@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 10;
+pub const VERSION: u32 = 11;
 
 pub mod database;
 mod fields;
@@ -407,7 +407,13 @@ impl Rollout {
             .and_then(Json::as_str)
             .map(str::to_owned)
             .or(s.git_commit.take());
-        if let Some(name) = p.str("agent_nickname").filter(|s| !s.is_empty()) {
+        // A spawned thread's name is on the record or in its spawn source.
+        let spawn = p.pointer("/source/subagent/thread_spawn");
+        if let Some(name) = p
+            .str("agent_nickname")
+            .filter(|s| !s.is_empty())
+            .or_else(|| spawn.and_then(|t| t.str("agent_nickname").filter(|s| !s.is_empty())))
+        {
             s.offer_title(name, TitleSource::AgentName);
         }
         let parent = p

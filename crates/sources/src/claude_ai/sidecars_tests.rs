@@ -176,3 +176,31 @@ fn explicit_null_collections_keep_sibling_text_and_parse_diagnostics() {
         assert_eq!(&raw[step.output.documents[0].offset as usize..step.output.documents[0].end as usize],serde_json::to_string(text).unwrap().as_bytes());
     }
 }
+
+#[test]
+fn project_document_content_given_as_parts_is_read_in_order() {
+    let bytes = br#"{"uuid":"p","docs":[{"uuid":"parts","filename":"notes.md","content":[{"type":"text","text":"First part"},{"type":"image","source":{"type":"url","url":"https://invalid.example/a.png"}},"plain part"]}]}"#;
+    let mut parser = open(Path::new("projects/p.json")).unwrap();
+    let step = parse_bound(&mut parser, "input", bytes);
+    let row = step
+        .output
+        .documents
+        .iter()
+        .find(|row| row.document.blocks.len() > 1)
+        .expect("the parts document");
+    assert_eq!(
+        row.document.blocks,
+        [
+            Block::Text {
+                text: "First part".into()
+            },
+            Block::Other {
+                type_name: "image".into(),
+                data: json!({"type":"image","source":{"type":"url","url":"https://invalid.example/a.png"}})
+            },
+            Block::Text {
+                text: "plain part".into()
+            },
+        ]
+    );
+}

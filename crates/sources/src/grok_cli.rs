@@ -101,7 +101,7 @@ static FIELDS: Fields = Fields::new(
         ("tool_calls[].name", Rule::Read(T::String)),
         (
             "tool_calls[].arguments",
-            Rule::Kept("complete parsed tool input"),
+            Rule::ReadWhole("complete parsed tool input"),
         ),
         ("content[].type", Rule::Read(T::String)),
         ("content[].text", Rule::Read(T::String)),

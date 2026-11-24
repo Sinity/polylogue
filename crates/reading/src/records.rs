@@ -432,7 +432,8 @@ pub(super) fn message_record(
             continue;
         }
         let context = record.context();
-        // Stated bindings and earlier exports the source supplied stay as declared.
+        // The claim and the earlier exports the source supplied stay as
+        // declared; `exported_from` names the context of this export.
         binding.exported_from = AttachmentNamespace {
             input: context.input.clone(),
             chain: context.chain,

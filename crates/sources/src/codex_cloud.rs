@@ -36,24 +36,27 @@ static FIELDS: Fields = Fields::new(
         ("turns[].previous_turn_id", Rule::Read(T::String)),
         (
             "turns[].custom_instructions",
-            Rule::Kept("instructions supplied to the cloud run"),
+            Rule::ReadWhole("instructions supplied to the cloud run"),
         ),
-        ("turns[].branch", Rule::Kept("Codex Cloud run metadata")),
+        (
+            "turns[].branch",
+            Rule::ReadWhole("Codex Cloud run metadata"),
+        ),
         (
             "turns[].branch_name",
-            Rule::Kept("Codex Cloud run metadata"),
+            Rule::ReadWhole("Codex Cloud run metadata"),
         ),
         (
             "turns[].external_pull_request_id",
-            Rule::Kept("Codex Cloud pull request reference"),
+            Rule::ReadWhole("Codex Cloud pull request reference"),
         ),
         (
             "turns[].pull_request_status",
-            Rule::Kept("Codex Cloud run metadata"),
+            Rule::ReadWhole("Codex Cloud run metadata"),
         ),
         (
             "turns[].turn_status",
-            Rule::Kept("Codex Cloud run metadata"),
+            Rule::ReadWhole("Codex Cloud run metadata"),
         ),
         ("turns[].input_items", Rule::Read(T::Array)),
         ("turns[].input_items[]", Rule::Read(T::Object)),

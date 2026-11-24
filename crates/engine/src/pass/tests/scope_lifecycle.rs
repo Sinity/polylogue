@@ -155,7 +155,6 @@ fn held_origin() -> &'static OriginSpec {
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: claude_code.recognize,
         open: held,
         resume: None,

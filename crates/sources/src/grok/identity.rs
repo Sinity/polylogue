@@ -117,10 +117,6 @@ fn response_identity_form(entry: &Json) -> Json {
     }
 }
 
-pub(super) fn response(entry: &Json) -> String {
-    digest(&response_identity_form(entry))
-}
-
 pub(super) fn conversation(conversation: &Json, responses: &[Json], wrapper: &Json) -> String {
     let mut responses: Vec<_> = responses.iter().map(response_identity_form).collect();
     responses.sort_by_cached_key(|value| ordered(value).to_string());

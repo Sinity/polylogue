@@ -44,7 +44,6 @@ const fn origin(open: fn(&Path) -> Option<Parse>) -> OriginSpec {
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: |_, _| true,
         open,
         resume: None,

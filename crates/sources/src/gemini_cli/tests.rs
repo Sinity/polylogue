@@ -121,3 +121,32 @@ fn recognizes_chat_files_only() {
         b"{\"sessionId\": \"x\""
     ));
 }
+
+#[test]
+fn an_unknown_session_kind_reads_as_main_and_is_reported() {
+    let parse = |kind: &str| {
+        let bytes =
+            serde_json::to_vec(&json!({"sessionId": "s1", "kind": kind, "messages": []})).unwrap();
+        crate::export::fixture::parse(&mut Parse::Export(Box::new(GeminiCli::default())), &bytes)
+            .unwrap()
+            .output
+    };
+    let out = parse("delegate");
+    assert_eq!(out.sessions[0].kind, SessionKind::Main);
+    let reported: Vec<_> = out
+        .events
+        .iter()
+        .filter(|event| event.kind == "session_kind_unknown")
+        .map(|event| event.data.clone())
+        .collect();
+    assert_eq!(reported, [json!({"kind": "delegate"})]);
+    for known in ["main", "subagent"] {
+        assert!(
+            parse(known)
+                .events
+                .iter()
+                .all(|event| event.kind != "session_kind_unknown")
+        );
+    }
+    assert_eq!(parse("subagent").sessions[0].kind, SessionKind::Subagent);
+}

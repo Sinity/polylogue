@@ -36,13 +36,11 @@ fn resolve(
     }
     if let Some(hash) = attachment.blob {
         let extent = reader.blob_reader()?.extent(&hashed_blobs::Hash(hash.0))?;
-        if attachment
-            .size
-            .is_some_and(|size| size != extent.decoded_len)
-        {
-            return Err(StoreError::stored_data(
-                "an attachment's recorded size differs from its stored size",
-            ));
+        if let Some(recorded) = attachment.size.filter(|size| *size != extent.decoded_len) {
+            return Ok(Availability::Unavailable(format!(
+                "the attachment records {recorded} bytes and its stored bytes are {}",
+                extent.decoded_len
+            )));
         }
         return Ok(Availability::Present { input: None });
     }

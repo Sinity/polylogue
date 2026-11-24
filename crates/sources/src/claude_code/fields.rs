@@ -304,12 +304,12 @@ pub static MESSAGE_FIELDS: Fields = Fields::new(
         ("message.content[].name", Read(T::String)),
         (
             "message.content[].input",
-            Kept("call input kept in the tool block"),
+            ReadWhole("call input kept in the tool block"),
         ),
         ("message.content[].tool_use_id", Read(T::String)),
         (
             "message.content[].content",
-            Kept("every result part kept in structured result data"),
+            ReadWhole("every result part kept in structured result data"),
         ),
         ("message.content[].is_error", Read(T::Boolean)),
         ("message.content[].source", Read(T::Object)),
@@ -320,11 +320,11 @@ pub static MESSAGE_FIELDS: Fields = Fields::new(
         ("message.content[].toolDenialKind", Read(T::String)),
         (
             "message.content[].from",
-            Kept("observed 3 times; no reader yet"),
+            Excluded("observed 3 times; stays in the stored bytes"),
         ),
         (
             "message.content[].to",
-            Kept("observed 3 times; no reader yet"),
+            Excluded("observed 3 times; stays in the stored bytes"),
         ),
         (
             "message.content[].caller",
@@ -337,7 +337,7 @@ pub static MESSAGE_FIELDS: Fields = Fields::new(
         ),
         (
             "message.content[].citations",
-            Kept("per-block citations in message attrs"),
+            ReadWhole("per-block citations in message attrs"),
         ),
     ],
 )

@@ -719,3 +719,128 @@ fn a_sessionless_event_follows_the_latest_opened_message_of_any_session() {
     let second = run(&main_file("s1"), &mut state, &bytes[cut..], cut as u64).unwrap();
     assert_eq!(after(vec![first, second]), whole);
 }
+
+#[test]
+fn a_title_summary_is_not_a_compaction_boundary() {
+    // Claude Code writes `{"type":"summary","summary":…,"leafUuid":…}` as the
+    // session's title line; compactions are `isCompactSummary` user records.
+    let records = [
+        json!({"type":"user","uuid":"first","sessionId":"s1","message":{"content":"Fix the parser"}}),
+        json!({"type":"summary","summary":"Parser fix","leafUuid":"first"}),
+    ];
+    let out = run(
+        &main_file("s1"),
+        &mut ParserState::default(),
+        &jsonl(&records),
+        0,
+    )
+    .unwrap()
+    .output;
+    assert_eq!(
+        out.messages
+            .iter()
+            .map(|row| row.message.id.to_string())
+            .collect::<Vec<_>>(),
+        ["claude-code:first"]
+    );
+    assert!(out.events.iter().all(|event| event.kind != "compaction"));
+    let title = out.sessions[0].title.as_ref().unwrap();
+    assert_eq!(
+        (title.text.as_str(), title.source),
+        ("Parser fix", TitleSource::Summary)
+    );
+}
+
+#[test]
+fn a_compaction_summary_is_recorded() {
+    let boundary = json!({"type":"system","subtype":"compact_boundary","uuid":"boundary","sessionId":"s1",
+        "logicalParentUuid":"first","compactMetadata":{"trigger":"manual","preTokens":90000}});
+    let summary = json!({"type":"user","uuid":"summary","parentUuid":"boundary","sessionId":"s1",
+        "isCompactSummary":true,"message":{"content":"Known compressed context."}});
+    let first = jsonl(&[
+        json!({"type":"user","uuid":"first","sessionId":"s1","message":{"content":"original"}}),
+        boundary.clone(),
+    ]);
+    let second = jsonl(std::slice::from_ref(&summary));
+    // The summary arrives in a later step than its boundary, as when the
+    // file is read while Claude Code writes it.
+    let parser = main_file("s1");
+    let mut state = ParserState::default();
+    let one = run(&parser, &mut state, &first, 0).unwrap();
+    assert!(
+        one.output
+            .events
+            .iter()
+            .all(|event| event.kind != "compaction")
+    );
+    let two = run(&parser, &mut state, &second, first.len() as u64).unwrap();
+    let events: Vec<_> = two
+        .output
+        .events
+        .iter()
+        .filter(|event| event.kind == "compaction")
+        .collect();
+    assert_eq!(events.len(), 1);
+    let boundary_line = serde_json::to_vec(&boundary).unwrap().len() as u64 + 1;
+    assert_eq!(
+        events[0].range,
+        Some((first.len() as u64 - boundary_line, first.len() as u64))
+    );
+    assert_eq!(
+        events[0].after.as_ref().map(ToString::to_string).as_deref(),
+        Some("claude-code:first")
+    );
+    let recorded: polylogue_model::CompactionBoundary =
+        serde_json::from_value(events[0].data.clone()).unwrap();
+    assert_eq!(
+        recorded
+            .summary
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("claude-code:summary")
+    );
+    assert_eq!(
+        (recorded.trigger.as_deref(), recorded.pre_tokens),
+        (Some("manual"), Some(90000))
+    );
+
+    // A boundary that no summary follows is sent with the next record,
+    // naming no summary.
+    let records = [
+        boundary,
+        json!({"type":"user","uuid":"next","sessionId":"s1","message":{"content":"go on"}}),
+    ];
+    let out = run(&parser, &mut ParserState::default(), &jsonl(&records), 0)
+        .unwrap()
+        .output;
+    let events: Vec<_> = out
+        .events
+        .iter()
+        .filter(|event| event.kind == "compaction")
+        .collect();
+    assert_eq!(events.len(), 1);
+    let recorded: polylogue_model::CompactionBoundary =
+        serde_json::from_value(events[0].data.clone()).unwrap();
+    assert_eq!(recorded.summary, None);
+
+    // A summary with no boundary record before it is a boundary of its own.
+    let out = run(&parser, &mut ParserState::default(), &jsonl(&[summary]), 0)
+        .unwrap()
+        .output;
+    let recorded: Vec<polylogue_model::CompactionBoundary> = out
+        .events
+        .iter()
+        .filter(|event| event.kind == "compaction")
+        .map(|event| serde_json::from_value(event.data.clone()).unwrap())
+        .collect();
+    assert_eq!(recorded.len(), 1);
+    assert_eq!(
+        recorded[0]
+            .summary
+            .as_ref()
+            .map(ToString::to_string)
+            .as_deref(),
+        Some("claude-code:summary")
+    );
+}

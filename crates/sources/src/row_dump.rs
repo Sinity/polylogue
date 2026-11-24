@@ -7,7 +7,7 @@ use polylogue_model::Json;
 use polylogue_model::JsonExt;
 use serde::{Deserialize, Serialize};
 
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 pub fn open() -> Parse {
     Parse::Lines(Box::new(RowDump))
@@ -17,6 +17,7 @@ pub struct RowDump;
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct NoState {}
 
+/// The header line the store writes when a database's schema changes.
 static HEADER: Fields = Fields::new(
     "schema_header",
     &[
@@ -24,6 +25,32 @@ static HEADER: Fields = Fields::new(
         ("at_ms", Rule::Read(T::Number)),
         ("schema", Rule::Read(T::Object)),
         ("table_metadata", Rule::Read(T::Object)),
+        (
+            "source",
+            Rule::Kept("the database file's identity; stays with the stored rows"),
+        ),
+    ],
+);
+/// A row line as the store writes it: table, key, the row's columns, when
+/// the snapshot was read, and how the columns are encoded.
+pub static ROW_ENVELOPE: Fields = Fields::new(
+    "row_wrapper",
+    &[
+        ("t", Rule::Read(T::String)),
+        ("k", Rule::Read(T::Any)),
+        ("r", Rule::Read(T::Object)),
+        ("at_ms", Rule::Read(T::Number)),
+        ("encoding", Rule::Read(T::String)),
+    ],
+);
+/// A line saying a row is gone from the database.
+static GONE: Fields = Fields::new(
+    "gone",
+    &[
+        ("t", Rule::Read(T::String)),
+        ("k", Rule::Read(T::Any)),
+        ("gone", Rule::Read(T::Boolean)),
+        ("at_ms", Rule::Read(T::Number)),
     ],
 );
 static INVALID: Fields = Fields::new("record", &[]);
@@ -79,7 +106,7 @@ impl Parser for RowDump {
             return RecordOutcome::unreadable("row-dump record has no table identifier");
         };
         if let Some(gone) = value.get("gone") {
-            records.unknown_table_gone(table, value);
+            records.unknown_table_gone(table, value, &GONE);
             return if gone == &Json::Bool(true) {
                 RecordOutcome::skipped("upstream row disappeared; original rows remain archived")
             } else {
@@ -90,7 +117,7 @@ impl Parser for RowDump {
             records.fields("row", value, &INVALID);
             return RecordOutcome::unreadable("row-dump record has no row object");
         };
-        records.unknown_table_row_wrapper(table, value);
+        records.unknown_table_row_wrapper(table, value, &ROW_ENVELOPE);
         records.unknown_table("row", table, row);
         RecordOutcome::skipped("tool table has no domain parser")
     }

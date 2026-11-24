@@ -375,7 +375,7 @@ fn observe_bytes(
     spec: &polylogue_sources::OriginSpec,
     path: &str,
 ) -> Result<(), &'static str> {
-    let framing = if spec.capture == Capture::RowDump {
+    let framing = if spec.capture.is_row_dump() {
         Framing::RowDump
     } else {
         match (spec.open)(Path::new(path)).ok_or("unsupported_framing")? {

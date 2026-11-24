@@ -257,7 +257,7 @@ pub(super) fn declared(
 fn importable(origin: &OriginSpec) -> bool {
     origin.support == Support::Parsed
         || (origin.support == Support::NoParser
-            && origin.capture == polylogue_sources::Capture::Bytes)
+            && matches!(origin.capture, polylogue_sources::Capture::Bytes))
 }
 
 // A standalone project path identifies that sidecar, not a whole

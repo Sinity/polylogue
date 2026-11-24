@@ -33,8 +33,15 @@ pub struct KnownKinds {
 pub enum Rule {
     /// Reads this value. A container does not account for its children.
     Read(ExpectedType),
-    /// Keeps this value, including its descendants, in row attributes.
+    /// Keeps this value, including its descendants, in row attributes. Its
+    /// path names one value: it holds no `[]` or `*`
+    /// ([`Fields::new`] refuses one that does).
     Kept(&'static str),
+    /// Reads this value whole, with its descendants, into the row built from
+    /// the element that holds it (a call's input, a result's data, a block's
+    /// attributes). The parser that reads the element stores it, so
+    /// [`attributes`] does not copy it.
+    ReadWhole(&'static str),
     /// A known field with no parsed representation. Its leaves remain unused.
     Excluded(&'static str),
 }
@@ -51,8 +58,13 @@ pub struct Fields {
 }
 impl Fields {
     /// A declaration for records of kind `kind`, which names this
-    /// declaration alone among its origin's.
+    /// declaration alone among its origin's. A kept path that holds `[]` or
+    /// `*` names many values, which no attribute can hold; such a declaration
+    /// does not build (declarations are statics, so this fails the build).
     pub const fn new(kind: &'static str, rules: &'static [(&'static str, Rule)]) -> Self {
+        if let Err(message) = check(rules) {
+            panic!("{}", message);
+        }
         Self {
             rules,
             dynamic_maps: &[],
@@ -95,6 +107,41 @@ impl Fields {
     }
 }
 
+/// Refuses a kept declaration whose path holds an array element or a map
+/// wildcard: [`attributes`] copies one value per kept path.
+pub const fn check(rules: &[(&str, Rule)]) -> Result<(), &'static str> {
+    let mut index = 0;
+    while index < rules.len() {
+        if let Rule::Kept(_) = rules[index].1
+            && names_many(rules[index].0.as_bytes())
+        {
+            return Err(
+                "a kept field path holds `[]` or `*`; declare it ReadWhole where the parser stores it",
+            );
+        }
+        index += 1;
+    }
+    Ok(())
+}
+
+/// Whether a declared path holds `[]`, or `*` as a whole segment.
+const fn names_many(path: &[u8]) -> bool {
+    let mut at = 0;
+    while at < path.len() {
+        if path[at] == b'[' && at + 1 < path.len() && path[at + 1] == b']' {
+            return true;
+        }
+        if path[at] == b'*'
+            && (at == 0 || path[at - 1] == b'.' || path[at - 1] == b'/')
+            && (at + 1 == path.len() || path[at + 1] == b'.' || path[at + 1] == b'/')
+        {
+            return true;
+        }
+        at += 1;
+    }
+    false
+}
+
 pub struct Accounting {
     pub unused: Vec<String>,
     pub shapes: BTreeMap<String, polylogue_model::WireShape>,
@@ -107,7 +154,7 @@ pub fn inspect(value: &Json, fields: &Fields) -> Accounting {
     let mut pending = vec![(value, String::new(), String::new(), false, false)];
     while let Some((value, path, shape_path, inherited, open_map)) = pending.pop() {
         let rule = fields.compiled().get(&shape_path);
-        let kept = inherited || matches!(rule, Some(Rule::Kept(_)));
+        let kept = inherited || matches!(rule, Some(Rule::Kept(_) | Rule::ReadWhole(_)));
         let shape = shapes.entry(shape_path.clone()).or_default();
         shape.path.clone_from(&shape_path);
         *shape.types.entry(type_name(value).into()).or_default() += 1;
@@ -291,7 +338,7 @@ impl ExpectedType {
 }
 
 /// Copies only fields declared kept. Attribute names are their full wire
-/// paths; array-bearing stored values are copied at their enclosing path.
+/// paths; a kept path names one value ([`check`]).
 pub fn attributes(value: &Json, fields: &Fields) -> serde_json::Map<String, Json> {
     fields
         .rules
@@ -306,9 +353,6 @@ pub fn attributes(value: &Json, fields: &Fields) -> serde_json::Map<String, Json
             }
             if let Some(path) = path.strip_prefix('/') {
                 for part in path.split('/') {
-                    if matches!(part, "[]" | "*") {
-                        return None;
-                    }
                     let key = part
                         .replace("~3", "[]")
                         .replace("~2", "*")
@@ -317,9 +361,6 @@ pub fn attributes(value: &Json, fields: &Fields) -> serde_json::Map<String, Json
                     current = current.get(&key)?;
                 }
             } else {
-                if path.contains("[]") || path.split('.').any(|part| part == "*") {
-                    return None;
-                }
                 for part in path.split('.') {
                     current = current.get(part)?;
                 }

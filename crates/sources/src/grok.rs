@@ -3,7 +3,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 
 use crate::fields::ExpectedType as T;
 mod identity;
@@ -201,7 +201,6 @@ impl Export {
             .expect("decoded source time is valid");
         sink.out.sessions.push(session);
         sink.records.record("conversation", &RecordOutcome::Used);
-        let mut response_occurrences = HashMap::<String, usize>::new();
         for entry in responses {
             let fields = if let Some(response) = entry.get("response") {
                 sink.records.fields(
@@ -253,18 +252,18 @@ impl Export {
                 warnings.push("missing, null or structured message is not read as text; original bytes stay in the stored input".into());
                 continue;
             };
-            let (native_message, id_kind) = match identity::native_id(fields, "id", "responseId") {
-                Ok(Some(id)) => (id.to_owned(), polylogue_model::IdKind::Native),
-                Ok(None) => {
-                    let hash = identity::response(entry);
-                    let n = response_occurrences.entry(hash.clone()).or_default();
-                    let id = format!("{native}:~{}-{n}", &hash[..12]);
-                    if *n > 0 {
-                        warnings.push("equal responses without an ID keep distinct occurrence IDs; which file record is which is ambiguous".into());
-                    }
-                    *n += 1;
-                    (id, polylogue_model::IdKind::Content)
-                }
+            let blocks = vec![Block::Text {
+                text: text.to_owned(),
+            }];
+            let offset = sink.position();
+            // A response without an ID is named by what it says
+            // (`crate::content_ids`), so equal responses settle by order.
+            let (id, id_kind) = match identity::native_id(fields, "id", "responseId") {
+                Ok(Some(native)) => (message_id(ORIGIN, native), polylogue_model::IdKind::Native),
+                Ok(None) => (
+                    crate::content_ids::named(&sid, role, &blocks, offset),
+                    polylogue_model::IdKind::Content,
+                ),
                 Err(reason) => {
                     sink.records
                         .record("response", &RecordOutcome::unreadable(reason));
@@ -272,7 +271,7 @@ impl Export {
                     continue;
                 }
             };
-            let Some(id) = message_id(ORIGIN, &native_message) else {
+            let Some(id) = id else {
                 sink.records.record(
                     "response",
                     &RecordOutcome::unreadable("unusable Grok message identity"),
@@ -292,7 +291,6 @@ impl Export {
             } else {
                 None
             };
-            let offset = sink.position();
             sink.out.messages.push(MessageRow {
                 response: None,
                 page_text: false,
@@ -315,9 +313,7 @@ impl Export {
                         at_until: time_accuracy.until,
                         model,
                         prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
-                        blocks: vec![Block::Text {
-                            text: text.to_owned(),
-                        }],
+                        blocks,
                         usage: Default::default(),
                         stop_reason: None,
                         reported_cost_usd: None,

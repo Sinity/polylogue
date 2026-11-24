@@ -17,8 +17,7 @@ fn the_repository_is_the_nearest_git_directory_above() {
 fn an_unchanged_lookup_is_written_once() {
     let t = tempfile::tempdir().unwrap();
     let repo = t.path().join("repo");
-    // Not a readable repository: remote and root stay unknown.
-    fs::create_dir_all(repo.join(".git")).unwrap();
+    let root = repository(&repo);
     fs::create_dir_all(repo.join("src")).unwrap();
     let out = t.path().join("lookups");
     let mut cache = Cache::default();
@@ -31,7 +30,7 @@ fn an_unchanged_lookup_is_written_once() {
         serde_json::from_slice(&fs::read(files[0].as_ref().unwrap().path()).unwrap()).unwrap();
     assert_eq!(doc["path"], repo.display().to_string());
     assert!(doc["remote"].is_null());
-    assert_eq!(doc["root_commits"], serde_json::json!([]));
+    assert_eq!(doc["root_commits"], serde_json::json!([root]));
     assert_eq!(doc["read_at"], "t1");
 }
 
@@ -71,7 +70,7 @@ fn the_checkout_this_crate_is_built_from_reads_as_a_repository() {
         return; // a build outside a checkout (the Nix package)
     }
     let repo = repository_of(here).expect("the crate is built from a checkout");
-    let l = read(&repo, &mut Cache::default());
+    let l = read(&repo, &mut Cache::default()).unwrap();
     // A shallow clone (cloud sessions, CI) does not hold the root commit, and
     // the lookup reports none rather than the shallow boundary.
     if git(&repo, &["rev-parse", "--is-shallow-repository"]) == "true" {
@@ -136,14 +135,17 @@ fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
     .unwrap();
     let mut cache = Cache::default();
     assert_eq!(
-        read(&repo, &mut cache),
+        read(&repo, &mut cache).unwrap(),
         Lookup {
             remote: Some("https://example.invalid/team/project.git".into()),
             root_commits: vec![root.clone()]
         }
     );
     git(&repo, &["pack-refs", "--all"]);
-    assert_eq!(read(&repo, &mut cache).root_commits, vec![root.clone()]);
+    assert_eq!(
+        read(&repo, &mut cache).unwrap().root_commits,
+        vec![root.clone()]
+    );
     let linked = temp.path().join("linked");
     git(
         &repo,
@@ -179,7 +181,7 @@ fn linked_worktrees_packed_refs_and_conditional_config_are_read() {
         "git@example.invalid:team/project.git"
     );
     assert_eq!(
-        read(&linked, &mut cache),
+        read(&linked, &mut cache).unwrap(),
         Lookup {
             remote: Some("git@example.invalid:team/project.git".into()),
             root_commits: vec![root]
@@ -196,11 +198,17 @@ fn roots_are_every_root_reachable_from_head() {
     let repo = temp.path().join("repo");
     let root = repository(&repo);
     let mut cache = Cache::default();
-    assert_eq!(read(&repo, &mut cache).root_commits, vec![root.clone()]);
+    assert_eq!(
+        read(&repo, &mut cache).unwrap().root_commits,
+        vec![root.clone()]
+    );
     git(&repo, &["checkout", "--orphan", "other"]);
     git(&repo, &["commit", "--allow-empty", "-m", "other root"]);
     let other = git(&repo, &["rev-parse", "HEAD"]);
-    assert_eq!(read(&repo, &mut cache).root_commits, vec![other.clone()]);
+    assert_eq!(
+        read(&repo, &mut cache).unwrap().root_commits,
+        vec![other.clone()]
+    );
     git(&repo, &["checkout", "main"]);
     git(
         &repo,
@@ -208,7 +216,7 @@ fn roots_are_every_root_reachable_from_head() {
     );
     let mut both = vec![root, other];
     both.sort();
-    assert_eq!(read(&repo, &mut cache).root_commits, both);
+    assert_eq!(read(&repo, &mut cache).unwrap().root_commits, both);
 }
 
 #[test]
@@ -228,9 +236,9 @@ fn missing_shallow_history_stays_unknown() {
         ],
     );
     let mut cache = Cache::default();
-    assert!(read(&clone, &mut cache).root_commits.is_empty());
+    assert!(read(&clone, &mut cache).unwrap().root_commits.is_empty());
     git(&clone, &["fetch", "--unshallow"]);
-    assert_eq!(read(&clone, &mut cache).root_commits, vec![root]);
+    assert_eq!(read(&clone, &mut cache).unwrap().root_commits, vec![root]);
 }
 
 #[test]
@@ -244,7 +252,10 @@ fn the_first_fetch_url_uses_the_longest_rewrite_and_masks_credentials() {
         .unwrap();
     writeln!(config, "[remote \"origin\"]\nurl = short:team/project.git\nurl = https://other.invalid/ignored.git\n[url \"https://example.invalid/\"]\ninsteadOf = short:\n[url \"https://user:secret@example.invalid/selected/\"]\ninsteadOf = short:team/").unwrap();
     assert_eq!(
-        read(&repo, &mut Cache::default()).remote.as_deref(),
+        read(&repo, &mut Cache::default())
+            .unwrap()
+            .remote
+            .as_deref(),
         Some("https://example.invalid/selected/project.git")
     );
 }
@@ -263,10 +274,8 @@ fn malformed_head_values_and_reference_paths_stay_unknown() {
         "ref: refs/../../outside",
     ] {
         fs::write(dir.join("HEAD"), head).unwrap();
-        assert!(
-            read(&repo, &mut Cache::default()).root_commits.is_empty(),
-            "{head}"
-        );
+        // No remote and no root: nothing to write over an earlier lookup.
+        assert_eq!(read(&repo, &mut Cache::default()), None, "{head}");
     }
 }
 
@@ -280,24 +289,23 @@ fn ownership_refusal_reports_the_repository_as_unavailable() {
         &["remote", "add", "origin", "https://example.invalid/project"],
     );
     let mut cache = Cache::default();
-    assert!(read(&repo, &mut cache).remote.is_some());
-    let lookup = read_with(&repo, &mut cache, |args| {
-        git_output(
-            Command::new("git")
-                .arg("-C")
-                .arg(&repo)
-                .args(["-c", "safe.directory="])
-                .args(args)
-                .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1"),
-        )
-    });
-    assert_eq!(
-        lookup,
-        Lookup {
-            remote: None,
-            root_commits: Vec::new()
-        }
+    assert!(read(&repo, &mut cache).unwrap().remote.is_some());
+    let lookup = read_with(
+        &repo,
+        &mut cache,
+        |args| {
+            git_output(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(["-c", "safe.directory="])
+                    .args(args)
+                    .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1"),
+            )
+        },
+        ANSWER_WITHIN,
     );
+    assert_eq!(lookup, None);
 }
 
 #[test]
@@ -313,17 +321,22 @@ fn unchanged_head_and_config_reuse_the_lookup_and_included_config_changes_refres
     )
     .unwrap();
     let mut cache = Cache::default();
-    let first = read(&repo, &mut cache);
+    let first = read(&repo, &mut cache).unwrap();
     assert_eq!(
         first.remote.as_deref(),
         Some("https://example.invalid/first")
     );
     let mut queries = Vec::new();
-    let reused = read_with(&repo, &mut cache, |args| {
-        queries.push(args.join(" "));
-        super::git(&repo, args)
-    });
-    assert_eq!(reused, first);
+    let reused = read_with(
+        &repo,
+        &mut cache,
+        |args| {
+            queries.push(args.join(" "));
+            super::git(&repo, args)
+        },
+        ANSWER_WITHIN,
+    );
+    assert_eq!(reused, Some(first));
     assert!(
         !queries
             .iter()
@@ -335,7 +348,7 @@ fn unchanged_head_and_config_reuse_the_lookup_and_included_config_changes_refres
     )
     .unwrap();
     assert_eq!(
-        read(&repo, &mut cache).remote.as_deref(),
+        read(&repo, &mut cache).unwrap().remote.as_deref(),
         Some("https://example.invalid/second-repository")
     );
 }
@@ -367,7 +380,10 @@ fn remote_paths_keep_their_spaces_and_newlines() {
     let remote = " local repository \n";
     git(&repo, &["remote", "add", "origin", remote]);
     assert_eq!(
-        read(&repo, &mut Cache::default()).remote.as_deref(),
+        read(&repo, &mut Cache::default())
+            .unwrap()
+            .remote
+            .as_deref(),
         Some(remote)
     );
 }
@@ -395,4 +411,46 @@ fn working_directories_are_the_last_cwd_and_listed_cwds_that_exist_here() {
         working_directories(&rows),
         BTreeSet::from([first, second, third])
     );
+}
+
+#[test]
+fn a_failed_repository_lookup_keeps_the_previous_lookup() {
+    let t = tempfile::tempdir().unwrap();
+    let repo = t.path().join("repo");
+    let root = repository(&repo);
+    git(
+        &repo,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://example.invalid/team/project.git",
+        ],
+    );
+    let out = t.path().join("lookups");
+    let mut cache = Cache::default();
+    assert_eq!(
+        refresh(vec![repo.clone()], &out, &mut cache, "t1").unwrap(),
+        1
+    );
+    let file = fs::read_dir(&out).unwrap().next().unwrap().unwrap().path();
+    let written = fs::read(&file).unwrap();
+    // A read past its deadline and a read Git refuses give no lookup.
+    git(&repo, &["commit", "--allow-empty", "-m", "later"]);
+    assert_eq!(
+        read_with(
+            &repo,
+            &mut cache,
+            |args| super::git(&repo, args),
+            Duration::ZERO
+        ),
+        None
+    );
+    assert_eq!(read_with(&repo, &mut cache, |_| None, ANSWER_WITHIN), None);
+    // Writing what such a read gave leaves the last good lookup in place.
+    assert!(!write_lookup(&repo, &out, None, "t2").unwrap());
+    assert_eq!(fs::read(&file).unwrap(), written);
+    let doc: serde_json::Value = serde_json::from_slice(&written).unwrap();
+    assert_eq!(doc["remote"], "https://example.invalid/team/project.git");
+    assert_eq!(doc["root_commits"], serde_json::json!([root]));
 }

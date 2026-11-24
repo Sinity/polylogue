@@ -103,7 +103,6 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: |_, _| true,
         open: |_| Some(polylogue_sources::Parse::Lines(Box::new(Held))),
         resume: None,

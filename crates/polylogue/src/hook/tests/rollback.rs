@@ -142,9 +142,13 @@ fn this_builds_reader_takes_every_rollback_fixture_line() {
         Path::new("/home/op/.local/state/polylogue/hooks/4242.ndjson"),
         LINES.as_bytes()
     ));
-    let step =
-        polylogue_sources::parse::run(&HookSpool, &mut ParserState::default(), LINES.as_bytes(), 0)
-            .unwrap();
+    let step = polylogue_sources::parse::run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        LINES.as_bytes(),
+        0,
+    )
+    .unwrap();
     assert_eq!(step.counts.records, 6);
     assert_eq!(step.counts.unreadable, Default::default());
     let sessions: Vec<String> = step
