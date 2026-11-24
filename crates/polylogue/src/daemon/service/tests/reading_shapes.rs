@@ -526,82 +526,6 @@ fn spawns_read_inline_at_their_call_to_the_asked_depth() {
     assert!(subtask < nested, "{full:?}");
 }
 
-/// A child that copied its parent's history, with the parent never stored,
-/// holds those messages as its own: one marked line and no link problem.
-#[test]
-fn a_copy_from_an_unstored_session_reads_as_own_with_its_marker() {
-    const PARENT: &str = "019a0000-0000-7000-8000-000000000001";
-    const CHILD: &str = "019a0000-0000-7000-8000-000000000002";
-    let d = test_daemon::start("placeholder");
-    let rollouts = d.home.join(".codex/sessions/2026/03/01");
-    std::fs::create_dir_all(&rollouts).unwrap();
-    let record = |n: u64, kind: &str, payload: serde_json::Value| {
-        line(json!({"timestamp": format!("2026-03-01T10:00:{n:02}Z"),
-                    "ordinal": n, "type": kind, "payload": payload}))
-    };
-    let message = |id: &str, role: &str, text: &str| {
-        json!({"type": "message", "id": id, "role": role,
-               "content": [{"type": if role == "user" { "input_text" } else { "output_text" },
-                            "text": text}]})
-    };
-    let child = record(
-        1,
-        "session_meta",
-        json!({"id": CHILD, "session_id": PARENT, "parent_thread_id": PARENT,
-               "forked_from_id": PARENT, "thread_source": "subagent",
-               "subagent_history_start_ordinal": 3,
-               "source": {"subagent": {"thread_spawn": {"parent_thread_id": PARENT, "depth": 1}}}}),
-    ) + &record(
-        2,
-        "response_item",
-        message("parent-user", "user", "copied prompt"),
-    ) + &record(
-        3,
-        "response_item",
-        message("child-user", "user", "child prompt"),
-    );
-    std::fs::write(
-        rollouts.join(format!("rollout-synthetic-{CHILD}.jsonl")),
-        child,
-    )
-    .unwrap();
-    let child_id = polylogue_model::SessionId::parse(&format!("codex:{CHILD}")).unwrap();
-    d.wait_for(|status| {
-        status["busy"] == false
-            && d.daemon
-                .reads
-                .reader()
-                .unwrap()
-                .session(&child_id)
-                .unwrap()
-                .is_some()
-    });
-    let page = read(
-        &d,
-        &format!("session:codex:{CHILD}"),
-        ReadOptions::default(),
-    );
-    let shown = texts(&page);
-    assert!(
-        shown
-            .iter()
-            .any(|text| text == "(repeated from a session not in the archive, counted as own)"),
-        "{shown:?}"
-    );
-    assert!(
-        shown.iter().any(|text| text == "copied prompt"),
-        "{shown:?}"
-    );
-    assert!(shown.iter().any(|text| text == "child prompt"), "{shown:?}");
-    assert!(
-        !page
-            .document
-            .items
-            .iter()
-            .any(|item| matches!(item.kind, ItemKind::LinkIssue { .. }))
-    );
-}
-
 /// The dialogue view hides the spawning call, so a cut after it leaves its
 /// message header with no shown block before the child; the header stays.
 #[test]
@@ -639,20 +563,26 @@ fn a_spawn_cut_keeps_its_header() {
         })),
     )
     .unwrap();
+    let spawner = polylogue_model::SessionId::parse("claude-code:spawner").unwrap();
+    let inline = || ReadOptions {
+        view: View::Dialogue,
+        spawns: SpawnDisplay::Inline { depth: Some(1) },
+        ..ReadOptions::default()
+    };
     d.wait_for(|status| {
-        status["store"]["messages"] == 4
-            && status["store"]["search_pending"] == 0
-            && status["busy"] == false
+        status["busy"] == false
+            && d.daemon
+                .reads
+                .reader()
+                .unwrap()
+                .session(&spawner)
+                .unwrap()
+                .is_some()
+            && texts(&read(&d, "session:claude-code:spawner", inline()))
+                .iter()
+                .any(|text| text == "do the subtask")
     });
-    let page = read(
-        &d,
-        "session:claude-code:spawner",
-        ReadOptions {
-            view: View::Dialogue,
-            spawns: SpawnDisplay::Inline { depth: Some(1) },
-            ..ReadOptions::default()
-        },
-    );
+    let page = read(&d, "session:claude-code:spawner", inline());
     let place = |wanted: &dyn Fn(&ItemKind) -> bool| {
         page.document
             .items

@@ -2556,3 +2556,6 @@ fn project_layout(
     })?;
     Ok(Some(record))
 }
+
+#[cfg(test)]
+mod tests;

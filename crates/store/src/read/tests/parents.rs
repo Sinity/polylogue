@@ -223,10 +223,7 @@ fn a_copied_prefix_from_an_unstored_session_is_no_parent_issue() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
     session(&mut f, "copy", &["copy"]);
-    fork(&mut f, "missing", "copy", Some("claude-code:missing-0"));
-    crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
-        .unwrap()
-        .execute("UPDATE link SET copies_prefix=1", [])
+    f.copying_link("claude-code:missing", "claude-code:copy", "fork")
         .unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
