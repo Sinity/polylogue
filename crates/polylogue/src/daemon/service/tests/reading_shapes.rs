@@ -565,7 +565,17 @@ fn a_copy_from_an_unstored_session_reads_as_own_with_its_marker() {
         child,
     )
     .unwrap();
-    d.wait_for(|status| status["store"]["messages"] == 2 && status["store"]["search_pending"] == 0);
+    let child_id = polylogue_model::SessionId::parse(&format!("codex:{CHILD}")).unwrap();
+    d.wait_for(|status| {
+        status["busy"] == false
+            && d.daemon
+                .reads
+                .reader()
+                .unwrap()
+                .session(&child_id)
+                .unwrap()
+                .is_some()
+    });
     let page = read(
         &d,
         &format!("session:codex:{CHILD}"),
@@ -629,7 +639,11 @@ fn a_spawn_cut_keeps_its_header() {
         })),
     )
     .unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["search_pending"] == 0);
+    d.wait_for(|status| {
+        status["store"]["messages"] == 4
+            && status["store"]["search_pending"] == 0
+            && status["busy"] == false
+    });
     let page = read(
         &d,
         "session:claude-code:spawner",
@@ -736,7 +750,11 @@ fn the_context_meter_estimates_from_stored_sums_what_context_at_computes() {
     ]
     .concat();
     std::fs::write(d.home.join(".claude/projects/-p/meter.jsonl"), session).unwrap();
-    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["search_pending"] == 0);
+    d.wait_for(|status| {
+        status["store"]["messages"] == 4
+            && status["store"]["search_pending"] == 0
+            && status["busy"] == false
+    });
     let page = read(
         &d,
         "session:claude-code:meter",
