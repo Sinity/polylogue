@@ -78,7 +78,7 @@ A compaction is a discontinuity in the model's context, not a special kind of co
 
 - **The summary is a message** at the boundary, with `written_by: harness` and `prompt_kind: compaction_summary`. It is searchable, embedded like other prose, and counted once.
 - **The boundary is an event linked to that message.** It records the tokens before and after (as reported), the trigger (`manual`, `auto`, or the harness's own value), the range of messages it evicted and what it kept. Codex `replacement_history` stays in this event and is not turned into messages.
-- Encodings mapped onto it: Claude Code inline `isCompactSummary` records, main-session `agent-acompact` replays, Codex `compacted` records, claude.ai inline summaries. Providers without compaction (ChatGPT, Gemini, Antigravity) have none.
+- Encodings mapped onto it: Claude Code inline `isCompactSummary` records (with the `compact_boundary` record before them, whose event names the summary message), main-session `agent-acompact` replays, Codex `compacted` records, claude.ai inline summaries. A Claude Code `summary` line holding only its text titles its session and is not a compaction; one carrying a `message` is a compaction replay's summary. Providers without compaction (ChatGPT, Gemini, Antigravity) have none.
 - **Microcompaction** (named tool results removed from the context) is an event naming the removed results.
 - Messages before the boundary stay stored and readable; they are no longer in the model's context. Composing the context as the model saw it at a message is a read ([transcripts.md](transcripts.md#the-context-view)).
 

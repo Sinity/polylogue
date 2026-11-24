@@ -94,9 +94,10 @@ fn unknown_database_table_has_explicit_schema_identity_without_row_values() {
 
 #[test]
 fn read_thread_fields_are_declared_and_new_ones_shown() {
-    let step = run(&Database, &mut NoState::default(), br#"{"t":"threads","k":["s"],"h":"00","r":{"id":"s","name":"Clock","cwd":"/work/project","thread_source":"user","created_at_ms":1700000000000,"future":{"flag":true}}}
+    let step = run(&Database, &mut NoState::default(), br#"{"t":"threads","k":["s"],"r":{"id":"s","name":"Clock","cwd":"/work/project","thread_source":"user","created_at_ms":1700000000000,"future":{"flag":true}},"at_ms":1,"encoding":"sqlite"}
 "#, 0).unwrap();
-    assert_eq!(step.counts.unread_fields.len(), 3);
+    // The envelope the store writes is declared; only the new column is unread.
+    assert_eq!(step.counts.unread_fields.len(), 1);
     assert_eq!(step.counts.unread_fields["threads.future.flag"], 1);
     let session = &step.output.sessions[0];
     assert_eq!(

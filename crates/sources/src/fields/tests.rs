@@ -216,3 +216,51 @@ fn typed_dynamic_members_override_open_map_expectations() {
     );
     assert_eq!(got.shapes["/literal/~2"].expected, ["null", "number"]);
 }
+
+#[test]
+fn kept_declarations_with_array_paths_are_refused_or_resolved() {
+    // A kept path names one attribute value; one under an array element or a
+    // map wildcard names many and is refused.
+    for path in [
+        "content[].citations",
+        "turns[]",
+        "map.*.value",
+        "/a/[]/b",
+        "*",
+    ] {
+        assert!(
+            check(&[(path, Rule::Kept("many values"))]).is_err(),
+            "{path}"
+        );
+    }
+    // The same values read whole by the element's parser are accepted, and
+    // literal names that only contain the characters are one value each.
+    for (path, rule) in [
+        (
+            "content[].citations",
+            Rule::ReadWhole("in the block's attributes"),
+        ),
+        ("/a~3b/~2", Rule::Kept("escaped literal names")),
+        ("a*b", Rule::Kept("a name holding an asterisk")),
+    ] {
+        assert_eq!(check(&[(path, rule)]), Ok(()), "{path}");
+    }
+    // A value read whole accounts for its descendants, and is not an attribute.
+    static FIELDS: Fields = Fields::new(
+        "record",
+        &[
+            ("content", Rule::Read(T::Array)),
+            (
+                "content[].input",
+                Rule::ReadWhole("tool input in the call block"),
+            ),
+            ("meta", Rule::Kept("provider metadata")),
+        ],
+    );
+    let source = json!({"content":[{"input":{"cmd":["ls"]}}],"meta":{"k":1}});
+    assert!(inspect(&source, &FIELDS).unused.is_empty());
+    assert_eq!(
+        attributes(&source, &FIELDS),
+        serde_json::from_value::<serde_json::Map<String, Json>>(json!({"meta":{"k":1}})).unwrap()
+    );
+}

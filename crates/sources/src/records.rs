@@ -97,22 +97,13 @@ impl Records {
     }
 
     /// The row body has its own table-column scope. Framing leaves are observed
-    /// separately so a new header field cannot disappear behind that walk.
-    pub fn unknown_table_row_wrapper(&mut self, table: &str, record: &Json) {
-        use crate::fields::{ExpectedType as T, Rule};
-        static ROW_WRAPPER: Fields = Fields::new(
-            "row_wrapper",
-            &[
-                ("t", Rule::Read(T::String)),
-                ("k", Rule::Read(T::Any)),
-                ("h", Rule::Read(T::String)),
-                ("r", Rule::Read(T::Object)),
-            ],
-        );
+    /// separately, against the row dump's envelope declaration, so a new
+    /// header field cannot disappear behind that walk.
+    pub fn unknown_table_row_wrapper(&mut self, table: &str, record: &Json, envelope: &Fields) {
         self.account(
             "row envelope",
             &crate::fields::header(record, &["r"]),
-            &ROW_WRAPPER,
+            envelope,
             Some(table),
             false,
         );
@@ -139,25 +130,8 @@ impl Records {
     }
     /// A row disappearance carries table identity and framing fields rather
     /// than a replacement sample of that table's columns.
-    pub fn unknown_table_gone(&mut self, table: &str, record: &Json) {
-        static GONE: Fields = Fields::new(
-            "gone",
-            &[
-                (
-                    "t",
-                    crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-                ),
-                (
-                    "k",
-                    crate::fields::Rule::Read(crate::fields::ExpectedType::Any),
-                ),
-                (
-                    "gone",
-                    crate::fields::Rule::Read(crate::fields::ExpectedType::Boolean),
-                ),
-            ],
-        );
-        self.account("gone", record, &GONE, Some(table), true);
+    pub fn unknown_table_gone(&mut self, table: &str, record: &Json, envelope: &Fields) {
+        self.account("gone", record, envelope, Some(table), true);
     }
 
     pub fn unknown_table_schema(&mut self, table: &str, schema: &Json) {

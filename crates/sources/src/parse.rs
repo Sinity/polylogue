@@ -285,7 +285,9 @@ impl Parse {
         finished: bool,
     ) -> Result<(Vec<Step>, Json), ParseError> {
         match self {
-            Parse::CaptureLog(parser) => Ok((capture_steps(&**parser, bytes, base)?, Json::Null)),
+            Parse::CaptureLog(parser) => {
+                Ok((capture_steps(&**parser, bytes, base, finished)?, Json::Null))
+            }
             _ => self
                 .step_to(parser_state, bytes, base, finished)
                 .map(|(step, parser_state)| (vec![step], parser_state)),
@@ -293,10 +295,16 @@ impl Parse {
     }
 }
 
+/// The captures in `bytes`, one step each. A frame whose bytes fail its
+/// digest is counted unreadable and the next frame read; a header that does
+/// not decode ends the framing, so the rest is counted unreadable; at the
+/// end of an input that will not grow, an incomplete last frame is counted
+/// unreadable. The captures before any of these stay.
 fn capture_steps(
     parser: &dyn DocumentParser,
     bytes: &[u8],
     base: u64,
+    finished: bool,
 ) -> Result<Vec<Step>, ParseError> {
     use polylogue_model::capture_log::{HEADER_LEN, Header, MAGIC};
     let mut position = 0usize;
@@ -320,37 +328,73 @@ fn capture_steps(
         }
     }
     let mut steps = Vec::new();
-    while bytes.len().saturating_sub(position) >= HEADER_LEN {
-        let header_start = position;
-        let header = Header::decode(&bytes[position..position + HEADER_LEN])
-            .map_err(ParseError::CaptureLog)?;
-        position += HEADER_LEN;
-        let length = usize::try_from(header.length)
-            .map_err(|_| ParseError::CaptureLog("frame length exceeds address space".into()))?;
-        let Some(end) = position
-            .checked_add(length)
-            .filter(|end| *end <= bytes.len())
-        else {
-            break;
-        };
-        if !header.verifies(&bytes[position..end]) {
-            return Err(ParseError::CaptureLog("capture digest mismatch".into()));
-        }
-        let mut step = run_document(parser, &bytes[position..end])?;
-        mark_whole_capture(&mut step, base + position as u64, base + end as u64);
-        step.start = if base == 0 && steps.is_empty() {
+    let start_of = |steps: &Vec<Step>, header_start: usize| {
+        if base == 0 && steps.is_empty() {
             0
         } else {
             header_start as u64
+        }
+    };
+    while bytes.len().saturating_sub(position) >= HEADER_LEN {
+        let header_start = position;
+        let header = match Header::decode(&bytes[position..position + HEADER_LEN]) {
+            Ok(header) => header,
+            Err(reason) => {
+                let start = start_of(&steps, header_start);
+                steps.push(unreadable_capture(&reason, start, bytes.len())?);
+                return Ok(steps);
+            }
         };
+        position += HEADER_LEN;
+        let end = usize::try_from(header.length)
+            .ok()
+            .and_then(|length| position.checked_add(length));
+        let Some(end) = end.filter(|end| *end <= bytes.len()) else {
+            position = header_start;
+            break;
+        };
+        let start = start_of(&steps, header_start);
+        if !header.verifies(&bytes[position..end]) {
+            steps.push(unreadable_capture("capture digest mismatch", start, end)?);
+            position = end;
+            continue;
+        }
+        let mut step = run_document(parser, &bytes[position..end])?;
+        mark_whole_capture(&mut step, base + position as u64, base + end as u64);
+        step.start = start;
         step.consumed = end as u64;
         steps.push(step);
         position = end;
+    }
+    if finished && position < bytes.len() {
+        let start = start_of(&steps, position);
+        steps.push(unreadable_capture(
+            "the capture log ends inside a frame",
+            start,
+            bytes.len(),
+        )?);
     }
     if steps.is_empty() {
         return empty_steps();
     }
     Ok(steps)
+}
+
+/// A step over capture-log bytes that hold no readable capture: one record,
+/// counted unreadable with its reason, and no rows.
+fn unreadable_capture(reason: &str, start: u64, end: usize) -> Result<Step, ParseError> {
+    let mut records = Records::default();
+    records.record(
+        "capture",
+        &RecordOutcome::unreadable(format!("invalid capture log: {reason}")),
+    );
+    Ok(Step {
+        output: Output::default(),
+        counts: records.finish()?,
+        consumed: end as u64,
+        start,
+        repeats_whole_conversations: false,
+    })
 }
 
 fn mark_whole_capture(step: &mut Step, start: u64, end: u64) {

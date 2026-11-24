@@ -215,11 +215,11 @@ static CHUNK_FIELDS: Fields = Fields::new(
         ("parts[].thoughtSignature", Rule::Read(T::String)),
         (
             "parts[].executableCode",
-            Rule::Kept("complete code input in tool block"),
+            Rule::ReadWhole("complete code input in tool block"),
         ),
         (
             "parts[].codeExecutionResult",
-            Rule::Kept("complete code result in tool block"),
+            Rule::ReadWhole("complete code result in tool block"),
         ),
         ("parts[].inlineData", Rule::Read(T::Object)),
         ("parts[].fileData", Rule::Read(T::Object)),

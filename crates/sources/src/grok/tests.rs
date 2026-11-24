@@ -1,9 +1,12 @@
 use super::*;
 use serde_json::json;
 
+/// The step as its chain's reading names it: content-named messages settled.
 fn parse(value: Json) -> Step {
     let mut parser = open(Path::new("renamed.json")).unwrap();
-    crate::export::fixture::parse(&mut parser, &serde_json::to_vec(&value).unwrap()).unwrap()
+    let step =
+        crate::export::fixture::parse(&mut parser, &serde_json::to_vec(&value).unwrap()).unwrap();
+    crate::chain_names::tests::settled(&[step]).remove(0)
 }
 
 fn conversation() -> Json {
@@ -94,7 +97,7 @@ fn same_opening_does_not_merge_different_idless_conversations_and_order_is_not_i
 }
 
 #[test]
-fn equal_idless_turns_keep_occurrences_and_report_the_correspondence_limit() {
+fn idless_responses_are_named_by_their_content_and_numbered_in_order() {
     let mut value = conversation();
     let repeated = value["responses"][1].clone();
     value["responses"].as_array_mut().unwrap().push(repeated);
@@ -108,21 +111,27 @@ fn equal_idless_turns_keep_occurrences_and_report_the_correspondence_limit() {
         parsed.output.messages[1].message.text(),
         parsed.output.messages[2].message.text()
     );
-    // A message without an ID is `<session>:~<content hash>-<occurrence>`;
-    // equal turns share the hash and differ in the occurrence.
+    // A message without an ID is named by its session, role and content
+    // (`<session>~<role>-<hash>`) and numbered among equal messages in order.
     let session = parsed.output.sessions[0].id.native().as_str().to_owned();
     let first = parsed.output.messages[1].message.id.native().as_str();
     let second = parsed.output.messages[2].message.id.native().as_str();
-    assert!(first.starts_with(&format!("{session}:~")), "{first}");
-    assert!(first.ends_with("-0"), "{first}");
-    assert!(second.ends_with("-1"), "{second}");
-    assert_eq!(first[..first.len() - 2], second[..second.len() - 2]);
+    let name = first.strip_suffix("-0").expect(first);
+    assert!(
+        name.starts_with(&format!("{session}~assistant-")),
+        "{first}"
+    );
+    assert_eq!(second, format!("{name}-1"));
+    assert!(
+        parsed.output.messages[1..]
+            .iter()
+            .all(|row| row.id_kind == polylogue_model::IdKind::Content)
+    );
     assert_eq!(parsed.output.events.len(), 1);
     assert_eq!(
         parsed.output.events[0].data["warnings"],
         json!([
-            "content-derived conversation: filename and ordering are stable, but append/edit continuity is unproved",
-            "equal responses without an ID keep distinct occurrence IDs; which file record is which is ambiguous"
+            "content-derived conversation: filename and ordering are stable, but append/edit continuity is unproved"
         ])
     );
 }

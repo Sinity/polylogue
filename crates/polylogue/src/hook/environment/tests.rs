@@ -211,8 +211,13 @@ fn captured_stated_facts_survive_spooling_and_parsing() {
         .path()
         .join(format!("{}.ndjson", std::os::unix::process::parent_id()));
     let bytes = std::fs::read(path).unwrap();
-    let parsed =
-        polylogue_sources::parse::run(&HookSpool, &mut ParserState::default(), &bytes, 0).unwrap();
+    let parsed = polylogue_sources::parse::run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &bytes,
+        0,
+    )
+    .unwrap();
     let event = &parsed.output.events[0];
     assert_eq!(event.range, Some((0, bytes.len() as u64 - 1)));
     assert_eq!(

@@ -31,7 +31,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 use crate::document::{first_key, session_id};
 use crate::fields::ExpectedType as T;
@@ -84,10 +84,46 @@ pub fn recognize(path: &Path, head: &[u8]) -> bool {
 }
 
 pub fn open(path: &Path) -> Option<Parse> {
-    is_spool_file(path).then(|| Parse::Lines(Box::new(HookSpool)))
+    is_spool_file(path).then(|| {
+        Parse::Lines(Box::new(HookSpool {
+            provider: provider_of(path),
+        }))
+    })
 }
 
-pub struct HookSpool;
+/// The harness a spool file's name gives: `<provider>-<session>.jsonl`
+/// directly under the spool, or `carriers/<provider>/<date>/…`. Lines
+/// that name their own provider keep it.
+fn provider_of(path: &Path) -> Option<String> {
+    fn name(path: Option<&Path>) -> Option<&str> {
+        path?.file_name()?.to_str()
+    }
+    let parent = path.parent();
+    let date_dir = parent.and_then(Path::parent);
+    if name(date_dir.and_then(Path::parent)) == Some("carriers") {
+        return name(date_dir).map(str::to_owned);
+    }
+    if name(parent) != Some("hooks") || path.extension().is_none_or(|e| e != "jsonl") {
+        return None;
+    }
+    let stem = path.file_stem()?.to_str()?;
+    crate::origin::ORIGINS
+        .iter()
+        .map(|origin| origin.name)
+        .filter(|origin| {
+            stem.strip_prefix(origin)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .is_some_and(|session| !session.is_empty())
+        })
+        .max_by_key(|origin| origin.len())
+        .map(str::to_owned)
+}
+
+#[derive(Default)]
+pub struct HookSpool {
+    /// The provider the file's name gives, for lines that name none.
+    provider: Option<String>,
+}
 
 /// Each line stands alone; nothing carries from one step to the next.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -200,7 +236,7 @@ impl Parser for HookSpool {
             Some(Json::String(provider)) => Some(provider.as_str()).filter(|s| !s.is_empty()),
             Some(_) => return RecordOutcome::unreadable("provider is not a string"),
         };
-        let provider = match provider {
+        let provider = match provider.or(self.provider.as_deref()) {
             Some(p) => p,
             None if value.get("at_ns").is_some() => "claude-code",
             None => return RecordOutcome::unreadable("no provider"),

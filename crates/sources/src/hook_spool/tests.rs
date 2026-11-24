@@ -23,7 +23,13 @@ fn each_line_is_an_event_on_the_harness_session() {
                "payload": {"tool_name": "Bash", "tool_input": {"command": "ls"}}}),
         json!({"event_type": "Stop", "provider": "codex", "payload": {}}),
     ]);
-    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &input,
+        0,
+    )
+    .unwrap();
     let kinds: Vec<&str> = step.output.events.iter().map(|e| e.kind.as_str()).collect();
     assert_eq!(kinds, ["hook_session_start", "hook_pre_tool_use"]);
     let pre = &step.output.events[1];
@@ -72,7 +78,7 @@ fn the_hook_commands_carrier_lines_are_read() {
         &input[..40]
     ));
     let mut parser_state = ParserState::default();
-    let step = run(&HookSpool, &mut parser_state, &input, 0).unwrap();
+    let step = run(&HookSpool::default(), &mut parser_state, &input, 0).unwrap();
     let e = &step.output.events[0];
     assert_eq!(e.kind, "hook_pre_tool_use");
     assert_eq!(e.session.as_ref().unwrap().to_string(), "claude-code:s9");
@@ -93,7 +99,13 @@ fn each_invocation_carries_its_own_time_and_process() {
                "session_id": "s9", "payload": {"session_id": "s9", "tool_name": "Bash"}})
     };
     let input = lines(&[line("1792400000123456789"), line("1792400000123456790")]);
-    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &input,
+        0,
+    )
+    .unwrap();
     let [first, second] = &step.output.events[..] else {
         panic!("{:?}", step.output.events)
     };
@@ -120,7 +132,13 @@ fn work_live_events_keep_their_hook_record_range() {
         "unstated":["optional observation unavailable"],
         "payload":{"objectives":[{"kind":"task","reference":"demo-1","repository":"https://example.test/project.git"}]}}),
     ]);
-    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &input,
+        0,
+    )
+    .unwrap();
     let event = &step.output.events[0];
     assert_eq!(event.range, Some((0, input.len() as u64 - 1)));
     assert_eq!(event.data["git_identity"], git);
@@ -141,7 +159,13 @@ fn nanosecond_times_keep_quality_and_unknown_clock() {
         json!({"event_type":"Stop","provider":"codex","session_id":"s","at_ns":"1792400000123456789"}),
         json!({"event_type":"Stop","provider":"codex","session_id":"s"}),
     ]);
-    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &input,
+        0,
+    )
+    .unwrap();
     let event = &step.output.events[0];
     assert_eq!(event.at.unwrap().unix_ns(), 1792400000123456789);
     assert_eq!(event.at_quality, TimeQuality::Captured);
@@ -162,7 +186,13 @@ fn emission_line() -> Json {
 fn hook_emission_keeps_producer_references() {
     let line = emission_line();
     let bytes = lines(&[line]);
-    let step = run(&HookSpool, &mut ParserState::default(), &bytes, 0).unwrap();
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &bytes,
+        0,
+    )
+    .unwrap();
     let [event] = &step.output.events[..] else {
         panic!("one emission event")
     };
@@ -194,7 +224,7 @@ fn rollback_lines_from_the_next_build_are_read() {
             String::from_utf8_lossy(line)
         );
     }
-    let step = run(&HookSpool, &mut ParserState::default(), input, 0).unwrap();
+    let step = run(&HookSpool::default(), &mut ParserState::default(), input, 0).unwrap();
     assert_eq!(step.counts.records, 6);
     assert!(
         step.counts.unreadable.is_empty(),
@@ -254,7 +284,13 @@ fn process_and_registry_lines_are_live_events() {
                "harness_start": 901, "boot_id": "b1", "provider": "claude-code",
                "session_id": "s1", "payload": {"tool_name": "Edit"}}),
     ]);
-    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &input,
+        0,
+    )
+    .unwrap();
     let kinds: Vec<&str> = step.output.events.iter().map(|e| e.kind.as_str()).collect();
     assert_eq!(
         kinds,
@@ -276,9 +312,52 @@ fn a_provider_or_route_that_is_not_a_string_is_unreadable() {
         json!({"event_type": "Stop", "session_id": "s", "provider": 3, "at_ns": "1792400000123456789"}),
         json!({"event_type": "Status", "session_id": "s", "provider": "claude-code", "route": 5}),
     ]);
-    let step = run(&HookSpool, &mut ParserState::default(), &input, 0).unwrap();
+    let step = run(
+        &HookSpool::default(),
+        &mut ParserState::default(),
+        &input,
+        0,
+    )
+    .unwrap();
     assert!(step.output.events.is_empty());
     assert_eq!(step.counts.unreadable.len(), 2);
     assert_eq!(step.counts.unreadable["Stop: provider is not a string"], 1);
     assert_eq!(step.counts.unreadable["Status: route is not a string"], 1);
+}
+
+#[test]
+fn a_per_session_or_dated_files_name_gives_the_provider_its_lines_omit() {
+    let input = lines(&[
+        json!({"event_type": "Stop", "session_id": "019a-0001", "timestamp": "2026-09-29T08:31:48Z",
+               "payload": {}}),
+        json!({"event_type": "Stop", "session_id": "019a-0001", "provider": "gemini-cli",
+               "timestamp": "2026-09-29T08:31:49Z", "payload": {}}),
+    ]);
+    let sessions = |path: &str| -> Vec<String> {
+        let Parse::Lines(parser) = open(Path::new(path)).unwrap() else {
+            panic!("a spool file is read by lines");
+        };
+        let (step, _) = parser.step(None, &input, 0, false).unwrap();
+        step.output
+            .events
+            .iter()
+            .map(|event| event.session.as_ref().unwrap().to_string())
+            .collect()
+    };
+    // The origin name holds dashes, and so does the session ID: the
+    // longest origin name before a dash is the provider.
+    assert_eq!(
+        sessions("/s/polylogue/hooks/claude-code-019a-0001.jsonl"),
+        ["claude-code:019a-0001", "gemini-cli:019a-0001"]
+    );
+    assert_eq!(
+        sessions("/s/polylogue/hooks/carriers/codex/2026-09-29/one.ndjson"),
+        ["codex:019a-0001", "gemini-cli:019a-0001"]
+    );
+    // A file whose name gives no provider still refuses such lines.
+    let Parse::Lines(parser) = open(Path::new("/s/polylogue/hooks/unnamed.jsonl")).unwrap() else {
+        panic!("a spool file is read by lines");
+    };
+    let (step, _) = parser.step(None, &input, 0, false).unwrap();
+    assert_eq!(step.counts.unreadable["Stop: no provider"], 1);
 }

@@ -10,7 +10,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 4;
+pub const VERSION: u32 = 5;
 
 use crate::fields::ExpectedType as T;
 mod fields;
@@ -126,29 +126,35 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("content[].thinking_hidden", Rule::Read(T::Boolean)),
         (
             "content[].summaries",
-            Rule::Kept("summaries in indexed block attributes"),
+            Rule::ReadWhole("summaries in indexed block attributes"),
         ),
         (
             "content[].citations",
-            Rule::Kept("citation blocks and indexed attributes"),
+            Rule::ReadWhole("citation blocks and indexed attributes"),
         ),
         (
             "content[].start_timestamp",
-            Rule::Kept("indexed block time"),
+            Rule::ReadWhole("indexed block time"),
         ),
-        ("content[].stop_timestamp", Rule::Kept("indexed block time")),
+        (
+            "content[].stop_timestamp",
+            Rule::ReadWhole("indexed block time"),
+        ),
         ("content[].id", Rule::Read(T::String)),
         ("content[].name", Rule::Read(T::String)),
-        ("content[].input", Rule::Kept("tool input in call block")),
+        (
+            "content[].input",
+            Rule::ReadWhole("tool input in call block"),
+        ),
         (
             "content[].content",
-            Rule::Kept("complete structured tool content"),
+            Rule::ReadWhole("complete structured tool content"),
         ),
         ("content[].tool_use_id", Rule::Read(T::String)),
         ("content[].is_error", Rule::Read(T::Boolean)),
         (
             "content[].structured_content",
-            Rule::Kept("structured tool result"),
+            Rule::ReadWhole("structured tool result"),
         ),
         ("content[].source.type", Rule::Read(T::String)),
         ("content[].source.media_type", Rule::Read(T::String)),
@@ -193,7 +199,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("compaction_summary[].text", Rule::Read(T::String)),
         (
             "compaction_summary[].citations",
-            Rule::Kept("summary block citation metadata"),
+            Rule::ReadWhole("summary block citation metadata"),
         ),
     ],
 )

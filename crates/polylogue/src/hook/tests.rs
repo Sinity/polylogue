@@ -604,7 +604,7 @@ fn context_output_records_a_parsable_emission() {
         let bytes = std::fs::read(&path).unwrap();
         assert!(polylogue_sources::hook_spool::open(&path).is_some());
         let step = polylogue_sources::parse::run(
-            &polylogue_sources::hook_spool::HookSpool,
+            &polylogue_sources::hook_spool::HookSpool::default(),
             &mut polylogue_sources::hook_spool::ParserState::default(),
             &bytes,
             0,

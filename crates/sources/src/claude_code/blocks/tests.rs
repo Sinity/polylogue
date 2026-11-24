@@ -282,3 +282,52 @@ fn tool_names_map_to_their_actions() {
         assert_eq!(action(tool), expected, "{tool}");
     }
 }
+
+#[test]
+fn content_of_every_declared_shape_is_kept() {
+    let record = json!({});
+    let mut blobs = Vec::new();
+    // A string, and an array of block objects, plain strings and other values.
+    assert_eq!(
+        blocks(&record, &json!("hello"), &mut blobs),
+        [Block::Text {
+            text: "hello".into()
+        }]
+    );
+    assert_eq!(
+        blocks(
+            &record,
+            &json!([{"type":"text","text":"a"}, "b", 7, {"type":"text","text":{"value":"c"}}]),
+            &mut blobs
+        ),
+        [
+            Block::Text { text: "a".into() },
+            Block::Text { text: "b".into() },
+            Block::Other {
+                type_name: "content".into(),
+                data: json!(7)
+            },
+            Block::Other {
+                type_name: "text".into(),
+                data: json!({"type":"text","text":{"value":"c"}})
+            },
+        ]
+    );
+    // One block object given without its array is that block; another value
+    // is kept whole; null is no content.
+    assert_eq!(
+        blocks(&record, &json!({"type":"text","text":"solo"}), &mut blobs),
+        [Block::Text {
+            text: "solo".into()
+        }]
+    );
+    assert_eq!(
+        blocks(&record, &json!(42), &mut blobs),
+        [Block::Other {
+            type_name: "content".into(),
+            data: json!(42)
+        }]
+    );
+    assert!(blocks(&record, &Json::Null, &mut blobs).is_empty());
+    assert!(blobs.is_empty());
+}

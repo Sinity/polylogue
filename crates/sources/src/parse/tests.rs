@@ -132,14 +132,79 @@ fn capture_logs_verify_complete_captures_and_wait_on_incomplete_suffixes() {
         .steps(None, &bytes[end..], end as u64, false)
         .unwrap();
     assert_eq!(waiting[0].consumed, 0);
-    bytes[end - 1] = b'[';
-    match parser.steps(None, &bytes, 0, false) {
-        Err(ParseError::CaptureLog(message)) => assert_eq!(message, "capture digest mismatch"),
-        other => panic!(
-            "expected a digest mismatch, got {:?}",
-            other.map(|(s, _)| s.len())
-        ),
-    }
+}
+
+#[test]
+fn a_damaged_capture_log_keeps_the_captures_around_it_and_reports_the_damage() {
+    use polylogue_model::capture_log::{Header, MAGIC};
+    let parser = Parse::CaptureLog(Box::new(EmptyDocument));
+    let frame = |body: &[u8]| {
+        let mut frame = Header::of(body).encode();
+        frame.extend(body);
+        frame
+    };
+    let unreadable = |step: &Step| step.counts.unreadable.clone();
+    let reason = |text: &str| {
+        [(format!("capture: invalid capture log: {text}"), 1)]
+            .into_iter()
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    // A frame whose body fails its digest is counted unreadable; the frames
+    // around it are read.
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend(frame(b"{}"));
+    let second = bytes.len();
+    let mut damaged = frame(b"{}");
+    *damaged.last_mut().unwrap() = b']';
+    bytes.extend(damaged);
+    let third = bytes.len();
+    bytes.extend(frame(b"{}"));
+    let (steps, _) = parser.steps(None, &bytes, 0, false).unwrap();
+    assert_eq!(steps.len(), 3);
+    assert!(unreadable(&steps[0]).is_empty());
+    assert_eq!(
+        (steps[1].start, steps[1].consumed),
+        (second as u64, third as u64)
+    );
+    assert_eq!(unreadable(&steps[1]), reason("capture digest mismatch"));
+    assert!(steps[1].output.events.is_empty() && steps[1].output.messages.is_empty());
+    assert!(unreadable(&steps[2]).is_empty());
+    assert_eq!(steps[2].consumed, bytes.len() as u64);
+
+    // An input that will not grow and ends inside a frame reports it after
+    // the complete captures; one that may still grow waits for the rest.
+    let complete = bytes.len();
+    bytes.extend(&frame(b"{}")[..30]);
+    let (waiting, _) = parser.steps(None, &bytes, 0, false).unwrap();
+    assert_eq!(waiting.last().unwrap().consumed, complete as u64);
+    let (ended, _) = parser.steps(None, &bytes, 0, true).unwrap();
+    assert_eq!(ended.len(), 4);
+    let last = ended.last().unwrap();
+    assert_eq!(
+        (last.start, last.consumed),
+        (complete as u64, bytes.len() as u64)
+    );
+    assert_eq!(
+        unreadable(last),
+        reason("the capture log ends inside a frame")
+    );
+
+    // A header that does not decode ends the framing: the rest is one
+    // unreadable record.
+    let mut bytes = MAGIC.to_vec();
+    bytes.extend(frame(b"{}"));
+    let broken = bytes.len();
+    bytes.extend(vec![b'x'; 200]);
+    let (steps, _) = parser.steps(None, &bytes, 0, false).unwrap();
+    assert_eq!(steps.len(), 2);
+    assert_eq!(
+        (steps[1].start, steps[1].consumed),
+        (broken as u64, bytes.len() as u64)
+    );
+    assert_eq!(
+        unreadable(&steps[1]),
+        reason("invalid capture frame header")
+    );
 }
 
 #[test]

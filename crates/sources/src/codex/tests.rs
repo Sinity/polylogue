@@ -1025,3 +1025,28 @@ fn a_rollout_is_named_by_its_header_in_either_shape() {
     let item = r#"{"type":"message","id":"m1","role":"user"}"#;
     assert_eq!(rollout_id(item.as_bytes()).unwrap(), None);
 }
+
+#[test]
+fn a_spawned_threads_nickname_in_its_spawn_source_titles_it() {
+    // Codex writes the spawn as `source.subagent.thread_spawn`, naming the
+    // parent thread and the agent's nickname.
+    let records = [meta(json!({"source": {"subagent": {"thread_spawn": {
+        "parent_thread_id": PARENT, "depth": 1, "agent_nickname": "Volta", "agent_role": "explorer"}}}}))];
+    let out = run(&rollout(), &mut ParserState::default(), &jsonl(&records), 0)
+        .unwrap()
+        .output;
+    let session = out
+        .sessions
+        .iter()
+        .find(|s| s.id.native().as_str() == THREAD)
+        .unwrap();
+    assert_eq!(session.kind, SessionKind::Subagent);
+    let title = session.title.as_ref().unwrap();
+    assert_eq!(
+        (title.text.as_str(), title.source),
+        ("Volta", TitleSource::AgentName)
+    );
+    assert!(out.links.iter().any(|l| l.kind == LinkKind::Spawn
+        && l.parent.native().as_str() == PARENT
+        && l.child.native().as_str() == THREAD));
+}

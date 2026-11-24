@@ -225,7 +225,7 @@ pub(crate) fn database_path(config: &Config, path: &Path) -> Option<PathBuf> {
         .unwrap_or(name);
     let db = path.with_file_name(name);
     collected()
-        .filter(|o| o.capture == polylogue_sources::Capture::RowDump)
+        .filter(|o| o.capture.is_row_dump())
         .find_map(|origin| {
             let relative = db.strip_prefix(config.root(origin.root)).ok()?;
             origin

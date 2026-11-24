@@ -2,10 +2,7 @@
   "counts": {
     "records": 1,
     "skipped": {},
-    "unread_fields": {
-      "threads.h": 1,
-      "threads.k[]": 1
-    },
+    "unread_fields": {},
     "unreadable": {},
     "used": {
       "threads": 1

@@ -76,7 +76,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("tool_calls[].function.name", Rule::Read(T::String)),
         (
             "tool_calls[].function.arguments",
-            Rule::Kept("complete parsed tool input"),
+            Rule::ReadWhole("complete parsed tool input"),
         ),
         ("function_call.name", Rule::Read(T::String)),
         (

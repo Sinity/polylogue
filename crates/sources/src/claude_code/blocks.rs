@@ -9,18 +9,32 @@ use polylogue_model::{
     ToolOutcome, UnknownReason,
 };
 
-/// The blocks of `message.content`, which is a string or an array.
+/// The blocks of `message.content`, which is a string or an array of
+/// blocks. A content of another shape, and an array member that is not a
+/// block object, is kept whole as a block of its own, never dropped.
 pub fn blocks(record: &Json, content: &Json, blobs: &mut Vec<ExtractedBlob>) -> Vec<Block> {
     match content {
+        Json::Null => Vec::new(),
         Json::String(text) => vec![Block::Text { text: text.clone() }],
         Json::Array(items) => {
             let results = items.iter().filter(|i| is_result(ty(i))).count();
             items
                 .iter()
-                .map(|item| block(record, item, results == 1, blobs))
+                .map(|item| match item {
+                    Json::Object(_) => block(record, item, results == 1, blobs),
+                    Json::String(text) => Block::Text { text: text.clone() },
+                    other => Block::Other {
+                        type_name: "content".into(),
+                        data: other.clone(),
+                    },
+                })
                 .collect()
         }
-        _ => Vec::new(),
+        Json::Object(_) => vec![block(record, content, true, blobs)],
+        other => vec![Block::Other {
+            type_name: "content".into(),
+            data: other.clone(),
+        }],
     }
 }
 
@@ -79,6 +93,13 @@ pub fn action(tool: &str) -> ToolAction {
 
 fn block(record: &Json, item: &Json, sole_result: bool, blobs: &mut Vec<ExtractedBlob>) -> Block {
     match ty(item) {
+        // A text block whose text is not a string keeps its value.
+        "text" if !matches!(item.get("text"), None | Some(Json::Null | Json::String(_))) => {
+            Block::Other {
+                type_name: "text".into(),
+                data: item.clone(),
+            }
+        }
         "text" => Block::Text {
             text: item.str("text").map(str::to_owned).unwrap_or_default(),
         },

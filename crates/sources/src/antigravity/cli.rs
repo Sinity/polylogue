@@ -42,7 +42,10 @@ static FIELDS: Fields = Fields::new(
         ("thinking", Rule::Read(T::String)),
         ("tool_calls", Rule::Read(T::Array)),
         ("tool_calls[].name", Rule::Read(T::String)),
-        ("tool_calls[].args", Rule::Kept("structured tool input")),
+        (
+            "tool_calls[].args",
+            Rule::ReadWhole("structured tool input"),
+        ),
         ("error", Rule::Kept("reported step error")),
         ("error_code", Rule::Kept("reported step error")),
     ],

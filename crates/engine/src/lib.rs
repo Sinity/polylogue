@@ -53,8 +53,7 @@ mod prefix_copies;
 /// reader supplies one. Unparsed provider bytes have no parser version to invent.
 fn has_reading(origin: &OriginSpec) -> bool {
     origin.support == Support::Parsed
-        || (origin.support == Support::NoParser
-            && origin.capture == polylogue_sources::Capture::RowDump)
+        || (origin.support == Support::NoParser && origin.capture.is_row_dump())
 }
 
 /// One view of the built-in registry is shared by reparse planning and read freshness.

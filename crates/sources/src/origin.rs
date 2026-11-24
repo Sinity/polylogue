@@ -100,23 +100,26 @@ pub fn synthetic_home_environment(home: &Path) -> Vec<(&'static str, PathBuf)> {
 }
 
 /// What is stored for a file found at an origin's location.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub enum Capture {
     /// The file's bytes.
     Bytes,
     /// A tool's SQLite database: a typed row dump of its rows,
     /// written by the store and parsed in place of the database, never
-    /// page images.
-    RowDump,
+    /// page images. `is_input` says which found files are databases; the
+    /// origin's other files are stored as bytes.
+    RowDump { is_input: fn(&Path) -> bool },
+}
+
+impl Capture {
+    pub fn is_row_dump(&self) -> bool {
+        matches!(self, Capture::RowDump { .. })
+    }
 }
 
 /// A tool's resume command line (program first) from a session's native
 /// ID, or `None` when that session cannot be resumed on its own.
 pub type Resume = fn(&str) -> Option<Vec<String>>;
-
-pub struct Database {
-    pub is_input: fn(&Path) -> bool,
-}
 
 /// One module contributing to an origin's reading.
 #[derive(Debug, Clone, Copy)]
@@ -159,8 +162,6 @@ pub struct OriginSpec {
     /// writes. Empty for imports.
     pub locations: &'static [&'static str],
     pub capture: Capture,
-    /// Which inputs are row dumps.
-    pub database: Option<Database>,
     /// Whether a file is this origin's, from its path and first bytes. Runs
     /// after the location pattern matched and before the file is tracked; a
     /// suffix alone never decides it.
@@ -273,7 +274,7 @@ pub struct LinkPrefix {
 impl OriginSpec {
     /// Stable, ordered tuple of module names and versions.
     pub fn parse_version(&self) -> String {
-        let modules = if self.support == Support::NoParser && self.capture == Capture::RowDump {
+        let modules = if self.support == Support::NoParser && self.capture.is_row_dump() {
             modules!(crate::row_dump::VERSION)
         } else {
             self.modules
@@ -286,9 +287,10 @@ impl OriginSpec {
     }
 
     pub fn is_row_dump(&self, path: &Path) -> bool {
-        self.database
-            .as_ref()
-            .is_some_and(|database| (database.is_input)(path))
+        match self.capture {
+            Capture::RowDump { is_input } => is_input(path),
+            Capture::Bytes => false,
+        }
     }
 
     /// Where Polylogue's own writer puts a spool origin's files, relative
@@ -348,7 +350,6 @@ const CLAUDE_CODE: OriginSpec = OriginSpec {
     root: crate::claude_code::ROOT,
     locations: crate::claude_code::LOCATIONS,
     capture: Capture::Bytes,
-    database: None,
     recognize: crate::claude_code::recognize,
     open: crate::claude_code::open,
     resume: Some(crate::claude_code::resume),
@@ -375,7 +376,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: crate::claude_code::side::SIDE_ROOT,
         locations: crate::claude_code::side::SIDE_LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::claude_code::side::recognize_side,
         open: crate::claude_code::side::open_side,
         resume: None,
@@ -399,7 +399,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: crate::claude_code::ROOT,
         locations: crate::claude_code::side::HISTORY_LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::claude_code::side::recognize_history,
         open: crate::claude_code::side::open_history,
         resume: None,
@@ -431,7 +430,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: crate::codex::ROOT,
         locations: crate::codex::LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::codex::recognize,
         open: crate::codex::open,
         resume: Some(crate::codex::resume),
@@ -451,10 +449,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         input_identity: InputIdentity::Location,
         root: crate::codex::database::ROOT,
         locations: crate::codex::database::LOCATIONS,
-        capture: Capture::RowDump,
-        database: Some(Database {
+        capture: Capture::RowDump {
             is_input: crate::codex::database::is_row_dump,
-        }),
+        },
         recognize: crate::codex::database::recognize,
         open: crate::codex::database::open,
         resume: None,
@@ -475,7 +472,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: crate::gemini_cli::LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::gemini_cli::recognize,
         open: crate::gemini_cli::open,
         resume: Some(crate::gemini_cli::resume),
@@ -499,7 +495,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: crate::antigravity::LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::antigravity::recognize,
         open: crate::antigravity::open,
         resume: None,
@@ -519,10 +514,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         input_identity: InputIdentity::Location,
         root: Root::HOME,
         locations: crate::antigravity::database::LOCATIONS,
-        capture: Capture::RowDump,
-        database: Some(Database {
+        capture: Capture::RowDump {
             is_input: crate::antigravity::database::is_row_dump,
-        }),
+        },
         recognize: crate::antigravity::database::recognize,
         open: crate::antigravity::database::open,
         resume: None,
@@ -546,7 +540,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::STATE,
         locations: &["polylogue/antigravity/*.json"],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::antigravity::recognize,
         open: crate::antigravity::open,
         resume: None,
@@ -566,10 +559,9 @@ pub static ORIGINS: &[OriginSpec] = &[
         input_identity: InputIdentity::Location,
         root: crate::locations::HERMES_ROOT,
         locations: crate::hermes::LOCATIONS,
-        capture: Capture::RowDump,
-        database: Some(Database {
+        capture: Capture::RowDump {
             is_input: crate::hermes::is_database,
-        }),
+        },
         recognize: crate::hermes::recognize,
         open: crate::hermes::open,
         resume: None,
@@ -590,7 +582,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: crate::grok_cli::LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::grok_cli::recognize,
         open: crate::grok_cli::open,
         resume: None,
@@ -611,7 +602,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::STATE,
         locations: crate::repo_lookup::LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::repo_lookup::recognize,
         open: crate::repo_lookup::open,
         resume: None,
@@ -632,7 +622,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::STATE,
         locations: crate::hook_spool::LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::hook_spool::recognize,
         open: crate::hook_spool::open,
         resume: None,
@@ -659,7 +648,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::STATE,
         locations: crate::browser_capture::LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::browser_capture::recognize,
         open: crate::browser_capture::open,
         resume: None,
@@ -683,7 +671,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         },
         locations: &["sessions/**/*.jsonl"],
         capture: Capture::Bytes,
-        database: None,
         recognize: |_, _| true,
         open: opens_nothing,
         resume: None,
@@ -706,8 +693,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             default: ".config/io.datasette.llm",
         },
         locations: &["logs.db"],
-        capture: Capture::RowDump,
-        database: Some(Database { is_input: |_| true }),
+        capture: Capture::RowDump { is_input: |_| true },
         recognize: |_, _| true,
         open: opens_nothing,
         resume: None,
@@ -728,7 +714,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: |_, _| true,
         open: opens_nothing,
         resume: None,
@@ -748,8 +733,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         input_identity: InputIdentity::Location,
         root: Root::HOME,
         locations: &[],
-        capture: Capture::RowDump,
-        database: Some(Database { is_input: |_| true }),
+        capture: Capture::RowDump { is_input: |_| true },
         recognize: |_, _| true,
         open: opens_nothing,
         resume: None,
@@ -770,7 +754,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: |_, _| true,
         open: opens_nothing,
         resume: None,
@@ -791,7 +774,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: |_, _| true,
         open: opens_nothing,
         resume: None,
@@ -812,7 +794,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::codex_cloud::recognize,
         open: crate::codex_cloud::open,
         resume: None,
@@ -833,7 +814,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::aider::recognize,
         open: crate::aider::open,
         resume: None,
@@ -854,7 +834,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: recognizes_nothing,
         open: opens_nothing,
         resume: None,
@@ -879,7 +858,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::polylogue_bundle::recognize,
         open: crate::polylogue_bundle::open,
         resume: None,
@@ -900,7 +878,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::chatgpt::recognize,
         open: crate::chatgpt::open,
         resume: None,
@@ -932,7 +909,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::claude_ai::recognize,
         open: crate::claude_ai::open,
         resume: None,
@@ -961,7 +937,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::claude_ai::recognize_design,
         open: crate::claude_ai::open_design,
         resume: None,
@@ -982,7 +957,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::STATE,
         locations: crate::ai_studio::LOCATIONS,
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::ai_studio::recognize,
         open: crate::ai_studio::open,
         resume: None,
@@ -1014,7 +988,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::gemini_app::recognize,
         open: crate::gemini_app::open,
         resume: None,
@@ -1046,7 +1019,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::grok::recognize,
         open: crate::grok::open,
         resume: None,
@@ -1075,7 +1047,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::otel_genai::recognize,
         open: crate::otel_genai::open,
         resume: None,
@@ -1096,7 +1067,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::openrouter::recognize,
         open: crate::openrouter::open,
         resume: None,
@@ -1119,7 +1089,6 @@ pub static ORIGINS: &[OriginSpec] = &[
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
-        database: None,
         recognize: crate::openai_chat::recognize,
         open: crate::openai_chat::open,
         resume: None,

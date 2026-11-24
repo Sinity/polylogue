@@ -16,7 +16,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 11;
+pub const VERSION: u32 = 12;
 
 mod blocks;
 mod fields;
@@ -152,8 +152,12 @@ pub struct ClaudeCode {
 pub struct ParserState {
     /// The latest message, for placing events on the timeline.
     last: Option<MessageId>,
-    #[serde(default)]
-    compaction_pending: bool,
+    /// A compaction boundary waiting for the summary record that follows
+    /// it, so the boundary names its summary message. Any other record
+    /// sends it as it is. Its range runs to the end of the record that sends
+    /// it, since the event depends on the bytes up to there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pending_boundary: Option<Event>,
     #[serde(default)]
     compaction_ownership_reported: bool,
     /// The session-wide names (plan `slug`, `teamName`) last recorded, by
@@ -431,6 +435,9 @@ impl ClaudeCode {
         RecordOutcome::Used
     }
 
+    /// The summary message of a compaction. The boundary record written just
+    /// before it is sent now, naming this message; a summary with no such
+    /// record (older versions) is a boundary of its own.
     fn compaction_summary(
         &self,
         parser_state: &mut ParserState,
@@ -439,30 +446,24 @@ impl ClaudeCode {
         out: &mut Output,
         records: &mut Records,
     ) -> RecordOutcome {
-        let boundary = if parser_state.compaction_pending {
-            None
-        } else {
-            let index = out.events.len();
+        let pending = parser_state.pending_boundary.take();
+        let own = if pending.is_none() {
             if self.event(parser_state, record, value, "compaction", out) != RecordOutcome::Used {
                 return RecordOutcome::unreadable("compaction has no session");
             }
-            Some(index)
+            out.events.pop()
+        } else {
+            None
         };
-        let mut value = value.clone();
-        value["isCompactSummary"] = Json::Bool(true);
-        if value.get("message").is_none() {
-            value["message"] =
-                serde_json::json!({"content":value.get("summary").cloned().unwrap_or(Json::Null)});
+        let outcome = self.message(parser_state, record, value, Role::User, out, records);
+        if let Some(mut boundary) = pending.or(own) {
+            boundary.range = boundary.range.map(|(start, _)| (start, range(record).1));
+            let mut data: polylogue_model::CompactionBoundary =
+                serde_json::from_value(boundary.data.clone()).unwrap_or_default();
+            data.summary = parser_state.last.clone();
+            boundary.data = serde_json::to_value(data).expect("boundary is JSON");
+            out.events.push(boundary);
         }
-        let outcome = self.message(parser_state, record, &value, Role::User, out, records);
-        if let Some(index) = boundary {
-            out.events[index].data = serde_json::to_value(polylogue_model::CompactionBoundary {
-                summary: parser_state.last.clone(),
-                ..Default::default()
-            })
-            .expect("boundary is JSON");
-        }
-        parser_state.compaction_pending = false;
         outcome
     }
 
@@ -1206,7 +1207,8 @@ impl Parser for ClaudeCode {
         let hook = (ty == "system"
             && v.str("subtype").filter(|s| !s.is_empty()) == Some("stop_hook_summary"))
         .then(|| hook_text(v));
-        let message_record = matches!(ty, "user" | "assistant" | "summary")
+        let message_record = matches!(ty, "user" | "assistant")
+            || (ty == "summary" && v.get("message").is_some())
             || hook
                 .as_ref()
                 .is_some_and(|summary| !summary.blocks.is_empty());
@@ -1248,10 +1250,14 @@ impl Parser for ClaudeCode {
         if ty == "continued-in" {
             records.fields(ty, v, &fields::CONTINUATION_FIELDS);
         }
+        let summary = (ty == "user" && v.bool("isCompactSummary") == Some(true))
+            || (ty == "summary" && v.get("message").is_some());
+        if !summary && let Some(mut boundary) = parser_state.pending_boundary.take() {
+            boundary.range = boundary.range.map(|(start, _)| (start, range(record).1));
+            out.events.push(boundary);
+        }
         match ty {
-            "user" if v.bool("isCompactSummary") == Some(true) => {
-                self.compaction_summary(parser_state, record, v, out, records)
-            }
+            "user" if summary => self.compaction_summary(parser_state, record, v, out, records),
             "user" => self.message(parser_state, record, v, Role::User, out, records),
             "assistant" => self.message(parser_state, record, v, Role::Assistant, out, records),
             "system" => match v.str("subtype").filter(|s| !s.is_empty()) {
@@ -1264,8 +1270,11 @@ impl Parser for ClaudeCode {
                 ),
                 Some("compact_boundary") => {
                     records.fields("system/compact_boundary", v, &fields::COMPACTION_FIELDS);
-                    parser_state.compaction_pending = true;
-                    self.event(parser_state, record, v, "compaction", out)
+                    let outcome = self.event(parser_state, record, v, "compaction", out);
+                    if outcome == RecordOutcome::Used {
+                        parser_state.pending_boundary = out.events.pop();
+                    }
+                    outcome
                 }
                 Some("microcompact_boundary") => {
                     records.fields(
@@ -1338,12 +1347,15 @@ impl Parser for ClaudeCode {
             }
             "custom-title" => self.title(v, "customTitle", TitleSource::Custom, out),
             "ai-title" => self.title(v, "aiTitle", TitleSource::Generated, out),
-            "summary" => {
-                if v.get("summary").is_some() {
-                    self.title(v, "summary", TitleSource::Summary, out);
-                }
-                self.compaction_summary(parser_state, record, v, out, records)
+            // A `summary` line with only its text titles the session
+            // (`leafUuid` names the message it summarizes). One carrying a
+            // `message` is the summary a compaction replay wrote.
+            "summary" if v.get("message").is_some() => {
+                let mut value = v.clone();
+                value["isCompactSummary"] = Json::Bool(true);
+                self.compaction_summary(parser_state, record, &value, out, records)
             }
+            "summary" => self.title(v, "summary", TitleSource::Summary, out),
             "continued-in" => {
                 let (Some(parent), Some(child)) = (
                     self.own_session(out),

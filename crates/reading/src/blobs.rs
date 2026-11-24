@@ -1,4 +1,6 @@
 //! Inline attachment bytes share one bounded transfer and disk-backed dedup.
+//! An attachment whose recorded size differs from its stored bytes is
+//! unavailable: the read says so in an omission and continues without them.
 use super::output::Stream;
 use crate::Error;
 use base64::Engine as _;
@@ -88,7 +90,23 @@ impl Blobs {
             return Ok(());
         }
         let extent = self.source.extent(&hashed_blobs::Hash(hash.0))?;
-        let size = size.unwrap_or(extent.decoded_len);
+        if let Some(recorded) = size.filter(|size| *size != extent.decoded_len) {
+            return stream.record(&ReadRecord::Presentation {
+                parts: vec![ReadPart::Item(ReadItem {
+                    source: Source::record(format!("blob:{hash}")),
+                    kind: ItemKind::Omission {
+                        count: ValueState::known(1),
+                        unit: "attachment".into(),
+                        why: format!(
+                            "unavailable: the attachment records {recorded} bytes and its stored bytes are {}",
+                            extent.decoded_len
+                        ),
+                        continue_call: None,
+                    },
+                })],
+            });
+        }
+        let size = extent.decoded_len;
         let mut bytes = self
             .source
             .read_plain(&hashed_blobs::Hash(hash.0), size, || Ok(()))?;
@@ -140,3 +158,6 @@ impl Blobs {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests;

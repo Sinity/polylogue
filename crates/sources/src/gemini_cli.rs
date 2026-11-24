@@ -8,7 +8,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, text_of, time_of};
@@ -98,10 +98,10 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ("toolCalls", Rule::Read(T::Array)),
         ("toolCalls[].id", Rule::Read(T::String)),
         ("toolCalls[].name", Rule::Read(T::String)),
-        ("toolCalls[].args", Rule::Kept("complete call input")),
+        ("toolCalls[].args", Rule::ReadWhole("complete call input")),
         (
             "toolCalls[].result",
-            Rule::Kept("complete result data as written"),
+            Rule::ReadWhole("complete result data as written"),
         ),
         ("toolCalls[].status", Rule::Read(T::String)),
         (
@@ -110,7 +110,7 @@ static MESSAGE_FIELDS: Fields = Fields::new(
         ),
         (
             "toolCalls[].resultDisplay",
-            Rule::Kept("Gemini result display data"),
+            Rule::ReadWhole("Gemini result display data"),
         ),
         (
             "toolCalls[].displayName",
@@ -285,10 +285,27 @@ impl GeminiCli {
                 .records
                 .record("session", &RecordOutcome::unreadable("no sessionId"));
         };
-        let kind = match doc.str("kind").filter(|s| !s.is_empty()) {
+        // A kind this parser does not know reads as a main session and is
+        // reported with the value the file gave.
+        let stated_kind = doc.str("kind").filter(|s| !s.is_empty());
+        let kind = match stated_kind {
             Some("subagent") => SessionKind::Subagent,
             _ => SessionKind::Main,
         };
+        if let Some(unknown) = stated_kind.filter(|kind| !matches!(*kind, "main" | "subagent")) {
+            let (at, time_accuracy) = crate::time::parts(None);
+            sink.out.events.push(Event {
+                session: Some(sid.clone()),
+                kind: "session_kind_unknown".into(),
+                at,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
+                after: None,
+                range: None,
+                data: serde_json::json!({"kind": unknown}),
+            });
+        }
         let mut session = Session::new(sid.clone(), kind);
         if let Some(summary) = doc.str("summary").filter(|s| !s.is_empty()) {
             session.offer_title(summary, TitleSource::Summary);

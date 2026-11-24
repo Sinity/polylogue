@@ -10,7 +10,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use super::session_id;
 use crate::lines::Record;
@@ -80,27 +80,6 @@ fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
         .and_then(session_id)
 }
 
-static ROW_WRAPPER: crate::fields::Fields = crate::fields::Fields::new(
-    "row_wrapper",
-    &[
-        (
-            "t",
-            crate::fields::Rule::Read(crate::fields::ExpectedType::String),
-        ),
-        (
-            "r",
-            crate::fields::Rule::Read(crate::fields::ExpectedType::Object),
-        ),
-        (
-            "k",
-            crate::fields::Rule::Excluded("row key is redundant with the consumed native row ID"),
-        ),
-        (
-            "h",
-            crate::fields::Rule::Excluded("capture row hash is not consumed by row decoding"),
-        ),
-    ],
-);
 static THREAD_FIELDS: crate::fields::Fields = crate::fields::Fields::new(
     "thread",
     &[
@@ -210,7 +189,11 @@ impl Parser for Database {
             );
         }
         let row = v.get("r").unwrap_or(&Json::Null);
-        records.fields(table, &crate::fields::header(v, &["r"]), &ROW_WRAPPER);
+        records.fields(
+            table,
+            &crate::fields::header(v, &["r"]),
+            &crate::row_dump::ROW_ENVELOPE,
+        );
         match table {
             "threads" => {
                 records.fields("threads", row, &THREAD_FIELDS);

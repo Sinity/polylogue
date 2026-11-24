@@ -18,6 +18,18 @@
     "events": [
       {
         "data": {
+          "kind": "chat"
+        },
+        "kind": "session_kind_unknown",
+        "range": [
+          0,
+          608
+        ],
+        "session": "gemini-cli:origin-matrix-gemini-cli",
+        "at_quality": "unknown"
+      },
+      {
+        "data": {
           "project_hash": "origin-matrix-project"
         },
         "kind": "project",

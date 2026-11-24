@@ -4,7 +4,7 @@ use super::service::{Daemon, error, store_error};
 use command_surface::Answer;
 use polylogue_model::LockExt as _;
 use polylogue_sources::{
-    Capture, Parse,
+    Parse,
     schema::{Framing, Observer, Schema, Selection},
 };
 use polylogue_store::{
@@ -375,7 +375,7 @@ fn observe_bytes(
     spec: &polylogue_sources::OriginSpec,
     path: &str,
 ) -> Result<(), &'static str> {
-    let framing = if spec.capture == Capture::RowDump {
+    let framing = if spec.capture.is_row_dump() {
         Framing::RowDump
     } else {
         match (spec.open)(Path::new(path)).ok_or("unsupported_framing")? {

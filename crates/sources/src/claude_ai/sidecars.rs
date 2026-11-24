@@ -108,6 +108,8 @@ static DOC: Fields = Fields::new(
         ("uuid", Rule::Read(T::String)),
         ("filename", Rule::Read(T::String)),
         ("content", Rule::Read(T::StringOrArray)),
+        ("content[].type", Rule::Read(T::String)),
+        ("content[].text", Rule::Read(T::String)),
         ("created_at", Rule::Read(T::StringOrNumber)),
         ("updated_at", Rule::Read(T::StringOrNumber)),
         (
@@ -462,13 +464,18 @@ impl ExportParser for Sidecars {
             );
             return Ok(());
         };
-        let text = if item.kind == "project_document" {
+        let blocks = if item.kind == "project_document" {
             let fields = fields::object(bytes)?;
-            fields::text(&fields, "content")
+            fields
+                .get("content")
+                .and_then(|raw| serde_json::from_str::<Json>(raw.get()).ok())
+                .and_then(|content| document_blocks(&content))
         } else {
-            serde_json::from_slice::<String>(bytes).ok()
+            serde_json::from_slice::<String>(bytes)
+                .ok()
+                .map(|text| vec![Block::Text { text }])
         };
-        let Some(text) = text else {
+        let Some(blocks) = blocks else {
             sink.records.record(
                 item.kind,
                 &RecordOutcome::skipped(if item.kind == "project_document" {
@@ -479,7 +486,7 @@ impl ExportParser for Sidecars {
             );
             return Ok(());
         };
-        doc.blocks.push(Block::Text { text });
+        doc.blocks.extend(blocks);
         sink.out.documents.push(DocumentRow {
             offset: 0,
             end: 0,
@@ -488,4 +495,31 @@ impl ExportParser for Sidecars {
         sink.records.record(item.kind, &RecordOutcome::Used);
         Ok(())
     }
+}
+
+/// A project document's `content`: its text, or its parts in order, a text
+/// part as text and any other part kept whole. `None` when it holds nothing.
+fn document_blocks(content: &Json) -> Option<Vec<Block>> {
+    let blocks = match content {
+        Json::String(text) => vec![Block::Text { text: text.clone() }],
+        Json::Array(parts) => parts
+            .iter()
+            .map(|part| match part {
+                Json::String(text) => Block::Text { text: text.clone() },
+                part => match part.get("text") {
+                    Some(Json::String(text)) => Block::Text { text: text.clone() },
+                    _ => Block::Other {
+                        type_name: part
+                            .get("type")
+                            .and_then(Json::as_str)
+                            .unwrap_or("content")
+                            .to_owned(),
+                        data: part.clone(),
+                    },
+                },
+            })
+            .collect(),
+        _ => return None,
+    };
+    (!blocks.is_empty()).then_some(blocks)
 }

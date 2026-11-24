@@ -6,7 +6,8 @@
 //! boundaries left out. The result is a small JSON input in the lookup spool,
 //! written again only when the remote or the roots change, so the loop stores
 //! and parses it like any input and a rebuild joins every session to the same
-//! repository.
+//! repository. A read that fails, runs past its deadline or names no
+//! remote and no root writes nothing, so the last good lookup stays.
 
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -71,24 +72,22 @@ fn git_output(command: &mut Command) -> Option<String> {
         .flatten()
 }
 
-/// Reads one repository directory. Git's ownership refusal makes both fields
-/// unavailable, just like an unreadable repository.
-pub fn read(repo: &Path, cache: &mut Cache) -> Lookup {
-    read_with(repo, cache, |args| git(repo, args))
+/// Reads one repository directory: `None` when Git cannot answer (an
+/// unreadable repository, its ownership refusal, a read past the deadline)
+/// or the repository names neither a remote nor a root.
+pub fn read(repo: &Path, cache: &mut Cache) -> Option<Lookup> {
+    read_with(repo, cache, |args| git(repo, args), ANSWER_WITHIN)
 }
 
 fn read_with(
     repo: &Path,
     cache: &mut Cache,
     mut git: impl FnMut(&[&str]) -> Option<String>,
-) -> Lookup {
-    let unavailable = Lookup {
-        remote: None,
-        root_commits: Vec::new(),
-    };
+    answer_within: Duration,
+) -> Option<Lookup> {
     let Some(config) = git(&["config", "--null", "--show-origin", "--name-only", "--list"]) else {
         cache.lookups.remove(repo);
-        return unavailable;
+        return None;
     };
     let head = git(&["rev-parse", "--verify", "HEAD"]).map(|text| text.trim().to_owned());
     // Git supplies each included configuration file, including conditional
@@ -117,7 +116,7 @@ fn read_with(
     ])
     .map(|text| PathBuf::from(text.trim())) else {
         cache.lookups.remove(repo);
-        return unavailable;
+        return None;
     };
     paths.insert(shallow);
     let files = paths
@@ -134,11 +133,20 @@ fn read_with(
         && old.files == files
         && !old.lookup.root_commits.is_empty()
     {
-        return old.lookup.clone();
+        return Some(old.lookup.clone());
     }
-    let deadline = Instant::now() + ANSWER_WITHIN;
-    let remote = git_identity::remote(repo, deadline).ok().flatten();
-    let root_commits = git_identity::root_commits(repo, deadline).unwrap_or_default();
+    let deadline = Instant::now() + answer_within;
+    let (Ok(remote), Ok(root_commits)) = (
+        git_identity::remote(repo, deadline),
+        git_identity::root_commits(repo, deadline),
+    ) else {
+        cache.lookups.remove(repo);
+        return None;
+    };
+    if remote.is_none() && root_commits.is_empty() {
+        cache.lookups.remove(repo);
+        return None;
+    }
     let lookup = Lookup {
         remote,
         root_commits,
@@ -151,7 +159,7 @@ fn read_with(
             lookup: lookup.clone(),
         },
     );
-    lookup
+    Some(lookup)
 }
 
 /// Writes the lookups for `cwds` into `dir`, one file per repository named
@@ -171,7 +179,8 @@ pub fn refresh(
     let mut changed = 0;
     let mut failure = None;
     for repo in repos {
-        match write_lookup(&repo, dir, cache, read_at) {
+        let lookup = read(&repo, cache);
+        match write_lookup(&repo, dir, lookup, read_at) {
             Ok(true) => changed += 1,
             Ok(false) => {}
             Err(error) => {
@@ -188,9 +197,16 @@ pub fn refresh(
 }
 
 /// Writes one repository's lookup file unless it already holds the same
-/// remote and roots; whether it wrote.
-fn write_lookup(repo: &Path, dir: &Path, cache: &mut Cache, read_at: &str) -> io::Result<bool> {
-    let lookup = read(repo, cache);
+/// remote and roots, or the read gave no lookup; whether it wrote.
+fn write_lookup(
+    repo: &Path,
+    dir: &Path,
+    lookup: Option<Lookup>,
+    read_at: &str,
+) -> io::Result<bool> {
+    let Some(lookup) = lookup else {
+        return Ok(false);
+    };
     let path = repo.display().to_string();
     let file = dir.join(format!(
         "{}.json",

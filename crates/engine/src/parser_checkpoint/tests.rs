@@ -251,7 +251,7 @@ fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versi
     }
     for name in ["llm", "tool-database"] {
         // The shared modules and the row-dump format, in declared order.
-        let expected = "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::row_dump::VERSION=2";
+        let expected = "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::row_dump::VERSION=3";
         assert!(
             matches!(contracts.iter().find(|contract| contract.origin()==name), Some(ReadingContract::Expected { version, .. }) if version == expected)
         );
