@@ -1,7 +1,24 @@
 //! Direct daemon children in tests. Callers keep their kill-and-wait guard.
 
 use std::io;
+use std::path::Path;
 use std::process::{Child, Command};
+
+/// Gives `command` a cleared environment over the synthetic home `home`:
+/// `PATH`, `LANG`, and `HOME`, Polylogue's XDG directories and every root
+/// variable the sources declare, each pointing under `home`. Nothing from
+/// the calling environment reaches the child, so a run over synthetic data
+/// discovers no file outside `home`. Callers set narrower directories after.
+pub fn synthetic_environment<'a>(command: &'a mut Command, home: &Path) -> &'a mut Command {
+    command
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("LANG", "C.UTF-8")
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .envs(polylogue_sources::origin::synthetic_home_environment(home))
+}
 
 /// Spawns a test daemon. On Linux, a forced parent exit also kills the child;
 /// normal shutdown still belongs to the caller's kill-and-wait guard.
@@ -78,3 +95,6 @@ impl ProcessExit {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

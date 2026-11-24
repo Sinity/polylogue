@@ -2271,6 +2271,7 @@ dependencies = [
  "libc",
  "polylogue-engine",
  "polylogue-model",
+ "polylogue-sources",
  "polylogue-store",
  "serde_json",
  "tempfile",

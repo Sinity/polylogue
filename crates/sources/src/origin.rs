@@ -72,6 +72,33 @@ impl Root {
 /// locations lie under it.
 pub const STATE_DIR: &str = "polylogue";
 
+/// Every root an override variable can move, once each, from the origins and
+/// the tools' own homes: the variables a deployment reads to find inputs.
+pub fn variable_roots() -> Vec<(&'static str, Root)> {
+    let mut roots: Vec<(&'static str, Root)> = ORIGINS
+        .iter()
+        .map(|origin| origin.root)
+        .chain(crate::locations::TOOLS.iter().map(|tool| tool.root))
+        .filter_map(|root| Some((root.env?, root)))
+        .collect();
+    roots.sort_by_key(|(variable, _)| *variable);
+    roots.dedup_by_key(|(variable, _)| *variable);
+    roots
+}
+
+/// The environment of a run over a synthetic home: `HOME` and every root
+/// variable set to where that root lies under `home`, so discovery reads
+/// nothing outside it whatever the calling environment holds.
+pub fn synthetic_home_environment(home: &Path) -> Vec<(&'static str, PathBuf)> {
+    std::iter::once(("HOME", home.to_path_buf()))
+        .chain(
+            variable_roots()
+                .into_iter()
+                .map(|(variable, root)| (variable, home.join(root.default))),
+        )
+        .collect()
+}
+
 /// What is stored for a file found at an origin's location.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Capture {

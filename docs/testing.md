@@ -56,6 +56,8 @@ The store and engine have a `faults` feature that adds a fault registry. It star
 
 One end-to-end harness: the real `polylogue` binary runs as a daemon over a temporary archive built from a seeded template, driven through the CLI, MCP and the browser extension's native-messaging host, with replies compared to goldens. Harness behaviour is tested with fixture harnesses: stub binaries on `PATH` that record their argv, cwd and stdin, so sends, resumes and installs are checked without a real agent.
 
+**Isolation.** A run over synthetic data finds its inputs under a synthetic home and nowhere else, because discovery roots come from `HOME` and the tools' own root variables (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME`, `XDG_STATE_HOME`, and whichever the origins declare). The run command sets them, never its caller: a scenario child starts from a cleared environment with `HOME`, the XDG directories and every declared root variable pointing under the fixture's home (the testkit's `synthetic_environment`, built from the sources' list of root variables); `polylogue demo` and the first-build bench construct their engine configuration with the synthetic home and no root overrides, so the environment is not consulted; and the daemon of `bench tails` runs with a cleared environment and a scratch home. A command run by hand over a synthetic archive gets the same isolation from `env -i PATH="$PATH" HOME=<synthetic home> polylogue --archive <archive> ...`.
+
 **Primary mode** uses a real Sinex stack (PostgreSQL with TimescaleDB, NATS and
 `sinexd` at the revision Polylogue pins). Morrow converged in primary mode
 must reply as standalone does, and again after rebuilding from the confirmed
