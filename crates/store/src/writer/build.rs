@@ -127,13 +127,37 @@ fn peak_memory() -> u64 {
 }
 
 /// A reading table moved out of the scratch index: its name, columns, the
-/// column holding the input key, and how rows from several chains combine.
+/// column holding the input key, and the insert that says how rows from
+/// several chains combine.
 #[derive(Clone)]
 struct Table {
     name: String,
     columns: Vec<String>,
     input: Option<usize>,
-    conflict: &'static str,
+    /// The statement that inserts one row into the build file.
+    insert: String,
+}
+
+impl Table {
+    fn new(name: String, columns: Vec<String>, conflict: &'static str) -> Self {
+        let input = columns.iter().position(|c| c == "input_pk");
+        let names = columns
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let marks = (1..=columns.len())
+            .map(|n| format!("?{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let insert = format!("INSERT {conflict} INTO main.\"{name}\"({names}) VALUES ({marks})");
+        Self {
+            name,
+            columns,
+            input,
+            insert,
+        }
+    }
 }
 
 /// The reading tables of an index file, in name order. A reading's rows
@@ -164,12 +188,7 @@ fn tables(conn: &Connection) -> Result<Vec<Table>> {
             _ if input.is_some() => "",
             _ => continue,
         };
-        found.push(Table {
-            name,
-            columns,
-            input,
-            conflict,
-        });
+        found.push(Table::new(name, columns, conflict));
     }
     if found.len() + TABLES as usize > 255 {
         return Err(StoreError::Invalid(
@@ -800,14 +819,13 @@ impl Inner {
         )?;
         t.commit()?;
         crate::fault::check("index.build.loading", "")?;
-        let parse_text = Table {
-            name: "parse_text".into(),
-            columns: ["input_pk", "chain", "document", "item", "idx", "text_id"]
+        let parse_text = Table::new(
+            "parse_text".into(),
+            ["input_pk", "chain", "document", "item", "idx", "text_id"]
                 .map(String::from)
                 .to_vec(),
-            input: Some(0),
-            conflict: "",
-        };
+            "",
+        );
         let mut merged = Merger::open(holders.finish()?, &paths.runs)?;
         let t = Transaction::new_unchecked(&self.index, TransactionBehavior::Immediate)?;
         while let Some((key, value)) = merged.next()? {
@@ -923,20 +941,7 @@ fn input_pk(tx: &Transaction<'_>, current: &mut Option<(String, i64)>, id: &str)
 }
 
 fn insert(tx: &Transaction<'_>, table: &Table, row: &[Value]) -> Result<()> {
-    let names = table
-        .columns
-        .iter()
-        .map(|c| format!("\"{c}\""))
-        .collect::<Vec<_>>()
-        .join(",");
-    let marks = (1..=table.columns.len())
-        .map(|n| format!("?{n}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    tx.prepare_cached(&format!(
-        "INSERT {} INTO main.\"{}\"({names}) VALUES ({marks})",
-        table.conflict, table.name
-    ))?
-    .execute(rusqlite::params_from_iter(row))?;
+    tx.prepare_cached(&table.insert)?
+        .execute(rusqlite::params_from_iter(row))?;
     Ok(())
 }
