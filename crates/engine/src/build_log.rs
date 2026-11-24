@@ -32,6 +32,19 @@ impl Engine {
             .unwrap_or_default();
         polylogue_store::log!(info, "build: {phase}: {detail}{previous}");
     }
+
+    /// Records that a batch build entered `phase`, for `status`, without a
+    /// line of its own: the phase's line, when it ends, carries its time,
+    /// items, bytes and peak memory ([`polylogue_store::writer::build::PhaseClock`]).
+    pub(crate) fn enter_build_phase(&mut self, phase: &'static str) {
+        if self.archive.index_build().is_none() {
+            return;
+        }
+        if let Some(since) = polylogue_model::Timestamp::from_unix_ms(self.config.clock.now_ms()) {
+            self.archive.record_build_phase(phase, since);
+        }
+        self.build_phase = Some((phase, Instant::now()));
+    }
 }
 
 /// What the minute's rates are measured from.

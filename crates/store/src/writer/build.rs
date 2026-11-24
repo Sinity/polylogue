@@ -85,7 +85,7 @@ impl PhaseClock {
         };
         crate::log!(
             info,
-            "index build: {} took {:.1} s; {} items; {:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
+            "build: {} took {:.1} s; {} items; {:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
             phase.name,
             phase.seconds,
             phase.items,

@@ -140,7 +140,15 @@ impl ScopeWorker {
                         error.clone()
                     };
                     if last_error.as_ref() != Some(&condition) {
-                        polylogue_store::log!(warning, "scope index: {error}");
+                        if building {
+                            // Waiting for a build is normal; its progress is in `status`.
+                            polylogue_store::log!(
+                                info,
+                                "scope index: waits for the index being built"
+                            );
+                        } else {
+                            polylogue_store::log!(warning, "scope index: {error}");
+                        }
                         last_error = Some(condition);
                     }
                     // Nothing is readable until the index being built is
