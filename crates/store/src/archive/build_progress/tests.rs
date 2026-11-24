@@ -125,6 +125,26 @@ fn the_phase_and_the_workers_are_reported_as_recorded() {
 
 /// Progress recorded once a minute, read between two steps: the time since
 /// the last step is not taken for slower work.
+/// The writer's count is reported for the phase it was recorded in, and
+/// not once the build has moved to another.
+#[test]
+fn a_writer_phase_progress_is_reported_while_its_phase_runs() {
+    let start = Instant::now();
+    let mut record = Record::default();
+    let since = Timestamp::from_unix_ms(1_000).unwrap();
+    let counted = PhaseProgress {
+        done: 7,
+        total: None,
+        unit: "sessions".into(),
+    };
+    record.phase_progress("compose", counted.clone());
+    record.phase("compose", since);
+    let report = |record: &Record| record.report(start, &build(10 * MB, 1_000), 0.);
+    assert_eq!(report(&record).phase_progress, Some(counted));
+    record.phase("full text", since);
+    assert_eq!(report(&record).phase_progress, None);
+}
+
 #[test]
 fn progress_recorded_in_steps_is_steady_between_them() {
     let start = Instant::now();

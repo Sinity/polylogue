@@ -16,7 +16,7 @@ use super::*;
 use crate::archive::index_build::Paths;
 use crate::sorted_runs::{Merger, Sorter};
 use rusqlite::types::{Value, ValueRef};
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -47,12 +47,13 @@ const TABLES: u8 = 3;
 /// What decides which sessions are composed from the stream, read before
 /// it: sessions whose composition reaches other sessions' readings
 /// ([`FALLBACK`]), and each message ID with the session stating it
-/// ([`MESSAGE_ID`]) or an event's message with its session
-/// ([`FOLLOWED`]).
+/// ([`MESSAGE_ID`]), an event's message with its session ([`FOLLOWED`]) or
+/// an event ID with its session ([`EVENT_ID`]).
 const MARKS: u8 = 253;
 const FALLBACK: u8 = 0;
 const MESSAGE_ID: u8 = 1;
 const FOLLOWED: u8 = 2;
+const EVENT_ID: u8 = 3;
 /// The readings composition takes, grouped by the session stating them:
 /// its facts' kinds, each message's readings with their values, its event
 /// readings and its calls' background outcomes, in that order.
@@ -82,10 +83,6 @@ const STREAM_READS: &[&str] = &[
     "event_session",
     "tool_call_session",
 ];
-
-/// The build file's mark that a round made its indexes: a later round loads
-/// into them instead of making them again over every row.
-const INDEXES_MADE: &str = "build_indexes_made";
 
 /// The indexes a build's load concerns, as (name, statement, table): every
 /// one on a stored table but the one that makes an equal text group one row.
@@ -881,6 +878,8 @@ fn compose_records(
                 out.sorter
                     .push(&mark_key(FOLLOWED, &[&after, &session]), &[])?;
             }
+            out.sorter
+                .push(&mark_key(EVENT_ID, &[&event, &session]), &[])?;
             let values: Vec<ValueRef<'_>> = (2..9)
                 .map(|n| row.get_ref(n))
                 .collect::<rusqlite::Result<_>>()?;
@@ -939,9 +938,10 @@ impl Prepared {
 #[derive(Default)]
 struct Fallback {
     sessions: BTreeSet<String>,
-    /// Message IDs of readings upkeep wrote into the build file while the
-    /// build ran.
+    /// Message and event IDs of readings upkeep wrote into the build file
+    /// while the build ran.
     messages: BTreeSet<String>,
+    events: HashSet<String>,
 }
 
 impl Fallback {
@@ -962,6 +962,10 @@ impl Fallback {
                  UNION SELECT session_id FROM call_outcome",
             )?,
             messages: strings("SELECT DISTINCT message_id FROM message_parse")?,
+            events: conn
+                .prepare("SELECT DISTINCT event_id FROM event_parse WHERE session_id IS NOT NULL")?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?,
         })
     }
 }
@@ -973,6 +977,7 @@ pub(super) struct Loaded {
     merged: Merger,
     texts: Merger,
     fallback: BTreeSet<String>,
+    shared_events: HashSet<String>,
 }
 
 /// Where a build's composition stands between its steps
@@ -991,6 +996,9 @@ pub(super) struct ComposeState {
     /// stream reader passes over.
     fallback: Vec<String>,
     aliases: Arc<super::identity::Aliases>,
+    /// Event IDs several sessions state: the stream leaves them for the
+    /// index to compose from every session's readings.
+    shared_events: Arc<HashSet<String>>,
     /// Events left by the stream for the index to compose.
     deferred: Vec<(Option<String>, String)>,
     pub(super) sessions: u64,
@@ -1016,6 +1024,7 @@ impl ComposeState {
             merged,
             texts,
             mut fallback,
+            shared_events,
         } = loaded;
         let aliases = Arc::new(super::identity::Aliases::load(index)?);
         // Composing runs no trigger per row: each counted table is counted
@@ -1048,6 +1057,7 @@ impl ComposeState {
             stream_done: false,
             fallback: fallback.into_iter().collect(),
             aliases,
+            shared_events: Arc::new(shared_events),
             deferred: Vec::new(),
             sessions: 0,
         })
@@ -1104,13 +1114,17 @@ struct Load {
     /// Each message reading's text keys, by its key in the composition
     /// stream.
     reading_texts: Option<Sorter>,
-    /// Sessions composed from the index, the message IDs of readings upkeep
-    /// wrote meanwhile, the copy names, and the last message ID seen with
-    /// its session (see [`MARKS`]).
+    /// Sessions composed from the index, the message and event IDs of
+    /// readings upkeep wrote meanwhile, the copy names, the last message and
+    /// event ID seen with its session, and the event IDs several sessions
+    /// state (see [`MARKS`]).
     fallback: BTreeSet<String>,
     upkept_messages: BTreeSet<String>,
+    upkept_events: HashSet<String>,
     aliases: Option<super::identity::Aliases>,
     last_message: Option<(String, String)>,
+    last_event: Option<(String, String)>,
+    shared_events: HashSet<String>,
 }
 
 /// The reading text rows, joined to their texts, being loaded.
@@ -1192,12 +1206,10 @@ impl Inner {
                 self.index.flush_prepared_statement_cache();
                 let upkept = Fallback::upkept(&self.index)?;
                 let present = load_indexes(&self.index)?;
-                // The first round drops every index for its load but the
-                // one that makes an equal group one row (see
-                // `Load::shared_groups`). A later round, after one that made
-                // the indexes, loads into them; any round makes only the
-                // declared indexes the file lacks.
-                if !runs.is_empty() && crate::meta_get(&self.index, INDEXES_MADE)?.is_none() {
+                // A load drops every index but the one that makes an equal
+                // group one row (see `Load::shared_groups`); the build makes
+                // the declared indexes the file lacks.
+                if !runs.is_empty() {
                     for (name, ..) in &present {
                         self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
                     }
@@ -1225,6 +1237,7 @@ impl Inner {
                             merged: Merger::open(Vec::new(), &runs_dir)?,
                             texts: Merger::open(Vec::new(), &runs_dir)?,
                             fallback: upkept.sessions,
+                            shared_events: HashSet::new(),
                         }),
                     )
                 } else {
@@ -1247,6 +1260,7 @@ impl Inner {
                         texts: Merger::open(reading_texts.finish()?, &paths.runs)?,
                         merged: load.merged,
                         fallback: load.fallback,
+                        shared_events: load.shared_events,
                     });
                     Stage::TextHolders(Box::new(TextHolders {
                         merged: Merger::open(holders.finish()?, &paths.runs)?,
@@ -1278,7 +1292,6 @@ impl Inner {
                     Stage::Indexes(next + 1, loaded)
                 }
                 None => {
-                    crate::meta_set(&self.index, INDEXES_MADE, "1")?;
                     crate::fault::check("index.build.composing", "")?;
                     job.phase("compose");
                     let indexes = std::mem::take(&mut job.after_stream);
@@ -1349,8 +1362,6 @@ impl Inner {
                 }
             }
             Stage::Install => {
-                self.index
-                    .execute("DELETE FROM meta WHERE key=?1", [INDEXES_MADE])?;
                 self.install_build()?;
                 self.search.ready();
                 self.commits
@@ -1358,6 +1369,24 @@ impl Inner {
                 return Ok(true);
             }
         };
+        if let Some((clock, done)) = &job.clock {
+            let counted = match clock.name {
+                "merge texts" | "load" => Some(("records", None)),
+                "indexes" => Some(("indexes", Some(job.indexes.len() as u64))),
+                "compose" => Some(("sessions", None)),
+                _ => None,
+            };
+            if let Some((unit, total)) = counted {
+                self.location.record_build_phase_progress(
+                    clock.name,
+                    crate::archive::build_progress::PhaseProgress {
+                        done: *done,
+                        total,
+                        unit: unit.into(),
+                    },
+                );
+            }
+        }
         Ok(false)
     }
 
@@ -1401,8 +1430,11 @@ impl Inner {
             )),
             fallback: upkept.sessions,
             upkept_messages: upkept.messages,
+            upkept_events: upkept.events,
             aliases: None,
             last_message: None,
+            last_event: None,
+            shared_events: HashSet::new(),
         })
     }
 
@@ -1594,6 +1626,22 @@ impl Inner {
                                 }
                                 load.last_message = Some((message.to_owned(), session.to_owned()));
                             }
+                        }
+                        EVENT_ID => {
+                            // An event stated under several sessions, or
+                            // also by a reading upkeep wrote, is composed
+                            // from all its readings once the stream is.
+                            let (event, rest) = split_id(rest)?;
+                            let session = split_id(rest)?.0;
+                            if load.upkept_events.contains(event)
+                                || load
+                                    .last_event
+                                    .as_ref()
+                                    .is_some_and(|(last, other)| last == event && other != session)
+                            {
+                                load.shared_events.insert(event.to_owned());
+                            }
+                            load.last_event = Some((event.to_owned(), session.to_owned()));
                         }
                         _ => return Err(StoreError::Invalid("a build mark of no kind".into())),
                     }
@@ -1791,7 +1839,11 @@ impl Inner {
             counter,
             changes: &changes,
         };
-        let mut composer = super::shown::Composer::new(&context, Arc::clone(&state.aliases))?;
+        let mut composer = super::shown::Composer::new(
+            &context,
+            Arc::clone(&state.aliases),
+            Arc::clone(&state.shared_events),
+        )?;
         let mut inputs = InputState::default();
         let mut kinds = std::collections::HashMap::new();
         let (mut messages, mut sessions) = (0usize, 0usize);

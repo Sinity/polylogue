@@ -182,9 +182,10 @@ of its own, without syncing as it goes, and installs them by rename when it
 ends; until then nothing but the build opens them. A build never changes the
 record or the stored bytes, so losing one costs the build and nothing else: a
 start that finds a build a crash or a stop left discards its files and builds
-again from the stored bytes, and a start that finds a finished build not yet
-installed installs it. A new archive's first index is built the same way,
-from the files its first pass stores. While a
+again from the stored bytes, a build that fails in a running daemon is
+discarded the same way and the next pass builds again, and a start that finds
+a finished build not yet installed installs it. A new archive's first index
+is built the same way, from the files its first pass stores. While a
 build runs, reads are served from the installed index when this build of
 Polylogue can read it, and otherwise reply `index_building` with the build's
 progress
@@ -337,8 +338,10 @@ The daemon reaches the index two ways, which must agree.
   under other sessions is composed from the loaded readings instead, as
   upkeep composes it: a copy named through another session, a message stated
   under several sessions, a reading holding part of a version other readings
-  complete, or readings upkeep wrote while the build ran. Links and
-  documents, which no session holds, are composed before the sessions.
+  complete, or readings upkeep wrote while the build ran. An event several
+  sessions state, such as a quota reading every session of an origin
+  shares, is composed from the loaded readings once the sessions are. Links
+  and documents, which no session holds, are composed before the sessions.
 - **They give the same index.** For any set of inputs, bringing them in
   through upkeep in any order and in any division into steps gives the index
   a build gives from the same record, as read through the reader. This is

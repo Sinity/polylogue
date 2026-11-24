@@ -1011,6 +1011,7 @@ impl Inner {
                 match rx.try_recv() {
                     Ok(first) => first,
                     Err(TryRecvError::Empty) => {
+                        let _busy = crate::timing::start_stage(crate::timing::Stage::Writer);
                         self.advance_build();
                         continue;
                     }
@@ -1613,8 +1614,31 @@ impl Inner {
             Ok(Some(false)) => self.build_job = Some(job),
             Ok(Some(true)) => job.finish(Ok(())),
             Ok(None) => job.finish(Err(StoreError::Stopped)),
-            Err(error) => job.finish(Err(error)),
+            Err(error) => {
+                let error = match self.restart_build() {
+                    Ok(()) => error,
+                    Err(restart) => StoreError::Invalid(format!(
+                        "{error}; the failed build could not be discarded: {restart}"
+                    )),
+                };
+                job.finish(Err(error));
+            }
         }
+    }
+
+    /// Discards a build that failed and makes its file again, empty, as
+    /// opening the archive after a crash does. The next build reads every
+    /// chain again and composes from its own runs; the failed build's
+    /// readings and partly composed sessions would otherwise read as
+    /// upkeep's, which composition takes from the index session by session.
+    fn restart_build(&mut self) -> Result<()> {
+        self.index.flush_prepared_statement_cache();
+        let failed = std::mem::replace(&mut self.index, Connection::open_in_memory()?);
+        failed.close().map_err(|(_, error)| error)?;
+        crate::archive::index_build::restart(&self.location)?;
+        self.index = open_index_writer(&self.location, true)?;
+        crate::chain_progress::open(&self.index, true)?;
+        Ok(())
     }
 
     /// Closes the writer's connection to the build file, installs it and

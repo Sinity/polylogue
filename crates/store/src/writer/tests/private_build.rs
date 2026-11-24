@@ -226,15 +226,18 @@ fn a_stopped_build_starts_again_from_the_stored_bytes() {
     assert_eq!(messages(&serving(&archive)), 1);
 }
 
-/// A round that follows one which made the indexes, and has nothing new to
-/// load, merges no texts and makes no index again.
+/// A round that fails leaves the build file as the next open would after a
+/// crash: empty, so a pool reading it finds no chain read. The next round
+/// reads the chains again and takes the whole batch path, composing from
+/// its runs.
 #[test]
-fn a_later_round_with_nothing_to_load_keeps_the_indexes_made() {
+fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
     let dir = tempfile::tempdir().unwrap();
     let chains = due_a_build(dir.path(), &["first-round"]);
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let runs = runs(&archive, &writer, &["first-round"], &chains);
+    let pipeline = ReadPool::open(&archive).unwrap();
+    let first = runs(&archive, &writer, &["first-round"], &chains);
     crate::fault::arm(
         "index.build.composing",
         "",
@@ -242,15 +245,26 @@ fn a_later_round_with_nothing_to_load_keeps_the_indexes_made() {
         0,
         1,
     );
-    let first = writer.build(runs);
+    let failed = writer.build(first);
     crate::fault::clear();
-    assert!(first.is_err());
-    let phases = writer.build(Vec::new()).unwrap();
+    assert!(failed.is_err());
+    let status = pipeline.reader().unwrap().status().unwrap();
+    assert_eq!(status.parse_states.get("done"), None);
+    assert_eq!(status.inputs, 1);
+    let again = runs(&archive, &writer, &["first-round"], &chains);
+    let phases = writer.build(again).unwrap();
     assert_eq!(
         phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-        ["indexes", "compose", "read indexes", "full text", "install"]
+        [
+            "merge texts",
+            "load",
+            "indexes",
+            "compose",
+            "read indexes",
+            "full text",
+            "install"
+        ]
     );
-    assert_eq!(phases[0].items, 0);
     assert_eq!(messages(&serving(&archive)), 1);
 }
 
