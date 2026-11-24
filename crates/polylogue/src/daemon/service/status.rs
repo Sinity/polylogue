@@ -24,8 +24,9 @@ fn mode(d: &Daemon) -> crate::protocol::status::Mode {
 /// worker that keeps the scope index ([`crate::daemon::scope`]), so that a
 /// status request reads only memory and never waits for a reader, the
 /// writer's lock or a query whose cost grows with the archive.
-pub(crate) struct Snapshot {
+struct Snapshot {
     /// When it was read, for the times it reports relative to now.
+    #[cfg(feature = "sinex")]
     taken: std::time::Instant,
     store: Result<polylogue_store::Status, String>,
     notices: Result<crate::protocol::status::Notices, String>,
@@ -54,6 +55,7 @@ impl Snapshot {
             .completeness(&polylogue_engine::reading_contracts())
             .and_then(|local| Ok((local, d.applied(reader)?)));
         Self {
+            #[cfg(feature = "sinex")]
             taken: std::time::Instant::now(),
             store: reader.status().map_err(|error| error.to_string()),
             notices: serde_json::from_value(crate::signals::recent(reader, now))
