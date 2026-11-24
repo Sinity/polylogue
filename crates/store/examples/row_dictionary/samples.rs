@@ -1,6 +1,11 @@
 use polylogue_model::{Block, Message, Timestamp, Usage};
 use serde_json::json;
 
+/// The dictionary trained from [`rows`], at the size `rows.dict` has.
+pub fn dictionary() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    Ok(zstd::dict::from_samples(&rows()?, 8192)?)
+}
+
 pub fn rows() -> Result<Vec<Vec<u8>>, serde_json::Error> {
     let mut rows = Vec::new();
     for n in 0..512_u64 {

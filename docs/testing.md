@@ -100,7 +100,7 @@ The target is a whole suite under 10 minutes, measured per stage (compile, setup
 
 ## Row dictionary
 
-`crates/store/src/encoding/rows.dict` compresses index rows. It is generated only from the synthetic samples in `crates/store/examples/row_dictionary/samples.rs`, and a check confirms that it reproduces from them. Changing it is an index format change. Archive records never depend on it.
+`crates/store/src/encoding/rows.dict` compresses index rows. It is generated only from the synthetic samples in `crates/store/examples/row_dictionary/samples.rs`, and `row_dictionary_rebuilds_from_its_samples` confirms that it reproduces from them; `cargo run -p polylogue-store --example row_dictionary PATH` regenerates it. Changing it is an index format change. Archive records never depend on it.
 
 The `first_build` example includes the final archive and index WAL checkpoints
 in its elapsed time and I/O totals. A busy reader or nonempty final WAL makes
