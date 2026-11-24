@@ -238,6 +238,10 @@ impl Engine {
             saved.through = self.reads.reader()?.last_input_id()?;
             saved.started = true;
         }
+        self.build_phase(
+            "read chains",
+            format_args!("each stored chain read whole into runs"),
+        );
         let workers = self.config.workers.max(1);
         let (plans_tx, plans_rx) = sync_channel::<Plan>(workers * 2);
         let prepare = Prepare {
@@ -261,7 +265,7 @@ impl Engine {
             failed: Mutex::new(std::mem::take(&mut saved.failed)),
         };
         let mut requests = self.requests.take();
-        let clock = PhaseClock::start("prepare");
+        let clock = PhaseClock::start("read chains");
         let planned = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
                 .map(|n| {
@@ -315,10 +319,19 @@ impl Engine {
             .map_err(|_| EngineError::Stopped)?;
         pass.bytes_read = prepare.bytes_read.load(Ordering::Relaxed);
         let mut phases = vec![clock.end(prepare.chains_read.load(Ordering::Relaxed))];
+        let (announce, announced) = std::sync::mpsc::channel();
+        let built = self
+            .writer
+            .sender()
+            .start_build(runs.into_iter().map(|(_, path)| path).collect(), announce)?;
+        // The writer drops its sender when the build ends.
+        for phase in announced {
+            self.build_phase(phase, format_args!("the writer's build phase"));
+        }
         phases.extend(
-            self.writer
-                .sender()
-                .build(runs.into_iter().map(|(_, path)| path).collect())?,
+            built
+                .recv()
+                .map_err(|_| polylogue_store::StoreError::WriterGone)??,
         );
         // Positions read before the build named the build file's empty
         // index; the next pass reads them from the installed one.

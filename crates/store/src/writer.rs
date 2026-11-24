@@ -106,6 +106,7 @@ enum Msg {
     /// Load a build's runs, compose, index and install the build file.
     Build(
         Vec<std::path::PathBuf>,
+        Option<std::sync::mpsc::Sender<&'static str>>,
         SyncSender<Result<Vec<build::BuildPhase>>>,
     ),
     ReplaceChain(InputKey, i64, u64, Box<ChainParse>, SyncSender<Result<u64>>),
@@ -667,7 +668,22 @@ impl WriterSender {
     /// build file, composes every session, writes the indexes and search
     /// entries and installs the file. Returns the phases it took.
     pub fn build(&self, runs: Vec<std::path::PathBuf>) -> Result<Vec<build::BuildPhase>> {
-        self.0.ask(|reply| Msg::Build(runs, reply))
+        self.0.ask(|reply| Msg::Build(runs, None, reply))
+    }
+
+    /// [`Self::build`] without waiting: each phase's name is sent to
+    /// `announce` as it starts, and the phases come on the returned
+    /// receiver once the file is installed.
+    pub fn start_build(
+        &self,
+        runs: Vec<std::path::PathBuf>,
+        announce: std::sync::mpsc::Sender<&'static str>,
+    ) -> Result<Receiver<Result<Vec<build::BuildPhase>>>> {
+        let (reply, wait) = sync_channel(1);
+        self.0
+            .send(Msg::Build(runs, Some(announce), reply))
+            .map_err(|_| StoreError::WriterGone)?;
+        Ok(wait)
     }
 
     /// Queue a chain without waiting for its transaction to commit.
@@ -1031,8 +1047,8 @@ impl Inner {
                         replacements.push((input, chain, length, *reading, reply));
                         false
                     }
-                    Msg::Build(runs, reply) => {
-                        builds.push((runs, reply));
+                    Msg::Build(runs, announce, reply) => {
+                        builds.push((runs, announce, reply));
                         false
                     }
                     Msg::DenyPrimaryReads(reply) => {
@@ -1175,8 +1191,8 @@ impl Inner {
                 }));
                 self.serve_users();
             }
-            for (runs, reply) in builds.drain(..) {
-                let built = self.until_stopped(|inner| inner.build(runs));
+            for (runs, announce, reply) in builds.drain(..) {
+                let built = self.until_stopped(|inner| inner.build(runs, announce));
                 let _ = reply.send(built.and_then(|built| built.ok_or(StoreError::Stopped)));
             }
             for (blob, reply) in blobs.drain(..) {

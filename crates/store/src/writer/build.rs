@@ -302,7 +302,18 @@ impl RunTexts {
 impl Inner {
     /// Loads the runs into the build file, composes every session, writes
     /// the search entries and the deferred indexes, and installs the file.
-    pub(super) fn build(&mut self, runs: Vec<PathBuf>) -> Result<Vec<BuildPhase>> {
+    /// Each phase's name is sent to `announce` as it starts.
+    pub(super) fn build(
+        &mut self,
+        runs: Vec<PathBuf>,
+        announce: Option<std::sync::mpsc::Sender<&'static str>>,
+    ) -> Result<Vec<BuildPhase>> {
+        let start = |name: &'static str| {
+            if let Some(announce) = &announce {
+                let _ = announce.send(name);
+            }
+            PhaseClock::start(name)
+        };
         if self.sinex.is_some() || !self.location.index_build.building() {
             return Err(StoreError::Invalid(
                 "no standalone build is in progress".into(),
@@ -310,7 +321,7 @@ impl Inner {
         }
         let mut phases = Vec::new();
         self.index.flush_prepared_statement_cache();
-        let clock = PhaseClock::start("load");
+        let clock = start("merge texts");
         let indexes: Vec<(String, String)> = self
             .index
             .prepare(
@@ -322,21 +333,28 @@ impl Inner {
         for (name, _) in &indexes {
             self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
         }
-        let rows = self.load(&runs)?;
+        let texts = self.merge_texts(&runs)?;
+        phases.push(clock.end(texts));
+        let clock = start("load");
+        let mut rows = 0;
+        for path in &runs {
+            self.stop.check()?;
+            rows += self.load_run(path)?;
+        }
         phases.push(clock.end(rows));
-        let clock = PhaseClock::start("indexes");
+        let clock = start("indexes");
         for (_, sql) in &indexes {
             self.stop.check()?;
             self.index.execute(sql, [])?;
         }
         phases.push(clock.end(indexes.len() as u64));
-        let clock = PhaseClock::start("compose");
+        let clock = start("compose");
         let sessions = self.compose_all()?;
         phases.push(clock.end(sessions));
-        let clock = PhaseClock::start("search");
+        let clock = start("full text");
         self.build_deferred()?;
         phases.push(clock.end(0));
-        let clock = PhaseClock::start("install");
+        let clock = start("install");
         self.install_build()?;
         self.texts =
             crate::text_rows::TextIds::new(&self.index, self.location.memory_budget().keys() / 3)?;
@@ -347,8 +365,8 @@ impl Inner {
         Ok(phases)
     }
 
-    /// Texts, then every run's reading rows; the rows loaded.
-    fn load(&mut self, runs: &[PathBuf]) -> Result<u64> {
+    /// Every run's texts, made one row per text; the texts written.
+    fn merge_texts(&mut self, runs: &[PathBuf]) -> Result<u64> {
         let held: bool = self.index.exists("SELECT EXISTS(SELECT 1 FROM text)", [])?;
         if held {
             return Err(StoreError::Invalid(
@@ -378,17 +396,13 @@ impl Inner {
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut loaded = merge_texts(&tx, runs, &bases)?;
+        let written = merge_texts(&tx, runs, &bases)?;
         tx.execute(
             "DELETE FROM text_group WHERE id NOT IN (SELECT group_id FROM text)",
             [],
         )?;
         tx.commit()?;
-        for path in runs {
-            self.stop.check()?;
-            loaded += self.load_run(path)?;
-        }
-        Ok(loaded)
+        Ok(written)
     }
 
     /// Copies one run's rows, with its input and text keys made the build

@@ -458,7 +458,14 @@ fn build_from_record(
     let phases = w.writer.build(paths).unwrap();
     assert_eq!(
         phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-        ["load", "indexes", "compose", "search", "install"]
+        [
+            "merge texts",
+            "load",
+            "indexes",
+            "compose",
+            "full text",
+            "install"
+        ]
     );
     assert!(w.archive.index_build().is_none());
     w
