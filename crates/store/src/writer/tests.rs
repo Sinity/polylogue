@@ -36,15 +36,12 @@ fn write_test_rows(
     step: &ParseStep,
     chain: i64,
     counter: i64,
-    at_build_end: bool,
 ) -> Result<u64> {
     let mut batch = batch.clone();
     batch.parse = vec![step.clone()];
     batch.parse[0].prepare();
     normalize_attachments_with(tx, &mut batch)?;
     let changes = crate::change_summary::ChangeSummary::start(tx)?;
-    let texts =
-        crate::text_rows::TextIds::new(tx, crate::archive::MemoryBudget::default().keys() / 3)?;
     let mut touched = Touched::default();
     // A primary cache hides the messages Sinex withdrew.
     let primary = tx.exists(
@@ -56,7 +53,6 @@ fn write_test_rows(
         &batch,
         &batch.parse[0],
         rows::StepWrite {
-            texts: &texts,
             counter,
             chain,
             source_commit: Some(&fixture_commit()),
@@ -67,7 +63,7 @@ fn write_test_rows(
         },
         &mut touched,
     )?;
-    let (written, _) = rows::finish(tx, touched, &changes, &texts, at_build_end, counter)?;
+    let (written, _) = rows::finish_upkeep(tx, touched, &changes, counter)?;
     Ok(written)
 }
 

@@ -83,9 +83,12 @@ fn clear(index: &mut Connection, archive: &Archive, scope: &str) -> Result<()> {
         tx.execute_batch(&format!("DROP {kind} {}", quoted(&name)))?;
     }
     let tables: Vec<String> = tx.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('meta','row_count','source_row_count') ORDER BY name")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
+    // Every row goes, so nothing is left for search membership to follow.
+    crate::schema::drop_search_triggers(&tx)?;
     for name in &tables {
         tx.execute(&format!("DELETE FROM {}", quoted(name)), [])?;
     }
+    tx.execute_batch(crate::schema::SEARCH_TRIGGERS)?;
     let fts: Vec<String> = tx.prepare("SELECT name FROM main.sqlite_schema WHERE type='table' AND lower(sql) LIKE '%using fts5(%'")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
     for name in fts {
         tx.execute(

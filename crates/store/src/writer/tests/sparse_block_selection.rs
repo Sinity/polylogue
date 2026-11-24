@@ -256,7 +256,7 @@ fn primary_readings_preserve_every_known_block() {
     let tx = index.transaction().unwrap();
     for input in &readings {
         for step in &input.parse {
-            write_test_rows(&tx, input, step, 1, 1, false).unwrap();
+            write_test_rows(&tx, input, step, 1, 1).unwrap();
         }
     }
     tx.commit().unwrap();
@@ -444,7 +444,7 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
     let mut replay = batch("native", Route::Live, 0, vec![row(0, message)], &["s"]);
     replay.change = Change::Reparse { chain: 1 };
     assert_eq!(
-        write_test_rows(&tx, &replay, &replay.parse[0], 1, 2, false).unwrap(),
+        write_test_rows(&tx, &replay, &replay.parse[0], 1, 2).unwrap(),
         0
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)

@@ -8,7 +8,7 @@ fn connection() -> Connection {
 }
 fn apply(tx: &Transaction<'_>, b: Batch) {
     let step = b.parse[0].clone();
-    write_test_rows(tx, &b, &step, 1, 1, false).unwrap();
+    write_test_rows(tx, &b, &step, 1, 1).unwrap();
     let pks = tx
         .prepare("SELECT pk FROM session")
         .unwrap()

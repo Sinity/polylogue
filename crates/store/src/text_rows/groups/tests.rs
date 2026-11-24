@@ -1,5 +1,5 @@
 use super::*;
-use crate::text_rows::{TextIds, remove};
+use crate::text_rows::{remove, resolve};
 
 fn hash(text: &str) -> [u8; 32] {
     *blake3::hash(text.as_bytes()).as_bytes()
@@ -102,62 +102,45 @@ fn prepared_texts_survive_a_staged_step_and_refuse_a_missing_group() {
 #[test]
 fn the_writer_stores_a_group_once_and_removes_it_with_its_last_text() {
     let mut conn = index();
-    let ids = TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3).unwrap();
     let prepared = PreparedTexts::pack(["kept", "removed", "never new"]).unwrap();
-    let transaction = ids.transaction();
     let tx = conn.transaction().unwrap();
-    let kept = ids
-        .resolve(&tx, &hash("kept"), prepared.get(&hash("kept")), None)
-        .unwrap();
-    let removed = ids
-        .resolve(&tx, &hash("removed"), prepared.get(&hash("removed")), None)
-        .unwrap();
+    let kept = resolve(&tx, &hash("kept"), prepared.get(&hash("kept"))).unwrap();
+    let removed = resolve(&tx, &hash("removed"), prepared.get(&hash("removed"))).unwrap();
     tx.commit().unwrap();
-    transaction.commit();
     assert_eq!(count(&conn, "text_group"), 1);
     assert_eq!(read(&conn, kept).unwrap(), "kept");
     assert_eq!(read(&conn, removed).unwrap(), "removed");
 
-    remove(&conn, removed, 0).unwrap();
-    ids.removed(removed);
+    remove(&conn, removed).unwrap();
     assert_eq!(count(&conn, "text_group"), 1);
     assert_eq!(read(&conn, kept).unwrap(), "kept");
-    remove(&conn, kept, 0).unwrap();
-    ids.removed(kept);
+    remove(&conn, kept).unwrap();
     assert_eq!(count(&conn, "text_group"), 0);
     assert_eq!(count(&conn, "text"), 0);
 }
 
 #[test]
-fn a_known_text_adds_no_group_and_a_rolled_back_group_is_stored_again() {
+fn an_equal_group_is_one_row_across_steps_and_a_rolled_back_group_is_stored_again() {
     let mut conn = index();
-    let ids = TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3).unwrap();
-    let first = PreparedTexts::pack(["shared"]).unwrap();
-    let id = ids
-        .resolve(&conn, &hash("shared"), first.get(&hash("shared")), None)
-        .unwrap();
+    let first = PreparedTexts::pack(["shared", "first only"]).unwrap();
+    let id = resolve(&conn, &hash("shared"), first.get(&hash("shared"))).unwrap();
+    // A later step whose group has the same bytes shares the stored row.
+    let same = PreparedTexts::pack(["shared", "first only"]).unwrap();
+    let other = resolve(&conn, &hash("first only"), same.get(&hash("first only"))).unwrap();
+    assert_eq!(count(&conn, "text_group"), 1);
+    assert_eq!(read(&conn, other).unwrap(), "first only");
     let later = PreparedTexts::pack(["shared", "fresh"]).unwrap();
     {
-        let _texts = ids.transaction();
         let tx = conn.transaction().unwrap();
-        let again = ids
-            .resolve(&tx, &hash("shared"), later.get(&hash("shared")), None)
-            .unwrap();
+        let again = resolve(&tx, &hash("shared"), later.get(&hash("shared"))).unwrap();
         assert_eq!(again, id);
         assert_eq!(count(&tx, "text_group"), 1);
-        ids.resolve(&tx, &hash("fresh"), later.get(&hash("fresh")), None)
-            .unwrap();
+        resolve(&tx, &hash("fresh"), later.get(&hash("fresh"))).unwrap();
         assert_eq!(count(&tx, "text_group"), 2);
         // Rolled back with its group.
     }
     assert_eq!(count(&conn, "text_group"), 1);
-    let texts = ids.transaction();
-    let tx = conn.transaction().unwrap();
-    let fresh = ids
-        .resolve(&tx, &hash("fresh"), later.get(&hash("fresh")), None)
-        .unwrap();
-    tx.commit().unwrap();
-    texts.commit();
+    let fresh = resolve(&conn, &hash("fresh"), later.get(&hash("fresh"))).unwrap();
     assert_eq!(read(&conn, fresh).unwrap(), "fresh");
     assert_eq!(read(&conn, id).unwrap(), "shared");
     assert_eq!(count(&conn, "text_group"), 2);

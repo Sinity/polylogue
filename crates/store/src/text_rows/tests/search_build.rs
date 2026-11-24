@@ -100,7 +100,7 @@ fn built_search_vocabulary_matches_incremental_writes() {
         )
         .unwrap();
         index_pending(conn).unwrap();
-        crate::text_rows::remove(conn, 2, 2).unwrap();
+        crate::text_rows::remove(conn, 2).unwrap();
     }
     let reopened = crate::archive::open_read(&dir.path().join("built.db")).unwrap();
     for reader in [&built, &reopened] {

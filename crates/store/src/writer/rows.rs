@@ -13,7 +13,6 @@ mod checkpoint;
 
 /// How a step's rows are written.
 pub(super) struct StepWrite<'a> {
-    pub texts: &'a crate::text_rows::TextIds,
     pub counter: i64,
     /// The chain the step's bytes were stored in.
     pub chain: i64,
@@ -102,7 +101,6 @@ pub(super) fn write_step(
             route: b.input.route,
             chain,
             committed,
-            texts: w.texts,
             changes: w.changes,
         },
         b,
@@ -174,28 +172,34 @@ pub(crate) fn finish(
     tx: &Transaction<'_>,
     touched: Touched,
     changes: &ChangeSummary,
-    texts: &crate::text_rows::TextIds,
-    at_build_end: bool,
     counter: i64,
 ) -> Result<(u64, u64)> {
     let written = super::shown::compose(
         &super::shown::Context {
             tx,
             counter,
-            texts,
-            at_build_end,
             changes,
         },
         touched,
     )?;
     let read = finish_summaries(tx, changes, counter)?;
-    // A first build derives every session once, when it ends.
-    if !at_build_end {
-        let sessions = changes.sessions(tx)?;
-        crate::derive::links::add_finished_links(tx, &sessions)?;
-        crate::measure::time::forget_settled(tx, changes, &sessions)?;
-    }
     Ok((written, read))
+}
+
+/// [`finish`] for upkeep of an installed index: the sessions it changed also
+/// get the links of the calls they finished, and their settled measures are
+/// forgotten. A build derives every session once, after it is installed.
+pub(crate) fn finish_upkeep(
+    tx: &Transaction<'_>,
+    touched: Touched,
+    changes: &ChangeSummary,
+    counter: i64,
+) -> Result<(u64, u64)> {
+    let finished = finish(tx, touched, changes, counter)?;
+    let sessions = changes.sessions(tx)?;
+    crate::derive::links::add_finished_links(tx, &sessions)?;
+    crate::measure::time::forget_settled(tx, changes, &sessions)?;
+    Ok(finished)
 }
 
 /// Brings counts, the session item index and the values kept with each

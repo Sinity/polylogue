@@ -246,7 +246,6 @@ impl Inner {
             return Ok(0);
         }
         drop(reader);
-        let text_transaction = self.texts.transaction();
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -258,7 +257,6 @@ impl Inner {
             &tx,
             ReadingWrite {
                 register: &self.archive,
-                texts: &self.texts,
                 counter,
                 primary: self.sinex.is_some(),
                 changes: &changes,
@@ -269,12 +267,11 @@ impl Inner {
             &reading,
             &mut touched,
         )?;
-        let (written, read) = rows::finish(&tx, touched, &changes, &self.texts, false, counter)?;
+        let (written, read) = rows::finish_upkeep(&tx, touched, &changes, counter)?;
         self.report.item_units_read += read;
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &input.id)?;
         crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
-        text_transaction.commit();
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();
@@ -287,7 +284,6 @@ impl Inner {
 pub(super) struct ReadingWrite<'a> {
     /// Answers which attachment bytes the archive holds.
     pub register: &'a Connection,
-    pub texts: &'a crate::text_rows::TextIds,
     pub counter: i64,
     pub primary: bool,
     pub changes: &'a crate::change_summary::ChangeSummary,
@@ -388,7 +384,6 @@ impl ChainSteps {
             &self.batch,
             step,
             rows::StepWrite {
-                texts: w.texts,
                 counter: w.counter,
                 chain: self.chain,
                 source_commit: Some(&source_commit),

@@ -115,11 +115,6 @@ impl PreparedTexts {
             group: &self.groups[text.group],
         })
     }
-
-    #[cfg(any(test, feature = "fixture"))]
-    pub(crate) fn contains(&self, hash: &[u8; 32]) -> bool {
-        self.texts.contains_key(hash)
-    }
 }
 
 /// The stored form of prepared texts in a staged step file.
@@ -151,88 +146,35 @@ impl<'de> serde::Deserialize<'de> for PreparedTexts {
     }
 }
 
-/// The group rows the writer stored in its current transaction, by the hash
-/// that names each prepared group. A step is written in one transaction, so
-/// the map ends with it.
-pub(crate) struct StoredGroups {
-    rows: RefCell<HashMap<[u8; 32], i64>>,
-    entries: usize,
+/// Inserts a prepared text and returns its key. Its group is stored once:
+/// a group is named by the hash of its compressed body, so a step that
+/// brings a group already stored shares its row.
+pub(crate) fn insert(conn: &Connection, hash: &[u8; 32], prepared: Prepared<'_>) -> Result<i64> {
+    let group = group_row(conn, prepared.group)?;
+    conn.prepare_cached(
+        "INSERT INTO text(hash,normalized_hash,group_id,start,length) VALUES (?1,?2,?3,?4,?5)",
+    )?
+    .execute(rusqlite::params![
+        hash.as_slice(),
+        prepared.text.normalized_hash.as_slice(),
+        group,
+        prepared.text.start as i64,
+        prepared.text.length as i64
+    ])?;
+    Ok(conn.last_insert_rowid())
 }
 
-impl Default for StoredGroups {
-    fn default() -> Self {
-        Self::new(1 << 20)
+fn group_row(conn: &Connection, group: &PreparedGroup) -> Result<i64> {
+    let stored = rusqlite::OptionalExtension::optional(
+        conn.prepare_cached("SELECT id FROM text_group WHERE hash=?1")?
+            .query_row([group.hash.as_slice()], |r| r.get::<_, i64>(0)),
+    )?;
+    if let Some(id) = stored {
+        return Ok(id);
     }
-}
-
-impl StoredGroups {
-    pub(crate) fn new(bytes: u64) -> Self {
-        Self {
-            rows: RefCell::new(HashMap::new()),
-            entries: (bytes / 128).max(1) as usize,
-        }
-    }
-    /// Stores `text`'s group unless this transaction already did, and returns
-    /// its row and whether this call inserted it.
-    pub(crate) fn row(&self, conn: &Connection, prepared: Prepared<'_>) -> Result<(i64, bool)> {
-        if let Some(&id) = self.rows.borrow().get(&prepared.group.hash) {
-            return Ok((id, false));
-        }
-        conn.prepare_cached("INSERT INTO text_group(body) VALUES (?1)")?
-            .execute([&prepared.group.body])?;
-        let id = conn.last_insert_rowid();
-        let mut rows = self.rows.borrow_mut();
-        if rows.len() >= self.entries {
-            rows.clear();
-        }
-        rows.insert(prepared.group.hash, id);
-        Ok((id, true))
-    }
-
-    pub(crate) fn clear(&self) {
-        self.rows.borrow_mut().clear();
-    }
-}
-
-/// Tries to insert a prepared text, returning no row when its identity or
-/// hash is already stored. A group used only by that skipped insert is removed.
-pub(crate) fn insert(
-    conn: &Connection,
-    stored_groups: &StoredGroups,
-    id: Option<i64>,
-    hash: &[u8; 32],
-    prepared: Prepared<'_>,
-    indexed: i64,
-) -> Result<Option<i64>> {
-    let (group_row, inserted) = stored_groups.row(conn, prepared)?;
-    let row = conn
-        .prepare_cached(
-            "INSERT OR IGNORE INTO text(id,hash,normalized_hash,indexed,group_id,start,length)
-             VALUES (?1,?2,?3,?4,?5,?6,?7) RETURNING id",
-        )?
-        .query_row(
-            rusqlite::params![
-                id,
-                hash.as_slice(),
-                prepared.text.normalized_hash.as_slice(),
-                indexed,
-                group_row,
-                prepared.text.start as i64,
-                prepared.text.length as i64
-            ],
-            |r| r.get::<_, i64>(0),
-        );
-    match row {
-        Ok(id) => Ok(Some(id)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => {
-            if inserted {
-                remove_empty_group(conn, group_row)?;
-                stored_groups.clear();
-            }
-            Ok(None)
-        }
-        Err(error) => Err(error.into()),
-    }
+    conn.prepare_cached("INSERT INTO text_group(hash,body) VALUES (?1,?2)")?
+        .execute(rusqlite::params![group.hash.as_slice(), group.body])?;
+    Ok(conn.last_insert_rowid())
 }
 
 /// Removes a text row, and its group once no text is left in it.

@@ -59,8 +59,6 @@ fn scope_change_waits_for_a_new_completion_marker() {
     )
     .unwrap();
     confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
         &mut index,
         &[
             input(1, "private"),
@@ -123,26 +121,14 @@ fn scope_change_waits_for_a_new_completion_marker() {
         before
     );
     assert!(!reset(&mut index, &archive, "narrow", false).unwrap());
-    confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[completion_marker(0)],
-    )
-    .unwrap();
+    confirmed::apply(&mut index, &[completion_marker(0)]).unwrap();
     assert_eq!(confirmed::checkpoint(&index).unwrap(), Some(0));
     drop(index);
     let mut index = Connection::open(archive.index_db()).unwrap();
     assert_eq!(current(&index).unwrap().as_deref(), Some("narrow"));
     assert!(reset(&mut index, &archive, "wide", false).unwrap());
     assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
-    confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[input(1, "private"), completion_marker(1)],
-    )
-    .unwrap();
+    confirmed::apply(&mut index, &[input(1, "private"), completion_marker(1)]).unwrap();
     assert_eq!(
         index
             .query_row("SELECT id FROM source_input", [], |row| row
@@ -165,13 +151,7 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[input(1, "private"), completion_marker(1)],
-    )
-    .unwrap();
+    confirmed::apply(&mut index, &[input(1, "private"), completion_marker(1)]).unwrap();
     index.execute_batch("CREATE TRIGGER stop_reset BEFORE DELETE ON source_input BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
     assert!(reset(&mut index, &archive, "changed", false).is_err());
     assert!(matches!(
@@ -204,13 +184,7 @@ fn unsaved_sinex_control_blocks_current_reads() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[input(1, "private"), completion_marker(1)],
-    )
-    .unwrap();
+    confirmed::apply(&mut index, &[input(1, "private"), completion_marker(1)]).unwrap();
     index.execute_batch("CREATE TRIGGER stop_control BEFORE INSERT ON meta WHEN new.key='confirmed_scope_pending' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
     assert!(reset(&mut index, &archive, "changed", false).is_err());
     assert!(matches!(
@@ -234,13 +208,7 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    confirmed::apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[input(1, "private"), completion_marker(1)],
-    )
-    .unwrap();
+    confirmed::apply(&mut index, &[input(1, "private"), completion_marker(1)]).unwrap();
     let pointer = root.path().join("catalog-current");
     let invalidate_path = pointer.clone();
     let fail = Arc::new(AtomicBool::new(false));

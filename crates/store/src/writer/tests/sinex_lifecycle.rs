@@ -36,7 +36,7 @@ fn write_local(index: &mut Connection, _archive: &Archive, mut batch: Batch) {
     let tx = index.transaction().unwrap();
     let counter = bump_counter(&tx).unwrap();
     let step = batch.parse[0].clone();
-    write_test_rows(&tx, &batch, &step, chain, counter, false).unwrap();
+    write_test_rows(&tx, &batch, &step, chain, counter).unwrap();
     tx.commit().unwrap();
 }
 
@@ -68,13 +68,7 @@ fn apply_position(
             delivery: None,
         })),
     });
-    crate::primary::confirmed::apply(
-        &crate::text_rows::TextIds::new(index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        index,
-        &events,
-    )
-    .unwrap();
+    crate::primary::confirmed::apply(index, &events).unwrap();
 }
 
 fn shown_text(archive: &Archive, message: &polylogue_model::MessageId) -> Option<String> {

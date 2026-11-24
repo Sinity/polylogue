@@ -380,7 +380,6 @@ fn key_input(key: &[u8]) -> Result<&str> {
 pub struct BuildWorker {
     conn: Connection,
     register: Connection,
-    texts: crate::text_rows::TextIds,
     blobs: Arc<crate::blobs::Blobs>,
     tables: Vec<Table>,
     sorter: Sorter,
@@ -419,11 +418,9 @@ impl BuildWorker {
         conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
         crate::source::views(&conn)?;
         let register = crate::archive::open_read(&archive.archive_db())?;
-        let texts = crate::text_rows::TextIds::new(&conn, archive.memory_budget().keys() / 16)?;
         Ok(Self {
             conn,
             register,
-            texts,
             blobs: Arc::new(archive.blobs()?),
             tables,
             sorter: Sorter::new(&paths.runs, format!("w{number:06}"), memory.max(32 << 20)),
@@ -452,7 +449,6 @@ impl BuildWorker {
             steps: super::chain::ChainSteps::new(input, chain, length),
             changes,
             register: &self.register,
-            texts: &self.texts,
             tx,
             input: input.id.clone(),
             chain,
@@ -465,7 +461,6 @@ impl BuildWorker {
                 groups: &mut self.groups,
                 packer: &mut self.packer,
             },
-            text_transaction: self.texts.transaction(),
         })
     }
 
@@ -488,14 +483,12 @@ pub struct OpenChain<'w> {
     steps: super::chain::ChainSteps,
     changes: crate::change_summary::ChangeSummary,
     register: &'w Connection,
-    texts: &'w crate::text_rows::TextIds,
     tx: Transaction<'w>,
     input: String,
     chain: i64,
     writer: &'w WriterSender,
     blobs: &'w Arc<crate::blobs::Blobs>,
     out: Out<'w>,
-    text_transaction: crate::text_rows::TextTransaction<'w>,
 }
 
 impl super::chain::ChainSink for OpenChain<'_> {
@@ -515,7 +508,6 @@ impl super::chain::ChainSink for OpenChain<'_> {
         step.prepare();
         let w = super::chain::ReadingWrite {
             register: self.register,
-            texts: self.texts,
             counter: 1,
             primary: false,
             changes: &self.changes,
@@ -544,7 +536,6 @@ impl OpenChain<'_> {
         self.steps.finish()?;
         move_out(&self.tx, &mut self.out, &self.input, self.chain)?;
         self.tx.commit()?;
-        self.text_transaction.commit();
         Ok(())
     }
 }
@@ -578,10 +569,11 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
         &mut value,
     );
     out.sorter.push(&key, &value)?;
-    // Text groups take the worker's next numbers.
+    // Text groups take the worker's next numbers; a group's record is its
+    // hash followed by its body.
     let mut groups = std::collections::HashMap::new();
     {
-        let mut statement = tx.prepare_cached("SELECT id,body FROM text_group ORDER BY id")?;
+        let mut statement = tx.prepare_cached("SELECT id,hash,body FROM text_group ORDER BY id")?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let local: i64 = row.get(0)?;
@@ -591,13 +583,17 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
             let mut key = vec![GROUPS];
             key.extend_from_slice(&out.number.to_be_bytes());
             key.extend_from_slice(&seq.to_be_bytes());
-            out.sorter.push(&key, &row.get::<_, Vec<u8>>(1)?)?;
+            value.clear();
+            value.extend_from_slice(row.get_ref(1)?.as_blob().map_err(rusqlite::Error::from)?);
+            value.extend_from_slice(row.get_ref(2)?.as_blob().map_err(rusqlite::Error::from)?);
+            out.sorter.push(&key, &value)?;
         }
     }
     {
         let mut statement = tx.prepare_cached(
-            "SELECT hash,normalized_hash,group_id,start,length FROM text
-             WHERE id IN (SELECT text_id FROM parse_text)",
+            "SELECT t.hash,t.normalized_hash,t.group_id,t.start,t.length,g.hash FROM text t
+             JOIN text_group g ON g.id=t.group_id
+             WHERE t.id IN (SELECT text_id FROM parse_text)",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -613,6 +609,7 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
                     row.get_ref(3)?,
                     row.get_ref(4)?,
                     row.get_ref(1)?,
+                    row.get_ref(5)?,
                 ],
                 &mut value,
             );
@@ -949,8 +946,14 @@ struct Load {
     merged: Merger,
     tables: Vec<Table>,
     held: std::iter::Peekable<std::vec::IntoIter<(Vec<u8>, i64)>>,
-    next_text: i64,
     next_group: i64,
+    /// The key the load's first group takes.
+    first_group: i64,
+    /// One bit for each group the load read, from `first_group` on, set for
+    /// a group not stored because a group with the same body already was (by
+    /// another worker, another chain or upkeep): its texts are placed at the
+    /// same bytes of the stored one, found by the group hash they carry.
+    shared_groups: Vec<u64>,
     bases: std::collections::HashMap<u32, i64>,
     holders: Option<Sorter>,
     input: Option<(String, i64)>,
@@ -1041,10 +1044,13 @@ impl Inner {
                 job.phase("merge texts");
                 self.index.flush_prepared_statement_cache();
                 let upkept = Fallback::upkept(&self.index)?;
+                // Every index goes during the load but the one that makes
+                // an equal group one row (see `Load::shared_groups`).
                 let indexes: Vec<(String, String, String)> = self
                     .index
                     .prepare(
                         "SELECT name,sql,tbl_name FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
+                         AND name <> 'text_group_hash'
                          AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')",
                     )?
                     .query_map([], |r| <(String, String, String)>::try_from(r))?
@@ -1125,10 +1131,13 @@ impl Inner {
                     drop(state);
                     crate::archive::index_build::remove_runs(&Paths::of(&self.location.root))?;
                     job.phase("full text");
-                    // The search entries are written from every text's marks;
-                    // entries queued by upkeep writes during the build would
-                    // repeat them.
-                    self.index.execute("DELETE FROM search_pending", [])?;
+                    // Composition wrote shown rows only: the search
+                    // membership of every text comes from the blocks now.
+                    let tx = self
+                        .index
+                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    super::shown::mark_searched_texts(&tx)?;
+                    tx.commit()?;
                     Stage::FullText(crate::text_rows::SearchBuild::new())
                 }
             }
@@ -1140,6 +1149,9 @@ impl Inner {
                         [],
                     )?;
                     crate::timing::add(crate::timing::Stage::TrigramIndex, started.elapsed());
+                    // From here on, search membership and the trigram index
+                    // follow the shown rows as they do in an installed index.
+                    self.index.execute_batch(crate::schema::SEARCH_TRIGGERS)?;
                     let mut deferred = crate::schema::built_at_end_sql()?;
                     deferred.reverse();
                     Stage::Deferred(deferred)
@@ -1162,10 +1174,6 @@ impl Inner {
             },
             Stage::Install => {
                 self.install_build()?;
-                self.texts = crate::text_rows::TextIds::new(
-                    &self.index,
-                    self.location.memory_budget().keys() / 3,
-                )?;
                 self.search.ready();
                 self.commits
                     .committed(crate::completion::Committed::CONTENT);
@@ -1186,6 +1194,9 @@ impl Inner {
             .prepare("SELECT hash,id FROM text ORDER BY hash")?
             .query_map([], |r| <(Vec<u8>, i64)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?;
+        let next_group: i64 = self
+            .index
+            .scalar("SELECT coalesce(max(id),0)+1 FROM text_group", [])?;
         // References are checked by the indexes and composition after the
         // load; tables arrive in name order, not in reference order.
         self.index.pragma_update(None, "foreign_keys", false)?;
@@ -1193,12 +1204,9 @@ impl Inner {
             merged: Merger::open(runs, &paths.runs)?,
             tables: tables(&self.index)?,
             held: held.into_iter().peekable(),
-            next_text: self
-                .index
-                .scalar("SELECT coalesce(max(id),0)+1 FROM text", [])?,
-            next_group: self
-                .index
-                .scalar("SELECT coalesce(max(id),0)+1 FROM text_group", [])?,
+            shared_groups: Vec::new(),
+            next_group,
+            first_group: next_group,
             bases: std::collections::HashMap::new(),
             holders: Some(Sorter::new(
                 &paths.runs,
@@ -1268,8 +1276,23 @@ impl Inner {
                     let worker = u32::from_be_bytes(rest[..4].try_into().expect("four bytes"));
                     let seq = i64::from_be_bytes(rest[4..12].try_into().expect("eight bytes"));
                     load.bases.entry(worker).or_insert(load.next_group - seq);
-                    t.prepare_cached("INSERT INTO text_group(id,body) VALUES (?1,?2)")?
-                        .execute(params![load.next_group, value])?;
+                    if value.len() < 32 {
+                        return Err(StoreError::Invalid("a text group has no hash".into()));
+                    }
+                    let (hash, body) = value.split_at(32);
+                    let stored = t
+                        .prepare_cached(
+                            "INSERT INTO text_group(id,hash,body) VALUES (?1,?2,?3)
+                             ON CONFLICT(hash) DO NOTHING",
+                        )?
+                        .execute(params![load.next_group, hash, body])?;
+                    if stored == 0 {
+                        let at = (load.next_group - load.first_group) as usize;
+                        if load.shared_groups.len() <= at / 64 {
+                            load.shared_groups.resize(at / 64 + 1, 0);
+                        }
+                        load.shared_groups[at / 64] |= 1 << (at % 64);
+                    }
                     load.next_group += 1;
                 }
                 TEXTS => {
@@ -1303,20 +1326,23 @@ impl Inner {
                                 let base = load.bases.get(&(*worker as u32)).ok_or_else(|| {
                                     StoreError::Invalid("a text's group is not in the build".into())
                                 })?;
+                                let mut group = base + seq;
+                                let at = (group - load.first_group) as usize;
+                                if load
+                                    .shared_groups
+                                    .get(at / 64)
+                                    .is_some_and(|bits| bits & (1 << (at % 64)) != 0)
+                                {
+                                    group = t
+                                        .prepare_cached("SELECT id FROM text_group WHERE hash=?1")?
+                                        .query_row([&row[5]], |r| r.get(0))?;
+                                }
                                 t.prepare_cached(
-                                    "INSERT INTO text(id,hash,normalized_hash,indexed,group_id,start,length)
-                                     VALUES (?1,?2,?3,0,?4,?5,?6)",
+                                    "INSERT INTO text(hash,normalized_hash,group_id,start,length)
+                                     VALUES (?1,?2,?3,?4,?5)",
                                 )?
-                                .execute(params![
-                                    load.next_text,
-                                    hash,
-                                    row[4],
-                                    base + seq,
-                                    row[2],
-                                    row[3]
-                                ])?;
-                                load.current_text = Some((hash.to_vec(), load.next_text));
-                                load.next_text += 1;
+                                .execute(params![hash, row[4], group, row[2], row[3]])?;
+                                load.current_text = Some((hash.to_vec(), t.last_insert_rowid()));
                             }
                         }
                         Some(&TEXT_HOLDER) => {
@@ -1482,11 +1508,6 @@ impl Inner {
                     self.index.execute(&sql, [])?;
                 }
                 None => {
-                    let tx = self
-                        .index
-                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
-                    super::shown::mark_searched_texts(&tx)?;
-                    tx.commit()?;
                     state.step = Step::Index { next: 0 };
                 }
             },
@@ -1560,7 +1581,6 @@ impl Inner {
     }
 
     fn compose_stream_transaction(&mut self, state: &mut ComposeState) -> Result<()> {
-        let text_transaction = self.texts.transaction();
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1569,8 +1589,6 @@ impl Inner {
         let context = super::shown::Context {
             tx: &tx,
             counter,
-            texts: &self.texts,
-            at_build_end: true,
             changes: &changes,
         };
         let mut composer = super::shown::Composer::new(&context, Arc::clone(&state.aliases))?;
@@ -1638,22 +1656,19 @@ impl Inner {
         state.sessions += sessions as u64;
         rows::finish_summaries(&tx, &changes, counter)?;
         tx.commit()?;
-        text_transaction.commit();
         Ok(())
     }
 
     /// Composes what `touched` names from the readings in the index, as
     /// upkeep does, in one transaction.
     fn compose_from_index(&mut self, touched: super::readings::Touched) -> Result<()> {
-        let text_transaction = self.texts.transaction();
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&tx)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-        rows::finish(&tx, touched, &changes, &self.texts, true, counter)?;
+        rows::finish(&tx, touched, &changes, counter)?;
         tx.commit()?;
-        text_transaction.commit();
         Ok(())
     }
 }

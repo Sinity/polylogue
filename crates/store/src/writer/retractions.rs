@@ -41,7 +41,6 @@ pub(crate) fn check_source_retractions(batches: &[Batch]) -> Result<()> {
 /// Removes the readings of the chains the retractions name; their shown
 /// rows are computed again when the transaction ends.
 pub(crate) fn apply_source_retractions(
-    texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     batches: &[Batch],
     counter: i64,
@@ -59,7 +58,6 @@ pub(crate) fn apply_source_retractions(
                 batch,
                 step,
                 rows::StepWrite {
-                    texts,
                     counter,
                     chain,
                     source_commit: None,

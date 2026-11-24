@@ -72,8 +72,6 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
     step.prepare();
     assert!(unsent(&index, first.reading().unwrap(), &first));
     apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
         &mut index,
         &[live(1, "first", first.clone()), complete_at(1)],
     )
@@ -86,11 +84,6 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
         (4, ConfirmedChange::Tombstoned, true),
     ] {
         apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3,
-            )
-            .unwrap(),
             &mut index,
             &[
                 Confirmed {
@@ -128,13 +121,7 @@ fn covered_absent_event_is_not_sent_but_unread_tail_is() {
         counts: Default::default(),
         stopped_attempt: None,
     };
-    apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[live(1, "covered", progress), complete_at(1)],
-    )
-    .unwrap();
+    apply(&mut index, &[live(1, "covered", progress), complete_at(1)]).unwrap();
     assert!(!unsent(&index, &reading, &original));
     assert!(unsent(&index, &reading, &message("source", 40)));
     reading.parse_version = "synthetic=2".into();
