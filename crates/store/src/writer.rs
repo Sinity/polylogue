@@ -491,6 +491,7 @@ impl Writer {
             location: archive.clone(),
             sinex,
             stream_error: None,
+            build_job: None,
         };
 
         let handle = polylogue_model::spawn_named("polylogue-writer", move || inner.run(&rx))?;
@@ -860,6 +861,9 @@ struct Inner {
     sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
     /// The last stream error recorded, so a lasting outage is recorded once.
     stream_error: Option<String>,
+    /// A build being loaded, composed and installed, advanced one step at a
+    /// time between the messages the writer serves ([`build::BuildJob`]).
+    build_job: Option<build::BuildJob>,
 }
 
 impl Drop for Inner {
@@ -1003,9 +1007,22 @@ impl Inner {
         let mut builds = Vec::new();
         let mut blobs = Vec::new();
         loop {
-            let first = match rx.recv() {
-                Ok(first) => first,
-                Err(_) => break,
+            // While a build runs, the writer takes a waiting message or else
+            // goes on with the build's next step.
+            let first = if self.build_job.is_some() {
+                match rx.try_recv() {
+                    Ok(first) => first,
+                    Err(TryRecvError::Empty) => {
+                        self.advance_build();
+                        continue;
+                    }
+                    Err(TryRecvError::Disconnected) => break,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(first) => first,
+                    Err(_) => break,
+                }
             };
             let _busy = crate::timing::start_stage(crate::timing::Stage::Writer);
             self.serve_users();
@@ -1204,8 +1221,13 @@ impl Inner {
                 self.serve_users();
             }
             for (runs, announce, reply) in builds.drain(..) {
-                let built = self.until_stopped(|inner| inner.build(runs, announce));
-                let _ = reply.send(built.and_then(|built| built.ok_or(StoreError::Stopped)));
+                if self.build_job.is_some() {
+                    let _ = reply.send(Err(StoreError::Invalid(
+                        "a build is already being loaded".into(),
+                    )));
+                } else {
+                    self.build_job = Some(build::BuildJob::new(runs, announce, reply));
+                }
             }
             for (blob, reply) in blobs.drain(..) {
                 let (new_blob, file) = *blob;
@@ -1333,6 +1355,8 @@ impl Inner {
                 }
             }
             self.restart_full_logs();
+            // A steady stream of messages still lets the build go on.
+            self.advance_build();
 
             if stopping {
                 break;
@@ -1562,6 +1586,19 @@ impl Inner {
         crate::archive::index_rebuild::remove_when_built(&self.index, &self.location.index_db())
     }
 
+    /// Runs the build's next step and answers its caller once it ends.
+    fn advance_build(&mut self) {
+        let Some(mut job) = self.build_job.take() else {
+            return;
+        };
+        match self.until_stopped(|inner| inner.build_step(&mut job)) {
+            Ok(Some(false)) => self.build_job = Some(job),
+            Ok(Some(true)) => job.finish(Ok(())),
+            Ok(None) => job.finish(Err(StoreError::Stopped)),
+            Err(error) => job.finish(Err(error)),
+        }
+    }
+
     /// Closes the writer's connection to the build file, installs it and
     /// opens the installed `index.db`. Connection-level state (the attached
     /// register, its views and the chain-progress triggers) is set up again
@@ -1577,29 +1614,6 @@ impl Inner {
         self.index = open_index_writer(&self.location, self.location.index_build.building())?;
         crate::chain_progress::install_triggers(&self.index, false)?;
         installed
-    }
-
-    /// Finishes search and secondary indexes before installing the build file.
-    fn build_deferred(&mut self) -> Result<()> {
-        use crate::timing::{Stage, add};
-        self.index.flush_prepared_statement_cache();
-        crate::text_rows::build_search_indexes(&self.index)?;
-        let started = std::time::Instant::now();
-        self.index.execute(
-            "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
-            [],
-        )?;
-        add(Stage::TrigramIndex, started.elapsed());
-        let started = std::time::Instant::now();
-        for sql in crate::schema::built_at_end_sql()? {
-            if self.stop.is_cancelled() {
-                return Err(StoreError::Stopped);
-            }
-            self.index.execute(&sql, [])?;
-            crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
-        }
-        add(Stage::SecondaryIndexes, started.elapsed());
-        Ok(())
     }
 
     /// Writes a group in one transaction per database. If it fails, each
@@ -1868,6 +1882,10 @@ impl Inner {
         }
 
         let indexed = batches.collect::<Vec<_>>();
+        // While a build's load and composition run, the build file has no
+        // indexes to write rows by: the bytes are stored, and upkeep reads
+        // them once the build is installed.
+        let reads = self.build_job.is_none();
         let text_transaction = self.texts.transaction();
         let itx = self
             .index
@@ -1878,7 +1896,7 @@ impl Inner {
         let mut touched = readings::Touched::default();
         let mut batches = 0u64;
         for (b, chain) in indexed.iter().zip(chains) {
-            if let Some(chain) = chain {
+            if let Some(chain) = chain.filter(|_| reads) {
                 for p in &b.parse {
                     let source_commit = crate::source::Source::reading_commit(
                         &itx,

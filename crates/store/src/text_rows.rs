@@ -5,6 +5,8 @@ use crate::ConnExt as _;
 use crate::Result;
 mod groups;
 mod search_build;
+pub(crate) use search_build::SearchBuild;
+#[cfg(test)]
 pub(crate) use search_build::build_search_indexes;
 mod identities;
 pub(crate) use groups::{PreparedTexts, StoredGroups, column, joined, read, slice};

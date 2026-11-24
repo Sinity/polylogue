@@ -343,6 +343,12 @@ The daemon reaches the index two ways, which must agree.
   start on a chain as soon as its bytes are stored, also while other inputs
   are still being captured; the merge takes only readings that are of their
   chain at the length the build's position gives.
+- **A build never makes a request wait for it.** Its workers read chains
+  without the writer or the index a request reads, so they never pause;
+  an import is answered between the chains handed to the workers, and the
+  writer's own build work (load, indexes, composition, full text) runs in
+  steps of one transaction each, between the requests it serves. No chain
+  is read twice.
 - **Live inputs go before bulk work.** A file being written now is read and
   committed ahead of stored chains waiting for a reading.
 - **Memory is bounded by streaming.** A build's memory does not grow with

@@ -4,9 +4,6 @@ use super::{folded_text, groups, insert_entry};
 use crate::{Result, StoreError};
 use rusqlite::{Connection, Statement, TransactionBehavior};
 
-const BATCH_BYTES: usize = 4 << 20;
-const BATCH_TEXTS: usize = 1024;
-
 struct IndexedText {
     id: i64,
     indexed: i64,
@@ -14,48 +11,6 @@ struct IndexedText {
     start: i64,
     length: i64,
     text: String,
-}
-
-/// Visits the texts group by group, in the order their groups were
-/// written, so each group's body is read and decoded once whatever order
-/// the text identities follow.
-pub(super) fn visit_indexed_texts(
-    conn: &Connection,
-    batch_bytes: usize,
-    mut visit: impl FnMut(i64, i64, String) -> Result<()>,
-) -> Result<()> {
-    let mut select = conn.prepare(
-        "SELECT id,indexed,group_id,start,length FROM text WHERE indexed<>0 ORDER BY group_id,start",
-    )?;
-    let mut group = conn.prepare("SELECT body FROM text_group WHERE id=?1")?;
-    let mut batch = Vec::with_capacity(BATCH_TEXTS);
-    let mut bytes = 0;
-    let mut rows = select.query([])?;
-    while let Some(row) = rows.next()? {
-        crate::cancellation::check_current()?;
-        let length = row.get(4)?;
-        let size = usize::try_from(length)
-            .map_err(|_| StoreError::stored(4, "a stored text has an invalid length"))?;
-        if batch.len() == BATCH_TEXTS || size > batch_bytes - bytes {
-            visit_batch(&mut group, &mut batch, &mut visit)?;
-            bytes = 0;
-        }
-        batch.push(IndexedText {
-            id: row.get(0)?,
-            indexed: row.get(1)?,
-            group: row.get(2)?,
-            start: row.get(3)?,
-            length,
-            text: String::new(),
-        });
-        if size > batch_bytes {
-            // Process a text above the window allowance alone.
-            visit_batch(&mut group, &mut batch, &mut visit)?;
-        } else {
-            bytes += size;
-        }
-    }
-    visit_batch(&mut group, &mut batch, &mut visit)
 }
 
 fn visit_batch(
@@ -87,32 +42,98 @@ fn visit_batch(
     Ok(())
 }
 
-/// Rebuilds both declared FTS tables in one transaction in the private index.
-/// Reopening after a stop can build them again from the same committed texts.
-pub(crate) fn build_search_indexes(conn: &Connection) -> Result<()> {
-    crate::timing::time(crate::timing::Stage::SearchIndex, || {
+/// The search entries of a build, written group by group from its texts'
+/// marks. Each step writes a bounded batch in its own transaction, and the
+/// next step starts after it, so the writer serves other work between
+/// steps and nothing is written twice.
+pub(crate) struct SearchBuild {
+    started: bool,
+    /// The last text entered, by (group, start, id).
+    after: Option<(i64, i64, i64)>,
+    written: bool,
+}
+
+/// Texts and bytes one step enters.
+const STEP_TEXTS: i64 = 16_384;
+
+impl SearchBuild {
+    pub(crate) fn new() -> Self {
+        Self {
+            started: false,
+            after: None,
+            written: false,
+        }
+    }
+
+    /// Writes the next batch; true once every marked text is entered.
+    pub(crate) fn step(&mut self, conn: &Connection) -> Result<bool> {
+        crate::timing::time(crate::timing::Stage::SearchIndex, || self.next(conn))
+    }
+
+    fn next(&mut self, conn: &Connection) -> Result<bool> {
         let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-        tx.execute_batch(
-            "INSERT INTO text_fts(text_fts) VALUES('delete-all');
-             INSERT INTO output_fts(output_fts) VALUES('delete-all');",
-        )?;
-        let mut written = false;
-        visit_indexed_texts(&tx, BATCH_BYTES, |id, indexed, text| {
+        if !self.started {
+            // An index in group order for the walk, dropped when it ends.
+            tx.execute_batch(
+                "INSERT INTO text_fts(text_fts) VALUES('delete-all');
+                 INSERT INTO output_fts(output_fts) VALUES('delete-all');
+                 CREATE INDEX IF NOT EXISTS text_search_walk ON text(group_id,start,id) WHERE indexed<>0;",
+            )?;
+            tx.commit()?;
+            self.started = true;
+            return Ok(false);
+        }
+        let (group, start, id) = self.after.unwrap_or((i64::MIN, i64::MIN, i64::MIN));
+        let rows: Vec<IndexedText> = tx
+            .prepare_cached(
+                "SELECT id,indexed,group_id,start,length FROM text
+                 WHERE indexed<>0 AND (group_id,start,id)>(?1,?2,?3)
+                 ORDER BY group_id,start,id LIMIT ?4",
+            )?
+            .query_map(rusqlite::params![group, start, id, STEP_TEXTS], |r| {
+                Ok(IndexedText {
+                    id: r.get(0)?,
+                    indexed: r.get(1)?,
+                    group: r.get(2)?,
+                    start: r.get(3)?,
+                    length: r.get(4)?,
+                    text: String::new(),
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let Some(last) = rows.last() else {
+            tx.execute("DROP INDEX IF EXISTS text_search_walk", [])?;
+            crate::fault::check("search.before_commit", conn.path().unwrap_or_default())?;
+            if self.written {
+                crate::archive::bump_counter(&tx)?;
+            }
+            tx.commit()?;
+            return Ok(true);
+        };
+        self.after = Some((last.group, last.start, last.id));
+        let mut group = tx.prepare_cached("SELECT body FROM text_group WHERE id=?1")?;
+        let mut batch = rows;
+        visit_batch(&mut group, &mut batch, &mut |id, indexed, text| {
             let (folded, _) = folded_text(text);
             for bit in [1, 2] {
                 if indexed & bit != 0 {
                     insert_entry(&tx, id, bit, &folded)?;
                 }
             }
-            written = true;
             Ok(())
         })?;
-        crate::fault::check("search.before_commit", conn.path().unwrap_or_default())?;
+        drop(group);
         crate::cancellation::check_current()?;
-        if written {
-            crate::archive::bump_counter(&tx)?;
-        }
+        self.written = true;
         tx.commit()?;
-        Ok(())
-    })
+        Ok(false)
+    }
+}
+
+/// Rebuilds both declared FTS tables in the private index, step by step.
+#[cfg(test)]
+pub(crate) fn build_search_indexes(conn: &Connection) -> Result<()> {
+    let mut search = SearchBuild::new();
+    while !search.step(conn)? {}
+    Ok(())
 }
