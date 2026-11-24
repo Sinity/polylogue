@@ -105,12 +105,6 @@ impl ReadingValue {
             text_ids: None,
         })
     }
-
-    /// Whether the reading holds only some of its version's blocks: its
-    /// value then joins the blocks every reading of that version holds.
-    pub(super) fn partial(&self) -> bool {
-        self.selection.block_count != self.message.blocks.len() as u64
-    }
 }
 
 /// The words of a message's text blocks.
