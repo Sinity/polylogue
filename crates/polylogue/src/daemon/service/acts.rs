@@ -593,7 +593,7 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
     } else {
         crate::mailbox::flagged(d.acts.mail())
             .unwrap_or_else(|error| {
-                crate::log::log!(warning, "session mailbox read failed: {error}");
+                polylogue_store::log!(warning, "session mailbox read failed: {error}");
                 Vec::new()
             })
             .iter()
@@ -622,7 +622,7 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
                 if !pending.is_empty()
                     && let Err(error) = crate::mailbox::raise(d.acts.mail(), &id)
                 {
-                    crate::log::log!(warning, "session mailbox update failed: {error}");
+                    polylogue_store::log!(warning, "session mailbox update failed: {error}");
                 }
             }
             _ => stopped.push((id, state, pending)),
@@ -645,7 +645,7 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
             );
         }
         if let Err(error) = crate::mailbox::lower(d.acts.mail(), &session) {
-            crate::log::log!(warning, "session mailbox update failed: {error}");
+            polylogue_store::log!(warning, "session mailbox update failed: {error}");
         }
     }
 }
@@ -963,7 +963,7 @@ fn resume_session(daemon: &std::sync::Arc<Daemon>, run: ResumeRun) {
                     .acts
                     .hand_to_hook(&candidate.delivery, &candidate.session)
                 {
-                    crate::log::log!(warning, "session mailbox update failed: {error}");
+                    polylogue_store::log!(warning, "session mailbox update failed: {error}");
                 }
                 next = daemon.acts.resume_finished(&candidate.session);
             }

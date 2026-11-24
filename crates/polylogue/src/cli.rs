@@ -14,6 +14,7 @@ pub mod print;
 pub(crate) mod run_line;
 pub(crate) mod schema;
 pub(crate) mod staged_file;
+pub(crate) mod status_view;
 pub(crate) mod write_out;
 
 use crate::commands::{COMMANDS, Cli, Command, GROUPS, Run};
@@ -622,23 +623,32 @@ fn style(output: crate::config::OutputConfig) -> TextStyle {
     }
 }
 
-/// `status`: the whole answer, or with `--line` the one line a status bar
-/// shows (`3 running · 1 waiting 7m`).
+/// `status`: the view, the whole answer with `--json`, or with `--line` the
+/// one line a status bar shows (`3 running · 1 waiting 7m`). `--watch`
+/// asks the daemon again every two seconds and redraws the view.
 pub fn status_output(
     values: &ParsedCommand,
     answer: &Answer<Value>,
     startup: &crate::config::Startup,
     json: bool,
 ) -> ExitCode {
-    let data = answer
-        .value()
-        .expect("output handlers receive answers with values");
-    let decoded = crate::protocol::status::Answer::deserialize(data).and_then(|status| {
-        crate::protocol::status::Arguments::deserialize(&values.request.arguments)
-            .map(|arguments| (status, arguments))
-    });
-    let (mut status, arguments) = match decoded {
-        Ok(decoded) => decoded,
+    let arguments = match crate::protocol::status::Arguments::deserialize(&values.request.arguments)
+    {
+        Ok(arguments) => arguments,
+        Err(error) => {
+            return fail(
+                startup.output,
+                json,
+                polylogue_model::Code::Internal,
+                &error.to_string(),
+            );
+        }
+    };
+    if arguments.watch {
+        return watch_status(values, &arguments, answer, startup, json);
+    }
+    let mut status = match status_answer(answer) {
+        Ok(status) => status,
         Err(error) => {
             return fail(
                 startup.output,
@@ -659,7 +669,7 @@ pub fn status_output(
             );
         } else {
             let verification = status.verification.take();
-            print!("{}", print::json(&status, style(startup.output)));
+            print!("{}", status_view(&status, answer, startup, &arguments));
             if let Some(found) = verification {
                 print!("{}", print::verification(&found, style(startup.output)));
             }
@@ -673,6 +683,100 @@ pub fn status_output(
         println!("{line}");
     }
     ExitCode::from(answer.exit_code())
+}
+
+fn status_answer(answer: &Answer<Value>) -> serde_json::Result<crate::protocol::status::Answer> {
+    let data = answer
+        .value()
+        .expect("output handlers receive answers with values");
+    crate::protocol::status::Answer::deserialize(data)
+}
+
+/// The status view of `status`, with the answer's degraded reasons and
+/// notes, at the terminal's width.
+fn status_view(
+    status: &crate::protocol::status::Answer,
+    answer: &Answer<Value>,
+    startup: &crate::config::Startup,
+    arguments: &crate::protocol::status::Arguments,
+) -> String {
+    let mut problems = match &answer.outcome {
+        command_surface::Outcome::Degraded { missing, .. } => missing.clone(),
+        _ => Vec::new(),
+    };
+    problems.extend(answer.envelope.notes.iter().cloned());
+    let zone = startup
+        .config
+        .standalone_day()
+        .map(|day| day.zone().clone())
+        .unwrap_or(jiff::tz::TimeZone::UTC);
+    let width = if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
+        // A terminal that reports no size (a pseudo-terminal nobody sized)
+        // gets the same width as no terminal.
+        crossterm::terminal::size()
+            .ok()
+            .filter(|(columns, _)| *columns > 0)
+            .map_or(100, |(columns, _)| usize::from(columns))
+    } else {
+        100
+    };
+    status_view::render(
+        status,
+        &problems,
+        &status_view::View {
+            style: style(startup.output),
+            width,
+            now_ms: startup.clock.now().as_millisecond(),
+            zone: &zone,
+            whole_log: arguments.log,
+        },
+    )
+}
+
+/// Redraws the status view every two seconds until interrupted. Each frame
+/// is a new request; the daemon keeps nothing between them.
+fn watch_status(
+    values: &ParsedCommand,
+    arguments: &crate::protocol::status::Arguments,
+    first: &Answer<Value>,
+    startup: &crate::config::Startup,
+    json: bool,
+) -> ExitCode {
+    if json || style(startup.output) != TextStyle::Ansi {
+        return fail(
+            startup.output,
+            json,
+            polylogue_model::Code::BadRequest,
+            "--watch redraws the view on a color terminal; without one, run `polylogue status` as often as needed",
+        );
+    }
+    let archive = Archive::at(&startup.config.archive);
+    let mut answer = first.clone();
+    loop {
+        let frame = match &answer.outcome {
+            command_surface::Outcome::Error(error) => {
+                print::diagnostic("", &error.message, None, startup.output.stdout_color())
+            }
+            _ => match status_answer(&answer) {
+                Ok(status) => status_view(&status, &answer, startup, arguments),
+                Err(error) => error.to_string(),
+            },
+        };
+        print!("\x1b[H\x1b[2J{frame}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        answer = match crate::client::call_ready(&archive, &values.request) {
+            Ok(answer) => answer,
+            Err(error) => {
+                return fail(
+                    startup.output,
+                    json,
+                    polylogue_model::Code::DaemonRequired,
+                    &error.to_string(),
+                );
+            }
+        };
+    }
 }
 
 fn run_plan(

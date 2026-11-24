@@ -831,8 +831,9 @@ impl Engine {
         if self.archive.index_build().is_none()
             && let Some((phase, began)) = self.build_phase.take()
         {
-            eprintln!(
-                "polylogue: build: the index is installed; {phase} took {:.0} s",
+            polylogue_store::log!(
+                info,
+                "build: the index is installed; {phase} took {:.0} s",
                 began.elapsed().as_secs_f64()
             );
         }
@@ -2815,6 +2816,8 @@ impl Engine {
                     || s.passes == 0
                 {
                     s.last_pass = finished;
+                    s.last_pass_at =
+                        polylogue_model::Timestamp::from_unix_ms(self.config.clock.now_ms());
                 }
                 s.passes += 1;
                 s.busy = pending;

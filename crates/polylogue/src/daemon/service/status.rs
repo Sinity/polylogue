@@ -25,6 +25,7 @@ pub(super) fn answer(
     d: &Daemon,
     reader: &polylogue_store::Reader<'_>,
     include_vectors: bool,
+    whole_log: bool,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
     // Totals are counters the writer keeps with the rows they count: reading
     // them costs the same at any archive size.
@@ -97,6 +98,7 @@ pub(super) fn answer(
         uptime_seconds: d.started.elapsed().as_secs(),
         store,
         index_build: d.archive.index_build(),
+        build_progress: d.archive.build_progress(),
         totals_error,
         vectors,
         vectors_error,
@@ -111,6 +113,7 @@ pub(super) fn answer(
         freshness: freshness.clone(),
         #[cfg(feature = "sinex")]
         primary,
+        recent_log: recent_log(whole_log),
     };
     capture_note(
         d,
@@ -120,6 +123,15 @@ pub(super) fn answer(
             command_surface::Answer::degraded(status, missing)
         },
     )
+}
+
+/// The daemon's log records an answer carries.
+fn recent_log(whole: bool) -> Vec<polylogue_store::log::Record> {
+    polylogue_store::log::recent(if whole {
+        polylogue_store::log::KEPT
+    } else {
+        crate::protocol::status::RECENT_LOG
+    })
 }
 
 fn capture_note(
@@ -138,6 +150,7 @@ pub(super) fn building(
     d: &Daemon,
     build: polylogue_store::archive::index_build::IndexBuild,
     include_vectors: bool,
+    whole_log: bool,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
     use polylogue_model::freshness::{
         CompletenessDimension, CompletenessReason, IndexFreshness, ReadCompleteness, ReadFreshness,
@@ -180,6 +193,7 @@ pub(super) fn building(
         uptime_seconds: d.started.elapsed().as_secs(),
         store: None,
         index_build: Some(build),
+        build_progress: d.archive.build_progress(),
         totals_error: Some(unread.clone()),
         vectors: None,
         vectors_error: include_vectors.then(|| unread.clone()),
@@ -196,6 +210,7 @@ pub(super) fn building(
         freshness: freshness.clone(),
         #[cfg(feature = "sinex")]
         primary: None,
+        recent_log: recent_log(whole_log),
     };
     let mut answer = crate::protocol::read(status, &freshness);
     if let crate::protocol::status::Mode::Blocked { path, error, .. } = &mode

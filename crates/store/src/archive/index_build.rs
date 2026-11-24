@@ -133,6 +133,8 @@ struct Inner {
     chains_read: u64,
     bytes: u64,
     bytes_read: u64,
+    /// The build's phase and rate samples.
+    measured: super::build_progress::Record,
 }
 
 pub(crate) fn state(root: &Path) -> Arc<State> {
@@ -164,6 +166,17 @@ pub(crate) fn state(root: &Path) -> Arc<State> {
 }
 
 impl Inner {
+    /// Samples the counts just recorded.
+    fn sample(&mut self) {
+        let (bytes_read, chains_read) = (self.bytes_read, self.chains_read);
+        self.measured.sample(
+            std::time::Instant::now(),
+            bytes_read,
+            chains_read,
+            crate::timing::writer_seconds,
+        );
+    }
+
     fn progress(&self) -> Option<IndexBuild> {
         self.file.map(|_| IndexBuild {
             serving_previous: self.serving_previous,
@@ -209,10 +222,14 @@ impl State {
         let mut inner = self.inner();
         inner.chains = chains;
         inner.chains_read = chains_read;
+        inner.sample();
     }
 
     fn set(&self, file: Option<BuildFile>, serving_previous: bool) {
         let mut inner = self.inner();
+        if inner.file.is_some() != file.is_some() {
+            inner.measured = Default::default();
+        }
         inner.file = file;
         inner.primary = None;
         inner.serving_previous = file.is_some() && serving_previous;
@@ -309,6 +326,7 @@ impl Archive {
         let mut inner = self.index_build.inner();
         inner.bytes = bytes;
         inner.bytes_read = bytes_read.min(bytes);
+        inner.sample();
     }
 
     /// Advance byte progress only after a range's write is acknowledged.
@@ -316,12 +334,42 @@ impl Archive {
         let mut inner = self.index_build.inner();
         if inner.file.is_some() {
             inner.bytes_read = inner.bytes_read.saturating_add(bytes).min(inner.bytes);
+            inner.sample();
         }
     }
 
     /// The build in progress, if `index.db` is being built.
     pub fn index_build(&self) -> Option<IndexBuild> {
         self.index_build.progress()
+    }
+
+    /// Records that the build in progress entered `phase` at `since`.
+    pub fn record_build_phase(&self, phase: &str, since: polylogue_model::Timestamp) {
+        let mut inner = self.index_build.inner();
+        if inner.file.is_some() {
+            inner.measured.phase(phase, since);
+        }
+    }
+
+    /// Records each parse worker's CPU seconds over the last minute.
+    pub fn record_build_workers(&self, cpu_seconds_per_minute: Vec<f64>) {
+        let mut inner = self.index_build.inner();
+        if inner.file.is_some() {
+            inner
+                .measured
+                .workers(std::time::Instant::now(), cpu_seconds_per_minute);
+        }
+    }
+
+    /// The phase, rates and estimate of the build in progress.
+    pub fn build_progress(&self) -> Option<super::build_progress::BuildProgress> {
+        let inner = self.index_build.inner();
+        let build = inner.progress()?;
+        Some(inner.measured.report(
+            std::time::Instant::now(),
+            &build,
+            crate::timing::writer_seconds(),
+        ))
     }
 }
 

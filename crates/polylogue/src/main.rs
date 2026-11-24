@@ -22,7 +22,6 @@ mod hosting;
 mod installation;
 mod live_acts;
 mod live_events;
-mod log;
 mod mailbox;
 mod manual;
 mod mcp;

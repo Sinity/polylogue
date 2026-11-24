@@ -436,7 +436,7 @@ impl Warm {
                 )
             })
         {
-            crate::log::log!(error, "storing a query vector: {error}");
+            polylogue_store::log!(error, "storing a query vector: {error}");
         }
         Ok(vector)
     }

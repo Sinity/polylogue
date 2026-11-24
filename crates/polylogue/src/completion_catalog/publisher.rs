@@ -73,7 +73,7 @@ impl Publisher {
                             error.clone()
                         };
                         if last_error.as_ref() != Some(&condition) {
-                            eprintln!("polylogue: completion catalog: {error}");
+                            polylogue_store::log!(warning, "completion catalog: {error}");
                             last_error = Some(condition);
                         }
                         // Nothing is readable until the index being built is
@@ -147,7 +147,7 @@ impl Publisher {
 impl Drop for Publisher {
     fn drop(&mut self) {
         if let Err(error) = self.shutdown() {
-            eprintln!("polylogue: completion worker shutdown: {error}");
+            polylogue_store::log!(error, "completion worker shutdown: {error}");
         }
     }
 }

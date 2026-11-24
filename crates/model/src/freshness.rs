@@ -139,6 +139,31 @@ pub enum CompletenessReason {
     StreamBehind,
 }
 
+impl CompletenessReason {
+    /// The reason in words, as notes and the status view say it.
+    pub fn text(self) -> &'static str {
+        match self {
+            CompletenessReason::MissingDeclaration => {
+                "some stored inputs have no recorded reading declaration"
+            }
+            CompletenessReason::MissingCheckpoint => "some stored inputs have not been parsed",
+            CompletenessReason::ParseVersionChanged => {
+                "some stored inputs await the current parser"
+            }
+            CompletenessReason::ParserBehind => "parsing is behind the stored bytes",
+            CompletenessReason::MissingSourcePrefix => {
+                "some stored inputs have missing earlier bytes"
+            }
+            CompletenessReason::KnownRawOnly => "some stored inputs have no parser",
+            CompletenessReason::DerivationBehind => "derived values are pending",
+            CompletenessReason::SearchPending => "search text is pending",
+            CompletenessReason::IndexBuilding => "the index is being built",
+            CompletenessReason::StreamNotApplied => "the confirmed stream has not been applied",
+            CompletenessReason::StreamBehind => "the index is behind the confirmed stream",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "state", content = "reasons", rename_all = "snake_case")]
 pub enum CompletenessDimension {
@@ -228,31 +253,7 @@ impl ReadFreshness {
             | CompletenessDimension::Unknown(reasons) = dimension
             {
                 for reason in reasons {
-                    notes.insert(match reason {
-                        CompletenessReason::MissingDeclaration => {
-                            "some stored inputs have no recorded reading declaration"
-                        }
-                        CompletenessReason::MissingCheckpoint => {
-                            "some stored inputs have not been parsed"
-                        }
-                        CompletenessReason::ParseVersionChanged => {
-                            "some stored inputs await the current parser"
-                        }
-                        CompletenessReason::ParserBehind => "parsing is behind the stored bytes",
-                        CompletenessReason::MissingSourcePrefix => {
-                            "some stored inputs have missing earlier bytes"
-                        }
-                        CompletenessReason::KnownRawOnly => "some stored inputs have no parser",
-                        CompletenessReason::DerivationBehind => "derived values are pending",
-                        CompletenessReason::SearchPending => "search text is pending",
-                        CompletenessReason::IndexBuilding => "the index is being built",
-                        CompletenessReason::StreamNotApplied => {
-                            "the confirmed stream has not been applied"
-                        }
-                        CompletenessReason::StreamBehind => {
-                            "the index is behind the confirmed stream"
-                        }
-                    });
+                    notes.insert(reason.text());
                 }
             }
         }

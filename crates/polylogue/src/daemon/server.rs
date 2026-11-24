@@ -408,7 +408,7 @@ fn raise_open_file_limit() {
             maximum: limit.maximum,
         };
         if let Err(e) = setrlimit(Resource::Nofile, raised) {
-            crate::log::log!(warning, "raise the open file limit: {e}");
+            polylogue_store::log!(warning, "raise the open file limit: {e}");
         }
     }
 }
@@ -442,7 +442,7 @@ pub fn serve(
     )?;
     let idle = runtime.idle();
     let server = Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))?;
-    crate::log::log!(
+    polylogue_store::log!(
         info,
         "serving {} on {}{}",
         root.display(),
@@ -456,11 +456,11 @@ pub fn serve(
     let web = match crate::web::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
     {
         Ok(web) => {
-            crate::log::log!(info, "web reader on http://127.0.0.1:{}/", web.port);
+            polylogue_store::log!(info, "web reader on http://127.0.0.1:{}/", web.port);
             Some(web)
         }
         Err(error) => {
-            crate::log::log!(warning, "web reader not started: {error}");
+            polylogue_store::log!(warning, "web reader not started: {error}");
             None
         }
     };
@@ -568,7 +568,7 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         if let Err(error) = self.shutdown() {
-            crate::log::log!(error, "socket shutdown: {error}");
+            polylogue_store::log!(error, "socket shutdown: {error}");
         }
     }
 }

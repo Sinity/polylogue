@@ -544,7 +544,7 @@ impl Writer {
         let started =
             (self.handle.is_some() && self.stop.is_cancelled()).then(std::time::Instant::now);
         if started.is_some() {
-            eprintln!("polylogue: shutdown writer drain started");
+            crate::log!(info, "shutdown writer drain started");
         }
         if let Some(mut follower) = self.follower.take() {
             follower.stop();
@@ -554,8 +554,9 @@ impl Writer {
             let _ = h.join();
         }
         if let Some(started) = started {
-            eprintln!(
-                "polylogue: shutdown writer drain finished in {:?}",
+            crate::log!(
+                info,
+                "shutdown writer drain finished in {:?}",
                 started.elapsed()
             );
         }
@@ -1351,7 +1352,7 @@ impl Inner {
             Ok(())
         });
         if let Err(error) = closed {
-            eprintln!("polylogue: writer: chain progress: {error}");
+            crate::log!(error, "writer: chain progress: {error}");
         }
     }
 
@@ -1405,7 +1406,7 @@ impl Inner {
         // a later one.
         for result in [index, archive] {
             if let Err(error) = result {
-                eprintln!("polylogue: writer: checkpoint: {error}");
+                crate::log!(error, "writer: checkpoint: {error}");
             }
         }
     }

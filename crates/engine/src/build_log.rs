@@ -1,6 +1,8 @@
 //! A first build's own record in the log: a line each time the pass enters a
 //! phase, naming what the phase before it did and how long it took, and a
-//! line a minute with the rates while inputs are stored and read.
+//! line a minute with the rates while inputs are stored and read. The phase
+//! and the workers' CPU also go to the archive's build progress, which
+//! `status` reports.
 use crate::{Engine, Pass};
 use std::time::{Duration, Instant};
 
@@ -15,6 +17,9 @@ impl Engine {
             return;
         }
         let now = Instant::now();
+        if let Some(since) = polylogue_model::Timestamp::from_unix_ms(self.config.clock.now_ms()) {
+            self.archive.record_build_phase(phase, since);
+        }
         let previous = self
             .build_phase
             .replace((phase, now))
@@ -25,7 +30,7 @@ impl Engine {
                 )
             })
             .unwrap_or_default();
-        eprintln!("polylogue: build: {phase}: {detail}{previous}");
+        polylogue_store::log!(info, "build: {phase}: {detail}{previous}");
     }
 }
 
@@ -47,7 +52,7 @@ impl Progress {
                 .archive
                 .index_build()
                 .map_or(0, |build| build.bytes_read),
-            writer: writer_seconds(),
+            writer: polylogue_store::timing::writer_seconds(),
             cpu,
         }
     }
@@ -69,9 +74,16 @@ impl Progress {
             .zip(self.cpu.iter().chain(std::iter::repeat(&0.0)))
             .map(|(now, before)| format!("{:.0}", now - before))
             .collect();
-        let writer = writer_seconds();
-        eprintln!(
-            "polylogue: build: {:.0} of {:.0} MB parsed, {:.1} MB/s; {:.1} MB/s stored; \
+        let writer = polylogue_store::timing::writer_seconds();
+        engine.archive.record_build_workers(
+            cpu.iter()
+                .zip(self.cpu.iter().chain(std::iter::repeat(&0.0)))
+                .map(|(now, before)| (now - before) * 60. / seconds)
+                .collect(),
+        );
+        polylogue_store::log!(
+            info,
+            "build: {:.0} of {:.0} MB parsed, {:.1} MB/s; {:.1} MB/s stored; \
              {} of {} input chains read; writer busy {:.0} s and parse workers {} s of the last {:.0} s",
             build.bytes_read as f64 / 1e6,
             build.bytes as f64 / 1e6,
@@ -91,11 +103,4 @@ impl Progress {
             cpu,
         };
     }
-}
-
-fn writer_seconds() -> f64 {
-    polylogue_store::timing::stage_seconds()
-        .into_iter()
-        .find(|(stage, _)| *stage == polylogue_store::timing::Stage::Writer)
-        .map_or(0.0, |(_, seconds)| seconds)
 }

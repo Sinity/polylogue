@@ -276,6 +276,16 @@ impl Handler for Status {
                 "--line cannot be combined with --verify or --vectors",
             ));
         }
+        if arguments.watch && (arguments.line || arguments.verify) {
+            return Err(Failure::bad_request(
+                "--watch cannot be combined with --line or --verify",
+            ));
+        }
+        if arguments.watch && caller.surface != crate::commands::Surface::Cli {
+            return Err(Failure::bad_request(
+                "--watch redraws a terminal and is available only on the command line",
+            ));
+        }
         if arguments.verify && caller.surface != crate::commands::Surface::Cli {
             return Err(Failure::bad_request(
                 "archive verification is available only on the command line",
@@ -291,11 +301,19 @@ impl Handler for Status {
             .transpose()?;
         // Drop the reader before waiting for idle-priority verification.
         let mut status = match call.reader() {
-            Ok(reader) => status::answer(call.daemon, &reader, status_is_deep(&arguments)),
+            Ok(reader) => status::answer(
+                call.daemon,
+                &reader,
+                status_is_deep(&arguments),
+                arguments.log,
+            ),
             Err(failure) => match call.daemon.archive.index_build() {
-                Some(build) if failure.code() == "index_building" => {
-                    status::building(call.daemon, build, status_is_deep(&arguments))
-                }
+                Some(build) if failure.code() == "index_building" => status::building(
+                    call.daemon,
+                    build,
+                    status_is_deep(&arguments),
+                    arguments.log,
+                ),
                 _ => failure.answer(),
             },
         };

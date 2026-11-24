@@ -44,7 +44,7 @@ impl Runtime {
             );
             let result = crate::signals::run(daemon, stopped);
             if let Err(error) = &result {
-                crate::log::log!(error, "signal worker: {error}");
+                polylogue_store::log!(error, "signal worker: {error}");
             }
             result
         })?;
@@ -148,14 +148,14 @@ impl Runtime {
             .executor
             .stop(crate::daemon::executor::STOP_WAIT);
         if let Some(started) = executor_started {
-            crate::log::log!(
+            polylogue_store::log!(
                 info,
                 "shutdown executor drain finished in {:?}",
                 started.elapsed()
             );
         }
         if running > 0 {
-            crate::log::log!(
+            polylogue_store::log!(
                 warning,
                 "{running} request(s) did not stop within {} s; stopping without them",
                 crate::daemon::executor::STOP_WAIT.as_secs()
@@ -201,7 +201,7 @@ impl Runtime {
         }
         if let Some(engine) = self.engine.take() {
             let started = Instant::now();
-            crate::log::log!(info, "shutdown engine drain started");
+            polylogue_store::log!(info, "shutdown engine drain started");
             match engine.join() {
                 Ok((result, engine)) => {
                     if let Err(error) = result {
@@ -223,7 +223,7 @@ impl Runtime {
                     failure.get_or_insert_with(|| std::io::Error::other("loop thread panicked"));
                 }
             }
-            crate::log::log!(
+            polylogue_store::log!(
                 info,
                 "shutdown engine drain finished in {:?}",
                 started.elapsed()
@@ -239,7 +239,7 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         if let Err(error) = self.shutdown() {
-            crate::log::log!(error, "shutdown: {error}");
+            polylogue_store::log!(error, "shutdown: {error}");
         }
     }
 }

@@ -68,7 +68,7 @@ impl Server {
 impl Drop for Server {
     fn drop(&mut self) {
         if let Err(error) = self.shutdown() {
-            crate::log::log!(error, "HTTP shutdown: {error}");
+            polylogue_store::log!(error, "HTTP shutdown: {error}");
         }
     }
 }

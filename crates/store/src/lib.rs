@@ -40,6 +40,7 @@ pub mod items;
 mod kept;
 pub mod lineage;
 mod live;
+pub mod log;
 pub use live::{
     FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveEditedFiles, LiveRoot,
     LiveSession, ProcessRow, RunningSession,

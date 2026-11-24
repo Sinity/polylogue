@@ -93,7 +93,7 @@ fn search_thread(
             }) {
                 Ok(c) => conn = Some(c),
                 Err(e) => {
-                    eprintln!("polylogue: search thread: open the index: {e}");
+                    crate::log!(warning, "search thread: open the index: {e}");
                     continue;
                 }
             }
@@ -101,7 +101,7 @@ fn search_thread(
         if let Some(c) = &conn {
             match drain(c, queue) {
                 Ok(()) | Err(StoreError::WriterGone) => {}
-                Err(e) => eprintln!("polylogue: search thread: {e}"),
+                Err(e) => crate::log!(warning, "search thread: {e}"),
             }
         }
     }

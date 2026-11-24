@@ -113,12 +113,44 @@ pub fn stage_seconds() -> Vec<(Stage, f64)> {
 /// the final operation and early returns.
 pub struct StageTimer(Stage, Instant);
 pub fn start_stage(stage: Stage) -> StageTimer {
-    StageTimer(stage, Instant::now())
+    let started = Instant::now();
+    if stage == Stage::Writer {
+        WRITER_SINCE.store(since_epoch(started), Ordering::Relaxed);
+    }
+    StageTimer(stage, started)
 }
 impl Drop for StageTimer {
     fn drop(&mut self) {
+        if self.0 == Stage::Writer {
+            WRITER_SINCE.store(0, Ordering::Relaxed);
+        }
         add(self.0, self.1.elapsed());
     }
+}
+
+/// When the writer's current message began, in nanoseconds after [`EPOCH`]
+/// plus one; zero while it waits. A first build is one message that runs
+/// for minutes, so its busy time is read while it runs.
+static WRITER_SINCE: AtomicU64 = AtomicU64::new(0);
+static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn since_epoch(at: Instant) -> u64 {
+    let epoch = *EPOCH.get_or_init(|| at);
+    at.saturating_duration_since(epoch).as_nanos() as u64 + 1
+}
+
+/// The writer thread's busy seconds so far, the message it is working on
+/// included.
+pub fn writer_seconds() -> f64 {
+    let done = NANOS[Stage::Writer.index()].load(Ordering::Relaxed) as f64 / 1e9;
+    let since = WRITER_SINCE.load(Ordering::Relaxed);
+    if since == 0 {
+        return done;
+    }
+    let started = EPOCH
+        .get()
+        .map(|epoch| *epoch + Duration::from_nanos(since - 1));
+    done + started.map_or(0., |started| started.elapsed().as_secs_f64())
 }
 
 use std::sync::atomic::AtomicI64;

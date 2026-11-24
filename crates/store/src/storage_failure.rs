@@ -62,7 +62,7 @@ static RECORDED: Condvar = Condvar::new();
 pub(crate) fn record(failure: StorageFailure) {
     let mut failed = FAILED.locked();
     if failed.is_none() {
-        eprintln!("polylogue: {failure}");
+        crate::log!(error, "{failure}");
         *failed = Some(failure);
         RECORDED.notify_all();
     }

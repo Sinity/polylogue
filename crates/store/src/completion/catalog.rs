@@ -261,8 +261,9 @@ impl CatalogWriter {
             let cache = match CatalogReader::open(path, &current.archive) {
                 Ok(Some(cache)) => cache,
                 Ok(None) => {
-                    eprintln!(
-                        "polylogue: completion catalog: missing or incompatible header; rebuilding"
+                    crate::log!(
+                        warning,
+                        "completion catalog: missing or incompatible header; rebuilding"
                     );
                     return Ok(None);
                 }
@@ -271,8 +272,9 @@ impl CatalogWriter {
                 {
                     // Offline reads cannot create a missing WAL mapping. A
                     // replacement gets its own complete journal namespace.
-                    eprintln!(
-                        "polylogue: completion catalog: cannot read cached database or journals ({error}); rebuilding"
+                    crate::log!(
+                        warning,
+                        "completion catalog: cannot read cached database or journals ({error}); rebuilding"
                     );
                     return Ok(None);
                 }
@@ -282,8 +284,9 @@ impl CatalogWriter {
             cache.identity
         };
         if fs::metadata(path)?.permissions().readonly() {
-            eprintln!(
-                "polylogue: completion catalog: database has no write permission; rebuilding"
+            crate::log!(
+                warning,
+                "completion catalog: database has no write permission; rebuilding"
             );
             return Ok(None);
         }
@@ -322,7 +325,7 @@ impl CatalogWriter {
                 None
             };
             if let Some(reason) = incompatible {
-                eprintln!("polylogue: completion catalog: {reason}; rebuilding");
+                crate::log!(warning, "completion catalog: {reason}; rebuilding");
                 return Ok(None);
             }
             let mut vocabulary = PublisherVocabulary::default();
