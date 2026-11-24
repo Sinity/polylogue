@@ -614,7 +614,7 @@ fn unavailable_dependencies_keep_the_annotation_pending() {
 /// A rule's last firing is the latest time of any of its stored
 /// deliveries, per rule name.
 #[test]
-fn the_last_firing_of_each_rule_is_its_latest_stored_delivery() {
+fn signal_rules_report_when_they_last_fired() {
     let mut fixture = crate::test_daemon::start_with_clock(
         "synthetic",
         polylogue_model::WallClock::fixed(

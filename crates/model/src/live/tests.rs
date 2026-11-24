@@ -452,7 +452,7 @@ fn hosted_lines_name_the_root_and_end_the_session() {
 /// stall, shown while the turn runs; it ends when the count returns to
 /// zero, the session goes idle or it ends, and it never counts as waiting.
 #[test]
-fn a_session_with_messages_queued_behind_its_turn_shows_the_queue_stall() {
+fn a_session_queued_behind_another_shows_the_queue_stall() {
     let process = json!({"pid": 300, "start": 77, "boot_id": "boot-a"});
     let mut busy = process.clone();
     busy["status"] = json!("busy");
