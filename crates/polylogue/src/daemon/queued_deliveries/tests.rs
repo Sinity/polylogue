@@ -57,9 +57,10 @@ fn a_failed_outcome_write_is_retried_and_reported() {
         held
     };
     let _release = daemon.daemon.archive.stop().on_cancel(fault::release);
-    while !fault::held() {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    assert!(
+        fault::wait_held_within(std::time::Duration::from_secs(30)),
+        "no thread reached the held point"
+    );
     let status = crate::protocol::into_value(
         crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon.daemon),
     )

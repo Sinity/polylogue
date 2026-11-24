@@ -333,11 +333,10 @@ fn the_daemon_loop_keeps_its_planning_page_when_refreshing_committed_progress() 
     let (send, receive) = channel();
     let incoming = send.clone();
     let enqueue = std::thread::spawn(move || {
-        let until = Instant::now() + Duration::from_secs(30);
-        while !fault::held() {
-            assert!(Instant::now() < until);
-            std::thread::yield_now();
-        }
+        assert!(
+            fault::wait_held_within(std::time::Duration::from_secs(30)),
+            "no thread reached the held point"
+        );
         fault::arm(
             "read.chains_behind_index",
             &completed_page,

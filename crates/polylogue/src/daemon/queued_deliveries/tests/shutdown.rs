@@ -65,9 +65,10 @@ fn a_queued_outcome_survives_loop_stop_and_writer_queue_pressure() {
         writes.try_enqueue_user(barrier.clone()).unwrap(),
         Queued::Committing(_)
     ));
-    while !fault::held() {
-        std::thread::sleep(std::time::Duration::from_millis(1));
-    }
+    assert!(
+        fault::wait_held_within(std::time::Duration::from_secs(30)),
+        "no thread reached the held point"
+    );
     // Fill the bounded public writer queue with repeats that change no user state.
     while matches!(
         writes.try_enqueue_user(barrier.clone()).unwrap(),
