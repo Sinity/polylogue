@@ -4,9 +4,12 @@
 //! hands the writer the group once the group is large enough or a live job
 //! is in it. A whole-chain replacement task is different: the worker parses
 //! the stored chain end to end into a reading the writer commits as one
-//! unit, after the worker's earlier groups. Live appends go before bulk
-//! work. One input has at most one job in flight, so its parser state
-//! passes from job to job.
+//! unit, after the worker's earlier groups. A rollout capture prepares one
+//! rollout's bytes and hands them to the writer as a group; its answer is
+//! awaited with the groups', off the thread that hands out work, which then
+//! plans the rollout's reading. Live appends and
+//! captures go before bulk work. One input has at most one job in flight, so
+//! its parser state passes from job to job.
 
 use crate::{EngineError, plan::Plan, read};
 use polylogue_model::{Json, LockExt, spawn_named};
@@ -127,12 +130,18 @@ pub struct Done {
 
 pub(crate) enum Task {
     Range(Box<Job>),
-    Chain { id: u64, plan: Box<Plan> },
+    Chain {
+        id: u64,
+        plan: Box<Plan>,
+    },
+    /// A rollout's bytes to store; its reading is planned once they are.
+    Capture(Box<crate::compressed::RolloutCapture>),
 }
 
 pub(crate) enum Finished {
     Range(Box<Done>),
     Chain(Box<ChainDone>),
+    Captured(Box<crate::compressed::CapturedRollout>),
 }
 
 pub(crate) struct ChainDone {
@@ -151,6 +160,7 @@ pub(crate) struct ChainSettings {
 pub(crate) struct Cancelled {
     pub ranges: usize,
     pub chains: Vec<(u64, Plan)>,
+    pub captures: Vec<crate::compressed::RolloutCapture>,
 }
 
 impl Task {
@@ -158,6 +168,9 @@ impl Task {
         match self {
             Self::Range(job) => job.bytes(),
             Self::Chain { plan, .. } => plan.size - plan.parse_pos,
+            // Stored bytes stream to their staging file; no parsed batch
+            // waits on the writer.
+            Self::Capture(_) => 0,
         }
     }
 
@@ -165,6 +178,9 @@ impl Task {
         match self {
             Self::Range(job) => job.priority,
             Self::Chain { plan, .. } => plan.priority,
+            // Storing goes ahead of parsing; the feeder bounds how many
+            // captures are in flight.
+            Self::Capture(_) => Priority::Live,
         }
     }
 }
@@ -197,6 +213,8 @@ pub(crate) struct Shared {
 
 pub struct Pool {
     shared: Arc<Shared>,
+    /// Nanoseconds each worker has spent on a CPU, as of its last task.
+    cpu: Arc<Vec<std::sync::atomic::AtomicU64>>,
     workers: Vec<JoinHandle<()>>,
     acknowledgments: Option<JoinHandle<()>>,
     /// Wakes submitters waiting for room when the stop request is made.
@@ -244,8 +262,14 @@ impl Pool {
         })
         .expect("spawn acknowledgment reader");
         let chains = Arc::new(chains);
+        let cpu: Arc<Vec<std::sync::atomic::AtomicU64>> = Arc::new(
+            (0..workers)
+                .map(|_| std::sync::atomic::AtomicU64::new(0))
+                .collect(),
+        );
         let workers = (0..workers)
             .map(|i| {
+                let cpu = Arc::clone(&cpu);
                 let shared = Arc::clone(&shared);
                 let writer = writer.clone();
                 let blobs = Arc::clone(&blobs);
@@ -254,7 +278,16 @@ impl Pool {
                 let chains = Arc::clone(&chains);
                 spawn_named(format!("polylogue-parse-{i}"), move || {
                     polylogue_store::cancellation::under(archive.stop(), || {
-                        work(i, &shared, &writer, &blobs, &archive, &acknowledge, &chains);
+                        work(
+                            i,
+                            &shared,
+                            &writer,
+                            &blobs,
+                            &archive,
+                            &acknowledge,
+                            &chains,
+                            &cpu[i],
+                        );
                     });
                 })
                 .expect("spawn a parse worker")
@@ -263,10 +296,19 @@ impl Pool {
         drop(acknowledge);
         Self {
             shared,
+            cpu,
             workers,
             acknowledgments: Some(acknowledgments),
             _stop_wake: stop_wake,
         }
+    }
+
+    /// Seconds each worker has spent on a CPU so far, as of its last task.
+    pub(crate) fn worker_cpu_seconds(&self) -> Vec<f64> {
+        self.cpu
+            .iter()
+            .map(|nanos| nanos.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e9)
+            .collect()
     }
 
     /// Whether submitting a job of `bytes` would return without waiting for
@@ -293,6 +335,11 @@ impl Pool {
             id,
             plan: Box::new(plan),
         })
+    }
+
+    #[must_use]
+    pub(crate) fn submit_capture(&self, capture: crate::compressed::RolloutCapture) -> bool {
+        self.submit_task(Task::Capture(Box::new(capture)))
     }
 
     fn submit_task(&self, task: Task) -> bool {
@@ -334,11 +381,13 @@ impl Pool {
         let mut cancelled = Cancelled {
             ranges: 0,
             chains: Vec::new(),
+            captures: Vec::new(),
         };
         for task in tasks {
             match task {
                 Task::Range(_) => cancelled.ranges += 1,
                 Task::Chain { id, plan } => cancelled.chains.push((id, *plan)),
+                Task::Capture(capture) => cancelled.captures.push(*capture),
             }
         }
         cancelled
@@ -389,6 +438,7 @@ fn release(shared: &Shared, bytes: u64) {
     shared.room.notify_all();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn work(
     me: usize,
     shared: &Arc<Shared>,
@@ -397,8 +447,10 @@ fn work(
     archive: &polylogue_store::Archive,
     acknowledge: &Sender<Pending>,
     chains: &ChainSettings,
+    cpu: &std::sync::atomic::AtomicU64,
 ) {
     let _worker = polylogue_store::timing::worker();
+    let started = polylogue_store::timing::thread_cpu_nanos();
     let mut group = Group {
         waiting: Vec::new(),
         bytes: 0,
@@ -441,6 +493,12 @@ fn work(
                 woken = true;
             }
         };
+        if let (Some(started), Some(now)) = (started, polylogue_store::timing::thread_cpu_nanos()) {
+            cpu.store(
+                now.saturating_sub(started),
+                std::sync::atomic::Ordering::Relaxed,
+            );
+        }
         let Some(task) = task else {
             if !flush(&mut group, shared, writer, store, acknowledge) {
                 return;
@@ -456,6 +514,19 @@ fn work(
                 group.bytes += size;
                 if (live || group.bytes >= GROUP_BYTES)
                     && !flush(&mut group, shared, writer, store, acknowledge)
+                {
+                    return;
+                }
+            }
+            Task::Capture(capture) => {
+                // Earlier ranges go to the writer before this worker waits on it.
+                if !flush(&mut group, shared, writer, store, acknowledge) {
+                    return;
+                }
+                let captured = capture.run(archive, store, writer, chains.read_memory);
+                if acknowledge
+                    .send(Pending::Captured(Box::new(captured)))
+                    .is_err()
                 {
                     return;
                 }
@@ -555,6 +626,7 @@ impl Queue {
 
 enum Pending {
     Group(PendingGroup),
+    Captured(Box<crate::compressed::CapturedRollout>),
     Chain {
         id: u64,
         plan: Box<Plan>,
@@ -575,6 +647,13 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
     for pending in pending {
         let mut group = match pending {
             Pending::Group(group) => group,
+            Pending::Captured(mut captured) => {
+                captured.answered();
+                if done.send(Finished::Captured(captured)).is_err() {
+                    return;
+                }
+                continue;
+            }
             Pending::Chain {
                 id,
                 plan,

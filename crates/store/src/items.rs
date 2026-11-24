@@ -80,6 +80,16 @@ pub enum ItemLookup {
 #[cfg(any(test, feature = "fixture"))]
 static ENTRIES_DECODED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Event rows the item refresh read from the event table in this process:
+/// what a test counts to show a refresh reads only what its write reached.
+#[cfg(any(test, feature = "fixture"))]
+static EVENT_ROWS_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "fixture"))]
+pub fn event_rows_read() -> u64 {
+    EVENT_ROWS_READ.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[cfg(any(test, feature = "fixture"))]
 pub fn entries_decoded() -> u64 {
     ENTRIES_DECODED.load(std::sync::atomic::Ordering::Relaxed)
@@ -128,6 +138,14 @@ enum Unit {
         data_bytes: u64,
         data: Option<Vec<u8>>,
     },
+    /// An unchanged event the refresh takes from the index as stored.
+    Kept {
+        pk: i64,
+        id: String,
+        identity: Vec<u8>,
+        entry: Vec<u8>,
+        call_id: Option<String>,
+    },
 }
 impl Unit {
     /// The identity of the entries this unit stores.
@@ -163,6 +181,7 @@ impl Unit {
                     &event_item(id, kind, *at, *data_bytes, data.as_deref())?,
                 );
             }
+            Self::Kept { identity, .. } => return Ok(identity.clone()),
         }
         Ok(digest.finalize().as_bytes().to_vec())
     }
@@ -171,7 +190,7 @@ impl Unit {
     fn columns(&self) -> (Option<i64>, Option<i64>, Option<i64>) {
         match self {
             Self::Message { pk, time_bound, .. } => (Some(*pk), None, *time_bound),
-            Self::Event { pk, .. } => (None, Some(*pk), None),
+            Self::Event { pk, .. } | Self::Kept { pk, .. } => (None, Some(*pk), None),
         }
     }
 }
@@ -217,27 +236,57 @@ struct MessageRow {
     at: Option<i64>,
 }
 
-/// An event row as the units read it.
+/// An event as the units place it: where it goes, and what it stores.
 struct EventRow {
     pk: i64,
     id: String,
-    kind: String,
     at: Option<i64>,
-    data_bytes: u64,
     after: Option<i64>,
     seq: i64,
-    data: Option<Vec<u8>>,
+    body: EventBody,
+}
+
+enum EventBody {
+    /// Read from the event row.
+    Read {
+        kind: String,
+        data_bytes: u64,
+        data: Option<Vec<u8>>,
+    },
+    /// An unchanged event: its stored identity and entry stand for its row.
+    Kept {
+        identity: Vec<u8>,
+        entry: Vec<u8>,
+        call_id: Option<String>,
+    },
 }
 
 impl EventRow {
     fn unit(self) -> Unit {
-        Unit::Event {
-            pk: self.pk,
-            id: self.id,
-            kind: self.kind,
-            at: self.at,
-            data_bytes: self.data_bytes,
-            data: self.data,
+        match self.body {
+            EventBody::Read {
+                kind,
+                data_bytes,
+                data,
+            } => Unit::Event {
+                pk: self.pk,
+                id: self.id,
+                kind,
+                at: self.at,
+                data_bytes,
+                data,
+            },
+            EventBody::Kept {
+                identity,
+                entry,
+                call_id,
+            } => Unit::Kept {
+                pk: self.pk,
+                id: self.id,
+                identity,
+                entry,
+                call_id,
+            },
         }
     }
 }
@@ -263,15 +312,19 @@ fn message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
 }
 
 fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
+    #[cfg(any(test, feature = "fixture"))]
+    EVENT_ROWS_READ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(EventRow {
         pk: row.get(0)?,
         id: row.get(1)?,
-        kind: row.get(2)?,
         at: row.get(3)?,
-        data_bytes: row.get::<_, i64>(4)?.max(0) as u64,
         after: row.get(5)?,
         seq: row.get(6)?,
-        data: row.get(7)?,
+        body: EventBody::Read {
+            kind: row.get(2)?,
+            data_bytes: row.get::<_, i64>(4)?.max(0) as u64,
+            data: row.get(7)?,
+        },
     })
 }
 
@@ -392,7 +445,7 @@ fn units_from(
     // Events whose message is not shown (a duplicate, or not stored) keep
     // their order at the end with the events that name no message.
     orphaned.sort_by_key(|unit| match unit {
-        Unit::Event { pk, .. } | Unit::Message { pk, .. } => *pk,
+        Unit::Event { pk, .. } | Unit::Kept { pk, .. } | Unit::Message { pk, .. } => *pk,
     });
     out.extend(unplaced);
     out.extend(orphaned);
@@ -400,9 +453,11 @@ fn units_from(
 }
 
 /// The events that can be placed from `start_point` on, in stored order: those
-/// following a loaded message, those naming no message, those indexed from
-/// the start point on (a message they follow may have stopped being shown), and
-/// the changed ones.
+/// following a loaded message, the changed ones, and the rest of those indexed
+/// from the start point on. The rest are unchanged, so they are placed after
+/// the start point again (nothing before it changed); their place comes from
+/// the event placement index and what they store from the item index, so the
+/// event table is read only for what the write reached.
 fn events_from(
     conn: &Connection,
     session_pk: i64,
@@ -429,33 +484,10 @@ fn events_from(
             found.insert(event.pk, event);
         }
     }
-    // Timed ones from the start point's bound on, and the untimed ones.
-    let mut timed = conn.prepare_cached(&format!(
-        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_placed_by_time
-         WHERE e.session_pk = ?1 AND e.after_message_pk IS NULL AND e.at >= coalesce(?2, -9223372036854775808)"
-    ))?;
-    let mut untimed = conn.prepare_cached(&format!(
-        "SELECT {EVENT_COLUMNS} FROM event e INDEXED BY event_placed_by_time
-         WHERE e.session_pk = ?1 AND e.after_message_pk IS NULL AND e.at IS NULL"
-    ))?;
-    for event in timed
-        .query_map(params![session_pk, start_point.time_bound], event_row)?
-        .chain(untimed.query_map([session_pk], event_row)?)
-    {
-        let event = event?;
-        found.insert(event.pk, event);
-    }
-    let indexed: Vec<i64> = conn
-        .prepare_cached(
-            "SELECT event_pk FROM session_item
-             WHERE session_pk = ?1 AND seq >= ?2 AND event_pk IS NOT NULL",
-        )?
-        .query_map(params![session_pk, start_point.seq], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
     let mut by_pk = conn.prepare_cached(&format!(
         "SELECT {EVENT_COLUMNS} FROM event e WHERE e.pk = ?1 AND e.session_pk = ?2"
     ))?;
-    for pk in indexed.into_iter().chain(extra.iter().copied()) {
+    for &pk in extra {
         if found.contains_key(&pk) {
             continue;
         }
@@ -465,6 +497,52 @@ fn events_from(
         {
             found.insert(pk, event);
         }
+    }
+    // Each indexed event's key, with its stored identity, entry and call ID.
+    let indexed: Vec<(i64, EventBody)> = conn
+        .prepare_cached(
+            "SELECT event_pk, unit, entry, call_id FROM session_item
+             WHERE session_pk = ?1 AND seq >= ?2 AND event_pk IS NOT NULL",
+        )?
+        .query_map(params![session_pk, start_point.seq], |row| {
+            Ok((
+                row.get(0)?,
+                EventBody::Kept {
+                    identity: row.get(1)?,
+                    entry: row.get(2)?,
+                    call_id: row.get(3)?,
+                },
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut placed = conn.prepare_cached(
+        "SELECT id, at, after_message_pk, seq FROM event INDEXED BY event_placement
+         WHERE session_pk = ?1 AND pk = ?2",
+    )?;
+    for (pk, body) in indexed {
+        if found.contains_key(&pk) || extra.contains(&pk) {
+            continue;
+        }
+        // An unchanged indexed event is still in the session; one that is
+        // not was changed, and the change summary names it.
+        let event = placed
+            .query_row(params![session_pk, pk], |row| {
+                Ok(EventRow {
+                    pk,
+                    id: row.get(0)?,
+                    at: row.get(1)?,
+                    after: row.get(2)?,
+                    seq: row.get(3)?,
+                    body,
+                })
+            })
+            .optional()?
+            .ok_or_else(|| {
+                StoreError::Invalid(format!(
+                    "indexed event {pk} left session {session_pk} unchanged"
+                ))
+            })?;
+        found.insert(pk, event);
     }
     let mut events: Vec<EventRow> = found.into_values().collect();
     events.sort_by(|a, b| (a.seq, &a.id).cmp(&(b.seq, &b.id)));
@@ -491,6 +569,11 @@ pub(crate) fn computed_entries(conn: &Connection, session_pk: i64) -> Result<Vec
                 ..
             } => {
                 out.push(event_item(&id, &kind, at, data_bytes, data.as_deref())?);
+            }
+            Unit::Kept { .. } => {
+                return Err(StoreError::Invalid(
+                    "a session read whole takes every event from its row".into(),
+                ));
             }
         }
     }
@@ -1062,6 +1145,13 @@ fn unit_entries(
             *at,
             *data_bytes,
             data.as_deref(),
+        )?]),
+        Unit::Kept {
+            id, entry, call_id, ..
+        } => Ok(vec![decode(
+            entry,
+            EntryOf::Event(id.clone()),
+            call_id.clone(),
         )?]),
     }
 }

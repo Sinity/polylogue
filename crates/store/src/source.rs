@@ -107,6 +107,44 @@ pub(crate) fn views(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// The source state a capture read samples before provider I/O: the confirmed
+/// observation at `source`, the boundary it was read at, and the capture held
+/// in the spool (`pending`, which only primary mode's writer has).
+pub(crate) fn snapshot(
+    index: &Connection,
+    conn: &Connection,
+    archive: &crate::Archive,
+    source: crate::primary::SourceSelector,
+    pending: crate::primary::PendingSource,
+) -> Result<crate::primary::SourceSnapshot> {
+    use crate::primary::SourceStatus;
+    let (mut status, confirmed) = Source::confirmed_source(conn, &source)?;
+    let boundary = SourceBoundary::read(index, conn, archive)?;
+    if boundary.is_none() && status == SourceStatus::Ready {
+        status = SourceStatus::MissingEvidence;
+    }
+    status = match (status, pending.status) {
+        (SourceStatus::Ambiguous, _) | (_, SourceStatus::Ambiguous) => SourceStatus::Ambiguous,
+        (SourceStatus::MissingEvidence, _) | (_, SourceStatus::MissingEvidence) => {
+            SourceStatus::MissingEvidence
+        }
+        _ => SourceStatus::Ready,
+    };
+    let base = crate::primary::SourceBase {
+        boundary,
+        resolved: None,
+        source,
+        status,
+        confirmed: confirmed.as_ref().map(|value| value.observation.id.clone()),
+        pending: pending.head.as_ref().map(|value| value.identity.clone()),
+    };
+    Ok(crate::primary::SourceSnapshot {
+        base,
+        confirmed,
+        pending,
+    })
+}
+
 /// Explicit source markers distinguish table names from identically named columns.
 #[derive(Clone, Copy)]
 pub(crate) enum Source {

@@ -467,7 +467,7 @@ CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain, source_start);
 CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
-CREATE INDEX event_placed_by_time ON event(session_pk, at) WHERE after_message_pk IS NULL;   -- events placed by time
+CREATE INDEX event_placement ON event(session_pk, pk, seq, after_message_pk, at, id);   -- where an unchanged event goes, without its row
 CREATE INDEX event_kind    ON event(kind, at);
 
 

@@ -456,6 +456,16 @@ impl Engine {
             errors,
             ..Pass::default()
         };
+        if discover && sources {
+            self.build_phase(
+                "discovery",
+                format_args!(
+                    "found {} files in {:.0} s",
+                    found.len(),
+                    started.elapsed().as_secs_f64()
+                ),
+            );
+        }
         let (deferred_database, database_changed) = if sources {
             self.capture_databases(&found, discover, &mut pass)?
         } else {
@@ -490,11 +500,11 @@ impl Engine {
                 std::fs::metadata(&f.path).ok().map(|m| FileFacts::of(&m)) != st.facts
             })
         });
-        let disappeared = paths.iter().any(|path| {
-            self.inputs
+        let disappeared = !paths.is_empty()
+            && self
+                .inputs
                 .iter()
-                .any(|(p, st)| p.starts_with(path) && st.facts.is_some() && !p.exists())
-        });
+                .any(|(p, st)| st.facts.is_some() && collect::under(paths, p) && !p.exists());
         if !discover
             && !self.readings_pending
             && !continuing
@@ -516,16 +526,44 @@ impl Engine {
             self.shared_prefixes.get_mut().clear();
             self.refresh_import_assets(&mut pass)?;
         }
-        if self.readings_pending {
+
+        // Files no earlier pass stored are planned and stored first. Their
+        // chains are new, so nothing the catch-up of stored chains reads
+        // decides them, and capturing them never waits for that backlog.
+        // Known files are planned after the catch-up, from the state it leaves.
+        let mut seen = HashSet::new();
+        let (fresh, found): (Vec<_>, Vec<_>) = found
+            .into_iter()
+            .partition(|f| !self.inputs.contains_key(&f.path));
+        let fresh = self.plan_found(fresh, &mut pass, &mut seen)?;
+        let mut changed_inputs = (fresh.len() + self.rollout_captures.len()) as u64;
+        if !fresh.is_empty() || !self.rollout_captures.is_empty() {
+            self.build_phase(
+                "storing and reading new files",
+                format_args!(
+                    "{} plans, {} rollouts to capture",
+                    fresh.len(),
+                    self.rollout_captures.len()
+                ),
+            );
+            self.execute(fresh, &mut pass)?;
+        }
+        if self.readings_pending && !self.yielding() && !self.archive.stop().is_cancelled() {
+            self.build_phase(
+                "reading stored newest chains",
+                format_args!(
+                    "{:.0} MB stored, {:.0} MB read so far",
+                    pass.bytes_stored as f64 / 1e6,
+                    pass.bytes_read as f64 / 1e6
+                ),
+            );
             self.reparse_behind(RevisionChains::Newest, &mut pass)?;
         }
         if self.yielding() {
             pass.capture_pending = true;
             pass.seconds = started.elapsed().as_secs_f64();
-            return Ok((pass, HashSet::new()));
+            return Ok((pass, seen));
         }
-
-        let mut seen = HashSet::new();
         let mut plans = self.plan_found(found, &mut pass, &mut seen)?;
         // Keep spooled bytes and stored parsing reachable when a provider disappears.
         // Databases already observe their pending SDK captures in capture_databases.
@@ -534,9 +572,7 @@ impl Engine {
             .iter()
             .filter(|(p, state)| {
                 sources
-                    && (discover
-                        || state.origin.is_row_dump(p)
-                        || paths.iter().any(|path| p.starts_with(path)))
+                    && (discover || state.origin.is_row_dump(p) || collect::under(paths, p))
                     && !seen.contains(*p)
             })
             .map(|(path, _)| path.clone())
@@ -552,7 +588,7 @@ impl Engine {
                             polylogue_store::primary::ReadRoute::NativeCapture,
                         )
                         .source;
-                    let snapshot = self.writer.source_snapshot(source)?;
+                    let snapshot = self.source_snapshot(source)?;
                     if snapshot.pending.head.is_some()
                         || snapshot.base.status != polylogue_store::primary::SourceStatus::Ready
                     {
@@ -630,8 +666,14 @@ impl Engine {
                 plans.push(plan);
             }
         }
-        pass.inputs_changed = plans.len() as u64;
-        if plans.is_empty() {
+        // One input is read by one plan at a time. A provider-named input
+        // found at one path and remembered at another keeps the plan of the
+        // path found.
+        let mut planned = HashSet::new();
+        plans.retain(|plan| planned.insert(plan.input.id.clone()));
+        changed_inputs += (plans.len() + self.rollout_captures.len()) as u64;
+        pass.inputs_changed = changed_inputs;
+        if plans.is_empty() && self.rollout_captures.is_empty() {
             let report = self.flush_writes()?;
             pass.errors.extend(report.errors);
         }
@@ -659,6 +701,16 @@ impl Engine {
             }
             self.archive.record_build_bytes(bytes, read);
         }
+        if !plans.is_empty() || !self.rollout_captures.is_empty() {
+            self.build_phase(
+                "storing and reading changed files",
+                format_args!(
+                    "{} plans, {} rollouts to capture",
+                    plans.len(),
+                    self.rollout_captures.len()
+                ),
+            );
+        }
         self.execute(plans, &mut pass)?;
         if self.yielding() {
             pass.capture_pending = true;
@@ -673,9 +725,21 @@ impl Engine {
             // Every input's newest chain is read: a first build ends here, so
             // its read indexes exist while the older chains are read.
             if !pass.capture_pending && !self.captures.pending() {
+                self.build_phase(
+                    "finishing the index",
+                    format_args!(
+                        "{:.0} MB stored, {:.0} MB read",
+                        pass.bytes_stored as f64 / 1e6,
+                        pass.bytes_read as f64 / 1e6
+                    ),
+                );
                 pass.sessions_derived += self.derive()?;
             }
             if !self.poll_request() {
+                self.build_phase(
+                    "reading older chains",
+                    format_args!("{} sessions derived", pass.sessions_derived),
+                );
                 self.reparse_behind(RevisionChains::Older, &mut pass)?;
             }
         }
@@ -696,6 +760,14 @@ impl Engine {
         }
         pass.capture_pending |= self.captures.pending();
         if !pass.capture_pending {
+            self.build_phase(
+                "finishing the index",
+                format_args!(
+                    "{:.0} MB stored, {:.0} MB read",
+                    pass.bytes_stored as f64 / 1e6,
+                    pass.bytes_read as f64 / 1e6
+                ),
+            );
             pass.sessions_derived += self.derive()?;
             if pass.errors.is_empty() {
                 // A source admitted behind the bookmark gets the next pass;
@@ -710,6 +782,14 @@ impl Engine {
                 pass.capture_pending |= again;
                 self.stored_planning = None;
             }
+        }
+        if self.archive.index_build().is_none()
+            && let Some((phase, began)) = self.build_phase.take()
+        {
+            eprintln!(
+                "polylogue: build: the index is installed; {phase} took {:.0} s",
+                began.elapsed().as_secs_f64()
+            );
         }
         self.pass_open = pass.capture_pending;
         pass.seconds = started.elapsed().as_secs_f64();
@@ -732,8 +812,9 @@ impl Engine {
             pass.inputs_seen += 1;
             let now = FileFacts::of(&meta);
             if compressed::is_rollout(&f) {
-                match self.capture_rollout(&f, now, pass) {
-                    Ok(Some(plan)) => {
+                match self.rollout_step(&f, now, Priority::Bulk, pass) {
+                    Ok(compressed::RolloutStep::Planned(Some(plan))) => {
+                        let plan = *plan;
                         if let Some(previous) = plans
                             .iter_mut()
                             .find(|p: &&mut Plan| p.input.id == plan.input.id)
@@ -743,7 +824,10 @@ impl Engine {
                             plans.push(plan);
                         }
                     }
-                    Ok(_) => {}
+                    Ok(compressed::RolloutStep::Planned(None)) => {}
+                    Ok(compressed::RolloutStep::Capture(capture)) => {
+                        self.rollout_captures.push_back(*capture);
+                    }
                     Err(error) => pass
                         .errors
                         .push(format!("capture {}: {error}", f.path.display())),
@@ -757,6 +841,10 @@ impl Engine {
                 plans.push(plan);
             }
         }
+        // The newest sessions are stored, and so readable, first.
+        self.rollout_captures
+            .make_contiguous()
+            .sort_by_key(|capture| std::cmp::Reverse(capture.facts.mtime_ns));
         Ok(plans)
     }
 
@@ -858,8 +946,13 @@ impl Engine {
             };
             let now = FileFacts::of(&meta);
             if compressed::is_rollout(f) {
-                match self.capture_rollout(f, now, pass) {
-                    Ok(Some(mut plan)) => {
+                match self.rollout_step(f, now, Priority::Live, pass) {
+                    // Paths already queued or being captured are busy.
+                    Ok(compressed::RolloutStep::Capture(capture)) => {
+                        self.rollout_captures.push_front(*capture);
+                    }
+                    Ok(compressed::RolloutStep::Planned(Some(plan))) => {
+                        let mut plan = *plan;
                         plan.priority = Priority::Live;
                         if let Some(previous) = plans
                             .iter_mut()
@@ -870,7 +963,7 @@ impl Engine {
                             plans.push(plan);
                         }
                     }
-                    Ok(_) => {}
+                    Ok(compressed::RolloutStep::Planned(None)) => {}
                     Err(error) => pass
                         .errors
                         .push(format!("capture {}: {error}", f.path.display())),
@@ -980,7 +1073,7 @@ impl Engine {
                 polylogue_store::primary::ReadRoute::NativeCapture,
             )
             .source;
-        let snapshot = self.writer.source_snapshot(source)?;
+        let snapshot = self.source_snapshot(source)?;
         let pending = snapshot.pending.head.as_ref();
         if let Some(working) = &self.inputs[path].working
             && pending.is_some_and(|latest| latest.identity == working.capture)
@@ -1723,74 +1816,95 @@ impl Engine {
         Ok(true)
     }
 
+    /// Readies a plan for reading: what a byte read already holds, the
+    /// captured authored records and local references are recorded first.
+    /// None when nothing is left to read, or the plan is refused or failed.
+    fn admit(&mut self, mut plan: Plan, pass: &mut Pass) -> Result<Option<Plan>, EngineError> {
+        self.prepare_byte_read(&mut plan)?;
+        if plan.byte_read.is_some() && plan.finished() {
+            self.record_byte_read_status(&plan, None, pass)?;
+            self.finish_plan(plan);
+            return Ok(None);
+        }
+        if plan.pending.is_some() && !plan.tracked && plan.finished() {
+            pass.capture_pending = true;
+            return Ok(None);
+        }
+        if matches!(plan.change, Change::Reparse { .. })
+            && let Some(reason) = unread_path(plan.origin, &plan.path)
+        {
+            // Stored bytes at a path this build's parser does not read
+            // (an earlier build captured it): refused with the reason,
+            // never read range by range with nothing to record.
+            pass.errors
+                .push(format!("refuse stored input {}: {reason}", plan.input.id));
+            plan.failed = true;
+            self.record_stop(
+                &mut plan,
+                polylogue_model::batch::StepProgress::Refused { reason },
+                pass,
+            );
+            self.finish_plan(plan);
+            return Ok(None);
+        }
+        if let Err(error) = self.restore_captured_authored(&plan, pass) {
+            let error = format!("authored restoration {}: {error}", plan.path.display());
+            self.record_failure(&mut plan, error, pass);
+            self.finish_plan(plan);
+            return Ok(None);
+        }
+        if let Err(error) = self.observe_local_references(&plan, pass) {
+            let error = format!("local references {}: {error}", plan.path.display());
+            self.record_failure(&mut plan, error, pass);
+            self.finish_plan(plan);
+            return Ok(None);
+        }
+        Ok(Some(plan))
+    }
+
     /// Runs plans on the parse pool, one job per input at a time, until
     /// every input is stored and parsed up to its size; then waits for the
     /// writer to commit.
     pub(crate) fn execute(&mut self, plans: Vec<Plan>, pass: &mut Pass) -> Result<(), EngineError> {
-        if plans.is_empty() {
+        if plans.is_empty() && self.rollout_captures.is_empty() {
             return Ok(());
         }
-        // A build keeps each input's work together. Arrays run serially
-        // only after preceding pool work has committed.
+        // A build keeps each input's work together. Plans that store new
+        // bytes go first, the newest first, so capture does not wait for
+        // stored chains to be read. Arrays run serially only after preceding
+        // pool work has committed.
         let mut plans = plans;
         if self.archive.index_build().is_some() {
+            let key = |plan: &Plan| {
+                let stores =
+                    matches!(plan.source, pool::Bytes::File) && plan.stored_upto < plan.size;
+                (
+                    plan.priority == Priority::Bulk,
+                    !stores,
+                    std::cmp::Reverse(
+                        plan.facts
+                            .filter(|_| stores)
+                            .map_or(0, |facts| facts.mtime_ns),
+                    ),
+                )
+            };
             plans.sort_by(|a, b| {
-                (a.priority == Priority::Bulk, &a.input.id, &a.path).cmp(&(
-                    b.priority == Priority::Bulk,
-                    &b.input.id,
-                    &b.path,
-                ))
+                key(a)
+                    .cmp(&key(b))
+                    .then_with(|| (&a.input.id, &a.path).cmp(&(&b.input.id, &b.path)))
             });
         } else {
             plans.sort_by_key(|p| (p.priority == Priority::Bulk, std::cmp::Reverse(p.size)));
         }
         let mut pooled = Vec::new();
         let mut replacements = Vec::new();
-        for mut plan in plans {
+        for plan in plans {
             if self.archive.stop().is_cancelled() || self.poll_request() {
                 break;
             }
-            self.prepare_byte_read(&mut plan)?;
-            if plan.byte_read.is_some() && plan.finished() {
-                self.record_byte_read_status(&plan, None, pass)?;
-                self.finish_plan(plan);
+            let Some(mut plan) = self.admit(plan, pass)? else {
                 continue;
-            }
-            if plan.pending.is_some() && !plan.tracked && plan.finished() {
-                pass.capture_pending = true;
-                continue;
-            }
-
-            if matches!(plan.change, Change::Reparse { .. })
-                && let Some(reason) = unread_path(plan.origin, &plan.path)
-            {
-                // Stored bytes at a path this build's parser does not read
-                // (an earlier build captured it): refused with the reason,
-                // never read range by range with nothing to record.
-                pass.errors
-                    .push(format!("refuse stored input {}: {reason}", plan.input.id));
-                plan.failed = true;
-                self.record_stop(
-                    &mut plan,
-                    polylogue_model::batch::StepProgress::Refused { reason },
-                    pass,
-                );
-                self.finish_plan(plan);
-                continue;
-            }
-            if let Err(error) = self.restore_captured_authored(&plan, pass) {
-                let error = format!("authored restoration {}: {error}", plan.path.display());
-                self.record_failure(&mut plan, error, pass);
-
-                self.finish_plan(plan);
-                continue;
-            }
-            if let Err(error) = self.observe_local_references(&plan, pass) {
-                let error = format!("local references {}: {error}", plan.path.display());
-                self.record_failure(&mut plan, error, pass);
-                self.finish_plan(plan);
-                continue;
-            }
+            };
             let store_first = matches!(plan.source, pool::Bytes::File)
                 && plan.parse_pos == 0
                 && plan.stored_upto > 0
@@ -1854,7 +1968,7 @@ impl Engine {
         chains: Vec<Plan>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        if plans.is_empty() && chains.is_empty() {
+        if plans.is_empty() && chains.is_empty() && self.rollout_captures.is_empty() {
             return Ok(());
         }
         if chains
@@ -1906,21 +2020,31 @@ impl Engine {
             let every = self.config.live_every;
             let mut stopping = false;
             let mut yielding = false;
+            // Storing runs beside parsing: up to half the workers store
+            // rollouts while the rest parse, so stored bytes do not wait for
+            // the parse backlog and parsing does not wait for every input to
+            // be stored.
+            let capture_room = (self.config.workers / 2).max(1);
+            let mut progress = build_log::Progress::start(self, pass, pool.worker_cpu_seconds());
+            // Rollout captures on workers, by path, with the input each names.
+            let mut capturing: HashMap<PathBuf, String> = HashMap::new();
             'work: loop {
                 if !yielding && self.poll_request() {
                     yielding = true;
                     waiting.clear();
                     chains.clear();
+                    self.rollout_captures.clear();
                     // No worker read these jobs. The next turn revalidates them;
                     // chunks already in hand keep their normal commit and ACK.
-                    outstanding -= self.cancel_pool(&pool, &mut active_chains);
+                    outstanding -= self.cancel_pool(&pool, &mut active_chains, &mut capturing);
                 }
                 if !stopping && self.archive.stop().is_cancelled() {
                     // What workers are parsing commits; nothing else starts.
                     stopping = true;
                     waiting.clear();
                     chains.clear();
-                    outstanding -= self.cancel_pool(&pool, &mut active_chains);
+                    self.rollout_captures.clear();
+                    outstanding -= self.cancel_pool(&pool, &mut active_chains, &mut capturing);
                 }
                 if !stopping && !yielding && checked.elapsed() >= every {
                     checked = Instant::now();
@@ -1928,12 +2052,19 @@ impl Engine {
                         // A continuation owns its path while queued, too. Finish
                         // its planned bytes before observing later source changes.
                         let reparsing: Vec<_> = self.reparsing.keys().cloned().collect();
+                        let queued: Vec<_> = self
+                            .rollout_captures
+                            .iter()
+                            .map(|capture| capture.path.clone())
+                            .collect();
                         let busy = running
                             .keys()
                             .map(PathBuf::as_path)
                             .chain(waiting.iter().map(|plan| plan.path.as_path()))
                             .chain(chains.iter().map(|plan| plan.path.as_path()))
                             .chain(reparsing.iter().map(PathBuf::as_path))
+                            .chain(capturing.keys().map(PathBuf::as_path))
+                            .chain(queued.iter().map(PathBuf::as_path))
                             .collect();
                         self.live_plans(&busy, pass)
                     };
@@ -1950,11 +2081,38 @@ impl Engine {
                         Err(e) => pass.errors.push(format!("live inputs: {e}")),
                     }
                 }
+                while !stopping && !yielding && outstanding < room && capturing.len() < capture_room
+                {
+                    // One input is captured or read by one worker at a time.
+                    let Some(index) = self.rollout_captures.iter().position(|capture| {
+                        !capturing.contains_key(&capture.path)
+                            && !capturing.values().any(|input| *input == capture.input)
+                            && !self.reparsing.contains_key(&capture.path)
+                            && !running.contains_key(&capture.path)
+                            && !running.values().any(|plan| plan.input.id == capture.input)
+                    }) else {
+                        break;
+                    };
+                    let capture = self
+                        .rollout_captures
+                        .remove(index)
+                        .expect("a queued capture");
+                    let (path, input) = (capture.path.clone(), capture.input.clone());
+                    if !pool.submit_capture(capture) {
+                        break;
+                    }
+                    capturing.insert(path, input);
+                    outstanding += 1;
+                }
+                // Plans of an input being captured wait for its new bytes.
                 while !stopping
                     && !yielding
                     && outstanding < room
-                    && let Some(mut plan) = waiting.pop_front()
+                    && let Some(index) = waiting
+                        .iter()
+                        .position(|plan| !capturing.values().any(|input| *input == plan.input.id))
                 {
+                    let mut plan = waiting.remove(index).expect("a waiting plan");
                     if self.poll_request() {
                         waiting.push_front(plan);
                         continue 'work;
@@ -2036,6 +2194,7 @@ impl Engine {
                     let Some(index) = chains.iter().position(|chain| {
                         !running.contains_key(&chain.path)
                             && !waiting.iter().any(|range| range.path == chain.path)
+                            && !capturing.values().any(|input| *input == chain.input.id)
                     }) else {
                         break;
                     };
@@ -2057,6 +2216,7 @@ impl Engine {
                 if outstanding == 0 {
                     break;
                 }
+                progress.log(self, pass, || pool.worker_cpu_seconds());
                 let d = match done_rx.recv_timeout(every.max(Duration::from_millis(10))) {
                     Ok(d) => d,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
@@ -2069,6 +2229,31 @@ impl Engine {
                         active_chains.remove(&done.id);
                         pass.bytes_read += done.bytes_read;
                         self.finish_chain(done.plan, done.written, pass);
+                        continue;
+                    }
+                    pool::Finished::Captured(captured) => {
+                        capturing.remove(&captured.path);
+                        let path = captured.path.clone();
+                        let plan = match self.captured_rollout(*captured, pass) {
+                            Ok(Some(plan)) if !stopping && !yielding => plan,
+                            Ok(_) => continue,
+                            Err(error) => {
+                                pass.errors
+                                    .push(format!("capture {}: {error}", path.display()));
+                                continue;
+                            }
+                        };
+                        // Its bytes are durable: its reading goes next, in
+                        // place of any older plan of the same input.
+                        waiting.retain(|queued| queued.input.id != plan.input.id);
+                        chains.retain(|queued| queued.input.id != plan.input.id);
+                        if let Some(plan) = self.admit(plan, pass)? {
+                            if plan.replace {
+                                chains.push_front(plan);
+                            } else {
+                                waiting.push_front(plan);
+                            }
+                        }
                         continue;
                     }
                 };
@@ -2177,12 +2362,21 @@ impl Engine {
         result
     }
 
-    fn cancel_pool(&mut self, pool: &Pool, active_chains: &mut HashMap<u64, PathBuf>) -> usize {
+    fn cancel_pool(
+        &mut self,
+        pool: &Pool,
+        active_chains: &mut HashMap<u64, PathBuf>,
+        capturing: &mut HashMap<PathBuf, String>,
+    ) -> usize {
         let cancelled = pool.cancel_queued();
-        let count = cancelled.ranges + cancelled.chains.len();
+        let count = cancelled.ranges + cancelled.chains.len() + cancelled.captures.len();
         for (id, plan) in cancelled.chains {
             active_chains.remove(&id);
             self.finish_chain_path(&plan.path);
+        }
+        // Not yet read: the next pass finds these files again.
+        for capture in cancelled.captures {
+            capturing.remove(&capture.path);
         }
         count
     }
@@ -2325,7 +2519,7 @@ impl Engine {
                 machine: self.config.machine.clone(),
                 path_bytes: plan.path.as_os_str().as_encoded_bytes().to_vec(),
             };
-            let snapshot = self.writer.source_snapshot(source).ok();
+            let snapshot = self.source_snapshot(source).ok();
             let latest = snapshot.and_then(|snapshot| snapshot.pending.head);
             let capture = latest.and_then(|latest| match latest.captured {
                 polylogue_store::primary::Capture::Input(input)

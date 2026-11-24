@@ -536,7 +536,9 @@ pub(crate) fn finish(
 ) -> Result<u64> {
     changes.finish_summaries(tx, Some(counter))?;
     changes.finish_links(tx)?;
-    let read = crate::items::refresh(tx, changes)?;
+    let read = crate::timing::time(crate::timing::Stage::Items, || {
+        crate::items::refresh(tx, changes)
+    })?;
     crate::session_values::refresh(tx, changes)?;
     // A first build derives every session once, when it ends.
     if !upkeep.at_build_end() {

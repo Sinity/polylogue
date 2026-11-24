@@ -337,14 +337,36 @@ impl Engine {
         }
     }
 
+    /// The source state a plan decides from. A standalone archive answers
+    /// from a read of committed state, so the thread that hands out parse
+    /// work never waits behind the writer's queue for it; a path has one job
+    /// at a time and its own writes commit before its next job is planned, so
+    /// that read already holds them. Primary mode asks the writer, which
+    /// holds the spooled capture.
+    pub(crate) fn source_snapshot(
+        &self,
+        source: polylogue_store::primary::SourceSelector,
+    ) -> Result<polylogue_store::primary::SourceSnapshot, EngineError> {
+        if self.archive.is_primary() {
+            Ok(self.writer.source_snapshot(source)?)
+        } else {
+            Ok(self.reads.reader()?.source_snapshot(source)?)
+        }
+    }
+
+    /// The context of a read whose bytes go to the writer. Primary mode
+    /// validates the position fixed before the read, so it is sampled here;
+    /// a standalone write validates none, so nothing is read, and a read
+    /// handed out during a build never waits on the index file's lock.
     pub(crate) fn sampling_context(
         &mut self,
         path: &Path,
         origin: &str,
     ) -> Result<SourceReadContext, EngineError> {
         let mut context = self.source_read_context(path, origin, ReadRoute::NativeCapture);
-        let snapshot = self.writer.source_snapshot(context.source.clone())?;
-        context.base = Some(snapshot.base);
+        if self.archive.is_primary() {
+            context.base = Some(self.writer.source_snapshot(context.source.clone())?.base);
+        }
         Ok(context)
     }
     pub(crate) fn source_read_context(

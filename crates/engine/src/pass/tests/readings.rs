@@ -587,6 +587,7 @@ fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
         match completed {
             pool::Finished::Chain(done) => assert!(done.written.is_ok(), "{:?}", done.written),
             pool::Finished::Range(done) => assert!(done.error.is_none(), "{:?}", done.error),
+            pool::Finished::Captured(_) => panic!("no rollout was captured"),
         }
     }
     assert!(paused, "the chain reaches the paused reply");

@@ -1,7 +1,9 @@
 //! Reads of the source observation, boundary and subject records.
 use super::Reader;
 use crate::Result;
-use crate::primary::{ConfirmedSource, SourceSelector, SourceStatus, SourceSubject};
+use crate::primary::{
+    ConfirmedSource, PendingSource, SourceSelector, SourceSnapshot, SourceStatus, SourceSubject,
+};
 
 impl Reader<'_> {
     /// The source boundary this read snapshot already has, before provider I/O.
@@ -22,6 +24,29 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let through = boundary.through(conn, &self.pool.archive)?;
         crate::source::Source::subject_at(conn, input, through)
+    }
+
+    /// The source snapshot a standalone capture read samples before provider
+    /// I/O, from this read's committed state; the same as the writer's answer
+    /// once the writes queued before it commit. Primary mode's pending
+    /// capture is held by the writer, which answers there.
+    pub fn source_snapshot(&self, source: SourceSelector) -> Result<SourceSnapshot> {
+        if self.pool.archive.is_primary() {
+            return Err(crate::StoreError::invalid(
+                "a primary source snapshot names the spooled capture, which only the writer holds",
+            ));
+        }
+        let conn = self.conn()?;
+        crate::source::snapshot(
+            conn,
+            conn,
+            &self.pool.archive,
+            source,
+            PendingSource {
+                status: SourceStatus::Ready,
+                ..Default::default()
+            },
+        )
     }
 
     /// Stored observation identity. In primary mode, absent cache rows show

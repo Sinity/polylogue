@@ -396,3 +396,76 @@ fn older_reading_copies_are_drained_across_multiple_planning_pages() {
         assert_eq!(home.texts(&format!("scan-{i:04}")), [format!("first {i}")]);
     }
 }
+
+/// A pass whose stored chains must all be read again still stores a new
+/// file first: storing never waits behind that reading.
+#[test]
+fn a_new_file_is_stored_before_the_stored_backlog_is_read() {
+    fault::clear();
+    let home = ClaudeHome::new();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    engine.config.workers = 1;
+    let mut backlog = Vec::new();
+    for i in 0..6 {
+        let session = format!("backlog-{i}");
+        std::fs::write(
+            home.file(&format!("{session}.jsonl")),
+            claude_user(&format!("u-{i}"), &session, &format!("stored {i}")),
+        )
+        .unwrap();
+        backlog.push(crate::location_id(
+            "test-machine",
+            &home.file(&format!("{session}.jsonl")),
+        ));
+    }
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    // Every stored chain now needs reading again.
+    polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
+    engine.discard_confirmed_state();
+    // The new file's input sorts after every stored one, where reading by
+    // input alone would put it.
+    let (path, bytes) = (0..)
+        .map(|n| home.file(&format!("fresh-{n}.jsonl")))
+        .find(|path| {
+            backlog
+                .iter()
+                .all(|id| crate::location_id("test-machine", path) > *id)
+        })
+        .map(|path| {
+            let bytes = claude_user("u-fresh", "fresh", "stored while the backlog waits");
+            std::fs::write(&path, &bytes).unwrap();
+            (path, bytes)
+        })
+        .unwrap();
+
+    fault::arm("parse", "backlog-", Action::Hold, 0, 1);
+    let archive = engine.archive.clone();
+    let watched = path.clone();
+    let observer = std::thread::spawn(move || {
+        fault::wait_held();
+        let pool = polylogue_store::ReadPool::open(&archive).unwrap();
+        let stored = pool
+            .reader()
+            .unwrap()
+            .known_input_at("test-machine", watched.as_os_str().as_encoded_bytes())
+            .unwrap()
+            .map(|known| known.stored);
+        fault::release();
+        stored
+    });
+    let pass = engine.run_pass();
+    let stored = observer.join().unwrap();
+    fault::clear();
+    let pass = pass.unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        stored,
+        Some(bytes.len() as u64),
+        "the new file was not stored before the stored chains were read"
+    );
+    assert_eq!(home.texts("fresh"), ["stored while the backlog waits"]);
+    for i in 0..6 {
+        assert_eq!(home.texts(&format!("backlog-{i}")), [format!("stored {i}")]);
+    }
+}

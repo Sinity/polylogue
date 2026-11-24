@@ -253,7 +253,9 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         .into_iter()
         .map(|finished| match finished {
             crate::pool::Finished::Range(done) => *done,
-            crate::pool::Finished::Chain(_) => panic!("expected a range"),
+            crate::pool::Finished::Chain(_) | crate::pool::Finished::Captured(_) => {
+                panic!("expected a range")
+            }
         })
         .collect();
     assert_eq!(completed.len(), INPUTS);
@@ -440,7 +442,9 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
         .into_iter()
         .map(|finished| match finished {
             crate::pool::Finished::Range(done) => *done,
-            crate::pool::Finished::Chain(_) => panic!("expected a range"),
+            crate::pool::Finished::Chain(_) | crate::pool::Finished::Captured(_) => {
+                panic!("expected a range")
+            }
         })
         .collect();
     assert_eq!(completed.len(), 1, "only the started parse reports");
