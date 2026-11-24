@@ -122,24 +122,24 @@ pub enum UserWrite {
     },
     /// A trusted daemon checkpoint with its immutable signal outbox and receipts.
     SignalCommit(Box<crate::signal::Commit>),
-    Variant {
-        variant: crate::NewVariant,
+    Alternate {
+        alternate: crate::NewAlternate,
     },
     Assert {
-        assertions: Vec<crate::assertion::NewAssertion>,
+        annotations: Vec<crate::annotation::NewAnnotation>,
     },
     AssertQuery {
         query: String,
-        assertion: crate::assertion::NewAssertion,
+        annotation: crate::annotation::NewAnnotation,
         resolved: Vec<crate::Reference>,
     },
-    ReviseAssertions {
-        #[serde(with = "crate::reference::assertion_revisions")]
+    ReviseAnnotations {
+        #[serde(with = "crate::reference::annotation_revisions")]
         #[schemars(with = "Vec<crate::Reference>")]
         bases: Vec<crate::RevisionReference>,
-        patch: crate::assertion::AssertionPatch,
+        patch: crate::annotation::AnnotationPatch,
     },
-    WithdrawAssertions {
+    WithdrawAnnotations {
         targets: Vec<crate::Reference>,
         reason: Option<String>,
     },
@@ -188,22 +188,22 @@ pub enum UserWrite {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
-    /// The operator starts a backfill job; the provider's job that has not
+    /// The operator starts an import job; the provider's job that has not
     /// ended is found instead of a second one.
-    BackfillStart(NewBackfillJob),
+    ImportJobStart(NewImportJob),
     /// The extension instance `by` takes the job it holds or the oldest
     /// waiting one; `NotFound` when there is none.
-    BackfillClaim {
+    ImportJobClaim {
         by: String,
     },
-    /// What the instance holding a backfill job's claim reports.
-    BackfillReport {
+    /// What the instance holding an import job's claim reports.
+    ImportJobReport {
         job: String,
         by: String,
-        report: BackfillReport,
+        report: ImportJobReport,
     },
-    /// The operator stops a backfill job.
-    BackfillCancel {
+    /// The operator stops an import job.
+    ImportJobCancel {
         job: String,
     },
 }
@@ -271,7 +271,7 @@ pub struct UserOutcome {
     pub pending: bool,
 }
 
-/// A bulk assertion retains the exact resolved target population count.
+/// A bulk annotation retains the exact resolved target population count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AssertQueryOutcome {
@@ -349,9 +349,9 @@ pub struct ChatAttachment {
     pub size: u64,
 }
 
-/// A new backfill job, as the writer stores it.
+/// A new import job, as the writer stores it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct NewBackfillJob {
+pub struct NewImportJob {
     pub id: String,
     /// The web chat, by the extension's name for it.
     pub provider: String,
@@ -363,7 +363,7 @@ pub struct NewBackfillJob {
 #[derive(
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
-pub struct BackfillCounts {
+pub struct ImportJobCounts {
     /// Listed by the provider.
     pub listed: u64,
     /// Captured and stored.
@@ -376,13 +376,13 @@ pub struct BackfillCounts {
 
 /// What the extension instance holding a job reports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct BackfillReport {
+pub struct ImportJobReport {
     /// `progress`, `finished` or `failed`.
     pub kind: String,
     /// Where in the provider's conversation list to continue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<String>,
-    pub counts: BackfillCounts,
+    pub counts: ImportJobCounts,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
@@ -543,11 +543,11 @@ impl<'a> ChatState<'a> {
     }
 }
 
-/// How long an extension's backfill claim lasts, in milliseconds.
-pub const BACKFILL_CLAIM_MS: i64 = 180_000;
-/// One thing that happened to a backfill job.
+/// How long an extension's import job claim lasts, in milliseconds.
+pub const IMPORT_JOB_CLAIM_MS: i64 = 180_000;
+/// One thing that happened to an import job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct BackfillEvent {
+pub struct ImportJobEvent {
     pub request: String,
     pub at: i64,
     pub kind: String,
@@ -555,15 +555,15 @@ pub struct BackfillEvent {
     pub by: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<String>,
-    pub counts: BackfillCounts,
+    pub counts: ImportJobCounts,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
 }
 
-/// Where a backfill job stands.
+/// Where an import job stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BackfillStatus {
+pub enum ImportJobStatus {
     /// Started and not held by an extension instance.
     Waiting,
     Running,
@@ -576,7 +576,7 @@ pub enum BackfillStatus {
     Cancelled,
 }
 
-impl BackfillStatus {
+impl ImportJobStatus {
     pub fn ended(self) -> bool {
         matches!(self, Self::Finished | Self::Failed | Self::Cancelled)
     }
@@ -584,48 +584,48 @@ impl BackfillStatus {
 
 /// What the extension instance holding a job may report, and the state
 /// each report leaves; `progress` renews the claim.
-pub fn backfill_report_status(kind: &str) -> Option<BackfillStatus> {
+pub fn import_job_report_status(kind: &str) -> Option<ImportJobStatus> {
     Some(match kind {
-        "progress" => BackfillStatus::Running,
-        "paused" => BackfillStatus::Paused,
-        "finished" => BackfillStatus::Finished,
-        "failed" => BackfillStatus::Failed,
+        "progress" => ImportJobStatus::Running,
+        "paused" => ImportJobStatus::Paused,
+        "finished" => ImportJobStatus::Finished,
+        "failed" => ImportJobStatus::Failed,
         _ => return None,
     })
 }
 
-/// A stored backfill job with everything that happened to it.
+/// A stored import job with everything that happened to it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct BackfillJob {
+pub struct ImportJob {
     pub id: String,
     pub provider: String,
     pub since: Option<i64>,
     pub created_at: i64,
     pub execution: crate::authored::ExecutionEligibility,
-    pub events: Vec<BackfillEvent>,
+    pub events: Vec<ImportJobEvent>,
 }
 
-impl BackfillJob {
+impl ImportJob {
     /// The state at `now`, and the instance holding an unexpired claim.
-    pub fn status(&self, now: i64) -> (BackfillStatus, Option<&str>) {
-        let mut status = BackfillStatus::Waiting;
+    pub fn status(&self, now: i64) -> (ImportJobStatus, Option<&str>) {
+        let mut status = ImportJobStatus::Waiting;
         let mut claim: Option<(&str, i64)> = None;
         for e in &self.events {
             match e.kind.as_str() {
                 "claimed" | "progress" => {
-                    status = BackfillStatus::Running;
-                    claim = e.by.as_deref().map(|by| (by, e.at + BACKFILL_CLAIM_MS));
+                    status = ImportJobStatus::Running;
+                    claim = e.by.as_deref().map(|by| (by, e.at + IMPORT_JOB_CLAIM_MS));
                 }
                 "cancelled" => {
-                    status = BackfillStatus::Cancelled;
+                    status = ImportJobStatus::Cancelled;
                     claim = None;
                 }
                 "resumed" => {
-                    status = BackfillStatus::Waiting;
+                    status = ImportJobStatus::Waiting;
                     claim = None;
                 }
                 kind => {
-                    if let Some(next) = backfill_report_status(kind) {
+                    if let Some(next) = import_job_report_status(kind) {
                         status = next;
                         claim = None;
                     }
@@ -633,8 +633,8 @@ impl BackfillJob {
             }
         }
         match (status, claim) {
-            (BackfillStatus::Running, Some((by, until))) if until >= now => (status, Some(by)),
-            (BackfillStatus::Running, _) => (BackfillStatus::Waiting, None),
+            (ImportJobStatus::Running, Some((by, until))) if until >= now => (status, Some(by)),
+            (ImportJobStatus::Running, _) => (ImportJobStatus::Waiting, None),
             _ => (status, None),
         }
     }
@@ -642,7 +642,7 @@ impl BackfillJob {
     /// The totals of the latest event, and the latest reported list position: a
     /// later event without a position keeps the earlier one, which is where a
     /// later claim resumes.
-    pub fn progress(&self) -> (BackfillCounts, Option<&str>) {
+    pub fn progress(&self) -> (ImportJobCounts, Option<&str>) {
         let counts = self.events.last().map(|e| e.counts).unwrap_or_default();
         let position = self.events.iter().rev().find_map(|e| e.position.as_deref());
         (counts, position)

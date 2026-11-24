@@ -1,10 +1,10 @@
 // The service worker: captures chat pages as they change, keeps captures in
-// the outbox until the host has them, and runs the backfill jobs and chat
+// the outbox until the host has them, and runs the importJob jobs and chat
 // actions Polylogue hands out. Chrome stops the worker when it is idle; the
 // alarms wake it, and everything it needs again is in Polylogue or the
 // outbox.
 
-import { Backfill } from "./backfill.js";
+import { ImportJob } from "./import_job.js";
 import { Capturer } from "./capture.js";
 import { ChatActions } from "./chat_actions.js";
 import { Host } from "./host.js";
@@ -18,7 +18,7 @@ const SWEEP = "polylogue.sweep";
 // The least time between two automatic captures of one tab.
 const SPACING_MS = 10_000;
 const PROBLEMS_KEPT = 20;
-// Backfill job states that are over.
+// ImportJob job states that are over.
 const JOB_ENDED = ["finished", "failed", "cancelled"];
 const JOBS_ENDED_SHOWN = 3;
 const DEFAULT_SETTINGS = { automatic: true, panel: true, hidden_sites: [] };
@@ -53,7 +53,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
   }
 
   const capturer = new Capturer({ chrome, host, outbox, seen: local, scheduler: new ProviderScheduler({ storage: local }), log });
-  const backfill = new Backfill({ chrome, host, capturer, instance, log });
+  const importJob = new ImportJob({ chrome, host, capturer, instance, log });
   const chatActions = new ChatActions({
     chrome, host, instance, log, scheduler: capturer.scheduler,
     capture: (tabId, confirm) => capturer.capture(tabId, "chatgpt", { reason: "chat action", force: true, confirm }),
@@ -151,14 +151,14 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       status = { host: error.code === "host_missing" ? "missing" : "failed", daemon: "unknown" };
     }
     const daemonUp = status.daemon === "running";
-    const jobs = daemonUp ? (await host.backfillJobs().catch(() => ({ jobs: [] }))).jobs : [];
+    const jobs = daemonUp ? (await host.importJobs().catch(() => ({ jobs: [] }))).jobs : [];
     const actions = daemonUp ? (await host.chatActions().catch(() => ({ actions: [] }))).actions : [];
     const { problems } = await session.get({ problems: [] });
     return {
       status,
       page: tab ? await pageState(tab) : null,
       waiting: await outbox.count(),
-      backfill: [
+      importJob: [
         ...jobs.filter((job) => !JOB_ENDED.includes(job.status)),
         ...jobs.filter((job) => JOB_ENDED.includes(job.status)).slice(-JOBS_ENDED_SHOWN),
       ],
@@ -172,7 +172,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
   async function tick() {
     await capturer.deliver().catch((error) => log(`Captures could not be stored: ${error.message}`));
     await Promise.all([
-      backfill.step().catch((error) => log(`Backfill: ${error.message}`)),
+      importJob.step().catch((error) => log(`Provider import: ${error.message}`)),
       chatActions.step().catch((error) => log(`Chat action: ${error.message}`)),
     ]);
   }

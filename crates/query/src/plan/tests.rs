@@ -317,8 +317,8 @@ fn saved_forks_do_not_poison_unit_queries() {
     prepare("sessions", &snapshot, |_| Ok(())).unwrap();
     let fork = snapshot.saved.get_mut("alias").unwrap();
     fork[0].conflicts = vec![
-        polylogue_model::Reference::parse_stored("assertion:root-b@left").unwrap(),
-        polylogue_model::Reference::parse_stored("assertion:root-b@right").unwrap(),
+        polylogue_model::Reference::parse("annotation:root-b@left").unwrap(),
+        polylogue_model::Reference::parse("annotation:root-b@right").unwrap(),
     ];
     let error = prepare("query:alias", &snapshot, |_| Ok(())).unwrap_err();
     assert_eq!(error.kind(), polylogue_model::Code::Ambiguous);
@@ -424,7 +424,7 @@ fn recorded_definitions_do_not_reinterpret_live_search_words() {
     loaded
         .add_saved("recorded", &old, "revision", "root")
         .unwrap();
-    for words in ["assertions", "\"assertions\"", "links", "changes"] {
+    for words in ["\"annotations\"", "links", "changes"] {
         let before = prepare(words, &Bindings::default(), |_| Ok(())).unwrap();
         let after = prepare(words, &loaded, |_| Ok(())).unwrap();
         assert_eq!(before.question_id(), after.question_id(), "{words}");
@@ -492,35 +492,35 @@ fn human_reference_spellings_bind_the_existing_stored_question_identity() {
     for (surface, stored) in [
         (
             "annotation:root@revision",
-            "annotations where assertion:root@revision",
+            "annotations where annotation:root@revision",
         ),
         (
             "annotations where about:annotation:root@revision",
-            "annotations where about:assertion:root@revision",
+            "annotations where about:annotation:root@revision",
         ),
         (
             "annotations where links_to:alternate:root@revision#2",
-            "annotations where links_to:variant:root@revision#2",
+            "annotations where links_to:alternate:root@revision#2",
         ),
         (
             "annotations where reference:annotation:root@revision",
-            "annotations where reference:assertion:root@revision",
+            "annotations where reference:annotation:root@revision",
         ),
         (
             "alternates where source:annotation:root@revision",
-            "alternates where source:assertion:root@revision",
+            "alternates where source:annotation:root@revision",
         ),
         (
             "deliveries where refs:annotation:root@revision",
-            "deliveries where refs:assertion:root@revision",
+            "deliveries where refs:annotation:root@revision",
         ),
         (
             "deliveries where left_out:annotation:root@revision",
-            "deliveries where left_out:assertion:root@revision",
+            "deliveries where left_out:annotation:root@revision",
         ),
         (
             "feed where ref:annotation:root@revision",
-            "feed where ref:assertion:root@revision",
+            "feed where ref:annotation:root@revision",
         ),
     ] {
         let plan = prepare(surface, &Bindings::default(), |_| Ok(())).unwrap();
@@ -600,7 +600,7 @@ fn annotation_history_roots_bind_natural_references_to_the_stored_family_identit
         let reference = prepare(text, &Bindings::default(), |_| Ok(())).unwrap();
         assert_eq!(reference.question_id(), bare.question_id(), "{text}");
     }
-    for root in ["session:claude-code:first", "assertion:opaque"] {
+    for root in ["session:claude-code:first", "alternate:opaque"] {
         let opaque = prepare(
             &format!("annotations where root:{root}"),
             &Bindings::default(),

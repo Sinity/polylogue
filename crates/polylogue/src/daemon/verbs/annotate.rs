@@ -1,5 +1,5 @@
 //! The verbs that write annotations: `note`, `tag`, `edit`, `withdraw` and
-//! `judge`. Notes and tags over the rows are one query assertion, which the
+//! `judge`. Notes and tags over the rows are one query annotation, which the
 //! writer checks and expands into one annotation per row.
 use super::{
     RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use, undo_line,
@@ -7,8 +7,8 @@ use super::{
 use crate::daemon::Failure;
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::{EditStep, JudgeStep, NoteStep, TagStep, WithdrawStep};
-use polylogue_model::assertion::{
-    AssertionKind, AssertionPatch, Change, LinkRole, NewAssertion, NewAssertionLink,
+use polylogue_model::annotation::{
+    AnnotationKind, AnnotationPatch, Change, LinkRole, NewAnnotation, NewAnnotationLink,
 };
 use polylogue_model::user::UserWrite;
 use polylogue_model::{Reference, RevisionReference, Timestamp};
@@ -24,21 +24,21 @@ impl Verb for Note {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        let assertion = note(&step)?;
-        each(assertion, selection, call)
+        let annotation = note(&step)?;
+        each(annotation, selection, call)
     }
     fn would(step: &NoteStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
-        let assertion = note(step)?;
+        let annotation = note(step)?;
         Ok(format!(
             "would write a {} about each of {}",
-            assertion.kind.as_str(),
+            annotation.kind.as_str(),
             selection.described()
         ))
     }
 }
 
 /// The annotation a note step writes about each row.
-fn note(step: &NoteStep) -> Result<NewAssertion, Failure> {
+fn note(step: &NoteStep) -> Result<NewAnnotation, Failure> {
     let NoteStep {
         text,
         kind,
@@ -87,15 +87,15 @@ fn note(step: &NoteStep) -> Result<NewAssertion, Failure> {
         }
     }
     let kind = match kind.as_deref() {
-        None => AssertionKind::Note,
-        Some(name) => AssertionKind::from_name(name)
-            .filter(|kind| !matches!(kind, AssertionKind::Tag))
+        None => AnnotationKind::Note,
+        Some(name) => AnnotationKind::from_name(name)
+            .filter(|kind| !matches!(kind, AnnotationKind::Tag))
             .ok_or_else(|| not_built_use("note", &format!("--as {name}")))?,
     };
     let mut links = Vec::new();
     for (references, role) in [
         (evidence, LinkRole::Evidence),
-        (replies_to, LinkRole::Answers),
+        (replies_to, LinkRole::RepliesTo),
         (supports, LinkRole::Supports),
         (challenges, LinkRole::Challenges),
         (qualifies, LinkRole::Qualifies),
@@ -105,7 +105,7 @@ fn note(step: &NoteStep) -> Result<NewAssertion, Failure> {
         (scope, LinkRole::Scope),
     ] {
         for text in references {
-            links.push(NewAssertionLink {
+            links.push(NewAnnotationLink {
                 role,
                 reference: Reference::parse(text).map_err(Failure::bad_value)?,
             });
@@ -118,7 +118,7 @@ fn note(step: &NoteStep) -> Result<NewAssertion, Failure> {
                 .map_err(|error| Failure::bad_value(format!("note --valid-until: {error}")))
         })
         .transpose()?;
-    Ok(NewAssertion {
+    Ok(NewAnnotation {
         kind,
         key: key.clone(),
         value: Some(Value::String(text.clone())),
@@ -142,7 +142,7 @@ impl Verb for Tag {
 }
 
 /// A tag's key and value split at the first `:`.
-fn tag(step: &TagStep) -> Result<NewAssertion, Failure> {
+fn tag(step: &TagStep) -> Result<NewAnnotation, Failure> {
     let (key, value) = match step.name.split_once(':') {
         Some((key, value)) => (key, Some(serde_json::json!({"value": value}))),
         None => (step.name.as_str(), None),
@@ -152,8 +152,8 @@ fn tag(step: &TagStep) -> Result<NewAssertion, Failure> {
             "tag needs a name: tag NAME or NAME:VALUE",
         ));
     }
-    Ok(NewAssertion {
-        kind: AssertionKind::Tag,
+    Ok(NewAnnotation {
+        kind: AnnotationKind::Tag,
         key: Some(key.to_owned()),
         value,
         valid_until: None,
@@ -163,7 +163,7 @@ fn tag(step: &TagStep) -> Result<NewAssertion, Failure> {
 
 /// One annotation about each row of the selection, in one request.
 fn each(
-    assertion: NewAssertion,
+    annotation: NewAnnotation,
     selection: &Selection,
     call: &StepCall<'_>,
 ) -> Result<StepDone, Failure> {
@@ -173,15 +173,15 @@ fn each(
     let resolved = selection.references()?.to_vec();
     let targets = resolved.len();
     let reader = call.call.reader()?;
-    let all_tagged = if assertion.kind == AssertionKind::Tag {
-        let value = assertion
+    let all_tagged = if annotation.kind == AnnotationKind::Tag {
+        let value = annotation
             .value
             .as_ref()
             .and_then(|value| value.get("value"));
         reader
             .tagged(
                 &resolved,
-                assertion.key.as_deref().expect("tag key checked"),
+                annotation.key.as_deref().expect("tag key checked"),
                 value,
                 &call.call.invocation.authorship.author,
             )?
@@ -194,7 +194,7 @@ fn each(
     drop(reader);
     let write = UserWrite::AssertQuery {
         query,
-        assertion,
+        annotation,
         resolved,
     };
     // The original accepted or pending write owns a retry, even when all
@@ -202,7 +202,7 @@ fn each(
     if all_tagged && crate::daemon::service::accepted_write(&write, &call.call)?.is_none() {
         let UserWrite::AssertQuery { resolved, .. } = write else {
             return Err(Failure::internal(
-                "an assertion step constructed another write",
+                "an annotation step constructed another write",
             ));
         };
         return Ok(StepDone {
@@ -277,15 +277,15 @@ impl Verb for Edit {
                 })
                 .collect::<Result<Vec<_>, Failure>>()?
         };
-        let patch = AssertionPatch {
+        let patch = AnnotationPatch {
             key: step.key.map_or(Change::Keep, Change::Set),
             value: Change::Set(Value::String(text)),
-            ..AssertionPatch::default()
+            ..AnnotationPatch::default()
         };
         if bases.is_empty() {
             return Err(Failure::bad_request("bases must not be empty"));
         }
-        wrote(UserWrite::ReviseAssertions { bases, patch }, call, None)
+        wrote(UserWrite::ReviseAnnotations { bases, patch }, call, None)
     }
     fn would(step: &EditStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
         text(step)?;
@@ -301,9 +301,9 @@ impl Verb for Edit {
 fn stored_annotation(
     reader: &polylogue_store::Reader<'_>,
     reference: &RevisionReference,
-) -> Result<polylogue_model::assertion::Assertion, Failure> {
+) -> Result<polylogue_model::annotation::Annotation, Failure> {
     reader
-        .assertion(reference)?
+        .annotation(reference)?
         .ok_or_else(|| Failure::not_found(format!("no annotation {reference}")))
 }
 
@@ -319,7 +319,7 @@ fn annotations(verb: &str, selection: &Selection) -> Result<Vec<RevisionReferenc
         .references()?
         .iter()
         .map(|reference| match reference {
-            Reference::Assertion(revision) => Ok(revision.clone()),
+            Reference::Annotation(revision) => Ok(revision.clone()),
             other => Err(Failure::bad_request(format!(
                 "{verb} acts on annotations; {other} is not one"
             ))),
@@ -366,7 +366,7 @@ impl Verb for Withdraw {
             return Err(Failure::bad_request("targets must not be empty"));
         }
         wrote(
-            UserWrite::WithdrawAssertions {
+            UserWrite::WithdrawAnnotations {
                 targets,
                 reason: step.reason,
             },
@@ -390,7 +390,7 @@ fn withdrawn(step: &WithdrawStep, selection: &Selection) -> Result<Vec<Reference
     if let Some(other) = references.iter().find(|reference| {
         !matches!(
             reference,
-            Reference::Assertion(_) | Reference::Variant { .. }
+            Reference::Annotation(_) | Reference::Alternate { .. }
         )
     }) {
         let address = other.to_string();
@@ -427,7 +427,7 @@ impl Verb for Judge {
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         let (note, accepted) = verdict(&step, selection)?;
-        let Reference::Assertion(reference) = note else {
+        let Reference::Annotation(reference) = note else {
             unreachable!("verdict checks the selection")
         };
         let reader = call.call.reader()?;
@@ -435,17 +435,17 @@ impl Verb for Judge {
         let found = stored_annotation(&reader, reference)?;
         if !found.fact.author.is_agent() {
             return Err(Failure::bad_request(
-                "only assertions agents wrote are accepted or rejected; revise or withdraw the operator's own",
+                "only annotations agents wrote are accepted or rejected; revise or withdraw the operator's own",
             ));
         }
         drop(reader);
-        let judgment = NewAssertion {
-            kind: AssertionKind::Judgment,
+        let judgment = NewAnnotation {
+            kind: AnnotationKind::Judgment,
             key: Some(if accepted { "accepted" } else { "rejected" }.into()),
             value: step.reason.map(Value::String),
-            links: vec![NewAssertionLink {
+            links: vec![NewAnnotationLink {
                 role: LinkRole::About,
-                reference: Reference::Assertion(RevisionReference::exact(
+                reference: Reference::Annotation(RevisionReference::exact(
                     found.fact.root,
                     found.fact.id,
                 )),
@@ -454,7 +454,7 @@ impl Verb for Judge {
         };
         wrote(
             UserWrite::Assert {
-                assertions: vec![judgment],
+                annotations: vec![judgment],
             },
             call,
             Some(scope),
@@ -486,7 +486,7 @@ fn verdict<'s>(
         other => return Err(not_built_use("judge", other)),
     };
     match selection.references()? {
-        [note @ Reference::Assertion(_)] => Ok((note, accepted)),
+        [note @ Reference::Annotation(_)] => Ok((note, accepted)),
         [other] => Err(Failure::bad_request(format!(
             "judge accepts or rejects annotations; {other} is not one"
         ))),

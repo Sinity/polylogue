@@ -1,6 +1,6 @@
 //! What the index holds of conversations the browser extension captures:
 //! enough for the extension to show a page's state, to skip, during a
-//! backfill, conversations the provider has not changed since their last
+//! provider import, conversations the provider has not changed since their last
 //! capture, and to skip downloading files whose bytes are already stored.
 use super::*;
 

@@ -19,11 +19,11 @@ fn the_channel_is_a_function_of_act_state_and_probe() {
     let observed = probe(false, true, true, true);
     let hosted = probe(true, true, true, true);
     let bare = probe(false, false, false, false);
-    let ping = Act::Ping { live: false };
-    let live_ping = Act::Ping { live: true };
+    let send = Act::Send { live: false };
+    let live_message = Act::Send { live: true };
     for state in [Working, Waiting, Idle, Unknown] {
-        assert_eq!(channel(ping, state, &observed), Ok(Channel::Hook));
-        assert_eq!(channel(ping, state, &hosted), Ok(Channel::Protocol));
+        assert_eq!(channel(send, state, &observed), Ok(Channel::Hook));
+        assert_eq!(channel(send, state, &hosted), Ok(Channel::Protocol));
         assert_eq!(channel(Act::Answer, state, &observed), Ok(Channel::Hook));
         assert_eq!(
             channel(Act::Interrupt, state, &observed)
@@ -41,13 +41,13 @@ fn the_channel_is_a_function_of_act_state_and_probe() {
         );
     }
     for state in [Ended, Stale] {
-        assert_eq!(channel(ping, state, &observed), Ok(Channel::Resume));
+        assert_eq!(channel(send, state, &observed), Ok(Channel::Resume));
         assert_eq!(channel(Act::Resume, state, &observed), Ok(Channel::Resume));
         assert_eq!(
-            channel(live_ping, state, &observed).unwrap_err().reason,
+            channel(live_message, state, &observed).unwrap_err().reason,
             "session_not_live"
         );
-        let refused = channel(ping, state, &bare).unwrap_err();
+        let refused = channel(send, state, &bare).unwrap_err();
         assert_eq!(refused.reason, "unsupported");
         assert!(refused.detail.contains("claude-code"));
     }

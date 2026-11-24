@@ -157,7 +157,7 @@ pub fn prepare(
             match pending {
                 PendingAuthored::Live { .. } => validate_live(original)?,
                 PendingAuthored::Restore { .. } => validate(original)?,
-                PendingAuthored::RestoreAssertion { .. } => unreachable!(),
+                PendingAuthored::RestoreAnnotation { .. } => unreachable!(),
             }
             if request_hash(&original.request)? != request_hash(request)?
                 || known.as_ref().is_some_and(|known| known != original)
@@ -263,8 +263,8 @@ pub(crate) fn with_overlay<T>(
             PendingAuthored::Restore { prepared } => {
                 restore(&tx, prepared, 0)?;
             }
-            PendingAuthored::RestoreAssertion { fact } => {
-                crate::assertions::apply(&tx, std::slice::from_ref(fact), 0)?;
+            PendingAuthored::RestoreAnnotation { fact } => {
+                crate::annotations::apply(&tx, std::slice::from_ref(fact), 0)?;
             }
         }
         Ok(())
@@ -313,7 +313,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
                     &part.id,
                     &part.name,
                     part.new_revision,
-                    polylogue_model::assertion::AssertionKind::SavedQuery,
+                    polylogue_model::annotation::AnnotationKind::SavedQuery,
                 )
             })
             .chain(parts.watch.iter().map(|part| {
@@ -321,19 +321,19 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
                     &part.id,
                     &part.name,
                     part.new_rule,
-                    polylogue_model::assertion::AssertionKind::Signal,
+                    polylogue_model::annotation::AnnotationKind::Signal,
                 )
             }))
         {
             if id.is_empty()
                 || Some(name) != save.name.as_ref()
                 || (created
-                    && !prepared.effect.assertions.iter().any(|fact| {
+                    && !prepared.effect.annotations.iter().any(|fact| {
                         fact.id == *id && fact.kind == kind && fact.key.as_ref() == Some(name)
                     }))
             {
                 return Err(StoreError::invalid(
-                    "recorded Save has inconsistent assertion outcomes",
+                    "recorded Save has inconsistent annotation outcomes",
                 ));
             }
         }
@@ -358,7 +358,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
         }
     }
     crate::signals::validate(prepared)?;
-    for fact in &prepared.effect.assertions {
+    for fact in &prepared.effect.annotations {
         fact.validate().map_err(crate::StoreError::invalid)?;
     }
     fn events<T: PartialEq>(
@@ -401,7 +401,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
             |e| &e.request,
         )?;
     }
-    for change in &prepared.effect.backfills {
+    for change in &prepared.effect.import_jobs {
         events(
             &change.job.events,
             &change.added_events,
@@ -446,7 +446,7 @@ fn validate_live(prepared: &PreparedRequest) -> Result<()> {
                 ));
             }
         }
-        if prepared.effect.assertions.len() != created.len() {
+        if prepared.effect.annotations.len() != created.len() {
             return Err(StoreError::invalid(
                 "a new Save carries exactly its accepted annotation parts",
             ));
@@ -549,21 +549,21 @@ pub fn clear(conn: &Connection) -> Result<()> {
     let source = Source::of(conn)?;
     for table in [
         "revision_state",
-        "assertion_slot",
-        "link",
-        "assertion",
-        "variant_part",
-        "variant",
+        "annotation_slot",
+        "annotation_link",
+        "annotation",
+        "alternate_part",
+        "alternate",
         "signal_event",
         "signal_state",
         "delivery_event",
         "chat_action_attachment",
         "chat_action_event",
-        "backfill_job_event",
+        "import_job_event",
         "kept_result",
         "delivery",
         "chat_action",
-        "backfill_job",
+        "import_job",
         "client_request",
     ] {
         conn.execute(&source.sql(&format!("DELETE FROM @source.{table}")), [])?;

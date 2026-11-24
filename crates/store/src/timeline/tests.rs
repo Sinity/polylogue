@@ -322,7 +322,7 @@ fn response_pages_exclude_only_sessions_with_unknown_boundaries() {
 }
 
 #[test]
-fn paging_across_assertions_and_events_shows_each_row_once() {
+fn paging_across_annotations_and_events_shows_each_row_once() {
     let temp = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(temp.path()).unwrap();
     let session = f
@@ -353,8 +353,8 @@ fn paging_across_assertions_and_events_shows_each_row_once() {
             .as_i64()
             .unwrap()
     };
-    // An event in the middle assertion's millisecond follows it: equal times
-    // order by kind, and `assertion` sorts before `event`.
+    // An event in the middle annotation's millisecond follows it: equal times
+    // order by kind, and `annotation` sorts before `event`.
     drop(reader);
     drop(pool);
     f.event(session, "synthetic", Some(noted_at(&notes[1])))
@@ -378,10 +378,10 @@ fn paging_across_assertions_and_events_shows_each_row_once() {
         after = Some(serde_json::from_value(found["after"].clone()).unwrap());
     }
     let kinds: Vec<&str> = seen.iter().map(|(kind, _)| kind.as_str()).collect();
-    assert_eq!(kinds, ["assertion", "assertion", "event", "assertion"]);
+    assert_eq!(kinds, ["annotation", "annotation", "event", "annotation"]);
     let shown: Vec<&str> = seen
         .iter()
-        .filter(|(kind, _)| kind == "assertion")
+        .filter(|(kind, _)| kind == "annotation")
         .map(|(_, id)| id.as_str())
         .collect();
     assert_eq!(shown, notes);

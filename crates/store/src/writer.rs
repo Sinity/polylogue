@@ -27,7 +27,7 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-mod assertions;
+mod annotations;
 mod assets;
 mod dispatch;
 pub use dispatch::ParentLifetime;
@@ -148,8 +148,8 @@ enum Msg {
         Box<authored::Restoration>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
     ),
-    RestoreAssertion(
-        Box<assertions::Restoration>,
+    RestoreAnnotation(
+        Box<annotations::Restoration>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
     ),
     Stop,
@@ -997,7 +997,7 @@ impl Inner {
         let mut byte_cursors = Vec::new();
         let mut group_pages = Vec::new();
         let mut restorations = Vec::new();
-        let mut assertion_restorations = Vec::new();
+        let mut annotation_restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut blobs = Vec::new();
         loop {
@@ -1068,8 +1068,8 @@ impl Inner {
                         restorations.push((restoration, reply));
                         false
                     }
-                    Msg::RestoreAssertion(restoration, reply) => {
-                        assertion_restorations.push((restoration, reply));
+                    Msg::RestoreAnnotation(restoration, reply) => {
+                        annotation_restorations.push((restoration, reply));
                         false
                     }
                     Msg::ByteCursor(query, reply) => {
@@ -1199,8 +1199,8 @@ impl Inner {
             for (restoration, reply) in restorations.drain(..) {
                 let _ = reply.send(self.restore_authored(*restoration));
             }
-            for (restoration, reply) in assertion_restorations.drain(..) {
-                let _ = reply.send(self.restore_assertion(*restoration));
+            for (restoration, reply) in annotation_restorations.drain(..) {
+                let _ = reply.send(self.restore_annotation(*restoration));
             }
             self.serve_users();
 
@@ -1491,14 +1491,14 @@ impl Inner {
     /// Starts a derive pass on the derive thread, answering `waiting` once
     /// it is done; the writer goes on with other work meanwhile. Here the
     /// writer only marks what the pass must see: sessions whose derivation
-    /// version moved, variants' text and the search entries waiting.
+    /// version moved, alternates' text and the search entries waiting.
     fn request_derive(&mut self, waiting: derive_thread::Waiting) {
         let prepared = self
             .until_stopped(|inner| {
                 if inner.stop.is_cancelled() {
                     return Err(StoreError::WriterGone);
                 }
-                inner.project_variant_text()?;
+                inner.project_alternate_text()?;
                 if !inner.resolver.upkeep().at_build_end() {
                     crate::text_rows::index_pending(&inner.index, || ())?;
                 }
@@ -1772,7 +1772,7 @@ impl Inner {
                 | polylogue_model::user::UserWrite::DeliveredAdvice(_)
                 | polylogue_model::user::UserWrite::MarkSeen { .. }
         ) {
-            self.project_variant_text()?;
+            self.project_alternate_text()?;
         }
         Ok(outcome)
     }

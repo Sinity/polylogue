@@ -416,7 +416,7 @@ fn model_authored_user_task_does_not_answer_a_turn() {
 }
 
 #[test]
-fn assertion_reference_keeps_its_family_and_revision() {
+fn annotation_reference_keeps_its_family_and_revision() {
     let (_dir, mut fixture) = fixture();
     let first = fixture
         .note("note", None, Some("first"), "session:test:one")
@@ -428,11 +428,11 @@ fn assertion_reference_keeps_its_family_and_revision() {
     // current. The stored current-revision index is recomputed as a writer would.
     let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
     conn.execute(
-        "UPDATE assertion SET root=?1 WHERE id=?2",
+        "UPDATE annotation SET root=?1 WHERE id=?2",
         rusqlite::params![first, second],
     )
     .unwrap();
-    crate::assertions::current_revisions::recompute(&conn, [first.clone(), second.clone()].into())
+    crate::annotations::current_revisions::recompute(&conn, [first.clone(), second.clone()].into())
         .unwrap();
     drop(conn);
     let pool = fixture.reads().unwrap();
@@ -767,7 +767,7 @@ fn event_read_target_uses_event_grain() {
 }
 
 #[test]
-fn assertion_values_are_decoded_once_and_predicates_match_recorded_text() {
+fn annotation_values_are_decoded_once_and_predicates_match_recorded_text() {
     let (_dir, mut fixture) = fixture();
     for text in ["", "quoted \"body\"\nnext"] {
         fixture
@@ -808,7 +808,7 @@ fn assertion_values_are_decoded_once_and_predicates_match_recorded_text() {
     assert_eq!(values, vec![serde_json::json!("quoted \"body\"\nnext")]);
 }
 
-/// The prepared selection that assertion writes use and the listing the query
+/// The prepared selection that annotation writes use and the listing the query
 /// command shows must select the same rows for one question.
 #[test]
 fn selection_and_listing_agree_when_every_row_is_committed() {

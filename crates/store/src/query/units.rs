@@ -2,7 +2,7 @@
 //! parser resolves unit names here; the compiler reads a unit's table, key,
 //! default columns, order, defaults, time window, relations, text search
 //! and parent rows from here; the fields each unit accepts are in
-//! [`crate::query::fields::FIELDS`]. Adding a unit is adding its [`Unit`] variant
+//! [`crate::query::fields::FIELDS`]. Adding a unit is adding its [`Unit`] alternate
 //! and one [`UnitSpec`].
 //!
 //! Templates name the unit's aliases as `{s}` session, `{m}` message, `{b}`
@@ -385,7 +385,7 @@ pub fn spec(unit: Unit) -> &'static UnitSpec {
         Unit::ToolCalls => &TOOL_CALLS,
         Unit::Files => &FILES,
         Unit::Events => &EVENTS,
-        Unit::Annotations => &ASSERTIONS,
+        Unit::Annotations => &ANNOTATIONS,
         Unit::SessionLinks => &LINKS,
         Unit::Turns => &TURNS,
         Unit::Deliveries => &DELIVERIES,
@@ -426,12 +426,12 @@ fn counts_as_action(a: &Aliases) -> String {
     fields::counts_as_action(&a.t)
 }
 
-fn current_assertion(a: &Aliases) -> String {
-    fields::current_assertion(&a.row)
+fn current_annotation(a: &Aliases) -> String {
+    fields::current_annotation(&a.row)
 }
 
 fn not_withdrawn(a: &Aliases) -> String {
-    format!("NOT {}", fields::withdrawn_assertion(&a.row))
+    format!("NOT {}", fields::withdrawn_annotation(&a.row))
 }
 
 fn turns_from(a: &Aliases) -> String {
@@ -723,15 +723,15 @@ static EVENTS: UnitSpec = UnitSpec {
     parents: &[],
 };
 
-static ASSERTIONS: UnitSpec = UnitSpec {
-    from: Expr::Template("source_assertion {r}"),
+static ANNOTATIONS: UnitSpec = UnitSpec {
+    from: Expr::Template("source_annotation {r}"),
     key: "{r}.rowid",
     identity: &["{r}.id", "{r}.root"],
     columns: &[
         ("id", T("{r}.id"), Text),
         (
             "reference",
-            Expr::Template("pl_assertion_ref({r}.root,{r}.id)"),
+            Expr::Template("pl_annotation_ref({r}.root,{r}.id)"),
             Text,
         ),
         ("kind", T("{r}.kind"), Text),
@@ -747,7 +747,7 @@ static ASSERTIONS: UnitSpec = UnitSpec {
         (
             "about",
             T(
-                "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))",
+                "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_annotation_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))",
             ),
             Text,
         ),
@@ -759,7 +759,7 @@ static ASSERTIONS: UnitSpec = UnitSpec {
     until: Some("{r}.created_at < {v}"),
     session_pk: "{r}.session_pk",
     session_scope: Some(
-        "EXISTS (SELECT 1 FROM source_link snt JOIN session ss ON 'session:' || ss.id = snt.ref \
+        "EXISTS (SELECT 1 FROM source_annotation_link snt JOIN session ss ON 'session:' || ss.id = snt.ref \
          WHERE snt.record = {r}.id AND snt.role = 'about' AND ss.pk IN ({sessions}))",
     ),
     search: Search::Substring("{r}.value"),
@@ -934,10 +934,10 @@ static CHANGES: UnitSpec = UnitSpec {
         "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
            MAX(cs.changed, COALESCE(cs.live_changed, 0), COALESCE(cs.derived_changed, 0)) AS seq, \
            cs.changed AS changed, cs.live_changed AS live_changed, cs.derived_changed AS derived_changed, \
-           NULL AS assertion_kind FROM session cs \
+           NULL AS annotation_kind FROM session cs \
          UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL \
            FROM removed_session rs \
-         UNION ALL SELECT 'assertion', cn.id, NULL, cn.commit_seq, NULL, NULL, NULL, cn.kind FROM source_assertion cn \
+         UNION ALL SELECT 'annotation', cn.id, NULL, cn.commit_seq, NULL, NULL, NULL, cn.kind FROM source_annotation cn \
 ) {r}",
     ),
     key: "({r}.kind || ':' || {r}.ref)",
@@ -947,7 +947,7 @@ static CHANGES: UnitSpec = UnitSpec {
         ("ref", T("{r}.ref"), Text),
         ("seq", T("{r}.seq"), Number),
         ("live_changed", T("{r}.live_changed"), Number),
-        ("assertion_kind", T("{r}.assertion_kind"), Text),
+        ("annotation_kind", T("{r}.annotation_kind"), Text),
     ],
     time: "{r}.seq",
     newest_first: false,
@@ -962,10 +962,10 @@ static CHANGES: UnitSpec = UnitSpec {
 };
 
 fn current_alternate(a: &Aliases) -> String {
-    crate::variants::current_sql(&a.row)
+    crate::alternates::current_sql(&a.row)
 }
 static ALTERNATES: UnitSpec = UnitSpec {
-    from: T("source_variant {r}"),
+    from: T("source_alternate {r}"),
     key: "{r}.rowid",
     identity: &["{r}.id"],
     columns: &[
@@ -993,14 +993,14 @@ static ALTERNATES: UnitSpec = UnitSpec {
     session_pk: "",
     session_scope: None,
     search: Search::Substring(
-        "(SELECT group_concat(vt.body,' ') FROM variant_text vt WHERE vt.variant={r}.id)",
+        "(SELECT group_concat(vt.body,' ') FROM alternate_text vt WHERE vt.alternate={r}.id)",
     ),
     relations: &[],
     parents: &[],
 };
 static QUERIES: UnitSpec = UnitSpec {
     from: T(
-        "(SELECT q.hash,q.commit_seq,a.key AS name,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.id) END AS revision,coalesce(CASE WHEN count(DISTINCT a.id)<=1 THEN min(json_extract(a.value,'$.text')) END,q.normal_form) AS text,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.created_at) END AS saved_at FROM source_query q LEFT JOIN source_assertion a ON a.kind='saved_query' AND json_extract(a.value,'$.hash')=q.hash AND EXISTS(SELECT 1 FROM source_revision_state rs WHERE rs.id=a.id AND rs.current=1 AND rs.withdrawn=0) GROUP BY q.hash,a.key) {r}",
+        "(SELECT q.hash,q.commit_seq,a.key AS name,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.id) END AS revision,coalesce(CASE WHEN count(DISTINCT a.id)<=1 THEN min(json_extract(a.value,'$.text')) END,q.normal_form) AS text,CASE WHEN count(DISTINCT a.id)=1 THEN min(a.created_at) END AS saved_at FROM source_query q LEFT JOIN source_annotation a ON a.kind='saved_query' AND json_extract(a.value,'$.hash')=q.hash AND EXISTS(SELECT 1 FROM source_revision_state rs WHERE rs.id=a.id AND rs.current=1 AND rs.withdrawn=0) GROUP BY q.hash,a.key) {r}",
     ),
     key: "({r}.hash || ':' || coalesce({r}.name,''))",
     identity: &["{r}.hash", "coalesce({r}.name,'')"],
@@ -1020,7 +1020,7 @@ static QUERIES: UnitSpec = UnitSpec {
         (
             "watched",
             T(
-                "EXISTS(SELECT 1 FROM source_assertion w JOIN source_revision_state ws ON ws.id=w.id AND ws.current=1 AND ws.withdrawn=0 WHERE w.kind='signal' AND w.key={r}.name)",
+                "EXISTS(SELECT 1 FROM source_annotation w JOIN source_revision_state ws ON ws.id=w.id AND ws.current=1 AND ws.withdrawn=0 WHERE w.kind='signal' AND w.key={r}.name)",
             ),
             Bool,
         ),
@@ -1152,8 +1152,8 @@ pub fn default_sql(id: DefaultId, a: &Aliases) -> String {
         DefaultId::CountedCalls => counts_as_action(a),
         DefaultId::NotWithdrawalOrSeen => a.expand("{r}.kind NOT IN ('withdrawal','seen')"),
         DefaultId::CurrentAlternate => current_alternate(a),
-        DefaultId::NotSeen => a.expand("coalesce({r}.assertion_kind,'') <> 'seen'"),
-        DefaultId::CurrentAssertion => current_assertion(a),
+        DefaultId::NotSeen => a.expand("coalesce({r}.annotation_kind,'') <> 'seen'"),
+        DefaultId::CurrentAnnotation => current_annotation(a),
         DefaultId::NotWithdrawn => not_withdrawn(a),
         DefaultId::VisibleIfSession => maybe_session_visible(a),
     }

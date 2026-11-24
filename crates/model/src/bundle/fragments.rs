@@ -106,18 +106,14 @@ type Result<T> = std::result::Result<T, TextFragmentError>;
 impl TextSourceVersion {
     /// Checks version and container metadata without checking source bytes.
     pub fn validate_container(&self, container: &Reference) -> Result<()> {
-        if Reference::parse_stored(&container.stored_form())
-            .ok()
-            .as_ref()
-            != Some(container)
-        {
+        if Reference::parse(&container.to_string()).ok().as_ref() != Some(container) {
             return Err(TextFragmentError::SourceVersion);
         }
         let version_reference = match self {
             Self::ContentHash { record, .. } => record,
             Self::ExactRevision { reference } => reference,
         };
-        if Reference::parse_stored(&version_reference.stored_form())
+        if Reference::parse(&version_reference.to_string())
             .ok()
             .as_ref()
             != Some(version_reference)
@@ -139,12 +135,12 @@ impl TextSourceVersion {
                 },
                 Reference::Document(document),
             ) => version_document == document,
-            (Self::ExactRevision { reference }, Reference::Assertion(revision)) => {
+            (Self::ExactRevision { reference }, Reference::Annotation(revision)) => {
                 revision.revision.is_some() && reference == container
             }
             (
                 Self::ExactRevision { reference },
-                Reference::Variant {
+                Reference::Alternate {
                     revision,
                     part: Some(_),
                 },
@@ -162,7 +158,7 @@ impl TextSourceVersion {
 impl TextFragmentRecord {
     pub fn validate(&self) -> Result<()> {
         self.fragment.validate()?;
-        if self.reference != self.fragment.reference().stored_form() {
+        if self.reference != self.fragment.reference().to_string() {
             return Err(TextFragmentError::Reference);
         }
         Ok(())

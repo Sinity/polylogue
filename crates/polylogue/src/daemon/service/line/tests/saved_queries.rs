@@ -71,7 +71,7 @@ fn shipped_query_resolves_and_withdrawing_an_authored_override_restores_it() {
     assert_eq!(current["definitions"][0]["revision"], definition.id);
     let reader = d.daemon.reads.reader().unwrap();
     let fact = reader
-        .assertion(&RevisionReference::exact(
+        .annotation(&RevisionReference::exact(
             definition.id.clone(),
             definition.id.clone(),
         ))
@@ -168,7 +168,7 @@ fn changing_a_saved_question_moves_its_existing_watch_to_the_exact_new_revision(
         (&second_watch.id, "query:watched@2"),
     ] {
         let fact = reader
-            .assertion(&RevisionReference::exact(
+            .annotation(&RevisionReference::exact(
                 first_watch.id.clone(),
                 id.clone(),
             ))
@@ -300,7 +300,7 @@ fn recreating_a_withdrawn_figure_keeps_its_watch_on_the_new_family_and_denominat
         .reads
         .reader()
         .unwrap()
-        .assertion(&RevisionReference::exact(
+        .annotation(&RevisionReference::exact(
             first_saved.id.clone(),
             first_saved.id.clone(),
         ))
@@ -322,16 +322,16 @@ fn recreating_a_withdrawn_figure_keeps_its_watch_on_the_new_family_and_denominat
     let watch = second.watch.as_ref().unwrap();
     let reader = d.daemon.reads.reader().unwrap();
     let new = reader
-        .assertion(&RevisionReference::exact(
+        .annotation(&RevisionReference::exact(
             second_saved.id.clone(),
             second_saved.id.clone(),
         ))
         .unwrap()
         .unwrap()
         .fact;
-    let old_value: polylogue_model::assertion::values::SavedQuery =
+    let old_value: polylogue_model::annotation::values::SavedQuery =
         serde_json::from_value(old.value.clone().unwrap()).unwrap();
-    let new_value: polylogue_model::assertion::values::SavedQuery =
+    let new_value: polylogue_model::annotation::values::SavedQuery =
         serde_json::from_value(new.value.clone().unwrap()).unwrap();
     assert_eq!(
         old_value.hash, new_value.hash,
@@ -339,7 +339,7 @@ fn recreating_a_withdrawn_figure_keeps_its_watch_on_the_new_family_and_denominat
     );
     assert_ne!(old_value.denominator, new_value.denominator);
     let rule = reader
-        .assertion(&RevisionReference::exact(
+        .annotation(&RevisionReference::exact(
             watch.id.clone(),
             watch.id.clone(),
         ))
@@ -357,7 +357,7 @@ fn recreating_a_withdrawn_figure_keeps_its_watch_on_the_new_family_and_denominat
     );
     assert_eq!(
         reader
-            .assertion(&RevisionReference::exact(
+            .annotation(&RevisionReference::exact(
                 first_saved.id.clone(),
                 first_saved.id.clone()
             ))

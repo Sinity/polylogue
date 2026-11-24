@@ -175,7 +175,7 @@ fn text_fragment_separator_coverage_uses_the_existing_document_recipe() {
     }
     check.finish().unwrap();
     let record = TextFragmentRecord {
-        reference: value.reference().stored_form(),
+        reference: value.reference().to_string(),
         commit: 99,
         fragment: value,
     };
@@ -206,8 +206,8 @@ fn partial_selection_carries_no_unselected_body() {
 #[test]
 fn text_fragment_exact_revision_never_resolves_a_current_root() {
     let mut value = fragment(0, "x");
-    value.container = Reference::Assertion(crate::RevisionReference {
-        root: "assertion".into(),
+    value.container = Reference::Annotation(crate::RevisionReference {
+        root: "annotation".into(),
         revision: None,
     });
     value.source_version = TextSourceVersion::ExactRevision {
@@ -215,8 +215,8 @@ fn text_fragment_exact_revision_never_resolves_a_current_root() {
     };
     value.provenance.spans[0].reference = value.reference();
     assert_eq!(value.validate(), Err(TextFragmentError::SourceVersion));
-    value.container = Reference::Assertion(crate::RevisionReference::exact(
-        "assertion".into(),
+    value.container = Reference::Annotation(crate::RevisionReference::exact(
+        "annotation".into(),
         "revision".into(),
     ));
     value.source_version = TextSourceVersion::ExactRevision {
@@ -230,7 +230,7 @@ fn text_fragment_exact_revision_never_resolves_a_current_root() {
 fn portable_fragment_keeps_versioned_identity() {
     let selected = fragment(1, "😀");
     let record = crate::bundle::Record::TextFragment(Box::new(TextFragmentRecord {
-        reference: selected.reference().stored_form(),
+        reference: selected.reference().to_string(),
         commit: 17,
         fragment: selected.clone(),
     }));

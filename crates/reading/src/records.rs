@@ -137,7 +137,7 @@ pub(super) fn reference(
                 .ok_or_else(|| Error::not_found(format!("no event {id}")))?;
             visit(Record::Event(record).into(), LayoutFacts::default(), at)
         }
-        ReadTarget::Assertion { .. } | ReadTarget::Delivery(_) => {
+        ReadTarget::Annotation { .. } | ReadTarget::Delivery(_) => {
             let at = single(ReadRecordKind::Authored)?;
             super::authored::reference(reader, &target.reference(), &mut |record, facts| {
                 visit(record.into(), facts, at)
@@ -578,7 +578,7 @@ fn adjacent(
             families[0] = (Event, 1);
             1
         }
-        ReadTarget::Assertion { .. } | ReadTarget::Delivery(_) => {
+        ReadTarget::Annotation { .. } | ReadTarget::Delivery(_) => {
             families[0] = (Authored, 1);
             1
         }

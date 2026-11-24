@@ -88,13 +88,13 @@ stored_names!(LinkKind {
 #[serde(rename_all = "snake_case")]
 pub enum ReferenceReason {
     Briefing,
-    Ping,
+    Send,
     Mention,
 }
 
 stored_names!(ReferenceReason {
     Briefing => "briefing",
-    Ping => "ping",
+    Send => "send",
     Mention => "mention",
 });
 

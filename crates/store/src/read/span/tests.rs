@@ -3,7 +3,7 @@ use crate::fixture::writer::{WriterArchive, message};
 use polylogue_model::{Block, Role};
 
 fn reference(text: &str) -> Reference {
-    Reference::parse_stored(text).unwrap()
+    Reference::parse(text).unwrap()
 }
 #[test]
 fn selected_prefix_is_portable_without_reading_or_hashing_unknown_suffix() {

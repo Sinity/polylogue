@@ -131,7 +131,7 @@ async fn send(r: &Reader, req: Http<Body>) -> (StatusCode, HeaderMap, String) {
     (status, headers, application_body(body))
 }
 
-/// Domain assertions use the payload; protocol tests inspect the wire envelope.
+/// Domain annotations use the payload; protocol tests inspect the wire envelope.
 pub(super) fn application_body(body: String) -> String {
     let Ok(answer) = serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&body)
     else {
@@ -487,7 +487,7 @@ fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
     let r = reader();
     let archive = rusqlite::Connection::open(r.w.daemon.archive.archive_db()).unwrap();
     archive
-        .execute_batch("ALTER TABLE assertion RENAME TO unavailable_assertion")
+        .execute_batch("ALTER TABLE annotation RENAME TO unavailable_annotation")
         .unwrap();
     let body = serde_json::json!({
         "provider": "chatgpt",
@@ -496,7 +496,7 @@ fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
     });
     let response = rt().block_on(async { send(&r, chat_send(&body)).await });
     archive
-        .execute_batch("ALTER TABLE unavailable_assertion RENAME TO assertion")
+        .execute_batch("ALTER TABLE unavailable_annotation RENAME TO annotation")
         .unwrap();
     assert_eq!(
         response.0,
@@ -526,7 +526,7 @@ fn chat_send_answer_preserves_draft_credentials_as_data() {
 }
 
 #[test]
-fn backfill_jobs_start_and_list_over_http() {
+fn import_jobs_start_and_list_over_http() {
     let r = reader();
     rt().block_on(async {
         let start = own_origin(authed(post("/api/v1/backfill/start")))
@@ -821,17 +821,17 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
     r.w.wait_for(|status| status["store"]["messages"] == 4);
     rt().block_on(async {
         use polylogue_model::read::{Card, ItemKind, ParentIssue, ReadRecord, ValueState};
-        let (status, _, html) = send_html(&r, "/s/claude-code:child?view=links").await;
+        let (status, _, html) = send_html(&r, "/s/claude-code:child?view=tree").await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(html.contains("href=\"/s/claude-code%3As1\""), "{html}");
         assert!(!html.contains("claude-code:other"), "{html}");
-        let scoped=read_items(&r,"session:claude-code:child",&[("view","links")]).await;
+        let scoped=read_items(&r,"session:claude-code:child",&[("view","tree")]).await;
         let edges:Vec<_>=scoped.iter().filter_map(|item| match &item.kind {
             ItemKind::Card {card} => match card.as_ref() { Card::LinkEdge {from,to,relation,how,..} => Some((from.as_str(),to.as_str(),relation.as_str(),how.as_deref())), _=>None }, _=>None,
         }).collect();
         assert_eq!(edges,[("session:claude-code:s1","session:claude-code:child","fork",None)]);
         // The source's fork marker and branch point are stored link facts, not invented HTML text.
-        let path=read_url("session:claude-code:child",&[("view","links"),("delivery","stream")]);
+        let path=read_url("session:claude-code:child",&[("view","tree"),("delivery","stream")]);
         let (status,_,body)=send(&r,authed(get(&path)).body(Body::empty()).unwrap()).await;
         assert_eq!(status,StatusCode::OK,"{body}");
         let frames=command_surface::SseDecoder::new().push(body.as_bytes()).unwrap();
@@ -849,7 +849,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
         assert_eq!(links[0].kind,polylogue_model::LinkKind::Fork);
         assert_eq!(links[0].at.as_ref().unwrap().to_string(),"claude-code:u1");
         assert_eq!(links[0].evidence,"forkedFrom");
-        let (status, _, html) = send_html(&r, "/s/claude-code:orphan?view=links").await;
+        let (status, _, html) = send_html(&r, "/s/claude-code:orphan?view=tree").await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert!(html.contains("href=\"/s/claude-code%3Amissing\""), "{html}");
         let items=read_items(&r,"session:claude-code:orphan",&[("show","inherited")]).await;
@@ -1155,7 +1155,7 @@ fn setting_http_keeps_typed_write_repeat_and_current_results() {
         assert_eq!(current.history.len(), 1);
         assert_eq!(
             current.history[0].value,
-            polylogue_model::settings::Value::Variants(vec![])
+            polylogue_model::settings::Value::Alternates(vec![])
         );
         assert_eq!(
             current.current.authored.as_ref().unwrap().reference,

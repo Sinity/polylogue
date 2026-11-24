@@ -31,7 +31,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 3;
+pub const VERSION: u32 = 4;
 
 use crate::document::{first_key, session_id};
 use crate::fields::ExpectedType as T;
@@ -46,7 +46,7 @@ use std::path::Path;
 pub const ORIGIN: &str = "hook-spool";
 
 /// Written only after the hook output was successfully handed over.
-pub const CONTEXT_EMITTED: &str = "HookContextEmitted";
+pub const CONTEXT_EMITTED: &str = "ContextEmitted";
 
 // These record wrapper fields are copied alongside, rather than inside, the
 // payload in Event.data. Keep decoding and event copying on the same list.

@@ -633,7 +633,7 @@ impl CatalogWriter {
     /// Session contributions remain independent of this category.
     pub fn clear_authored(&mut self) -> Result<()> {
         for family in self.definition_families()? {
-            self.remove_values(&format!("assertion:{family}"))?;
+            self.remove_values(&format!("annotation:{family}"))?;
         }
         self.conn.execute(
             "DELETE FROM item WHERE kind IN ('saved','kept','setting','dependencies','kept_binding')",
@@ -644,7 +644,7 @@ impl CatalogWriter {
 
     /// Includes tag-only contributors as well as saved definitions.
     pub fn definition_families(&self) -> Result<Vec<String>> {
-        Ok(self.conn.prepare("SELECT id FROM item WHERE kind='saved' UNION SELECT substr(session,11) FROM contribution WHERE session GLOB 'assertion:*' ORDER BY 1")?
+        Ok(self.conn.prepare("SELECT id FROM item WHERE kind='saved' UNION SELECT substr(session,12) FROM contribution WHERE session GLOB 'annotation:*' ORDER BY 1")?
             .query_map([],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?)
     }
     fn put_item(&self, kind: &str, id: &str, name: &str, item: &impl Serialize) -> Result<()> {

@@ -35,7 +35,7 @@ it("rechecks ownership after waiting and never executes a rejected action", asyn
   expect(now).toBe(30000);
 });
 
-it("runs an explicit action ahead of queued backfill once the active request settles", async () => {
+it("runs an explicit action ahead of queued provider imports once the active request settles", async () => {
   const scheduler = new ProviderScheduler();
   const order = [];
   let release;

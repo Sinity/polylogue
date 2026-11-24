@@ -58,9 +58,9 @@ polylogue session:claude-code:example read --view dialogue --budget 1000
 polylogue session:claude-code:example brief
 polylogue session:claude-code:example note 'Investigate the latency.' --as finding
 polylogue session:claude-code:example tag reviewed
-polylogue assertion:example edit 'Confirmed the finding.'
-polylogue assertion:example withdraw --reason 'Superseded finding.'
-polylogue assertion:example judge accept --reason 'Matches the result.'
+polylogue annotation:example edit 'Confirmed the finding.'
+polylogue annotation:example withdraw --reason 'Superseded finding.'
+polylogue annotation:example judge accept --reason 'Matches the result.'
 polylogue 'sessions where repo:morrow' save morrow-review
 polylogue session:claude-code:example send 'Please check the result.'
 polylogue session:claude-code:example answer allow

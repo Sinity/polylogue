@@ -1,12 +1,12 @@
 use super::*;
 use polylogue_model::authored::ExecutionEligibility;
 use polylogue_model::user::{
-    BackfillCounts, BackfillReport, ChatAttachment, Delivery, NewBackfillJob, NewChatAction,
+    ChatAttachment, Delivery, ImportJobCounts, ImportJobReport, NewChatAction, NewImportJob,
     UserWrite,
 };
 use polylogue_model::{
     Author, BlobHash, Reference, Timestamp,
-    assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+    annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink},
 };
 
 fn cache() -> Connection {
@@ -28,12 +28,12 @@ fn request(id: &str, at: i64, write: UserWrite) -> UserRequest {
         write,
     }
 }
-fn statement(value: &str) -> NewAssertion {
-    NewAssertion {
-        kind: AssertionKind::Note,
+fn statement(value: &str) -> NewAnnotation {
+    NewAnnotation {
+        kind: AnnotationKind::Note,
         key: None,
         value: Some(serde_json::json!(value)),
-        links: vec![NewAssertionLink {
+        links: vec![NewAnnotationLink {
             role: LinkRole::About,
             reference: Reference::parse("repo:example").unwrap(),
         }],
@@ -113,27 +113,27 @@ fn prepared_effect_is_private_and_keeps_its_source() {
         "note-a",
         10,
         UserWrite::Assert {
-            assertions: vec![statement("first")],
+            annotations: vec![statement("first")],
         },
     );
     r.authorship.author = Author::Agent(Some(
         polylogue_model::SessionId::parse("codex:session-a").unwrap(),
     ));
     let p = prepare_with(&conn, &r, &[], &[]).unwrap();
-    assert_eq!(count(&conn, "assertion"), 0);
+    assert_eq!(count(&conn, "annotation"), 0);
     assert_eq!(count(&conn, "client_request"), 0);
     assert_eq!(
-        p.effect.assertions[0].author,
+        p.effect.annotations[0].author,
         Author::Agent(Some(
             polylogue_model::SessionId::parse("codex:session-a").unwrap()
         ))
     );
-    assert_eq!(p.effect.assertions[0].machine, "machine-a");
-    assert_eq!(p.effect.assertions[0].via, r.authorship.via);
-    assert_eq!(p.effect.assertions[0].created_at, Some(r.at));
+    assert_eq!(p.effect.annotations[0].machine, "machine-a");
+    assert_eq!(p.effect.annotations[0].via, r.authorship.via);
+    assert_eq!(p.effect.annotations[0].created_at, Some(r.at));
     assert!(!p.outcome.pending);
     commit(&mut conn, &p, 1);
-    assert_eq!(count(&conn, "assertion"), 1);
+    assert_eq!(count(&conn, "annotation"), 1);
     assert_eq!(known_request(&conn, &r).unwrap(), Some(p));
 }
 #[test]
@@ -211,15 +211,21 @@ fn saved_family_and_revision_stay_fixed_across_replay() {
         &[],
     )
     .unwrap();
-    assert_eq!(third.effect.assertions[0].root, "first");
-    assert!(third.effect.assertions[0].links.iter().any(|link| link.role
-        == polylogue_model::assertion::LinkRole::Revises
-        && link.reference == Reference::parse_stored("assertion:first@second").unwrap()));
-    assert_eq!(count(&conn, "assertion"), 0);
+    assert_eq!(third.effect.annotations[0].root, "first");
+    assert!(
+        third.effect.annotations[0]
+            .links
+            .iter()
+            .any(
+                |link| link.role == polylogue_model::annotation::LinkRole::Revises
+                    && link.reference == Reference::parse("annotation:first@second").unwrap()
+            )
+    );
+    assert_eq!(count(&conn, "annotation"), 0);
     let mut rebuilt = cache();
     commit(&mut rebuilt, &third, 1);
-    let got:(String,String)=rebuilt.query_row("SELECT a.root,l.ref FROM source_assertion a JOIN source_link l ON l.record=a.id WHERE a.id='third' AND l.role='revises'",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
-    assert_eq!(got, ("first".into(), "assertion:first@second".into()));
+    let got:(String,String)=rebuilt.query_row("SELECT a.root,l.ref FROM source_annotation a JOIN source_annotation_link l ON l.record=a.id WHERE a.id='third' AND l.role='revises'",[],|row|Ok((row.get(0)?,row.get(1)?))).unwrap();
+    assert_eq!(got, ("first".into(), "annotation:first@second".into()));
 }
 #[test]
 fn changed_claim_state_never_reselects_another_chat_action() {
@@ -353,13 +359,13 @@ fn duplicate_and_conflicting_retries_preserve_original_effect_and_outcome() {
 #[test]
 fn refusal_creates_no_prepared_or_applied_state() {
     let conn = cache();
-    let mut assertion = statement("invalid");
-    assertion.links.clear();
+    let mut annotation = statement("invalid");
+    annotation.links.clear();
     let r = request(
         "bad",
         10,
         UserWrite::Assert {
-            assertions: vec![assertion],
+            annotations: vec![annotation],
         },
     );
     assert!(matches!(
@@ -367,7 +373,7 @@ fn refusal_creates_no_prepared_or_applied_state() {
         Err(StoreError::Invalid(_))
     ));
     assert_eq!(count(&conn, "client_request"), 0);
-    assert_eq!(count(&conn, "assertion"), 0);
+    assert_eq!(count(&conn, "annotation"), 0);
 }
 #[test]
 fn pending_attachment_metadata_is_validated_once_and_reference_survives_missing_blob() {
@@ -405,7 +411,7 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
             &request(
                 id,
                 at,
-                UserWrite::BackfillStart(NewBackfillJob {
+                UserWrite::ImportJobStart(NewImportJob {
                     id: id.into(),
                     provider: provider.into(),
                     since: None,
@@ -419,14 +425,22 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
     }
     let p = prepare_with(
         &conn,
-        &request("claim", 30, UserWrite::BackfillClaim { by: "tab-a".into() }),
+        &request(
+            "claim",
+            30,
+            UserWrite::ImportJobClaim { by: "tab-a".into() },
+        ),
         &[],
         &[],
     )
     .unwrap();
     let other = prepare_with(
         &conn,
-        &request("other", 31, UserWrite::BackfillClaim { by: "tab-b".into() }),
+        &request(
+            "other",
+            31,
+            UserWrite::ImportJobClaim { by: "tab-b".into() },
+        ),
         &[],
         &[],
     )
@@ -439,13 +453,13 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
         &request(
             "progress",
             32,
-            UserWrite::BackfillReport {
+            UserWrite::ImportJobReport {
                 job: "a".into(),
                 by: "tab-a".into(),
-                report: BackfillReport {
+                report: ImportJobReport {
                     kind: "progress".into(),
                     position: Some("cursor".into()),
-                    counts: BackfillCounts {
+                    counts: ImportJobCounts {
                         listed: 4,
                         captured: 2,
                         unchanged: 1,
@@ -462,7 +476,7 @@ fn backfill_claim_replays_its_original_job_and_preserves_reports() {
     commit(&mut conn, &report, 5);
     let got: (String, i64, String) = conn
         .query_row(
-            "SELECT position,captured,request FROM source_backfill_job_event WHERE kind='progress'",
+            "SELECT position,captured,request FROM source_import_job_event WHERE kind='progress'",
             [],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -489,7 +503,7 @@ fn pending_authored_records_are_never_confirmed() {
             "note",
             1,
             UserWrite::Assert {
-                assertions: vec![statement("text")],
+                annotations: vec![statement("text")],
             },
         ),
         request(
@@ -525,7 +539,7 @@ fn pending_authored_records_are_never_confirmed() {
                 event: "advice".into(),
                 cwd: None,
                 text: "example advice".into(),
-                refs: vec!["assertion:note".into()],
+                refs: vec!["annotation:note".into()],
                 left_out: vec![],
             }),
         ),
@@ -547,9 +561,9 @@ fn pending_authored_records_are_never_confirmed() {
             Some(p.clone())
         );
     }
-    assert_eq!(count(&rebuilt, "assertion"), 3);
+    assert_eq!(count(&rebuilt, "annotation"), 3);
     let kinds: Vec<(String, i64)> = rebuilt
-        .prepare("SELECT kind,count(*) FROM source_assertion GROUP BY kind ORDER BY kind")
+        .prepare("SELECT kind,count(*) FROM source_annotation GROUP BY kind ORDER BY kind")
         .unwrap()
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
@@ -564,9 +578,9 @@ fn pending_authored_records_are_never_confirmed() {
         ]
     );
     for request in &prepared {
-        for fact in &request.effect.assertions {
+        for fact in &request.effect.annotations {
             assert_eq!(
-                crate::assertions::get(&rebuilt, &fact.id)
+                crate::annotations::get(&rebuilt, &fact.id)
                     .unwrap()
                     .unwrap()
                     .fact,
@@ -653,14 +667,14 @@ fn restored_actions_keep_their_history_but_never_run() {
 #[test]
 fn retry_reuses_stored_annotation_targets() {
     let mut conn = cache();
-    let mut assertion = statement("example");
-    assertion.links.clear();
+    let mut annotation = statement("example");
+    annotation.links.clear();
     let r = request(
         "annotation",
         10,
         UserWrite::AssertQuery {
             query: "sessions".into(),
-            assertion,
+            annotation,
             resolved: vec![Reference::parse("repo:example").unwrap()],
         },
     );
@@ -735,7 +749,7 @@ fn repeated_import_changes_no_recorded_state() {
             "note",
             1,
             UserWrite::Assert {
-                assertions: vec![statement("example")],
+                annotations: vec![statement("example")],
             },
         ),
         &[],
@@ -751,7 +765,7 @@ fn repeated_import_changes_no_recorded_state() {
         assert!(restore(&tx, &p, counter).unwrap().repeat);
         tx.commit().unwrap();
     }
-    assert_eq!(count(&conn, "assertion"), 1);
+    assert_eq!(count(&conn, "annotation"), 1);
     visit(&conn, &mut |record| {
         assert_eq!(record, &p);
         Ok(())
@@ -843,7 +857,7 @@ fn reverse_full_snapshot_restore_keeps_event_order_and_disabled_execution() {
         request(
             "start",
             30,
-            UserWrite::BackfillStart(NewBackfillJob {
+            UserWrite::ImportJobStart(NewImportJob {
                 id: "job".into(),
                 provider: "service".into(),
                 since: None,
@@ -852,7 +866,7 @@ fn reverse_full_snapshot_restore_keeps_event_order_and_disabled_execution() {
         request(
             "job-claim",
             40,
-            UserWrite::BackfillClaim { by: "tab".into() },
+            UserWrite::ImportJobClaim { by: "tab".into() },
         ),
         request(
             "delivery",
@@ -901,10 +915,10 @@ fn reverse_full_snapshot_restore_keeps_event_order_and_disabled_execution() {
         crate::chat_actions::read(&reverse, "source_", "chat").unwrap()
     );
     assert_eq!(
-        crate::backfill_jobs::read(&forward, "source_", "job").unwrap(),
-        crate::backfill_jobs::read(&reverse, "source_", "job").unwrap()
+        crate::import_jobs::read(&forward, "source_", "job").unwrap(),
+        crate::import_jobs::read(&reverse, "source_", "job").unwrap()
     );
-    for table in ["chat_action_event", "backfill_job_event"] {
+    for table in ["chat_action_event", "import_job_event"] {
         let rows = |conn: &Connection| {
             conn.prepare(&format!("SELECT n,request FROM source_{table} ORDER BY n"))
                 .unwrap()
@@ -959,7 +973,7 @@ fn reverse_full_snapshot_restore_keeps_event_order_and_disabled_execution() {
             &request(
                 "new-job-claim",
                 1_000_000,
-                UserWrite::BackfillClaim {
+                UserWrite::ImportJobClaim {
                     by: "new-tab".into()
                 }
             ),
@@ -987,8 +1001,8 @@ fn two_hosts_first_setting_show_conflict_in_primary() {
     let in_conflict = |conn: &Connection| -> i64 {
         conn.query_row(
             &format!(
-                "SELECT count(*) FROM source_assertion a WHERE a.kind = 'setting' AND {}",
-                crate::assertions::sql::in_conflict("a")
+                "SELECT count(*) FROM source_annotation a WHERE a.kind = 'setting' AND {}",
+                crate::annotations::sql::in_conflict("a")
             ),
             [],
             |row| row.get(0),
@@ -1008,7 +1022,7 @@ fn two_hosts_first_setting_show_conflict_in_primary() {
     assert_eq!(in_conflict(&conn), 0);
     let current: i64 = conn
         .query_row(
-            "SELECT count(*) FROM source_revision_state s JOIN source_assertion a ON a.id = s.id \
+            "SELECT count(*) FROM source_revision_state s JOIN source_annotation a ON a.id = s.id \
              WHERE a.kind = 'setting' AND s.current = 1",
             [],
             |row| row.get(0),
@@ -1433,14 +1447,14 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
     assert_eq!(first.outcome.id, "atomic-save");
     let ids: Vec<_> = first
         .effect
-        .assertions
+        .annotations
         .iter()
         .map(|fact| fact.id.as_str())
         .collect();
     assert_eq!(ids, ["atomic-save.1", "atomic-save.2"]);
     assert_eq!(first.effect.kept_results.len(), 1);
     assert_eq!(first.effect.kept_results[0].id, "atomic-save");
-    for table in ["assertion", "kept_result", "client_request"] {
+    for table in ["annotation", "kept_result", "client_request"] {
         assert_eq!(count(&conn, table), 0, "{table}");
     }
     let mut retried = r.clone();
@@ -1488,7 +1502,7 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
         );
         tx.rollback().unwrap();
     }
-    for table in ["assertion", "kept_result", "client_request"] {
+    for table in ["annotation", "kept_result", "client_request"] {
         assert_eq!(count(&rebuilt, table), 0, "{table}");
     }
     rebuilt.execute_batch("DROP TRIGGER reject_kept").unwrap();
@@ -1500,7 +1514,7 @@ fn save_selection_pending_and_effect_replay_keep_one_receipt_and_original_child_
     commit(&mut rebuilt, &first, 2);
     commit(&mut rebuilt, &first, 3);
     assert_eq!(count(&rebuilt, "client_request"), 1);
-    assert_eq!(count(&rebuilt, "assertion"), 2);
+    assert_eq!(count(&rebuilt, "annotation"), 2);
     assert_eq!(count(&rebuilt, "kept_result"), 1);
     assert_eq!(known_request(&rebuilt, &r).unwrap(), Some(first));
 }
@@ -1516,16 +1530,16 @@ fn sinex_reference_keeps_authored_request_identity_on_replay() {
         "url:HTTPS://Example.com:443/a?utm_source=x&b=1",
     ]
     .into_iter()
-    .map(|text| NewAssertionLink {
+    .map(|text| NewAnnotationLink {
         role: LinkRole::About,
-        reference: Reference::parse_stored(text).unwrap(),
+        reference: Reference::parse(text).unwrap(),
     })
     .collect();
     let r = request(
         "cross-product-note",
         10,
         UserWrite::Assert {
-            assertions: vec![note],
+            annotations: vec![note],
         },
     );
     let original_bytes = serde_json::to_vec(&r).unwrap();
@@ -1537,6 +1551,6 @@ fn sinex_reference_keeps_authored_request_identity_on_replay() {
     assert_eq!(request_hash(&stored.request).unwrap(), original_hash);
     assert_eq!(stored, prepared);
     assert_eq!(prepare_with(&conn, &r, &[], &[]).unwrap(), prepared);
-    assert_eq!(count(&conn, "assertion"), 1);
+    assert_eq!(count(&conn, "annotation"), 1);
     assert_eq!(count(&conn, "client_request"), 1);
 }

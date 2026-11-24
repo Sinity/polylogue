@@ -27,7 +27,7 @@ fn stale_cursor_failures_suggest_rerun() {
             "messages where words >= 5 | sort by id",
             View::Transcript,
         ),
-        ("changed links", "session:claude-code:s1", View::Links),
+        ("changed links", "session:claude-code:s1", View::Tree),
     ] {
         let daemon =
             test_daemon::start("the original synthetic question has enough text to continue");

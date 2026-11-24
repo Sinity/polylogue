@@ -16,7 +16,7 @@ fn invocation(d: &test_daemon::TestDaemon) -> Invocation {
         ))
 }
 
-/// A prepared ping to `s1`, as a ping to a running session leaves it.
+/// A prepared message to `s1`, as a message to a running session leaves it.
 fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
     author(
         &d.daemon,
@@ -25,8 +25,8 @@ fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some("claude-code:s1".into()),
-            sender: DeliverySender::Ping.as_str().into(),
-            event: DeliveryEvent::Ping.as_str().into(),
+            sender: DeliverySender::Send.as_str().into(),
+            event: DeliveryEvent::Message.as_str().into(),
             cwd: None,
             text: text.into(),
             refs: vec![],
@@ -53,8 +53,8 @@ fn claim_ids(d: &test_daemon::TestDaemon) -> Vec<String> {
 #[test]
 fn concurrent_claims_hand_each_delivery_over_once() {
     let d = test_daemon::start_with_clock("mailbox", at("2026-03-01T10:05:00Z"));
-    prepared(&d, "ping-a", "first");
-    prepared(&d, "ping-b", "second");
+    prepared(&d, "message-a", "first");
+    prepared(&d, "message-b", "second");
     crate::mailbox::raise(d.daemon.acts.mail(), &s1()).unwrap();
     let claimed: Vec<String> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..4).map(|_| scope.spawn(|| claim_ids(&d))).collect();
@@ -65,7 +65,7 @@ fn concurrent_claims_hand_each_delivery_over_once() {
     });
     let mut sorted = claimed.clone();
     sorted.sort();
-    assert_eq!(sorted, ["ping-a", "ping-b"]);
+    assert_eq!(sorted, ["message-a", "message-b"]);
     assert!(!crate::mailbox::raised(d.daemon.acts.mail(), &s1()));
     assert!(
         claim_ids(&d).is_empty(),
@@ -74,18 +74,18 @@ fn concurrent_claims_hand_each_delivery_over_once() {
     // The hook records `delivered` once it has written the text; until
     // then the claim leaves no outcome, and nothing hands it out again.
     let reader = d.daemon.reads.reader().unwrap();
-    let (row, _) = reader.delivery("ping-a").unwrap().unwrap();
+    let (row, _) = reader.delivery("message-a").unwrap().unwrap();
     assert!(row.events.is_empty());
 }
 
-/// A ping is refused, and the refusal recorded, when no channel reaches
-/// the session: a live ping to a session that ended, or a session whose
+/// A message is refused, and the refusal recorded, when no channel reaches
+/// the session: a live message to a session that ended, or a session whose
 /// harness shows no hook.
 #[test]
-fn a_ping_with_no_channel_is_refused_and_recorded() {
-    let ping = |d: &test_daemon::TestDaemon, live: bool| {
+fn a_message_with_no_channel_is_refused_and_recorded() {
+    let send = |d: &test_daemon::TestDaemon, live: bool| {
         crate::test_answers::ok(
-            super::ping(
+            super::send_message(
                 &d.daemon,
                 &invocation(d),
                 &polylogue_store::user_writes::new_request_id(),
@@ -98,7 +98,7 @@ fn a_ping_with_no_channel_is_refused_and_recorded() {
         )
     };
     let ended = test_daemon::start_with_clock("ended", at("2026-03-02T10:00:00Z"));
-    let answer = ping(&ended, true);
+    let answer = send(&ended, true);
     assert_eq!(answer["deliveries"][0]["outcome"], "not_sent");
     assert_eq!(answer["deliveries"][0]["reason"], "session_not_live");
     let delivery = answer["deliveries"][0]["delivery"].as_str().unwrap();
@@ -111,18 +111,18 @@ fn a_ping_with_no_channel_is_refused_and_recorded() {
     drop(reader);
     // Running by its transcript's growth, but no hook event: no channel.
     let running = test_daemon::start_with_clock("running", at("2026-03-01T10:05:00Z"));
-    let answer = ping(&running, false);
+    let answer = send(&running, false);
     assert_eq!(answer["deliveries"][0]["reason"], "unsupported");
     assert!(!crate::mailbox::raised(running.daemon.acts.mail(), &s1()));
 }
 
-/// A broadcast resolves its query once, when sent: one ping assertion
+/// A broadcast resolves its query once, when sent: one message annotation
 /// about each recipient and one delivery each.
 #[test]
 fn a_broadcast_resolves_its_recipients_when_sent() {
     let d = test_daemon::start_with_clock("broadcast", at("2026-03-02T10:00:00Z"));
     let answer = crate::test_answers::ok(
-        super::ping(
+        super::send_message(
             &d.daemon,
             &invocation(&d),
             &polylogue_store::user_writes::new_request_id(),
@@ -136,7 +136,7 @@ fn a_broadcast_resolves_its_recipients_when_sent() {
     let deliveries = answer["deliveries"].as_array().unwrap();
     assert_eq!(deliveries.len(), 1);
     assert_eq!(deliveries[0]["session"], "claude-code:s1");
-    assert!(answer["ping"].as_str().is_some());
+    assert!(answer["message"].as_str().is_some());
 }
 
 /// Without a pending permission request there is nothing to answer.
@@ -286,13 +286,13 @@ fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
 /// role never seen running has no directory to start in.
 #[test]
 fn role_addresses_and_role_starts() {
-    use polylogue_model::assertion::{AssertionKind, NewAssertion};
+    use polylogue_model::annotation::{AnnotationKind, NewAnnotation};
     let d = test_daemon::start_with_clock("roles", at("2026-03-01T10:05:00Z"));
     let fixture = hosted_codex(&d);
     let work = tempfile::tempdir().unwrap();
-    let ping = |target: &str| {
+    let send = |target: &str| {
         serde_json::to_value(
-            super::ping(
+            super::send_message(
                 &d.daemon,
                 &invocation(&d),
                 &polylogue_store::user_writes::new_request_id(),
@@ -305,14 +305,14 @@ fn role_addresses_and_role_starts() {
         )
         .unwrap()
     };
-    assert_eq!(ping("@[role:reviewer]")["error"]["kind"], "not_found");
+    assert_eq!(send("@[role:reviewer]")["error"]["kind"], "not_found");
     author(
         &d.daemon,
         &invocation(&d),
         polylogue_store::user_writes::new_request_id(),
         UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Role,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Role,
                 key: Some("reviewer".into()),
                 value: Some(
                     json!({"instructions": "Review diffs for data safety.", "harness": "codex"}),
@@ -323,7 +323,7 @@ fn role_addresses_and_role_starts() {
         },
     )
     .unwrap();
-    let refused = ping("@[role:reviewer]");
+    let refused = send("@[role:reviewer]");
     assert_eq!(refused["error"]["kind"], "refused");
     assert_eq!(
         refused["error"]["message"],
@@ -341,9 +341,9 @@ fn role_addresses_and_role_starts() {
     assert_eq!(instances[0].0, "codex:t1");
     drop(reader);
     // The instance runs on its hosted connection (no live events have
-    // arrived yet), so a ping reaches it rather than starting another.
+    // arrived yet), so a message reaches it rather than starting another.
     let pinged = crate::test_answers::ok(
-        super::ping(
+        super::send_message(
             &d.daemon,
             &invocation(&d),
             &polylogue_store::user_writes::new_request_id(),
@@ -359,12 +359,12 @@ fn role_addresses_and_role_starts() {
     assert_eq!(pinged["deliveries"][0]["outcome"], "delivered");
     assert!(turns(fixture.path())[1].contains("review my diff"));
     // Once the daemon lets go of it, the role has no running instance, and
-    // a ping starts one where the last one ran.
+    // a message starts one where the last one ran.
     d.daemon
         .acts
         .release_host(&SessionId::parse("codex:t1").unwrap());
     let restarted = crate::test_answers::ok(
-        super::ping(
+        super::send_message(
             &d.daemon,
             &invocation(&d),
             &polylogue_store::user_writes::new_request_id(),
@@ -386,37 +386,37 @@ fn role_addresses_and_role_starts() {
 /// Markup is not parsed yet, so the pack names the MCP operation that
 /// records an answer.
 #[test]
-fn ping_text_names_the_assert_tool() {
+fn message_text_names_the_write_tool() {
     let answer = "Answer with Polylogue's MCP `rows` operation (tool `polylogue_write`): `selection` and `replies_to` both name `annotation:p1@p1`; use a `note` step with `as: finding` and your answer as `text`. Reach the sender with a `send` step (tool `polylogue_act`).";
     assert_eq!(
-        ping_text("d1", "p1", "operator", "rebase please", None),
-        format!("Ping from operator (delivery:d1, annotation:p1):\nrebase please\n{answer}")
+        message_text("d1", "p1", "operator", "rebase please", None),
+        format!("Message from operator (delivery:d1, annotation:p1):\nrebase please\n{answer}")
     );
     assert_eq!(
-        ping_text("d1", "p1", "operator", "rebase please", Some("session:x")),
+        message_text("d1", "p1", "operator", "rebase please", Some("session:x")),
         format!(
-            "Ping from operator (delivery:d1, annotation:p1):\nrebase please\nAbout: session:x\n{answer}"
+            "Message from operator (delivery:d1, annotation:p1):\nrebase please\nAbout: session:x\n{answer}"
         )
     );
 }
 
-/// A ping that starts a new role instance tells it how to answer.
+/// A message that starts a new role instance tells it how to answer.
 #[test]
 fn new_instance_ping_text_says_how_to_reply() {
-    let text = new_instance_ping_text("d1", "operator", "rebase please", Some("session:x"));
+    let text = new_instance_message_text("d1", "operator", "rebase please", Some("session:x"));
     assert_eq!(
         text,
-        "Ping from operator:\nrebase please\nAbout: session:x\nAnswer with a note replying to `delivery:d1` (`replies_to`, tool `polylogue_write`), or reach the sender with a `send` step (tool `polylogue_act`)."
+        "Message from operator:\nrebase please\nAbout: session:x\nAnswer with a note replying to `delivery:d1` (`replies_to`, tool `polylogue_write`), or reach the sender with a `send` step (tool `polylogue_act`)."
     );
 }
 
-/// An answer written the way the pack says is an assertion linked to the ping.
+/// An answer written the way the pack says is an annotation linked to the message.
 #[test]
-fn an_authored_finding_answers_the_ping() {
-    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+fn an_authored_finding_replies_to_the_message() {
+    use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
     let d = test_daemon::start_with_clock("answer through assert", at("2026-03-02T10:00:00Z"));
     let sent = crate::test_answers::ok(
-        super::ping(
+        super::send_message(
             &d.daemon,
             &invocation(&d),
             &polylogue_store::user_writes::new_request_id(),
@@ -427,24 +427,25 @@ fn an_authored_finding_answers_the_ping() {
         )
         .unwrap(),
     );
-    let ping = sent["ping"].as_str().unwrap().to_owned();
+    let message = sent["message"].as_str().unwrap().to_owned();
     let delivery = sent["deliveries"][0]["delivery"].as_str().unwrap();
     let reader = d.daemon.reads.reader().unwrap();
     let (_, text) = reader.delivery(delivery).unwrap().unwrap();
     drop(reader);
-    let instruction = format!("`selection` and `replies_to` both name `annotation:{ping}@{ping}`");
+    let instruction =
+        format!("`selection` and `replies_to` both name `annotation:{message}@{message}`");
     assert!(text.contains(&instruction), "{text}");
-    let answer = NewAssertion {
-        kind: AssertionKind::Finding,
+    let answer = NewAnnotation {
+        kind: AnnotationKind::Finding,
         key: None,
         value: Some(serde_json::json!("rebased onto master")),
         valid_until: None,
-        links: [LinkRole::About, LinkRole::Answers]
+        links: [LinkRole::About, LinkRole::RepliesTo]
             .into_iter()
-            .map(|role| NewAssertionLink {
+            .map(|role| NewAnnotationLink {
                 role,
-                reference: polylogue_model::Reference::parse_stored(&format!(
-                    "assertion:{ping}@{ping}"
+                reference: polylogue_model::Reference::parse(&format!(
+                    "annotation:{message}@{message}"
                 ))
                 .unwrap(),
             })
@@ -455,22 +456,22 @@ fn an_authored_finding_answers_the_ping() {
         &invocation(&d),
         "answer".into(),
         UserWrite::Assert {
-            assertions: vec![answer],
+            annotations: vec![answer],
         },
     )
     .unwrap();
     let id = written.id.as_str();
     let reader = d.daemon.reads.reader().unwrap();
     let stored = reader
-        .assertion(&polylogue_model::RevisionReference::exact(
+        .annotation(&polylogue_model::RevisionReference::exact(
             id.into(),
             id.into(),
         ))
         .unwrap()
         .unwrap();
     assert!(
-        stored.fact.links.iter().any(|link| link.role == LinkRole::Answers
-            && matches!(&link.reference, polylogue_model::Reference::Assertion(target) if target.root == ping)),
+        stored.fact.links.iter().any(|link| link.role == LinkRole::RepliesTo
+            && matches!(&link.reference, polylogue_model::Reference::Annotation(target) if target.root == message)),
         "{:?}",
         stored.fact.links
     );
@@ -503,8 +504,8 @@ fn resume_with_missing_directory_is_refused_by_name() {
             UserWrite::Deliver(Delivery {
                 recipient_kind: "session".into(),
                 recipient_id: Some(session.into()),
-                sender: DeliverySender::Ping.as_str().into(),
-                event: DeliveryEvent::Ping.as_str().into(),
+                sender: DeliverySender::Send.as_str().into(),
+                event: DeliveryEvent::Message.as_str().into(),
                 cwd: None,
                 text: "rebase".into(),
                 refs: vec![],

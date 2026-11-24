@@ -112,7 +112,7 @@ pub(crate) fn project_fragment(
     };
     if matches!(
         options.view,
-        View::Summary | View::Links | View::Changes | View::Live
+        View::Overview | View::Tree | View::Changes | View::Live
     ) {
         return Err(unsupported());
     }

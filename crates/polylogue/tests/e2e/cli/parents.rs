@@ -83,7 +83,7 @@ fn write_bundle(path: &Path, sessions: Vec<Vec<Record>>) -> Vec<u8> {
             with_blobs: false,
             read: Default::default(),
         },
-        enabled_variants: vec![],
+        enabled_alternates: vec![],
         author: polylogue_model::Author::Operator,
         notes: vec![],
         incomplete: vec![],

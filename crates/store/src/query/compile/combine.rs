@@ -60,7 +60,10 @@ impl<'a> Compiler<'a> {
         join(&mut self.incomplete, &mut program.incomplete);
         join(&mut self.snippet_terms, &mut program.snippet_terms);
         join(&mut self.id_checks, &mut program.id_checks);
-        join(&mut self.assertion_cutoffs, &mut program.assertion_cutoffs);
+        join(
+            &mut self.annotation_cutoffs,
+            &mut program.annotation_cutoffs,
+        );
         join(
             &mut self.change_generations,
             &mut program.change_generations,

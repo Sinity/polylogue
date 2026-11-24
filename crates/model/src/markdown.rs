@@ -1,6 +1,6 @@
 //! Reference links in authored Markdown. CommonMark owns the text grammar;
 //! the reference parser owns which destinations name archive records.
-use crate::{Reference, ReferenceError, assertion::LinkRole};
+use crate::{Reference, ReferenceError, annotation::LinkRole};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use std::collections::HashSet;
 

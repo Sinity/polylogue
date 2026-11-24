@@ -29,7 +29,7 @@ fn a_parent_cancelled_after_queueing_cannot_store_the_question_or_begin() {
             .unwrap()
             .is_none()
     );
-    // Store the question independently, then exercise the closed Begin variant.
+    // Store the question independently, then exercise the closed Begin alternate.
     sender.query_object(object.clone(), None).unwrap();
     let expected = run(
         &object,

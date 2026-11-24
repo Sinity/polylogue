@@ -23,7 +23,7 @@ pub(super) fn annotations(
     reference: &polylogue_model::Reference,
     at: polylogue_model::Timestamp,
     bound: Option<AnnotationAt>,
-) -> Result<Vec<Annotation>, Error> {
+) -> Result<Vec<AnnotationMark>, Error> {
     let at = match bound {
         Some(AnnotationAt::Time(at)) => at,
         _ => at,
@@ -31,11 +31,11 @@ pub(super) fn annotations(
     let mut annotations = Vec::new();
     let mut visit = |revision: polylogue_model::RevisionReference| {
         // Both visitors select current revisions before loading their bodies.
-        if let Some(assertion) = reader.assertion(&revision)? {
-            let fact = assertion.fact;
+        if let Some(annotation) = reader.annotation(&revision)? {
+            let fact = annotation.fact;
             if fact.valid_until.is_none_or(|until| until > at) {
-                annotations.push(Annotation {
-                    reference: polylogue_model::Reference::Assertion(revision).to_string(),
+                annotations.push(AnnotationMark {
+                    reference: polylogue_model::Reference::Annotation(revision).to_string(),
                     key: fact.key,
                     author: fact.author,
                     kind: fact.kind.as_str().into(),
@@ -49,9 +49,9 @@ pub(super) fn annotations(
     if let polylogue_model::Reference::Message(message) = reference {
         let _ = reader.visit_message_annotation_references_at(message, bound, &mut visit)?;
     } else {
-        let _ = reader.visit_assertion_references_linked_at(
+        let _ = reader.visit_annotation_references_linked_at(
             reference,
-            &[polylogue_model::assertion::LinkRole::About],
+            &[polylogue_model::annotation::LinkRole::About],
             bound,
             &mut visit,
         )?;
@@ -70,11 +70,11 @@ pub(super) fn annotate(
         record,
         polylogue_model::bundle::Record::Session(_) | polylogue_model::bundle::Record::Message(_)
     ) {
-        let reference = polylogue_model::Reference::parse_stored(
+        let reference = polylogue_model::Reference::parse(
             record.reference().expect("selected record has a reference"),
         )
         .map_err(Error::internal)?;
-        facts.assertions = annotations(reader, &reference, at, bound)?;
+        facts.annotations = annotations(reader, &reference, at, bound)?;
     }
     Ok(())
 }

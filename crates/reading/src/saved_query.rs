@@ -55,7 +55,7 @@ pub(super) fn prepare(
     let Some(mut query) = reader.saved_query_record(bare_name)? else {
         return Ok(None);
     };
-    let selected_revision = Reference::Assertion(RevisionReference::exact(
+    let selected_revision = Reference::Annotation(RevisionReference::exact(
         definition.root.clone(),
         definition.revision.clone(),
     ))

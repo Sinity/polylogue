@@ -25,7 +25,8 @@ macro_rules! check {
 /// writes the same name.
 #[test]
 fn stored_name_round_trips_for_every_enum() {
-    use crate::assertion::{AssertionKind, LinkRole};
+    use crate::alternate::{AlternateKind, AlternateRelation};
+    use crate::annotation::{AnnotationKind, LinkRole};
     use crate::authored::ExecutionEligibility;
     use crate::batch::IdKind;
     use crate::block::CallOutcome;
@@ -34,7 +35,6 @@ fn stored_name_round_trips_for_every_enum() {
     use crate::live::{Activity, Aspect, LiveState, Stall, WaitingOn};
     use crate::message::WrittenBy;
     use crate::settings::EmbeddingProvider;
-    use crate::variant::{VariantKind, VariantRelation};
     use crate::{DeliveryEvent, DeliveryOutcome, DeliverySender};
     check!(SessionKind);
     check!(crate::TitleSource);
@@ -44,7 +44,7 @@ fn stored_name_round_trips_for_every_enum() {
     check!(ToolAction);
     check!(CallOutcome);
     check!(BlockKind);
-    check!(AssertionKind);
+    check!(AnnotationKind);
     check!(LinkRole);
     check!(crate::authorship::Channel);
     check!(ExecutionEligibility);
@@ -63,8 +63,8 @@ fn stored_name_round_trips_for_every_enum() {
     check!(HostProtocol);
     check!(EmbeddingProvider);
     check!(crate::freshness::FreshnessState);
-    check!(VariantKind);
-    check!(VariantRelation);
+    check!(AlternateKind);
+    check!(AlternateRelation);
     check!(crate::read::IndicatorKind);
     check!(crate::read::TargetKind);
     check!(crate::read::Format);
@@ -128,5 +128,5 @@ fn link_names_cover_every_kind_once() {
         LINK_KIND_NAMES,
         ["spawn", "fork", "continuation", "resume", "reference"]
     );
-    assert_eq!(LINK_HOW_NAMES, ["briefing", "ping", "mention"]);
+    assert_eq!(LINK_HOW_NAMES, ["briefing", "send", "mention"]);
 }

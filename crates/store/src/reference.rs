@@ -1,4 +1,4 @@
-//! Original recorded text, before view filtering, masking or rendition. Source
+//! Original recorded text, before view filtering, masking or alternate. Source
 //! hashes stream these same chunks and never load a whole session at once.
 mod source_text;
 
@@ -170,24 +170,24 @@ impl<'a> ReferenceText<'a> {
                 self.source_text_while(reference, complete, None, &mut |_, text| visit(text))
             }
             Reference::MessageRange { first, last } => self.range_text(first, last, visit),
-            Reference::Variant { revision, part } => {
-                let variant = if let Some(id) = &revision.revision {
-                    crate::variants::get_record(self.authored, id)?
-                        .filter(|variant| variant.root == revision.root)
+            Reference::Alternate { revision, part } => {
+                let alternate = if let Some(id) = &revision.revision {
+                    crate::alternates::get_record(self.authored, id)?
+                        .filter(|alternate| alternate.root == revision.root)
                 } else {
-                    let mut heads = crate::variants::heads(self.authored, &revision.root)?;
+                    let mut heads = crate::alternates::heads(self.authored, &revision.root)?;
                     if heads.len() > 1 {
                         return Err(StoreError::Ambiguous {
                             reference: reference.to_string(),
                             candidates: heads
                                 .iter()
-                                .map(|v| crate::variants::reference_string(&v.root, &v.id))
+                                .map(|v| crate::alternates::reference_string(&v.root, &v.id))
                                 .collect(),
                         });
                     }
                     heads.pop()
                 };
-                let Some(variant) = variant else {
+                let Some(alternate) = alternate else {
                     return Ok(false);
                 };
                 let mut text = Text {
@@ -196,7 +196,7 @@ impl<'a> ReferenceText<'a> {
                     reference,
                 };
                 let mut present = part.is_none();
-                crate::variants::parts_while(self.authored, &variant.id, |value| {
+                crate::alternates::parts_while(self.authored, &alternate.id, |value| {
                     if part.is_none_or(|n| value.n == n) {
                         present = true;
                         return Ok(text.body(&value.body)?.is_continue());
@@ -205,12 +205,12 @@ impl<'a> ReferenceText<'a> {
                 })?;
                 Ok(present)
             }
-            Reference::Assertion(revision) => match self.assertion_text(revision, visit)? {
+            Reference::Annotation(revision) => match self.annotation_text(revision, visit)? {
                 TextState::Missing => Ok(false),
                 TextState::Present => Ok(true),
                 TextState::NotApplicable => Err(unavailable(
                     reference,
-                    "this assertion has no recorded text body",
+                    "this annotation has no recorded text body",
                 )),
             },
             Reference::Span {
@@ -229,46 +229,46 @@ impl<'a> ReferenceText<'a> {
             )),
         }
     }
-    fn assertion_text(
+    fn annotation_text(
         &self,
         revision: &polylogue_model::RevisionReference,
         visit: &mut Visit<'_>,
     ) -> Result<TextState> {
-        let reference = Reference::Assertion(revision.clone());
+        let reference = Reference::Annotation(revision.clone());
         let id = if let Some(id) = &revision.revision {
             id.clone()
         } else {
-            let heads = crate::assertions::heads(self.authored, &reference)?;
+            let heads = crate::annotations::heads(self.authored, &reference)?;
             if heads.len() > 1 {
                 return Err(StoreError::Ambiguous {
                     reference: reference.to_string(),
                     candidates: heads.iter().map(ToString::to_string).collect(),
                 });
             }
-            if let Some(Reference::Assertion(head)) = heads.first() {
+            if let Some(Reference::Annotation(head)) = heads.first() {
                 head.revision
                     .clone()
-                    .or_invalid("assertion head names no revision")?
+                    .or_invalid("annotation head names no revision")?
             } else {
-                if crate::assertions::family_present(self.authored, &revision.root)? {
+                if crate::annotations::family_present(self.authored, &revision.root)? {
                     return Err(unavailable(
                         &reference,
-                        "the assertion family has no current text",
+                        "the annotation family has no current text",
                     ));
                 }
                 return Ok(TextState::Missing);
             }
         };
-        let Some(assertion) = crate::assertions::get(self.authored, &id)?
-            .filter(|assertion| assertion.fact.root == revision.root)
+        let Some(annotation) = crate::annotations::get(self.authored, &id)?
+            .filter(|annotation| annotation.fact.root == revision.root)
         else {
             return Ok(TextState::Missing);
         };
-        assertion
+        annotation
             .fact
             .validate()
             .map_err(crate::StoreError::invalid)?;
-        let Some(text) = assertion.fact.text() else {
+        let Some(text) = annotation.fact.text() else {
             return Ok(TextState::NotApplicable);
         };
         let _ = visit(text)?;
@@ -375,7 +375,7 @@ pub(crate) fn link_quote(
     original: &rusqlite::Connection,
     authored: &rusqlite::Connection,
     reference: &Reference,
-) -> Result<Option<polylogue_model::assertion::Quote>> {
+) -> Result<Option<polylogue_model::annotation::Quote>> {
     let Reference::Span {
         container,
         unit,
@@ -400,7 +400,7 @@ pub(crate) fn link_quote(
     let range = bounds.finish().map_err(span_error)?;
     let span =
         |position: u64| usize::try_from(position).map_err(|_| span_error(SpanError::Overflow));
-    Ok(polylogue_model::assertion::Quote::of(
+    Ok(polylogue_model::annotation::Quote::of(
         &text,
         span(range.start)?,
         span(range.end)?,
@@ -467,7 +467,7 @@ fn hash(
     }
 }
 /// Link capture distinguishes an absent target from an existing,
-/// validated non-text assertion. Neither null state is a future text wildcard.
+/// validated non-text annotation. Neither null state is a future text wildcard.
 pub(crate) fn link_hash(
     original: &rusqlite::Connection,
     authored: &rusqlite::Connection,
@@ -476,7 +476,7 @@ pub(crate) fn link_hash(
     pinned(original)?;
     let view = ReferenceText::new(original, authored);
     hash_source(|visit| match reference {
-        Reference::Assertion(revision) => view.assertion_text(revision, visit),
+        Reference::Annotation(revision) => view.annotation_text(revision, visit),
         _ => view.reference_text(reference, true, visit).map(|present| {
             if present {
                 TextState::Present

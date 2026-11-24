@@ -180,7 +180,7 @@ pub struct Production {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     /// The model the request named, when the one that answered differs
-    /// (a fallback) or carries a variant suffix.
+    /// (a fallback) or carries an alternate suffix.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requested_model: Option<String>,
     /// The model consulted as an advisor for this response.

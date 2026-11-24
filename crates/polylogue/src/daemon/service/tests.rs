@@ -1,5 +1,5 @@
 use super::*;
-use crate::briefing::Ask;
+use crate::brief::Ask;
 use crate::test_daemon;
 use polylogue_engine::Config;
 use polylogue_model::user::UserWrite;
@@ -129,7 +129,7 @@ fn reading_alternates_setting_is_the_default_and_is_bound_in_the_cursor() {
         let call = page.document.footer.next.as_ref().expect("another page");
         call.request.clone()
     };
-    let variants = |call: &command_surface::RunnableRequest| -> Vec<String> {
+    let alternates = |call: &command_surface::RunnableRequest| -> Vec<String> {
         let rows: crate::protocol::line::Rows =
             serde_json::from_value(call.arguments.clone()).unwrap();
         let crate::protocol::line::Step::Read(step) = &rows.steps[0] else {
@@ -139,19 +139,19 @@ fn reading_alternates_setting_is_the_default_and_is_bound_in_the_cursor() {
     };
     set(r#"["translation:pl"]"#);
     let first = next(&typed(read(&w.daemon, "transcript", "json", Some(1), None)));
-    assert_eq!(variants(&first), ["translation:pl"]);
+    assert_eq!(alternates(&first), ["translation:pl"]);
     // The setting changes; the reading keeps what its first page resolved,
-    // even when the continuation names no variant.
+    // even when the continuation names no alternate.
     set("[]");
     let mut bare = first.clone();
     bare.arguments["steps"][0]["alternate"] = serde_json::Value::Null;
     let second = typed(read(&w.daemon, "transcript", "json", Some(1), Some(&bare)));
     if second.document.footer.next.is_some() {
-        assert_eq!(variants(&next(&second)), ["translation:pl"]);
+        assert_eq!(alternates(&next(&second)), ["translation:pl"]);
     }
     // A new reading follows the setting as it is now.
     let fresh = next(&typed(read(&w.daemon, "transcript", "json", Some(1), None)));
-    assert!(variants(&fresh).is_empty());
+    assert!(alternates(&fresh).is_empty());
     // `none` asks for the originals whatever the setting holds.
     set(r#"["translation:pl"]"#);
     let originals = crate::test_daemon::read_call(polylogue_reading::ReadRequest {
@@ -159,7 +159,7 @@ fn reading_alternates_setting_is_the_default_and_is_bound_in_the_cursor() {
         references: None,
         target: "session:claude-code:s1".into(),
         options: polylogue_model::read::ReadOptions {
-            variants: vec!["none".into()],
+            alternates: vec!["none".into()],
             ..Default::default()
         },
         delivery: polylogue_model::read::ReadDelivery::Page,
@@ -169,7 +169,7 @@ fn reading_alternates_setting_is_the_default_and_is_bound_in_the_cursor() {
         cursor: None,
     })
     .answer(&w.daemon);
-    assert!(variants(&next(&typed(originals))).is_empty());
+    assert!(alternates(&next(&typed(originals))).is_empty());
 }
 
 #[test]
@@ -188,7 +188,7 @@ fn several_setting_alternates_survive_next_and_previous_when_the_setting_changes
     set(r#"["translation:pl","translation:de"]"#);
     let first = typed(read(&w.daemon, "transcript", "json", Some(1), None));
     let next = first.document.footer.next.as_ref().unwrap().request.clone();
-    let variants = |request: &command_surface::RunnableRequest| {
+    let alternates = |request: &command_surface::RunnableRequest| {
         let reader = w.daemon.reads.reader().unwrap();
         let seal = CursorSeal {
             key: reader.cursor_key().unwrap(),
@@ -199,9 +199,9 @@ fn several_setting_alternates_survive_next_and_previous_when_the_setting_changes
             &seal,
         )
         .unwrap()
-        .variants
+        .alternates
     };
-    assert_eq!(variants(&next), ["translation:pl", "translation:de"]);
+    assert_eq!(alternates(&next), ["translation:pl", "translation:de"]);
     assert!(next.arguments["steps"][0].get("alternate").is_none());
     set("[]");
     let second = typed(read(&w.daemon, "transcript", "json", Some(1), Some(&next)));
@@ -213,7 +213,7 @@ fn several_setting_alternates_survive_next_and_previous_when_the_setting_changes
         .unwrap()
         .request
         .clone();
-    assert_eq!(variants(&previous), ["translation:pl", "translation:de"]);
+    assert_eq!(alternates(&previous), ["translation:pl", "translation:de"]);
     let original = typed(read(
         &w.daemon,
         "transcript",

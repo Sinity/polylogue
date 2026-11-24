@@ -5,8 +5,8 @@ use polylogue_model::{
     Usage,
 };
 
+mod annotations;
 mod append_cost;
-mod assertions;
 mod build_upkeep;
 mod empty_source;
 mod event_fk;
@@ -1215,7 +1215,7 @@ fn a_user_write_goes_ahead_of_queued_batches() {
             reading.release = InFlight::new(move || {
                 let db = crate::archive::open_read(&archive).unwrap();
                 let value = db
-                    .query_row("SELECT json_extract(value,'$.value.value') FROM assertion WHERE kind='setting' AND key='browser.actions'", [], |r| {
+                    .query_row("SELECT json_extract(value,'$.value.value') FROM annotation WHERE kind='setting' AND key='browser.actions'", [], |r| {
                         r.get::<_, bool>(0)
                     })
                     .optional()

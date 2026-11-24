@@ -789,8 +789,8 @@ impl Fixture {
         Ok(id)
     }
 
-    /// Inserts a fixture assertion with a text or absent value.
-    /// Kind and key follow the same checked shapes as stored assertion facts.
+    /// Inserts a fixture annotation with a text or absent value.
+    /// Kind and key follow the same checked shapes as stored annotation facts.
     pub fn note(
         &mut self,
         kind: &str,
@@ -800,15 +800,14 @@ impl Fixture {
     ) -> Result<String> {
         use polylogue_model::{
             Author, Reference, Timestamp,
-            assertion::{AssertionFact, AssertionKind, AssertionLink, LinkRole},
+            annotation::{AnnotationFact, AnnotationKind, AnnotationLink, LinkRole},
             authorship::Channel,
         };
         self.commit_seq += 1;
         let id = format!("n{}", self.commit_seq);
-        let kind = AssertionKind::from_name(kind).or_invalid("unknown fixture assertion kind")?;
-        let target =
-            Reference::parse_stored(target).or_invalid("invalid fixture assertion target")?;
-        let fact = AssertionFact {
+        let kind = AnnotationKind::from_name(kind).or_invalid("unknown fixture annotation kind")?;
+        let target = Reference::parse(target).or_invalid("invalid fixture annotation target")?;
+        let fact = AnnotationFact {
             id: id.clone(),
             root: id.clone(),
             kind,
@@ -822,7 +821,7 @@ impl Fixture {
                     .expect("synthetic fixture counter is a timestamp"),
             ),
             valid_until: None,
-            links: vec![AssertionLink {
+            links: vec![AnnotationLink {
                 role: LinkRole::About,
                 reference: target,
                 seen_hash: None,
@@ -830,7 +829,7 @@ impl Fixture {
             }],
         };
         let tx = self.archive_conn.transaction()?;
-        crate::assertions::apply(&tx, std::slice::from_ref(&fact), self.commit_seq)?;
+        crate::annotations::apply(&tx, std::slice::from_ref(&fact), self.commit_seq)?;
         tx.commit()?;
         Ok(id)
     }
@@ -844,16 +843,16 @@ impl Fixture {
     ) -> Result<String> {
         use polylogue_model::{
             Author, Timestamp,
-            assertion::{AssertionFact, AssertionKind},
+            annotation::{AnnotationFact, AnnotationKind},
             authorship::Channel,
         };
         let object = plan.query_object().map_err(crate::StoreError::Query)?;
         self.commit_seq += 1;
         let id = format!("n{}", self.commit_seq);
-        let fact = AssertionFact {
+        let fact = AnnotationFact {
             id: id.clone(),
             root: id.clone(),
-            kind: AssertionKind::SavedQuery,
+            kind: AnnotationKind::SavedQuery,
             key: Some(name.into()),
             value: Some(serde_json::json!({
                 "text": plan.text(), "hash":object.id.to_string(), "denominator":null,
@@ -867,7 +866,7 @@ impl Fixture {
         };
         let tx = self.archive_conn.transaction()?;
         crate::query_objects::apply_object(&tx, &object, self.commit_seq)?;
-        crate::assertions::apply(&tx, &[fact], self.commit_seq)?;
+        crate::annotations::apply(&tx, &[fact], self.commit_seq)?;
         tx.commit()?;
         Ok(id)
     }

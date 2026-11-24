@@ -46,10 +46,10 @@ pub struct Arguments {
     #[serde(default)]
     #[schemars(extend("unlisted" = true))]
     pub for_others: bool,
-    /// Ordered variant layers
+    /// Ordered alternate layers
     #[serde(default)]
     #[schemars(extend("unlisted" = true))]
-    pub variant: Vec<String>,
+    pub alternate: Vec<String>,
     /// Include stored blob bytes in a stream
     #[serde(default)]
     #[schemars(extend("unlisted" = true))]

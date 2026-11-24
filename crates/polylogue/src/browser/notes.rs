@@ -98,14 +98,16 @@ impl SelectionNote {
         };
         Ok((Reference::Session(session), message))
     }
-    pub(crate) fn assertion(
+    pub(crate) fn annotation(
         &self,
         session: Reference,
         message: Reference,
-    ) -> polylogue_model::assertion::NewAssertion {
-        use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
-        NewAssertion {
-            kind: AssertionKind::Note,
+    ) -> polylogue_model::annotation::NewAnnotation {
+        use polylogue_model::annotation::{
+            AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink,
+        };
+        NewAnnotation {
+            kind: AnnotationKind::Note,
             key: None,
             value: Some(serde_json::Value::String(format!(
                 "{}\n\nQuoted selection:\n{}\n\nSource: {}\nSelected at: {}",
@@ -114,7 +116,7 @@ impl SelectionNote {
             valid_until: None,
             links: [session, message]
                 .into_iter()
-                .map(|reference| NewAssertionLink {
+                .map(|reference| NewAnnotationLink {
                     role: LinkRole::About,
                     reference,
                 })

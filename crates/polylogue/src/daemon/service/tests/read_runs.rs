@@ -295,7 +295,7 @@ fn raw_run_pages_replay_after_restart_and_reject_changed_completion() {
 fn object_read_runs_have_no_invented_question_or_followup() {
     use polylogue_model::{
         Author,
-        assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+        annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink},
         authorship::{Authorship, Channel},
         user::UserWrite,
     };
@@ -308,12 +308,12 @@ fn object_read_runs_have_no_invented_question_or_followup() {
     let request = d.daemon.invocation(&actor).request(
         "no-query-object".into(),
         UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Note,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Note,
                 key: None,
                 value: Some(json!("synthetic note")),
                 valid_until: None,
-                links: vec![NewAssertionLink {
+                links: vec![NewAnnotationLink {
                     role: LinkRole::About,
                     reference: Reference::parse("repo:synthetic").unwrap(),
                 }],

@@ -278,7 +278,7 @@ impl Compiler<'_> {
             snippet_terms: vec![],
             id_checks: vec![],
             change_generations: vec![],
-            assertion_cutoffs: vec![],
+            annotation_cutoffs: vec![],
             attach: vec![],
             notes: vec![],
             incomplete: vec![],

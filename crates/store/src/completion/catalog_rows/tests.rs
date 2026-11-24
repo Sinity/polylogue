@@ -252,8 +252,8 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     let after = reads.reader().unwrap().change_position().unwrap();
     write(
         "withdraw-a",
-        UserWrite::WithdrawAssertions {
-            targets: vec![Reference::parse_stored("assertion:saved-a").unwrap()],
+        UserWrite::WithdrawAnnotations {
+            targets: vec![Reference::parse("annotation:saved-a").unwrap()],
             reason: None,
         },
     );
@@ -272,8 +272,8 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     let after = reads.reader().unwrap().change_position().unwrap();
     write(
         "reinstate-a",
-        UserWrite::WithdrawAssertions {
-            targets: vec![Reference::parse_stored("assertion:withdraw-a").unwrap()],
+        UserWrite::WithdrawAnnotations {
+            targets: vec![Reference::parse("annotation:withdraw-a").unwrap()],
             reason: None,
         },
     );

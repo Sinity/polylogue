@@ -152,7 +152,7 @@ fn named_query_phases_survive_restart_until_applied() {
             .unwrap();
         let version = match kind {
             "polylogue.query" => 2,
-            "polylogue.query_run" => 7,
+            "polylogue.query_run" => 8,
             "polylogue.query_run_outcome" => 2,
             other => panic!("unexpected named query phase kind: {other}"),
         };
@@ -401,7 +401,9 @@ fn unchanged_prior_source_restoration_retries_keep_original_named_frames() {
         let prepared = PreparedRequest {
             request: polylogue_store::fixture::authored::operator_request(
                 "preserved-authored".into(),
-                UserWrite::Assert { assertions: vec![] },
+                UserWrite::Assert {
+                    annotations: vec![],
+                },
             ),
             outcome: UserOutcome {
                 id: "preserved-authored".into(),

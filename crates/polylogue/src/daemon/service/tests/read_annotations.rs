@@ -2,13 +2,13 @@ use super::*;
 use crate::test_daemon::{self, Call};
 use polylogue_model::{
     Reference, Timestamp,
-    assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+    annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink},
     read::*,
     user::UserWrite,
 };
 use serde_json::json;
 
-fn write(d: &Daemon, id: &str, assertion: NewAssertion) {
+fn write(d: &Daemon, id: &str, annotation: NewAnnotation) {
     let outcome = d
         .writes
         .as_ref()
@@ -16,21 +16,21 @@ fn write(d: &Daemon, id: &str, assertion: NewAssertion) {
         .user(polylogue_store::fixture::authored::operator_request(
             id.into(),
             UserWrite::Assert {
-                assertions: vec![assertion],
+                annotations: vec![annotation],
             },
         ))
         .unwrap();
     assert_eq!(outcome.id, id);
 }
-fn note(text: &str, targets: &[&str]) -> NewAssertion {
-    NewAssertion {
-        kind: AssertionKind::Note,
+fn note(text: &str, targets: &[&str]) -> NewAnnotation {
+    NewAnnotation {
+        kind: AnnotationKind::Note,
         key: None,
         value: Some(json!(text)),
         valid_until: None,
         links: targets
             .iter()
-            .map(|target| NewAssertionLink {
+            .map(|target| NewAnnotationLink {
                 role: LinkRole::About,
                 reference: Reference::parse(target).unwrap(),
             })
@@ -73,7 +73,7 @@ fn read(d: &Daemon, target: &str, hide: bool) -> ReadPage {
     )
 }
 
-fn annotations(page: &ReadPage, message: &str) -> Vec<Annotation> {
+fn annotations(page: &ReadPage, message: &str) -> Vec<AnnotationMark> {
     let items: Vec<_> = page
         .document
         .items
@@ -82,7 +82,7 @@ fn annotations(page: &ReadPage, message: &str) -> Vec<Annotation> {
             if item.source.reference == format!("message:{message}")
                 && let ItemKind::MessageHeader { header } = &item.kind
             {
-                Some(header.assertions.clone())
+                Some(header.annotations.clone())
             } else {
                 None
             }
@@ -118,7 +118,7 @@ fn message_annotations_include_original_spans_once_and_keep_current_user_facts()
     write(&d.daemon, "direct-note", note("direct note", &[message]));
     write(&d.daemon, "span-old", note("superseded span note", &[span]));
     let mut revised = note("current span note", &[span]);
-    revised.links.push(NewAssertionLink {
+    revised.links.push(NewAnnotationLink {
         role: LinkRole::Revises,
         reference: Reference::parse("annotation:span-old@span-old").unwrap(),
     });
@@ -145,8 +145,8 @@ fn message_annotations_include_original_spans_once_and_keep_current_user_facts()
     write(
         &d.daemon,
         "internal-mark",
-        NewAssertion {
-            kind: AssertionKind::Seen,
+        NewAnnotation {
+            kind: AnnotationKind::Seen,
             key: Some(message.into()),
             value: Some(json!({"position":{"item":null,"at":at.to_string()}})),
             valid_until: None,
@@ -401,7 +401,7 @@ fn historical_session_continuations_keep_the_position_after_new_revisions_and_re
     let notes = items
         .iter()
         .filter_map(|item| match &item.kind {
-            ItemKind::MessageHeader { header } => Some(&header.assertions),
+            ItemKind::MessageHeader { header } => Some(&header.annotations),
             _ => None,
         })
         .flatten()
@@ -494,11 +494,11 @@ fn time(text: &str) -> Timestamp {
     Timestamp::parse_rfc3339(text).unwrap()
 }
 
-fn write_at(d: &Daemon, id: &str, assertion: NewAssertion, at: Timestamp) {
+fn write_at(d: &Daemon, id: &str, annotation: NewAnnotation, at: Timestamp) {
     let mut request = polylogue_store::fixture::authored::operator_request(
         id.into(),
         UserWrite::Assert {
-            assertions: vec![assertion],
+            annotations: vec![annotation],
         },
     );
     request.at = at;
@@ -541,7 +541,7 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
             .reads
             .reader()
             .unwrap()
-            .assertion(&polylogue_model::RevisionReference::exact(
+            .annotation(&polylogue_model::RevisionReference::exact(
                 "time-message".into(),
                 "time-message".into(),
             ))
@@ -556,7 +556,7 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
             .writes
             .as_ref()
             .unwrap()
-            .restore_assertion(unknown, None)
+            .restore_annotation(unknown, None)
             .unwrap();
 
         let mut invocation = d
@@ -749,7 +749,7 @@ fn session_annotation_time_continuations_freeze_relative_time_through_edit_and_r
     let notes = items
         .iter()
         .filter_map(|item| match &item.kind {
-            ItemKind::MessageHeader { header } => Some(&header.assertions),
+            ItemKind::MessageHeader { header } => Some(&header.annotations),
             _ => None,
         })
         .flatten()
@@ -934,7 +934,7 @@ fn historical_context_pages_bind_the_message_and_cutoff_through_append_and_reope
         let notes = items
             .iter()
             .filter_map(|item| match &item.kind {
-                ItemKind::MessageHeader { header } => Some(&header.assertions),
+                ItemKind::MessageHeader { header } => Some(&header.annotations),
                 _ => None,
             })
             .flatten()
@@ -975,7 +975,7 @@ fn historical_context_pages_bind_the_message_and_cutoff_through_append_and_reope
 }
 
 /// Decode the finite read protocol, preserving original frames independently
-/// from presentation so a hidden block cannot pass a layout-only assertion.
+/// from presentation so a hidden block cannot pass a layout-only annotation.
 pub(super) fn context_stream(
     d: &Daemon,
     target: &str,

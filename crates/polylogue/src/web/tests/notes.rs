@@ -3,7 +3,7 @@ use axum::body::{Body, to_bytes};
 use axum::http::Request as Http;
 use polylogue_model::{
     Reference,
-    assertion::{Assertion, LinkRole},
+    annotation::{Annotation, LinkRole},
 };
 use serde_json::{Value, json};
 use tower::ServiceExt;
@@ -141,7 +141,7 @@ async fn write_one(f: &Fixture, id: &str, line: Value) -> Value {
 async fn revise(f: &Fixture, id: &str, root: &str, base: &str, value: Value) {
     command(f,"rows",id,json!({"selection":format!("annotation:{root}-1@{base}-1"),"steps":[{"verb":"edit","text":value}]})).await;
 }
-async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
+async fn stored(f: &Fixture, root: &str, revision: &str) -> Annotation {
     let reference = format!("annotation:{root}@{revision}");
     // The original object-read oracle now checks the complete answer stream.
     // No deadline is lifted and no generated child is rewritten.
@@ -179,16 +179,16 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
                             found.extend(
                                 row.prepared
                                     .effect
-                                    .assertions
+                                    .annotations
                                     .iter()
                                     .filter(|fact| fact.root == root && fact.id == revision)
                                     .cloned(),
                             );
                         }
-                        polylogue_model::bundle::Record::Assertion(row)
-                            if row.assertion.root == root && row.assertion.id == revision =>
+                        polylogue_model::bundle::Record::Annotation(row)
+                            if row.annotation.root == root && row.annotation.id == revision =>
                         {
-                            found.push(row.assertion.clone())
+                            found.push(row.annotation.clone())
                         }
                         _ => {}
                     }
@@ -198,13 +198,13 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
                 assert!(began && !completed);
                 completed = true;
             }
-            other => panic!("unexpected assertion read frame {other}: {}", frame.data),
+            other => panic!("unexpected annotation read frame {other}: {}", frame.data),
         }
         Ok(completed)
     })
     .unwrap();
     assert!(completed);
-    let Reference::Assertion(exact) = Reference::parse(&reference).unwrap() else {
+    let Reference::Annotation(exact) = Reference::parse(&reference).unwrap() else {
         unreachable!()
     };
     let row = f
@@ -213,13 +213,13 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Assertion {
         .reads
         .reader()
         .unwrap()
-        .assertion(&exact)
+        .annotation(&exact)
         .unwrap()
         .unwrap();
     assert_eq!(
         found,
         vec![row.fact.clone()],
-        "HTTP must return the whole assertion, including links, original authorship and clock"
+        "HTTP must return the whole annotation, including links, original authorship and clock"
     );
     row
 }
@@ -242,7 +242,7 @@ fn agent_write(f: &Fixture, request: crate::test_daemon::Call) -> Value {
 fn agent_assert(f: &Fixture, id: &str, value: &str) {
     agent_write(f, crate::test_daemon::Call::new("rows", note(value)).id(id));
 }
-fn about(row: &Assertion) -> Vec<String> {
+fn about(row: &Annotation) -> Vec<String> {
     row.fact
         .links
         .iter()
@@ -413,7 +413,7 @@ fn selected_current_and_kept_rows_have_distinct_populations() {
 }
 
 #[test]
-fn editing_keyed_assertions_preserves_relations_and_expiry() {
+fn editing_keyed_annotations_preserves_relations_and_expiry() {
     run(async {
         let f = fixture();
         write_one(&f, "other", note("independent evidence")).await;
@@ -566,14 +566,14 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
             for reference in resolved {
                 let mut matching = Vec::new();
                 let flow = reader
-                    .visit_assertion_references_linked(
+                    .visit_annotation_references_linked(
                         &reference,
-                        &[polylogue_model::assertion::LinkRole::About],
+                        &[polylogue_model::annotation::LinkRole::About],
                         |revision| {
-                            if let Some(assertion) = reader.assertion(&revision)?
-                                && assertion.fact.value == Some(json!(annotation))
+                            if let Some(stored) = reader.annotation(&revision)?
+                                && stored.fact.value == Some(json!(annotation))
                             {
-                                matching.push(assertion.fact.id);
+                                matching.push(stored.fact.id);
                             }
                             Ok(std::ops::ControlFlow::Continue(()))
                         },
@@ -583,7 +583,7 @@ fn semantic_and_mixed_annotation_use_the_public_query_population() {
                 assert_eq!(
                     matching.len(),
                     1,
-                    "every committed population member gets exactly one new assertion in this run"
+                    "every committed population member gets exactly one new annotation in this run"
                 );
             }
         }
@@ -640,7 +640,7 @@ fn bulk_retry_uses_committed_targets_after_the_query_becomes_empty() {
 }
 
 #[test]
-fn assertion_fields_and_saved_query_edits_keep_metadata() {
+fn annotation_fields_and_saved_query_edits_keep_metadata() {
     run(async {
         let f = fixture();
         command(
@@ -705,7 +705,7 @@ fn assertion_fields_and_saved_query_edits_keep_metadata() {
 }
 
 #[test]
-fn grouped_assertion_population_returns_a_typed_refusal() {
+fn grouped_annotation_population_returns_a_typed_refusal() {
     run(async {
         let f = fixture();
         let (status,answer)=send(&f,"rows","grouped",json!({"selection":"sessions | group by origin","all":true,"steps":[{"verb":"note","text":"review"}]})).await;

@@ -1,6 +1,6 @@
 // One request lane per provider. Stored bytes stay only in the outbox.
 export class ProviderDeferred extends Error {
-  constructor(until, reason = "the daily backfill budget is spent; continuing tomorrow") {
+  constructor(until, reason = "the daily provider import budget is spent; continuing tomorrow") {
     super(reason);
     this.until = until;
   }

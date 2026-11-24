@@ -283,10 +283,10 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
             present
         );
         let setting: String = index.query_row(
-            "SELECT json(value) FROM source_assertion WHERE kind='setting' AND key='browser.actions'",
+            "SELECT json(value) FROM source_annotation WHERE kind='setting' AND key='browser.actions'",
             [],|row|row.get(0),
         ).unwrap();
-        let setting: polylogue_model::assertion::values::Setting =
+        let setting: polylogue_model::annotation::values::Setting =
             serde_json::from_str(&setting).unwrap();
         assert_eq!(
             setting.value,
@@ -350,7 +350,7 @@ fn setting(index: &Connection, id: &str, key: &str) -> Product {
 }
 fn settings(index: &Connection) -> Vec<String> {
     index
-        .prepare("SELECT key FROM source_assertion WHERE kind='setting' ORDER BY key")
+        .prepare("SELECT key FROM source_annotation WHERE kind='setting' ORDER BY key")
         .unwrap()
         .query_map([], |row| row.get(0))
         .unwrap()

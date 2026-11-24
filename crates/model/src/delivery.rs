@@ -9,13 +9,13 @@ pub enum DeliveryEvent {
     SessionStart,
     Resume,
     Compaction,
-    Takeover,
-    Recall,
+    SessionBrief,
+    SearchBrief,
     Signal,
     /// A hint just before a tool runs.
     Advice,
     /// An addressed message to a session.
-    Ping,
+    Message,
     /// A signal rule's notice to a session.
     Notice,
     /// A live-session act: an answer to a pending request, an interrupt.
@@ -29,11 +29,11 @@ stored_names!(DeliveryEvent {
     SessionStart => "session_start",
     Resume => "resume",
     Compaction => "compaction",
-    Takeover => "takeover",
-    Recall => "recall",
+    SessionBrief => "session_brief",
+    SearchBrief => "search_brief",
     Signal => "signal",
     Advice => "advice",
-    Ping => "ping",
+    Message => "message",
     Notice => "notice",
     Control => "control",
     FirstTurn => "first_turn",
@@ -46,8 +46,8 @@ pub enum DeliverySender {
     Hook,
     Mcp,
     Signal,
-    /// A ping, from whichever surface its author used.
-    Ping,
+    /// A message, from whichever surface its author used.
+    Send,
     /// A live-session act from the command line, MCP or the web.
     Act,
 }
@@ -56,7 +56,7 @@ stored_names!(DeliverySender {
     Hook => "hook",
     Mcp => "mcp",
     Signal => "signal",
-    Ping => "ping",
+    Send => "send",
     Act => "act",
 });
 

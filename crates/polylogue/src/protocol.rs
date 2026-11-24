@@ -340,7 +340,7 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::UnknownChatActionAttachment
         | Code::AttachmentMissing
         | Code::AttachmentUnavailable
-        | Code::UnknownBackfillJob => FailureKind::NotFound,
+        | Code::UnknownImportJob => FailureKind::NotFound,
         Code::Conflict
         | Code::Stale
         | Code::ScopeChanged

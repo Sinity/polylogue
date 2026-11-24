@@ -136,7 +136,7 @@ export class Host {
     if (answer.status >= 400) throw new HostError(`host_http_${answer.status}`, answer.status);
     return answer.body;
   }
-  backfillJobs() { return this.json("GET", "/v1/backfill"); }
-  claimBackfill(by) { return this.json("POST", "/v1/backfill/claim", { by }); }
-  reportBackfill(id, by, report) { return this.json("POST", `/v1/backfill/${encodeURIComponent(id)}/report`, { by, ...report }); }
+  importJobs() { return this.json("GET", "/v1/import_job"); }
+  claimImportJob(by) { return this.json("POST", "/v1/import_job/claim", { by }); }
+  reportImportJob(id, by, report) { return this.json("POST", `/v1/import_job/${encodeURIComponent(id)}/report`, { by, ...report }); }
 }

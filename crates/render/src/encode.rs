@@ -1,7 +1,7 @@
 //! Encoders for a read document: JSON and JSONL records, HTML, terminal text
 //! and Markdown, each with the archive notice and its own escaping.
 use crate::{Format, html, terminal};
-use polylogue_model::{Reference, read::*};
+use polylogue_model::read::*;
 use serde::Serialize;
 use std::{
     fmt::Display,
@@ -276,11 +276,11 @@ impl<'a> Encoder<'a> {
                     }
                     _ => {}
                 }
-                if let Some(variant) = &header.variant {
+                if let Some(alternate) = &header.alternate {
                     text.push_str(&format!(
                         " · ≈ {}{}",
-                        variant.key,
-                        if variant.stale { " (stale)" } else { "" }
+                        alternate.key,
+                        if alternate.stale { " (stale)" } else { "" }
                     ));
                 }
                 if md {
@@ -288,9 +288,9 @@ impl<'a> Encoder<'a> {
                 } else {
                     self.line(&format!("\n{text}"))?;
                 }
-                self.line(&Reference::display_stored(&item.source.reference))?;
-                for assertion in &header.assertions {
-                    self.line(&annotation_text(assertion, self.format))?;
+                self.line(&item.source.reference)?;
+                for annotation in &header.annotations {
+                    self.line(&annotation_text(annotation, self.format))?;
                 }
             }
             ItemKind::Text { text } => {
@@ -397,9 +397,7 @@ impl<'a> Encoder<'a> {
                 let fragment = &record.fragment;
                 self.line(&format!(
                     "Selected source text · {} · bytes {}..{}",
-                    Reference::display_stored(&record.reference),
-                    fragment.coverage.start,
-                    fragment.coverage.end
+                    record.reference, fragment.coverage.start, fragment.coverage.end
                 ))?;
                 self.line(&format!(
                     "Source classification: {} · recorded source length: {}",
@@ -443,9 +441,7 @@ impl<'a> Encoder<'a> {
             ItemKind::Raw { record } => {
                 self.line(&format!(
                     "{} · {} · {}",
-                    Reference::display_stored(&record.reference),
-                    record.input,
-                    record.media_type
+                    record.reference, record.input, record.media_type
                 ))?;
                 match std::str::from_utf8(&record.bytes) {
                     Ok(text) => self.literal(text, "")?,
@@ -469,8 +465,7 @@ impl<'a> Encoder<'a> {
                 self.literal(text, "json-fragment")?;
                 self.line(&format!(
                     "… encoded characters {}..{until} of {total} · {}",
-                    position.character,
-                    Reference::display_stored(&item.source.reference)
+                    position.character, item.source.reference
                 ))?;
             }
         }
@@ -545,7 +540,7 @@ impl<'a> Encoder<'a> {
                 session,
                 open,
                 lineage_complete,
-                assertions,
+                annotations,
             } => {
                 if lineage_complete == &ValueState::known(false) {
                     self.line("Parents incomplete")?;
@@ -562,8 +557,8 @@ impl<'a> Encoder<'a> {
                 for line in session_lines(session, &self.zone) {
                     self.line(&line)?;
                 }
-                for assertion in assertions {
-                    self.line(&annotation_text(assertion, self.format))?;
+                for annotation in annotations {
+                    self.line(&annotation_text(annotation, self.format))?;
                 }
                 if let Some(open) = open {
                     self.line(&self.call_text(open)?)?;
@@ -972,20 +967,20 @@ pub(crate) fn lineage_text(lineage: &polylogue_model::read::SessionLineage) -> S
     }
 }
 
-pub(crate) fn annotation_text(assertion: &Annotation, format: Format) -> String {
-    let key = assertion
+pub(crate) fn annotation_text(annotation: &AnnotationMark, format: Format) -> String {
+    let key = annotation
         .key
         .as_ref()
         .map(|key| format!(" {key}"))
         .unwrap_or_default();
-    let value = if assertion.value.is_null() {
+    let value = if annotation.value.is_null() {
         String::new()
     } else {
-        format!(": {}", assertion.value)
+        format!(": {}", annotation.value)
     };
     match format {
-        Format::Html => format!("◆ {}{key}{value} · {}", assertion.kind, assertion.author),
-        _ => format!("◆ {}{key}{value} ({})", assertion.kind, assertion.author),
+        Format::Html => format!("◆ {}{key}{value} · {}", annotation.kind, annotation.author),
+        _ => format!("◆ {}{key}{value} ({})", annotation.kind, annotation.author),
     }
 }
 

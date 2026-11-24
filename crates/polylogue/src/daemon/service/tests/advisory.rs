@@ -3,7 +3,7 @@ use crate::advisory::tests::{CWD, fixture, operator, selected, statement};
 use crate::test_daemon::TestDaemon;
 use polylogue_model::{
     Reference, SessionId,
-    assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink},
+    annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink},
     authorship::{Authorship, Channel},
 };
 use polylogue_store::read::limit::ReadLimit;
@@ -80,7 +80,7 @@ fn busy_scope_change_returns_empty_without_reserving_advice() {
     statement(
         &w,
         "locked-file",
-        AssertionKind::Decision,
+        AnnotationKind::Decision,
         "file:src/parser.rs@fixture-commit",
         Some("cwd:/synthetic/repo"),
         true,
@@ -125,7 +125,7 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
     statement(
         &w,
         "cooldown-file",
-        AssertionKind::Decision,
+        AnnotationKind::Decision,
         "file:src/parser.rs@fixture-commit",
         Some("cwd:/synthetic/repo"),
         true,
@@ -153,12 +153,12 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
         &w,
         "after-advisory",
         polylogue_model::user::UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Note,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Note,
                 key: None,
                 value: Some(json!("synthetic barrier")),
                 valid_until: None,
-                links: vec![NewAssertionLink {
+                links: vec![NewAnnotationLink {
                     role: LinkRole::About,
                     reference: Reference::Repo("synthetic".into()),
                 }],
@@ -190,7 +190,7 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
     statement(
         &w,
         "different-file-decision",
-        AssertionKind::Correction,
+        AnnotationKind::Correction,
         "file:src/parser.rs@fixture-commit",
         Some("cwd:/synthetic/repo"),
         true,

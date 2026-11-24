@@ -303,24 +303,24 @@ fn chat_actions_text(actions: &[crate::browser::actions::ActionSummary]) -> Stri
 }
 
 /// `backfill list`: one line per job.
-pub fn backfill_jobs(list: &protocol::browser::BackfillJobList, _style: TextStyle) -> String {
-    polylogue_render::terminal::escape(&backfill_jobs_text(&list.jobs))
+pub fn import_jobs(list: &protocol::browser::ImportJobs, _style: TextStyle) -> String {
+    polylogue_render::terminal::escape(&import_jobs_text(&list.jobs))
 }
 
 /// `backfill start` and `cancel`: the job's line, or a write still
 /// awaiting confirmation as JSON.
-pub fn backfill_answer(answer: &protocol::browser::BackfillAnswer, style: TextStyle) -> String {
+pub fn import_job_answer(answer: &protocol::browser::ImportJobAnswer, style: TextStyle) -> String {
     match answer {
-        protocol::browser::BackfillAnswer::Current(current) => polylogue_render::terminal::escape(
-            &backfill_jobs_text(current.job.as_deref().map_or(&[], std::slice::from_ref)),
+        protocol::browser::ImportJobAnswer::Current(current) => polylogue_render::terminal::escape(
+            &import_jobs_text(current.job.as_deref().map_or(&[], std::slice::from_ref)),
         ),
-        protocol::browser::BackfillAnswer::Outcome(_) => json(answer, style),
+        protocol::browser::ImportJobAnswer::Outcome(_) => json(answer, style),
     }
 }
 
-fn backfill_jobs_text(jobs: &[crate::browser::backfill::JobSummary]) -> String {
+fn import_jobs_text(jobs: &[crate::browser::import_job::JobSummary]) -> String {
     if jobs.is_empty() {
-        return "no backfill jobs\n".into();
+        return "no import jobs\n".into();
     }
     let mut out = String::new();
     for job in jobs {

@@ -239,7 +239,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::RestoredRequest { prepared, .. } => {
             Some(format!("request:{}", prepared.request.id))
         }
-        Product::RestoredAssertion { fact, .. } => Some(fact.reference().stored_form()),
+        Product::RestoredAnnotation { fact, .. } => Some(fact.reference().to_string()),
         Product::Coverage(coverage) => Some(format!("coverage:{}", coverage.machine)),
         Product::Query { object } => Some(format!("query:{}", object.id)),
         Product::QueryRun { run } => Some(format!("query-run:{}", run.id)),
@@ -265,7 +265,7 @@ fn metadata(product: &Product) -> (Option<String>, Option<i64>, Option<String>, 
         Product::Blob(_) => (None, None, reference, "blob"),
         Product::Request(_)
         | Product::RestoredRequest { .. }
-        | Product::RestoredAssertion { .. } => (None, None, reference, "request"),
+        | Product::RestoredAnnotation { .. } => (None, None, reference, "request"),
         Product::Coverage(_) => (None, None, reference, "coverage"),
         Product::Query { .. } | Product::QueryRun { .. } | Product::QueryRunOutcome { .. } => {
             (None, None, reference, "query")
@@ -738,10 +738,10 @@ fn requests(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
             Product::RestoredRequest { prepared } => {
                 super::authored::restore(tx, &prepared, committed)?;
             }
-            Product::RestoredAssertion { fact, import } => {
-                crate::assertions::apply(tx, std::slice::from_ref(&fact), committed)?;
+            Product::RestoredAnnotation { fact, import } => {
+                crate::annotations::apply(tx, std::slice::from_ref(&fact), committed)?;
                 if let Some(import) = import {
-                    crate::assertions::imports::record(tx, &fact.id, &import, committed)?;
+                    crate::annotations::imports::record(tx, &fact.id, &import, committed)?;
                 }
             }
             _ => unreachable!(),
@@ -968,7 +968,7 @@ pub(crate) fn apply_prepared(
     bindings(&tx, &plan)?;
     // Variants are authored records, so only a request can change them.
     if plan.requests != StateChange::Unchanged {
-        crate::variants::project(&tx)?;
+        crate::alternates::project(&tx)?;
     }
     tx.execute(
         "INSERT OR REPLACE INTO confirmed_event SELECT * FROM primary_staged",

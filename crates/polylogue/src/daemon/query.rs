@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 
 use super::Failure;
 
-pub(crate) mod assertions;
+pub(crate) mod annotations;
 pub(crate) mod feed;
 mod page;
 pub(crate) use page::{read_positions, read_positions_unchanged};

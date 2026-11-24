@@ -195,7 +195,7 @@ pub enum SavedQueryItem {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Annotation {
+pub struct AnnotationMark {
     pub reference: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
@@ -207,7 +207,7 @@ pub struct Annotation {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct VariantMark {
+pub struct AlternateMark {
     pub reference: String,
     pub key: String,
     pub original: String,
@@ -223,9 +223,9 @@ pub struct MessageHeader {
     pub author: ValueState<String>,
     pub model: ValueState<String>,
     #[serde(default)]
-    pub assertions: Vec<Annotation>,
+    pub annotations: Vec<AnnotationMark>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub variant: Option<VariantMark>,
+    pub alternate: Option<AlternateMark>,
     #[serde(default)]
     pub inherited: bool,
     #[serde(default)]
@@ -335,7 +335,7 @@ pub enum IndicatorKind {
     Turn,
     LinkIssue,
     Stale,
-    Variant,
+    Alternate,
 }
 
 stored_names!(IndicatorKind {
@@ -350,7 +350,7 @@ stored_names!(IndicatorKind {
     Turn => "turn",
     LinkIssue => "link_issue",
     Stale => "stale",
-    Variant => "variant",
+    Alternate => "alternate",
 });
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -454,7 +454,7 @@ pub enum Card {
     Session {
         session: Box<Session>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
-        assertions: Vec<Annotation>,
+        annotations: Vec<AnnotationMark>,
         #[serde(default)]
         lineage_complete: ValueState<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

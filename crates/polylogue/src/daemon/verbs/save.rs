@@ -37,9 +37,9 @@ impl Verb for Save {
                 revision: Some(definition.revision.clone()),
             };
             let saved = reader
-                .assertion(&reference)?
+                .annotation(&reference)?
                 .ok_or_else(|| Failure::not_found(format!("query:{name} accepted revision")))?;
-            let value: polylogue_model::assertion::values::SavedQuery = serde_json::from_value(
+            let value: polylogue_model::annotation::values::SavedQuery = serde_json::from_value(
                 saved
                     .fact
                     .value
@@ -119,7 +119,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
         return Err(super::not_built_use("save", "page:NAME"));
     }
     if let Some(name) = &step.name
-        && !polylogue_model::assertion::policy::valid_saved_name(name)
+        && !polylogue_model::annotation::policy::valid_saved_name(name)
     {
         return Err(Failure::bad_value(format!(
             "{name:?} is not a saved query name: use lowercase letters, digits and hyphens, starting with a letter"

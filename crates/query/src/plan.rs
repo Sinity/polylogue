@@ -475,7 +475,7 @@ fn normalize_references(query: &mut Query) -> Result<(), QueryError> {
         let ConditionKind::Reference { reference: text } = &condition.kind else {
             return Ok(());
         };
-        let Some(reference) = polylogue_model::Reference::parse_stored(text)
+        let Some(reference) = polylogue_model::Reference::parse(text)
             .or_else(|_| polylogue_model::Reference::parse(text))
             .ok()
             .filter(|reference| crate::catalog::reference_unit(reference).is_some())
@@ -483,7 +483,7 @@ fn normalize_references(query: &mut Query) -> Result<(), QueryError> {
             return Ok(());
         };
         condition.kind = ConditionKind::Reference {
-            reference: reference.stored_form(),
+            reference: reference.to_string(),
         };
         Ok(())
     })

@@ -89,9 +89,9 @@ enum PlanAt {
     Conflict,
 }
 
-/// Archive-wide plan assertions apply from their own recorded time.
+/// Archive-wide plan annotations apply from their own recorded time.
 fn plans(reader: &Reader<'_>, provider: &str, now: i64) -> Result<Vec<(i64, PlanAt)>> {
-    use crate::assertions::settings::SettingAt;
+    use crate::annotations::settings::SettingAt;
     let now = polylogue_model::Timestamp::from_unix_ms(now)
         .or_invalid("plan history time is out of range")?;
     let mut result = Vec::new();

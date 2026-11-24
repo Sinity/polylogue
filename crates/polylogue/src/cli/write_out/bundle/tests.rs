@@ -16,7 +16,7 @@ fn begin() -> ReadBegin {
                 local: polylogue_model::freshness::ReadCompleteness::empty(),
                 sinex: polylogue_model::freshness::IndexFreshness::Standalone,
             },
-            enabled_variants: vec![],
+            enabled_alternates: vec![],
             author: Author::Operator,
             notes: vec![],
             incomplete: vec![],

@@ -69,7 +69,7 @@ For a bounded synthetic measurement, record successful output from the functiona
 cargo xtask test -p polylogue -E 'test(completion_matrix_thirteen_positions_three_shells_empty_and_seeded) | test(completion_latency_reports_real_shell_callbacks_with_daemon_up_and_down) | test(acknowledged_commits_refresh_catalog_values_while_keystrokes_continue)' --success-output immediate
 ```
 
-The output records the position matrix distribution, ten real CLI callbacks per shell and daemon state, and five setting batches scheduled one second apart. Record the acknowledged commit offsets with the workload. Submit-to-visible samples bound commit-to-visible latency from above; the acknowledgment-to-visible samples are reported separately. Compare the recorded values with the budgets without adding elapsed-time assertions to tests.
+The output records the position matrix distribution, ten real CLI callbacks per shell and daemon state, and five setting batches scheduled one second apart. Record the acknowledged commit offsets with the workload. Submit-to-visible samples bound commit-to-visible latency from above; the acknowledgment-to-visible samples are reported separately. Compare the recorded values with the budgets without adding elapsed-time annotations to tests.
 
 ## Registration
 

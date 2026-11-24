@@ -17,7 +17,7 @@ pub const RULES: crate::origin::ExportAssets = crate::origin::ExportAssets {
     metadata: |member, reader, emit| metadata(member, reader, emit),
 };
 
-/// IDs are anchored at a member basename or rendition separator. An arbitrary
+/// IDs are anchored at a member basename or alternate separator. An arbitrary
 /// embedded ID or an original filename does not identify a member.
 pub fn member_id(member: &str) -> Option<&str> {
     if member

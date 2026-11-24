@@ -91,5 +91,5 @@ pub struct KeptSummary {
 pub struct DependentSavedQuery {
     pub name: String,
     pub revision: crate::RevisionReference,
-    pub value: crate::assertion::values::SavedQuery,
+    pub value: crate::annotation::values::SavedQuery,
 }

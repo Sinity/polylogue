@@ -454,7 +454,7 @@ fn an_unresponsive_server_times_out_once_for_the_whole_conversion_pass() {
     let client = Server::with_timeout(42, port, "synthetic-token".into(), Duration::from_secs(2));
     let spool = temp.path().join("spool");
     // A regression that loses the client timeout ends here by closing the
-    // stalled connection, so the assertions below fail instead of hanging.
+    // stalled connection, so the annotations below fail instead of hanging.
     let watchdog = stop.clone();
     thread::spawn(move || {
         thread::sleep(Duration::from_secs(20));

@@ -13,7 +13,7 @@ const sourceVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8"
 // Independent release oracle, separate from the production input declaration.
 const members = [
   "manifest.json", "src/actions/chatgpt.js", "src/background.js",
-  "src/background/backfill.js", "src/background/base64.js", "src/background/capture.js",
+  "src/background/import_job.js", "src/background/base64.js", "src/background/capture.js",
   "src/background/chat_actions.js",
   "src/background/host.js", "src/background/main.js", "src/background/notes.js",
   "src/background/outbox.js", "src/background/provider.js", "src/background/tabs.js",

@@ -683,7 +683,7 @@ fn session_notes_are_visible_in_pages_and_hide_or_withdraw_removes_them() {
             .iter()
             .flat_map(|item| match &item.kind {
                 ItemKind::Card { card } => match card.as_ref() {
-                    Card::Session { assertions, .. } => assertions.clone(),
+                    Card::Session { annotations, .. } => annotations.clone(),
                     _ => vec![],
                 },
                 _ => vec![],

@@ -88,7 +88,7 @@ pub(crate) fn membership(
             format!("SELECT pk FROM event WHERE id={}", bind(id.clone()))
         }
         Unit::Annotations => {
-            let Reference::Assertion(revision) = reference else {
+            let Reference::Annotation(revision) = reference else {
                 return None;
             };
             let root = bind(revision.root.clone());
@@ -97,7 +97,7 @@ pub(crate) fn membership(
                 .as_ref()
                 .map(|id| format!(" AND n.id={}", bind(id.clone())))
                 .unwrap_or_default();
-            format!("SELECT n.rowid AS pk FROM source_assertion n WHERE n.root={root}{exact}")
+            format!("SELECT n.rowid AS pk FROM source_annotation n WHERE n.root={root}{exact}")
         }
         Unit::Deliveries => {
             let Reference::Delivery(id) = reference else {

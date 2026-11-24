@@ -437,7 +437,12 @@ fn catalog_and_compiled_reference_targets_agree() {
             ColumnReference::Message,
             false,
         ),
-        ("annotations", "reference", ColumnReference::Assertion, true),
+        (
+            "annotations",
+            "reference",
+            ColumnReference::Annotation,
+            true,
+        ),
         ("turns", "id", ColumnReference::Message, true),
         ("turns", "answer", ColumnReference::Message, true),
         ("turns", "session", ColumnReference::Session, true),

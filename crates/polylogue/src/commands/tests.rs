@@ -355,7 +355,7 @@ fn measure_options_render_the_measure_clause() {
     );
 }
 
-mod assertions;
+mod annotations;
 
 #[test]
 fn status_parses_verification_manifest_and_explicit_vectors() {

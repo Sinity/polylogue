@@ -1,7 +1,7 @@
 use super::*;
 use polylogue_model::{
     BlobHash,
-    assertion::{AssertionKind, NewAssertion, values::SavedQuery},
+    annotation::{AnnotationKind, NewAnnotation, values::SavedQuery},
     user::{UserRequest, UserWrite},
 };
 
@@ -39,9 +39,9 @@ fn save(id: &str, name: &str, text: &str) -> UserRequest {
     )
 }
 
-fn definition(name: &str, text: &str, plan: &polylogue_query::plan::Plan) -> NewAssertion {
-    NewAssertion {
-        kind: AssertionKind::SavedQuery,
+fn definition(name: &str, text: &str, plan: &polylogue_query::plan::Plan) -> NewAnnotation {
+    NewAnnotation {
+        kind: AnnotationKind::SavedQuery,
         key: Some(name.into()),
         value: Some(
             serde_json::to_value(SavedQuery {
@@ -68,7 +68,7 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
     let batch = request(
         "batch",
         UserWrite::Assert {
-            assertions: vec![
+            annotations: vec![
                 definition("alpha", "sessions", &alpha),
                 definition("beta", "query:alpha", &beta),
             ],
@@ -148,7 +148,7 @@ fn invalid_saved_batch_acks_no_objects_and_sends_no_assertions() {
                 request: request(
                     "invalid-batch",
                     UserWrite::Assert {
-                        assertions: vec![definition("alpha", "sessions", &alpha), wrong],
+                        annotations: vec![definition("alpha", "sessions", &alpha), wrong],
                     },
                 ),
                 scope: None,
@@ -167,7 +167,7 @@ fn invalid_saved_batch_acks_no_objects_and_sends_no_assertions() {
             .is_none()
     );
     assert!(
-        crate::assertions::saved_query_snapshot(reader.conn().unwrap(), ["alpha", "beta"])
+        crate::annotations::saved_query_snapshot(reader.conn().unwrap(), ["alpha", "beta"])
             .unwrap()
             .definitions
             .is_empty()
@@ -244,14 +244,14 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
         .unwrap();
     let reads = ReadPool::open(&archive.archive).unwrap();
     let reader = reads.reader().unwrap();
-    let assertion = reader
-        .assertion(&polylogue_model::RevisionReference {
+    let annotation = reader
+        .annotation(&polylogue_model::RevisionReference {
             root: "figure".into(),
             revision: Some("figure".into()),
         })
         .unwrap()
         .unwrap();
-    let value: SavedQuery = serde_json::from_value(assertion.fact.value.unwrap()).unwrap();
+    let value: SavedQuery = serde_json::from_value(annotation.fact.value.unwrap()).unwrap();
     assert_eq!(value.hash, BlobHash(figure.question_id().0));
     assert_eq!(
         value.denominator,

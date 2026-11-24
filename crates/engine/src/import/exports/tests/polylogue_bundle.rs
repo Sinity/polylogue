@@ -4,15 +4,15 @@ fn authored_bundle() -> Vec<u8> {
     // Independent wire literals: the manifest's stated operator is unrelated
     // to the current program accepting this historical setting.
     let manifest = json!({"record":"manifest","data":{
-        "format":"polylogue-bundle","version":3,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
+        "format":"polylogue-bundle","version":4,"query":format!("query:{}","0".repeat(64)),"query_text":"synthetic",
         "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":100,"archive":100},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}},
-        "counts":{"sessions":1,"messages":0,"documents":0,"events":0,"links":0,"authored":1,"assertions":0,"text_fragments":0,"variants":0,"variant_parts":0,"blobs":0},
-        "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript","inherited":false,"assertions":true}},"enabled_variants":[],"author":"operator"}});
+        "counts":{"sessions":1,"messages":0,"documents":0,"events":0,"links":0,"authored":1,"annotations":0,"text_fragments":0,"alternates":0,"alternate_parts":0,"blobs":0},
+        "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript","inherited":false,"annotations":true}},"enabled_alternates":[],"author":"operator"}});
     let session = json!({"record":"session","data":{"ref":"session:claude-code:bundle-session","commit":1,"session":{"id":"claude-code:bundle-session","kind":"main","cwd":[]}}});
     let authored = json!({"record":"authored","data":{"ref":"request:setting-request","commit":2,"prepared":{
         "request":{"id":"setting-request","machine":"exported-machine","at":"2026-01-01T00:00:00Z","authorship":{"author":"operator","via":"cli"},"write":{"write":"set_setting","key":"browser.actions","value":"on","machine":null}},
         "outcome":{"id":"setting-request","repeat":false,"pending":false},
-        "effect":{"assertions":[{"id":"setting-request","root":"setting-request","kind":"setting","key":"browser.actions","value":{"machine":null,"value":{"type":"boolean","value":true}},"author":"operator","via":"cli","machine":"exported-machine","created_at":"2026-01-01T00:00:00Z","valid_until":null,"links":[]}],"variants":{"variants":[],"variant_parts":[]},"kept_results":[],"deliveries":[],"chats":[],"backfills":[]}}}});
+        "effect":{"annotations":[{"id":"setting-request","root":"setting-request","kind":"setting","key":"browser.actions","value":{"machine":null,"value":{"type":"boolean","value":true}},"author":"operator","via":"cli","machine":"exported-machine","created_at":"2026-01-01T00:00:00Z","valid_until":null,"links":[]}],"alternates":{"alternates":[],"alternate_parts":[]},"kept_results":[],"deliveries":[],"chats":[],"import_jobs":[]}}}});
     [manifest, session, authored]
         .into_iter()
         .flat_map(|record| {
@@ -38,7 +38,7 @@ fn bundle_keeps_authorship_apart_from_import_observation() {
         (1, 0)
     );
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND key='browser.actions' AND json_extract(value,'$.value.value')=1 AND author='operator' AND via='cli' AND machine='exported-machine' AND created_at=1767225600000"),1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.annotation WHERE id='setting-request' AND kind='setting' AND key='browser.actions' AND json_extract(value,'$.value.value')=1 AND author='operator' AND via='cli' AND machine='exported-machine' AND created_at=1767225600000"),1);
     assert_eq!(import_actors(&engine), ["script:polylogue-import"]);
     let again = engine.import(std::slice::from_ref(&path)).unwrap();
     assert!(again.pass.errors.is_empty(), "{again:?}");
@@ -161,7 +161,7 @@ fn open_replays_stored_authored_state_after_real_interruption() {
         assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
         assert_eq!(
             w.count(
-                "SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND author='operator' AND via='cli' AND machine='exported-machine' AND json_extract(value,'$.value.value')=1"
+                "SELECT count(*) AS n FROM a.annotation WHERE id='setting-request' AND kind='setting' AND author='operator' AND via='cli' AND machine='exported-machine' AND json_extract(value,'$.value.value')=1"
             ),
             1
         );
@@ -193,7 +193,7 @@ fn explicit_receiver_after_interruption_does_not_rewrite_historical_authorship()
     assert!(report.pass.errors.is_empty(), "{report:?}");
     assert_eq!(report.user_state.present, 1);
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.assertion WHERE id='setting-request' AND kind='setting' AND author='operator' AND via='cli' AND machine='exported-machine' AND json_extract(value,'$.value.value')=1"), 1);
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.annotation WHERE id='setting-request' AND kind='setting' AND author='operator' AND via='cli' AND machine='exported-machine' AND json_extract(value,'$.value.value')=1"), 1);
     assert_eq!(
         import_actors(&engine),
         ["script:polylogue-import", "script:receiver-b"]
@@ -201,7 +201,7 @@ fn explicit_receiver_after_interruption_does_not_rewrite_historical_authorship()
     assert!(engine.run_pass().unwrap().errors.is_empty());
     assert_eq!(w.count("SELECT count(*) AS n FROM a.client_request"), 1);
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM a.assertion WHERE kind='setting'"),
+        w.count("SELECT count(*) AS n FROM a.annotation WHERE kind='setting'"),
         1
     );
 }

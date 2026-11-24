@@ -163,7 +163,8 @@ fn build(origins: &[String]) -> Catalog {
         ("document:", Some(":")),
         ("event:", None),
         ("span:", Some("#")),
-        ("assertion:", None),
+        ("annotation:", None),
+        ("alternate:", None),
         ("delivery:", None),
         ("run:", None),
         ("page:", None),
@@ -193,24 +194,8 @@ fn build(origins: &[String]) -> Catalog {
 
 pub use query_language::catalog::{AGGREGATES, FUNCTIONS, TRANSFORMS};
 pub use query_language::complete::{Completion, CompletionKind};
-/// Completion uses surface names without changing the catalog of stored bindings.
-pub fn surface_references(catalog: &mut Catalog) {
-    catalog.references.retain(|reference| {
-        !matches!(reference,
-        ReferenceForm::Prefix { prefix, .. }
-            if polylogue_model::AUTHORED_REFERENCE_SPELLINGS.iter()
-                .any(|(stored, _)| prefix == &format!("{stored}:")))
-    });
-    catalog.references.extend(
-        polylogue_model::AUTHORED_REFERENCE_SPELLINGS
-            .into_iter()
-            .map(|(_, surface)| ReferenceForm::prefix(format!("{surface}:"))),
-    );
-}
 pub fn complete(text: &str, position: usize, catalog: &Catalog) -> Vec<Completion> {
-    let mut surface = catalog.clone();
-    surface_references(&mut surface);
-    query_language::complete::complete(text, position, &surface)
+    query_language::complete::complete(text, position, catalog)
 }
 
 /// The unit a read target selects; every target has one.
@@ -222,7 +207,7 @@ pub fn target_unit(target: &polylogue_model::read::ReadTarget) -> Unit {
         ReadTarget::Block { .. } => Unit::Blocks,
         ReadTarget::Document(_) => Unit::Documents,
         ReadTarget::Event(_) => Unit::Events,
-        ReadTarget::Assertion { .. } => Unit::Annotations,
+        ReadTarget::Annotation { .. } => Unit::Annotations,
         ReadTarget::Delivery(_) => Unit::Deliveries,
     }
 }
@@ -237,7 +222,7 @@ pub fn reference_unit(reference: &polylogue_model::Reference) -> Option<Unit> {
         Reference::Block { .. } => Unit::Blocks,
         Reference::Document(_) => Unit::Documents,
         Reference::Event(_) => Unit::Events,
-        Reference::Assertion(_) => Unit::Annotations,
+        Reference::Annotation(_) => Unit::Annotations,
         Reference::Delivery(_) => Unit::Deliveries,
         Reference::Span { container, .. } => return reference_unit(container),
         _ => return None,

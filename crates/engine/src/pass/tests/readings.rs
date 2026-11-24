@@ -314,7 +314,7 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
                     new_ready.recv_timeout(Duration::from_secs(10))
                 });
             // Release the other parser even when live work failed, so the
-            // production pass can return its actual errors to the assertion.
+            // production pass can return its actual errors to the annotation.
             let _ = resume.send(());
             appended
         });

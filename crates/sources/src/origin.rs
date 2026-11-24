@@ -231,7 +231,7 @@ pub struct WebChat {
     pub actions: bool,
     /// Whether the extension can page through the provider's conversation
     /// list to capture older conversations.
-    pub backfill: bool,
+    pub import_job: bool,
 }
 
 /// A provider's optional account or project prefix on a conversation link.
@@ -885,7 +885,7 @@ pub static ORIGINS: &[OriginSpec] = &[
                 numeric: false,
             }],
             actions: true,
-            backfill: true,
+            import_job: true,
         }),
         assets: Some(crate::chatgpt::assets::RULES),
         collector: None,
@@ -913,7 +913,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             path: "chat",
             prefixes: &[],
             actions: false,
-            backfill: true,
+            import_job: true,
         }),
         assets: None,
         collector: None,
@@ -965,7 +965,7 @@ pub static ORIGINS: &[OriginSpec] = &[
                 numeric: true,
             }],
             actions: false,
-            backfill: false,
+            import_job: false,
         }),
         assets: None,
         collector: Some(crate::ai_studio::drive::COLLECTOR),
@@ -996,7 +996,7 @@ pub static ORIGINS: &[OriginSpec] = &[
                 numeric: true,
             }],
             actions: false,
-            backfill: false,
+            import_job: false,
         }),
         assets: None,
         collector: None,
@@ -1024,7 +1024,7 @@ pub static ORIGINS: &[OriginSpec] = &[
             path: "c",
             prefixes: &[],
             actions: false,
-            backfill: true,
+            import_job: true,
         }),
         assets: None,
         collector: None,

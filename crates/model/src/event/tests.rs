@@ -59,6 +59,6 @@ fn link_statement_identity_preserves_recorded_coordinates() {
     let mut different = from_parent;
     different.kind = LinkKind::Reference;
     let reference = different.clone();
-    different.how = Some(ReferenceReason::Ping);
+    different.how = Some(ReferenceReason::Send);
     assert_ne!(reference.selection_tag(), different.selection_tag());
 }

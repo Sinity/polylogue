@@ -28,9 +28,9 @@ fn identical_cell_text_links_only_by_its_column_reference() {
         {"name":"session","kind":"text","reference":"session"},
         {"name":"document","kind":"text","reference":"document"},
         {"name":"message","kind":"text","reference":"message"},
-        {"name":"assertion","kind":"text","reference":"assertion"},
+        {"name":"annotation","kind":"text","reference":"annotation"},
         {"name":"id","kind":"text"}],
-        "rows":[{"session":id,"document":id,"message":id,"assertion":id,"id":id}],"count":1});
+        "rows":[{"session":id,"document":id,"message":id,"annotation":id,"id":id}],"count":1});
     let page = results_table(&data);
     assert_eq!(page.matches("href=\"/s/same%3Aopaque\"").count(), 1);
     assert_eq!(page.matches("href=\"/d/same%3Aopaque\"").count(), 1);

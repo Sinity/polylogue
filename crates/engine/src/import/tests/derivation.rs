@@ -51,7 +51,7 @@ fn unrelated_reading(engine: &Engine, home: &ClaudeHome) {
 }
 
 /// Observe whether the caller returned while the derive wave was held. Always
-/// release it, so the old blocking behaviour fails an assertion instead of
+/// release it, so the old blocking behaviour fails an annotation instead of
 /// leaving the test's engine waiting forever.
 fn held_derivation(engine: &Engine) -> (Sender<()>, std::thread::JoinHandle<bool>) {
     let pause = engine.writer.pause_derive_for_test();

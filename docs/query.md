@@ -106,7 +106,7 @@ Each unit binds its default filters once, when its source is bound (a unit, `que
 | `tool_calls` | wrapper calls whose children are counted are excluded |
 | `annotations` | current and not withdrawn; withdrawal records and read marks stay out unless `kind:` explicitly selects them |
 | `alternates` | current and not withdrawn; `current:`, `root:` or `withdrawn:` selects revision history |
-| `feed` | read marks stay out unless `assertion_kind:` explicitly selects them |
+| `feed` | read marks stay out unless `annotation_kind:` explicitly selects them |
 
 `queries where name:*` selects named questions; unnamed questions remain available in `queries` without that condition.
 
@@ -199,4 +199,4 @@ Verbs after the selection act on the rows it resolved, once, in order: reading, 
 
 ## Read-only SQL
 
-`polylogue dev sql STATEMENT` runs one read-only statement against `index.db` with `archive.db` attached, through versioned views (`v1_sessions`, `v1_messages`, `v1_tool_calls`, `v1_links`, `v1_assertions`): `polylogue dev sql 'select count(*) from v1_sessions'`. It is an escape hatch outside the language: a need met repeatedly only through `dev sql` is a gap in the language. Over MCP it is the `dev sql` operation of every tool ([agents.md](agents.md#mcp-server)).
+`polylogue dev sql STATEMENT` runs one read-only statement against `index.db` with `archive.db` attached, through versioned views (`v1_sessions`, `v1_messages`, `v1_tool_calls`, `v1_links`, `v1_annotations`): `polylogue dev sql 'select count(*) from v1_sessions'`. It is an escape hatch outside the language: a need met repeatedly only through `dev sql` is a gap in the language. Over MCP it is the `dev sql` operation of every tool ([agents.md](agents.md#mcp-server)).

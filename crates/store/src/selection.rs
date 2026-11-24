@@ -25,7 +25,7 @@ pub use shipped::shipped_bindings;
 mod keyed;
 use std::{collections::BTreeMap, ops::ControlFlow, sync::Arc};
 
-/// A current assertion family's names and resolved query definitions.
+/// A current annotation family's names and resolved query definitions.
 pub(crate) struct SavedFamily {
     pub names: BTreeMap<String, usize>,
     pub queries: BTreeMap<String, Vec<polylogue_query::SavedQuery>>,
@@ -326,17 +326,17 @@ impl Reader<'_> {
     }
 
     /// The one point where a selected reference becomes a read target: an
-    /// assertion family binds its current revision, other kinds are refused.
+    /// annotation family binds its current revision, other kinds are refused.
     fn bind_direct_reference(&self, reference: Reference) -> Result<ReadTarget, SelectionError> {
         let reference = match reference {
-            Reference::Assertion(revision) if revision.revision.is_none() => {
-                let row = self.assertion(&revision)?.ok_or_else(|| {
+            Reference::Annotation(revision) if revision.revision.is_none() => {
+                let row = self.annotation(&revision)?.ok_or_else(|| {
                     SelectionError::invalid(
                         polylogue_model::Code::NotFound,
-                        "assertion family has no current revision",
+                        "annotation family has no current revision",
                     )
                 })?;
-                Reference::Assertion(RevisionReference {
+                Reference::Annotation(RevisionReference {
                     root: row.fact.root,
                     revision: Some(row.fact.id),
                 })
@@ -445,7 +445,7 @@ impl Reader<'_> {
                         })?;
                     if fixed
                         .get(index)
-                        .is_none_or(|target| target.reference().stored_form() != at.row_identity)
+                        .is_none_or(|target| target.reference().to_string() != at.row_identity)
                     {
                         return Err(E::from(SelectionError::invalid(
                             polylogue_model::Code::StaleCursor,
@@ -484,7 +484,7 @@ impl Reader<'_> {
                     aggregates: BTreeMap::new(),
                     position: OrderPosition {
                         values: vec![serde_json::json!(index)],
-                        row_identity: target.reference().stored_form(),
+                        row_identity: target.reference().to_string(),
                     },
                 })?
                 .is_break()
@@ -571,7 +571,7 @@ impl Reader<'_> {
             let aggregates = aggregate_values(program, &row);
             let row_identity = target
                 .as_ref()
-                .map(|target| target.reference().stored_form())
+                .map(|target| target.reference().to_string())
                 .or_else(|| {
                     identity
                         .as_ref()
@@ -752,8 +752,8 @@ impl Reader<'_> {
         Ok(self.query(&format!("SELECT EXISTS(SELECT 1 FROM ({outer}) a JOIN ({inner}) b ON a.pk=b.pk) AS present"),&params)?.first().and_then(|row|row["present"].as_i64())==Some(1))
     }
     pub fn validate_selection(&self, program: &Program) -> Result<(), SelectionError> {
-        for cutoff in &program.assertion_cutoffs {
-            self.prepare_assertion_history(*cutoff)?;
+        for cutoff in &program.annotation_cutoffs {
+            self.prepare_annotation_history(*cutoff)?;
         }
         let position = self.change_position()?;
         if program
@@ -1019,7 +1019,7 @@ fn direct_reference(
                 | "document"
                 | "event"
                 | "span"
-                | "assertion"
+                | "annotation"
                 | "delivery"
         ) =>
         {
@@ -1053,7 +1053,7 @@ fn identity_target(unit: Unit, values: &[Value]) -> Option<ReadTarget> {
         Unit::Messages => MessageId::parse(text(0)?).ok().map(ReadTarget::Message),
         Unit::Documents => DocumentId::parse(text(0)?).ok().map(ReadTarget::Document),
         Unit::Events => Some(ReadTarget::Event(text(0)?.to_owned())),
-        Unit::Annotations => Some(ReadTarget::Assertion {
+        Unit::Annotations => Some(ReadTarget::Annotation {
             root: text(1)?.to_owned(),
             revision: text(0)?.to_owned(),
         }),

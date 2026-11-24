@@ -239,7 +239,7 @@ impl Binder<'_> {
         let kind = reference.split_once(':').map(|(kind, _)| kind);
         if matches!(
             kind,
-            Some("block" | "document" | "event" | "span" | "assertion" | "delivery")
+            Some("block" | "document" | "event" | "span" | "annotation" | "delivery")
         ) || (reference.starts_with("message:") && reference.contains(".."))
         {
             return Ok(Filter::Rows {
@@ -309,7 +309,7 @@ impl Binder<'_> {
                 || (lower == "event" && unit != Unit::Deliveries)
                 || matches!(
                     lower.as_str(),
-                    "block" | "document" | "span" | "assertion" | "delivery"
+                    "block" | "document" | "span" | "annotation" | "delivery"
                 )
             {
                 return Ok(rows(format!("{lower}:{text}")));

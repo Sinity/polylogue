@@ -1,12 +1,12 @@
 //! What the browser extension and the operator ask about web chats: chat
-//! actions (the operator queues, the extension claims and reports), backfill
+//! actions (the operator queues, the extension claims and reports), import_job
 //! jobs (the operator starts, the extension claims and reports), and what
 //! the archive holds of captured conversations. Every change goes through
 //! the one writer ([`polylogue_store::chat_actions`],
-//! [`polylogue_store::backfill_jobs`]).
+//! [`polylogue_store::import_jobs`]).
 
 use super::{Daemon, browser_refusal, store_error, writer};
-use crate::browser::{actions, backfill};
+use crate::browser::{actions, import_job};
 use crate::cli::print;
 use crate::daemon::Failure;
 use crate::daemon::handler::{Call, Handler};
@@ -19,7 +19,7 @@ use polylogue_store::{Reader, StoreError, user_writes};
 
 fn refused(e: &StoreError) -> Failure {
     match e {
-        StoreError::ChatAction(code) | StoreError::Backfill(code) => {
+        StoreError::ChatAction(code) | StoreError::ImportJob(code) => {
             let Some(code) = polylogue_model::Code::from_name(code) else {
                 return crate::protocol::protocol_mismatch(
                     "browser action",
@@ -44,7 +44,7 @@ fn enabled(invocation: &Invocation, reader: &Reader<'_>) -> Result<bool, Failure
 }
 
 /// Writes `write`; `None` when it found nothing to claim. Chat actions and
-/// backfill jobs carry their own retry keys, so each write gets a new
+/// import jobs carry their own retry keys, so each write gets a new
 /// request ID.
 fn apply(
     d: &Daemon,
@@ -103,34 +103,34 @@ fn chat_then_view(
     }
 }
 
-fn backfill_then_view(
+fn import_job_then_view(
     d: &Daemon,
     invocation: &Invocation,
     write: UserWrite,
-) -> Answer<protocol::BackfillAnswer> {
+) -> Answer<protocol::ImportJobAnswer> {
     let outcome = match apply(d, invocation, write) {
         Ok(Some(outcome)) => outcome,
         Ok(None) => {
-            return Answer::ok(protocol::BackfillAnswer::Current(
-                protocol::BackfillCurrent { job: None },
+            return Answer::ok(protocol::ImportJobAnswer::Current(
+                protocol::ImportJobCurrent { job: None },
             ));
         }
         Err(failure) => return failure.answer(),
     };
     if outcome.pending {
-        return crate::protocol::written(protocol::BackfillAnswer::Outcome(outcome), true);
+        return crate::protocol::written(protocol::ImportJobAnswer::Outcome(outcome), true);
     }
     let reader = match d.reads.reader() {
         Ok(reader) => reader,
         Err(e) => return store_error(&e),
     };
-    match reader.backfill_job(&outcome.id) {
-        Ok(Some(job)) => Answer::ok(protocol::BackfillAnswer::Current(
-            protocol::BackfillCurrent {
-                job: Some(Box::new(backfill::view(&job, invocation.at.unix_ms()))),
+    match reader.import_job(&outcome.id) {
+        Ok(Some(job)) => Answer::ok(protocol::ImportJobAnswer::Current(
+            protocol::ImportJobCurrent {
+                job: Some(Box::new(import_job::view(&job, invocation.at.unix_ms()))),
             },
         )),
-        Ok(None) => browser_refusal(actions::Refused(polylogue_model::Code::UnknownBackfillJob)),
+        Ok(None) => browser_refusal(actions::Refused(polylogue_model::Code::UnknownImportJob)),
         Err(e) => store_error(&e),
     }
 }
@@ -363,14 +363,14 @@ browser!(
 );
 
 browser!(
-    BackfillStart,
-    protocol::BackfillStart,
-    protocol::BackfillAnswer,
-    print::backfill_answer,
+    ImportJobStart,
+    protocol::ImportJobStart,
+    protocol::ImportJobAnswer,
+    print::import_job_answer,
     |a, call| {
-        match backfill::new_job(&a.provider, a.since.as_deref()) {
+        match import_job::new_job(&a.provider, a.since.as_deref()) {
             Ok(new) => {
-                backfill_then_view(call.daemon, call.invocation, UserWrite::BackfillStart(new))
+                import_job_then_view(call.daemon, call.invocation, UserWrite::ImportJobStart(new))
             }
             Err(r) => browser_refusal(r),
         }
@@ -378,16 +378,16 @@ browser!(
 );
 
 browser!(
-    BackfillList,
-    protocol::BackfillList,
-    protocol::BackfillJobList,
-    print::backfill_jobs,
+    ImportJobList,
+    protocol::ImportJobList,
+    protocol::ImportJobs,
+    print::import_jobs,
     |_a, call| {
         let reader = call.reader()?;
         let now = call.invocation.at.unix_ms();
-        match reader.backfill_jobs() {
-            Ok(jobs) => Answer::ok(protocol::BackfillJobList {
-                jobs: jobs.iter().map(|job| backfill::view(job, now)).collect(),
+        match reader.import_jobs() {
+            Ok(jobs) => Answer::ok(protocol::ImportJobs {
+                jobs: jobs.iter().map(|job| import_job::view(job, now)).collect(),
             }),
             Err(e) => store_error(&e),
         }
@@ -395,43 +395,43 @@ browser!(
 );
 
 browser!(
-    BackfillCancel,
-    protocol::BackfillCancel,
-    protocol::BackfillAnswer,
-    print::backfill_answer,
+    ImportJobCancel,
+    protocol::ImportJobCancel,
+    protocol::ImportJobAnswer,
+    print::import_job_answer,
     |a, call| {
-        backfill_then_view(
+        import_job_then_view(
             call.daemon,
             call.invocation,
-            UserWrite::BackfillCancel { job: a.id },
+            UserWrite::ImportJobCancel { job: a.id },
         )
     }
 );
 
 browser!(
-    BackfillClaim,
-    protocol::BackfillClaim,
-    protocol::BackfillAnswer,
+    ImportJobClaim,
+    protocol::ImportJobClaim,
+    protocol::ImportJobAnswer,
     print::json,
     |a, call| {
-        backfill_then_view(
+        import_job_then_view(
             call.daemon,
             call.invocation,
-            UserWrite::BackfillClaim { by: a.by },
+            UserWrite::ImportJobClaim { by: a.by },
         )
     }
 );
 
 browser!(
-    BackfillReport,
-    protocol::BackfillReport,
-    protocol::BackfillAnswer,
+    ImportJobReport,
+    protocol::ImportJobReport,
+    protocol::ImportJobAnswer,
     print::json,
     |a, call| {
-        backfill_then_view(
+        import_job_then_view(
             call.daemon,
             call.invocation,
-            UserWrite::BackfillReport {
+            UserWrite::ImportJobReport {
                 job: a.id,
                 by: a.by,
                 report: a.report,

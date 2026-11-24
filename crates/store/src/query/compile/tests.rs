@@ -221,7 +221,7 @@ fn fields_choose_the_columns() {
 fn changes_continue_from_a_feed_position() {
     let p = c("feed where after:generation:12:3");
     let sql = statements(&p);
-    // Assertions follow the archive counter, removals and sessions the index.
+    // Annotations follow the archive counter, removals and sessions the index.
     assert!(sql.contains(".seq > 3) OR ("), "{sql}");
     assert!(sql.contains(".seq > 12) OR"), "{sql}");
     assert!(sql.contains(".changed > 12 OR"), "{sql}");
@@ -374,10 +374,10 @@ fn column_references_follow_shown_fields() {
         kinds(c("messages"))["session"],
         Some(ColumnReference::Session)
     );
-    let assertions = kinds(c("annotations"));
-    assert_eq!(assertions["id"], None);
-    assert_eq!(assertions["root"], None);
-    assert_eq!(assertions["reference"], Some(ColumnReference::Assertion));
+    let annotations = kinds(c("annotations"));
+    assert_eq!(annotations["id"], None);
+    assert_eq!(annotations["root"], None);
+    assert_eq!(annotations["reference"], Some(ColumnReference::Annotation));
     let mut options = opts(&[]);
     options.fields = vec!["id".into(), "root".into(), "reference".into()];
     assert_eq!(
@@ -385,7 +385,7 @@ fn column_references_follow_shown_fields() {
         std::collections::BTreeMap::from([
             ("id".into(), None),
             ("root".into(), None),
-            ("reference".into(), Some(ColumnReference::Assertion)),
+            ("reference".into(), Some(ColumnReference::Annotation)),
         ])
     );
     options.fields = vec!["id".into(), "session.id".into(), "session.title".into()];

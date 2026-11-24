@@ -780,7 +780,7 @@ fn aggregate_aliases_stay_visible_to_measures() {
 }
 
 #[test]
-fn assertion_aggregates_keep_the_selected_rowid_scope() {
+fn annotation_aggregates_keep_the_selected_rowid_scope() {
     let (_directory, mut fixture) = fixture();
     fixture
         .note("note", None, Some("one"), "session:claude-code:a")

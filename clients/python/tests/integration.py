@@ -302,7 +302,7 @@ class ClientTests(unittest.TestCase):
         current = self.checked(lambda: self.client.call("set", "signal.interrupts_per_hour"))["value"]
         self.assertEqual(current["value"], {"type": "interrupt_budget", "value": 9})
         self.assertEqual(first["id"], "python-write")
-        self.assertEqual(current["authored"]["reference"], "assertion:python-write@python-write")
+        self.assertEqual(current["authored"]["reference"], "annotation:python-write@python-write")
 
     def test_change_feed_can_continue_from_its_completion(self):
         first = [line.json() for line in self.direct.feed()]

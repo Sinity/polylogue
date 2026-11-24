@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 #[cfg(test)]
 mod tests;
 
-/// A ping to a session that is not running, run through the harness's
+/// A message to a session that is not running, run through the harness's
 /// headless resume.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResumeRun {
@@ -572,7 +572,7 @@ impl Acts {
 
     /// Starts a resumed run, or queues it behind the session's run in
     /// progress; `true` when it started. `false` when it waits, or when no
-    /// acts worker runs and the ping went back to the mailbox.
+    /// acts worker runs and the message went back to the mailbox.
     pub(crate) fn resume(&self, run: ResumeRun) -> bool {
         {
             let mut resuming = self.resuming.locked();
@@ -586,7 +586,7 @@ impl Acts {
         let delivery = run.delivery.clone();
         let session = run.session.clone();
         if !self.report(Report::Resume(run)) {
-            // Nothing runs: the pings go back to the mailbox, where they
+            // Nothing runs: the messages go back to the mailbox, where they
             // are handled like any other.
             self.release(&delivery);
             while let Some(queued) = self.resume_finished(&session) {

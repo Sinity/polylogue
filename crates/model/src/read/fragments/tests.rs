@@ -105,7 +105,7 @@ fn fragment_record(text: &str) -> TextFragmentRecord {
         end,
     };
     TextFragmentRecord {
-        reference: span.stored_form(),
+        reference: span.to_string(),
         commit: 7,
         fragment: TextFragment {
             container: container.clone(),

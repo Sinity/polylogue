@@ -21,7 +21,7 @@ block:test:session:message#0
 ↳ turn: as recorded
 ↳ link_issue: as recorded
 ↳ stale: as recorded
-↳ variant: as recorded
+↳ alternate: as recorded
 ▸ result for unknown call call-0  unknown  ok · unknown ms
 ```json
 null

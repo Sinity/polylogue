@@ -297,64 +297,24 @@ fn unknown_reference_prefix_is_refused() {
 }
 
 #[test]
-fn surface_names_leave_stored_references_and_serialization_unchanged() {
-    for (surface, stored) in [
-        ("annotation:root", "assertion:root"),
-        ("annotation:root@revision", "assertion:root@revision"),
-        ("alternate:root@revision#2", "variant:root@revision#2"),
-        (
-            "span:annotation:root@revision#c=0-3",
-            "span:assertion:root@revision#c=0-3",
-        ),
-        (
-            "span:alternate:root@revision#2#b=0-3",
-            "span:variant:root@revision#2#b=0-3",
-        ),
-        (
-            "url:https://example.test/assertion:kept",
-            "url:https://example.test/assertion:kept",
-        ),
+fn authored_references_round_trip_through_text_and_serde() {
+    for text in [
+        "annotation:root",
+        "annotation:root@revision",
+        "alternate:root@revision#2",
+        "span:annotation:root@revision#c=0-3",
+        "span:alternate:root@revision#2#b=0-3",
+        "url:https://example.test/annotation:kept",
     ] {
-        let reference = Reference::parse(surface).unwrap();
-        assert_eq!(reference.to_string(), surface);
-        assert_eq!(reference.stored_form(), stored);
-        assert_eq!(Reference::display_stored(stored), surface);
-        assert_eq!(Reference::parse_stored(stored).unwrap(), reference);
+        let reference = Reference::parse(text).unwrap();
+        assert_eq!(reference.to_string(), text);
         assert_eq!(
             serde_json::to_value(&reference).unwrap(),
-            serde_json::json!(stored)
+            serde_json::json!(text)
         );
         assert_eq!(
-            serde_json::from_value::<Reference>(serde_json::json!(stored)).unwrap(),
+            serde_json::from_value::<Reference>(serde_json::json!(text)).unwrap(),
             reference
-        );
-        if surface != stored {
-            assert!(Reference::parse_stored(surface).is_err());
-            assert!(serde_json::from_value::<Reference>(serde_json::json!(surface)).is_err());
-        }
-    }
-}
-
-#[test]
-fn stored_spellings_report_the_complete_surface_correction() {
-    for (written, corrected) in [
-        ("assertion:root@revision", "annotation:root@revision"),
-        ("variant:root@revision#2", "alternate:root@revision#2"),
-        (
-            "span:assertion:root@revision#c=0-3",
-            "span:annotation:root@revision#c=0-3",
-        ),
-        (
-            "span:variant:root@revision#2#b=0-3",
-            "span:alternate:root@revision#2#b=0-3",
-        ),
-    ] {
-        assert_eq!(
-            Reference::parse(written).unwrap_err(),
-            ReferenceError::StoredSpelling {
-                written: written.into(),
-                corrected: corrected.into(),
-            }
         );
     }
 }
@@ -376,7 +336,7 @@ fn read_targets_refuse_what_has_no_selected_row_reading() {
         ),
         (
             "annotation:root@revision",
-            ReadTarget::Assertion {
+            ReadTarget::Annotation {
                 root: "root".into(),
                 revision: "revision".into(),
             },
@@ -391,7 +351,7 @@ fn read_targets_refuse_what_has_no_selected_row_reading() {
     for (text, reason) in [
         (
             "annotation:root",
-            "an assertion family is read through its current revision",
+            "an annotation family is read through its current revision",
         ),
         (
             "span:block:test:one:m1#0#u16=0-2",

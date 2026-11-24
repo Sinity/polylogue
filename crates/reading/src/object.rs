@@ -103,7 +103,7 @@ fn execute<T>(
                 ran_at: operation.ran_at,
                 read_at: positions,
                 freshness: services.freshness(reader)?,
-                enabled_variants: vec![],
+                enabled_alternates: vec![],
                 author: operation.authorship.author.clone(),
                 notes: vec![],
                 incomplete: vec![],

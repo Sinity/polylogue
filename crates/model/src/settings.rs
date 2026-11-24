@@ -12,7 +12,7 @@ pub enum Scope {
 #[serde(rename_all = "snake_case")]
 pub enum Kind {
     Boolean,
-    Variants,
+    Alternates,
     QuietHours,
     InterruptBudget,
     EmbeddingProvider,
@@ -47,7 +47,7 @@ pub const CATALOG: &[Declaration] = &[
     },
     Declaration {
         key: "reading.alternates",
-        kind: Kind::Variants,
+        kind: Kind::Alternates,
         default: Some("[]"),
         scope: Scope::Archive,
         standalone_only: false,
@@ -118,7 +118,7 @@ pub enum SettingMode {
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum Value {
     Boolean(bool),
-    Variants(Vec<String>),
+    Alternates(Vec<String>),
     QuietHours(Option<[u16; 2]>),
     InterruptBudget(usize),
     EmbeddingProvider(EmbeddingProvider),
@@ -139,7 +139,7 @@ fn buffered_value<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwn
 
 impl Value {
     /// The catalog parser alone decides type and constraints for both
-    /// surface text and a typed assertion payload.
+    /// surface text and a typed annotation payload.
     pub fn validate_for(&self, key: &str, mode: SettingMode) -> Result<(), Error> {
         let invalid = || Error::Invalid {
             key: key.into(),
@@ -161,7 +161,7 @@ impl Value {
                     "off".into()
                 }
             }
-            Self::Variants(value) => serde_json::to_string(value)?,
+            Self::Alternates(value) => serde_json::to_string(value)?,
             Self::QuietHours(value) => serde_json::to_string(
                 &value.map(|[from, to]| serde_json::json!({"from":from,"to":to})),
             )?,
@@ -334,21 +334,21 @@ pub fn parse(key: &str, text: &str, mode: SettingMode) -> Result<Value, Error> {
             "off" => false,
             _ => return Err(invalid("on or off")),
         }),
-        Kind::Variants => {
+        Kind::Alternates => {
             let values: Vec<String> = serde_json::from_str(text)
-                .map_err(|_| invalid("an ordered JSON list of variant keys"))?;
+                .map_err(|_| invalid("an ordered JSON list of alternate keys"))?;
             if values.iter().any(|value| {
                 value.trim().is_empty()
                     || value.chars().any(char::is_control)
                     || value
                         .split(':')
                         .next()
-                        .and_then(crate::VariantKind::from_name)
+                        .and_then(crate::AlternateKind::from_name)
                         .is_none()
             }) {
-                return Err(invalid("an ordered JSON list of variant keys"));
+                return Err(invalid("an ordered JSON list of alternate keys"));
             }
-            Value::Variants(values)
+            Value::Alternates(values)
         }
         Kind::QuietHours => {
             #[derive(Deserialize)]
@@ -456,10 +456,10 @@ impl Snapshot {
     }
     pub fn reading_alternates(&self) -> Result<&[String], Error> {
         match self.get("reading.alternates")? {
-            Some(Value::Variants(value)) => Ok(value),
+            Some(Value::Alternates(value)) => Ok(value),
             _ => Err(Error::Invalid {
                 key: "reading.alternates".into(),
-                expected: "a typed ordered variant list",
+                expected: "a typed ordered alternate list",
             }),
         }
     }

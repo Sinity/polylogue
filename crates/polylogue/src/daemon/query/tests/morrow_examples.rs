@@ -31,7 +31,7 @@ const GAPS: &[(&str, &str)] = &[
 
 fn archive_with_notes() -> Morrow {
     use crate::daemon::service::ArchiveMode;
-    use polylogue_model::assertion::{AssertionKind, LinkRole, NewAssertion, NewAssertionLink};
+    use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
     use polylogue_model::{Block, Reference};
     use polylogue_testkit::session;
 
@@ -58,7 +58,7 @@ fn archive_with_notes() -> Morrow {
     for (id, kind, key, value, targets) in [
         (
             "morrow-project",
-            AssertionKind::Tag,
+            AnnotationKind::Tag,
             Some("project:morrow"),
             None,
             [1, 2, 4, 5, 6]
@@ -68,14 +68,14 @@ fn archive_with_notes() -> Morrow {
         ),
         (
             "morrow-research",
-            AssertionKind::Tag,
+            AnnotationKind::Tag,
             Some("research"),
             None,
             vec![Reference::Session(session(7))],
         ),
         (
             "morrow-decision",
-            AssertionKind::Decision,
+            AnnotationKind::Decision,
             None,
             Some("decided: chrono, not time"),
             vec![Reference::Message(decision)],
@@ -92,13 +92,13 @@ fn archive_with_notes() -> Morrow {
             &invocation,
             id.into(),
             polylogue_model::user::UserWrite::Assert {
-                assertions: vec![NewAssertion {
+                annotations: vec![NewAnnotation {
                     kind,
                     key: key.map(Into::into),
                     value: value.map(|value| serde_json::json!(value)),
                     links: targets
                         .into_iter()
-                        .map(|reference| NewAssertionLink {
+                        .map(|reference| NewAnnotationLink {
                             role: LinkRole::About,
                             reference,
                         })

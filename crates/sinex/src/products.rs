@@ -91,7 +91,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
             UserWrite::Save(_) => "polylogue.line_save_restore",
             _ => "polylogue.request_restore",
         },
-        Product::RestoredAssertion { .. } => "polylogue.assertion_restore",
+        Product::RestoredAnnotation { .. } => "polylogue.annotation_restore",
         Product::Query { .. } => "polylogue.query",
         Product::QueryRun { .. } => "polylogue.query_run",
         Product::QueryRunOutcome { .. } => "polylogue.query_run_outcome",
@@ -102,9 +102,9 @@ pub(crate) fn kind(product: &Product) -> &'static str {
             UserWrite::Assert { .. }
             | UserWrite::MarkSeen { .. }
             | UserWrite::AssertQuery { .. }
-            | UserWrite::ReviseAssertions { .. }
-            | UserWrite::WithdrawAssertions { .. }
-            | UserWrite::SetSetting { .. } => "polylogue.assertion",
+            | UserWrite::ReviseAnnotations { .. }
+            | UserWrite::WithdrawAnnotations { .. }
+            | UserWrite::SetSetting { .. } => "polylogue.annotation",
             UserWrite::Deliver(_) | UserWrite::DeliveredAdvice(_) => "polylogue.delivery",
             UserWrite::DeliveryEvent { .. } => "polylogue.delivery_outcome",
             _ => "polylogue.request",
@@ -142,7 +142,7 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
         Product::ParseProgress { reading, .. } => json!([reading.start]),
         Product::Request(request) => json!([request.request.id]),
         Product::RestoredRequest { prepared } => json!([prepared.request.id]),
-        Product::RestoredAssertion { fact, import } => match import {
+        Product::RestoredAnnotation { fact, import } => match import {
             None => json!([fact.root, fact.id]),
             Some(i) => json!([fact.root, fact.id, i.input, i.chain, i.machine, i.actor]),
         },
@@ -257,8 +257,8 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
             "at": prepared.request.at,
             "machine": prepared.request.machine
         }),
-        Product::RestoredAssertion { fact, .. } => json!({
-            "assertion": fact.reference().stored_form(),
+        Product::RestoredAnnotation { fact, .. } => json!({
+            "annotation": fact.reference().to_string(),
             "at": fact.created_at,
             "machine": fact.machine
         }),
@@ -270,10 +270,10 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                 UserWrite::Assert { .. }
                 | UserWrite::MarkSeen { .. }
                 | UserWrite::AssertQuery { .. }
-                | UserWrite::ReviseAssertions { .. }
-                | UserWrite::WithdrawAssertions { .. }
+                | UserWrite::ReviseAnnotations { .. }
+                | UserWrite::WithdrawAnnotations { .. }
                 | UserWrite::SetSetting { .. } => {
-                    value["assertions"] = serde_json::to_value(&prepared.effect.assertions)?;
+                    value["annotations"] = serde_json::to_value(&prepared.effect.annotations)?;
                 }
                 UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery) => {
                     value["delivery"] = request.id.clone().into();
@@ -488,7 +488,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.background", "background"),
         ("polylogue.repository", "repository"),
         ("polylogue.parse_progress", "parse_progress"),
-        ("polylogue.assertion", "request"),
+        ("polylogue.annotation", "request"),
         ("polylogue.delivery", "request"),
         ("polylogue.delivery_outcome", "request"),
         ("polylogue.request", "request"),
@@ -497,7 +497,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
         ("polylogue.line_resolution_restore", "restored_request"),
         ("polylogue.line_save", "request"),
         ("polylogue.line_save_restore", "restored_request"),
-        ("polylogue.assertion_restore", "restored_assertion"),
+        ("polylogue.annotation_restore", "restored_annotation"),
         ("polylogue.query", "query"),
         ("polylogue.query_run", "query_run"),
         ("polylogue.query_run_outcome", "query_run_outcome"),
@@ -705,28 +705,29 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     name: (*name).into(),
                     version: if matches!(
                         *name,
-                        "polylogue.line_save" | "polylogue.line_save_restore"
+                        "polylogue.annotation" | "polylogue.annotation_restore"
                     ) {
-                        3
+                        1
+                    } else if matches!(*name, "polylogue.line_save" | "polylogue.line_save_restore")
+                    {
+                        4
                     } else if matches!(
                         *name,
-                        "polylogue.line_resolution"
-                            | "polylogue.line_resolution_restore"
-                            | "polylogue.assertion"
+                        "polylogue.line_resolution" | "polylogue.line_resolution_restore"
                     ) {
-                        5
+                        6
                     } else {
                         match *product {
-                            "message" => 8,
-                            "request" | "restored_request" => 9,
+                            "message" => 9,
+                            "request" | "restored_request" => 10,
                             "session" => 7,
-                            "document" | "event" | "link" | "background" | "repository" => 6,
+                            "link" => 7,
+                            "document" | "event" | "background" | "repository" => 6,
                             "parse_progress" => 7,
                             // Input rows refuse fields outside their declared source shape.
                             "input" => 6,
                             "fragment" => 4,
-                            "query_run" => 7,
-                            "restored_assertion" => 4,
+                            "query_run" => 8,
                             "tool_call" | "prefix_copy" | "prefix_member" => 2,
                             "query_run_outcome" => 2,
                             "restored_history" | "attachment_binding" => 1,
@@ -747,7 +748,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         "attachment_binding"
                             | "request"
                             | "restored_request"
-                            | "restored_assertion"
+                            | "restored_annotation"
                             | "blob"
                             | "query"
                             | "query_run"

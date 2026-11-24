@@ -66,7 +66,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
         format!("feed where after:{cursor} | limit 1"),
         format!("feed where after:{cursor} | group by kind | count"),
         format!("sessions where exists feed(after:{cursor}) | count"),
-        format!("feed where NOT after:{cursor} OR kind:assertion"),
+        format!("feed where NOT after:{cursor} OR kind:annotation"),
         "query:old-feed".into(),
     ] {
         let error = run(&reader, ask(&query, T0)).unwrap_err();
@@ -121,7 +121,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
             machine: "synthetic".into(),
             at: Timestamp::from_unix_ms(T0 - 86_400_000).unwrap(),
             write: UserWrite::Assert {
-                assertions: vec![serde_json::from_value(json!({"kind":"note","key":null,"value":"late arrival","links":[{"role":"about","reference":"repo:synthetic"}],"valid_until":null})).unwrap()],
+                annotations: vec![serde_json::from_value(json!({"kind":"note","key":null,"value":"late arrival","links":[{"role":"about","reference":"repo:synthetic"}],"valid_until":null})).unwrap()],
             },
         })
         .unwrap();
@@ -158,7 +158,7 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     assert_eq!(
         changed,
         [
-            ("assertion", "000-late-note"),
+            ("annotation", "000-late-note"),
             ("session", "claude-code:kept")
         ],
         "{changes}"

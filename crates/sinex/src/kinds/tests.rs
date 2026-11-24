@@ -153,29 +153,28 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message" => 8,
+                "polylogue.message" => 9,
                 "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 9,
+                | "polylogue.request_restore" => 10,
                 "polylogue.session" => 7,
                 "polylogue.document"
                 | "polylogue.event"
-                | "polylogue.link"
                 | "polylogue.background"
                 | "polylogue.repository" => 6,
-                "polylogue.assertion_restore" => 4,
                 "polylogue.parse_progress" => 7,
                 "polylogue.input_observation" => 6,
-                "polylogue.query_run" => 7,
+                "polylogue.query_run" => 8,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
                 "polylogue.fragment" => 4,
-                "polylogue.assertion" => 5,
+                "polylogue.link" => 7,
+                "polylogue.annotation" | "polylogue.annotation_restore" => 1,
                 "polylogue.query" => 2,
                 "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 2,
-                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 5,
-                "polylogue.line_save" | "polylogue.line_save_restore" => 3,
+                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 6,
+                "polylogue.line_save" | "polylogue.line_save_restore" => 4,
                 "polylogue.historical_restore" | "polylogue.attachment_binding" => 1,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
@@ -240,7 +239,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         end: 10,
     });
     let record = TextFragmentRecord {
-        reference: fragment.reference().stored_form(),
+        reference: fragment.reference().to_string(),
         commit: 9000,
         fragment,
     };
@@ -404,7 +403,7 @@ fn current_declarations_keep_every_source7_kind_version() {
 }
 
 #[test]
-fn markdown_link_roles_version_only_the_changed_authored_declarations() {
+fn markdown_link_roles_versioned_only_the_changed_authored_declarations() {
     let old: serde_json::Value = serde_json::from_str(include_str!(
         "../../tests/rebuild/source11-kind-hashes.json"
     ))
@@ -427,50 +426,71 @@ fn markdown_link_roles_version_only_the_changed_authored_declarations() {
     ))
     .unwrap();
     let introduced = source12["kinds"].as_array().unwrap();
-    let current = declarations("polylogue");
-    assert_eq!(current.len(), previous.len());
+    assert_eq!(introduced.len(), previous.len());
     assert_eq!(
         source12["source"]["version"].as_u64().unwrap(),
         old["source"]["version"].as_u64().unwrap() + 1
     );
-    for declaration in current {
-        let name = declaration.kind.name.as_str();
+    for introduction in introduced {
+        let name = introduction["name"].as_str().unwrap();
         let previous = previous.iter().find(|kind| kind["name"] == name).unwrap();
         let version = previous["version"].as_u64().unwrap();
         let hash = previous["definition_hash"].as_str().unwrap();
-        let introduction = introduced.iter().find(|kind| kind["name"] == name).unwrap();
-        if changed.contains(&name) {
-            assert_eq!(
-                introduction["version"].as_u64().unwrap(),
-                version + 1,
-                "{name}"
-            );
-            assert_ne!(
-                introduction["definition_hash"].as_str().unwrap(),
-                hash,
-                "{name}"
-            );
-            let roles = declaration.payload_schema.as_ref().unwrap()["$defs"]["LinkRole"]["enum"]
-                .as_array()
-                .unwrap();
-            for role in ["mentions", "cites", "embeds"] {
-                assert!(roles.iter().any(|value| value == role), "{name}: {role}");
-            }
-        } else {
-            assert_eq!(introduction["version"].as_u64().unwrap(), version, "{name}");
-            assert_eq!(
-                introduction["definition_hash"].as_str().unwrap(),
-                hash,
-                "{name}"
-            );
-        }
+        let bump = u64::from(changed.contains(&name));
+        assert_eq!(
+            introduction["version"].as_u64().unwrap(),
+            version + bump,
+            "{name}"
+        );
+        assert_eq!(
+            introduction["definition_hash"].as_str().unwrap() != hash,
+            bump == 1,
+            "{name}"
+        );
     }
 }
 
 #[test]
-fn trace_view_versions_only_its_three_reachable_declarations() {
-    let previous: serde_json::Value = serde_json::from_str(include_str!(
+fn trace_view_versioned_only_its_three_reachable_declarations() {
+    let source12: serde_json::Value = serde_json::from_str(include_str!(
         "../../tests/rebuild/source12-kind-hashes.json"
+    ))
+    .unwrap();
+    let source13: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/rebuild/source13-kind-hashes.json"
+    ))
+    .unwrap();
+    let changed = [
+        "polylogue.line_resolution",
+        "polylogue.line_resolution_restore",
+        "polylogue.query_run",
+    ];
+    let old = source12["kinds"].as_array().unwrap();
+    let new = source13["kinds"].as_array().unwrap();
+    assert_eq!(new.len(), old.len());
+    for kind in new {
+        let name = kind["name"].as_str().unwrap();
+        let old = old.iter().find(|old| old["name"] == name).unwrap();
+        let bump = u64::from(changed.contains(&name));
+        assert_eq!(
+            kind["version"].as_u64().unwrap(),
+            old["version"].as_u64().unwrap() + bump,
+            "{name}"
+        );
+        assert_eq!(
+            kind["definition_hash"] != old["definition_hash"],
+            bump == 1,
+            "{name}"
+        );
+    }
+}
+
+/// The vocabulary rename gave annotations their own kind names (version 1)
+/// and raised every other declaration whose definition changed by one.
+#[test]
+fn vocabulary_rename_versions_every_changed_declaration() {
+    let previous: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/rebuild/source13-kind-hashes.json"
     ))
     .unwrap();
     assert_eq!(
@@ -478,34 +498,35 @@ fn trace_view_versions_only_its_three_reachable_declarations() {
         previous["source"]["version"].as_u64().unwrap() + 1
     );
     let old = previous["kinds"].as_array().unwrap();
-    let changed = [
-        "polylogue.line_resolution",
-        "polylogue.line_resolution_restore",
-        "polylogue.query_run",
-    ];
+    let introduced = ["polylogue.annotation", "polylogue.annotation_restore"];
+    let retired = ["polylogue.assertion", "polylogue.assertion_restore"];
     let current = declarations("polylogue");
     assert_eq!(current.len(), old.len());
-    for kind in current {
+    let mut wrong = Vec::new();
+    for kind in &current {
         let name = kind.kind.name.as_str();
-        let old = old.iter().find(|kind| kind["name"] == name).unwrap();
-        let version = old["version"].as_u64().unwrap();
-        let hash = old["definition_hash"].as_str().unwrap();
-        if changed.contains(&name) {
-            assert_eq!(kind.kind.version, version + 1, "{name}");
-            assert_ne!(kind.definition_hash(), hash, "{name}");
-            assert!(
-                kind.payload_schema.as_ref().unwrap()["$defs"]["View"]["enum"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|view| view == "trace"),
-                "{name}"
-            );
-        } else {
-            assert_eq!(kind.kind.version, version, "{name}");
-            assert_eq!(kind.definition_hash(), hash, "{name}");
+        let expected = match old.iter().find(|old| old["name"] == name) {
+            None => {
+                assert!(introduced.contains(&name), "{name}");
+                1
+            }
+            Some(old) => {
+                let version = old["version"].as_u64().unwrap();
+                version + u64::from(kind.definition_hash() != old["definition_hash"])
+            }
+        };
+        if kind.kind.version != expected {
+            wrong.push(format!(
+                "{name}: {} should be {expected}",
+                kind.kind.version
+            ));
         }
     }
+    for name in retired {
+        assert!(old.iter().any(|old| old["name"] == name), "{name}");
+        assert!(current.iter().all(|kind| kind.kind.name != name), "{name}");
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
 }
 
 #[test]
@@ -531,5 +552,5 @@ fn historical_annotation_positions_keep_the_published_execution_string_schema() 
             );
         }
     }
-    assert_eq!(crate::source_reference().version, 13);
+    assert_eq!(crate::source_reference().version, 14);
 }

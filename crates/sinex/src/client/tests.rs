@@ -1018,7 +1018,9 @@ fn refused_attachment_keeps_request_as_others_complete() {
         let request = PreparedRequest {
             request: polylogue_store::fixture::authored::operator_request(
                 id.into(),
-                UserWrite::Assert { assertions: vec![] },
+                UserWrite::Assert {
+                    annotations: vec![],
+                },
             ),
             outcome: UserOutcome {
                 id: id.into(),

@@ -274,25 +274,25 @@ fn unknown_call_and_empty_output_are_distinct() {
     assert!(matches!(call.tool, ValueState::Unknown { .. }));
 }
 #[test]
-fn variants_change_layout_only_and_stale_is_opt_in() {
+fn alternates_change_layout_only_and_stale_is_opt_in() {
     let original = message(vec![Block::Text {
         text: "original".into(),
     }]);
     let mut facts = LayoutFacts::default();
     facts
-        .variants
+        .alternates
         .insert(
             polylogue_model::Reference::parse("block:test:session:message#0").unwrap(),
-            VariantText {
-                mark: VariantMark {
-                    reference: "variant:test".into(),
+            AlternateText {
+                mark: AlternateMark {
+                    reference: "alternate:test".into(),
                     key: "en".into(),
                     original: "block:test:session:message#0".into(),
                     stale: true,
                     show_original: None,
                 },
-                text: "variant".into(),
-                relations: vec![polylogue_model::VariantRelation::Translates],
+                text: "alternate".into(),
+                relations: vec![polylogue_model::AlternateRelation::Translates],
                 alignment: vec![],
             },
         )
@@ -309,14 +309,14 @@ fn variants_change_layout_only_and_stale_is_opt_in() {
     let items = layout_record(
         &projected,
         &ReadOptions {
-            variants: vec!["en".into()],
+            alternates: vec!["en".into()],
             ..options
         },
         &facts,
     )
     .unwrap();
     assert!(
-        items.iter().any(|item| matches!(item,ReadPart::Item(ReadItem{kind:ItemKind::Text{text},..}) if text=="variant"))
+        items.iter().any(|item| matches!(item,ReadPart::Item(ReadItem{kind:ItemKind::Text{text},..}) if text=="alternate"))
     );
     assert_eq!(projected, original);
 }
@@ -325,7 +325,7 @@ fn specialized_views_need_prepared_layout_facts() {
     let record = message(vec![Block::Text {
         text: "not a summary".into(),
     }]);
-    for view in [View::Summary, View::Links, View::Changes] {
+    for view in [View::Overview, View::Tree, View::Changes] {
         let parts = layout_record(
             &record,
             &ReadOptions {
@@ -715,7 +715,7 @@ fn summary_cards_show_header_facts_without_source_instructions() {
     let items = layout(
         record,
         &ReadOptions {
-            view: View::Summary,
+            view: View::Overview,
             ..Default::default()
         },
         &LayoutFacts::default(),
@@ -1299,31 +1299,31 @@ fn encoded_control_expansion_is_included_in_the_page_byte_budget() {
     );
 }
 #[test]
-fn variant_marks_only_describe_visible_substitutions() {
+fn alternate_marks_only_describe_visible_substitutions() {
     let record = message(vec![Block::Text {
         text: "visible".into(),
     }]);
     let mut facts = LayoutFacts::default();
     facts
-        .variants
+        .alternates
         .insert(
             polylogue_model::Reference::parse("block:test:session:message#7").unwrap(),
-            VariantText {
-                mark: VariantMark {
-                    reference: "variant:test".into(),
+            AlternateText {
+                mark: AlternateMark {
+                    reference: "alternate:test".into(),
                     key: "en".into(),
                     original: "block:test:session:message#7".into(),
                     stale: false,
                     show_original: None,
                 },
                 text: "not selected".into(),
-                relations: vec![polylogue_model::VariantRelation::Translates],
+                relations: vec![polylogue_model::AlternateRelation::Translates],
                 alignment: vec![],
             },
         )
         .unwrap();
     let items = layout(record, &ReadOptions::default(), &facts);
-    assert!(matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.variant.is_none()));
+    assert!(matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.alternate.is_none()));
 }
 #[test]
 fn paired_off_page_result_attachments_use_their_own_original_ordinal() {
@@ -1525,22 +1525,22 @@ fn final_footer_size_can_shorten_a_single_item_without_skipping_its_middle() {
     assert!(encode(&doc, Format::Json).len() <= limits.bytes.get());
 }
 
-fn text_variant(original: &str, text: &str, alignment: Vec<TextAlignment>) -> VariantText {
-    VariantText {
-        mark: VariantMark {
-            reference: "variant:synthetic@revision".into(),
+fn text_alternate(original: &str, text: &str, alignment: Vec<TextAlignment>) -> AlternateText {
+    AlternateText {
+        mark: AlternateMark {
+            reference: "alternate:synthetic@revision".into(),
             key: "en".into(),
             original: original.into(),
             stale: false,
             show_original: None,
         },
-        relations: vec![polylogue_model::VariantRelation::Translates],
+        relations: vec![polylogue_model::AlternateRelation::Translates],
         text: text.into(),
         alignment,
     }
 }
 #[test]
-fn variants_replace_thinking_and_remote_tool_output_at_their_sources() {
+fn alternates_replace_thinking_and_remote_tool_output_at_their_sources() {
     let call = Block::ToolCall {
         written_text: None,
         call_id: Some("c".into()),
@@ -1577,10 +1577,10 @@ fn variants_replace_thinking_and_remote_tool_output_at_their_sources() {
         (result_source.reference.as_str(), "translated result"),
     ] {
         facts
-            .variants
+            .alternates
             .insert(
                 polylogue_model::Reference::parse(reference).unwrap(),
-                text_variant(reference, text, vec![]),
+                text_alternate(reference, text, vec![]),
             )
             .unwrap();
     }
@@ -1637,7 +1637,7 @@ fn variants_replace_thinking_and_remote_tool_output_at_their_sources() {
         assert!(encoded.contains("translated result"));
         assert!(!encoded.contains("original thinking"));
         assert!(!encoded.contains("original result"));
-        assert!(encoded.contains("variant"));
+        assert!(encoded.contains("alternate"));
     }
 }
 #[test]
@@ -1661,10 +1661,10 @@ fn document_overlay_uses_original_body_ordinal_and_byte_boundaries() {
     let mut facts = LayoutFacts::default();
     let reference = polylogue_model::Reference::parse("document:test:document").unwrap();
     facts
-        .variants
+        .alternates
         .insert(
             reference.clone(),
-            text_variant(
+            text_alternate(
                 &reference.to_string(),
                 "replacement",
                 vec![TextAlignment {
@@ -1778,10 +1778,10 @@ fn paired_result_header_marks_only_the_pair_emitted_here() {
     );
     let mut facts = LayoutFacts::default();
     facts
-        .variants
+        .alternates
         .insert(
             polylogue_model::Reference::parse(&result_source.reference).unwrap(),
-            text_variant(&result_source.reference, "replacement result", vec![]),
+            text_alternate(&result_source.reference, "replacement result", vec![]),
         )
         .unwrap();
     facts.tool_pairs.insert(
@@ -1818,10 +1818,12 @@ fn paired_result_header_marks_only_the_pair_emitted_here() {
     };
     let hidden = layout(message(vec![result.clone()]), &options, &facts);
     assert_eq!(hidden.len(), 1);
-    assert!(matches!(&hidden[0].kind,ItemKind::MessageHeader{header} if header.variant.is_none()));
+    assert!(
+        matches!(&hidden[0].kind,ItemKind::MessageHeader{header} if header.alternate.is_none())
+    );
     facts.tool_pairs.get_mut(&0).unwrap().emit_at = result_source.reference;
     let shown = layout(message(vec![result]), &options, &facts);
-    assert!(matches!(&shown[0].kind,ItemKind::MessageHeader{header} if header.variant.is_some()));
+    assert!(matches!(&shown[0].kind,ItemKind::MessageHeader{header} if header.alternate.is_some()));
     assert!(shown.iter().any(|item|matches!(&item.kind,ItemKind::Call{call} if call.output.as_deref()==Some("replacement result"))));
 }
 
@@ -1840,12 +1842,12 @@ fn separator_only_span_keeps_its_reference_and_emits_text_once() {
     );
     let mut facts = LayoutFacts::default();
     facts
-        .variants
+        .alternates
         .insert(
             polylogue_model::Reference::parse(span).unwrap(),
-            text_variant(
+            text_alternate(
                 span,
-                "RENDITIONSEPARATOR",
+                "ALTERNATESEPARATOR",
                 vec![TextAlignment {
                     source,
                     start: 1,
@@ -1860,7 +1862,7 @@ fn separator_only_span_keeps_its_reference_and_emits_text_once() {
     assert_eq!(projected, original);
     let items = layout(projected, &ReadOptions::default(), &facts);
     assert!(
-        matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.variant.as_ref().is_some_and(|variant|variant.original==span))
+        matches!(&items[0].kind,ItemKind::MessageHeader{header} if header.alternate.as_ref().is_some_and(|alternate|alternate.original==span))
     );
     let texts = items
         .iter()
@@ -1872,7 +1874,7 @@ fn separator_only_span_keeps_its_reference_and_emits_text_once() {
             }
         })
         .collect::<Vec<_>>();
-    assert_eq!(texts, ["aRENDITIONSEPARATOR", "b"]);
+    assert_eq!(texts, ["aALTERNATESEPARATOR", "b"]);
     for format in [
         Format::Terminal,
         Format::Markdown,
@@ -1882,7 +1884,7 @@ fn separator_only_span_keeps_its_reference_and_emits_text_once() {
     ] {
         assert_eq!(
             encode(&document(items.clone()), format)
-                .matches("RENDITIONSEPARATOR")
+                .matches("ALTERNATESEPARATOR")
                 .count(),
             1
         );
@@ -1890,7 +1892,7 @@ fn separator_only_span_keeps_its_reference_and_emits_text_once() {
 }
 
 #[test]
-fn empty_record_renditions_have_no_source_blocks() {
+fn empty_record_alternates_have_no_source_blocks() {
     for original in [
         message(vec![]),
         Record::Document(polylogue_model::bundle::DocumentRecord {
@@ -1908,7 +1910,7 @@ fn empty_record_renditions_have_no_source_blocks() {
         } else {
             reference.clone()
         };
-        let mut variant = text_variant(
+        let mut alternate = text_alternate(
             &key,
             "expanded empty source",
             vec![TextAlignment {
@@ -1917,11 +1919,11 @@ fn empty_record_renditions_have_no_source_blocks() {
                 end: 0,
             }],
         );
-        variant.relations = vec![polylogue_model::VariantRelation::Expands];
+        alternate.relations = vec![polylogue_model::AlternateRelation::Expands];
         let mut facts = LayoutFacts::default();
         facts
-            .variants
-            .insert(polylogue_model::Reference::parse(&key).unwrap(), variant)
+            .alternates
+            .insert(polylogue_model::Reference::parse(&key).unwrap(), alternate)
             .unwrap();
         let projected = project_record(original.clone(), &ReadOptions::default(), &facts)
             .unwrap()
@@ -2138,8 +2140,9 @@ fn prose_encoders_label_json_fragments_as_encoded_transport() {
 fn authored_selection_keeps_the_stored_request_and_coverage() {
     use polylogue_model::{
         Author, Reference, Timestamp,
-        assertion::{
-            AssertionFact, AssertionKind, AssertionLink, LinkRole, NewAssertion, NewAssertionLink,
+        annotation::{
+            AnnotationFact, AnnotationKind, AnnotationLink, LinkRole, NewAnnotation,
+            NewAnnotationLink,
         },
         authored::{AuthoredEffect, PreparedRequest},
         authorship::{Authorship, Channel},
@@ -2150,12 +2153,12 @@ fn authored_selection_keeps_the_stored_request_and_coverage() {
     let target = Reference::parse("session:codex:subject").unwrap();
     let statements: Vec<_> = ["one", "two"]
         .into_iter()
-        .map(|text| NewAssertion {
-            kind: AssertionKind::Note,
+        .map(|text| NewAnnotation {
+            kind: AnnotationKind::Note,
             key: None,
             value: Some(serde_json::json!(format!("entire {text}"))),
             valid_until: None,
-            links: vec![NewAssertionLink {
+            links: vec![NewAnnotationLink {
                 role: LinkRole::About,
                 reference: target.clone(),
             }],
@@ -2170,7 +2173,7 @@ fn authored_selection_keeps_the_stored_request_and_coverage() {
             via: Channel::Cli,
         },
         write: UserWrite::Assert {
-            assertions: statements.clone(),
+            annotations: statements.clone(),
         },
     };
     let facts = statements
@@ -2178,11 +2181,11 @@ fn authored_selection_keeps_the_stored_request_and_coverage() {
         .enumerate()
         .map(|(n, statement)| {
             let id = format!("synthetic.{n}");
-            AssertionFact::from_request(
+            AnnotationFact::from_request(
                 id.clone(),
                 id,
                 statement,
-                vec![AssertionLink {
+                vec![AnnotationLink {
                     role: LinkRole::About,
                     reference: target.clone(),
                     seen_hash: None,
@@ -2203,7 +2206,7 @@ fn authored_selection_keeps_the_stored_request_and_coverage() {
                 pending: false,
             },
             effect: AuthoredEffect {
-                assertions: facts,
+                annotations: facts,
                 ..Default::default()
             },
         },
@@ -2211,7 +2214,7 @@ fn authored_selection_keeps_the_stored_request_and_coverage() {
     let record = Record::Authored(Box::new(row.clone()));
     record.validate().unwrap();
     let options = ReadOptions {
-        assertions: true,
+        annotations: true,
         ..Default::default()
     };
     let selected = AuthoredSelection {
@@ -2268,7 +2271,7 @@ fn selected_fragment_in(container: polylogue_model::Reference, text: &str, start
         end,
     };
     Record::TextFragment(Box::new(TextFragmentRecord {
-        reference: span.stored_form(),
+        reference: span.to_string(),
         commit: 7,
         fragment: TextFragment {
             container: container.clone(),
@@ -3053,7 +3056,7 @@ fn times_render_local_with_quality() {
         source: Source::record("session:test:time-session"),
         kind: ItemKind::Card {
             card: Box::new(Card::Session {
-                assertions: Vec::new(),
+                annotations: Vec::new(),
                 session: Box::new(session),
                 open: None,
                 lineage_complete: ValueState::NotApplicable,
@@ -3093,9 +3096,9 @@ fn every_kind_document() -> ReadDocument {
         Author::Script("nightly".into()),
     ]
     .into_iter()
-    .map(|author| Annotation {
+    .map(|author| AnnotationMark {
         key: None,
-        reference: "assertion:a1@a1".into(),
+        reference: "annotation:a1@a1".into(),
         author,
         kind: "note".into(),
         value: json!("checked"),
@@ -3109,8 +3112,8 @@ fn every_kind_document() -> ReadDocument {
                 time: TimeValue::unknown(),
                 author: ValueState::known("model".into()),
                 model: ValueState::NotRecorded,
-                assertions: annotations,
-                variant: None,
+                annotations,
+                alternate: None,
                 inherited: false,
                 branch: Default::default(),
                 context: None,
@@ -3129,7 +3132,7 @@ fn every_kind_document() -> ReadDocument {
         IndicatorKind::Turn,
         IndicatorKind::LinkIssue,
         IndicatorKind::Stale,
-        IndicatorKind::Variant,
+        IndicatorKind::Alternate,
     ] {
         items.push(ReadItem {
             source: source.clone(),
@@ -3345,57 +3348,24 @@ fn run_card_renders_zero_pending_and_unrecorded_counts_truthfully() {
 }
 
 #[test]
-fn visible_reference_names_leave_structured_source_records_unchanged() {
-    for (stored, surface) in [
-        ("assertion:root@revision", "annotation:root@revision"),
-        ("variant:root@revision#2", "alternate:root@revision#2"),
-        (
-            "span:variant:root@revision#2#b=0-3",
-            "span:alternate:root@revision#2#b=0-3",
-        ),
-    ] {
-        let doc = document(vec![ReadItem {
-            source: Source::record(stored),
-            kind: ItemKind::Raw {
-                record: Box::new(RawRecord {
-                    reference: stored.into(),
-                    input: "synthetic-source".into(),
-                    media_type: "text/plain".into(),
-                    bytes: b"exact source bytes".to_vec(),
-                }),
-            },
-        }]);
-        for format in [Format::Terminal, Format::Markdown, Format::Html] {
-            let rendered = encode(&doc, format);
-            assert!(rendered.contains(surface), "{format:?}: {rendered}");
-            assert!(!rendered.contains(stored), "{format:?}: {rendered}");
-        }
-        let encoded: serde_json::Value = serde_json::from_str(&encode(&doc, Format::Json)).unwrap();
-        assert_eq!(encoded["items"][0]["source"]["ref"], stored);
-        assert_eq!(encoded["items"][0]["kind"]["record"]["reference"], stored);
-        assert_eq!(doc.items[0].source.reference, stored);
-    }
-}
-
-#[test]
-fn variant_indicator_names_partial_omission_and_stale_state() {
-    use polylogue_model::VariantRelation::{Expands, Omits, Translates};
+fn alternate_indicator_names_partial_omission_and_stale_state() {
+    use polylogue_model::AlternateRelation::{Expands, Omits, Translates};
     let reference = "block:test:session:message#0";
-    let indicators = |relations: Vec<polylogue_model::VariantRelation>, stale: bool| {
-        let mut variant = text_variant(reference, "translated thinking", vec![]);
-        variant.relations = relations;
-        variant.mark.stale = stale;
+    let indicators = |relations: Vec<polylogue_model::AlternateRelation>, stale: bool| {
+        let mut alternate = text_alternate(reference, "translated thinking", vec![]);
+        alternate.relations = relations;
+        alternate.mark.stale = stale;
         let mut facts = LayoutFacts::default();
         facts
-            .variants
+            .alternates
             .insert(
                 polylogue_model::Reference::parse(reference).unwrap(),
-                variant,
+                alternate,
             )
             .unwrap();
         let options = ReadOptions {
             thinking: Some(Expansion::Full),
-            variants: vec!["en".into()],
+            alternates: vec!["en".into()],
             ..Default::default()
         };
         let record = message(vec![Block::Thinking {
@@ -3407,7 +3377,7 @@ fn variant_indicator_names_partial_omission_and_stale_state() {
             .into_iter()
             .filter_map(|item| match item.kind {
                 ItemKind::Indicator {
-                    indicator: IndicatorKind::Variant,
+                    indicator: IndicatorKind::Alternate,
                     text,
                     ..
                 } => Some(text),
@@ -3417,15 +3387,15 @@ fn variant_indicator_names_partial_omission_and_stale_state() {
     };
     assert_eq!(
         indicators(vec![Omits, Expands], false),
-        ["[variant en · omits, expands · variant:synthetic@revision · partly omitted]"]
+        ["[alternate en · omits, expands · alternate:synthetic@revision · partly omitted]"]
     );
     assert_eq!(
         indicators(vec![Omits], false),
-        ["[variant en · omits · variant:synthetic@revision]"]
+        ["[alternate en · omits · alternate:synthetic@revision]"]
     );
     assert_eq!(
         indicators(vec![Translates], true),
-        ["[variant en · translates · variant:synthetic@revision · stale]"]
+        ["[alternate en · translates · alternate:synthetic@revision · stale]"]
     );
 }
 #[test]

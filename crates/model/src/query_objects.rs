@@ -289,7 +289,7 @@ fn span_container(origin: &TextSpanOrigin) -> Result<&crate::Reference, TextFrag
     else {
         return Err(TextFragmentError::Origin);
     };
-    if crate::Reference::parse_stored(&origin.reference.stored_form())
+    if crate::Reference::parse(&origin.reference.to_string())
         .ok()
         .as_ref()
         != Some(&origin.reference)

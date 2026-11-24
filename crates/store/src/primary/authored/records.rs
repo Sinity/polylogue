@@ -3,7 +3,7 @@ use super::*;
 use crate::ConnExt as _;
 use polylogue_model::Timestamp;
 use polylogue_model::authored::*;
-use polylogue_model::user::{BackfillJob, ChatAction, UserWrite};
+use polylogue_model::user::{ChatAction, ImportJob, UserWrite};
 use std::collections::BTreeSet;
 
 fn event_index(n: i64) -> Result<usize> {
@@ -131,9 +131,9 @@ pub(super) fn capture(
 ) -> Result<AuthoredEffect> {
     let source = Source::of(conn)?;
     let mut effect = AuthoredEffect::default();
-    for id in ids(conn, "assertion", "WHERE commit_seq=?1", Some(counter))? {
-        let row = crate::assertions::get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id))?;
-        effect.assertions.push(row.fact);
+    for id in ids(conn, "annotation", "WHERE commit_seq=?1", Some(counter))? {
+        let row = crate::annotations::get(conn, &id)?.ok_or_else(|| StoreError::NotFound(id))?;
+        effect.annotations.push(row.fact);
     }
     if let UserWrite::Save(_) = &request.write {
         effect.kept_results.push(kept(conn, &request.id)?);
@@ -175,22 +175,29 @@ pub(super) fn capture(
             added_events,
         });
     }
-    for id in touched("backfill_job", "backfill_job_event", "job")? {
-        let job = crate::backfill_jobs::read(conn, source.prefix(), &id)?
+    for id in touched("import_job", "import_job_event", "job")? {
+        let job = crate::import_jobs::read(conn, source.prefix(), &id)?
             .ok_or_else(|| StoreError::NotFound(id.clone()))?;
-        let ns:Vec<i64>=conn.prepare(&source.sql("SELECT n FROM @source.backfill_job_event WHERE job=?1 AND commit_seq=?2 ORDER BY n"))?.query_map(params![id,counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        let ns: Vec<i64> = conn
+            .prepare(&source.sql(
+                "SELECT n FROM @source.import_job_event WHERE job=?1 AND commit_seq=?2 ORDER BY n",
+            ))?
+            .query_map(params![id, counter], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
         let added_events = ns
             .into_iter()
             .map(|n| {
                 job.events
                     .get(event_index(n)?)
                     .cloned()
-                    .or_invalid("backfill event order has a gap")
+                    .or_invalid("import_job event order has a gap")
             })
             .collect::<Result<_>>()?;
-        effect.backfills.push(BackfillChange { job, added_events });
+        effect
+            .import_jobs
+            .push(ImportJobChange { job, added_events });
     }
-    effect.variants = crate::variants::capture(conn, request, counter)?;
+    effect.alternates = crate::alternates::capture(conn, request, counter)?;
     Ok(effect)
 }
 
@@ -318,12 +325,12 @@ fn append_chat(
 }
 fn insert_backfill(
     conn: &Connection,
-    value: &BackfillJob,
+    value: &ImportJob,
     counter: i64,
     historical: bool,
 ) -> Result<()> {
     let source = Source::of(conn)?;
-    if let Some(old) = crate::backfill_jobs::read(conn, source.prefix(), &value.id)? {
+    if let Some(old) = crate::import_jobs::read(conn, source.prefix(), &value.id)? {
         if old.provider != value.provider
             || old.since != value.since
             || old.created_at != value.created_at
@@ -337,21 +344,21 @@ fn insert_backfill(
     } else {
         value.execution
     };
-    conn.execute(&source.sql("INSERT INTO @source.backfill_job(id,provider,since,created_at,execution,commit_seq) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.provider,value.since,value.created_at,execution.as_str(),counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.import_job(id,provider,since,created_at,execution,commit_seq) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.provider,value.since,value.created_at,execution.as_str(),counter])?;
     Ok(())
 }
 fn append_backfill(
     conn: &Connection,
     id: &str,
-    events: &[polylogue_model::user::BackfillEvent],
+    events: &[polylogue_model::user::ImportJobEvent],
     counter: i64,
 ) -> Result<()> {
     let source = Source::of(conn)?;
     let mut n: i64 = conn.scalar(
-        &source.sql("SELECT COALESCE(max(n),0) FROM @source.backfill_job_event WHERE job=?1"),
+        &source.sql("SELECT COALESCE(max(n),0) FROM @source.import_job_event WHERE job=?1"),
         [id],
     )?;
-    let known = crate::backfill_jobs::read(conn, source.prefix(), id)?
+    let known = crate::import_jobs::read(conn, source.prefix(), id)?
         .ok_or_else(|| StoreError::NotFound(id.into()))?
         .events;
     for event in events {
@@ -363,9 +370,9 @@ fn append_backfill(
         }
         n = n
             .checked_add(1)
-            .or_invalid("backfill event order is out of range")?;
-        let count = |value: u64| crate::to_i64(value, "backfill count is out of range");
-        conn.execute(&source.sql("INSERT INTO @source.backfill_job_event(job,n,at,kind,by,position,listed,captured,unchanged,failed,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![id,n,event.at,event.kind,event.by,event.position,count(event.counts.listed)?,count(event.counts.captured)?,count(event.counts.unchanged)?,count(event.counts.failed)?,event.detail,event.request,counter])?;
+            .or_invalid("import_job event order is out of range")?;
+        let count = |value: u64| crate::to_i64(value, "import_job count is out of range");
+        conn.execute(&source.sql("INSERT INTO @source.import_job_event(job,n,at,kind,by,position,listed,captured,unchanged,failed,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![id,n,event.at,event.kind,event.by,event.position,count(event.counts.listed)?,count(event.counts.captured)?,count(event.counts.unchanged)?,count(event.counts.failed)?,event.detail,event.request,counter])?;
     }
     Ok(())
 }
@@ -376,8 +383,8 @@ pub(super) fn apply(
     counter: i64,
     historical: bool,
 ) -> Result<()> {
-    crate::variants::apply(conn, &effect.variants, counter)?;
-    crate::assertions::apply(conn, &effect.assertions, counter)?;
+    crate::alternates::apply(conn, &effect.alternates, counter)?;
+    crate::annotations::apply(conn, &effect.annotations, counter)?;
     for value in &effect.kept_results {
         insert_kept(conn, value)?;
     }
@@ -390,7 +397,7 @@ pub(super) fn apply(
         append_chat(conn, &value.action.id, &value.action.events, counter)?;
     }
     crate::signals::apply(conn, effect, counter, historical)?;
-    for value in &effect.backfills {
+    for value in &effect.import_jobs {
         insert_backfill(conn, &value.job, counter, historical)?;
         append_backfill(conn, &value.job.id, &value.job.events, counter)?;
     }
@@ -402,8 +409,8 @@ pub(super) fn apply(
 /// never enter the overlay.
 pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
     let source = Source::reading(from)?;
-    crate::variants::copy(from, to)?;
-    crate::assertions::copy(from, to)?;
+    crate::alternates::copy(from, to)?;
+    crate::annotations::copy(from, to)?;
     for (table, copy) in [
         (
             "kept_result",
@@ -411,7 +418,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         ),
         ("delivery", copy_delivery),
         ("chat_action", copy_chat),
-        ("backfill_job", copy_backfill),
+        ("import_job", copy_backfill),
     ] {
         let mut statement =
             from.prepare(&source.sql(&format!("SELECT id FROM @source.{table} ORDER BY id")))?;
@@ -461,7 +468,7 @@ fn copy_chat(from: &Connection, to: &Connection, id: &str) -> Result<()> {
 }
 fn copy_backfill(from: &Connection, to: &Connection, id: &str) -> Result<()> {
     let source = Source::reading(from)?;
-    let value = crate::backfill_jobs::read(from, source.prefix(), id)?
+    let value = crate::import_jobs::read(from, source.prefix(), id)?
         .ok_or_else(|| StoreError::NotFound(id.into()))?;
     insert_backfill(to, &value, 0, false)?;
     append_backfill(to, id, &value.events, 0)

@@ -132,7 +132,7 @@ pub(crate) fn arguments(
         hide: hide.clone(),
         output_lines: crate::protocol::read::output_lines(),
         for_others: *neutral_names,
-        variant: alternate.iter().cloned().collect(),
+        alternate: alternate.iter().cloned().collect(),
         with_blobs: false,
         at: at.clone(),
         diff: diff.clone(),
@@ -160,7 +160,7 @@ pub(crate) fn step_of(
         hide,
         output_lines: _,
         for_others,
-        variant,
+        alternate,
         with_blobs: _,
         at,
         diff,
@@ -168,7 +168,7 @@ pub(crate) fn step_of(
         latest: _,
         physical,
     } = arguments;
-    let alternate = match variant.as_slice() {
+    let alternate = match alternate.as_slice() {
         [] => None,
         [alternate] => Some(alternate.clone()),
         _ if cursor.is_some() => None,

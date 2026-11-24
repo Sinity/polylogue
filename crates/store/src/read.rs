@@ -164,7 +164,7 @@ struct PoolState {
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
 /// the pool when dropped. Holding a reader slot takes no read lock; the first
 /// database access starts the read on both databases and checks them.
-/// Current assertion revisions are stored (`revision_state`), so no read builds it.
+/// Current annotation revisions are stored (`revision_state`), so no read builds it.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
     conn: Option<Connection>,
@@ -178,7 +178,7 @@ pub struct Reader<'a> {
     thread_bound: std::marker::PhantomData<std::rc::Rc<()>>,
     vectors: std::cell::RefCell<Option<crate::vectors::Vectors>>,
     calendar: crate::sql_functions::CalendarContext,
-    assertion_history_ready: std::cell::RefCell<std::collections::BTreeSet<i64>>,
+    annotation_history_ready: std::cell::RefCell<std::collections::BTreeSet<i64>>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -510,7 +510,7 @@ impl ReadPool {
             thread_bound: std::marker::PhantomData,
             vectors: std::cell::RefCell::new(None),
             calendar: crate::sql_functions::CalendarContext::new(),
-            assertion_history_ready: std::cell::RefCell::new(Default::default()),
+            annotation_history_ready: std::cell::RefCell::new(Default::default()),
         };
         // A replaced index is a new file, never an old inode reused. Compare
         // around the open without starting a read or delaying an unused slot.
@@ -692,15 +692,15 @@ impl Reader<'_> {
         Ok(u64::try_from(current).unwrap_or(0))
     }
 
-    /// As-of assertion reads need the current revisions among the records written
+    /// As-of annotation reads need the current revisions among the records written
     /// before `cutoff`, computed once per cutoff in this read transaction. Present
     /// current revisions are stored and needs no preparation.
-    pub(crate) fn prepare_assertion_history(&self, cutoff: i64) -> Result<()> {
+    pub(crate) fn prepare_annotation_history(&self, cutoff: i64) -> Result<()> {
         let conn = self.conn()?;
-        if !self.assertion_history_ready.borrow().contains(&cutoff) {
-            crate::assertions::current_revisions::prepare_history(conn, cutoff)?;
+        if !self.annotation_history_ready.borrow().contains(&cutoff) {
+            crate::annotations::current_revisions::prepare_history(conn, cutoff)?;
             self.check()?;
-            self.assertion_history_ready.borrow_mut().insert(cutoff);
+            self.annotation_history_ready.borrow_mut().insert(cutoff);
         }
         Ok(())
     }
@@ -1714,11 +1714,11 @@ pub(crate) fn retitled_sessions(
 ) -> Result<std::collections::BTreeSet<String>> {
     let mut sessions = std::collections::BTreeSet::new();
     let mut statement = conn.prepare_cached(
-        "SELECT DISTINCT substr(l.ref, 9) FROM source_assertion a \
-         JOIN source_link l ON l.record = a.id AND l.role = 'about' \
+        "SELECT DISTINCT substr(l.ref, 9) FROM source_annotation a \
+         JOIN source_annotation_link l ON l.record = a.id AND l.role = 'about' \
          WHERE a.root = ?1 AND a.kind = 'title' AND l.ref LIKE 'session:%'",
     )?;
-    for root in crate::assertions::changed_roots(conn, after)? {
+    for root in crate::annotations::changed_roots(conn, after)? {
         for id in statement.query_map([&root], |r| r.get::<_, String>(0))? {
             sessions.insert(id?);
         }

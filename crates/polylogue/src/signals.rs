@@ -213,32 +213,32 @@ fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Resu
     if clock.now.as_millisecond() < checkpoint.evaluator.now() {
         return Err("clock precedes the stored evaluator checkpoint".into());
     }
-    let assertions = crate::daemon::query::assertions::list(&reader, "kind:signal", &context)
+    let annotations = crate::daemon::query::annotations::list(&reader, "kind:signal", &context)
         .map_err(|e| e.to_string())?;
     #[cfg(test)]
     observations::emit(
         d,
         observations::Phase::RulesRead {
-            ids: assertions
+            ids: annotations
                 .iter()
-                .map(|assertion| assertion.fact.id.clone())
+                .map(|annotation| annotation.fact.id.clone())
                 .collect(),
         },
     );
     let mut definitions = Vec::new();
     let mut unusable = Vec::new();
     let mut held_rules = Vec::new();
-    for assertion in assertions {
-        match rules::definition(&assertion, &d.config.signals.rule_configuration()) {
+    for annotation in annotations {
+        match rules::definition(&annotation, &d.config.signals.rule_configuration()) {
             Ok(definition) => {
                 let id = format!("authored:{}", definition.family);
                 held_rules.push(held_rule(&id));
                 definitions.push(json!({
                     "id":id,"name":definition.rule.name,"query":definition.rule.query,
-                    "author":assertion.fact.author.to_string(),
+                    "author":annotation.fact.author.to_string(),
                 }));
             }
-            Err(reason) => unusable.push(json!({"id":assertion.fact.id,"reason":reason})),
+            Err(reason) => unusable.push(json!({"id":annotation.fact.id,"reason":reason})),
         }
     }
     // A current-looking row set does not show the complete revision graph.

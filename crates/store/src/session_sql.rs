@@ -16,13 +16,13 @@ pub fn counts_as_action(t: &str) -> String {
 }
 
 /// The title a session is shown with, everywhere: its current authored
-/// `title` assertions (several current families are a conflict, shown as
+/// `title` annotations (several current families are a conflict, shown as
 /// every value joined by ` | `), else the recorded title, else the derived
 /// one. Withdrawn titles are not shown.
 pub fn display_title(s: &str) -> String {
     format!(
-        "COALESCE((SELECT group_concat(tv.value, ' | ') FROM (SELECT DISTINCT json_extract(ta.value, '$') AS value FROM source_link tl \
-         JOIN source_assertion ta ON ta.id = tl.record AND ta.kind = 'title' \
+        "COALESCE((SELECT group_concat(tv.value, ' | ') FROM (SELECT DISTINCT json_extract(ta.value, '$') AS value FROM source_annotation_link tl \
+         JOIN source_annotation ta ON ta.id = tl.record AND ta.kind = 'title' \
          JOIN source_revision_state ts ON ts.id = ta.id AND ts.current = 1 AND ts.withdrawn = 0 \
          WHERE tl.ref = 'session:' || {s}.id AND tl.role = 'about' ORDER BY 1) tv), \
          {s}.title, {s}.derived_title)"
@@ -109,20 +109,20 @@ pub fn compute_count(s: &str, column: &str) -> String {
 /// A current reply names the question's root or one exact revision.
 pub fn answered(r: &str) -> String {
     format!(
-        "({r}.kind='question' AND EXISTS(SELECT 1 FROM source_link al JOIN source_assertion aa ON aa.id=al.record JOIN source_revision_state ar ON ar.id=aa.id AND ar.current=1 AND ar.withdrawn=0 WHERE al.role='answers' AND (al.ref='assertion:'||{r}.root OR (al.ref>'assertion:'||{r}.root||'@' AND al.ref<'assertion:'||{r}.root||'A'))))"
+        "({r}.kind='question' AND EXISTS(SELECT 1 FROM source_annotation_link al JOIN source_annotation aa ON aa.id=al.record JOIN source_revision_state ar ON ar.id=aa.id AND ar.current=1 AND ar.withdrawn=0 WHERE al.role='replies_to' AND (al.ref='annotation:'||{r}.root OR (al.ref>'annotation:'||{r}.root||'@' AND al.ref<'annotation:'||{r}.root||'A'))))"
     )
 }
 
 /// Open work follows current authored answers, decisions, judgments and blockers.
 pub fn open_annotation(r: &str) -> String {
     let reply = format!(
-        "(rl.ref='assertion:'||{r}.root OR (rl.ref>'assertion:'||{r}.root||'@' AND rl.ref<'assertion:'||{r}.root||'A'))"
+        "(rl.ref='annotation:'||{r}.root OR (rl.ref>'annotation:'||{r}.root||'@' AND rl.ref<'annotation:'||{r}.root||'A'))"
     );
     let closed = format!(
-        "EXISTS(SELECT 1 FROM source_link rl JOIN source_assertion ra ON ra.id=rl.record JOIN source_revision_state rr ON rr.id=ra.id AND rr.current=1 AND rr.withdrawn=0 WHERE {reply} AND ((rl.role='about' AND ra.kind='decision') OR (rl.role IN ('replies_to','answers') AND EXISTS(SELECT 1 FROM source_link jl JOIN source_assertion ja ON ja.id=jl.record AND ja.kind='judgment' AND ja.author='operator' AND ja.key='accepted' JOIN source_revision_state jr ON jr.id=ja.id AND jr.current=1 AND jr.withdrawn=0 WHERE jl.role='about' AND (jl.ref='assertion:'||ra.root OR jl.ref='assertion:'||ra.root||'@'||ra.id)))))"
+        "EXISTS(SELECT 1 FROM source_annotation_link rl JOIN source_annotation ra ON ra.id=rl.record JOIN source_revision_state rr ON rr.id=ra.id AND rr.current=1 AND rr.withdrawn=0 WHERE {reply} AND ((rl.role='about' AND ra.kind='decision') OR (rl.role ='replies_to' AND EXISTS(SELECT 1 FROM source_annotation_link jl JOIN source_annotation ja ON ja.id=jl.record AND ja.kind='judgment' AND ja.author='operator' AND ja.key='accepted' JOIN source_revision_state jr ON jr.id=ja.id AND jr.current=1 AND jr.withdrawn=0 WHERE jl.role='about' AND (jl.ref='annotation:'||ra.root OR jl.ref='annotation:'||ra.root||'@'||ra.id)))))"
     );
     let blocked = format!(
-        "EXISTS(SELECT 1 FROM source_link bl JOIN source_assertion ba ON ba.id=bl.record JOIN source_revision_state br ON br.id=ba.id AND br.current=1 AND br.withdrawn=0 WHERE bl.role='blocks' AND (bl.ref='assertion:'||{r}.root OR (bl.ref>'assertion:'||{r}.root||'@' AND bl.ref<'assertion:'||{r}.root||'A')) AND NOT EXISTS(SELECT 1 FROM source_link repl JOIN source_revision_state repls ON repls.id=repl.record AND repls.current=1 AND repls.withdrawn=0 WHERE repl.role IN ('replies_to','answers') AND (repl.ref='assertion:'||ba.root OR (repl.ref>'assertion:'||ba.root||'@' AND repl.ref<'assertion:'||ba.root||'A'))))"
+        "EXISTS(SELECT 1 FROM source_annotation_link bl JOIN source_annotation ba ON ba.id=bl.record JOIN source_revision_state br ON br.id=ba.id AND br.current=1 AND br.withdrawn=0 WHERE bl.role='blocks' AND (bl.ref='annotation:'||{r}.root OR (bl.ref>'annotation:'||{r}.root||'@' AND bl.ref<'annotation:'||{r}.root||'A')) AND NOT EXISTS(SELECT 1 FROM source_annotation_link repl JOIN source_revision_state repls ON repls.id=repl.record AND repls.current=1 AND repls.withdrawn=0 WHERE repl.role ='replies_to' AND (repl.ref='annotation:'||ba.root OR (repl.ref>'annotation:'||ba.root||'@' AND repl.ref<'annotation:'||ba.root||'A'))))"
     );
     format!(
         "(EXISTS(SELECT 1 FROM source_revision_state os WHERE os.id={r}.id AND os.current=1 AND os.withdrawn=0) AND (({r}.kind IN ('question','goal','problem') AND NOT {} AND NOT {closed}) OR {blocked}))",
@@ -136,7 +136,7 @@ pub fn ends_open(s: &str) -> String {
         own_messages("m", Some(&format!("={s}.pk")))
     );
     format!(
-        "(coalesce({last},0) OR json_extract({s}.live_facts,'$.todo') IS NOT NULL OR EXISTS(SELECT 1 FROM source_assertion a JOIN source_link l ON l.record=a.id AND l.role='about' JOIN source_revision_state ar ON ar.id=a.id AND ar.current=1 AND ar.withdrawn=0 WHERE l.ref='session:'||{s}.id AND ((a.kind='outcome' AND (json_extract(a.value,'$')='partial' OR json_extract(a.value,'$.text')='partial')) OR (a.kind='handoff' AND NOT EXISTS(SELECT 1 FROM source_link reply JOIN source_revision_state rr ON rr.id=reply.record AND rr.current=1 AND rr.withdrawn=0 WHERE reply.role IN ('replies_to','answers') AND (reply.ref='assertion:'||a.root OR (reply.ref>'assertion:'||a.root||'@' AND reply.ref<'assertion:'||a.root||'A')))))))"
+        "(coalesce({last},0) OR json_extract({s}.live_facts,'$.todo') IS NOT NULL OR EXISTS(SELECT 1 FROM source_annotation a JOIN source_annotation_link l ON l.record=a.id AND l.role='about' JOIN source_revision_state ar ON ar.id=a.id AND ar.current=1 AND ar.withdrawn=0 WHERE l.ref='session:'||{s}.id AND ((a.kind='outcome' AND (json_extract(a.value,'$')='partial' OR json_extract(a.value,'$.text')='partial')) OR (a.kind='handoff' AND NOT EXISTS(SELECT 1 FROM source_annotation_link reply JOIN source_revision_state rr ON rr.id=reply.record AND rr.current=1 AND rr.withdrawn=0 WHERE reply.role ='replies_to' AND (reply.ref='annotation:'||a.root OR (reply.ref>'annotation:'||a.root||'@' AND reply.ref<'annotation:'||a.root||'A')))))))"
     )
 }
 
@@ -152,12 +152,12 @@ pub fn failure_streak(s: &str) -> String {
 }
 pub fn corrections(s: &str) -> String {
     format!(
-        "(SELECT count(DISTINCT a.id) FROM source_assertion a JOIN source_revision_state ar ON ar.id=a.id AND ar.current=1 AND ar.withdrawn=0 WHERE a.kind='correction' AND a.author='operator' AND EXISTS(SELECT 1 FROM source_link l WHERE l.record=a.id AND l.role='about' AND (l.ref='session:'||{s}.id OR EXISTS(SELECT 1 FROM message m WHERE m.session_pk={s}.pk AND (l.ref='message:'||m.id OR l.ref>'message:'||m.id||'#' AND l.ref<'message:'||m.id||'$')))))"
+        "(SELECT count(DISTINCT a.id) FROM source_annotation a JOIN source_revision_state ar ON ar.id=a.id AND ar.current=1 AND ar.withdrawn=0 WHERE a.kind='correction' AND a.author='operator' AND EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.record=a.id AND l.role='about' AND (l.ref='session:'||{s}.id OR EXISTS(SELECT 1 FROM message m WHERE m.session_pk={s}.pk AND (l.ref='message:'||m.id OR l.ref>'message:'||m.id||'#' AND l.ref<'message:'||m.id||'$')))))"
     )
 }
 pub fn open_items(s: &str) -> String {
     format!(
-        "(SELECT count(*) FROM source_assertion a WHERE a.kind IN ('question','problem') AND {} AND EXISTS(SELECT 1 FROM source_link l WHERE l.record=a.id AND l.role='about' AND (l.ref='session:'||{s}.id OR EXISTS(SELECT 1 FROM message m WHERE m.session_pk={s}.pk AND l.ref='message:'||m.id))))",
+        "(SELECT count(*) FROM source_annotation a WHERE a.kind IN ('question','problem') AND {} AND EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.record=a.id AND l.role='about' AND (l.ref='session:'||{s}.id OR EXISTS(SELECT 1 FROM message m WHERE m.session_pk={s}.pk AND l.ref='message:'||m.id))))",
         open_annotation("a")
     )
 }
@@ -181,7 +181,7 @@ pub fn outlier(s: &str) -> String {
 }
 pub fn triage_score(s: &str) -> String {
     format!(
-        "CASE WHEN EXISTS(SELECT 1 FROM source_assertion a JOIN source_link l ON l.record=a.id AND l.role='about' JOIN source_revision_state ar ON ar.id=a.id AND ar.current=1 AND ar.withdrawn=0 WHERE a.kind='tag' AND a.key='triaged' AND l.ref='session:'||{s}.id AND a.created_at>{s}.last_activity_at) THEN 0 ELSE {}+({}>=3)+{}+({}>=3)+{} END",
+        "CASE WHEN EXISTS(SELECT 1 FROM source_annotation a JOIN source_annotation_link l ON l.record=a.id AND l.role='about' JOIN source_revision_state ar ON ar.id=a.id AND ar.current=1 AND ar.withdrawn=0 WHERE a.kind='tag' AND a.key='triaged' AND l.ref='session:'||{s}.id AND a.created_at>{s}.last_activity_at) THEN 0 ELSE {}+({}>=3)+{}+({}>=3)+{} END",
         unrecovered_failures(s),
         failure_streak(s),
         outlier(s),

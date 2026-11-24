@@ -77,7 +77,7 @@ fn complete_callback_products_keep_fields_and_source_keys() {
             offset: 30,
             end: 31,
             record: TextFragmentRecord {
-                reference: fragment.reference().stored_form(),
+                reference: fragment.reference().to_string(),
                 commit: 999,
                 fragment,
             },

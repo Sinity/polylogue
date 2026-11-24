@@ -47,7 +47,7 @@ fn results_table(data: &Value) -> String {
             "session" => "s",
             "document" => "d",
             "message" => "m",
-            "assertion" => "a",
+            "annotation" => "a",
             _ => return None,
         };
         Some(format!("/{route}/{}", encode_id(id)))

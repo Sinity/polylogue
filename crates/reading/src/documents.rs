@@ -155,7 +155,7 @@ pub(super) fn visit(
     }
     if matches!(
         layout.options.view,
-        View::Summary | View::Links | View::Changes | View::Live
+        View::Overview | View::Tree | View::Changes | View::Live
     ) {
         return if start.is_some() {
             Err(stale())

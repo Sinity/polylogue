@@ -71,12 +71,12 @@ fn an_offline_withdrawal_retry_keeps_its_original_saved_family() {
     let seed = polylogue_store::fixture::writer::WriterArchive::new();
     save(&seed, "first-definition");
     let original_definition = authored(&seed, "first-definition");
-    let old_root = Reference::Assertion(polylogue_model::RevisionReference {
+    let old_root = Reference::Annotation(polylogue_model::RevisionReference {
         root: original_definition
             .effect
-            .assertions
+            .annotations
             .iter()
-            .find(|fact| fact.kind == polylogue_model::assertion::AssertionKind::SavedQuery)
+            .find(|fact| fact.kind == polylogue_model::annotation::AnnotationKind::SavedQuery)
             .unwrap()
             .root
             .clone(),
@@ -143,7 +143,7 @@ fn an_offline_withdrawal_retry_keeps_its_original_saved_family() {
     seed.writer
         .user(polylogue_store::fixture::authored::operator_request(
             "other-withdrawal".into(),
-            UserWrite::WithdrawAssertions {
+            UserWrite::WithdrawAnnotations {
                 targets: vec![old_root.clone()],
                 reason: None,
             },
@@ -153,9 +153,9 @@ fn an_offline_withdrawal_retry_keeps_its_original_saved_family() {
     let replacement = authored(&seed, "replacement-definition");
     let new_root = replacement
         .effect
-        .assertions
+        .annotations
         .iter()
-        .find(|fact| fact.kind == polylogue_model::assertion::AssertionKind::SavedQuery)
+        .find(|fact| fact.kind == polylogue_model::annotation::AnnotationKind::SavedQuery)
         .unwrap()
         .root
         .clone();
@@ -172,7 +172,7 @@ fn an_offline_withdrawal_retry_keeps_its_original_saved_family() {
         ],
     );
     let runtime = launch(primary(&home)).unwrap();
-    let expected = Some(Reference::Assertion(polylogue_model::RevisionReference {
+    let expected = Some(Reference::Annotation(polylogue_model::RevisionReference {
         root: new_root,
         revision: None,
     }));

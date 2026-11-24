@@ -292,7 +292,7 @@ fn advice_history_waits_for_confirmed_application() {
         cwd: Some("/synthetic/repo".into()),
         text: "one file pointer".into(),
         refs: vec![
-            "assertion:root@revision".into(),
+            "annotation:root@revision".into(),
             "file:src/parser.rs@commit".into(),
         ],
         left_out: vec![],

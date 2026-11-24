@@ -51,7 +51,7 @@ fn read_target(
             references: None,
             target: target.into(),
             options: ReadOptions {
-                view: View::Links,
+                view: View::Tree,
                 ..ReadOptions::default()
             },
             delivery: ReadDelivery::Page,

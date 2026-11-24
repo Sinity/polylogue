@@ -41,7 +41,7 @@ pub(crate) fn record(
         },
     };
     TextFragmentRecord {
-        reference: fragment.reference().stored_form(),
+        reference: fragment.reference().to_string(),
         commit: 900,
         fragment,
     }

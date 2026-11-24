@@ -1,7 +1,7 @@
 //! Original references and UTF-8 body ranges identify presentation overlays.
 //! Stored records and their source hashes are never rewritten.
-use super::{ReadError, ReadOptions, Source, VariantMark};
-use crate::{Reference, VariantRelation};
+use super::{AlternateMark, ReadError, ReadOptions, Source};
+use crate::{AlternateRelation, Reference};
 use serde::{Deserialize, Serialize};
 use std::{borrow::Cow, collections::BTreeMap};
 
@@ -15,10 +15,10 @@ pub struct TextAlignment {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct VariantText {
-    pub mark: VariantMark,
-    /// Declared relations, in original variant part order.
-    pub relations: Vec<VariantRelation>,
+pub struct AlternateText {
+    pub mark: AlternateMark,
+    /// Declared relations, in original alternate part order.
+    pub relations: Vec<AlternateRelation>,
     pub text: String,
     /// Original body ranges in source order. Replacement is emitted at the first
     /// range; subsequent covered ranges are removed. Empty means the key names
@@ -35,7 +35,7 @@ pub struct VariantText {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, schemars::JsonSchema)]
 #[serde(transparent)]
 pub struct PresentationMap(
-    BTreeMap<Reference, VariantText>,
+    BTreeMap<Reference, AlternateText>,
     #[serde(skip)]
     #[schemars(skip)]
     BTreeMap<BodyKey, Vec<Patch>>,
@@ -49,26 +49,30 @@ struct Patch {
     first: bool,
 }
 impl PresentationMap {
-    pub fn insert(&mut self, original: Reference, variant: VariantText) -> Result<(), ReadError> {
+    pub fn insert(
+        &mut self,
+        original: Reference,
+        alternate: AlternateText,
+    ) -> Result<(), ReadError> {
         if self.0.contains_key(&original) {
-            return Err(ReadError::invalid("multiple renditions for one original"));
+            return Err(ReadError::invalid("multiple alternates for one original"));
         }
-        if variant.mark.original != original.stored_form() {
+        if alternate.mark.original != original.to_string() {
             return Err(ReadError::invalid(
-                "variant mark and original reference disagree",
+                "alternate mark and original reference disagree",
             ));
         }
-        if variant.relations.is_empty() {
+        if alternate.relations.is_empty() {
             return Err(ReadError::invalid(
-                "variant presentation needs declared part relations",
+                "alternate presentation needs declared part relations",
             ));
         }
         let mut pending: BTreeMap<BodyKey, Vec<Patch>> = BTreeMap::new();
-        if variant.alignment.is_empty() {
+        if alternate.alignment.is_empty() {
             let exact = match &original {
                 Reference::Block { .. } => true,
-                Reference::Assertion(revision)
-                | Reference::Variant {
+                Reference::Annotation(revision)
+                | Reference::Alternate {
                     revision,
                     part: Some(_),
                 } => revision.revision.is_some(),
@@ -76,11 +80,11 @@ impl PresentationMap {
             };
             if !exact {
                 return Err(ReadError::invalid(
-                    "multi-body or unresolved variant target needs original body alignment",
+                    "multi-body or unresolved alternate target needs original body alignment",
                 ));
             }
             pending
-                .entry(body_key(&Source::record(original.stored_form())))
+                .entry(body_key(&Source::record(original.to_string())))
                 .or_default()
                 .push(Patch {
                     original: original.clone(),
@@ -89,11 +93,11 @@ impl PresentationMap {
                     first: true,
                 });
         } else {
-            for (n, range) in variant.alignment.iter().enumerate() {
-                let reference = Reference::parse_stored(&range.source.reference)
+            for (n, range) in alternate.alignment.iter().enumerate() {
+                let reference = Reference::parse(&range.source.reference)
                     .map_err(|e| ReadError::invalid(e.to_string()))?;
                 if range.start > range.end {
-                    return Err(ReadError::invalid("reversed variant body range"));
+                    return Err(ReadError::invalid("reversed alternate body range"));
                 }
                 let patch = Patch {
                     original: original.clone(),
@@ -105,7 +109,7 @@ impl PresentationMap {
                     .entry(body_key_of(&range.source, &reference))
                     .or_default();
                 if ranges.iter().any(|prior| overlap(prior, &patch)) {
-                    return Err(ReadError::invalid("overlapping variant body ranges"));
+                    return Err(ReadError::invalid("overlapping alternate body ranges"));
                 }
                 ranges.push(patch);
             }
@@ -117,11 +121,11 @@ impl PresentationMap {
                     .any(|patch| prior.iter().any(|prior| overlap(patch, prior)))
             {
                 return Err(ReadError::invalid(
-                    "overlapping distinct variant replacements",
+                    "overlapping distinct alternate replacements",
                 ));
             }
         }
-        self.0.insert(original, variant);
+        self.0.insert(original, alternate);
         for (body, patches) in pending {
             self.1.entry(body).or_default().extend(patches);
         }
@@ -130,7 +134,7 @@ impl PresentationMap {
     pub fn for_source<'a>(
         &'a self,
         source: &Source,
-    ) -> impl Iterator<Item = (&'a Reference, &'a VariantText)> {
+    ) -> impl Iterator<Item = (&'a Reference, &'a AlternateText)> {
         self.1
             .get(&body_key(source))
             .into_iter()
@@ -141,11 +145,11 @@ impl PresentationMap {
         &'a self,
         source: &Source,
         options: &ReadOptions,
-    ) -> Option<&'a VariantMark> {
+    ) -> Option<&'a AlternateMark> {
         self.for_source(source)
-            .map(|(_, variant)| variant)
-            .find(|variant| variant.is_active(options))
-            .map(|variant| &variant.mark)
+            .map(|(_, alternate)| alternate)
+            .find(|alternate| alternate.is_active(options))
+            .map(|alternate| &alternate.mark)
     }
     /// Apply simultaneously against original bytes. Never use offsets in the
     /// output of another replacement; reject non-scalar UTF-8 boundaries.
@@ -157,31 +161,31 @@ impl PresentationMap {
     ) -> Result<Cow<'a, str>, ReadError> {
         let mut patches = Vec::new();
         for patch in self.1.get(&body_key(source)).into_iter().flatten() {
-            let variant = &self.0[&patch.original];
-            if !variant.is_active(options) {
+            let alternate = &self.0[&patch.original];
+            if !alternate.is_active(options) {
                 continue;
             }
-            let replacement = if variant
+            let replacement = if alternate
                 .relations
                 .iter()
-                .all(|relation| *relation == VariantRelation::Omits)
+                .all(|relation| *relation == AlternateRelation::Omits)
                 || !patch.first
             {
                 ""
             } else {
-                &variant.text
+                &alternate.text
             };
             let start = usize::try_from(patch.start)
-                .map_err(|_| ReadError::invalid("variant range exceeds address space"))?;
+                .map_err(|_| ReadError::invalid("alternate range exceeds address space"))?;
             let end = patch
                 .end
                 .map(usize::try_from)
                 .transpose()
-                .map_err(|_| ReadError::invalid("variant range exceeds address space"))?
+                .map_err(|_| ReadError::invalid("alternate range exceeds address space"))?
                 .unwrap_or(original.len());
             if original.get(start..end).is_none() {
                 return Err(ReadError::invalid(
-                    "variant range is outside original UTF-8 body boundaries",
+                    "alternate range is outside original UTF-8 body boundaries",
                 ));
             }
             patches.push((start, end, replacement));
@@ -195,7 +199,7 @@ impl PresentationMap {
         for (start, end, replacement) in patches {
             if start < at {
                 return Err(ReadError::invalid(
-                    "overlapping distinct variant replacements",
+                    "overlapping distinct alternate replacements",
                 ));
             }
             text.push_str(&original[at..start]);
@@ -206,14 +210,14 @@ impl PresentationMap {
         Ok(Cow::Owned(text))
     }
 }
-impl VariantText {
-    /// A stale variant applies only when the reader names its key.
+impl AlternateText {
+    /// A stale alternate applies only when the reader names its key.
     pub fn is_active(&self, options: &ReadOptions) -> bool {
-        !self.mark.stale || options.variants.contains(&self.mark.key)
+        !self.mark.stale || options.alternates.contains(&self.mark.key)
     }
 }
 fn body_key(source: &Source) -> BodyKey {
-    match Reference::parse_stored(&source.reference) {
+    match Reference::parse(&source.reference) {
         Ok(reference) => body_key_of(source, &reference),
         Err(_) => (source.reference.clone(), source.block),
     }
@@ -237,7 +241,7 @@ impl<'de> Deserialize<'de> for PresentationMap {
         impl<'de> serde::de::Visitor<'de> for Checked {
             type Value = PresentationMap;
             fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                f.write_str("a map of distinct original references to non-overlapping renditions")
+                f.write_str("a map of distinct original references to non-overlapping alternates")
             }
             fn visit_map<M: serde::de::MapAccess<'de>>(
                 self,

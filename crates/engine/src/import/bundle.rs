@@ -26,9 +26,9 @@ fn stage_record(
     range: std::ops::Range<u64>,
     mut record: Record,
 ) -> Result<(), String> {
-    if let Record::Assertion(assertion) = &mut record {
-        assertion.assertion = assertion
-            .assertion
+    if let Record::Annotation(annotation) = &mut record {
+        annotation.annotation = annotation
+            .annotation
             .canonicalized()
             .map_err(|error| error.to_string())?;
     }
@@ -83,10 +83,10 @@ fn count(counts: &mut Counts, record: &Record) {
         Record::Document(_) => counts.documents += 1,
         Record::Link(_) => counts.links += 1,
         Record::Authored(_) => counts.authored += 1,
-        Record::Assertion(_) => counts.assertions += 1,
+        Record::Annotation(_) => counts.annotations += 1,
         Record::TextFragment(_) => counts.text_fragments += 1,
-        Record::Variant(_) => counts.variants += 1,
-        Record::VariantPart(_) => counts.variant_parts += 1,
+        Record::Alternate(_) => counts.alternates += 1,
+        Record::AlternatePart(_) => counts.alternate_parts += 1,
         Record::Blob(_) => counts.blobs += 1,
         Record::Manifest(_) => {}
     }
@@ -204,9 +204,10 @@ pub(super) fn preflight(members: &mut [package::Member]) -> std::io::Result<()> 
                     }
                     return Err("bundle primary does not start with its manifest".into());
                 }
-                if matches!(record, Record::Variant(_) | Record::VariantPart(_)) {
+                if matches!(record, Record::Alternate(_) | Record::AlternatePart(_)) {
                     return Err(
-                        "bundle variant restoration requires the historical variant import".into(),
+                        "bundle alternate restoration requires the historical alternate import"
+                            .into(),
                     );
                 }
                 if let Record::Blob(blob) = &record {

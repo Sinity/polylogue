@@ -23,7 +23,7 @@
 //! thread on its shared app-server, which keeps the thread itself. At
 //! start the daemon reattaches to every recorded session.
 //!
-//! **The daemon's side** ([`HostedStdio`]) speaks the protocol: a ping is
+//! **The daemon's side** ([`HostedStdio`]) speaks the protocol: a message is
 //! a user message (Claude) or a prompt (ACP; queued until the running
 //! prompt finishes, since ACP has no steering), an answer replies to the
 //! oldest open permission request, and an interrupt is Claude's

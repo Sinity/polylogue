@@ -308,7 +308,7 @@ fn writer_pairs_tools_and_behind_reads_equal_the_next_derivation() {
 }
 
 #[test]
-fn assertions_settings_and_read_clocks_do_not_change_stored_time_products() {
+fn annotations_settings_and_read_clocks_do_not_change_stored_time_products() {
     use crate::fixture::{Fixture, MessageFacts, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();

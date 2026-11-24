@@ -295,7 +295,7 @@ tests and the story and judging boards load "Morrow plus the annotation set"
 
 This annotation set records Python Polylogue tool and reference spellings as input
 history. Imports preserve them as declared metadata. Current commands author
-assertions, and runtime lookups use full `assertion:` references rather
+annotations, and runtime lookups use full `annotation:` references rather
 than interpreting historical `note:` strings as aliases.
 
 **The rubric** `note:0199f400-0000-7000-8000-000000000400`, revision 1,

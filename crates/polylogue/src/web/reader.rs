@@ -43,12 +43,12 @@ pub(super) async fn message(
     redirect("message", &id, &parameters)
 }
 
-pub(super) async fn assertion(
+pub(super) async fn annotation(
     UrlPath(reference): UrlPath<String>,
     Query(parameters): Query<Vec<(String, String)>>,
 ) -> HttpResponse {
     match polylogue_model::Reference::parse(&reference) {
-        Ok(reference @ polylogue_model::Reference::Assertion(_)) => {
+        Ok(reference @ polylogue_model::Reference::Annotation(_)) => {
             match target_url(&reference.to_string(), &parameters) {
                 Ok(url) => Redirect::temporary(&url).into_response(),
                 Err(reason) => failed(StatusCode::BAD_REQUEST, "bad_request", &reason),
@@ -57,7 +57,7 @@ pub(super) async fn assertion(
         Ok(_) => failed(
             StatusCode::BAD_REQUEST,
             "bad_request",
-            "an assertion URL requires its natural reference",
+            "an annotation URL requires its natural reference",
         ),
         Err(error) => failed(StatusCode::BAD_REQUEST, "bad_request", &error.to_string()),
     }

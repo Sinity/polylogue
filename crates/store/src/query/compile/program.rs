@@ -779,7 +779,7 @@ impl<'a> Compiler<'a> {
             snippet_terms: self.snippet_terms,
             id_checks: self.id_checks,
             change_generations: self.change_generations,
-            assertion_cutoffs: self.assertion_cutoffs,
+            annotation_cutoffs: self.annotation_cutoffs,
             attach,
             notes: self.notes,
             incomplete: self.incomplete,

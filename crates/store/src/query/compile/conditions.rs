@@ -326,8 +326,8 @@ impl<'a> Compiler<'a> {
             return Err(refuse(scope.unit));
         };
         let alternate = if let Some(languages) = alternate_languages {
-            let variants = format!("{cte}_alternates");
-            self.ctes.push(format!("{variants} AS MATERIALIZED (SELECT vt.variant,vt.n,bm25(variant_fts) AS rank FROM variant_fts JOIN variant_text vt ON vt.rowid=variant_fts.rowid WHERE variant_fts MATCH {param})"));
+            let alternates = format!("{cte}_alternates");
+            self.ctes.push(format!("{alternates} AS MATERIALIZED (SELECT vt.alternate,vt.n,bm25(alternate_fts) AS rank FROM alternate_fts JOIN alternate_text vt ON vt.rowid=alternate_fts.rowid WHERE alternate_fts MATCH {param})"));
             let mut language = Vec::new();
             for lang in languages {
                 language.push(self.text_param(&lang));
@@ -338,9 +338,9 @@ impl<'a> Compiler<'a> {
                 format!(" AND av.to_lang IN ({})", language.join(","))
             };
             let from = format!(
-                "FROM {variants} ah JOIN source_variant_part ap ON ap.variant=ah.variant AND ap.n=ah.n JOIN source_variant av ON av.id=ap.variant WHERE {} AND {}{language}",
-                crate::variants::current_sql("av"),
-                fields::message_variant_match("av", "ap", &a.m)
+                "FROM {alternates} ah JOIN source_alternate_part ap ON ap.alternate=ah.alternate AND ap.n=ah.n JOIN source_alternate av ON av.id=ap.alternate WHERE {} AND {}{language}",
+                crate::alternates::current_sql("av"),
+                fields::message_alternate_match("av", "ap", &a.m)
             );
             Some((
                 format!("EXISTS(SELECT 1 {from})"),
@@ -594,12 +594,11 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         span: Span,
     ) -> Result<String, QueryError> {
-        let reference = polylogue_model::Reference::parse_stored(text).map_err(|error| {
-            QueryError::Invalid {
+        let reference =
+            polylogue_model::Reference::parse(text).map_err(|error| QueryError::Invalid {
                 message: error.to_string(),
                 position: span.start,
-            }
-        })?;
+            })?;
         let key = scope.a.expand(units::spec(scope.unit).key);
         let members = crate::query::references::membership(scope.unit, &reference, &mut |value| {
             self.text_param(&value)

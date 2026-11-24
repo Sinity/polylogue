@@ -6,7 +6,7 @@ use super::{
     Failure, advisory_silence, context, delivery_event, error, ok, query_targets_in,
     repeated_request, status, store_error, write, write_from_read,
 };
-use crate::briefing::Ask;
+use crate::brief::Ask;
 use crate::cli::print;
 use crate::commands::{Caller, Command};
 use crate::daemon::handler::{Call, CountReplyMap, Handler};
@@ -1039,7 +1039,7 @@ impl Handler for SelectionNote {
         let reader = call.reader()?;
         let message = polylogue_model::Reference::Message(message_id.clone());
         let intended = UserWrite::Assert {
-            assertions: vec![input.assertion(session.clone(), message.clone())],
+            annotations: vec![input.annotation(session.clone(), message.clone())],
         };
         let selected_scope = reader.scope_token();
         match repeated_request(&reader, &input.request_id, &intended, invocation) {

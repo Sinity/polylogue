@@ -3,7 +3,7 @@
 //! `_`), the key beside `verb` in an MCP or HTTP step. Its doc comment is
 //! its help; the schema key `argument_form = "positional"` marks the one
 //! word a verb takes after its name.
-use crate::briefing::StartSource;
+use crate::brief::StartSource;
 use command_surface::{JsonSchema, StepDeclarations};
 use polylogue_model::read::{ReadBudget, ReadDelivery, View};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

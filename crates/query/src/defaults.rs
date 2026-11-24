@@ -23,7 +23,7 @@ pub enum DefaultId {
     /// Withdrawals and read marks stay out of annotations.
     NotWithdrawalOrSeen,
     /// Only current revisions.
-    CurrentAssertion,
+    CurrentAnnotation,
     /// Only the current nonwithdrawn alternate revisions.
     CurrentAlternate,
     /// Read marks are absent from the ordinary feed.
@@ -56,9 +56,9 @@ impl DefaultId {
             Self::CountedCalls => &["action"],
             Self::Visible => &["hidden"],
             Self::NotWithdrawalOrSeen => &["kind", "note", "annotation"],
-            Self::NotSeen => &["assertion_kind"],
+            Self::NotSeen => &["annotation_kind"],
             Self::CurrentAlternate => &["current", "root", "withdrawn"],
-            Self::CurrentAssertion => &[
+            Self::CurrentAnnotation => &[
                 "current",
                 "root",
                 "withdrawn",
@@ -121,7 +121,7 @@ pub fn declared(unit: Unit) -> &'static [DefaultId] {
         Unit::Files | Unit::Events | Unit::Turns | Unit::LiveIntervals | Unit::Processes => {
             &[Visible]
         }
-        Unit::Annotations => &[NotWithdrawalOrSeen, CurrentAssertion, NotWithdrawn],
+        Unit::Annotations => &[NotWithdrawalOrSeen, CurrentAnnotation, NotWithdrawn],
         Unit::Alternates => &[CurrentAlternate],
         Unit::Feed => &[NotSeen],
         Unit::Deliveries => &[VisibleIfSession],

@@ -200,7 +200,7 @@ pub(crate) fn named_definitions(
         .into_iter()
         .collect();
     let mut definitions =
-        crate::assertions::saved_query_snapshot(authored, names.iter().map(String::as_str))?
+        crate::annotations::saved_query_snapshot(authored, names.iter().map(String::as_str))?
             .definitions;
     for name in &names {
         if let Some((saved_name, revision)) = name.rsplit_once('@') {
@@ -214,7 +214,7 @@ pub(crate) fn named_definitions(
                     position: 0,
                     message: "a saved revision is a positive integer: query:NAME@N".into(),
                 })?;
-            let definition = crate::assertions::named_revision(authored, saved_name, revision)?;
+            let definition = crate::annotations::named_revision(authored, saved_name, revision)?;
             definitions.insert(name.clone(), vec![definition]);
         }
     }
@@ -354,7 +354,7 @@ pub(super) fn saved_queries_for_family(
     conn: &Connection,
     root: &str,
 ) -> Result<SavedFamily, SelectionError> {
-    let family = crate::assertions::saved_family(conn, root)?.definitions;
+    let family = crate::annotations::saved_family(conn, root)?.definitions;
     let names = family
         .iter()
         .map(|(name, definitions)| (name.clone(), definitions.len()))
@@ -370,7 +370,7 @@ fn saved_queries_from(
     conn: &Connection,
     pending: Option<&dyn crate::primary::Sinex>,
     provisional: Option<&ProvisionalQueries>,
-    definitions: BTreeMap<String, Vec<crate::assertions::CurrentSavedDefinition>>,
+    definitions: BTreeMap<String, Vec<crate::annotations::CurrentSavedDefinition>>,
 ) -> Result<BTreeMap<String, Vec<SavedQuery>>, SelectionError> {
     let mut saved = BTreeMap::<String, Vec<SavedQuery>>::new();
     for (name, definitions) in definitions {
@@ -433,7 +433,7 @@ fn saved_queries_from(
     Ok(saved)
 }
 
-/// Shared stored-body resolver for named assertions and explicit typed hashes.
+/// Shared stored-body resolver for named annotations and explicit typed hashes.
 /// Provisional input stays private to the writer's preflight.
 fn stored_bindings(
     original: &Connection,

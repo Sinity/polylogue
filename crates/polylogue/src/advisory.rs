@@ -1,8 +1,8 @@
-//! Optional file pointers. Selection uses the assertion query and
+//! Optional file pointers. Selection uses the annotation query and
 //! delivery history; only uncommitted coordination lives in memory.
-use crate::briefing::Prepared;
+use crate::brief::Prepared;
 use crate::daemon::{query, scope::SharedScopeIndex};
-use polylogue_model::{Reference, SessionId, Timestamp, assertion::LinkRole};
+use polylogue_model::{Reference, SessionId, Timestamp, annotation::LinkRole};
 use polylogue_store::{Reader, StoreError};
 use std::collections::HashMap;
 use std::path::{Component, Path, PathBuf};
@@ -83,7 +83,7 @@ fn matches_file(
     path: &str,
     tokens: &[PathBuf],
     cwd: &Path,
-    links: &[polylogue_model::assertion::AssertionLink],
+    links: &[polylogue_model::annotation::AnnotationLink],
     repos: &[String],
 ) -> bool {
     let Some(target) = normalize(Path::new(path)) else {
@@ -140,12 +140,12 @@ fn already_given(
     // archive prefix: the first prompt can precede provider capture.
     let text = format!(
         "deliveries where event:advice bytes > 0 text(recipient) = {} refs:{} refs:{}",
-        query::assertions::quoted(&session.to_string()),
-        query::assertions::quoted(&reference.to_string()),
-        query::assertions::quoted(&target.to_string())
+        query::annotations::quoted(&session.to_string()),
+        query::annotations::quoted(&reference.to_string()),
+        query::annotations::quoted(&target.to_string())
     );
-    let reference = reference.stored_form();
-    let target = target.stored_form();
+    let reference = reference.to_string();
+    let target = target.to_string();
     let mut cursor = None;
     loop {
         let page = query::run(
@@ -218,21 +218,21 @@ pub fn prepare(
     };
     let now: Timestamp = context.clock.now.into();
     // The query decides current revisions and the operator's latest judgment of a revision.
-    let candidates = query::assertions::ids(
+    let candidates = query::annotations::ids(
         reader,
         "(kind:decision OR kind:correction) judged:accepted current:true text(about) ~ \"file:\" | sort by created_at desc, id",
         context,
     )?;
     for reference in candidates {
         reader.check()?;
-        if !reader.assertion_is_unexpired(&reference, now)? {
+        if !reader.annotation_is_unexpired(&reference, now)? {
             continue;
         }
-        let Some(note) = reader.assertion(&reference)? else {
+        let Some(note) = reader.annotation(&reference)? else {
             continue;
         };
-        let about = query::assertions::about(&[Reference::Assertion(reference.clone())]);
-        let judgments = query::assertions::ids(
+        let about = query::annotations::about(&[Reference::Annotation(reference.clone())]);
+        let judgments = query::annotations::ids(
             reader,
             &format!("kind:judgment author:operator {about} | sort by created_at desc, id desc"),
             context,
@@ -240,12 +240,12 @@ pub fn prepare(
         let Some(judgment) = judgments.first() else {
             continue;
         };
-        if !reader.assertion_is_unexpired(judgment, now)? {
+        if !reader.annotation_is_unexpired(judgment, now)? {
             continue;
         }
         reader.check()?;
-        let reference = Reference::Assertion(reference);
-        let stored_reference = reference.stored_form();
+        let reference = Reference::Annotation(reference);
+        let stored_reference = reference.to_string();
         let mut selected = None;
         for link in &note.fact.links {
             if link.role != LinkRole::About {
@@ -256,7 +256,7 @@ pub fn prepare(
             };
             if matches_file(path, &tokens, &cwd, &note.fact.links, &repos)
                 && !pending.iter().any(|refs| {
-                    refs.contains(&stored_reference) && refs.contains(&link.reference.stored_form())
+                    refs.contains(&stored_reference) && refs.contains(&link.reference.to_string())
                 })
                 && !already_given(reader, session, &reference, &link.reference, context)?
             {
@@ -272,12 +272,12 @@ pub fn prepare(
             "[polylogue advice delivery:{}] Operator-judged {}: {}\n",
             polylogue_render::terminal::escape(delivery),
             note.fact.kind.as_str(),
-            crate::briefing::archive_json(&pointer)
+            crate::brief::archive_json(&pointer)
         );
         return Ok(Prepared {
             event: polylogue_model::DeliveryEvent::Advice.as_str().into(),
             text,
-            refs: vec![stored_reference, target.stored_form()],
+            refs: vec![stored_reference, target.to_string()],
             left_out: Vec::new(),
             search_summary: None,
             empty: false,

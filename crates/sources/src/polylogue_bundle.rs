@@ -1,5 +1,5 @@
 //! Current bundle records, framed one record at a time.
-pub const VERSION: u32 = 5;
+pub const VERSION: u32 = 6;
 pub const ORIGIN: &str = "polylogue-bundle";
 use crate::RecordOutcome;
 use crate::document::Sink;
@@ -233,12 +233,12 @@ impl ExportParser for Bundle {
                 "link"
             }
             Record::Authored(_)
-            | Record::Assertion(_)
-            | Record::Variant(_)
-            | Record::VariantPart(_) => {
+            | Record::Annotation(_)
+            | Record::Alternate(_)
+            | Record::AlternatePart(_) => {
                 let kind = match record {
-                    Record::Variant(_) => "variant",
-                    Record::VariantPart(_) => "variant_part",
+                    Record::Alternate(_) => "alternate",
+                    Record::AlternatePart(_) => "alternate_part",
                     _ => "authored",
                 };
                 sink.records.record(

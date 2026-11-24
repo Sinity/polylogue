@@ -202,7 +202,7 @@ export class Capturer {
 
   async fetchAndStore(tabId, provider, { id = null, reason = "changed", force = false, confirm = null, before = null } = {}) {
     const capturedAt = new Date();
-    const page = await this.scheduler.run(provider, () => askPage(this.chrome, tabId, { type: "conversation", id }), { background: reason === "backfill", owner: tabId, before });
+    const page = await this.scheduler.run(provider, () => askPage(this.chrome, tabId, { type: "conversation", id }), { background: reason === "import_job", owner: tabId, before });
     if (page.status !== 200) throw refused(page);
     const { info } = page;
     const conversation = info.id;
@@ -303,7 +303,7 @@ export class Capturer {
           job.next = null;
           try {
             const fetched = await this.fetchFiles(current.tabId, current.base.conversation,
-              current.missing.filter((file) => !job.available.has(file.id)), current.base.provider, current.base.reason === "backfill");
+              current.missing.filter((file) => !job.available.has(file.id)), current.base.provider, current.base.reason === "import_job");
             for (const file of fetched) if (file.body) job.available.set(file.id, file);
             await job.observed;
             // A newer conversation arrived during the download. Its files

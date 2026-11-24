@@ -2,7 +2,7 @@ use super::*;
 use crate::test_daemon;
 use polylogue_model::{
     Author,
-    assertion::{AssertionKind, NewAssertion},
+    annotation::{AnnotationKind, NewAnnotation},
     authorship::{Authorship, Channel},
     bundle::Record,
     user::UserWrite,
@@ -23,13 +23,13 @@ fn actor() -> Authorship {
 fn repeat_write_with_no_effect(d: &Daemon, id: &str) {
     let invocation = d.invocation(&actor());
     let write = || UserWrite::Assert {
-        assertions: vec![NewAssertion {
-            kind: AssertionKind::Tag,
+        annotations: vec![NewAnnotation {
+            kind: AnnotationKind::Tag,
             key: Some("read-object-test".into()),
             value: None,
             valid_until: None,
-            links: vec![polylogue_model::assertion::NewAssertionLink {
-                role: polylogue_model::assertion::LinkRole::About,
+            links: vec![polylogue_model::annotation::NewAnnotationLink {
+                role: polylogue_model::annotation::LinkRole::About,
                 reference: polylogue_model::Reference::parse("session:claude-code:synthetic")
                     .unwrap(),
             }],
@@ -142,7 +142,7 @@ fn no_effect_request_read_records_one_object_run_and_roundtrips_through_director
     let Some(Record::Authored(original)) = record.record() else {
         panic!("whole accepted request omitted")
     };
-    assert!(original.prepared.effect.assertions.is_empty());
+    assert!(original.prepared.effect.annotations.is_empty());
     assert_eq!(original.prepared.outcome.id, "tag-base");
     assert_single_object_run(&d.daemon, "request:no-effect", &begin);
     let directory = tempfile::tempdir().unwrap();
@@ -283,13 +283,13 @@ fn object_read_pages_past_its_budget() {
     let request = daemon.daemon.invocation(&actor()).request(
         "large-object".into(),
         UserWrite::Assert {
-            assertions: vec![NewAssertion {
-                kind: AssertionKind::Note,
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Note,
                 key: None,
                 value: Some(serde_json::json!("SYNTHETIC λ🙂 ".repeat(64))),
                 valid_until: None,
-                links: vec![polylogue_model::assertion::NewAssertionLink {
-                    role: polylogue_model::assertion::LinkRole::About,
+                links: vec![polylogue_model::annotation::NewAnnotationLink {
+                    role: polylogue_model::annotation::LinkRole::About,
                     reference: Reference::parse("session:claude-code:s1").unwrap(),
                 }],
             }],
@@ -311,10 +311,10 @@ fn object_read_pages_past_its_budget() {
             panic!("stored request")
         };
         assert_eq!(record.prepared.request, request);
-        let [fact] = record.prepared.effect.assertions.as_slice() else {
-            panic!("one stored assertion")
+        let [fact] = record.prepared.effect.annotations.as_slice() else {
+            panic!("one stored annotation")
         };
-        assert_eq!(fact.kind, AssertionKind::Note);
+        assert_eq!(fact.kind, AnnotationKind::Note);
         assert_eq!(
             fact.value,
             Some(serde_json::json!("SYNTHETIC λ🙂 ".repeat(64)))

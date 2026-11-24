@@ -150,7 +150,7 @@ fn demo_steps_run_through_rows() {
     let notes = steps[8]["result"]["reply"]["rows"].as_array().unwrap();
     assert_eq!(notes.len(), 1, "{notes:?}");
     assert_eq!(notes[0]["value"], "Use chrono for date parsing.");
-    // A takeover names an assertion by another author that the operator has
+    // A takeover names an annotation by another author that the operator has
     // not accepted, without quoting it (docs/agents.md, Brief).
     let takeover = steps[9]["result"]["reply"]["steps"][0]["outcome"]["reply"]["reply"]["prepared"]
         ["text"]
@@ -158,12 +158,12 @@ fn demo_steps_run_through_rows() {
         .unwrap();
     let session = "session:claude-code:7f3a2c10-0002-4000-8000-000000000002";
     let pointer = format!(
-        "Assertions by other authors, not yet accepted: 1; list them with `polylogue 'annotations where NOT author:operator judged:unknown about:\"{session}\"'`."
+        "Annotations by other authors, not yet accepted: 1; list them with `polylogue 'annotations where NOT author:operator judged:unknown about:\"{session}\"'`."
     );
     assert_eq!(
         takeover
             .lines()
-            .filter(|line| line.starts_with("Assertions by other authors"))
+            .filter(|line| line.starts_with("Annotations by other authors"))
             .collect::<Vec<_>>(),
         [pointer.as_str()],
         "{takeover}"

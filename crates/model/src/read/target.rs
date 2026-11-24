@@ -17,8 +17,8 @@ pub enum ReadTarget {
     },
     Document(DocumentId),
     Event(String),
-    /// One exact assertion revision; a family is resolved before conversion.
-    Assertion {
+    /// One exact annotation revision; a family is resolved before conversion.
+    Annotation {
         root: String,
         revision: String,
     },
@@ -47,14 +47,14 @@ impl TryFrom<Reference> for ReadTarget {
             Reference::Document(id) => Self::Document(id),
             Reference::Event(id) => Self::Event(id),
             Reference::Delivery(id) => Self::Delivery(id),
-            Reference::Assertion(RevisionReference {
+            Reference::Annotation(RevisionReference {
                 root,
                 revision: Some(revision),
-            }) => Self::Assertion { root, revision },
-            Reference::Assertion(RevisionReference { revision: None, .. }) => {
+            }) => Self::Annotation { root, revision },
+            Reference::Annotation(RevisionReference { revision: None, .. }) => {
                 return Err(refuse(
                     &reference,
-                    "an assertion family is read through its current revision",
+                    "an annotation family is read through its current revision",
                 ));
             }
             Reference::Sinex(_) => {
@@ -73,7 +73,7 @@ impl TryFrom<Reference> for ReadTarget {
             | Reference::Run(_)
             | Reference::Request(_)
             | Reference::Attachment(_)
-            | Reference::Variant { .. }
+            | Reference::Alternate { .. }
             | Reference::Page(_)
             | Reference::Role(_)
             | Reference::Query { .. }
@@ -103,8 +103,8 @@ impl ReadTarget {
             },
             Self::Document(id) => Reference::Document(id.clone()),
             Self::Event(id) => Reference::Event(id.clone()),
-            Self::Assertion { root, revision } => {
-                Reference::Assertion(RevisionReference::exact(root.clone(), revision.clone()))
+            Self::Annotation { root, revision } => {
+                Reference::Annotation(RevisionReference::exact(root.clone(), revision.clone()))
             }
             Self::Delivery(id) => Reference::Delivery(id.clone()),
         }

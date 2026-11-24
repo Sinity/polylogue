@@ -24,7 +24,7 @@ pub(crate) fn request_of(
         hide,
         output_lines,
         for_others,
-        variant,
+        alternate,
         with_blobs,
         at,
         diff,
@@ -36,7 +36,7 @@ pub(crate) fn request_of(
         view,
         output_lines,
         for_others,
-        variants: variant,
+        alternates: alternate,
         at: at.map(ReadAt::try_from).transpose()?,
         diff,
         around,
@@ -90,7 +90,7 @@ pub(crate) fn arguments_of(
         hide,
         output_lines: options.output_lines,
         for_others: options.for_others,
-        variant: options.variants.clone(),
+        alternate: options.alternates.clone(),
         with_blobs: *with_blobs,
         at: options.at.as_ref().map(ToString::to_string),
         diff: options.diff.clone(),
@@ -131,7 +131,7 @@ pub(crate) fn page(
         daemon: call.daemon,
         accepted: context.accepted_request(),
     };
-    let request = polylogue_reading::with_variants(&reader, services, request.clone())
+    let request = polylogue_reading::with_alternates(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
     let (page, marks) = polylogue_reading::page(&reader, services, &request, &context, history)
         .map_err(|error| failure(error, &request))?;
@@ -157,7 +157,7 @@ pub(crate) fn stream(
     let reader = call.reader()?;
     polylogue_reading::resolve_start(&reader, context, &mut request)
         .map_err(|error| failure(error, &request))?;
-    let request = polylogue_reading::with_variants(&reader, services, request.clone())
+    let request = polylogue_reading::with_alternates(&reader, services, request.clone())
         .map_err(|error| failure(error, &request))?;
     let freshness = services.freshness(&reader)?;
     let complete = polylogue_reading::stream(&reader, services, &request, context, output)

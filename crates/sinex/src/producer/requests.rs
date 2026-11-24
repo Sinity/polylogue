@@ -26,8 +26,8 @@ pub(super) fn visit(
             for write in writes {
                 let pending = match write.product {
                     Product::RestoredRequest { prepared } => PendingAuthored::Restore { prepared },
-                    Product::RestoredAssertion { fact, .. } => {
-                        PendingAuthored::RestoreAssertion { fact }
+                    Product::RestoredAnnotation { fact, .. } => {
+                        PendingAuthored::RestoreAnnotation { fact }
                     }
                     _ => {
                         return Err(Error::invalid(
