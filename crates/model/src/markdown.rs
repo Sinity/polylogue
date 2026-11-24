@@ -24,16 +24,22 @@ pub enum TextError {
     Form { written: String },
     #[error("{what} is not built")]
     NotBuilt { what: &'static str },
+    #[error("the quote opened at byte {position} of the text is never closed")]
+    UnclosedQuote { position: usize },
 }
 
 #[derive(Default)]
 struct QuotedText {
     closing: Option<char>,
+    /// Where the opening quote stands in the written text.
+    opened_at: usize,
     text: String,
     complete: bool,
 }
 impl QuotedText {
-    fn push(&mut self, text: &str) {
+    /// Takes the text of one event, which the written text holds at
+    /// `source` starting at byte `start`.
+    fn push(&mut self, text: &str, source: &str, start: usize) {
         if self.complete {
             return;
         }
@@ -44,14 +50,22 @@ impl QuotedText {
                     break;
                 }
                 Some(_) => self.text.push(ch),
-                None if ch == '"' => self.closing = Some('"'),
-                None if ch == '“' => self.closing = Some('”'),
+                None if ch == '"' || ch == '“' => {
+                    self.closing = Some(if ch == '"' { '"' } else { '”' });
+                    self.opened_at = start + source.find(ch).unwrap_or(0);
+                }
                 None => {}
             }
         }
     }
-    fn finish(self) -> Option<String> {
-        self.complete.then_some(self.text)
+    /// The quote, `None` when there is none, an error when one never closes.
+    fn finish(self) -> Result<Option<String>, TextError> {
+        match (self.closing, self.complete) {
+            (Some(_), false) => Err(TextError::UnclosedQuote {
+                position: self.opened_at,
+            }),
+            (_, complete) => Ok(complete.then_some(self.text)),
+        }
     }
 }
 
@@ -63,21 +77,26 @@ struct Footnote {
 }
 
 /// References in text order, with each role and reference occurring once.
-pub fn links(text: &str) -> Result<Vec<TextLink>, TextError> {
+pub fn links(source: &str) -> Result<Vec<TextLink>, TextError> {
     let mut output: Vec<TextLink> = Vec::new();
     let mut seen = HashSet::new();
     let mut footnotes: Vec<Footnote> = Vec::new();
     let mut images = 0usize;
     let mut code_blocks = 0usize;
-    for event in Parser::new_ext(text, Options::ENABLE_FOOTNOTES) {
+    for (event, range) in Parser::new_ext(source, Options::ENABLE_FOOTNOTES).into_offset_iter() {
         match event {
             Event::Start(Tag::CodeBlock(_)) => code_blocks += 1,
             Event::End(TagEnd::CodeBlock) => code_blocks -= 1,
             Event::Start(Tag::FootnoteDefinition(_)) => footnotes.push(Footnote::default()),
             Event::End(TagEnd::FootnoteDefinition) => {
                 let note = footnotes.pop().expect("balanced CommonMark footnotes");
-                let quote = note.quote.finish();
+                let quote = note.quote.finish()?;
                 for index in note.citations {
+                    if quote.is_some() && matches!(output[index].reference, Reference::Message(_)) {
+                        return Err(TextError::NotBuilt {
+                            what: "citing a message by quote",
+                        });
+                    }
                     output[index].quote = quote.clone();
                 }
             }
@@ -141,12 +160,12 @@ pub fn links(text: &str) -> Result<Vec<TextLink>, TextError> {
             }
             Event::Text(text) | Event::Code(text) if code_blocks == 0 && images == 0 => {
                 if let Some(note) = footnotes.last_mut() {
-                    note.quote.push(&text);
+                    note.quote.push(&text, &source[range.clone()], range.start);
                 }
             }
             Event::SoftBreak | Event::HardBreak if code_blocks == 0 && images == 0 => {
                 if let Some(note) = footnotes.last_mut() {
-                    note.quote.push("\n");
+                    note.quote.push("\n", "", range.start);
                 }
             }
             _ => {}

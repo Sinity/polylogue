@@ -19,6 +19,22 @@ pub(super) fn context_selected(
         })
 }
 
+/// A document reads as `transcript` or `raw` only; every other view refuses it
+/// and names the two that fit.
+pub fn document_view(view: View, reference: &str) -> Result<(), ReadError> {
+    if matches!(
+        view,
+        View::Dialogue | View::Overview | View::Tree | View::Changes | View::Live
+    ) {
+        return Err(ReadError::UnsupportedTarget {
+            view,
+            target: reference.into(),
+            accepted_views: vec![View::Transcript, View::Raw],
+        });
+    }
+    Ok(())
+}
+
 /// Project a record already selected by the store. Source identity, original
 /// block positions, provider metadata and time accuracy are never reconstructed
 /// from rendered text. Alternate substitutions belong only to layout.
@@ -101,19 +117,7 @@ pub fn project_record(
             }
         }
         Record::Document(document) => {
-            if options.view == View::Dialogue {
-                return Err(ReadError::UnsupportedTarget {
-                    view: options.view,
-                    target: document.reference.clone(),
-                    accepted_views: vec![View::Transcript, View::Raw],
-                });
-            }
-            if matches!(
-                options.view,
-                View::Overview | View::Tree | View::Changes | View::Live
-            ) {
-                return Ok(None);
-            }
+            document_view(options.view, &document.reference)?;
         }
         Record::TextFragment(row) => {
             super::fragments::project_fragment(row, options, facts)?;

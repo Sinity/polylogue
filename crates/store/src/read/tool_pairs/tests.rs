@@ -420,3 +420,52 @@ fn cancellation_and_scope_reset_are_reported_by_the_pair_readers() {
     ));
     archive.archive.read_scope.finish_reset();
 }
+
+#[test]
+fn a_failed_call_shows_its_first_output_line() {
+    let failure = |session: &str, output: &str| {
+        let mut messages = call(
+            session,
+            1,
+            10,
+            "synthetic",
+            Some("cargo test"),
+            serde_json::json!({}),
+            Err(output),
+        );
+        (messages.remove(0), messages.remove(0))
+    };
+    let (call, result) = failure(
+        "s",
+        "running 2 tests\n\ntest parse_dates::tomorrow_at_noon ... FAILED\ntest other ... ok\n",
+    );
+    let mut archive = WriterArchive::new();
+    archive.write("s", vec![call.clone(), result]);
+    let pool = ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    // The collapsed read pairs without output and still names the failure.
+    for pair in [
+        reader
+            .message_tool_pair_header(&call.id, 0)
+            .unwrap()
+            .unwrap(),
+        reader.message_tool_pair(&call.id, 0).unwrap().unwrap(),
+    ] {
+        assert_eq!(
+            pair.error_line.as_deref(),
+            Some("test parse_dates::tomorrow_at_noon ... FAILED")
+        );
+    }
+    // An output that never names a failure shows its first non-blank line.
+    let (call, result) = failure("q", "\n\nsomething went sideways\nsecond");
+    let mut quiet = WriterArchive::new();
+    quiet.write("q", vec![call.clone(), result]);
+    let pool = ReadPool::open(&quiet.archive).unwrap();
+    let pair = pool
+        .reader()
+        .unwrap()
+        .message_tool_pair_header(&call.id, 0)
+        .unwrap()
+        .unwrap();
+    assert_eq!(pair.error_line.as_deref(), Some("something went sideways"));
+}

@@ -153,16 +153,6 @@ pub(super) fn visit(
     {
         return Err(stale());
     }
-    if matches!(
-        layout.options.view,
-        View::Overview | View::Tree | View::Changes | View::Live
-    ) {
-        return if start.is_some() {
-            Err(stale())
-        } else {
-            Ok(true)
-        };
-    }
     let root = || -> Result<Vec<ReadItem>, Error> {
         let mut items = Vec::new();
         polylogue_render::visit_document_root(&reference, layout.options, layout.facts, |item| {

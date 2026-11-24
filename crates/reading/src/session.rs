@@ -129,6 +129,8 @@ struct Composed {
     parts: Vec<Part>,
     indexes: Vec<Arc<SessionIndex>>,
     issues: Vec<ParentIssue>,
+    /// A copied prefix whose source session is not stored.
+    unstored_copy: bool,
     /// Lines shown before an entry (a `continues` line at a continuation).
     before: std::collections::HashMap<EntryKey, Vec<ReadItem>>,
     after: Vec<CardsAfterEntry>,
@@ -243,7 +245,7 @@ fn spawning_call(
 /// sessions already on the path; problems are reported, never resolved by
 /// choosing one link.
 fn prefix(reader: &Reader<'_>, session: &SessionId, composed: &mut Composed) -> Result<(), Error> {
-    let mut chain: Vec<(SessionId, Option<String>)> = Vec::new();
+    let mut chain: Vec<(SessionId, Option<String>, bool)> = Vec::new();
     let mut on_path: HashSet<SessionId> = HashSet::from([session.clone()]);
     let mut current = session.clone();
     loop {
@@ -313,23 +315,33 @@ fn prefix(reader: &Reader<'_>, session: &SessionId, composed: &mut Composed) -> 
             });
             break;
         }
-        chain.push((parent.clone(), link.branch_point.clone()));
+        chain.push((
+            parent.clone(),
+            link.branch_point.clone(),
+            link.copies_prefix,
+        ));
         current = parent;
     }
     // Compose from the oldest ancestor down, cutting each at the branch
     // point its child continues from.
     let mut parts: Vec<(Part, Arc<SessionIndex>)> = Vec::new();
-    for (at, (parent, branch_point)) in chain.iter().enumerate().rev() {
+    for (at, (parent, branch_point, copies_prefix)) in chain.iter().enumerate().rev() {
         let child = if at == 0 {
             session.clone()
         } else {
             chain[at - 1].0.clone()
         };
         let Some(index) = session_index(reader, parent)? else {
-            composed.issues.push(ParentIssue::MissingParent {
-                child,
-                parent: parent.clone(),
-            });
+            // A copied prefix whose source is not stored is not a broken
+            // link: the child's messages are its own.
+            if *copies_prefix {
+                composed.unstored_copy = true;
+            } else {
+                composed.issues.push(ParentIssue::MissingParent {
+                    child,
+                    parent: parent.clone(),
+                });
+            }
             parts.clear();
             continue;
         };
@@ -391,6 +403,7 @@ fn compose(
         parts: Vec::new(),
         indexes: Vec::new(),
         issues: Vec::new(),
+        unstored_copy: false,
         before: Default::default(),
         after: Vec::new(),
     };
@@ -1845,6 +1858,16 @@ fn lead_items(
             source: source.clone(),
             kind: ItemKind::LinkIssue {
                 issue: issue.clone(),
+            },
+        });
+    }
+    if composed.unstored_copy {
+        out.push(ReadItem {
+            source: source.clone(),
+            kind: ItemKind::Indicator {
+                indicator: IndicatorKind::Continues,
+                text: "(repeated from a session not in the archive, counted as own)".into(),
+                expand: None,
             },
         });
     }

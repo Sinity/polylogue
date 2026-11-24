@@ -30,7 +30,8 @@ pub(super) fn family(d: &test_daemon::TestDaemon) {
                 "content": [{"type": "tool_use", "id": "call-1", "name": "Task",
                              "input": {"description": "check the parser", "prompt": "check it"}},
                             {"type": "tool_use", "id": "call-1b", "name": "Bash",
-                             "input": {"command": "ls after the spawn"}}]}
+                             "input": {"command": "ls after the spawn"}},
+                            {"type": "text", "text": "spawned a checker"}]}
         })),
         line(json!({
             "type": "user", "uuid": "r3", "parentUuid": "r2", "sessionId": "root",
@@ -524,6 +525,109 @@ fn spawns_read_inline_at_their_call_to_the_asked_depth() {
         .position(|text| text == "do the subtask")
         .unwrap();
     assert!(subtask < nested, "{full:?}");
+}
+
+/// A child that copied its parent's history, with the parent never stored,
+/// holds those messages as its own: one marked line and no link problem.
+#[test]
+fn a_copy_from_an_unstored_session_reads_as_own_with_its_marker() {
+    const PARENT: &str = "019a0000-0000-7000-8000-000000000001";
+    const CHILD: &str = "019a0000-0000-7000-8000-000000000002";
+    let d = test_daemon::start("placeholder");
+    let rollouts = d.home.join(".codex/sessions/2026/03/01");
+    std::fs::create_dir_all(&rollouts).unwrap();
+    let record = |n: u64, kind: &str, payload: serde_json::Value| {
+        line(json!({"timestamp": format!("2026-03-01T10:00:{n:02}Z"),
+                    "ordinal": n, "type": kind, "payload": payload}))
+    };
+    let message = |id: &str, role: &str, text: &str| {
+        json!({"type": "message", "id": id, "role": role,
+               "content": [{"type": if role == "user" { "input_text" } else { "output_text" },
+                            "text": text}]})
+    };
+    let child = record(
+        1,
+        "session_meta",
+        json!({"id": CHILD, "session_id": PARENT, "parent_thread_id": PARENT,
+               "forked_from_id": PARENT, "thread_source": "subagent",
+               "subagent_history_start_ordinal": 3,
+               "source": {"subagent": {"thread_spawn": {"parent_thread_id": PARENT, "depth": 1}}}}),
+    ) + &record(
+        2,
+        "response_item",
+        message("parent-user", "user", "copied prompt"),
+    ) + &record(
+        3,
+        "response_item",
+        message("child-user", "user", "child prompt"),
+    );
+    std::fs::write(
+        rollouts.join(format!("rollout-synthetic-{CHILD}.jsonl")),
+        child,
+    )
+    .unwrap();
+    d.wait_for(|status| status["store"]["messages"] == 2 && status["store"]["search_pending"] == 0);
+    let page = read(
+        &d,
+        &format!("session:codex:{CHILD}"),
+        ReadOptions::default(),
+    );
+    let shown = texts(&page);
+    assert!(
+        shown
+            .iter()
+            .any(|text| text == "(repeated from a session not in the archive, counted as own)"),
+        "{shown:?}"
+    );
+    assert!(
+        shown.iter().any(|text| text == "copied prompt"),
+        "{shown:?}"
+    );
+    assert!(shown.iter().any(|text| text == "child prompt"), "{shown:?}");
+    assert!(
+        !page
+            .document
+            .items
+            .iter()
+            .any(|item| matches!(item.kind, ItemKind::LinkIssue { .. }))
+    );
+}
+
+/// The dialogue view hides the spawning call, so a cut after it leaves its
+/// message header with no shown block before the child; the header stays.
+#[test]
+fn a_spawn_cut_keeps_its_header() {
+    let d = test_daemon::start("placeholder");
+    family(&d);
+    let page = read(
+        &d,
+        "session:claude-code:root",
+        ReadOptions {
+            view: View::Dialogue,
+            spawns: SpawnDisplay::Inline { depth: Some(1) },
+            ..ReadOptions::default()
+        },
+    );
+    let place = |wanted: &dyn Fn(&ItemKind) -> bool| {
+        page.document
+            .items
+            .iter()
+            .position(|item| wanted(&item.kind))
+            .expect("item in the reading")
+    };
+    let spawner = page
+        .document
+        .items
+        .iter()
+        .position(|item| {
+            matches!(item.kind, ItemKind::MessageHeader { .. })
+                && item.source.reference == "message:claude-code:r2"
+        })
+        .expect("the spawning message keeps its header");
+    let child = place(&|kind| matches!(kind, ItemKind::Text { text } if text == "do the subtask"));
+    let after =
+        place(&|kind| matches!(kind, ItemKind::Text { text } if text == "spawned a checker"));
+    assert!(spawner < child && child < after);
 }
 
 #[test]

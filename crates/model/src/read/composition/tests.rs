@@ -301,6 +301,52 @@ fn compaction_keeps_later_messages_in_recorded_order() {
 }
 
 #[test]
+fn a_listed_kept_message_does_not_hide_the_kept_range() {
+    let mut source = entries("kept", 3);
+    let mut boundary = event_entry("boundary", "compaction", None, 10, Vec::new());
+    boundary.compaction = Some(crate::CompactionBoundary {
+        kept: vec![message("kept", 2, Role::User).id],
+        kept_range: Some(crate::KeptRange {
+            first: message("kept", 0, Role::User).id,
+            last: message("kept", 1, Role::User).id,
+        }),
+        ..Default::default()
+    });
+    source.push(boundary);
+    let mut summary = message("kept", 3, Role::User);
+    summary.prompt_kind = Some(PromptKind::CompactionSummary);
+    source.extend(message_entries(&summary, &[0], MessagePlace::default()));
+    let parts = [whole("kept", &source)];
+    let context = context_at(
+        &parts,
+        |_| &source,
+        Place {
+            part: 0,
+            entry: source.len() - 1,
+        },
+    );
+    let headers: Vec<_> = context
+        .members
+        .iter()
+        .filter_map(|place| {
+            let entry = &source[place.entry];
+            (entry.kind == EntryKind::Header).then(|| entry.key.message().unwrap().to_string())
+        })
+        .collect();
+    assert_eq!(
+        headers,
+        [
+            "test:kept:m3",
+            "test:kept:m2",
+            "test:kept:m0",
+            "test:kept:m1"
+        ]
+    );
+    assert!(context.complete, "{:?}", context.reason);
+    assert!(context.evicted.is_empty());
+}
+
+#[test]
 fn compaction_reports_missing_kept_context() {
     let mut source = compacted();
     source[6].compaction = Some(crate::CompactionBoundary {

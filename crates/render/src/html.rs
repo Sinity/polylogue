@@ -121,6 +121,15 @@ fn ready(call: &ReadyCall, commands: Option<&OperationDeclarations>) -> Result<M
         html! { @if let Ok(url) = crate::ready::http_url(commands, &call.request) { a class="ready-call" href=(url) { (cli) } } @else { code class="ready-call" { (cli) } } },
     )
 }
+/// The notes after an attachment's description, shared with the text encoders.
+fn attachment_notes(
+    supplied_by: &ValueState<String>,
+    availability: &ValueState<String>,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    crate::encode::attachment_notes(supplied_by, availability, |note| notes.push(note));
+    notes
+}
 fn edit(edit: &EditView) -> Markup {
     html! { section class="edit" { h3 { (&edit.path) } p { @if edit.applied { "applied" } @else { "failed, may have changed the file" } " · " (edit.failed_edits) " failed edits" } pre { (value_text(&edit.diff)) } } }
 }
@@ -176,19 +185,19 @@ fn item_markup(
 ) -> Result<Markup, Failure> {
     Ok(
         html! { section class="read-item" data-row="" tabindex="-1" data-reference=(&item.source.reference) data-block=[item.source.block] { @match &item.kind {
-            ItemKind::MessageHeader { header } => { h2 { time { (crate::encode::message_time(&header.time, zone)) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"unknown".into())) " of " (total.map(|n|n.to_string()).unwrap_or_else(||"unknown".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(alternate)=&header.alternate { " · ≈ " (&alternate.key) @if alternate.stale { " (stale)" } @if let Some(call)=&alternate.show_original { " " (ready(call, commands)?) } } } code { (&item.source.reference) } @for annotation in &header.annotations { aside { (crate::encode::annotation_text(annotation, crate::Format::Html)) } } },
+            ItemKind::MessageHeader { header } => { h2 { time { (crate::encode::message_time(&header.time, zone, false)) } " " (value(&header.author)) @if let Some(model)=header.model.value() { " · " (model) } @if header.inherited { " · inherited" } @match &header.branch { BranchState::Abandoned { n,total } => { " · abandoned branch " (n.map(|n|n.to_string()).unwrap_or_else(||"unknown".into())) " of " (total.map(|n|n.to_string()).unwrap_or_else(||"unknown".into())) }, BranchState::Unknown { versions:Some(n) } => { " · active version unknown: " (n) " versions" }, _ => {} } @if let Some(alternate)=&header.alternate { " · ≈ " (&alternate.key) @if alternate.stale { " (stale)" } @if let Some(call)=&alternate.show_original { " " (ready(call, commands)?) } } } code { (&item.source.reference) } @for annotation in &header.annotations { aside { (crate::encode::annotation_text(annotation, crate::Format::Html)) } } },
             ItemKind::Text { text } => { div class="archived-text" { (markdown(text)) } },
             ItemKind::Thinking { words,content } => { @match content {
                 ThinkingContent::Text { text } => { details class="thinking" { summary { "thinking (" (value(words)) " words)" } pre { (text) } } },
                 ThinkingContent::Collapsed => { p class="thinking" { "thinking (" (value(words)) " words)" } },
                 ThinkingContent::Encrypted => { p class="thinking" { "thinking (encrypted)" } }, ThinkingContent::Redacted => { p class="thinking" { "thinking (redacted)" } }, ThinkingContent::Absent { blocks } => { p class="thinking" { "thinking absent · " (blocks) " blocks" } }
             } },
-            ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (crate::encode::call_label(call)) " " code { (value(&call.target)) } " " (value(&call.outcome)) @if let Some(exit)=call.exit { " · exit " (exit) } " · " (value(&call.duration_ms)) " ms" } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { @for part in &excerpt.parts { @match part { OutputPart::Text {text,..}=>{ pre { (text) } }, OutputPart::Omission {lines,characters,..}=>{ p class="omission" { "… " (lines) " lines / " (characters) " characters skipped" } } } } @if let Some(open)=&excerpt.open { (ready(open, commands)?) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() }, zone, commands)?) } } },
-            ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes,verified_hash,open } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),verified_hash.as_ref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ") · supplied by " (value(supplied_by)) " · " (value(availability)) @if let Some(open)=open { " " (ready(open, commands)?) } } },
+            ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (crate::encode::call_label(call)) "  " code { (crate::encode::call_target(call)) } "  " (value(&call.outcome)) @for part in [crate::encode::call_exit(call), crate::encode::call_duration(call)].into_iter().flatten() { "  " (part) } } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { @for part in &excerpt.parts { @match part { OutputPart::Text {text,..}=>{ pre { (text) } }, OutputPart::Omission {lines,characters,..}=>{ p class="omission" { "… " (lines) " lines / " (characters) " characters skipped" } } } } @if let Some(open)=&excerpt.open { (ready(open, commands)?) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() }, zone, commands)?) } } },
+            ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes,verified_hash,open } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),verified_hash.as_ref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ")" @for note in attachment_notes(supplied_by, availability) { " · " (note) } @if let Some(open)=open { " " (ready(open, commands)?) } } },
             ItemKind::TextFragment { record,origin } => { aside class="partial-source" { p { "Selected source text · " code { (&record.reference) } " · bytes " (record.fragment.coverage.start) ".." (record.fragment.coverage.end) } p { "Source classification: " (crate::encode::value_text(origin)) " · recorded source length: " (record.fragment.coverage.total_bytes.map_or_else(||"unknown".into(),|total|total.to_string())) } pre class="archived-text" { (&record.fragment.text) } } },
             ItemKind::LinkIssue { issue } => { aside class="indicator link-issue" { "Parents incomplete: " (issue) } },
             ItemKind::Other { type_name,data } => { details { summary { (type_name) } pre { (serde_json::to_string_pretty(data).expect("JSON serializes")) } } },
-            ItemKind::Indicator { indicator,text,expand } => { aside class="indicator" data-kind=(indicator.as_str()) { (text) @if let Some(call)=expand { " " (ready(call, commands)?) } } },
+            ItemKind::Indicator { indicator,text,expand } => { aside class="indicator" data-kind=(indicator.as_str()) { (crate::encode::indicator_line(*indicator, text)) @if let Some(call)=expand { " " (ready(call, commands)?) } } },
             ItemKind::Omission { count,unit,why,continue_call } => { aside class="omission" { "… " (value(count)) " " (unit) ": " (why) @if let Some(call)=continue_call { " " (ready(call, commands)?) } } },
             ItemKind::Card { card:c } => { (card(c, zone, commands)?) },
             ItemKind::Raw { record } => { p { (&record.reference) " · " (&record.input) " · " (&record.media_type) } @if let Ok(text)=std::str::from_utf8(&record.bytes) { pre { (text) } } @else { @let encoded = { use base64::Engine; base64::engine::general_purpose::STANDARD.encode(&record.bytes) }; p { "binary bytes (base64)" } pre { (encoded) } } },
@@ -208,7 +217,7 @@ fn footer_markup(
     commands: Option<&OperationDeclarations>,
 ) -> Result<Markup, Failure> {
     Ok(
-        html! { footer class="read-footer" { @for coverage in &footer.coverage { p { (coverage.omitted) " " (coverage.target.as_str()) " omitted from " (coverage.view) } } @for reference in &footer.referenced_by { p { "Referenced by " (&reference.reference) " · " (&reference.role) @if let Some(call)=&reference.open { " " (ready(call, commands)?) } } } @if let Some(call)=&footer.previous { nav aria-label="Previous page" { (ready(call, commands)?) } } @if let Some(call)=&footer.next { nav aria-label="Next page" { (ready(call, commands)?) } } } },
+        html! { footer class="read-footer" { @for coverage in &footer.coverage { p { (coverage.omitted) " " (coverage.target.as_str()) " omitted from " (coverage.view) } } @if !footer.referenced_by.is_empty() { h2 { (crate::encode::CITED_AND_LINKED) } @for reference in &footer.referenced_by { p { code { (&reference.reference) } " · " (&reference.role) @if let Some(call)=&reference.open { " " (ready(call, commands)?) } } } } @if let Some(call)=&footer.previous { nav aria-label="Previous page" { (ready(call, commands)?) } } @if let Some(call)=&footer.next { nav aria-label="Next page" { (ready(call, commands)?) } } } },
     )
 }
 pub fn document(
@@ -216,8 +225,9 @@ pub fn document(
     commands: Option<&OperationDeclarations>,
 ) -> Result<Markup, Failure> {
     let zone = crate::encode::header_zone(&document.header);
+    let mut days = crate::encode::Days::default();
     Ok(
-        html! { article class="read-document" { (header(&document.header)) @for i in &document.items { (item(i, 0, &zone, commands)?) } (footer(&document.footer, commands)?) } },
+        html! { article class="read-document" { (header(&document.header)) @for i in &document.items { @if let Some(day) = days.announce(i, &zone) { p class="day" { (day) } } (item(i, DEFAULT_INLINE_IMAGE_BYTES, &zone, commands)?) } (footer(&document.footer, commands)?) } },
     )
 }
 /// Shared design tokens are embedded directly in the export. This is the same

@@ -49,13 +49,7 @@ pub fn visit_document_root(
     mut visit: impl FnMut(ReadItem) -> bool,
 ) -> Result<(), ReadError> {
     options.validate()?;
-    if options.view == View::Dialogue {
-        return Err(ReadError::UnsupportedTarget {
-            view: options.view,
-            target: reference.into(),
-            accepted_views: vec![View::Transcript, View::Raw],
-        });
-    }
+    polylogue_model::read::document_view(options.view, reference)?;
     if options.view == View::Raw {
         if facts.raw.is_empty() {
             return Err(ReadError::MissingPreparedData {
@@ -231,27 +225,28 @@ pub fn visit_record(
                 .map_err(|e| ReadError::invalid(e.to_string()))?;
             let message = &row.message;
             let by = WrittenBy::of(message);
-            let author =
-                match by {
-                    WrittenBy::Human => {
-                        ValueState::known(if options.for_others { "user" } else { "you" }.into())
-                    }
-                    WrittenBy::Model => ValueState::known("model".into()),
-                    WrittenBy::Harness => ValueState::known(
+            let author = match by {
+                WrittenBy::Human => {
+                    ValueState::known(if options.for_others { "user" } else { "you" }.into())
+                }
+                WrittenBy::Model => ValueState::known("model".into()),
+                WrittenBy::Harness => {
+                    let label = format!("[{}]", message.session.origin());
+                    ValueState::known(
                         if message.prompt_kind
                             == Some(polylogue_model::PromptKind::CompactionSummary)
                         {
-                            "[harness] compaction summary"
+                            format!("{label} compaction summary")
                         } else {
-                            "[harness]"
-                        }
-                        .into(),
-                    ),
-                    WrittenBy::Tool => ValueState::known("[tool]".into()),
-                    WrittenBy::Unknown => ValueState::Unknown {
-                        reason: Some("author not established by source".into()),
-                    },
-                };
+                            label
+                        },
+                    )
+                }
+                WrittenBy::Tool => ValueState::known("[tool]".into()),
+                WrittenBy::Unknown => ValueState::Unknown {
+                    reason: Some("author not established by source".into()),
+                },
+            };
             let mark = row
                 .block_ordinals
                 .iter()
