@@ -5,22 +5,22 @@ use serde_json::Value;
 const FLAGS: FunctionFlags = FunctionFlags::SQLITE_UTF8.union(FunctionFlags::SQLITE_DETERMINISTIC);
 const READINGS: &str = r#"
 WITH readings AS (
- SELECT r.input_pk,r.chain,r.reading_version,r.format,r.active,r.state,
+ SELECT r.input_pk,r.chain,r.parse_version,r.format,r.active,r.state,
    pl_wire_status(r.state,p.status) AS status
  FROM wire_reading r LEFT JOIN parse_state p ON r.active=1 AND p.input_pk=r.input_pk
-   AND p.chain=r.chain AND p.reading_version=r.reading_version
- WHERE (?1 IS NULL OR r.format=?1) AND (?2 IS NULL OR r.reading_version=?2)
+   AND p.chain=r.chain AND p.parse_version=r.parse_version
+ WHERE (?1 IS NULL OR r.format=?1) AND (?2 IS NULL OR r.parse_version=?2)
    AND (?3 OR r.active=1)
  UNION ALL
- SELECT p.input_pk,p.chain,p.reading_version,i.format,1,
+ SELECT p.input_pk,p.chain,p.parse_version,i.format,1,
    json_object('input',i.id,'parsed_upto',p.parsed_upto,'length',NULL,'first',NULL,'last',NULL),
    CASE WHEN p.status='done' THEN 'unknown' ELSE p.status END
  FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
- WHERE (?1 IS NULL OR i.format=?1) AND (?2 IS NULL OR p.reading_version=?2)
+ WHERE (?1 IS NULL OR i.format=?1) AND (?2 IS NULL OR p.parse_version=?2)
    AND NOT EXISTS(SELECT 1 FROM wire_reading r WHERE r.input_pk=p.input_pk AND r.chain=p.chain AND r.active=1)
 ), latest AS (
- SELECT format,reading_version,MAX(json_extract(state,'$.last.sequence')) AS occurrence
- FROM readings GROUP BY format,reading_version
+ SELECT format,parse_version,MAX(json_extract(state,'$.last.sequence')) AS occurrence
+ FROM readings GROUP BY format,parse_version
 )
 "#;
 type Key = (String, String, String, String, Option<String>);
@@ -33,7 +33,7 @@ fn for_each_row(
     mut each: impl FnMut(&rusqlite::Row<'_>) -> Result<()>,
 ) -> Result<()> {
     let mut statement = conn.prepare_cached(sql)?;
-    let mut rows = statement.query(params![scope.format, scope.reading_version, scope.history])?;
+    let mut rows = statement.query(params![scope.format, scope.parse_version, scope.history])?;
     while let Some(row) = rows.next()? {
         each(row)?;
     }
@@ -48,7 +48,7 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
     let mut report = Report::default();
     let mut coverage_keys = BTreeMap::new();
     let sql = format!(
-        "{READINGS} SELECT format,reading_version,COUNT(*),COUNT(DISTINCT input_pk),SUM(active),pl_wire_sum(state,'parsed_upto'),pl_wire_sum(state,'length'),SUM(json_extract(state,'$.length') IS NULL),pl_wire_first(state,'first'),pl_wire_last(state,'last') FROM readings GROUP BY format,reading_version ORDER BY format,reading_version"
+        "{READINGS} SELECT format,parse_version,COUNT(*),COUNT(DISTINCT input_pk),SUM(active),pl_wire_sum(state,'parsed_upto'),pl_wire_sum(state,'length'),SUM(json_extract(state,'$.length') IS NULL),pl_wire_first(state,'first'),pl_wire_last(state,'last') FROM readings GROUP BY format,parse_version ORDER BY format,parse_version"
     );
     for_each_row(conn, &sql, scope, |row| {
         let format: String = row.get(0)?;
@@ -56,7 +56,7 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
         coverage_keys.insert((format.clone(), version.clone()), report.coverage.len());
         report.coverage.push(Coverage {
             format,
-            reading_version: version,
+            parse_version: version,
             readings: integer(row, 2)?,
             inputs: integer(row, 3)?,
             current_readings: integer(row, 4)?,
@@ -70,7 +70,7 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
         Ok(())
     })?;
     let sql = format!(
-        "{READINGS} SELECT format,reading_version,status,COUNT(*) FROM readings GROUP BY format,reading_version,status ORDER BY format,reading_version,status"
+        "{READINGS} SELECT format,parse_version,status,COUNT(*) FROM readings GROUP BY format,parse_version,status ORDER BY format,parse_version,status"
     );
     for_each_row(conn, &sql, scope, |row| {
         let format: String = row.get(0)?;
@@ -89,28 +89,28 @@ pub fn read(conn: &Connection, scope: Scope<'_>) -> Result<Report> {
     // preceding that reset.
     let sql = format!(
         r#"{READINGS}
-SELECT r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_key,'$'),COUNT(*),
+SELECT r.format,s.parse_version,s.record_kind,s.path,json_extract(s.table_key,'$'),COUNT(*),
  MIN(d.expected),MAX(d.dynamic_map),MIN(d.known_kinds),
  SUM(s.unknown_kinds),SUM(s.unknown_tables),
  pl_wire_first(first_occurrence.occurrence),pl_wire_last(last_occurrence.occurrence),
  pl_wire_last(CASE WHEN EXISTS(SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain
-     AND t.reading_version=s.reading_version AND t.record_kind=s.record_kind AND t.path=s.path
+     AND t.parse_version=s.parse_version AND t.record_kind=s.record_kind AND t.path=s.path
      AND t.table_key=s.table_key AND t.count>0)
    THEN CASE WHEN json_extract(first_occurrence.occurrence,'$.sequence')<=json_extract(r.state,'$.completed.sequence')
      THEN json_extract(r.state,'$.completed') END
    ELSE CASE WHEN json_extract(last_occurrence.occurrence,'$.sequence')<=json_extract(r.state,'$.completed_before_reset.sequence')
      THEN json_extract(r.state,'$.completed_before_reset') END END),
  MAX(CASE WHEN json_extract(r.state,'$.last.sequence')=l.occurrence AND EXISTS(
-   SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain AND t.reading_version=s.reading_version
+   SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain AND t.parse_version=s.parse_version
      AND t.record_kind=s.record_kind AND t.path=s.path AND t.table_key=s.table_key AND t.count>0)
    THEN 1 ELSE 0 END),SUM(s.unused)
-FROM wire_shape s JOIN readings r ON r.input_pk=s.input_pk AND r.chain=s.chain AND r.reading_version=s.reading_version
-JOIN latest l ON l.format=r.format AND l.reading_version=r.reading_version
-JOIN wire_declaration d ON d.format=r.format AND d.reading_version=s.reading_version AND d.record_kind=s.record_kind AND d.path=s.path AND d.table_key=s.table_key
-JOIN wire_occurrence first_occurrence ON first_occurrence.input_pk=s.input_pk AND first_occurrence.chain=s.chain AND first_occurrence.reading_version=s.reading_version AND first_occurrence.number=s.first
-JOIN wire_occurrence last_occurrence ON last_occurrence.input_pk=s.input_pk AND last_occurrence.chain=s.chain AND last_occurrence.reading_version=s.reading_version AND last_occurrence.number=s.last
-GROUP BY r.format,s.reading_version,s.record_kind,s.path,s.table_key
-ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_key,'$')"#
+FROM wire_shape s JOIN readings r ON r.input_pk=s.input_pk AND r.chain=s.chain AND r.parse_version=s.parse_version
+JOIN latest l ON l.format=r.format AND l.parse_version=r.parse_version
+JOIN wire_declaration d ON d.format=r.format AND d.parse_version=s.parse_version AND d.record_kind=s.record_kind AND d.path=s.path AND d.table_key=s.table_key
+JOIN wire_occurrence first_occurrence ON first_occurrence.input_pk=s.input_pk AND first_occurrence.chain=s.chain AND first_occurrence.parse_version=s.parse_version AND first_occurrence.number=s.first
+JOIN wire_occurrence last_occurrence ON last_occurrence.input_pk=s.input_pk AND last_occurrence.chain=s.chain AND last_occurrence.parse_version=s.parse_version AND last_occurrence.number=s.last
+GROUP BY r.format,s.parse_version,s.record_kind,s.path,s.table_key
+ORDER BY r.format,s.parse_version,s.record_kind,s.path,json_extract(s.table_key,'$')"#
     );
     let mut shape_keys = BTreeMap::new();
     for_each_row(conn, &sql, scope, |row| {
@@ -131,7 +131,7 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_ke
         );
         report.shapes.push(PathShape {
             format,
-            reading_version: version,
+            parse_version: version,
             record_kind: kind,
             path,
             table,
@@ -152,13 +152,13 @@ ORDER BY r.format,s.reading_version,s.record_kind,s.path,json_extract(s.table_ke
     })?;
     let sql = format!(
         r#"{READINGS}
-SELECT r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type,
+SELECT r.format,t.parse_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type,
  SUM(t.count),pl_wire_first(first_occurrence.occurrence),pl_wire_last(last_occurrence.occurrence)
-FROM wire_type t JOIN readings r ON r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version
-JOIN wire_occurrence first_occurrence ON first_occurrence.input_pk=t.input_pk AND first_occurrence.chain=t.chain AND first_occurrence.reading_version=t.reading_version AND first_occurrence.number=t.first
-JOIN wire_occurrence last_occurrence ON last_occurrence.input_pk=t.input_pk AND last_occurrence.chain=t.chain AND last_occurrence.reading_version=t.reading_version AND last_occurrence.number=t.last
-GROUP BY r.format,t.reading_version,t.record_kind,t.path,t.table_key,t.json_type
-ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type"#
+FROM wire_type t JOIN readings r ON r.input_pk=t.input_pk AND r.chain=t.chain AND r.parse_version=t.parse_version
+JOIN wire_occurrence first_occurrence ON first_occurrence.input_pk=t.input_pk AND first_occurrence.chain=t.chain AND first_occurrence.parse_version=t.parse_version AND first_occurrence.number=t.first
+JOIN wire_occurrence last_occurrence ON last_occurrence.input_pk=t.input_pk AND last_occurrence.chain=t.chain AND last_occurrence.parse_version=t.parse_version AND last_occurrence.number=t.last
+GROUP BY r.format,t.parse_version,t.record_kind,t.path,t.table_key,t.json_type
+ORDER BY r.format,t.parse_version,t.record_kind,t.path,json_extract(t.table_key,'$'),t.json_type"#
     );
     for_each_row(conn, &sql, scope, |row| {
         let key: Key = (
@@ -191,7 +191,7 @@ ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_ke
         .collect();
     for shape in &report.shapes {
         let source =
-            &report.coverage[coverage_keys[&(shape.format.clone(), shape.reading_version.clone())]];
+            &report.coverage[coverage_keys[&(shape.format.clone(), shape.parse_version.clone())]];
         let present = shape.types.values().any(|kind| kind.count > 0);
         let mut kinds = Vec::new();
         if present && !shape.path.is_empty() && shape.expected.is_empty() && !shape.dynamic_map {
@@ -236,7 +236,7 @@ ORDER BY r.format,t.reading_version,t.record_kind,t.path,json_extract(t.table_ke
         latest_occurrence(right)
             .cmp(&latest_occurrence(left))
             .then_with(|| left.shape.format.cmp(&right.shape.format))
-            .then_with(|| left.shape.reading_version.cmp(&right.shape.reading_version))
+            .then_with(|| left.shape.parse_version.cmp(&right.shape.parse_version))
             .then_with(|| left.shape.record_kind.cmp(&right.shape.record_kind))
             .then_with(|| left.shape.path.cmp(&right.shape.path))
             .then_with(|| left.kind.cmp(&right.kind))

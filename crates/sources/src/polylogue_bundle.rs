@@ -186,7 +186,7 @@ impl ExportParser for Bundle {
                 sink.out.message_order.insert(index, record.order);
                 sink.out.block_selections.insert(
                     index,
-                    polylogue_model::bundle::MessageProjection {
+                    polylogue_model::bundle::ShownBlocks {
                         source_version: record.source_version,
                         block_count: record.block_count,
                         block_ordinals: record.block_ordinals,

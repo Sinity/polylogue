@@ -59,7 +59,7 @@ const WRAPPER_FIELDS: &[&str] = &[
     "terminal_identity",
     "repository",
     "boot_id",
-    "native_unavailable",
+    "unstated",
 ];
 
 pub const LOCATIONS: &[&str] = &[
@@ -118,7 +118,7 @@ static FIELDS: Fields = Fields::new(
         ),
         ("boot_id", Rule::Kept("the source boot identity")),
         (
-            "native_unavailable",
+            "unstated",
             Rule::Kept("optional observations that were unavailable"),
         ),
         (
@@ -239,14 +239,14 @@ impl Parser for HookSpool {
             }
         }
         out.events.push({
-            let (at, time_evidence) = crate::time::parts(at);
+            let (at, time_accuracy) = crate::time::parts(at);
             Event {
                 session: Some(sid),
                 kind: routed_kind(prefix, event_type),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: Some((record.offset, record.offset + record.bytes.len() as u64)),
                 data,

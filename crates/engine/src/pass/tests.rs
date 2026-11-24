@@ -597,7 +597,7 @@ fn confirmed_stop_finishes_only_its_bytes_and_reader() {
             polylogue_store::ParseStep::new(Default::default(), Default::default(), 0..0, false);
         step.progress = progress;
         step.stopped_attempt = Some(engine.stopped_attempt);
-        step.reading_version = expected.origin.reading_version();
+        step.parse_version = expected.origin.parse_version();
         engine
             .writer
             .send(polylogue_store::Batch {
@@ -610,8 +610,8 @@ fn confirmed_stop_finishes_only_its_bytes_and_reader() {
                 blobs: vec![],
                 length: expected.size,
                 parse: vec![step],
-                acquisition: None,
-                basis: None,
+                capture_read: None,
+                base: None,
                 release: Default::default(),
             })
             .unwrap();
@@ -717,7 +717,7 @@ fn unparseable_stored_input_refused_and_pass_continues() {
     std::fs::write(&kept, claude_user("k1", "kept", "still indexed")).unwrap();
     std::fs::write(&odd, claude_user("o1", "odd", "refused")).unwrap();
     let options = crate::ImportOptions {
-        format: Some("claude-code".into()),
+        origin: Some("claude-code".into()),
         ..Default::default()
     };
     {

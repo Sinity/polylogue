@@ -120,7 +120,7 @@ pub enum UserWrite {
         resolved: Option<Vec<crate::Reference>>,
         retained: Option<Box<LineSelection>>,
     },
-    /// A trusted daemon checkpoint with its immutable signal outbox and receipts.
+    /// A trusted daemon checkpoint with its immutable signal pending_delivery and receipts.
     SignalCommit(Box<crate::signal::Commit>),
     Alternate {
         alternate: crate::NewAlternate,
@@ -456,7 +456,7 @@ pub struct ChatAction {
     pub stage_only: bool,
     pub needs_approval: bool,
     pub created_at: i64,
-    pub execution: crate::authored::ExecutionEligibility,
+    pub execution: crate::authored::RunsHere,
     pub attachments: Vec<ChatAttachment>,
     pub events: Vec<ChatEvent>,
 }
@@ -601,7 +601,7 @@ pub struct ImportJob {
     pub provider: String,
     pub since: Option<i64>,
     pub created_at: i64,
-    pub execution: crate::authored::ExecutionEligibility,
+    pub execution: crate::authored::RunsHere,
     pub events: Vec<ImportJobEvent>,
 }
 

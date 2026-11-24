@@ -43,8 +43,8 @@ fn writer_never_decodes_staged_input() {
         blobs: Vec::new(),
         length: bytes.len() as u64,
         parse: Vec::new(),
-        acquisition: None,
-        basis: None,
+        capture_read: None,
+        base: None,
         release: Default::default(),
     };
     let results = writer

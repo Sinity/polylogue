@@ -142,7 +142,7 @@ impl Parser for Summaries {
                 how: None,
                 parent,
                 child: id.clone(),
-                at: None,
+                branch_point: None,
                 call_id: None,
                 evidence: "parent_conversation_id".into(),
             });

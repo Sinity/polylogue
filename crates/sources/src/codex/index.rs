@@ -63,14 +63,14 @@ impl Parser for History {
             return RecordOutcome::skipped("prompt without text");
         }
         out.events.push({
-            let (at, time_evidence) = crate::time::parts(v.get("ts").and_then(time::epoch_seconds));
+            let (at, time_accuracy) = crate::time::parts(v.get("ts").and_then(time::epoch_seconds));
             Event {
                 session: Some(session),
                 kind: "prompt".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: Some((record.offset, record.offset + record.bytes.len() as u64)),
                 data: v.clone(),

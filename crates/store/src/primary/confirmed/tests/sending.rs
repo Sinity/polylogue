@@ -3,7 +3,7 @@ use crate::primary::products::{SourceRecord, hidden_messages, needs_sending};
 
 fn message(input: &str, offset: u64) -> Product {
     let mut step = crate::ParseStep::new(Default::default(), Default::default(), 0..100, true);
-    step.reading_version = "synthetic=1".into();
+    step.parse_version = "synthetic=1".into();
     Product::Message {
         reading: crate::primary::Reading::from_step(
             &crate::InputKey {
@@ -33,7 +33,7 @@ fn message(input: &str, offset: u64) -> Product {
         }),
         order: None,
         projection: None,
-        native_fields: None,
+        stated_fields: None,
         declared_injections: None,
         declared_attachment_bindings: None,
     }
@@ -60,14 +60,20 @@ fn unsent(index: &Connection, reading: &crate::primary::Reading, product: &Produ
 fn confirmed_event_is_not_sent_again_in_any_state() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let first = message("first-source", 10);
     let independent = message("second-source", 10);
     let Product::Message { facts, reading, .. } = &first else {
         unreachable!("fixture message")
     };
     let mut step = crate::ParseStep::new(Default::default(), Default::default(), 0..100, true);
-    step.reading_version = reading.reading_version.clone();
+    step.parse_version = reading.parse_version.clone();
     step.output.messages.push((**facts).clone());
     step.prepare();
     assert!(unsent(&index, first.reading().unwrap(), &first));
@@ -79,6 +85,7 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[live(1, "first", first.clone()), complete_at(1)],
     )
     .unwrap();
@@ -97,6 +104,7 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[
                 Confirmed {
                     sinex_context: None,
@@ -123,7 +131,13 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
 fn covered_absent_event_is_not_sent_but_unread_tail_is() {
     let directory = tempfile::tempdir().unwrap();
     let mut index = cache(&directory.path().join("index.db"));
-    let _archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(directory.path(), &directory.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let original = message("source", 10);
     let mut reading = original.reading().unwrap().clone();
     reading.parsed_upto = 30;
@@ -141,11 +155,12 @@ fn covered_absent_event_is_not_sent_but_unread_tail_is() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[live(1, "covered", progress), complete_at(1)],
     )
     .unwrap();
     assert!(!unsent(&index, &reading, &original));
     assert!(unsent(&index, &reading, &message("source", 40)));
-    reading.reading_version = "synthetic=2".into();
+    reading.parse_version = "synthetic=2".into();
     assert!(unsent(&index, &reading, &original));
 }

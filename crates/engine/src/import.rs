@@ -30,7 +30,7 @@ impl Engine {
     ) -> Result<ImportReport, EngineError> {
         let started = Instant::now();
         let mut report = ImportReport::default();
-        if options.format.as_deref() == Some(python_polylogue::VECTORS) {
+        if options.origin.as_deref() == Some(python_polylogue::VECTORS) {
             let [path] = paths else {
                 return Err(std::io::Error::other(format!(
                     "--format {} names one Python Polylogue vector store",
@@ -50,7 +50,7 @@ impl Engine {
             return Ok(report);
         }
         for path in paths {
-            let members = match package::stage(path, &self.archive, options.format.as_deref()) {
+            let members = match package::stage(path, &self.archive, options.origin.as_deref()) {
                 Ok(members) => members,
                 Err(error) => {
                     recognition::refuse(&mut report, path, error.to_string());
@@ -431,11 +431,11 @@ impl Engine {
             blobs: Vec::new(),
             length: size,
             parse: Vec::new(),
-            acquisition: Some(
+            capture_read: Some(
                 self.source_read_context(
                     path,
                     origin.name,
-                    polylogue_store::primary::AcquisitionRoute::ExplicitImport,
+                    polylogue_store::primary::ReadRoute::ExplicitImport,
                 )
                 .finish(
                     polylogue_store::primary::RawRange {
@@ -445,7 +445,7 @@ impl Engine {
                     hash,
                 ),
             ),
-            basis: None,
+            base: None,
             release: Default::default(),
         }
     }
@@ -466,14 +466,14 @@ impl Engine {
         let progress = reader
             .input_progress(&input.id)?
             .ok_or_else(|| std::io::Error::other("a stored import has no revision"))?;
-        let version = origin.reading_version();
+        let version = origin.parse_version();
         let reading = reader.parser_progress(&input.id, stored.chain)?;
         // An import does not grow, so a reading that waits on its last
         // record is unfinished and is read again; a recorded stop at its
         // length stays final for the same program.
         if progress.parsed
             && reading.as_ref().is_some_and(|reading| {
-                reading.reading_version == version
+                reading.parse_version == version
                     && if reading.progress.stopped() {
                         reading.progress.at_length() == Some(size)
                             && reading.stopped_attempt == Some(self.stopped_attempt)
@@ -488,7 +488,7 @@ impl Engine {
         let parser = (origin.open)(path);
         let interrupted_lines = matches!(parser.as_ref(), Some(polylogue_sources::Parse::Lines(_)))
             && reading.as_ref().is_some_and(|reading| {
-                reading.reading_version == version
+                reading.parse_version == version
                     && reading.parsed_upto == progress.parsed_upto
                     && (1..size).contains(&reading.parsed_upto)
                     && reading.progress == polylogue_model::batch::ParseProgress::Parsing

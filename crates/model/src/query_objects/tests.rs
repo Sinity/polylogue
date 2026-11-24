@@ -1,7 +1,7 @@
 use super::*;
 use crate::{
     BlobHash, Reference, SpanUnit,
-    bundle::fragments::seek::{NativeTextBody, NativeTextPiece, NativeTextPosition, TextField},
+    bundle::fragments::seek::{SourceTextBody, SourceTextPiece, SourceTextPosition, TextField},
 };
 
 fn resolved() -> NormalizedReadSpan {
@@ -16,19 +16,19 @@ fn resolved() -> NormalizedReadSpan {
             record: Reference::parse("message:codex:synthetic").unwrap(),
             hash: BlobHash::of(b"stored source identity, not selected text"),
         },
-        NativeSpanSeek {
-            start: NativeTextPosition {
-                piece: NativeTextPiece::Body {
-                    body: NativeTextBody {
+        SourceSpanSeek {
+            start: SourceTextPosition {
+                piece: SourceTextPiece::Body {
+                    body: SourceTextBody {
                         block: 7,
                         field: TextField::Text,
                     },
                 },
                 byte: 1,
             },
-            end: NativeTextPosition {
-                piece: NativeTextPiece::Body {
-                    body: NativeTextBody {
+            end: SourceTextPosition {
+                piece: SourceTextPiece::Body {
+                    body: SourceTextBody {
                         block: 7,
                         field: TextField::Text,
                     },
@@ -84,8 +84,8 @@ fn normalized_span_rejects_moved_coordinates_or_ends() {
     *unit = SpanUnit::Bytes;
     assert_eq!(wrong_coordinates.validate(), Err(TextFragmentError::Origin));
     let mut wrong_piece = value.clone();
-    wrong_piece.seek.end.piece = NativeTextPiece::Body {
-        body: NativeTextBody {
+    wrong_piece.seek.end.piece = SourceTextPiece::Body {
+        body: SourceTextBody {
             block: 3,
             field: TextField::Text,
         },

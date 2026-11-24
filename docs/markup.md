@@ -27,7 +27,7 @@ A footnote that gives a container and a quotation is pinned to the exact span wh
 
 **Extraction and identity.**
 - Markers are extracted when the message is parsed (the `sources` crate), into annotations authored by the message's author, with `via: markup` and the message as `origin`.
-- The ID is derived from the origin, the provider message ID, the BLAKE3 of the marker line and its occurrence among identical lines in that message. Position, arrival, parser and reading version never enter it, so re-parsing, re-importing or a copy in a resumed session finds the existing row and creates nothing.
+- The ID is derived from the origin, the provider message ID, the BLAKE3 of the marker line and its occurrence among identical lines in that message. Position, arrival, parser and parse version never enter it, so re-parsing, re-importing or a copy in a resumed session finds the existing row and creates nothing.
 - A marker annotation is in force while the current parse of its message still contains it; otherwise it shows "marker no longer present" and leaves results like a withdrawn one. Annotations that revise, reply to or cite it remain.
 - **Success is silent.** Failures (unknown kind, unresolvable reference, wrong value shape, a rubric refusal) are counted in `status` and listed by a query.
 - Instructions inside a body are content; markup does nothing beyond writing its annotation, its slot or its send.

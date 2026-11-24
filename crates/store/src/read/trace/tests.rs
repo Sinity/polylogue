@@ -7,7 +7,7 @@ fn trace_maps_a_record_across_every_stored_extent() {
     archive.write("trace", prose("trace", 1, 1, "first"));
     archive.write("trace", prose("trace", 2, 2, "second"));
     let index = Connection::open(archive.archive.index_db()).unwrap();
-    index.execute("UPDATE reading_message SET source_start=1,source_end=3 WHERE message_id='claude-code:trace-p1'",[]).unwrap();
+    index.execute("UPDATE message_parse SET source_start=1,source_end=3 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let card = reader
@@ -33,7 +33,7 @@ fn trace_maps_a_record_across_every_stored_extent() {
         .collect();
     let hash = polylogue_model::BlobHash::of(b"r\n");
     assert_eq!(extents, vec![(hash, 2, 0, 2, 0), (hash, 2, 2, 2, 0)]);
-    assert!(card.chain.iter().any(|step|matches!(step,ChainStep::ReaderVersion{reading_version,..} if reading_version=="synthetic=1")));
+    assert!(card.chain.iter().any(|step|matches!(step,ChainStep::ReaderVersion{parse_version,..} if parse_version=="synthetic=1")));
     assert_eq!(
         reader
             .stored_range(
@@ -54,7 +54,7 @@ fn trace_states_a_record_beyond_the_reader_checkpoint() {
     archive.write("trace", prose("trace", 1, 1, "first"));
     archive.write("trace", prose("trace", 2, 2, "second"));
     let index = Connection::open(archive.archive.index_db()).unwrap();
-    index.execute("UPDATE reading_message SET source_start=1,source_end=3 WHERE message_id='claude-code:trace-p1'",[]).unwrap();
+    index.execute("UPDATE message_parse SET source_start=1,source_end=3 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
     for (parsed_upto, covered) in [(3_i64, true), (2, false)] {
         index.execute("UPDATE parse_state SET parsed_upto=?1 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[parsed_upto]).unwrap();
         let pool = crate::ReadPool::open(&archive.archive).unwrap();
@@ -96,8 +96,8 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
         );
     }
     let index = Connection::open(archive.archive.index_db()).unwrap();
-    index.execute("UPDATE reading_message SET source_end=source_start WHERE message_id='claude-code:trace-p1'",[]).unwrap();
-    index.execute("UPDATE parse_state SET reading_version='' WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
+    index.execute("UPDATE message_parse SET source_end=source_start WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
+    index.execute("UPDATE parse_state SET parse_version='' WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
     let reader = pool.reader().unwrap();
     let card = reader
         .record_chain(&Reference::parse("message:claude-code:trace-p1").unwrap())
@@ -188,7 +188,7 @@ fn trace_states_when_the_reader_checkpoint_stops_before_the_record() {
     archive.write("trace", prose("trace", 1, 1, "first"));
     archive.write("trace", prose("trace", 2, 2, "second"));
     let index = Connection::open(archive.archive.index_db()).unwrap();
-    index.execute("UPDATE reading_message SET source_start=1,source_end=3 WHERE message_id='claude-code:trace-p1'",[]).unwrap();
+    index.execute("UPDATE message_parse SET source_start=1,source_end=3 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:trace-p1')",[]).unwrap();
     index.execute("UPDATE parse_state SET parsed_upto=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -197,5 +197,5 @@ fn trace_states_when_the_reader_checkpoint_stops_before_the_record() {
         .unwrap()
         .unwrap();
     assert!(card.chain.iter().any(|step| matches!(step,ChainStep::Unavailable{reason} if reason=="the current reader checkpoint does not cover this record; its original reader version is unavailable")));
-    assert!(card.chain.iter().any(|step| matches!(step,ChainStep::ReaderVersion{reading_version,parsed_upto:0,..} if reading_version=="synthetic=1")));
+    assert!(card.chain.iter().any(|step| matches!(step,ChainStep::ReaderVersion{parse_version,parsed_upto:0,..} if parse_version=="synthetic=1")));
 }

@@ -1,6 +1,6 @@
 //! Saving a query object and replaying it use Polylogue's built-in declarations.
 use super::*;
-use polylogue_model::query_objects::{FrozenQueryDefinition, QueryEdge, QueryObject, SourceOutput};
+use polylogue_model::query_objects::{QueryEdge, QueryObject, SavedQueryDefinition, SourceOutput};
 use query_language::identity;
 use std::collections::{BTreeSet, VecDeque};
 use std::sync::Arc;
@@ -366,7 +366,7 @@ pub(super) fn from_plan(plan: &Plan) -> Result<QueryObject, QueryError> {
                 .iter()
                 .any(|node| node.question == question)
             {
-                saved_definitions.push(FrozenQueryDefinition {
+                saved_definitions.push(SavedQueryDefinition {
                     question,
                     normal_form: identity::normal_form(query, &plan.identity_catalog)
                         .map_err(language)?,
@@ -446,8 +446,8 @@ pub fn saved_query_bindings(
     Ok(saved)
 }
 
-pub(super) fn root_definition(object: &QueryObject) -> FrozenQueryDefinition {
-    FrozenQueryDefinition {
+pub(super) fn root_definition(object: &QueryObject) -> SavedQueryDefinition {
+    SavedQueryDefinition {
         question: object.id,
         normal_form: object.normal_form.clone(),
         parameters: object.parameters.clone(),
@@ -460,7 +460,7 @@ pub(super) fn root_definition(object: &QueryObject) -> FrozenQueryDefinition {
 pub(super) fn definition_with_dependencies(
     object: &QueryObject,
     question: QuestionId,
-) -> Result<(FrozenQueryDefinition, Vec<FrozenQueryDefinition>), QueryError> {
+) -> Result<(SavedQueryDefinition, Vec<SavedQueryDefinition>), QueryError> {
     validate_object(object)?;
     let node = if question == object.id {
         root_definition(object)
@@ -572,7 +572,7 @@ fn replay_bindings(object: &QueryObject, catalog: &Catalog) -> Result<Bindings, 
                 .or_insert_with(|| crate::Kept {
                     output_metadata: Default::default(),
                     shape: None,
-                    native_identity: false,
+                    row_identity: false,
                     unit: unit.clone(),
                     columns: vec![],
                     match_columns: vec![],
@@ -760,9 +760,9 @@ pub fn replay_binding(
                 if question != binding.context.question
                     && !definitions
                         .iter()
-                        .any(|definition: &FrozenQueryDefinition| definition.question == question)
+                        .any(|definition: &SavedQueryDefinition| definition.question == question)
                 {
-                    definitions.push(FrozenQueryDefinition {
+                    definitions.push(SavedQueryDefinition {
                         question,
                         normal_form: identity::normal_form(query, &catalog).map_err(language)?,
                         parameters: BTreeMap::new(),

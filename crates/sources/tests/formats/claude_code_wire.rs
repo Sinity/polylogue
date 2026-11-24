@@ -413,7 +413,7 @@ fn hook_context_unsupported_shapes_keep_facts() {
 }
 
 #[test]
-fn hook_context_keeps_native_identity_and_parent_links_outside_model_responses() {
+fn hook_context_keeps_row_identity_and_parent_links_outside_model_responses() {
     let human = user("u1", json!("human prompt"));
     let response = |uuid: &str, text: &str, parent: &str| {
         record(

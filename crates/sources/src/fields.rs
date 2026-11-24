@@ -71,7 +71,7 @@ impl Fields {
         self
     }
     /// Public shape kinds come from declarations, never arbitrary wire scalars.
-    /// A wire shape is keyed by its kind and path, and a reading version
+    /// A wire shape is keyed by its kind and path, and a parse version
     /// declares one shape per key, so a kind names one declaration: the
     /// declaration's own kind, or a `type` it lists as known.
     pub fn kind(&self, supplied: &str) -> &'static str {

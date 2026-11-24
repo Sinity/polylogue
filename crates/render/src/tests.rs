@@ -2259,8 +2259,8 @@ fn selected_fragment_in(container: polylogue_model::Reference, text: &str, start
     use polylogue_model::{
         BlobHash, Reference, SpanUnit,
         bundle::{
-            TextCoverage, TextFragment, TextFragmentProvenance, TextFragmentRecord,
-            TextSourceVersion, TextSpanOrigin,
+            TextCoverage, TextFragment, TextFragmentRecord, TextFragmentSource, TextSourceVersion,
+            TextSpanOrigin,
         },
     };
     let end = start + text.len() as u64;
@@ -2286,7 +2286,7 @@ fn selected_fragment_in(container: polylogue_model::Reference, text: &str, start
             },
             text: text.into(),
             text_hash: BlobHash::of(text.as_bytes()),
-            provenance: TextFragmentProvenance {
+            provenance: TextFragmentSource {
                 spans: vec![TextSpanOrigin {
                     reference: span,
                     start,
@@ -3028,7 +3028,7 @@ fn times_render_local_with_quality() {
         );
     }
     if let ItemKind::MessageHeader { header } = &mut doc.items[0].kind {
-        header.time.evidence = polylogue_model::TimeEvidence {
+        header.time.evidence = polylogue_model::TimeAccuracy {
             quality: TimeQuality::Captured,
             precision: Some(polylogue_model::Precision::Bounded),
             until: Some(polylogue_model::Timestamp::parse_rfc3339("2026-11-09T08:13:00Z").unwrap()),
@@ -3043,7 +3043,7 @@ fn times_render_local_with_quality() {
     session
         .set_time(
             Some(polylogue_model::Timestamp::parse_rfc3339("2026-11-09T08:12:00Z").unwrap()),
-            polylogue_model::TimeEvidence {
+            polylogue_model::TimeAccuracy {
                 quality: TimeQuality::Captured,
                 precision: Some(polylogue_model::Precision::Bounded),
                 until: Some(
@@ -3245,7 +3245,7 @@ fn no_debug_formatting_in_rendered_output() {
     session
         .set_time(
             Some(polylogue_model::Timestamp::from_unix_ms(1_000).unwrap()),
-            polylogue_model::TimeEvidence {
+            polylogue_model::TimeAccuracy {
                 quality: TimeQuality::Captured,
                 precision: Some(polylogue_model::Precision::Minute),
                 until: None,

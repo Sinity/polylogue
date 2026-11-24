@@ -56,10 +56,10 @@ impl DocumentParser for ConversationFile {
     fn document(&self, bytes: &[u8], out: &mut Output, records: &mut Records) {
         out.sessions
             .push(Session::new(self.session.clone(), SessionKind::Main));
-        out.events.push({ let (at,time_evidence)=crate::time::parts(None); Event {
+        out.events.push({ let (at,time_accuracy)=crate::time::parts(None); Event {
             session: Some(self.session.clone()),
             kind: "antigravity_conversation_bytes".into(),
- at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until,
+ at, at_quality:time_accuracy.quality, at_precision:time_accuracy.precision, at_until:time_accuracy.until,
             after: None,
             range: None,
             data: serde_json::json!({"hash":BlobHash::of(bytes).to_string(),"length":bytes.len()}),
@@ -127,14 +127,14 @@ impl DocumentParser for Antigravity {
             out.sessions
                 .push(Session::new(id.clone(), SessionKind::Main));
             out.events.push({
-                let (at, time_evidence) = crate::time::parts(None);
+                let (at, time_accuracy) = crate::time::parts(None);
                 Event {
                     session: Some(id),
                     kind: "antigravity_conversion".into(),
                     at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
+                    at_quality: time_accuracy.quality,
+                    at_precision: time_accuracy.precision,
+                    at_until: time_accuracy.until,
                     after: None,
                     range: None,
                     data: value,
@@ -169,15 +169,15 @@ impl DocumentParser for Antigravity {
         metadata.remove("markdown");
         // The source reports its last update, not the time of each message.
         out.events.push({
-            let (at, time_evidence) =
+            let (at, time_accuracy) =
                 crate::time::parts(value.get("lastModifiedTime").and_then(crate::time::rfc3339));
             Event {
                 session: Some(id.clone()),
                 kind: "antigravity_session".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: None,
                 data: Json::Object(metadata),

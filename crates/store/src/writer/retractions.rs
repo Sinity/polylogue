@@ -1,12 +1,13 @@
-//! Sinex lifecycle changes retract source contributions through the writer:
-//! each names one chain whose reading is removed.
+//! Sinex lifecycle changes retract source contributions through the writer.
 use super::*;
 use std::collections::BTreeSet;
 
-/// A retraction is one plain reset of each chain it names, with no rows.
-pub(crate) fn check_source_retractions(batches: &[Batch]) -> Result<()> {
+pub(crate) fn prepare_source_retractions(
+    resolver: &Arc<resolve::Resolver>,
+    batches: &mut [Batch],
+) -> Result<()> {
     let mut distinct = BTreeSet::new();
-    for batch in batches {
+    for batch in batches.iter() {
         let Change::Reparse { chain } = batch.change else {
             return Err(StoreError::Invalid(
                 "source retraction names no chain".into(),
@@ -35,42 +36,47 @@ pub(crate) fn check_source_retractions(batches: &[Batch]) -> Result<()> {
             ));
         }
     }
-    Ok(())
+    resolver.batches(&mut batches.iter_mut().collect::<Vec<_>>())
 }
 
-/// Removes the readings of the chains the retractions name; their shown
-/// rows are computed again when the transaction ends.
 pub(crate) fn apply_source_retractions(
     texts: &crate::text_rows::TextIds,
     tx: &Transaction<'_>,
     batches: &[Batch],
     counter: i64,
     changes: &crate::change_summary::ChangeSummary,
-    touched: &mut Touched,
 ) -> Result<()> {
-    check_source_retractions(batches)?;
     for batch in batches {
         let Change::Reparse { chain } = batch.change else {
-            unreachable!("checked above");
+            return Err(StoreError::Invalid(
+                "source retraction names no chain".into(),
+            ));
         };
         for step in &batch.parse {
-            rows::write_step(
+            let resolution = step
+                .resolution
+                .as_ref()
+                .filter(|r| r.chain == chain)
+                .ok_or_else(|| {
+                    StoreError::Invalid("source retraction was not resolved for its chain".into())
+                })?;
+            rows::retract_source(
                 tx,
                 batch,
                 step,
-                rows::StepWrite {
+                rows::ReadingWrite {
                     texts,
+                    resolution,
                     counter,
-                    chain,
+                    upkeep: &resolve::IndexUpkeep::PerTransaction,
                     source_commit: None,
-                    replacement: false,
-                    retraction: true,
-                    primary: false,
                     changes,
+                    retraction: false,
+                    replacement: false,
                 },
-                touched,
             )?;
         }
+        rows::prune_sessions(tx, &batch.input.id, chain, counter)?;
     }
     Ok(())
 }

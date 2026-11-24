@@ -127,7 +127,7 @@ fn read_rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Row
     };
     let mut statement=conn.prepare_cached(&format!("SELECT m.id,m.at,m.written_by,m.prompt_kind,m.stop_reason,
         (SELECT b.kind FROM block b WHERE b.message_pk=m.pk ORDER BY b.idx DESC LIMIT 1),
-        EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=(SELECT b.pk FROM block b WHERE b.message_pk=m.pk ORDER BY b.idx DESC LIMIT 1) AND t.result_message_id IS NULL),
+        EXISTS(SELECT 1 FROM tool_call t WHERE t.call_block_pk=(SELECT b.pk FROM block b WHERE b.message_pk=m.pk ORDER BY b.idx DESC LIMIT 1) AND t.result_block_pk IS NULL),
         m.session_order
         FROM message m WHERE {own}{tail} ORDER BY m.session_order,m.id"))?;
     let mut messages = Vec::new();
@@ -154,10 +154,10 @@ fn read_rows(conn: &Connection, pk: i64, after: Option<&OrderKey>) -> Result<Row
         .collect();
     // From the messages: a tail reads only the calls of the messages in it.
     let mut statement=conn.prepare_cached(&format!("SELECT CASE WHEN t.action='shell' THEN coalesce(t.command_norm,t.tool) ELSE coalesce(t.action,t.tool) END,
-        coalesce(t.at,m.at),CASE WHEN rm.duplicate_of IS NULL AND coalesce(rm.on_active_path,1)=1 THEN rm.at END,t.result_message_id IS NOT NULL,t.outcome='error',m.id,
+        coalesce(t.at,m.at),CASE WHEN rm.duplicate_of IS NULL AND coalesce(rm.on_active_path,1)=1 THEN rm.at END,t.result_block_pk IS NOT NULL,t.outcome='error',m.id,
         rm.session_order,rm.id
         FROM message m CROSS JOIN block b ON b.message_pk=m.pk CROSS JOIN tool_call t ON t.call_block_pk=b.pk
-        LEFT JOIN message rm ON rm.id=t.result_message_id LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.idx=t.result_idx
+        LEFT JOIN block rb ON rb.pk=t.result_block_pk LEFT JOIN message rm ON rm.pk=rb.message_pk
         WHERE {own}{tail} AND {}
         ORDER BY m.session_order,m.id,b.idx,t.call_id,t.command_norm,t.tool",session_sql::counts_as_action("t")))?;
     let mut tools = Vec::new();
@@ -580,7 +580,7 @@ fn resumable(conn: &Connection, pk: i64, script: bool) -> Result<Option<Prefix>>
     let answered_later: bool = conn
         .prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM message m CROSS JOIN block b ON b.message_pk=m.pk
-               CROSS JOIN tool_call t ON t.result_message_id=m.id AND t.result_idx=b.idx
+               CROSS JOIN tool_call t ON t.result_block_pk=b.pk
                JOIN block cb ON cb.pk=t.call_block_pk JOIN message cm ON cm.pk=cb.message_pk
              WHERE m.session_pk=?1 AND (m.session_order,m.id)>(?2,?3)
                AND (cm.session_order,cm.id)<=(?2,?3))",

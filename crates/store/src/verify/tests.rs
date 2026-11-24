@@ -54,8 +54,8 @@ impl Stored {
             blobs: Vec::new(),
             length: from + body.len() as u64,
             parse: Vec::new(),
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: InFlight::default(),
         };
         self.writer

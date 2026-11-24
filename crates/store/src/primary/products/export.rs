@@ -6,7 +6,7 @@ use std::hash::{Hash, Hasher};
 pub struct ExportReadingKey {
     pub input: InputKey,
     pub chain: i64,
-    pub reading_version: String,
+    pub parse_version: String,
     pub length: u64,
 }
 impl ExportReadingKey {
@@ -14,7 +14,7 @@ impl ExportReadingKey {
         if self.input.id.is_empty()
             || self.input.format.is_empty()
             || self.chain < 1
-            || self.reading_version.is_empty()
+            || self.parse_version.is_empty()
             || i64::try_from(self.length).is_err()
         {
             return Err(crate::StoreError::Invalid(
@@ -35,7 +35,7 @@ impl ExportReadingKey {
         self.input.id == reading.input.id
             && self.input.format == reading.input.format
             && self.chain == reading.chain
-            && self.reading_version == reading.reading_version
+            && self.parse_version == reading.parse_version
             && reading.source_length == Some(self.length)
     }
     fn parts(&self) -> (&str, &str, i64, &str, u64) {
@@ -43,7 +43,7 @@ impl ExportReadingKey {
             &self.input.id,
             &self.input.format,
             self.chain,
-            &self.reading_version,
+            &self.parse_version,
             self.length,
         )
     }

@@ -61,7 +61,7 @@ fn checkpoint_commits_with_its_cursor_and_mismatched_state_rolls_back() {
             .parser_progress("checkpoint-input", stored.chain)
             .unwrap()
             .unwrap();
-        assert_eq!(metadata.reading_version, state.reading_version);
+        assert_eq!(metadata.parse_version, state.parse_version);
         assert_eq!(metadata.parsed_upto, state.parsed_upto);
         assert_eq!(
             metadata.progress,
@@ -201,7 +201,7 @@ fn unchanged_stopped_readings_wait_until_the_source_or_reading_changes() {
         batch.length = stored.length + 2;
         batch.parse[0].parsed_upto = batch.length;
         batch.parse[0].progress = StepProgress::AtEnd;
-        batch.parse[0].reading_version = "synthetic=2".into();
+        batch.parse[0].parse_version = "synthetic=2".into();
         writer.send(batch).unwrap();
         assert!(writer.flush().unwrap().errors.is_empty());
         assert!(!waiting());

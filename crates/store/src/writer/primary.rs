@@ -82,6 +82,7 @@ impl Inner {
             let changed = match crate::primary::scope::reset(
                 &mut self.index,
                 &self.location,
+                &self.resolver,
                 scope,
                 replacing,
             ) {
@@ -155,14 +156,14 @@ impl Inner {
         request: &polylogue_model::user::UserRequest,
         scope: Option<&crate::ReadScopeToken>,
         preparation: Option<&crate::user_writes::PreparationContext>,
-    ) -> Result<crate::user_writes::UserReceipt> {
+    ) -> Result<crate::user_writes::WriteResult> {
         scoped::require_current(&self.location, scope)?;
         self.primary_cache_ready()?;
         let sinex = Arc::clone(self.sinex.as_ref().expect("primary writer"));
         if let Some(known) = crate::primary::authored::known_request(&self.index, request)? {
             let mut outcome = known.outcome.clone();
             outcome.repeat = true;
-            return crate::user_writes::UserReceipt::recorded(&known, outcome);
+            return crate::user_writes::WriteResult::recorded(&known, outcome);
         }
         if let Some(known) = crate::primary::authored::pending_prepared(sinex.as_ref(), request)? {
             let outcome = polylogue_model::user::UserOutcome {
@@ -170,7 +171,7 @@ impl Inner {
                 pending: true,
                 ..known.outcome.clone()
             };
-            return crate::user_writes::UserReceipt::recorded(&known, outcome);
+            return crate::user_writes::WriteResult::recorded(&known, outcome);
         }
         // The local overlay stays available while the stream is behind or offline.
         let prepared: PreparedRequest = crate::primary::authored::prepare(
@@ -190,10 +191,10 @@ impl Inner {
         ) && prepared.outcome.repeat
             && prepared.effect.annotations.is_empty()
         {
-            return crate::user_writes::UserReceipt::recorded(&prepared, prepared.outcome.clone());
+            return crate::user_writes::WriteResult::recorded(&prepared, prepared.outcome.clone());
         }
         let outcome = sinex.prepare_request(&prepared)?;
-        crate::user_writes::UserReceipt::recorded(&prepared, outcome)
+        crate::user_writes::WriteResult::recorded(&prepared, outcome)
     }
 
     pub(super) fn primary_blob(
@@ -313,10 +314,10 @@ pub(super) fn validate_primary_reading(index: &Connection, batch: &Batch) -> Res
             "primary parsed products need their confirmed source chain".into(),
         ));
     };
-    if batch.acquisition.is_some()
+    if batch.capture_read.is_some()
         || batch.observation.is_some()
         || batch.new_blob.is_some()
-        || batch.basis.is_some()
+        || batch.base.is_some()
         || batch.required_outcome.is_some()
         || batch.continues
     {
@@ -398,8 +399,10 @@ impl WriterSender {
             loop {
                 match step {
                     crate::primary::confirmed::Step::Complete(position) => return Ok(position),
-                    crate::primary::confirmed::Step::Prepare(prepared) => {
-                        check_source_retractions(&prepared.retractions)?;
+                    crate::primary::confirmed::Step::Prepare(mut prepared) => {
+                        // Queued groups can hold these key locks. Waiting here
+                        // leaves the serial writer free to commit or reject them.
+                        prepare_source_retractions(&self.0.resolver, &mut prepared.retractions)?;
                         step = self
                             .0
                             .ask(|reply| Msg::ApplyConfirmed(prepared, kinds, reply))?;

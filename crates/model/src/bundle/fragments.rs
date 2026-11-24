@@ -2,7 +2,7 @@
 //! Message or Block. Checking the complete source belongs to the Store reader.
 pub mod seek;
 
-use super::SourceClaim;
+use super::StatedSource;
 use crate::{BlobHash, Reference, SpanBounds, SpanUnit, authored::ImportAttribution};
 use serde::{Deserialize, Serialize};
 
@@ -46,12 +46,12 @@ pub struct TextSpanOrigin {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct TextFragmentProvenance {
+pub struct TextFragmentSource {
     /// Requests that contributed to this coverage, not permissions or proof
     /// that any one sender observed the whole union.
     pub spans: Vec<TextSpanOrigin>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sources: Vec<SourceClaim>,
+    pub sources: Vec<StatedSource>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub imports: Vec<ImportAttribution>,
 }
@@ -65,7 +65,7 @@ pub struct TextFragment {
     pub coverage: TextCoverage,
     pub text: String,
     pub text_hash: BlobHash,
-    pub provenance: TextFragmentProvenance,
+    pub provenance: TextFragmentSource,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -92,7 +92,7 @@ pub enum TextFragmentError {
     #[error("text fragment has an invalid original-span source")]
     Origin,
     #[error("text fragment stated source is invalid: {0}")]
-    SourceClaim(String),
+    StatedSource(String),
     #[error("same-version text observations conflict")]
     Conflict,
     #[error("text fragment bounds split a UTF-8 character")]
@@ -247,7 +247,7 @@ impl TextFragment {
         for source in &self.provenance.sources {
             source
                 .validate()
-                .map_err(|error| TextFragmentError::SourceClaim(error.to_string()))?;
+                .map_err(|error| TextFragmentError::StatedSource(error.to_string()))?;
         }
         Ok(())
     }

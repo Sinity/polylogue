@@ -125,9 +125,9 @@ fn later_chunks_keep_their_commit_when_a_revision_grows() {
         )
         .unwrap();
         let mut row = crate::input_rows::InputRows {
-            acquisition: None,
+            capture_read: None,
             input: "input".into(),
-            format: "synthetic".into(),
+            origin: "synthetic".into(),
             observation: None,
             revision: Some(crate::input_rows::Revision {
                 number: 1,
@@ -220,8 +220,8 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
                     blobs: Vec::new(),
                     length: 8,
                     parse: Vec::new(),
-                    acquisition: None,
-                    basis: None,
+                    capture_read: None,
+                    base: None,
                     release: Default::default(),
                 },
                 files: prepared.into_iter().collect(),
@@ -236,9 +236,9 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
     let mut standalone = Connection::open(archive.archive_db()).unwrap();
     let tx = standalone.transaction().unwrap();
     crate::input_rows::InputRows {
-        acquisition: None,
+        capture_read: None,
         input: "native".into(),
-        format: "synthetic".into(),
+        origin: "synthetic".into(),
         revision: None,
         extents: Vec::new(),
         observation: Some(crate::input_rows::ObservationRow {

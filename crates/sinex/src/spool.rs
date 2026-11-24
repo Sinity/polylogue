@@ -402,7 +402,7 @@ impl Spool {
                 continue;
             }
             remove_dot_entries(&entry.path())?;
-            if entry.path().join("acquisition.json").try_exists()? && members.is_dir() {
+            if entry.path().join("capture_read.json").try_exists()? && members.is_dir() {
                 remove_staging_database(&entry.path())?;
                 remove_dot_entries(&members)?;
                 for member in fs::read_dir(&members)? {
@@ -728,7 +728,7 @@ impl Spool {
             .root
             .join("operations")
             .join(hash(staged.identity.as_bytes()))
-            .join("acquisition.json");
+            .join("capture_read.json");
         let header =
             read_checked::<CaptureGroupHeader>(&path)?.expect("read above under capture lock");
         if header.intent != staged.intent || header.count != staged.count {
@@ -777,7 +777,7 @@ impl Spool {
             count: staged.count,
             disposition: outcome,
         };
-        write_checked(&staged.temporary.path().join("acquisition.json"), &header)?;
+        write_checked(&staged.temporary.path().join("capture_read.json"), &header)?;
         // Close the private database at its original path before moving its
         // directory, so SQLite finishes its checkpoint at the same location.
         drop(staged.queue);
@@ -798,7 +798,7 @@ impl Spool {
             queue::Kind::CaptureGroupHeader,
         );
         operation.unresolved =
-            outcome == polylogue_store::primary::CaptureOutcome::UnresolvedBasisConflict;
+            outcome == polylogue_store::primary::CaptureOutcome::UnresolvedBaseConflict;
         let staged_queue = Queue::open(&destination.join("queue.db"))?;
         self.queue
             .publish_capture_group(&staged_queue, &operation)?;
@@ -1475,13 +1475,13 @@ fn empty_operation(
         material: None,
         previous_material: None,
         logical_name: None,
-        acquisition: None,
+        capture_read: None,
         ordinal: None,
         unresolved: false,
         source: None,
         raw: false,
-        raw_generation: None,
-        raw_predecessor: None,
+        observed_state: None,
+        previous_revision: None,
         raw_root: false,
         input: None,
         format: None,
@@ -1542,14 +1542,14 @@ fn operation(record: &Record, directory: String, frame: &Ingress) -> Result<queu
     }
     if let Some(Capture::Input(input)) = record.capture() {
         operation.input = Some(input.rows.input.clone());
-        operation.format = Some(input.rows.format.clone());
+        operation.format = Some(input.rows.origin.clone());
         operation.source = input
-            .basis
+            .base
             .as_ref()
             .map(|base| serde_json::to_vec(&base.source))
             .transpose()?;
         operation.raw = input.raw_range.is_some();
-        operation.raw_generation = if operation.raw {
+        operation.observed_state = if operation.raw {
             input
                 .generation
                 .as_ref()
@@ -1558,8 +1558,8 @@ fn operation(record: &Record, directory: String, frame: &Ingress) -> Result<queu
         } else {
             None
         };
-        operation.raw_predecessor = input.raw_predecessor.clone();
-        operation.raw_root = input.raw_predecessor.is_none()
+        operation.previous_revision = input.previous_revision.clone();
+        operation.raw_root = input.previous_revision.is_none()
             && input
                 .raw_range
                 .zip(input.generation.as_ref())

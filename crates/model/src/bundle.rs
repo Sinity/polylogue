@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod fragments;
 pub use fragments::{
-    TextCoverage, TextFragment, TextFragmentError, TextFragmentProvenance, TextFragmentRecord,
+    TextCoverage, TextFragment, TextFragmentError, TextFragmentRecord, TextFragmentSource,
     TextSourceVersion, TextSpanOrigin,
 };
 
@@ -336,7 +336,7 @@ impl Record {
 /// describes selected content without changing the canonical source identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct MessageProjection {
+pub struct ShownBlocks {
     pub source_version: BlobHash,
     pub block_count: u64,
     pub block_ordinals: Vec<u64>,
@@ -348,7 +348,7 @@ pub struct MessageProjection {
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(deny_unknown_fields)]
-pub struct SourceClaim {
+pub struct StatedSource {
     pub input: String,
     pub source: String,
     pub source_chain: i64,
@@ -364,7 +364,7 @@ pub struct SourceClaim {
 #[serde(deny_unknown_fields)]
 pub struct ImportedEventIdentity {
     pub id: String,
-    pub sources: Vec<SourceClaim>,
+    pub sources: Vec<StatedSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -416,7 +416,7 @@ pub enum BundleError {
     #[error("cannot encode canonical message content: {0}")]
     CanonicalMessage(String),
     #[error("invalid source time accuracy: {0}")]
-    Time(#[from] crate::TimeEvidenceError),
+    Time(#[from] crate::TimeAccuracyError),
     #[error("invalid event identity or original stated source")]
     InvalidEventIdentity,
     #[error("event reference does not name its imported identity")]
@@ -425,7 +425,7 @@ pub enum BundleError {
     InvalidEventAssociation,
 }
 
-impl SourceClaim {
+impl StatedSource {
     pub fn validate(&self) -> Result<(), BundleError> {
         if self.input.is_empty()
             || self.source.is_empty()
@@ -447,7 +447,7 @@ impl ImportedEventIdentity {
         if self.id.is_empty() || self.sources.is_empty() {
             return Err(BundleError::InvalidEventIdentity);
         }
-        self.sources.iter().try_for_each(SourceClaim::validate)
+        self.sources.iter().try_for_each(StatedSource::validate)
     }
 
     pub fn canonicalize(&mut self) {
@@ -459,7 +459,7 @@ impl ImportedEventIdentity {
 impl InputEventRecord {
     pub fn validate(&self) -> Result<(), BundleError> {
         self.identity.validate()?;
-        self.event.time_evidence().validate(self.event.at)?;
+        self.event.time_accuracy().validate(self.event.at)?;
         if self.reference != format!("event:{}", self.identity.id) {
             return Err(BundleError::EventReferenceMismatch);
         }
@@ -549,7 +549,7 @@ impl SessionRecord {
             return Err(BundleError::ReferenceMismatch);
         }
         self.session
-            .time_evidence()
+            .time_accuracy()
             .validate(self.session.started)?;
         Ok(())
     }
@@ -560,7 +560,7 @@ impl MessageRecord {
         if self.reference != format!("message:{}", self.message.id) {
             return Err(BundleError::ReferenceMismatch);
         }
-        self.message.time_evidence().validate(self.message.at)?;
+        self.message.time_accuracy().validate(self.message.at)?;
         self.block_selection().validate(self.message.blocks.len())?;
         for injection in &self.injections {
             injection.validate_for(&self.message.id, &self.block_selection())?;
@@ -578,8 +578,8 @@ impl MessageRecord {
         Ok(())
     }
 
-    pub fn block_selection(&self) -> MessageProjection {
-        MessageProjection {
+    pub fn block_selection(&self) -> ShownBlocks {
+        ShownBlocks {
             source_version: self.source_version,
             block_count: self.block_count,
             block_ordinals: self.block_ordinals.clone(),
@@ -591,7 +591,7 @@ impl MessageRecord {
     }
 }
 
-impl MessageProjection {
+impl ShownBlocks {
     pub fn validate(&self, selected_blocks: usize) -> Result<(), BundleError> {
         if self.block_ordinals.len() != selected_blocks
             || self
@@ -609,7 +609,7 @@ impl MessageProjection {
     }
 }
 
-impl MessageProjection {
+impl ShownBlocks {
     /// Distinct source versions stay distinct. Compatible views of one
     /// version union original positions; an overlap must contain equal blocks.
     pub fn merge(
@@ -668,7 +668,7 @@ impl DocumentRecord {
             return Err(BundleError::ReferenceMismatch);
         }
         self.document
-            .time_evidence()
+            .time_accuracy()
             .validate(self.document.source_time)?;
         Ok(())
     }

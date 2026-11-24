@@ -141,7 +141,13 @@ impl Fixture {
     /// Queues search work without committing it, for reader and index tests.
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
-        let id = crate::text_rows::intern(&tx, body, 1, None, false)?;
+        let id = crate::text_rows::intern(
+            &tx,
+            body,
+            1,
+            None,
+            &crate::writer::resolve::IndexUpkeep::PerTransaction,
+        )?;
         tx.commit()?;
         Ok(id)
     }
@@ -203,7 +209,7 @@ impl Fixture {
         &mut self,
         session_pk: i64,
         at: Option<polylogue_model::Timestamp>,
-        accuracy: polylogue_model::TimeEvidence,
+        accuracy: polylogue_model::TimeAccuracy,
     ) -> Result<()> {
         accuracy
             .validate(at)
@@ -221,7 +227,7 @@ impl Fixture {
         &mut self,
         message_pk: i64,
         at: Option<polylogue_model::Timestamp>,
-        accuracy: polylogue_model::TimeEvidence,
+        accuracy: polylogue_model::TimeAccuracy,
     ) -> Result<()> {
         accuracy
             .validate(at)
@@ -317,7 +323,13 @@ impl Fixture {
             &self.index,
             rusqlite::TransactionBehavior::Immediate,
         )?;
-        let id = crate::text_rows::intern(&tx, body, search_index, None, false)?;
+        let id = crate::text_rows::intern(
+            &tx,
+            body,
+            search_index,
+            None,
+            &crate::writer::resolve::IndexUpkeep::PerTransaction,
+        )?;
         tx.commit()?;
         crate::text_rows::index_pending(&self.index, || ())?;
         Ok(id)
@@ -433,14 +445,14 @@ impl Fixture {
             None => None,
         };
         self.index.execute(
-            "INSERT INTO tool_call(session_pk, call_block_pk, call_id, result_message_id, result_idx, at, tool,
+            "INSERT INTO tool_call(session_pk, call_block_pk, call_id, result_block_pk, at, tool,
                  action, command, command_norm, path, outcome, exit_code)
-             VALUES (?1, ?2, ?3, (SELECT id FROM message WHERE pk=?4), ?12, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11)",
             params![
                 session_pk,
                 call,
                 format!("c{message_pk}-{idx}"),
-                result.map(|_| message_pk),
+                result,
                 t.at,
                 t.tool,
                 t.action,
@@ -451,8 +463,7 @@ impl Fixture {
                 } else {
                     t.outcome
                 },
-                t.exit_code,
-                result.map(|_| idx + 1),
+                t.exit_code
             ],
         )?;
         let pk = self.index.last_insert_rowid();
@@ -521,9 +532,8 @@ impl Fixture {
                     // The last message is always a model answer.
                     let model = (spec.messages - 1 - m).is_multiple_of(2);
                     self.seq += 1;
-                    let id = format!("many-{n}-{m}");
                     message.execute(params![
-                        id,
+                        format!("many-{n}-{m}"),
                         pk,
                         self.input_pk,
                         crate::encoding::session_order(None, "fixture", self.seq, 0),
@@ -539,7 +549,7 @@ impl Fixture {
                             &format!("Answer {n}: the synthetic work is finished."),
                             1,
                             None,
-                            false,
+                            &crate::writer::resolve::IndexUpkeep::PerTransaction,
                         )?;
                         block.execute(params![message_pk, pk, text, text_body])?;
                     }
@@ -562,8 +572,8 @@ impl Fixture {
 
     pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: Option<&str>) -> Result<()> {
         self.index.execute(
-            "INSERT INTO link(parent_id, child_id, kind, how, evidence, input_pk)
-             VALUES (?1, ?2, ?3, ?4, 'fixture', ?5)",
+            "INSERT INTO link(parent_id, child_id, child_pk, kind, how, evidence, input_pk)
+             VALUES (?1, ?2, (SELECT pk FROM session WHERE id = ?2), ?3, ?4, 'fixture', ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
         crate::items::refresh_stale(&self.index)?;
@@ -598,9 +608,9 @@ impl Fixture {
         // Fixture `at` declares a source instant, like MessageFacts::at.
         let source_at = at.and_then(polylogue_model::Timestamp::from_unix_ms);
         let accuracy = if source_at.is_some() {
-            polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant)
+            polylogue_model::TimeAccuracy::intrinsic(polylogue_model::Precision::Instant)
         } else {
-            polylogue_model::TimeEvidence::UNKNOWN
+            polylogue_model::TimeAccuracy::UNKNOWN
         };
         let fields = crate::encoding::pack_json(&polylogue_model::Event {
             at_quality: accuracy.quality,
@@ -620,9 +630,13 @@ impl Fixture {
             params![id, session_pk, self.seq, kind, at, self.input_pk, data,fields],
         )?;
         let hash = *blake3::hash(b"{}").as_bytes();
-        self.index.execute("INSERT INTO reading_event(input_pk,chain,event_id,session_id,route,seq,kind,at,hash,fields,data,imported_sources)
-            SELECT ?2,1,?1,s.id,'live',?6,?7,?8,?5,?4,?3,'[]' FROM session s WHERE s.pk=?9",
-            params![id,self.input_pk,data,fields,hash.as_slice(),self.seq,kind,at,session_pk])?;
+        self.index.execute(
+            "INSERT OR IGNORE INTO event_value(hash,body) VALUES (?1,?2)",
+            params![hash.as_slice(), data],
+        )?;
+        self.index.execute("INSERT INTO event_parse(event_pk,input_pk,chain,value_pk,route,session_pk,fields,imported_sources)
+            SELECT e.pk,?2,1,v.pk,'live',?3,?4,'[]' FROM event e,event_value v WHERE e.id=?1 AND v.hash=?5",
+            params![id,self.input_pk,session_pk,fields,hash.as_slice()])?;
         self.index.execute(
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],
@@ -870,7 +884,7 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
     crate::chain_progress::install_triggers(&conn, false)?;
     let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
         FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
-    conn.execute("UPDATE parse_state SET reading_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    conn.execute("UPDATE parse_state SET parse_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
     Ok(size)
 }
 
@@ -879,9 +893,9 @@ fn fixture_time(at: Option<i64>) -> Result<Vec<u8>> {
     crate::encoding::time_bytes(
         at,
         if at.is_some() {
-            polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant)
+            polylogue_model::TimeAccuracy::intrinsic(polylogue_model::Precision::Instant)
         } else {
-            polylogue_model::TimeEvidence::UNKNOWN
+            polylogue_model::TimeAccuracy::UNKNOWN
         },
     )
 }

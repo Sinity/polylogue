@@ -188,7 +188,7 @@ fn a_copied_document_source_equals_its_parse_and_is_not_shown() {
                     input: "doc".into(),
                     from,
                     to,
-                    reading_version: "synthetic=1".into(),
+                    parse_version: "synthetic=1".into(),
                     upto: 100,
                     reaches_end: true,
                 })
@@ -217,7 +217,7 @@ fn a_copied_document_source_equals_its_parse_and_is_not_shown() {
             // The commit position names the shown, newer chain's reading.
             let newer_committed: Option<i64> = reader
                 .query(
-                    "SELECT ds.committed AS n FROM reading_document ds WHERE ds.document_id=?1 AND ds.chain=?2",
+                    "SELECT ds.committed AS n FROM document_parse ds JOIN document d ON d.pk=ds.document_pk WHERE d.id=?1 AND ds.chain=?2",
                     &[
                         crate::SqlValue::Text(id.to_string()),
                         crate::SqlValue::Int(newer),
@@ -246,7 +246,7 @@ fn reading_copies_keep_portable_members_and_reparse_chain_members() {
             source: (!unsourced).then(|| polylogue_model::PrefixSource {
                 input: "original".into(),
                 chain: 7,
-                reading_version: "original=1".into(),
+                parse_version: "original=1".into(),
             }),
             position: [u64::MAX, 2],
         };
@@ -258,7 +258,7 @@ fn reading_copies_keep_portable_members_and_reparse_chain_members() {
                 input: "doc".into(),
                 from: 2,
                 to: 1,
-                reading_version: "synthetic=1".into(),
+                parse_version: "synthetic=1".into(),
                 upto: 100,
                 reaches_end: true,
             })
@@ -307,7 +307,7 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
         input: "doc".into(),
         from,
         to,
-        reading_version: "synthetic=1".into(),
+        parse_version: "synthetic=1".into(),
         upto: 100,
         reaches_end: true,
     });
@@ -536,7 +536,7 @@ fn copy_failure_keeps_its_cause_and_rolls_back_its_transaction() {
             input: "doc".into(),
             from: 2,
             to: 1,
-            reading_version: "synthetic=1".into(),
+            parse_version: "synthetic=1".into(),
             upto: 100,
             reaches_end: true,
         })

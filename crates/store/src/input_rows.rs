@@ -15,10 +15,10 @@ use serde::{Deserialize, Serialize};
 pub struct InputRows {
     /// Receiver-owned evidence for the acquired body, independent of overlap trimming.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub acquisition: Option<crate::primary::AcquisitionReceipt>,
+    pub capture_read: Option<crate::primary::CaptureRead>,
     pub input: String,
     /// The origin that parses it (`claude-code`).
-    pub format: String,
+    pub origin: String,
     /// A new revision, or the current one grown by a later chunk of the
     /// same read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -119,7 +119,7 @@ impl InputRows {
         tx.prepare_cached(
             &source.sql("INSERT OR IGNORE INTO @source.input(id, format) VALUES (?1, ?2)"),
         )?
-        .execute(params![self.input, self.format])?;
+        .execute(params![self.input, self.origin])?;
         if let Some(r) = &self.revision {
             tx.prepare_cached(&source.sql(
                 "INSERT INTO @source.revision(input, number, produced, chain, length, commit_seq)
@@ -132,11 +132,11 @@ impl InputRows {
         }
         for e in &self.extents {
             tx.prepare_cached(
-                &source.sql("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, acquisition)
+                &source.sql("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, capture_read)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
                  ON CONFLICT(input,chain,offset) DO UPDATE SET
                      commit_seq=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN min(commit_seq,excluded.commit_seq) ELSE excluded.commit_seq END,
-                     acquisition=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN coalesce(acquisition,excluded.acquisition) ELSE excluded.acquisition END,
+                     capture_read=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN coalesce(capture_read,excluded.capture_read) ELSE excluded.capture_read END,
                      length=excluded.length,blob=excluded.blob,blob_offset=excluded.blob_offset"),
             )?
             .execute(params![
@@ -145,7 +145,7 @@ impl InputRows {
                 e.offset,
                 e.length,
                 &e.blob.0[..],e.blob_offset,seq,
-                self.acquisition.as_ref().map(crate::encoding::pack_json).transpose()?
+                self.capture_read.as_ref().map(crate::encoding::pack_json).transpose()?
             ])?;
         }
         if let Some(o) = &self.observation {
@@ -217,11 +217,11 @@ impl InputRows {
         Ok(())
     }
     fn validate_source_read(&self) -> Result<()> {
-        let Some(source_read) = &self.acquisition else {
+        let Some(source_read) = &self.capture_read else {
             return Ok(());
         };
         source_read.validate_for(&crate::InputKey {
-            format: self.format.clone(),
+            format: self.origin.clone(),
             id: self.input.clone(),
             route: polylogue_model::Route::Live,
         })?;
@@ -231,8 +231,8 @@ impl InputRows {
                 "the capture read does not describe these source rows".into(),
             )
         };
-        if source_read.version != crate::primary::AcquisitionReceipt::VERSION
-            || source_read.source.origin != self.format
+        if source_read.version != crate::primary::CaptureRead::VERSION
+            || source_read.source.origin != self.origin
             || source_read.source.machine.is_empty()
         {
             return Err(invalid());
@@ -285,7 +285,7 @@ impl InputRows {
 
     fn observation_details(&self, observation: &ObservationRow) -> Result<Option<String>> {
         let Some(source_read) = self
-            .acquisition
+            .capture_read
             .as_ref()
             .filter(|_| self.extents.is_empty())
         else {
@@ -302,14 +302,14 @@ impl InputRows {
         })?;
         let source_read = serde_json::to_value(source_read)?;
         if object
-            .get("acquisition")
+            .get("capture_read")
             .is_some_and(|prior| prior != &source_read)
         {
             return Err(crate::StoreError::Invalid(
                 "the observation's capture read conflicts".into(),
             ));
         }
-        object.insert("acquisition".into(), source_read);
+        object.insert("capture_read".into(), source_read);
         Ok(Some(serde_json::to_string(&details)?))
     }
 }

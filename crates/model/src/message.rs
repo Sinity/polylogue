@@ -310,8 +310,8 @@ impl Message {
             .map_err(serde::ser::Error::custom)
     }
 
-    pub fn time_evidence(&self) -> crate::TimeEvidence {
-        crate::TimeEvidence {
+    pub fn time_accuracy(&self) -> crate::TimeAccuracy {
+        crate::TimeAccuracy {
             quality: self.at_quality,
             precision: self.at_precision,
             until: self.at_until,
@@ -321,8 +321,8 @@ impl Message {
     pub fn set_time(
         &mut self,
         at: Option<Timestamp>,
-        accuracy: crate::TimeEvidence,
-    ) -> Result<(), crate::TimeEvidenceError> {
+        accuracy: crate::TimeAccuracy,
+    ) -> Result<(), crate::TimeAccuracyError> {
         accuracy.validate(at)?;
         self.at = at;
         self.at_quality = accuracy.quality;

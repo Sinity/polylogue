@@ -128,7 +128,7 @@ pub(crate) fn built(index: &Connection) -> Result<bool> {
              LEFT JOIN input_ref i ON i.id=c.input
              LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=c.chain
              WHERE c.length>0 AND NOT COALESCE((
-                 (p.reading_version IS NOT NULL AND p.reading_version<>'' AND
+                 (p.parse_version IS NOT NULL AND p.parse_version<>'' AND
                     ((p.status IN ('parsing','done') AND p.parsed_upto>=c.length) OR
                      (p.status='waiting' AND p.at_length=c.length) OR
                      (p.status IN ('refused','failed') AND p.at_length=c.length AND p.stopped_attempt IS NOT NULL)))

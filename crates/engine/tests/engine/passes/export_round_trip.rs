@@ -620,7 +620,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
             source: polylogue_model::PrefixSource {
                 input: "supplied-source-reading".into(),
                 chain: 3,
-                reading_version: "copy-reader=1".into(),
+                parse_version: "copy-reader=1".into(),
             },
             position: [42, 7],
         };

@@ -115,7 +115,7 @@ pub struct Link {
     pub child: SessionId,
     /// The parent's message the child branched from or was spawned by.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<MessageId>,
+    pub branch_point: Option<MessageId>,
     /// The tool call in the parent that spawned the child.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call_id: Option<String>,
@@ -141,7 +141,7 @@ pub struct PrefixCopy {
 pub struct PrefixSource {
     pub input: String,
     pub chain: i64,
-    pub reading_version: String,
+    pub parse_version: String,
 }
 
 /// One copied message, independent of any provider relationship.
@@ -174,7 +174,7 @@ impl Link {
             self.kind,
             &self.parent,
             &self.child,
-            self.at.as_ref(),
+            self.branch_point.as_ref(),
             self.call_id.as_deref(),
             self.how,
         )
@@ -204,8 +204,8 @@ impl Link {
 mod tests;
 
 impl Event {
-    pub fn time_evidence(&self) -> crate::TimeEvidence {
-        crate::TimeEvidence {
+    pub fn time_accuracy(&self) -> crate::TimeAccuracy {
+        crate::TimeAccuracy {
             quality: self.at_quality,
             precision: self.at_precision,
             until: self.at_until,
@@ -215,8 +215,8 @@ impl Event {
     pub fn set_time(
         &mut self,
         at: Option<Timestamp>,
-        accuracy: crate::TimeEvidence,
-    ) -> Result<(), crate::TimeEvidenceError> {
+        accuracy: crate::TimeAccuracy,
+    ) -> Result<(), crate::TimeAccuracyError> {
         accuracy.validate(at)?;
         self.at = at;
         self.at_quality = accuracy.quality;

@@ -3,9 +3,7 @@ use super::client;
 use crate::Sinex;
 use polylogue_engine::Engine;
 use polylogue_model::LockExt;
-use polylogue_store::primary::{
-    ByteCursorQuery, Capture, RawRange, SourceGeneration, SourceSelector,
-};
+use polylogue_store::primary::{ByteCursorQuery, Capture, ObservedState, RawRange, SourceSelector};
 use polylogue_store::{Archive, ArchiveLock, ReadPool};
 use polylogue_testkit::ClaudeHome;
 use std::io::Read;
@@ -36,7 +34,7 @@ fn selector(path: &Path) -> SourceSelector {
     }
 }
 
-fn kept(sdk: &Sinex, generation: &SourceGeneration) -> (Vec<u8>, usize) {
+fn kept(sdk: &Sinex, generation: &ObservedState) -> (Vec<u8>, usize) {
     let mut headers: Vec<_> = sdk
         .pending_captures()
         .unwrap()
@@ -179,7 +177,7 @@ fn database_completion_preserves_pending_provider_files_in_the_same_batch() {
         "database completion cannot clear pending provider work: {pass:?}"
     );
     let captures = sdk.pending_captures().unwrap();
-    assert!(captures.iter().any(|capture| matches!(&capture.captured, Capture::Input(input) if input.rows.format == "claude-code")));
+    assert!(captures.iter().any(|capture| matches!(&capture.captured, Capture::Input(input) if input.rows.origin == "claude-code")));
     assert!(captures.iter().any(|capture| matches!(&capture.captured, Capture::Input(input) if input.rows.input == "codex:rollout:pending-capture")));
     let identities = |captures: Vec<polylogue_store::primary::PendingCapture>| {
         let mut ids = captures
@@ -473,14 +471,14 @@ fn captured_file(
     archive: &Archive,
     writer: &polylogue_store::Writer,
     path: &Path,
-    route: polylogue_store::primary::AcquisitionRoute,
+    route: polylogue_store::primary::ReadRoute,
 ) -> polylogue_store::staging::PreparedBatch {
     use polylogue_store::primary::{
-        AcquisitionReceipt, AcquisitionRoute, FileSnapshot, FileTime, RawStream, RawStreamRole,
+        CaptureRead, FileSnapshot, FileTime, RawStream, RawStreamRole, ReadRoute,
     };
     use std::os::unix::fs::MetadataExt;
     let source = selector(path);
-    let base = writer.source_snapshot(source.clone()).unwrap().basis;
+    let base = writer.source_snapshot(source.clone()).unwrap().base;
     let mut file = std::fs::File::open(path).unwrap();
     let metadata = file.metadata().unwrap();
     let facts = polylogue_store::FileFacts::of(&metadata);
@@ -497,7 +495,7 @@ fn captured_file(
     let prepared = archive.prepare_bytes(bytes.as_slice()).unwrap();
     let hash = prepared.hash();
     let size = prepared.len();
-    let imported = route == AcquisitionRoute::ExplicitImport;
+    let imported = route == ReadRoute::ExplicitImport;
     let input = polylogue_store::InputKey {
         id: if imported {
             hash.to_string()
@@ -515,7 +513,7 @@ fn captured_file(
         start: 0,
         end: size,
     };
-    let generation = (!imported).then(|| SourceGeneration::File {
+    let generation = (!imported).then(|| ObservedState::File {
         stream: RawStream {
             source: source.clone(),
             input: input.clone(),
@@ -569,8 +567,8 @@ fn captured_file(
             length: size,
             parse: Vec::new(),
             release: Default::default(),
-            acquisition: Some(AcquisitionReceipt {
-                version: AcquisitionReceipt::VERSION,
+            capture_read: Some(CaptureRead {
+                version: CaptureRead::VERSION,
                 route,
                 source,
                 range,
@@ -578,10 +576,10 @@ fn captured_file(
                 observed_at: at.into(),
                 generation,
                 raw_total: (!imported).then_some(size),
-                raw_predecessor: None,
+                previous_revision: None,
                 chunks: Vec::new(),
             }),
-            basis: Some(base),
+            base: Some(base),
             required_outcome: None,
         },
         files: vec![prepared],
@@ -590,7 +588,7 @@ fn captured_file(
 
 #[test]
 fn byte_only_file_does_not_hold_back_another_file() {
-    use polylogue_store::primary::{AcquisitionRoute, CaptureOutcome};
+    use polylogue_store::primary::{CaptureOutcome, ReadRoute};
     let home = ClaudeHome::new();
     home.append(
         "file-a.jsonl",
@@ -609,21 +607,21 @@ fn byte_only_file_does_not_hold_back_another_file() {
         &archive,
         &writer,
         &home.file("file-a.jsonl"),
-        AcquisitionRoute::NativeCapture,
+        ReadRoute::NativeCapture,
     );
     let b = captured_file(
         &home,
         &archive,
         &writer,
         &home.file("file-b.jsonl"),
-        AcquisitionRoute::NativeCapture,
+        ReadRoute::NativeCapture,
     );
-    a.batch.required_outcome = Some(CaptureOutcome::UnresolvedBasisConflict);
+    a.batch.required_outcome = Some(CaptureOutcome::UnresolvedBaseConflict);
     let results = writer
         .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
         .unwrap();
     assert_eq!(results.len(), 2);
-    let Err(polylogue_store::StoreError::UnresolvedBasisConflict { spooled }) = &results[0] else {
+    let Err(polylogue_store::StoreError::UnresolvedBaseConflict { spooled }) = &results[0] else {
         panic!("A must keep only its bytes in the spool: {results:?}")
     };
     assert_eq!(spooled.count, 1);
@@ -646,13 +644,13 @@ fn byte_only_file_does_not_hold_back_another_file() {
     let page = sdk
         .pending_group_headers(&spooled.identity, None, 32)
         .unwrap();
-    assert_eq!(page.outcome, Some(CaptureOutcome::UnresolvedBasisConflict));
+    assert_eq!(page.outcome, Some(CaptureOutcome::UnresolvedBaseConflict));
     assert_eq!(page.headers.len(), 1);
 }
 
 #[test]
 fn explicit_package_spools_its_members_together() {
-    use polylogue_store::primary::{AcquisitionRoute, CaptureOutcome};
+    use polylogue_store::primary::{CaptureOutcome, ReadRoute};
     let home = ClaudeHome::new();
     home.append(
         "package-a.jsonl",
@@ -671,16 +669,16 @@ fn explicit_package_spools_its_members_together() {
         &archive,
         &writer,
         &home.file("package-a.jsonl"),
-        AcquisitionRoute::ExplicitImport,
+        ReadRoute::ExplicitImport,
     );
     let b = captured_file(
         &home,
         &archive,
         &writer,
         &home.file("package-b.jsonl"),
-        AcquisitionRoute::ExplicitImport,
+        ReadRoute::ExplicitImport,
     );
-    a.batch.required_outcome = Some(CaptureOutcome::UnresolvedBasisConflict);
+    a.batch.required_outcome = Some(CaptureOutcome::UnresolvedBaseConflict);
     let results = writer
         .store_group(vec![a, b], Arc::new(archive.blobs().unwrap()))
         .unwrap();
@@ -688,7 +686,7 @@ fn explicit_package_spools_its_members_together() {
     let groups: Vec<_> = results
         .into_iter()
         .map(|result| match result {
-            Err(polylogue_store::StoreError::UnresolvedBasisConflict { spooled }) => spooled,
+            Err(polylogue_store::StoreError::UnresolvedBaseConflict { spooled }) => spooled,
             other => panic!("a package must keep every member together: {other:?}"),
         })
         .collect();
@@ -697,7 +695,7 @@ fn explicit_package_spools_its_members_together() {
     let page = sdk
         .pending_group_headers(&groups[0].identity, None, 32)
         .unwrap();
-    assert_eq!(page.outcome, Some(CaptureOutcome::UnresolvedBasisConflict));
+    assert_eq!(page.outcome, Some(CaptureOutcome::UnresolvedBaseConflict));
     assert_eq!(page.headers.len(), 2);
     assert!(
         sdk.pending_source(&selector(&home.file("package-b.jsonl")))
@@ -729,7 +727,7 @@ fn finished_database_worker_keeps_spooled_bytes_pending() {
                 let Capture::Input(input) = capture.captured else {
                     panic!("database input capture")
                 };
-                assert_eq!(input.rows.format, "codex-database");
+                assert_eq!(input.rows.origin, "codex-database");
                 (capture.identity, input.hash, input.length)
             })
             .collect();
@@ -801,7 +799,7 @@ fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
         let hash = BlobHash::of(bytes);
         let input = "confirmed-database";
         let rows = serde_json::from_value(serde_json::json!({
-            "input":input, "format":"codex-database",
+            "input":input, "origin":"codex-database",
             "revision":{"number":1,"produced":"first","chain":1,"length":bytes.len()},
             "extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob":hash,"blob_offset":0}],
             "observation":{
@@ -858,7 +856,7 @@ fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
         let captures = sdk.pending_captures().unwrap();
         assert_eq!(captures.is_empty(), !pending_file);
         assert!(captures.iter().all(|capture| matches!(
-            &capture.captured, Capture::Input(input) if input.rows.format == "claude-code"
+            &capture.captured, Capture::Input(input) if input.rows.origin == "claude-code"
         )));
         if pending_file {
             assert_spool_complete(
@@ -919,8 +917,8 @@ fn idle_continuation_reports_errors_and_keeps_spool() {
             blobs: Vec::new(),
             length: 0,
             parse: Vec::new(),
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: Default::default(),
         })
         .unwrap();
@@ -1096,7 +1094,7 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
         })])
         .unwrap();
     let rows = serde_json::from_value(serde_json::json!({
-        "input":"kept-raw-input", "format":"pi",
+        "input":"kept-raw-input", "origin":"pi",
         "revision":{"number":1,"produced":"first","chain":1,"length":0},
         "observation":{
             "id":"original-empty-observation", "machine":"test-machine", "host":"test",
@@ -1239,7 +1237,7 @@ fn a_late_other_host_original_is_parsed_with_an_empty_local_home() {
     let hash = BlobHash::of(bytes.as_bytes());
     let input = "late-other-host-input";
     let rows = serde_json::from_value(serde_json::json!({
-        "input":input,"format":"claude-code",
+        "input":input,"origin":"claude-code",
         "revision":{"number":1,"produced":"first","chain":1,"length":bytes.len()},
         "extents":[{"chain":1,"offset":0,"length":bytes.len(),"blob":hash,"blob_offset":0}],
         "observation":{

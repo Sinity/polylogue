@@ -300,7 +300,7 @@ fn captured_logical_declarations_must_agree_with_physical_columns_and_reference_
             None,
         ),
         shape: Some(polylogue_query::Shape::Rows),
-        native_identity: false,
+        row_identity: false,
         unit: "sessions".into(),
         columns: vec![polylogue_query::Column {
             name: "id".into(),

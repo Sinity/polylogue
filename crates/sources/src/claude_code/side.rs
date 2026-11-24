@@ -166,14 +166,14 @@ fn file_event(
         return RecordOutcome::unreadable("session ID in the path is empty");
     };
     out.events.push({
-        let (at, time_evidence) = crate::time::parts(None);
+        let (at, time_accuracy) = crate::time::parts(None);
         Event {
             session: Some(session),
             kind: kind.to_owned(),
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             after: None,
             range: Some((0, len as u64)),
             data,
@@ -319,7 +319,7 @@ fn job_state(bytes: &[u8], len: usize, out: &mut Output) -> RecordOutcome {
             how: None,
             parent,
             child: id,
-            at: None,
+            branch_point: None,
             call_id: None,
             evidence: "resumeSessionId".to_owned(),
         });
@@ -349,7 +349,7 @@ fn spawn_link(stem: &str, session: Option<&str>, v: &Json, out: &mut Output) {
         how: None,
         parent,
         child,
-        at: None,
+        branch_point: None,
         call_id: Some(call.to_owned()),
         evidence: "toolUseId".to_owned(),
     });
@@ -390,15 +390,15 @@ impl Parser for History {
             return RecordOutcome::unreadable("session ID is not valid");
         };
         out.events.push({
-            let (at, time_evidence) =
+            let (at, time_accuracy) =
                 crate::time::parts(v.get("timestamp").and_then(crate::time::epoch_millis));
             Event {
                 session: Some(session),
                 kind: "prompt_history".to_owned(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: Some(super::range(record)),
                 data: v.clone(),

@@ -8,8 +8,8 @@ mod rules;
 use crate::daemon::service::Daemon;
 use polylogue_model::{
     LockExt as _,
-    authored::ExecutionEligibility,
-    signal::{Checkpoint, Commit, Event, Outbox},
+    authored::RunsHere,
+    signal::{Checkpoint, Commit, Event, PendingDelivery},
     user::UserWrite,
 };
 use serde_json::{Value, json};
@@ -168,14 +168,14 @@ fn persist(
     context: &polylogue_reading::operation::Context,
     prior: Option<polylogue_model::BlobHash>,
     checkpoint: Checkpoint,
-    outbox: Vec<Outbox>,
+    pending_delivery: Vec<PendingDelivery>,
     events: Vec<Event>,
 ) -> Result<bool, String> {
     let writes = d.writes.as_ref().ok_or("writer is unavailable")?;
     let commit = Commit {
         prior,
         checkpoint,
-        outbox,
+        pending_delivery,
         events,
     };
     let id = canonical_json::canonical_hash("polylogue-signal-commit", &commit)

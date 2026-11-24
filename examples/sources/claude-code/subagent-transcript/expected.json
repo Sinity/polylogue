@@ -36,7 +36,7 @@
     ],
     "links": [
       {
-        "at": "claude-code:a9",
+        "branch_point": "claude-code:a9",
         "child": "claude-code:agent-ab12",
         "evidence": "fork-context-ref",
         "kind": "spawn",

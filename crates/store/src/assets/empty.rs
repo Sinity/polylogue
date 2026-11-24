@@ -1,7 +1,7 @@
 //! Empty members are backed by a receiving observation and encoded body.
 use super::*;
 use crate::OptionExt as _;
-use crate::primary::{AcquisitionReceipt, AcquisitionRoute, RawRange};
+use crate::primary::{CaptureRead, RawRange, ReadRoute};
 use polylogue_model::BlobHash;
 
 pub(crate) fn source(
@@ -47,12 +47,12 @@ pub(crate) fn source(
         };
         let details: serde_json::Value = serde_json::from_str(&details)?;
         let (Some(import), Some(capture_read)) =
-            (details.get("import"), details.get("acquisition"))
+            (details.get("import"), details.get("capture_read"))
         else {
             continue;
         };
         let import: ImportMember = serde_json::from_value(import.clone())?;
-        let read_record: AcquisitionReceipt = serde_json::from_value(capture_read.clone())?;
+        let read_record: CaptureRead = serde_json::from_value(capture_read.clone())?;
         let key = crate::InputKey {
             id: input.to_owned(),
             format: format.clone(),
@@ -64,7 +64,7 @@ pub(crate) fn source(
             || format.is_empty()
             || machine.is_empty()
             || path.is_empty()
-            || read_record.route != AcquisitionRoute::ExplicitImport
+            || read_record.route != ReadRoute::ExplicitImport
             || read_record.source.origin != format
             || read_record.source.machine != machine
             || read_record.source.path_bytes != path

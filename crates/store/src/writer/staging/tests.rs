@@ -28,8 +28,8 @@ fn batch(id: &str, length: u64) -> Batch {
         blobs: Vec::new(),
         length,
         parse: Vec::new(),
-        acquisition: None,
-        basis: None,
+        capture_read: None,
+        base: None,
         release: Default::default(),
     }
 }
@@ -370,8 +370,8 @@ fn reading(input: &str, chain: i64, length: u64) -> PreparedBatch {
             blobs: Vec::new(),
             parse: Vec::new(),
             continues: false,
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             required_outcome: None,
             release: Default::default(),
         },

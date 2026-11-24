@@ -70,16 +70,16 @@ pub(super) fn seed(row: &Json) -> Option<String> {
 
 pub(super) fn system(id: MessageId, session: SessionId, text: String) -> Message {
     {
-        let (at, time_evidence) = crate::time::parts(None);
+        let (at, time_accuracy) = crate::time::parts(None);
         Message {
             id,
             session,
             parent: None,
             role: Role::System,
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             model: None,
             prompt_kind: Some(PromptKind::Harness),
             blocks: vec![Block::Text { text }],

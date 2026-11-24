@@ -307,9 +307,9 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             }
             continue;
         }
-        use super::handler::NativeReply;
-        let (answer, read_scope, deadline) = match shared.runtime.block_on(
-            super::handler::dispatch_native(
+        use super::handler::HandlerReply;
+        let (answer, read_scope, deadline) =
+            match shared.runtime.block_on(super::handler::dispatch_native(
                 d,
                 &shared.operations,
                 command,
@@ -317,34 +317,35 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
                 accepted,
                 via,
                 false,
-            ),
-        ) {
-            NativeReply::Refused(answer) => {
-                if !write_answer(&mut out, &answer) {
-                    return;
+            )) {
+                HandlerReply::Refused(answer) => {
+                    if !write_answer(&mut out, &answer) {
+                        return;
+                    }
+                    continue;
                 }
-                continue;
-            }
-            NativeReply::Stream {
-                request,
-                accepted,
-                policy,
-                produce,
-            } => {
-                let limit = execution::request_limit(
-                    request.deadline,
-                    command.latency,
-                    policy.default_deadline,
-                    parent_deadline,
-                    cancellation.clone(),
-                );
-                if !send_stream(&mut out, d, policy.class, &accepted, limit, produce) {
-                    return;
+                HandlerReply::Stream {
+                    request,
+                    accepted,
+                    policy,
+                    produce,
+                } => {
+                    let limit = execution::request_limit(
+                        request.deadline,
+                        command.latency,
+                        policy.default_deadline,
+                        parent_deadline,
+                        cancellation.clone(),
+                    );
+                    if !send_stream(&mut out, d, policy.class, &accepted, limit, produce) {
+                        return;
+                    }
+                    continue;
                 }
-                continue;
-            }
-            NativeReply::Answer(ready, answer) => (answer, ready.scope, ready.publication_deadline),
-        };
+                HandlerReply::Answer(ready, answer) => {
+                    (answer, ready.scope, ready.publication_deadline)
+                }
+            };
         let scopes = crate::protocol::ReadScopes::single(read_scope);
         let answer = crate::protocol::scope_answer(answer, &scopes);
         if send_answer(&mut out, &answer, &scopes, deadline).is_err() {

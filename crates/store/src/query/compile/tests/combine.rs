@@ -220,7 +220,7 @@ fn snapshot_operands_refuse_rebuilding_current_rows() {
         Kept {
             output_metadata: Default::default(),
             shape: Some(Shape::Rows),
-            native_identity: true,
+            row_identity: true,
             unit: "sessions".into(),
             columns: c("sessions").columns,
             match_columns: vec![],

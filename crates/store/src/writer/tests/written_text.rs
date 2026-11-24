@@ -135,13 +135,10 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
             assert_eq!(decoded, call(Some("written needle Łódź")));
             let original = message(Some("written needle Łódź"));
             let version = original.content_hash().unwrap();
-            let (kept, block_selection) = crate::writer::readings::read_version(
-                r.conn().unwrap(),
-                &[original.id.to_string()],
-                &version.0,
-            )
-            .unwrap()
-            .unwrap();
+            let (kept, block_selection) =
+                crate::versions::read_message(r.conn().unwrap(), &version.0)
+                    .unwrap()
+                    .unwrap();
             assert_eq!(kept, original);
             assert_eq!(kept.content_hash().unwrap(), block_selection.source_version);
             let terms = [polylogue_query::search::SnippetTerms::Word {
@@ -166,7 +163,7 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
             chain: stored.chain,
         };
         replacement.observation = None;
-        replacement.parse[0].reading_version = "synthetic=2".into();
+        replacement.parse[0].parse_version = "synthetic=2".into();
         w.store_reading(replacement, None).unwrap();
         w.writer.derive().unwrap();
         let pool = ReadPool::open(&w.archive).unwrap();

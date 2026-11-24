@@ -13,7 +13,7 @@ fn fixture(messages: i64, successor: bool) -> (Connection, SessionChange) {
             message_pk INTEGER,event_pk INTEGER,time_bound INTEGER,PRIMARY KEY(session_pk,seq)) WITHOUT ROWID;
         CREATE INDEX session_item_message ON session_item(message_pk) WHERE message_pk IS NOT NULL;
         CREATE INDEX session_item_event ON session_item(event_pk) WHERE event_pk IS NOT NULL;
-        CREATE TABLE event(pk INTEGER PRIMARY KEY,session_pk INTEGER,after_message_id TEXT,at INTEGER);
+        CREATE TABLE event(pk INTEGER PRIMARY KEY,session_pk INTEGER,after_message_pk INTEGER,at INTEGER);
         INSERT INTO message VALUES(1,1,'prefix','00000000',NULL,1);
         INSERT INTO session_item VALUES(1,0,1,NULL,1);")
         .unwrap();

@@ -598,7 +598,7 @@ fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
             how: None,
             parent: sid("parent"),
             child,
-            at: Some(polylogue_model::MessageId::parse("claude-code:parent-p1").unwrap()),
+            branch_point: Some(polylogue_model::MessageId::parse("claude-code:parent-p1").unwrap()),
             call_id: None,
             evidence: "fork-context-ref".into(),
         }],

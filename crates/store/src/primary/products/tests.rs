@@ -1,7 +1,7 @@
 use super::*;
 use polylogue_model::batch::{ExportDelivery, ExportDeliverySource, FragmentRow};
 use polylogue_model::bundle::fragments::{
-    TextCoverage, TextFragment, TextFragmentProvenance, TextFragmentRecord, TextSourceVersion,
+    TextCoverage, TextFragment, TextFragmentRecord, TextFragmentSource, TextSourceVersion,
     TextSpanOrigin,
 };
 use polylogue_model::{
@@ -43,7 +43,7 @@ fn complete_callback_products_keep_fields_and_source_keys() {
         },
         text: "x".into(),
         text_hash: BlobHash::of(b"x"),
-        provenance: TextFragmentProvenance {
+        provenance: TextFragmentSource {
             spans: vec![TextSpanOrigin {
                 reference: Reference::Span {
                     container: Box::new(container),
@@ -89,7 +89,7 @@ fn complete_callback_products_keep_fields_and_source_keys() {
             how: None,
             parent: message.session.clone(),
             child: polylogue_model::SessionId::parse("claude-code:export-child").unwrap(),
-            at: None,
+            branch_point: None,
             call_id: None,
             evidence: "original marker".into(),
         }],
@@ -105,7 +105,7 @@ fn complete_callback_products_keep_fields_and_source_keys() {
             source: Some(polylogue_model::PrefixSource {
                 input: "original-copy".into(),
                 chain: 4,
-                reading_version: "provider-reading".into(),
+                parse_version: "provider-reading".into(),
             }),
             position: [u64::MAX, 2],
         }],
@@ -119,7 +119,7 @@ fn complete_callback_products_keep_fields_and_source_keys() {
     output.message_order.insert(0, 51);
     output.block_selections.insert(
         0,
-        polylogue_model::bundle::MessageProjection {
+        polylogue_model::bundle::ShownBlocks {
             source_version: version,
             block_count: 1,
             block_ordinals: vec![0],
@@ -133,7 +133,7 @@ fn complete_callback_products_keep_fields_and_source_keys() {
         0,
         polylogue_model::bundle::ImportedEventIdentity {
             id: "explicit-event".into(),
-            sources: vec![polylogue_model::bundle::SourceClaim {
+            sources: vec![polylogue_model::bundle::StatedSource {
                 input: "original-input".into(),
                 source: "provider".into(),
                 source_chain: 4,
@@ -148,7 +148,7 @@ fn complete_callback_products_keep_fields_and_source_keys() {
     };
     counts.add("item", &RecordOutcome::Used);
     let mut step = crate::ParseStep::new(output, counts, 0..0, false);
-    step.reading_version = "crate::export::VERSION=2".into();
+    step.parse_version = "crate::export::VERSION=2".into();
     step.order_from = Some(40);
     step.reset = true;
     step.repeats_whole_conversations = true;
@@ -165,12 +165,12 @@ fn complete_callback_products_keep_fields_and_source_keys() {
             route: polylogue_model::Route::Live,
         },
         chain: 1,
-        reading_version: step.reading_version.clone(),
+        parse_version: step.parse_version.clone(),
         length: 64,
     };
     step.prepare();
     let products = parse(&key.input, key.chain, Some(key.length), &step).unwrap();
-    assert!(products.iter().any(|product|matches!(product,Product::Message{native_fields:Some(fields),declared_injections:Some(injections),declared_attachment_bindings:Some(bindings),..} if fields.is_empty()&&injections.is_empty()&&bindings.is_empty())));
+    assert!(products.iter().any(|product|matches!(product,Product::Message{stated_fields:Some(fields),declared_injections:Some(injections),declared_attachment_bindings:Some(bindings),..} if fields.is_empty()&&injections.is_empty()&&bindings.is_empty())));
     let mut reranked = key.clone();
     reranked.input.route = polylogue_model::Route::Export;
     assert_eq!(key, reranked);

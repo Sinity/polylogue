@@ -3,9 +3,9 @@ use super::*;
 /// Records `b`'s observation as a disappearance.
 fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
     let rows = crate::input_rows::InputRows {
-        acquisition: None,
+        capture_read: None,
         input: b.input.id.clone(),
-        format: b.input.format.clone(),
+        origin: b.input.format.clone(),
         revision: None,
         extents: Vec::new(),
         observation: bytes::observation(

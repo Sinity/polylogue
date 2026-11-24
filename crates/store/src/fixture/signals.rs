@@ -1,8 +1,8 @@
-//! A pending signal delivery (`Outbox`) in the shape the host policy hands off, for tests of what
+//! A pending signal delivery (`PendingDelivery`) in the shape the host policy hands off, for tests of what
 //! stores, recovers and delivers it.
 use polylogue_model::{
-    authored::ExecutionEligibility,
-    signal::{Metadata, Outbox},
+    authored::RunsHere,
+    signal::{Metadata, PendingDelivery},
     user::Delivery as PreparedDelivery,
 };
 use shared_signals::notifications::{Notice, Outlets};
@@ -14,7 +14,12 @@ use shared_signals::{
 /// One delivery of the synthetic rule `rule` for `occurrence`, handed off at
 /// `at`. An interrupting delivery is shown on the desktop; any other is a value
 /// delivery run through its configured target.
-pub fn outbox(rule: &str, occurrence: &str, at: i64, interrupts: bool) -> Outbox {
+pub fn pending_delivery(
+    rule: &str,
+    occurrence: &str,
+    at: i64,
+    interrupts: bool,
+) -> PendingDelivery {
     let trigger = Trigger {
         rule: RuleVersion {
             product: "polylogue".into(),
@@ -69,7 +74,7 @@ pub fn outbox(rule: &str, occurrence: &str, at: i64, interrupts: bool) -> Outbox
         actions: vec![],
         showing: 0,
     };
-    Outbox {
+    PendingDelivery {
         record: PreparedDelivery {
             recipient_kind: "operator".into(),
             recipient_id: None,
@@ -93,7 +98,7 @@ pub fn outbox(rule: &str, occurrence: &str, at: i64, interrupts: bool) -> Outbox
             },
             notice,
             outlet: None,
-            execution: ExecutionEligibility::Live,
+            execution: RunsHere::Live,
         },
     }
 }

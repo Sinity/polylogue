@@ -33,8 +33,8 @@ fn source(id: &str, bytes: &[u8]) -> PreparedBatch {
             blobs: Vec::new(),
             length: bytes.len() as u64,
             parse: Vec::new(),
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: Default::default(),
         },
         files: Vec::new(),
@@ -62,12 +62,12 @@ fn capture_intent_survives_observer_retry_and_preserves_source_order() {
 fn capture_identity_ignores_reading_and_tracks_source_ranges() {
     let mut group = vec![source("session", b"source")];
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..6, true);
-    step.reading_version = "codex:1".into();
+    step.parse_version = "codex:1".into();
     group[0].batch.parse.push(step);
     let original = capture_group_identity(&group, false).unwrap();
-    group[0].batch.parse[0].reading_version = "codex:2".into();
+    group[0].batch.parse[0].parse_version = "codex:2".into();
     assert_eq!(capture_group_identity(&group, false).unwrap(), original);
-    group[0].batch.parse[0].reading_version = "codex:1".into();
+    group[0].batch.parse[0].parse_version = "codex:1".into();
     group[0].batch.change = Change::Appended { from: 6 };
     group[0].batch.length = 12;
     assert_ne!(capture_group_identity(&group, false).unwrap(), original);
@@ -268,8 +268,8 @@ impl crate::primary::Sinex for OfflineProducer {
                 "missing synthetic capture member".into(),
             ));
         }
-        if plan.required_outcome == Some(crate::primary::CaptureOutcome::UnresolvedBasisConflict) {
-            return Ok(crate::primary::CaptureResult::UnresolvedBasisConflict {
+        if plan.required_outcome == Some(crate::primary::CaptureOutcome::UnresolvedBaseConflict) {
+            return Ok(crate::primary::CaptureResult::UnresolvedBaseConflict {
                 spooled: crate::primary::SpooledGroup {
                     identity: "offline-capture".into(),
                     count: plan.count,
@@ -306,13 +306,13 @@ impl crate::primary::Sinex for OfflineProducer {
         }
         let full = self.captured();
         let selector = full
-            .basis
+            .base
             .as_ref()
             .map(|base| base.source.clone())
             .or_else(|| {
                 full.rows.observation.as_ref().and_then(|o| {
                     o.path_bytes.as_ref().map(|bytes| SourceSelector {
-                        origin: full.rows.format.clone(),
+                        origin: full.rows.origin.clone(),
                         machine: o.machine.clone(),
                         path_bytes: bytes.clone(),
                     })
@@ -335,7 +335,7 @@ impl crate::primary::Sinex for OfflineProducer {
         };
         Ok(PendingSource {
             status: full
-                .basis
+                .base
                 .as_ref()
                 .map_or(SourceStatus::MissingEvidence, |base| base.status),
             raw: full.raw_range.map(|_| latest.clone()),
@@ -660,7 +660,7 @@ fn offline_writer_keeps_original_source_before_release() {
             0..bytes.len() as u64,
             true,
         );
-        step.reading_version = "synthetic:1".into();
+        step.parse_version = "synthetic:1".into();
         step.prepare();
         input.batch.parse.push(step);
         let prepared = archive.prepare_bytes(bytes.as_slice()).unwrap();
@@ -679,13 +679,13 @@ fn offline_writer_keeps_original_source_before_release() {
             })
             .unwrap();
         assert_eq!(
-            snapshot.basis.status,
+            snapshot.base.status,
             crate::primary::SourceStatus::MissingEvidence
         );
-        assert_eq!(snapshot.basis.confirmed, None);
-        assert_eq!(snapshot.basis.pending.as_deref(), Some("offline-capture"));
+        assert_eq!(snapshot.base.confirmed, None);
+        assert_eq!(snapshot.base.pending.as_deref(), Some("offline-capture"));
         assert!(snapshot.pending.raw.is_some());
-        assert!(snapshot.basis.boundary.is_none());
+        assert!(snapshot.base.boundary.is_none());
         writer
             .apply_confirmed(vec![crate::primary::Confirmed {
                 sinex_context: None,
@@ -708,10 +708,10 @@ fn offline_writer_keeps_original_source_before_release() {
             })
             .unwrap();
         assert_eq!(
-            after_checkpoint.basis.status,
+            after_checkpoint.base.status,
             crate::primary::SourceStatus::MissingEvidence
         );
-        assert!(after_checkpoint.basis.boundary.is_none());
+        assert!(after_checkpoint.base.boundary.is_none());
         let Capture::Input(hydrated) = writer.capture("offline-capture".into()).unwrap() else {
             panic!("the pending source must restore its original input rows");
         };
@@ -954,8 +954,8 @@ fn unknown_empty_capture_is_sent_after_stream_completion() {
         ])
         .unwrap();
     let snapshot = writer.source_snapshot(source.clone()).unwrap();
-    assert_eq!(snapshot.basis.status, SourceStatus::MissingEvidence);
-    assert!(snapshot.basis.boundary.is_some());
+    assert_eq!(snapshot.base.status, SourceStatus::MissingEvidence);
+    assert!(snapshot.base.boundary.is_some());
     writer.synchronize_primary().unwrap();
     assert!(
         !producer_root.join("products.json").exists(),
@@ -1029,7 +1029,7 @@ fn unknown_empty_capture_is_sent_after_stream_completion() {
         original
     );
     assert_eq!(std::fs::read(producer_root.join("source")).unwrap(), bytes);
-    assert!(producer.captured().basis.unwrap().resolved.is_none());
+    assert!(producer.captured().base.unwrap().resolved.is_none());
 }
 
 #[test]
@@ -1065,7 +1065,7 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
             sinex_context: None,
             change: ConfirmedChange::Control(Box::new(control)),
         };
-        let unknown = writer.source_snapshot(selector.clone()).unwrap().basis;
+        let unknown = writer.source_snapshot(selector.clone()).unwrap().base;
         writer
             .apply_confirmed(vec![control(ReplayControl::Reset {
                 scope: "original".into(),
@@ -1080,7 +1080,7 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
         let mut sampled = if scenario == "unknown-to-ready" {
             unknown
         } else {
-            writer.source_snapshot(selector.clone()).unwrap().basis
+            writer.source_snapshot(selector.clone()).unwrap().base
         };
         if scenario == "later-observation" {
             let observation = serde_json::from_value(serde_json::json!({"id":"own-confirmation","machine":"machine","host":"host","path":"/home/op/offline","path_bytes":selector.path_bytes.clone(),"class":"seen","polylogue_version":"test","seen_at":1})).unwrap();
@@ -1093,9 +1093,9 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
                         sinex_context: None,
                         change: ConfirmedChange::Live(Box::new(Product::Input {
                             rows: Box::new(InputRows {
-                                acquisition: None,
+                                capture_read: None,
                                 input: "offline".into(),
-                                format: "codex".into(),
+                                origin: "codex".into(),
                                 revision: None,
                                 extents: Vec::new(),
                                 observation: Some(observation),
@@ -1133,9 +1133,9 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
                         sinex_context: None,
                         change: ConfirmedChange::Live(Box::new(Product::Input {
                             rows: Box::new(InputRows {
-                                acquisition: None,
+                                capture_read: None,
                                 input: "alias-target".into(),
-                                format: "codex".into(),
+                                origin: "codex".into(),
                                 revision: None,
                                 extents: Vec::new(),
                                 observation: Some(observation),
@@ -1149,7 +1149,7 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
                     }),
                 ])
                 .unwrap();
-            sampled = writer.source_snapshot(selector.clone()).unwrap().basis;
+            sampled = writer.source_snapshot(selector.clone()).unwrap().base;
             sampled.resolved = Some(crate::primary::SourceSubject {
                 input: "alias-target".into(),
                 observation: if scenario == "copied-alias" {
@@ -1162,7 +1162,7 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
         }
         let bytes = b"stored source bytes";
         let mut capture = source("offline", bytes);
-        capture.batch.basis = Some(sampled.clone());
+        capture.batch.base = Some(sampled.clone());
         if sampled.resolved.is_some() {
             capture.batch.input.id = "alias-target".into();
         }
@@ -1175,7 +1175,7 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
         let outcome = outcomes.remove(0);
         if matches!(scenario, "changed-scope" | "forged-alias") {
             assert!(
-                matches!(outcome, Err(StoreError::UnresolvedBasisConflict { .. })),
+                matches!(outcome, Err(StoreError::UnresolvedBaseConflict { .. })),
                 "{scenario}: {outcome:?}"
             );
         } else {
@@ -1185,9 +1185,9 @@ fn original_source_base_survives_progress_and_keeps_conflicts() {
             );
         }
         let original = producer.captured();
-        assert_eq!(original.basis.as_ref(), Some(&sampled));
+        assert_eq!(original.base.as_ref(), Some(&sampled));
         assert_eq!(original.hash, BlobHash::of(bytes));
-        assert_eq!(original.basis.unwrap().resolved, sampled.resolved);
+        assert_eq!(original.base.unwrap().resolved, sampled.resolved);
         let [body] = <[_; 1]>::try_from(producer.capture_body("offline-capture").unwrap())
             .ok()
             .unwrap();
@@ -1261,9 +1261,9 @@ fn stored_readings_use_confirmed_chain_not_latest_path_state() {
                     sinex_context: None,
                     change: ConfirmedChange::Live(Box::new(Product::Input {
                         rows: Box::new(InputRows {
-                            acquisition: None,
+                            capture_read: None,
                             input: id.into(),
-                            format: "codex-database".into(),
+                            origin: "codex-database".into(),
                             revision: Some(Revision {
                                 number: 1,
                                 produced: "first".into(),
@@ -1300,7 +1300,7 @@ fn stored_readings_use_confirmed_chain_not_latest_path_state() {
     reading.batch.new_blob = None;
     reading.batch.observation = None;
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..4, true);
-    step.reading_version = "database-reading".into();
+    step.parse_version = "database-reading".into();
     step.prepare();
     reading.batch.parse.push(step);
     let store = Arc::new(archive.blobs().unwrap());
@@ -1473,5 +1473,183 @@ fn a_failed_scope_reset_reports_its_original_error_before_reply_without_a_commit
             .unwrap()
             .as_deref(),
         Some("changed")
+    );
+}
+
+#[test]
+fn lifecycle_wait_lets_a_key_lock_holder_finish() {
+    use crate::primary::{Confirmed, ConfirmedChange, Product, ReplayControl};
+    use std::time::Duration;
+    let directory = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_primary(
+        &directory.path().join("cache"),
+        &directory.path().join("bytes"),
+    )
+    .unwrap();
+    let control = |position| Confirmed {
+        position: 0,
+        event: String::new(),
+        output_index: 0,
+        sinex_context: None,
+        change: ConfirmedChange::Control(Box::new(ReplayControl::Completion {
+            position,
+            delivery: None,
+        })),
+    };
+    {
+        let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
+        let resolver = resolve::Resolver::new(
+            &archive,
+            &index,
+            crate::writer::resolve::IndexUpkeep::PerTransaction,
+        )
+        .unwrap();
+        crate::primary::confirmed::apply(
+            &crate::text_rows::TextIds::new(
+                &index,
+                false,
+                crate::archive::MemoryBudget::default().keys() / 3,
+            )
+            .unwrap(),
+            &mut index,
+            &resolver,
+            &[
+                Confirmed {
+                    position: 1,
+                    event: "input-event".into(),
+                    output_index: 0,
+                    sinex_context: None,
+                    change: ConfirmedChange::Live(Box::new(Product::Input {
+                        rows: Box::new(crate::input_rows::InputRows {
+                            capture_read: None,
+                            input: "queued-input".into(),
+                            origin: "codex".into(),
+                            revision: None,
+                            extents: Vec::new(),
+                            observation: None,
+                        }),
+                        material: None,
+                    })),
+                },
+                control(1),
+            ],
+        )
+        .unwrap();
+        index.execute_batch("INSERT INTO input_ref(id,format) VALUES ('queued-input','codex'); INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto) SELECT pk,1,'codex=1','done',0 FROM input_ref WHERE id='queued-input'").unwrap();
+    }
+    let writer = Writer::start_on_sinex(
+        &archive,
+        Arc::new(OfflineProducer {
+            root: directory.path().join("producer"),
+        }),
+    )
+    .unwrap();
+    let queue = writer.sender();
+    let mut reparse_batch = source("queued-input", b"").batch;
+    reparse_batch.change = Change::Reparse { chain: 1 };
+    reparse_batch.observation = None;
+    reparse_batch.new_blob = None;
+    let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, true);
+    step.parse_version = "codex=1".into();
+    step.source_prefix_missing = true;
+    reparse_batch.parse.push(step);
+    prepare_source_retractions(&queue.0.resolver, std::slice::from_mut(&mut reparse_batch))
+        .unwrap();
+    // Keep only a failure-cleanup handle: the queued batch still owns normal
+    // release, after the writer accepts or rejects it.
+    let held = Arc::new(Mutex::new(Some(std::mem::take(&mut reparse_batch.release))));
+    let release = Arc::clone(&held);
+    reparse_batch.release = InFlight::new(move || {
+        release.lock().unwrap().take();
+    });
+    let (waiting, observed) = std::sync::mpsc::channel();
+    queue.0.resolver.observe_wait(waiting);
+    let (reply, complete) = std::sync::mpsc::channel();
+    let following = queue.clone();
+    let follower = std::thread::spawn(move || {
+        let result = following.apply_confirmed(vec![
+            Confirmed {
+                position: 2,
+                event: "input-event".into(),
+                output_index: 0,
+                sinex_context: None,
+                change: ConfirmedChange::Archived,
+            },
+            control(2),
+        ]);
+        reply.send(result).unwrap();
+    });
+    let waiting = observed.recv_timeout(Duration::from_secs(5));
+    if waiting.is_err() {
+        held.lock().unwrap().take();
+    }
+    waiting.expect("lifecycle preparation did not reach the existing worker key lock");
+    let index = crate::archive::open_read(&archive.index_db()).unwrap();
+    assert_eq!(
+        crate::primary::confirmed::checkpoint(&index).unwrap(),
+        Some(1)
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT state FROM confirmed_event WHERE event='input-event'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "live"
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT count(*) FROM primary_pending WHERE position=2",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+        1
+    );
+    // The confirmation is already waiting. Its overlapping worker queues
+    // afterwards and must be rejected without being blocked behind that wait.
+    queue.0.send(Msg::Batch(Box::new(reparse_batch))).unwrap();
+    let result = complete.recv_timeout(Duration::from_secs(5));
+    held.lock().unwrap().take();
+    follower.join().unwrap();
+    assert_eq!(
+        result
+            .expect("serial writer waited on its own queued worker")
+            .unwrap(),
+        2
+    );
+    let report = writer.flush().unwrap();
+    assert_eq!(
+        report
+            .errors
+            .iter()
+            .filter(|error| error.starts_with("input queued-input:"))
+            .count(),
+        1,
+        "{report:?}"
+    );
+    assert_eq!(
+        crate::primary::confirmed::checkpoint(&index).unwrap(),
+        Some(2)
+    );
+    assert_eq!(
+        index
+            .query_row(
+                "SELECT state FROM confirmed_event WHERE event='input-event'",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+        "archived"
+    );
+    assert_eq!(
+        index
+            .query_row("SELECT count(*) FROM parse_state", [], |row| row
+                .get::<_, i64>(0))
+            .unwrap(),
+        0
     );
 }

@@ -108,7 +108,7 @@ pub struct Kept {
     #[serde(default)]
     pub shape: Option<Shape>,
     #[serde(default)]
-    pub native_identity: bool,
+    pub row_identity: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

@@ -111,7 +111,7 @@
     ],
     "links": [
       {
-        "at": "codex:msg_p2",
+        "branch_point": "codex:msg_p2",
         "child": "codex:019a0000-0000-7000-8000-000000000001",
         "evidence": "parent_thread_id",
         "kind": "spawn",

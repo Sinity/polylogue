@@ -62,7 +62,7 @@ fn source_time_quality_does_not_become_an_instant() {
     for (timestamp, accuracy, expected) in [
         (
             Some(at),
-            polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant),
+            polylogue_model::TimeAccuracy::intrinsic(polylogue_model::Precision::Instant),
             sinex_model::TsOrig::known(
                 serde_json::from_value(json!(at)).unwrap(),
                 sinex_model::TimeQuality::Intrinsic,
@@ -70,7 +70,7 @@ fn source_time_quality_does_not_become_an_instant() {
         ),
         (
             Some(at),
-            polylogue_model::TimeEvidence {
+            polylogue_model::TimeAccuracy {
                 quality: polylogue_model::TimeQuality::FileMtime,
                 precision: Some(polylogue_model::Precision::Minute),
                 until: None,
@@ -79,7 +79,7 @@ fn source_time_quality_does_not_become_an_instant() {
         ),
         (
             None,
-            polylogue_model::TimeEvidence::UNKNOWN,
+            polylogue_model::TimeAccuracy::UNKNOWN,
             sinex_model::TsOrig::unknown(),
         ),
     ] {
@@ -145,7 +145,7 @@ fn session_identity_and_time_accuracy_are_declared() {
     session
         .set_time(
             polylogue_model::Timestamp::parse_rfc3339("2026-01-02T03:00:00Z"),
-            polylogue_model::TimeEvidence {
+            polylogue_model::TimeAccuracy {
                 quality: polylogue_model::TimeQuality::FileMtime,
                 precision: Some(polylogue_model::Precision::Day),
                 until: None,
@@ -199,7 +199,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
         }
     })).unwrap());
     let mut step = polylogue_store::ParseStep::new(output, Default::default(), 0..150, true);
-    step.reading_version = "reader-3".into();
+    step.parse_version = "reader-3".into();
     step.prepare();
     let input = reading("input-a", 0).input;
     let mut products =

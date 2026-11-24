@@ -554,14 +554,14 @@ fn new_empty_file_has_body_and_eof_without_progress() {
     let prepared = prepared.unwrap();
     assert!(prepared.batch.parse.is_empty());
     assert_eq!(prepared.batch.new_blob.as_ref().unwrap().size, 0);
-    let source_read = prepared.batch.acquisition.as_ref().unwrap();
+    let source_read = prepared.batch.capture_read.as_ref().unwrap();
     assert_eq!(
         source_read.range,
         polylogue_store::primary::RawRange { start: 0, end: 0 }
     );
     assert_eq!(source_read.raw_total, Some(0));
     assert!(
-        matches!(&source_read.generation, Some(polylogue_store::primary::SourceGeneration::File { observed, .. }) if observed.size == 0)
+        matches!(&source_read.generation, Some(polylogue_store::primary::ObservedState::File { observed, .. }) if observed.size == 0)
     );
     let results = engine
         .writer
@@ -624,7 +624,7 @@ fn malformed_middle_is_unreadable_and_later_facts_stay() {
         );
         let version = polylogue_sources::origin::by_name("claude-code")
             .unwrap()
-            .reading_version();
+            .parse_version();
         let checkpoint = reader
             .parser_checkpoint(&known.input_id, progress.chain, &version)
             .unwrap()
@@ -731,7 +731,7 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         );
         let version = polylogue_sources::origin::by_name("claude-code")
             .unwrap()
-            .reading_version();
+            .parse_version();
         let checkpoint = reader
             .parser_checkpoint(&known.input_id, progress.chain, &version)
             .unwrap()

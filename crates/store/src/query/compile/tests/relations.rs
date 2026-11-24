@@ -308,7 +308,7 @@ fn explicit_pick_keeps_the_outer_row_and_its_order() {
 
 #[test]
 fn explicit_absolute_distance_choice_orders_by_exact_nanoseconds() {
-    use polylogue_model::{Precision, TimeEvidence, TimeQuality, Timestamp};
+    use polylogue_model::{Precision, TimeAccuracy, TimeQuality, Timestamp};
     let directory = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(directory.path()).unwrap();
     let session = fixture
@@ -345,7 +345,7 @@ fn explicit_absolute_distance_choice_orders_by_exact_nanoseconds() {
             .message_time(
                 message,
                 Some(Timestamp::parse_rfc3339(at).unwrap()),
-                TimeEvidence {
+                TimeAccuracy {
                     quality: TimeQuality::Intrinsic,
                     precision: Some(Precision::Instant),
                     until: None,

@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::{TimeEvidence, TimeQuality, Timestamp};
+use polylogue_model::{TimeAccuracy, TimeQuality, Timestamp};
 use rusqlite::params;
 
 fn conn() -> Connection {
@@ -13,7 +13,7 @@ fn stored_time(at: &str, quality: TimeQuality, until: Option<&str>) -> Vec<u8> {
     let at = Timestamp::parse_rfc3339(at).unwrap();
     crate::encoding::time_bytes(
         Some(at),
-        TimeEvidence {
+        TimeAccuracy {
             quality,
             precision: Some(if until.is_some() {
                 Precision::Bounded
@@ -112,7 +112,7 @@ fn latest_activity_cannot_resolve_a_source_calendar_period_in_the_reader_zone() 
     let conn = conn();
     let unresolved = crate::encoding::time_bytes(
         Timestamp::parse_rfc3339("1970-01-01T00:00:00Z"),
-        TimeEvidence::intrinsic(Precision::Day),
+        TimeAccuracy::intrinsic(Precision::Day),
     )
     .unwrap();
     let point = stored_time("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
@@ -249,7 +249,7 @@ fn temporal_order_preserves_nanoseconds_at_large_absolute_timestamps() {
 #[test]
 fn temporal_order_keeps_unknown_separate_from_a_known_nonmatch() {
     let conn = conn();
-    let unknown = crate::encoding::time_bytes(None, TimeEvidence::UNKNOWN).unwrap();
+    let unknown = crate::encoding::time_bytes(None, TimeAccuracy::UNKNOWN).unwrap();
     let point = stored_time("1970-01-01T00:00:05Z", TimeQuality::Intrinsic, None);
     assert_eq!(
         relates(&conn, &unknown, &point, "before", None, "when"),

@@ -33,7 +33,7 @@ pub(crate) fn write(conn: &Connection, pk: i64, s: &Session) -> Result<()> {
         s.git_commit,
         s.model_provider,
         s.instructions,
-        crate::encoding::time_bytes(s.started,s.time_evidence())?,
+        crate::encoding::time_bytes(s.started,s.time_accuracy())?,
     ])?;
     Ok(())
 }

@@ -3,7 +3,7 @@ use crate::primary::{
     Capture, CapturedInput, Confirmed, ConfirmedChange, PendingCapture, PreparedInput,
     PreparedWrite, Product, ProductWrite, ReadingProducts,
 };
-use polylogue_model::authored::{ExecutionEligibility, PendingAuthored};
+use polylogue_model::authored::{PendingAuthored, RunsHere};
 use polylogue_model::user::{NewChatAction, UserRequest, UserWrite};
 use polylogue_model::{
     AlternateKind, AlternateRelation, Author, BlobHash, NewAlternate, NewAlternatePart,
@@ -432,7 +432,7 @@ fn primary_restore_stays_pending_and_blocks_live_retry() {
         .unwrap();
     assert_eq!(
         stored[0]["execution"],
-        serde_json::json!(ExecutionEligibility::Historical.as_str())
+        serde_json::json!(RunsHere::Historical.as_str())
     );
     let mut copies = Vec::new();
     pool.reader()
@@ -592,9 +592,9 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
         event: format!("event-{id}"),
         change: ConfirmedChange::Live(Box::new(Product::Input {
             rows: Box::new(crate::input_rows::InputRows {
-                acquisition: None,
+                capture_read: None,
                 input: id.into(),
-                format: "synthetic".into(),
+                origin: "synthetic".into(),
                 revision: None,
                 extents: Vec::new(),
                 observation: None,
@@ -717,8 +717,8 @@ fn imported(archive: &Archive, bytes: &[u8]) -> crate::staging::PreparedBatch {
             blobs: Vec::new(),
             length: bytes.len() as u64,
             parse: Vec::new(),
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: Default::default(),
         },
         files: file.into_iter().collect(),

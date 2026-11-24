@@ -1,7 +1,7 @@
 //! Wire shape observations from the parser's existing full-depth walk.
 //!
 //! A reading's coverage and counts commit with its parsed rows. The saved
-//! cursor accepts each byte range once; a new reading version gets separate
+//! cursor accepts each byte range once; a new parse version gets separate
 //! rows. Occurrences state order, identity and optional time.
 use crate::{OptionExt as _, ResultExt as _};
 use crate::{ParseStep, Result, StoreError};
@@ -83,7 +83,7 @@ pub struct TypeObservation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PathShape {
     pub format: String,
-    pub reading_version: String,
+    pub parse_version: String,
     pub record_kind: String,
     pub path: String,
     pub table: Option<String>,
@@ -105,7 +105,7 @@ impl PathShape {
     fn record_key(&self) -> (String, String, String, Option<String>) {
         (
             self.format.clone(),
-            self.reading_version.clone(),
+            self.parse_version.clone(),
             self.record_kind.clone(),
             self.table.clone(),
         )
@@ -129,7 +129,7 @@ pub enum CoverageStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Coverage {
     pub format: String,
-    pub reading_version: String,
+    pub parse_version: String,
     pub readings: u64,
     pub inputs: u64,
     pub current_readings: u64,
@@ -157,21 +157,21 @@ impl Coverage {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Scope<'a> {
     pub format: Option<&'a str>,
-    pub reading_version: Option<&'a str>,
+    pub parse_version: Option<&'a str>,
     pub history: bool,
 }
 impl<'a> Scope<'a> {
     pub fn current(format: Option<&'a str>) -> Self {
         Self {
             format,
-            reading_version: None,
+            parse_version: None,
             history: false,
         }
     }
-    pub fn history(format: Option<&'a str>, reading_version: Option<&'a str>) -> Self {
+    pub fn history(format: Option<&'a str>, parse_version: Option<&'a str>) -> Self {
         Self {
             format,
-            reading_version,
+            parse_version,
             history: true,
         }
     }
@@ -250,14 +250,14 @@ fn occurrence_number(
     let json = serde_json::to_string(occurrence)?;
     let key = params![source.input_pk, source.chain, version, json];
     if let Some(number) = tx
-        .prepare_cached("SELECT number FROM wire_occurrence WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 AND occurrence=?4")?
+        .prepare_cached("SELECT number FROM wire_occurrence WHERE input_pk=?1 AND chain=?2 AND parse_version=?3 AND occurrence=?4")?
         .query_row(key, |row| row.get(0))
         .optional()?
     {
         return Ok(number);
     }
     Ok(tx
-        .prepare_cached("INSERT INTO wire_occurrence(input_pk,chain,reading_version,number,occurrence) SELECT ?1,?2,?3,coalesce(max(number),0)+1,?4 FROM wire_occurrence WHERE input_pk=?1 AND chain=?2 AND reading_version=?3 RETURNING number")?
+        .prepare_cached("INSERT INTO wire_occurrence(input_pk,chain,parse_version,number,occurrence) SELECT ?1,?2,?3,coalesce(max(number),0)+1,?4 FROM wire_occurrence WHERE input_pk=?1 AND chain=?2 AND parse_version=?3 RETURNING number")?
         .query_row(key, |row| row.get(0))?)
 }
 
@@ -285,11 +285,11 @@ impl Reading {
     }
 }
 
-/// The stored state of one chain's reading under a reading version.
+/// The stored state of one chain's reading under a parse version.
 fn stored_reading(tx: &Connection, source: Source<'_>, version: &str) -> Result<Option<Reading>> {
     let state: Option<String> = tx
         .prepare_cached(
-            "SELECT state FROM wire_reading WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+            "SELECT state FROM wire_reading WHERE input_pk=?1 AND chain=?2 AND parse_version=?3",
         )?
         .query_row(params![source.input_pk, source.chain, version], |row| {
             row.get(0)
@@ -308,10 +308,10 @@ fn stored_reading(tx: &Connection, source: Source<'_>, version: &str) -> Result<
 pub(crate) fn copied(
     tx: &Connection,
     source: Source<'_>,
-    reading_version: &str,
+    parse_version: &str,
     reaches_end: bool,
 ) -> Result<()> {
-    let Some(mut reading) = stored_reading(tx, source, reading_version)? else {
+    let Some(mut reading) = stored_reading(tx, source, parse_version)? else {
         return Ok(());
     };
     reading.length = source.length;
@@ -322,12 +322,12 @@ pub(crate) fn copied(
         reading.complete(source, &Occurrence::from(source));
     }
     tx.prepare_cached(
-        "UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+        "UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3",
     )?
     .execute(params![
         source.input_pk,
         source.chain,
-        reading_version,
+        parse_version,
         serde_json::to_string(&reading)?
     ])?;
     Ok(())
@@ -335,7 +335,7 @@ pub(crate) fn copied(
 
 /// Apply before or after the parse checkpoint, in the same transaction.
 /// A complete reset replaces current counts, keeping first/last occurrences and
-/// the rows of older reading versions. A step that ends inside the committed
+/// the rows of older parse versions. A step that ends inside the committed
 /// frontier is ignored as already counted (only the last range's hash is kept,
 /// so its bytes are not compared); a step that starts inside the frontier and
 /// extends past it, or repeats the last range with different bytes, fails.
@@ -406,7 +406,7 @@ fn apply_inner(
     let hash = step
         .delivery
         .map_or(computed_hash, |delivery| delivery.body_hash.to_string());
-    let previous = stored_reading(tx, source, &step.reading_version)?;
+    let previous = stored_reading(tx, source, &step.parse_version)?;
     let duplicate = !replacement
         && !export_delivery
         && previous.as_ref().is_some_and(|old| {
@@ -424,7 +424,7 @@ fn apply_inner(
             && hash != old.last_hash
         {
             return Err(StoreError::invalid(
-                "the same wire source range has different observations under one reading version",
+                "the same wire source range has different observations under one parse version",
             ));
         }
         if !duplicate && !step.reset && step.start < old.parsed_upto {
@@ -456,7 +456,7 @@ fn apply_inner(
                 if old.status() == CoverageStatus::Complete {
                     old.complete(source, &occurrence);
                 }
-                tx.prepare_cached("UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3")?.execute(params![source.input_pk,source.chain,step.reading_version,serde_json::to_string(&old)?])?;
+                tx.prepare_cached("UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3")?.execute(params![source.input_pk,source.chain,step.parse_version,serde_json::to_string(&old)?])?;
             }
         }
         return Ok(());
@@ -532,37 +532,37 @@ fn apply_inner(
         "UPDATE wire_reading SET active=0 WHERE input_pk=?1 AND chain=?2 AND active=1",
     )?
     .execute(params![source.input_pk, source.chain])?;
-    tx.prepare_cached("INSERT INTO wire_reading(input_pk,chain,reading_version,format,active,state) VALUES (?1,?2,?3,?4,1,?5) ON CONFLICT(input_pk,chain,reading_version) DO UPDATE SET format=excluded.format,active=1,state=excluded.state")?.execute(params![source.input_pk,source.chain,step.reading_version,source.format,serde_json::to_string(&reading)?])?;
-    let reading_key = params![source.input_pk, source.chain, step.reading_version];
+    tx.prepare_cached("INSERT INTO wire_reading(input_pk,chain,parse_version,format,active,state) VALUES (?1,?2,?3,?4,1,?5) ON CONFLICT(input_pk,chain,parse_version) DO UPDATE SET format=excluded.format,active=1,state=excluded.state")?.execute(params![source.input_pk,source.chain,step.parse_version,source.format,serde_json::to_string(&reading)?])?;
+    let reading_key = params![source.input_pk, source.chain, step.parse_version];
     if reset {
         // A reset replaces the counts; where each path was first and last
         // seen stays.
-        tx.prepare_cached("UPDATE wire_shape SET unknown_kinds=0,unknown_tables=0,unused=0 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3")?
+        tx.prepare_cached("UPDATE wire_shape SET unknown_kinds=0,unknown_tables=0,unused=0 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3")?
             .execute(reading_key)?;
         tx.prepare_cached(
-            "UPDATE wire_type SET count=0 WHERE input_pk=?1 AND chain=?2 AND reading_version=?3",
+            "UPDATE wire_type SET count=0 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3",
         )?
         .execute(reading_key)?;
     }
     if step.counts.wire_shapes.is_empty() {
         return Ok(());
     }
-    let number = occurrence_number(tx, source, &step.reading_version, &occurrence)?;
+    let number = occurrence_number(tx, source, &step.parse_version, &occurrence)?;
     for observation in step.counts.wire_shapes.values() {
         validate(observation)?;
         let table_key = serde_json::to_string(&observation.table)?;
         declare(
             tx,
             source.format,
-            &step.reading_version,
+            &step.parse_version,
             observation,
             &table_key,
         )?;
-        tx.prepare_cached("INSERT INTO wire_shape(input_pk,chain,reading_version,record_kind,path,table_key,unknown_kinds,unknown_tables,unused,first,last) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10) ON CONFLICT(input_pk,chain,reading_version,record_kind,path,table_key) DO UPDATE SET unknown_kinds=unknown_kinds+excluded.unknown_kinds,unknown_tables=unknown_tables+excluded.unknown_tables,unused=unused+excluded.unused,last=excluded.last")?
+        tx.prepare_cached("INSERT INTO wire_shape(input_pk,chain,parse_version,record_kind,path,table_key,unknown_kinds,unknown_tables,unused,first,last) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10) ON CONFLICT(input_pk,chain,parse_version,record_kind,path,table_key) DO UPDATE SET unknown_kinds=unknown_kinds+excluded.unknown_kinds,unknown_tables=unknown_tables+excluded.unknown_tables,unused=unused+excluded.unused,last=excluded.last")?
             .execute(params![
                 source.input_pk,
                 source.chain,
-                step.reading_version,
+                step.parse_version,
                 observation.record_kind,
                 observation.path,
                 table_key,
@@ -575,11 +575,11 @@ fn apply_inner(
             if count == 0 {
                 continue;
             }
-            tx.prepare_cached("INSERT INTO wire_type(input_pk,chain,reading_version,record_kind,path,table_key,json_type,count,first,last) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(input_pk,chain,reading_version,record_kind,path,table_key,json_type) DO UPDATE SET count=count+excluded.count,last=excluded.last")?
+            tx.prepare_cached("INSERT INTO wire_type(input_pk,chain,parse_version,record_kind,path,table_key,json_type,count,first,last) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(input_pk,chain,parse_version,record_kind,path,table_key,json_type) DO UPDATE SET count=count+excluded.count,last=excluded.last")?
                 .execute(params![
                     source.input_pk,
                     source.chain,
-                    step.reading_version,
+                    step.parse_version,
                     observation.record_kind,
                     observation.path,
                     table_key,
@@ -592,7 +592,7 @@ fn apply_inner(
     Ok(())
 }
 
-/// Records what a reading version declares about a path, once per format;
+/// Records what a parse version declares about a path, once per format;
 /// the same version declaring otherwise is refused.
 fn declare(
     tx: &Connection,
@@ -604,7 +604,7 @@ fn declare(
     let expected = serde_json::to_string(&observation.expected)?;
     let known_kinds = serde_json::to_string(&observation.known_kinds)?;
     let stored: Option<(String, bool, String)> = tx
-        .prepare_cached("SELECT expected,dynamic_map,known_kinds FROM wire_declaration WHERE format=?1 AND reading_version=?2 AND record_kind=?3 AND path=?4 AND table_key=?5")?
+        .prepare_cached("SELECT expected,dynamic_map,known_kinds FROM wire_declaration WHERE format=?1 AND parse_version=?2 AND record_kind=?3 AND path=?4 AND table_key=?5")?
         .query_row(
             params![format, version, observation.record_kind, observation.path, table_key],
             |row| <(_, _, _)>::try_from(row),
@@ -619,12 +619,12 @@ fn declare(
             Ok(())
         }
         Some(_) => Err(StoreError::Invalid(format!(
-            "wire declarations changed without a reading version change: {format} {version} \
+            "wire declarations changed without a parse version change: {format} {version} \
              declares {} {} {table_key} otherwise",
             observation.record_kind, observation.path
         ))),
         None => {
-            tx.prepare_cached("INSERT INTO wire_declaration(format,reading_version,record_kind,path,table_key,expected,dynamic_map,known_kinds) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?
+            tx.prepare_cached("INSERT INTO wire_declaration(format,parse_version,record_kind,path,table_key,expected,dynamic_map,known_kinds) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?
                 .execute(params![
                     format,
                     version,

@@ -17,7 +17,7 @@ use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 
 /// Runtime completion, distinct from the immutable stored outcome schema.
 #[derive(Debug)]
-pub struct UserReceipt {
+pub struct WriteResult {
     pub outcome: UserOutcome,
     pub save: Option<polylogue_model::user::SaveReport>,
     /// Exact annotation revisions created by the accepted write, including on retry.
@@ -25,7 +25,7 @@ pub struct UserReceipt {
     /// Resolved tag targets absent from the original accepted write's effects.
     pub already: Vec<polylogue_model::Reference>,
 }
-impl UserReceipt {
+impl WriteResult {
     pub(crate) fn recorded(
         prepared: &polylogue_model::authored::PreparedRequest,
         outcome: UserOutcome,
@@ -163,7 +163,7 @@ pub(crate) fn apply_resolving(
     r: &UserRequest,
     seq: i64,
     preparation: Preparation<'_>,
-) -> Result<UserReceipt> {
+) -> Result<WriteResult> {
     let source = crate::source::Source::of(tx)?;
     apply_using(
         tx,
@@ -240,12 +240,12 @@ pub(crate) fn apply_using(
     seq: i64,
     available: &dyn Fn(&polylogue_model::user::ChatAttachment) -> Result<bool>,
     preparation: Preparation<'_>,
-) -> Result<UserReceipt> {
+) -> Result<WriteResult> {
     let source = crate::source::Source::of(tx)?;
     if let Some(known) = crate::primary::authored::known_request(tx, r)? {
         let mut outcome = known.outcome.clone();
         outcome.repeat = true;
-        return UserReceipt::recorded(&known, outcome);
+        return WriteResult::recorded(&known, outcome);
     }
     let advancing_seen = if let UserWrite::MarkSeen { marks } = &r.write {
         let marks = crate::annotations::seen::advancing(
@@ -255,7 +255,7 @@ pub(crate) fn apply_using(
             marks,
         )?;
         if marks.is_empty() {
-            return Ok(UserReceipt {
+            return Ok(WriteResult {
                 outcome: UserOutcome {
                     id: r.id.clone(),
                     repeat: true,
@@ -273,10 +273,10 @@ pub(crate) fn apply_using(
     if let Some(prepared) = prepare_delivery(r) {
         crate::primary::authored::require_new_delivery(tx, &r.id)?;
         crate::primary::authored::apply(tx, &prepared, seq)?;
-        return Ok(UserReceipt {
+        return Ok(WriteResult {
             outcome: prepared.outcome,
             save: None,
-            written: UserReceipt::references(&prepared.effect),
+            written: WriteResult::references(&prepared.effect),
             already: Vec::new(),
         });
     }
@@ -607,14 +607,14 @@ pub(crate) fn apply_using(
             crate::primary::authored::pack(accepted)?,
         ],
     )?;
-    Ok(UserReceipt {
+    Ok(WriteResult {
         outcome,
         save: save_outcomes,
-        already: UserReceipt::already(accepted, &effect),
+        already: WriteResult::already(accepted, &effect),
         written: if matches!(r.write, UserWrite::MarkSeen { .. }) {
             Vec::new()
         } else {
-            UserReceipt::references(&effect)
+            WriteResult::references(&effect)
         },
     })
 }

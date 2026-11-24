@@ -279,7 +279,7 @@ fn session(
             .visit_with_sources(
                 from,
                 |message,
-                 polylogue_store::read::MessageSource {
+                 polylogue_store::read::MessageParse {
                      blocks: block_selection,
                      committed: commit,
                      ordinal: order,
@@ -403,7 +403,7 @@ fn session(
 pub(super) fn message_record(
     reader: &Reader<'_>,
     message: polylogue_model::Message,
-    block_selection: MessageProjection,
+    block_selection: ShownBlocks,
     commit: u64,
     order: u64,
 ) -> Result<Record, Error> {

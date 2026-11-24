@@ -32,7 +32,7 @@ CREATE TABLE annotation_link (
   role        TEXT NOT NULL,     -- see Links
   ref         TEXT NOT NULL,     -- a reference in its stored form
   seen_hash   BLOB,              -- BLAKE3 of the referenced text when written; filled on arrival for a waiting target
-  quote       TEXT,              -- JSON, links to a span and citations: the exact text with up to 32 characters before and after, and the container's reading version when written
+  quote       TEXT,              -- JSON, links to a span and citations: the exact text with up to 32 characters before and after, and the container's parse version when written
   PRIMARY KEY (record, role, ref)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX annotation_link_ref ON annotation_link(ref, role, record);

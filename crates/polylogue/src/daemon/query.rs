@@ -331,7 +331,7 @@ fn save_with_rows(
     polylogue_query::Kept {
         output_metadata: output_metadata.clone(),
         shape: Some(program.shape),
-        native_identity: program.shape == Shape::Rows
+        row_identity: program.shape == Shape::Rows
             && matches!(&program.row_kind, RowKind::UnitRows { .. }),
         unit: kept["unit"].as_str().expect("producer unit").into(),
         columns: program.columns.clone(),
@@ -568,7 +568,7 @@ fn save_measure(
     polylogue_query::Kept {
         output_metadata: output_metadata.clone(),
         shape: Some(Shape::Summary),
-        native_identity: false,
+        row_identity: false,
         unit: program.unit.name().into(),
         columns: columns.clone(),
         match_columns: vec![],

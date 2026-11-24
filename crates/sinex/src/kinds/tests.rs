@@ -14,14 +14,14 @@ fn reading(input: &str, start: u64) -> Reading {
             route: polylogue_model::Route::Live,
         },
         chain: 1,
-        reading_version: "reader-3".into(),
+        parse_version: "reader-3".into(),
         start,
         parsed_upto: 100,
         progress: polylogue_model::batch::StepProgress::AtEnd,
     }
 }
 fn message(input: &str, start: u64) -> Product {
-    Product::Message {native_fields:None,declared_injections:None,declared_attachment_bindings:None,reading:reading(input,start),order:Some(6),projection:None,facts:Box::new(serde_json::from_value(json!({"offset":50,"end":100,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"nested":{"citation":["source"]}},"production":{"phase":"final","server_tool_use":{"web_search_requests":0}},"blocks":[{"type":"tool_result","call_id":"native","outcome":{"kind":"ok"},"output":"done","reported_duration_ms":17}]}})).unwrap())}
+    Product::Message {stated_fields:None,declared_injections:None,declared_attachment_bindings:None,reading:reading(input,start),order:Some(6),projection:None,facts:Box::new(serde_json::from_value(json!({"offset":50,"end":100,"message":{"id":"codex:m","session":"codex:s","role":"assistant","attrs":{"nested":{"citation":["source"]}},"production":{"phase":"final","server_tool_use":{"web_search_requests":0}},"blocks":[{"type":"tool_result","call_id":"native","outcome":{"kind":"ok"},"output":"done","reported_duration_ms":17}]}})).unwrap())}
 }
 
 fn interpreted_record(product: &Product) -> Product {
@@ -85,7 +85,7 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
     }))
     .unwrap();
     let mut weak = strong.clone();
-    weak.at = None;
+    weak.branch_point = None;
     weak.evidence = "agentId".into();
     let contribution = |facts, start| Product::Link {
         reading: reading("subagent-source", start),
@@ -114,7 +114,7 @@ fn richer_and_weaker_link_contributions_keep_their_own_retry_stable_keys() {
             sinex_model::TsOrig::unknown()
         );
         if let Product::Link { facts, .. } = &product {
-            assert_eq!(payload["branch_point"], json!(facts.at));
+            assert_eq!(payload["branch_point"], json!(facts.branch_point));
         }
         assert_eq!(
             products::decode(
@@ -153,29 +153,29 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message" => 9,
+                "polylogue.message" => 10,
                 "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
-                | "polylogue.request_restore" => 10,
-                "polylogue.session" => 7,
+                | "polylogue.request_restore" => 11,
+                "polylogue.session" | "polylogue.link" | "polylogue.parse_progress" => 8,
+                "polylogue.input_observation" => 7,
                 "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.background"
-                | "polylogue.repository" => 6,
-                "polylogue.parse_progress" => 7,
-                "polylogue.input_observation" => 6,
-                "polylogue.query_run" => 8,
+                | "polylogue.repository" => 7,
+                "polylogue.query_run" => 9,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
-                "polylogue.fragment" => 4,
-                "polylogue.link" => 7,
-                "polylogue.annotation" | "polylogue.annotation_restore" => 1,
-                "polylogue.query" => 2,
-                "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 2,
-                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 6,
-                "polylogue.line_save" | "polylogue.line_save_restore" => 4,
-                "polylogue.historical_restore" | "polylogue.attachment_binding" => 1,
+                "polylogue.fragment" => 5,
+                "polylogue.annotation" | "polylogue.attachment_binding" => 2,
+                "polylogue.annotation_restore" | "polylogue.historical_restore" => 1,
+                "polylogue.query"
+                | "polylogue.tool_call"
+                | "polylogue.prefix_copy"
+                | "polylogue.prefix_member" => 3,
+                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 7,
+                "polylogue.line_save" | "polylogue.line_save_restore" => 5,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
         );
@@ -208,7 +208,7 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
 #[test]
 fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
     use polylogue_model::bundle::fragments::{
-        TextCoverage, TextFragment, TextFragmentProvenance, TextFragmentRecord, TextSourceVersion,
+        TextCoverage, TextFragment, TextFragmentRecord, TextFragmentSource, TextSourceVersion,
         TextSpanOrigin,
     };
     use polylogue_model::{BlobHash, Reference};
@@ -227,7 +227,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         },
         text: "abc".into(),
         text_hash: BlobHash::of(b"abc"),
-        provenance: TextFragmentProvenance {
+        provenance: TextFragmentSource {
             spans: vec![],
             sources: vec![],
             imports: vec![],
@@ -257,7 +257,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         .into_iter()
         .find(|declaration| declaration.kind.name == "polylogue.fragment")
         .unwrap();
-    assert_eq!(declaration.kind.version, 4);
+    assert_eq!(declaration.kind.version, 5);
     jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
         .unwrap()
         .validate(&payload)
@@ -283,7 +283,7 @@ fn sinex_message_keeps_numbers_and_source_identity() {
     )
     .unwrap();
     let product = Product::Message {
-        native_fields: None,
+        stated_fields: None,
         declared_injections: None,
         declared_attachment_bindings: None,
         reading: reading("input-a", 0),
@@ -308,9 +308,9 @@ fn sinex_message_keeps_numbers_and_source_identity() {
 fn an_input_payload_at_an_earlier_kind_version_is_refused() {
     let product = Product::Input {
         rows: Box::new(polylogue_store::input_rows::InputRows {
-            acquisition: None,
+            capture_read: None,
             input: "input-a".into(),
-            format: "codex".into(),
+            origin: "codex".into(),
             revision: None,
             extents: vec![polylogue_store::input_rows::Extent {
                 chain: 1,
@@ -485,48 +485,98 @@ fn trace_view_versioned_only_its_three_reachable_declarations() {
     }
 }
 
-/// The vocabulary rename gave annotations their own kind names (version 1)
-/// and raised every other declaration whose definition changed by one.
+/// Every kind of `current` keeps its version from `previous` when its
+/// definition is unchanged and is raised by one when it changed; a kind new in
+/// `current` starts at version 1, and `retired` kinds are gone.
+fn assert_versioned_transition(
+    previous: &serde_json::Value,
+    current: &[(String, u64, String)],
+    introduced: &[&str],
+    retired: &[&str],
+) {
+    let old = previous["kinds"].as_array().unwrap();
+    assert_eq!(current.len(), old.len());
+    let mut wrong = Vec::new();
+    for (name, version, hash) in current {
+        let expected = match old.iter().find(|old| old["name"] == name.as_str()) {
+            None => {
+                assert!(introduced.contains(&name.as_str()), "{name}");
+                1
+            }
+            Some(old) => {
+                old["version"].as_u64().unwrap()
+                    + u64::from(old["definition_hash"] != hash.as_str())
+            }
+        };
+        if *version != expected {
+            wrong.push(format!("{name}: {version} should be {expected}"));
+        }
+    }
+    for name in retired {
+        assert!(old.iter().any(|old| old["name"] == *name), "{name}");
+        assert!(current.iter().all(|(kind, ..)| kind != name), "{name}");
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+}
+
+fn recorded_kinds(file: &serde_json::Value) -> Vec<(String, u64, String)> {
+    file["kinds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|kind| {
+            (
+                kind["name"].as_str().unwrap().to_owned(),
+                kind["version"].as_u64().unwrap(),
+                kind["definition_hash"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+/// Source 14 gave annotations their own kind names and raised every other
+/// declaration whose definition changed.
 #[test]
-fn vocabulary_rename_versions_every_changed_declaration() {
-    let previous: serde_json::Value = serde_json::from_str(include_str!(
+fn annotation_names_versioned_every_changed_declaration() {
+    let source13: serde_json::Value = serde_json::from_str(include_str!(
         "../../tests/rebuild/source13-kind-hashes.json"
+    ))
+    .unwrap();
+    let source14: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/rebuild/source14-kind-hashes.json"
+    ))
+    .unwrap();
+    assert_versioned_transition(
+        &source13,
+        &recorded_kinds(&source14),
+        &["polylogue.annotation", "polylogue.annotation_restore"],
+        &["polylogue.assertion", "polylogue.assertion_restore"],
+    );
+}
+
+/// Source 15 renamed the parse version, time accuracy and other fields and
+/// raised every declaration whose definition changed.
+#[test]
+fn field_names_version_every_changed_declaration() {
+    let previous: serde_json::Value = serde_json::from_str(include_str!(
+        "../../tests/rebuild/source14-kind-hashes.json"
     ))
     .unwrap();
     assert_eq!(
         u64::from(crate::source_reference().version),
         previous["source"]["version"].as_u64().unwrap() + 1
     );
-    let old = previous["kinds"].as_array().unwrap();
-    let introduced = ["polylogue.annotation", "polylogue.annotation_restore"];
-    let retired = ["polylogue.assertion", "polylogue.assertion_restore"];
-    let current = declarations("polylogue");
-    assert_eq!(current.len(), old.len());
-    let mut wrong = Vec::new();
-    for kind in &current {
-        let name = kind.kind.name.as_str();
-        let expected = match old.iter().find(|old| old["name"] == name) {
-            None => {
-                assert!(introduced.contains(&name), "{name}");
-                1
-            }
-            Some(old) => {
-                let version = old["version"].as_u64().unwrap();
-                version + u64::from(kind.definition_hash() != old["definition_hash"])
-            }
-        };
-        if kind.kind.version != expected {
-            wrong.push(format!(
-                "{name}: {} should be {expected}",
-                kind.kind.version
-            ));
-        }
-    }
-    for name in retired {
-        assert!(old.iter().any(|old| old["name"] == name), "{name}");
-        assert!(current.iter().all(|kind| kind.kind.name != name), "{name}");
-    }
-    assert!(wrong.is_empty(), "{wrong:#?}");
+    let current: Vec<_> = declarations("polylogue")
+        .iter()
+        .map(|kind| {
+            (
+                kind.kind.name.clone(),
+                kind.kind.version,
+                kind.definition_hash(),
+            )
+        })
+        .collect();
+    assert_versioned_transition(&previous, &current, &[], &[]);
 }
 
 #[test]
@@ -552,5 +602,5 @@ fn historical_annotation_positions_keep_the_published_execution_string_schema() 
             );
         }
     }
-    assert_eq!(crate::source_reference().version, 14);
+    assert_eq!(crate::source_reference().version, 15);
 }

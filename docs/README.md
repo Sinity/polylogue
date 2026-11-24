@@ -21,7 +21,7 @@ runtime and its tests. The target card and tool descriptions are
 | [architecture](architecture.md) | purpose, principles, the two modes, data flow, the stores, durability, the pipeline (the record and the index, readings, pure parsers, composition, one path for upkeep and build) and its targets, configuration and clocks, the store boundary, deletion |
 | [capture](capture.md) | where inputs come from: locations, origins, hooks, tool databases, import, AI Studio through Drive, capture status |
 | [extension](extension.md) | the browser extension: live capture, provider import, its own UI, chat actions |
-| [archive](archive.md) | stored inputs and their chains, readings and covered chains, text, evolution, parsers and reading versions, goldens, field accounting, format drift and `dev schema`, trace data |
+| [archive](archive.md) | stored inputs and their chains, readings and covered chains, text, evolution, parsers and parse versions, goldens, field accounting, format drift and `dev schema`, trace data |
 | [sessions](sessions.md) | the parsed model: sessions and what identifies them, messages, names and references, message authorship, times, session links, compaction, attachments, logical sessions |
 | [references](references.md) | the one reference grammar and its rules |
 | [interfaces](interfaces.md) | the operation table, the line grammar, verb words, chains, the verbs and commands, option names and exit codes |

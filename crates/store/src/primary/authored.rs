@@ -600,18 +600,18 @@ impl crate::Reader<'_> {
 }
 
 /// Uses the logical source views of a Reader in either storage mode.
-pub(crate) fn signal_outbox(
+pub(crate) fn pending_delivery(
     conn: &Connection,
     id: &str,
-) -> Result<polylogue_model::signal::StoredOutbox> {
+) -> Result<polylogue_model::signal::StoredPendingDelivery> {
     let record = records::delivery_from(conn, Source::Cache, id)?;
     let metadata = record
         .signal
         .or_invalid("delivery has no signal metadata")?;
-    Ok(polylogue_model::signal::StoredOutbox {
+    Ok(polylogue_model::signal::StoredPendingDelivery {
         id: record.id,
         at: record.at,
-        outbox: polylogue_model::signal::Outbox {
+        pending_delivery: polylogue_model::signal::PendingDelivery {
             record: record.prepared,
             metadata,
         },

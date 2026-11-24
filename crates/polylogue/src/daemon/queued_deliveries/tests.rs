@@ -124,7 +124,7 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
         },
     );
     reply
-        .send(Ok(polylogue_store::user_writes::UserReceipt {
+        .send(Ok(polylogue_store::user_writes::WriteResult {
             outcome: polylogue_model::user::UserOutcome {
                 id: "advice-request".into(),
                 repeat: false,

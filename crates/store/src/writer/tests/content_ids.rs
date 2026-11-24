@@ -65,7 +65,7 @@ fn ai_studio_deleted_chunk_reads_a_c_d() {
         .reader()
         .unwrap()
         .query(
-            "SELECT count(*) AS n FROM message WHERE id='claude-code:b'",
+            "SELECT count(*) AS n FROM message_parse s JOIN message m ON m.pk=s.message_pk WHERE m.id='claude-code:b'",
             &[],
         )
         .unwrap();
@@ -104,7 +104,7 @@ fn a_copy_in_another_input_keeps_a_content_named_message() {
         chunks(&[("a", "A"), ("b", "B")]),
         &["s"],
     );
-    copy.parse[0].reading_version = "synthetic=1".into();
+    copy.parse[0].parse_version = "synthetic=1".into();
     w.store_reading(copy, Some(&SOURCE_RECORD)).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     store(&w, chunks(&[("a", "A")]), true);

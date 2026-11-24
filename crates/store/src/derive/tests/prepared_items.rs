@@ -1,6 +1,6 @@
 use super::*;
 use crate::derive::{Derived, Output, SessionWrite, Token, Write};
-use crate::writer::{ChainReading, InputKey, ParseStep};
+use crate::writer::{ChainParse, InputKey, ParseStep};
 use rusqlite::{Connection, params};
 
 fn duplicate_write(
@@ -91,7 +91,7 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
         let (mut world, conn, session, message) = hidden();
         let reveal = duplicate_write(&conn, session, message, None);
         if retract {
-            let mut reading = ChainReading::new().unwrap();
+            let mut reading = ChainParse::new().unwrap();
             reading
                 .push(&mut ParseStep::new(
                     polylogue_model::Output::default(),

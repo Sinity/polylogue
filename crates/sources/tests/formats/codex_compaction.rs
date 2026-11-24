@@ -146,7 +146,7 @@ fn compaction_keeps_parent_history_and_branch_point() {
     assert_eq!(links[0]["kind"], "fork");
     assert_eq!(links[0]["parent"], "codex:parent-session");
     assert_eq!(links[0]["child"], format!("codex:{SID}"));
-    assert_eq!(links[0]["at"], "codex:parent-message");
+    assert_eq!(links[0]["branch_point"], "codex:parent-message");
 }
 
 #[test]

@@ -274,14 +274,14 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect();
         sink.out.events.push({
-            let (at, time_evidence) = crate::time::parts(conv.get("updated_at").and_then(time_of));
+            let (at, time_accuracy) = crate::time::parts(conv.get("updated_at").and_then(time_of));
             Event {
                 session: Some(sid.clone()),
                 kind: "conversation_settings".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: None,
                 data: Json::Object(settings),
@@ -340,7 +340,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                             id.clone(),
                             msg.parent.clone(),
                             msg.at,
-                            msg.time_evidence(),
+                            msg.time_accuracy(),
                             blocks,
                         );
                         let details = content_details(summary);
@@ -358,14 +358,14 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                             polylogue_model::IdKind::Content,
                             summary_message,
                         ));
-                        let time_evidence = msg.time_evidence();
+                        let time_accuracy = msg.time_accuracy();
                         sink.out.events.push(Event {
                             session: Some(sid.clone()),
                             kind: "compaction".into(),
                             at: msg.at,
-                            at_quality: time_evidence.quality,
-                            at_precision: time_evidence.precision,
-                            at_until: time_evidence.until,
+                            at_quality: time_accuracy.quality,
+                            at_precision: time_accuracy.precision,
+                            at_until: time_accuracy.until,
                             after: msg.parent.clone(),
                             range: None,
                             data: serde_json::to_value(polylogue_model::CompactionBoundary {
@@ -375,7 +375,7 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
                             .expect("boundary is JSON"),
                         });
                     } else {
-                        let accuracy = msg.time_evidence();
+                        let accuracy = msg.time_accuracy();
                         sink.out.events.push(Event {
                             session: Some(sid.clone()),
                             kind: "compaction".into(),
@@ -429,14 +429,14 @@ pub fn conversation(conv: &Json, sink: &mut Sink<'_>) {
         && let Some(id) = message_id(ORIGIN, leaf)
     {
         sink.out.events.push({
-            let (at, time_evidence) = crate::time::parts(None);
+            let (at, time_accuracy) = crate::time::parts(None);
             Event {
                 session: Some(sid),
                 kind: "active_leaf".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: Some(id),
                 range: None,
                 data: Json::Null,
@@ -503,16 +503,16 @@ fn message(
         .filter(|p| *p != ROOT_PARENT)
         .and_then(|p| message_id(ORIGIN, p));
     Ok({
-        let (at, time_evidence) = crate::time::parts(m.get("created_at").and_then(time_of));
+        let (at, time_accuracy) = crate::time::parts(m.get("created_at").and_then(time_of));
         Message {
             id,
             session: sid.clone(),
             parent,
             role,
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             model: (role == Role::Assistant)
                 .then(|| {
                     m.str("model")
@@ -876,14 +876,14 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
     sink.records.record("chat", &RecordOutcome::Used);
     if let Some(project) = chat.get("project").filter(|p| !p.is_null()) {
         sink.out.events.push({
-            let (at, time_evidence) = crate::time::parts(None);
+            let (at, time_accuracy) = crate::time::parts(None);
             Event {
                 session: Some(sid.clone()),
                 kind: "design_project".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: None,
                 range: None,
                 data: project.clone(),
@@ -956,7 +956,7 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
             }));
         }
         let message = {
-            let (at, time_evidence) = crate::time::parts(
+            let (at, time_accuracy) = crate::time::parts(
                 m.get("created_at")
                     .and_then(time_of)
                     .or_else(|| body.get("timestamp").and_then(time_of)),
@@ -967,9 +967,9 @@ fn design_chat(chat: &Json, sink: &mut Sink<'_>) {
                 parent: previous.replace(id),
                 role,
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 model: None,
                 prompt_kind,
                 blocks,
@@ -1006,7 +1006,7 @@ fn context_summary(
     id: MessageId,
     parent: Option<MessageId>,
     at: Option<polylogue_model::Timestamp>,
-    accuracy: polylogue_model::TimeEvidence,
+    accuracy: polylogue_model::TimeAccuracy,
     blocks: Vec<polylogue_model::Block>,
 ) -> polylogue_model::Message {
     polylogue_model::Message {

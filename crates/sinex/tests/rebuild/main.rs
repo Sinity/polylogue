@@ -53,10 +53,10 @@ impl Running {
                 .map(|capture| match capture.captured {
                     polylogue_store::primary::Capture::Input(input) => {
                         let current = (|| -> polylogue_store::Result<serde_json::Value> {
-                            let source = input.basis.as_ref().map(|base| base.source.clone()).or_else(|| {
+                            let source = input.base.as_ref().map(|base| base.source.clone()).or_else(|| {
                                 let observation = input.rows.observation.as_ref()?;
                                 Some(polylogue_store::primary::SourceSelector {
-                                    origin: input.rows.format.clone(), machine: observation.machine.clone(),
+                                    origin: input.rows.origin.clone(), machine: observation.machine.clone(),
                                     path_bytes: observation.path_bytes.clone()?,
                                 })
                             });
@@ -79,8 +79,8 @@ impl Running {
                         "identity":capture.identity,
                         "anchor":capture.anchor,
                         "material":capture.material.as_ref().map(|material| (&material.id, material.hash, material.length)),
-                        "input":input.rows.input,"format":input.rows.format,"group":input.group,
-                        "basis":input.basis,"raw_range":input.raw_range,"generation":input.generation,
+                        "input":input.rows.input,"format":input.rows.origin,"group":input.group,
+                        "basis":input.base,"raw_range":input.raw_range,"generation":input.generation,
                         "revision":input.rows.revision,"extents":input.rows.extents,
                         "observation":input.rows.observation.as_ref().map(|observation| serde_json::json!({
                             "id":observation.id,"machine":observation.machine,"path":observation.path,
@@ -264,7 +264,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         },
         String::new,
     );
-    let capture_frames = running.real_sinex.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame");
+    let capture_frames = running.real_sinex.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'capture_read:%' ORDER BY frame");
     let repeated = confirm_capture(
         &mut engine,
         &commits,
@@ -279,7 +279,7 @@ fn build_on_sinex(example: &Morrow, home: &Path, sinex: &Arc<Sinex>, running: &R
         running.diagnostics(sinex, &archive)
     );
     assert_eq!(
-        running.real_sinex.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'acquisition:%' ORDER BY frame"),
+        running.real_sinex.sql("SELECT frame,material_id FROM core.ingress_frames WHERE producer='polylogue' AND frame LIKE 'capture_read:%' ORDER BY frame"),
         capture_frames,
         "an unchanged capture keeps its original capture group and material identities"
     );
@@ -723,7 +723,7 @@ fn confirmed_original_reconstructs_a_claude_session_and_its_tool_citation() {
                 let actual = ReadPool::open(&archive)
                     .and_then(|pool| pool.reader()?.messages(&session, false));
                 let progress = ReadPool::open(&archive).and_then(|pool| pool.reader()?.query(
-                    "SELECT i.id,p.chain,p.status,p.parsed_upto,p.at_length,p.reading_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk", &[],
+                    "SELECT i.id,p.chain,p.status,p.parsed_upto,p.at_length,p.parse_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk", &[],
                 ));
                 format!(
                     "phase {phase}; expected {wanted:?}; actual {actual:?}; parser progress {progress:?}"

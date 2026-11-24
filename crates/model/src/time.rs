@@ -1,4 +1,4 @@
-//! Source times: a Timestamp as a source stated it, the TimeEvidence that says
+//! Source times: a Timestamp as a source stated it, the TimeAccuracy that says
 //! how well it is known (quality, precision, optional upper bound), and its
 //! rendering as RFC 3339 or as a local minute.
 use serde::{Deserialize, Serialize};
@@ -9,7 +9,7 @@ pub use query_language::time::{Precision, TimeQuality};
 /// Evidence accompanying a source time. The timestamp stays in its domain
 /// field; this value validates its quality, precision and optional upper bound.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct TimeEvidence {
+pub struct TimeAccuracy {
     pub quality: TimeQuality,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precision: Option<Precision>,
@@ -19,7 +19,7 @@ pub struct TimeEvidence {
 
 /// How a time is known, for readers: `captured`, `intrinsic, minute`,
 /// `file_mtime, bounded until …`.
-impl fmt::Display for TimeEvidence {
+impl fmt::Display for TimeAccuracy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.quality.as_str())?;
         if let Some(precision) = self.precision {
@@ -32,13 +32,13 @@ impl fmt::Display for TimeEvidence {
     }
 }
 
-impl Default for TimeEvidence {
+impl Default for TimeAccuracy {
     fn default() -> Self {
         Self::UNKNOWN
     }
 }
 
-impl TimeEvidence {
+impl TimeAccuracy {
     pub const UNKNOWN: Self = Self {
         quality: TimeQuality::Unknown,
         precision: None,
@@ -53,31 +53,31 @@ impl TimeEvidence {
         }
     }
 
-    pub fn validate(self, at: Option<Timestamp>) -> Result<(), TimeEvidenceError> {
+    pub fn validate(self, at: Option<Timestamp>) -> Result<(), TimeAccuracyError> {
         let Some(at) = at else {
             return if self == Self::UNKNOWN {
                 Ok(())
             } else {
-                Err(TimeEvidenceError::MissingTime)
+                Err(TimeAccuracyError::MissingTime)
             };
         };
         if self.quality == TimeQuality::Unknown {
-            return Err(TimeEvidenceError::UnknownQuality);
+            return Err(TimeAccuracyError::UnknownQuality);
         }
-        let precision = self.precision.ok_or(TimeEvidenceError::MissingPrecision)?;
+        let precision = self.precision.ok_or(TimeAccuracyError::MissingPrecision)?;
         if self.until.is_some_and(|until| until <= at) {
-            return Err(TimeEvidenceError::InvalidBounds);
+            return Err(TimeAccuracyError::InvalidBounds);
         }
         match precision {
-            Precision::Instant if self.until.is_some() => Err(TimeEvidenceError::InstantHasBounds),
-            Precision::Bounded if self.until.is_none() => Err(TimeEvidenceError::MissingBounds),
+            Precision::Instant if self.until.is_some() => Err(TimeAccuracyError::InstantHasBounds),
+            Precision::Bounded if self.until.is_none() => Err(TimeAccuracyError::MissingBounds),
             _ => Ok(()),
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-pub enum TimeEvidenceError {
+pub enum TimeAccuracyError {
     #[error("time accuracy requires a timestamp")]
     MissingTime,
     #[error("a known timestamp requires known quality")]

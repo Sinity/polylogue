@@ -79,7 +79,7 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id,format) VALUES('waiting','synthetic');
-        INSERT INTO parse_state(input_pk,chain,reading_version,status,parsed_upto,at_length)
+        INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto,at_length)
         SELECT pk,1,'v1','waiting',4,10 FROM input_ref WHERE id='waiting';",
         )
         .unwrap();
@@ -104,7 +104,7 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     assert_eq!(kept.raw_only_chains, 0);
     index
         .execute(
-            "UPDATE parse_state SET at_length=9 WHERE reading_version='v1'",
+            "UPDATE parse_state SET at_length=9 WHERE parse_version='v1'",
             [],
         )
         .unwrap();
@@ -243,7 +243,7 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
                     AND json_type(o.details_json, '$.import_format') = 'text'
             )
             SELECT COALESCE(f.format, i.format), c.length, COALESCE(p.parsed_upto, 0),
-                p.input_pk IS NOT NULL, p.reading_version, p.status, p.at_length, p.reason
+                p.input_pk IS NOT NULL, p.parse_version, p.status, p.at_length, p.reason
             FROM chains c JOIN source_input i ON i.id = c.input
             LEFT JOIN formats f ON f.input = c.input AND f.choice = 1
             LEFT JOIN input_ref ir ON ir.id = c.input
@@ -279,7 +279,7 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
                 if !parsed {
                     missing.insert(CompletenessReason::MissingCheckpoint);
                 } else if version.as_ref() != Some(wanted) {
-                    missing.insert(CompletenessReason::ReadingVersionChanged);
+                    missing.insert(CompletenessReason::ParseVersionChanged);
                 } else {
                     match progress {
                         Some(ParseProgress::NoParserYet) => {
@@ -343,8 +343,8 @@ fn import(stored: &WriterArchive, body: &[u8], format: &str) -> crate::staging::
         blobs: vec![],
         length: prepared.len(),
         parse: vec![],
-        acquisition: None,
-        basis: None,
+        capture_read: None,
+        base: None,
         release: Default::default(),
     };
     stored.writer.store_bytes(prepared, batch).unwrap()
@@ -421,7 +421,7 @@ fn caught_up_equals_a_full_walk() {
     let export = import(&stored, b"synthetic export member", "chatgpt-export");
     agree("raw-only store and import");
 
-    // The appended chain re-parsed at a new reading version, then the import parsed.
+    // The appended chain re-parsed at a new parse version, then the import parsed.
     let mut reparse = step(
         "input-a",
         "claude-code",
@@ -434,10 +434,10 @@ fn caught_up_equals_a_full_walk() {
         chain: appended.chain,
     };
     reparse.observation = None;
-    reparse.parse[0].reading_version = "synthetic=2".into();
+    reparse.parse[0].parse_version = "synthetic=2".into();
     stored.writer.send(reparse).unwrap();
     assert!(stored.writer.flush().unwrap().errors.is_empty());
-    agree("re-parse at a new reading version");
+    agree("re-parse at a new parse version");
     let mut parsed = step(
         &export.input,
         "chatgpt-export",
@@ -513,7 +513,7 @@ fn unreadable_chain_counts_are_stored_value_errors() {
         let index = Connection::open(stored.archive.index_db()).unwrap();
         index
             .execute(
-                "INSERT INTO chain_progress_count(origin, reading_version, state, n)
+                "INSERT INTO chain_progress_count(origin, parse_version, state, n)
                  VALUES ('claude-code', 'other=1', ?1, ?2)",
                 rusqlite::params![state, n],
             )

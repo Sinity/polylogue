@@ -23,7 +23,7 @@ fn merge_is_idempotent_and_keeps_the_earliest_start() {
     a.offer_cwd("/a");
     a.offer_start(
         Timestamp::from_unix_ms(50).unwrap(),
-        crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+        crate::TimeAccuracy::intrinsic(crate::Precision::Instant),
     )
     .unwrap();
     let mut b = session();
@@ -32,7 +32,7 @@ fn merge_is_idempotent_and_keeps_the_earliest_start() {
     b.offer_title("t", TitleSource::Generated);
     b.offer_start(
         Timestamp::from_unix_ms(10).unwrap(),
-        crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+        crate::TimeAccuracy::intrinsic(crate::Precision::Instant),
     )
     .unwrap();
     a.merge(&b);
@@ -124,7 +124,7 @@ fn merged_session_start_keeps_selected_time_accuracy() {
     earlier
         .set_time(
             Some(at),
-            crate::TimeEvidence {
+            crate::TimeAccuracy {
                 quality: crate::TimeQuality::Operator,
                 precision: Some(crate::Precision::Bounded),
                 until: Some(until),
@@ -135,22 +135,22 @@ fn merged_session_start_keeps_selected_time_accuracy() {
     later
         .offer_start(
             crate::Timestamp::from_unix_ms(30).unwrap(),
-            crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+            crate::TimeAccuracy::intrinsic(crate::Precision::Instant),
         )
         .unwrap();
     later.merge(&earlier);
     assert_eq!(later.started, Some(at));
-    assert_eq!(later.time_evidence(), earlier.time_evidence());
+    assert_eq!(later.time_accuracy(), earlier.time_accuracy());
     let selected = later.clone();
     let mut equal = earlier;
     equal
         .set_time(
             Some(at),
-            crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+            crate::TimeAccuracy::intrinsic(crate::Precision::Instant),
         )
         .unwrap();
     later.merge(&equal);
-    assert_eq!(later.time_evidence(), selected.time_evidence());
+    assert_eq!(later.time_accuracy(), selected.time_accuracy());
     later.merge(&selected);
-    assert_eq!(later.time_evidence(), selected.time_evidence());
+    assert_eq!(later.time_accuracy(), selected.time_accuracy());
 }

@@ -64,7 +64,7 @@ CREATE TABLE extent (
   blob          BLOB NOT NULL REFERENCES blob(hash),
   blob_offset   INTEGER NOT NULL,
   commit_seq    INTEGER NOT NULL,
-  acquisition   BLOB,                    -- receiver acquisition evidence
+  capture_read   BLOB,                    -- receiver capture_read evidence
   PRIMARY KEY (input, chain, offset),
   FOREIGN KEY (input, chain) REFERENCES revision(input, number)
 ) STRICT, WITHOUT ROWID;

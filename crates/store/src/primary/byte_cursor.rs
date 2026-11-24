@@ -71,7 +71,7 @@ pub struct DatabaseSnapshotToken {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
-pub enum SourceGeneration {
+pub enum ObservedState {
     File {
         stream: RawStream,
         observed: FileSnapshot,
@@ -90,7 +90,7 @@ pub enum SourceGeneration {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ByteCursorQuery {
-    pub generation: SourceGeneration,
+    pub generation: ObservedState,
     pub tail_body: Option<String>,
 }
 impl ByteCursorQuery {
@@ -103,7 +103,7 @@ impl ByteCursorQuery {
     }
 }
 
-impl SourceGeneration {
+impl ObservedState {
     pub fn stream(&self) -> &RawStream {
         match self {
             Self::File { stream, .. } | Self::Database { stream, .. } => stream,
@@ -178,7 +178,7 @@ impl SourceGeneration {
 /// its decoded hash and length agree with the header.
 #[derive(Debug, Clone)]
 pub struct BodyRange {
-    pub generation: SourceGeneration,
+    pub generation: ObservedState,
     pub body: String,
     pub previous: Option<String>,
     pub outcome: Option<CaptureOutcome>,
@@ -191,7 +191,7 @@ pub struct BodyRange {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ByteCursor {
-    generation: SourceGeneration,
+    generation: ObservedState,
     range: RawRange,
     known_total: Option<u64>,
     last_body: String,
@@ -201,7 +201,7 @@ pub struct ByteCursor {
 }
 
 impl ByteCursor {
-    pub fn generation(&self) -> &SourceGeneration {
+    pub fn generation(&self) -> &ObservedState {
         &self.generation
     }
     pub fn range(&self) -> RawRange {
@@ -232,7 +232,7 @@ impl ByteCursor {
 /// unchecked overlap invalidates the result instead of producing a cursor that
 /// ends at the largest offset.
 pub struct ByteCursorCheck {
-    generation: SourceGeneration,
+    generation: ObservedState,
     range: RawRange,
     total: Option<u64>,
     outcome: Option<CaptureOutcome>,
@@ -242,7 +242,7 @@ pub struct ByteCursorCheck {
 }
 
 impl ByteCursorCheck {
-    pub fn new(generation: SourceGeneration) -> Result<Self> {
+    pub fn new(generation: ObservedState) -> Result<Self> {
         generation.validate()?;
         let start = generation.window().start;
         Ok(Self {
@@ -262,9 +262,9 @@ impl ByteCursorCheck {
             ));
         }
         self.outcome = match (self.outcome, body.outcome) {
-            (Some(CaptureOutcome::UnresolvedBasisConflict), _)
-            | (_, Some(CaptureOutcome::UnresolvedBasisConflict)) => {
-                Some(CaptureOutcome::UnresolvedBasisConflict)
+            (Some(CaptureOutcome::UnresolvedBaseConflict), _)
+            | (_, Some(CaptureOutcome::UnresolvedBaseConflict)) => {
+                Some(CaptureOutcome::UnresolvedBaseConflict)
             }
             (None, _) | (_, None) => None,
             _ => Some(CaptureOutcome::Prepared),
@@ -276,7 +276,7 @@ impl ByteCursorCheck {
                 .known_total
                 .is_some_and(|end| end != self.generation.window().end)
             || matches!(&self.generation,
-                SourceGeneration::File { stream: RawStream { role: RawStreamRole::ProviderBytes, .. }, observed, .. }
+                ObservedState::File { stream: RawStream { role: RawStreamRole::ProviderBytes, .. }, observed, .. }
                 if body.known_total.is_some_and(|end| end != observed.size))
             || self
                 .total

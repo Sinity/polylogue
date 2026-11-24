@@ -19,10 +19,10 @@ fn an_unchanged_database_read_after_restart_keeps_the_original_pending_capture()
         let Capture::Input(input) = &pending.captured else {
             panic!("a database capture")
         };
-        assert_eq!(input.rows.format, "codex-database");
+        assert_eq!(input.rows.origin, "codex-database");
         assert!(matches!(
             input.generation,
-            Some(SourceGeneration::Database { .. })
+            Some(ObservedState::Database { .. })
         ));
     }
     drop(engine);

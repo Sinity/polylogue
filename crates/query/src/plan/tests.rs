@@ -198,7 +198,7 @@ fn kept_replay_keeps_its_typed_columns() {
         crate::Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "sessions".into(),
             columns: vec![
                 crate::Column {

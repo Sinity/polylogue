@@ -184,16 +184,16 @@ impl ExportParser for OpenAiChat {
         }
         let harness = matches!(kind.as_str(), "tool" | "function");
         let message = {
-            let (at, time_evidence) = crate::time::parts(None);
+            let (at, time_accuracy) = crate::time::parts(None);
             Message {
                 id: id.clone(),
                 session: sid.clone(),
                 parent: self.state.previous.replace(id),
                 role,
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 model: (role == Role::Assistant)
                     .then(|| self.state.model.clone())
                     .flatten(),

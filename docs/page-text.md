@@ -39,7 +39,7 @@ weekday_offset() compared with >= instead of >.[^1] Errors fell to ![34 of 1,210
 
 ## Citations
 
-A citation says a sentence rests on an exact source passage: `[^1]` in the sentence and a footnote definition below the paragraph giving the quoted words and the source. One link row is stored per cited place: role `cites`, the reference as written (normally a `span:`), the quoted text with up to 32 characters of context either side, the BLAKE3 hash of the cited text when written, and the reading version of the container at that time. The quote and context are what let a citation be found again after a re-parse moves offsets.
+A citation says a sentence rests on an exact source passage: `[^1]` in the sentence and a footnote definition below the paragraph giving the quoted words and the source. One link row is stored per cited place: role `cites`, the reference as written (normally a `span:`), the quoted text with up to 32 characters of context either side, the BLAKE3 hash of the cited text when written, and the parse version of the container at that time. The quote and context are what let a citation be found again after a re-parse moves offsets.
 
 ### Cite by quote
 
@@ -75,7 +75,7 @@ States are computed when the page is read, from the text the page reads anyway t
 
 ### What a citation proves
 
-A citation of captured text proves what it quoted three ways: the hash of the cited text in the link row; the stored input bytes the message was read from, which are never deleted (`polylogue span:message:codex:01a20000-0005:msg_01a20000a11#c=88-121 read --view trace` walks record → input record → stored bytes → reading version, [reading.md](reading.md#trace)); and the reading version recorded with the citation. When a later reading of the same bytes yields different text, the page shows both, the text as cited and the text now. The quote and hash preserve what was cited whether or not the earlier reading can be run again.
+A citation of captured text proves what it quoted three ways: the hash of the cited text in the link row; the stored input bytes the message was read from, which are never deleted (`polylogue span:message:codex:01a20000-0005:msg_01a20000a11#c=88-121 read --view trace` walks record → input record → stored bytes → parse version, [reading.md](reading.md#trace)); and the parse version recorded with the citation. When a later reading of the same bytes yields different text, the page shows both, the text as cited and the text now. The quote and hash preserve what was cited whether or not the earlier reading can be run again.
 
 ### Citation lines
 

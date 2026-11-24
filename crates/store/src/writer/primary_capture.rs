@@ -24,8 +24,8 @@ fn failed(count: usize, error: StoreError) -> Vec<Result<StoredInput>> {
                 StoreError::PrimaryPending { identity } => StoreError::PrimaryPending {
                     identity: identity.clone(),
                 },
-                StoreError::UnresolvedBasisConflict { spooled } => {
-                    StoreError::UnresolvedBasisConflict {
+                StoreError::UnresolvedBaseConflict { spooled } => {
+                    StoreError::UnresolvedBaseConflict {
                         spooled: spooled.clone(),
                     }
                 }
@@ -125,7 +125,7 @@ impl CapturedBody<'_> {
 // whole chain.
 fn captured_body(item: &PreparedBatch) -> Result<Option<CapturedBody<'_>>> {
     let batch = &item.batch;
-    let expected = if let Some(capture_read) = &batch.acquisition {
+    let expected = if let Some(capture_read) = &batch.capture_read {
         let length = capture_read.range.length()?;
         let parts = if capture_read.chunks.is_empty() {
             vec![crate::Chunk {
@@ -344,9 +344,9 @@ impl Inner {
         }
         let immutable = group.iter().all(|item| {
             item.batch
-                .acquisition
+                .capture_read
                 .as_ref()
-                .is_some_and(|read| read.route == crate::primary::AcquisitionRoute::ExplicitImport)
+                .is_some_and(|read| read.route == crate::primary::ReadRoute::ExplicitImport)
         });
         let mut held = Vec::with_capacity(group.len());
         if immutable {
@@ -400,9 +400,12 @@ impl Inner {
                 StoreError::Invalid("primary capture requires a producer".into())
             })?);
         let immutable = group.iter().all(|item| {
-            item.batch.acquisition.as_ref().is_some_and(|capture_read| {
-                capture_read.route == crate::primary::AcquisitionRoute::ExplicitImport
-            })
+            item.batch
+                .capture_read
+                .as_ref()
+                .is_some_and(|capture_read| {
+                    capture_read.route == crate::primary::ReadRoute::ExplicitImport
+                })
         });
         let intent = capture_group_identity(group, immutable)?;
         let pending = sinex.pending_captures()?;
@@ -415,7 +418,7 @@ impl Inner {
                         "a capture constraint cannot require source acceptance".into(),
                     ));
                 }
-                Some(crate::primary::CaptureOutcome::UnresolvedBasisConflict) => {
+                Some(crate::primary::CaptureOutcome::UnresolvedBaseConflict) => {
                     required_outcome = item.batch.required_outcome
                 }
                 None => {}
@@ -426,24 +429,23 @@ impl Inner {
             if let Some(existing) = bases.get(&source) {
                 if item
                     .batch
-                    .basis
+                    .base
                     .as_ref()
                     .is_some_and(|base| base != existing)
                 {
-                    required_outcome =
-                        Some(crate::primary::CaptureOutcome::UnresolvedBasisConflict);
+                    required_outcome = Some(crate::primary::CaptureOutcome::UnresolvedBaseConflict);
                 }
             } else {
-                let base = if let Some(sampled) = &item.batch.basis {
+                let base = if let Some(sampled) = &item.batch.base {
                     if !self.sampled_base_matches(sampled, &source, &item.batch.input.id)? {
                         required_outcome =
-                            Some(crate::primary::CaptureOutcome::UnresolvedBasisConflict);
+                            Some(crate::primary::CaptureOutcome::UnresolvedBaseConflict);
                     }
                     // The pending previous revision is compared under the SDK
                     // spool lock, after the serialized writer checks confirmed state.
                     sampled.clone()
                 } else {
-                    self.source_snapshot(source.clone())?.basis
+                    self.source_snapshot(source.clone())?.base
                 };
                 bases.insert(source, base);
             }
@@ -480,10 +482,15 @@ impl Inner {
                 // The captured provider body belongs to this atomic group, even
                 // when it creates no source extent. Generic blob replay must
                 // not send bytes from an unresolved capture read separately.
-                if item.batch.acquisition.as_ref().is_some_and(|capture_read| {
-                    capture_read.hash == blob.hash
-                        && capture_read.range.length().ok() == Some(blob.size)
-                }) {
+                if item
+                    .batch
+                    .capture_read
+                    .as_ref()
+                    .is_some_and(|capture_read| {
+                        capture_read.hash == blob.hash
+                            && capture_read.range.length().ok() == Some(blob.size)
+                    })
+                {
                     continue;
                 }
                 let file = item
@@ -544,19 +551,19 @@ impl Inner {
                     });
                 let captured = CapturedInput {
                     generation: batch
-                        .acquisition
+                        .capture_read
                         .as_ref()
                         .and_then(|capture_read| capture_read.generation.clone()),
                     raw_total: batch
-                        .acquisition
+                        .capture_read
                         .as_ref()
                         .and_then(|capture_read| capture_read.raw_total),
-                    raw_predecessor: batch
-                        .acquisition
+                    previous_revision: batch
+                        .capture_read
                         .as_ref()
-                        .and_then(|capture_read| capture_read.raw_predecessor.clone()),
+                        .and_then(|capture_read| capture_read.previous_revision.clone()),
                     raw_range: batch
-                        .acquisition
+                        .capture_read
                         .as_ref()
                         .map(|capture_read| capture_read.range)
                         .or_else(|| {
@@ -565,7 +572,7 @@ impl Inner {
                                 end: batch.length,
                             })
                         }),
-                    basis: Some(bases[&self.capture_source_selector(batch, &pending)?].clone()),
+                    base: Some(bases[&self.capture_source_selector(batch, &pending)?].clone()),
                     input: name,
                     route: batch.input.route,
                     rows,
@@ -598,10 +605,10 @@ impl Inner {
         };
         let prepared = match sinex.prepare_input_group(&plan, &mut members)? {
             crate::primary::CaptureResult::Accepted { write } => write,
-            crate::primary::CaptureResult::UnresolvedBasisConflict { spooled } => {
+            crate::primary::CaptureResult::UnresolvedBaseConflict { spooled } => {
                 return Ok(failed(
                     group.len(),
-                    StoreError::UnresolvedBasisConflict { spooled },
+                    StoreError::UnresolvedBaseConflict { spooled },
                 ));
             }
         };
@@ -645,7 +652,7 @@ impl Inner {
         batch: &Batch,
         pending: &[PendingCapture],
     ) -> Result<crate::primary::SourceSelector> {
-        if let Some(capture_read) = &batch.acquisition {
+        if let Some(capture_read) = &batch.capture_read {
             return Ok(capture_read.source.clone());
         }
         if let Some(observation) = &batch.observation {
@@ -660,7 +667,7 @@ impl Inner {
             .rev()
             .find_map(|pending| match &pending.captured {
                 Capture::Input(input) if input.rows.input == batch.input.id => {
-                    input.basis.as_ref().map(|base| base.source.clone())
+                    input.base.as_ref().map(|base| base.source.clone())
                 }
                 _ => None,
             })
@@ -874,13 +881,13 @@ impl Inner {
         ready_extents: &[Placed],
     ) -> Result<Option<InputRows>> {
         let source = input
-            .basis
+            .base
             .as_ref()
             .map(|base| base.source.clone())
             .or_else(|| {
                 let observation = input.rows.observation.as_ref()?;
                 Some(crate::primary::SourceSelector {
-                    origin: input.rows.format.clone(),
+                    origin: input.rows.origin.clone(),
                     machine: observation.machine.clone(),
                     path_bytes: observation.path_bytes.clone()?,
                 })

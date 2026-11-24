@@ -284,7 +284,7 @@ fn a_chat_branched_into_a_new_conversation_keeps_only_its_tail() {
     assert_eq!(link.kind, LinkKind::Fork);
     assert_eq!(link.parent.native().as_str(), "orig");
     assert_eq!(link.child.native().as_str(), "fork");
-    assert_eq!(link.at.as_ref().unwrap().native().as_str(), "a");
+    assert_eq!(link.branch_point.as_ref().unwrap().native().as_str(), "a");
     let tail = &step.output.messages[2].message;
     assert_eq!(tail.parent.as_ref().unwrap().native().as_str(), "a");
     let [copy] = &step.output.prefix_copies[..] else {

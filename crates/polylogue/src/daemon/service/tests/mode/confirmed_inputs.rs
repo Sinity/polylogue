@@ -91,9 +91,9 @@ fn an_idle_primary_parses_later_confirmed_originals_without_provider_sources() {
                     sinex_context: None,
                     change: ConfirmedChange::Live(Box::new(Product::Input {
                         rows: Box::new(InputRows {
-                            acquisition: None,
+                            capture_read: None,
                             input: format!("late-input-{number}"),
-                            format: "claude-code".into(),
+                            origin: "claude-code".into(),
                             revision: Some(Revision {
                                 number: 1,
                                 produced: "first".into(),

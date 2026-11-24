@@ -102,7 +102,7 @@ fn an_unknown_hash_keeps_the_conversation_and_leaves_the_file_not_fetched() {
         .import_with_options(
             std::slice::from_ref(&path),
             &ImportOptions {
-                format: Some("browser-capture".into()),
+                origin: Some("browser-capture".into()),
                 ..Default::default()
             },
         )

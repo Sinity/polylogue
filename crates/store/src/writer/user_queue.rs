@@ -23,12 +23,12 @@ pub(super) struct UserQueue {
     blocked: Condvar,
 }
 
-pub(super) struct QueueSlot {
+pub(super) struct Reservation {
     queue: Option<Arc<UserQueue>>,
 }
 
 impl UserQueue {
-    pub(super) fn reserve(self: &Arc<Self>, limit: Option<&ReadLimit>) -> Result<QueueSlot> {
+    pub(super) fn reserve(self: &Arc<Self>, limit: Option<&ReadLimit>) -> Result<Reservation> {
         let _cancel = limit.map(|limit| {
             let queue = Arc::clone(self);
             limit.cancellation.on_cancel(move || {
@@ -46,7 +46,7 @@ impl UserQueue {
             }
             if state.waiting.len() + state.reserved < USER_QUEUE {
                 state.reserved += 1;
-                return Ok(QueueSlot {
+                return Ok(Reservation {
                     queue: Some(Arc::clone(self)),
                 });
             }
@@ -140,7 +140,7 @@ impl UserQueue {
 #[cfg(test)]
 mod tests;
 
-impl QueueSlot {
+impl Reservation {
     pub(super) fn push(mut self, message: UserMsg) -> Result<()> {
         let queue = self.queue.take().expect("an unconsumed reservation");
         let mut state = queue.state.lock().map_err(|_| StoreError::WriterGone)?;
@@ -154,7 +154,7 @@ impl QueueSlot {
     }
 }
 
-impl Drop for QueueSlot {
+impl Drop for Reservation {
     fn drop(&mut self) {
         if let Some(queue) = self.queue.take() {
             let mut state = queue.state.locked();

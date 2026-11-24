@@ -95,7 +95,7 @@ fn version_hash_ignores_nested_json_member_order() {
         );
         let rows = reader
             .query(
-                "SELECT count(*) AS sources, count(DISTINCT hash) AS n FROM reading_message",
+                "SELECT count(*) AS sources, count(DISTINCT version_pk) AS n FROM message_parse",
                 &[],
             )
             .unwrap();
@@ -103,7 +103,7 @@ fn version_hash_ignores_nested_json_member_order() {
         let count = rows[0]["n"].as_u64().unwrap();
         let hashes = reader
             .query(
-                "SELECT hex(s.hash) AS hash FROM reading_message s ORDER BY input_pk",
+                "SELECT hex(v.version_hash) AS hash FROM message_parse s JOIN message_version v ON v.pk=s.version_pk ORDER BY input_pk",
                 &[],
             )
             .unwrap();
@@ -141,7 +141,10 @@ fn distinct_structured_values_remain_inspectable_versions() {
         let reader = pool.reader().unwrap();
         assert_eq!(
             reader
-                .query("SELECT count(DISTINCT hash) AS n FROM reading_message", &[])
+                .query(
+                    "SELECT count(DISTINCT version_pk) AS n FROM message_parse",
+                    &[]
+                )
                 .unwrap()[0]["n"],
             2
         );

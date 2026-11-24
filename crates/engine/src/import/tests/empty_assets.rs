@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::{BlobHash, MessageId};
 use polylogue_store::Batch;
 use polylogue_store::assets::{AssetMatch, AttachmentState, ObservedMember};
-use polylogue_store::primary::{AcquisitionRoute, RawRange};
+use polylogue_store::primary::{RawRange, ReadRoute};
 use polylogue_testkit::ClaudeHome;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -269,7 +269,7 @@ fn mismatched_source_reads_cannot_borrow_an_empty_body() {
             format: Some("export-file".into()),
         });
         let mut source_read = engine
-            .source_read_context(&path, "export-file", AcquisitionRoute::ExplicitImport)
+            .source_read_context(&path, "export-file", ReadRoute::ExplicitImport)
             .finish(RawRange { start: 0, end: 0 }, prepared.hash());
         match invalid {
             "machine" => source_read.source.machine = "another-machine".into(),
@@ -294,8 +294,8 @@ fn mismatched_source_reads_cannot_borrow_an_empty_body() {
                 blobs: vec![],
                 length: 0,
                 parse: vec![],
-                acquisition: (invalid != "absent").then_some(source_read),
-                basis: None,
+                capture_read: (invalid != "absent").then_some(source_read),
+                base: None,
                 release: Default::default(),
             },
         );
@@ -352,8 +352,8 @@ fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
                 blobs: vec![],
                 length: b"replacement bytes".len() as u64,
                 parse: vec![],
-                acquisition: None,
-                basis: None,
+                capture_read: None,
+                base: None,
                 release: Default::default(),
             },
         )

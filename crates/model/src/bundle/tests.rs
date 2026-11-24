@@ -74,7 +74,7 @@ fn manifest_refuses_a_query_that_is_no_question_or_run_and_a_bad_position() {
 
 #[test]
 fn event_identity_refuses_each_malformed_claim() {
-    let claim = SourceClaim {
+    let claim = StatedSource {
         input: "a".into(),
         source: "codex".into(),
         source_chain: 1,
@@ -83,30 +83,30 @@ fn event_identity_refuses_each_malformed_claim() {
     };
     assert!(claim.validate().is_ok());
     for bad in [
-        SourceClaim {
+        StatedSource {
             source_chain: 0,
             ..claim.clone()
         },
-        SourceClaim {
+        StatedSource {
             source_end: None,
             ..claim.clone()
         },
-        SourceClaim {
+        StatedSource {
             source_start: None,
             ..claim.clone()
         },
-        SourceClaim {
+        StatedSource {
             source_start: Some(21),
             ..claim.clone()
         },
-        SourceClaim {
+        StatedSource {
             input: String::new(),
             ..claim.clone()
         },
     ] {
         assert_eq!(bad.validate(), Err(BundleError::InvalidEventIdentity));
     }
-    let identity = |id: &str, sources: Vec<SourceClaim>| ImportedEventIdentity {
+    let identity = |id: &str, sources: Vec<StatedSource>| ImportedEventIdentity {
         id: id.into(),
         sources,
     };
@@ -163,7 +163,7 @@ fn inventory_names_are_relative_and_cannot_escape_or_alias_members() {
 
 #[test]
 fn event_identity_keeps_every_stated_source() {
-    let stated = |input: &str| SourceClaim {
+    let stated = |input: &str| StatedSource {
         input: input.into(),
         source: "codex".into(),
         source_chain: 1,
@@ -190,13 +190,13 @@ fn event_identity_keeps_every_stated_source() {
     record.event.at = Timestamp::from_unix_ms(1);
     assert_eq!(
         record.validate(),
-        Err(BundleError::Time(crate::TimeEvidenceError::UnknownQuality))
+        Err(BundleError::Time(crate::TimeAccuracyError::UnknownQuality))
     );
     record
         .event
         .set_time(
             record.event.at,
-            crate::TimeEvidence::intrinsic(crate::Precision::Instant),
+            crate::TimeAccuracy::intrinsic(crate::Precision::Instant),
         )
         .unwrap();
     assert!(record.validate().is_ok());
@@ -344,7 +344,7 @@ fn hook_injection_keeps_message_and_imports_as_declared() {
         message: record.message.id.clone(),
         source_version: record.source_version,
         block: 1,
-        observed: Some(crate::injection::NativeHookField {
+        observed: Some(crate::injection::StatedHookField {
             input: "synthetic-input".into(),
             chain: 1,
             start: 3,

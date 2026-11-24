@@ -1,7 +1,7 @@
 use super::*;
 
-fn file_state() -> SourceGeneration {
-    SourceGeneration::File {
+fn file_state() -> ObservedState {
+    ObservedState::File {
         stream: RawStream {
             source: SourceSelector {
                 origin: "synthetic".into(),
@@ -33,7 +33,7 @@ fn file_state() -> SourceGeneration {
     }
 }
 
-fn body(state: &SourceGeneration, start: u64, end: u64) -> BodyRange {
+fn body(state: &ObservedState, start: u64, end: u64) -> BodyRange {
     BodyRange {
         generation: state.clone(),
         body: format!("body:{start}:{end}"),
@@ -67,7 +67,7 @@ fn holes_and_conflicting_overlaps_do_not_become_maximum_end_cursors() {
 #[test]
 fn tail_window_covers_only_its_back_linked_bytes() {
     let mut state = file_state();
-    let SourceGeneration::File { window, .. } = &mut state else {
+    let ObservedState::File { window, .. } = &mut state else {
         unreachable!()
     };
     window.start = 3;
@@ -89,7 +89,7 @@ fn tail_window_covers_only_its_back_linked_bytes() {
     assert_eq!(complete.root_body(), first.body);
     assert_eq!(complete.last_body(), last.body);
     let mut changed_source = last;
-    let SourceGeneration::File { observed, .. } = &mut changed_source.generation else {
+    let ObservedState::File { observed, .. } = &mut changed_source.generation else {
         unreachable!()
     };
     observed.changed.nanos += 1;
@@ -115,7 +115,7 @@ fn equal_file_stamps_do_not_join_different_stream_roles_or_members() {
         },
     ] {
         let mut other = state.clone();
-        let SourceGeneration::File { stream, .. } = &mut other else {
+        let ObservedState::File { stream, .. } = &mut other else {
             unreachable!()
         };
         stream.role = role;
@@ -132,7 +132,7 @@ fn database_snapshot_restart_cannot_complete_an_earlier_sampling_window() {
         role: RawStreamRole::DatabaseDump,
         ..file_state().stream().clone()
     };
-    let state = SourceGeneration::Database {
+    let state = ObservedState::Database {
         stream,
         snapshot: DatabaseSnapshotToken {
             nonce: "00000000-0000-0000-0000-000000000001".into(),
@@ -140,7 +140,7 @@ fn database_snapshot_restart_cannot_complete_an_earlier_sampling_window() {
         window: RawRange { start: 0, end: 10 },
     };
     let mut restarted = state.clone();
-    let SourceGeneration::Database { snapshot, .. } = &mut restarted else {
+    let ObservedState::Database { snapshot, .. } = &mut restarted else {
         unreachable!()
     };
     snapshot.nonce = "00000000-0000-0000-0000-000000000002".into();
@@ -153,7 +153,7 @@ fn database_snapshot_restart_cannot_complete_an_earlier_sampling_window() {
 #[test]
 fn empty_range_needs_a_body_and_repeats_keep_eof() {
     let mut empty = file_state();
-    let SourceGeneration::File {
+    let ObservedState::File {
         window, observed, ..
     } = &mut empty
     else {
@@ -198,7 +198,7 @@ fn contiguous_ranges_need_the_previous_body() {
 #[test]
 fn provider_window_end_before_opened_file_size_is_not_eof() {
     let mut state = file_state();
-    let SourceGeneration::File { observed, .. } = &mut state else {
+    let ObservedState::File { observed, .. } = &mut state else {
         unreachable!()
     };
     observed.size = 20;
@@ -211,7 +211,7 @@ fn provider_window_end_before_opened_file_size_is_not_eof() {
 fn input_route_leaves_stream_and_wire_key_unchanged() {
     let original = file_state();
     let mut imported = original.clone();
-    let SourceGeneration::File { stream, .. } = &mut imported else {
+    let ObservedState::File { stream, .. } = &mut imported else {
         unreachable!()
     };
     stream.input.route = polylogue_model::Route::Export;
@@ -220,7 +220,7 @@ fn input_route_leaves_stream_and_wire_key_unchanged() {
         serde_json::to_vec(&original).unwrap(),
         serde_json::to_vec(&imported).unwrap()
     );
-    let restored: SourceGeneration =
+    let restored: ObservedState =
         serde_json::from_slice(&serde_json::to_vec(&imported).unwrap()).unwrap();
     assert_eq!(restored, imported);
 }
@@ -228,7 +228,7 @@ fn input_route_leaves_stream_and_wire_key_unchanged() {
 #[test]
 fn cursor_keeps_unresolved_or_unknown_outcome() {
     let state = file_state();
-    for outcome in [None, Some(CaptureOutcome::UnresolvedBasisConflict)] {
+    for outcome in [None, Some(CaptureOutcome::UnresolvedBaseConflict)] {
         let mut check = ByteCursorCheck::new(state.clone()).unwrap();
         let mut first = body(&state, 0, 5);
         first.outcome = outcome;
@@ -246,7 +246,7 @@ fn separate_reads_of_equal_bytes_are_ambiguous() {
     let mut check = ByteCursorCheck::new(state.clone()).unwrap();
     let mut old = body(&state, 0, 10);
     old.body = "original-unresolved".into();
-    old.outcome = Some(CaptureOutcome::UnresolvedBasisConflict);
+    old.outcome = Some(CaptureOutcome::UnresolvedBaseConflict);
     check.push(old).unwrap();
     let mut new = body(&state, 0, 10);
     new.body = "new-observation".into();

@@ -47,14 +47,14 @@ fn unknown_time_event(
     after: Option<MessageId>,
     data: Json,
 ) -> Event {
-    let (at, time_evidence) = crate::time::parts(None);
+    let (at, time_accuracy) = crate::time::parts(None);
     Event {
         session: Some(session),
         kind: kind.into(),
         at,
-        at_quality: time_evidence.quality,
-        at_precision: time_evidence.precision,
-        at_until: time_evidence.until,
+        at_quality: time_accuracy.quality,
+        at_precision: time_accuracy.precision,
+        at_until: time_accuracy.until,
         after,
         range: None,
         data,
@@ -604,7 +604,7 @@ impl ExportParser for Database {
                         how: None,
                         parent: parent_id,
                         child: id.clone(),
-                        at: branch_point,
+                        branch_point,
                         call_id: None,
                         evidence: "Hermes parent_session_id/model_config/end_reason".into(),
                     });
@@ -626,16 +626,16 @@ impl ExportParser for Database {
                 }
                 if let Some(end) = text(row, "end_reason") {
                     sink.out.events.push({
-                        let (at, time_evidence) = crate::time::parts(
+                        let (at, time_accuracy) = crate::time::parts(
                             row.get("ended_at").and_then(crate::time::epoch_seconds),
                         );
                         Event {
                             session: Some(id),
                             kind: "session_end".into(),
                             at,
-                            at_quality: time_evidence.quality,
-                            at_precision: time_evidence.precision,
-                            at_until: time_evidence.until,
+                            at_quality: time_accuracy.quality,
+                            at_precision: time_accuracy.precision,
+                            at_until: time_accuracy.until,
                             after: facts.leaf.clone(),
                             range: None,
                             data: serde_json::json!({"end_reason":end}),
@@ -688,14 +688,14 @@ impl ExportParser for Database {
                             .or_else(|| facts.system.then(|| self.mid(raw, "system")).flatten());
                         for (kind, data) in diagnostics {
                             sink.out.events.push({
-                                let (at, time_evidence) = (message.at, message.time_evidence());
+                                let (at, time_accuracy) = (message.at, message.time_accuracy());
                                 Event {
                                     session: Some(sid.clone()),
                                     kind,
                                     at,
-                                    at_quality: time_evidence.quality,
-                                    at_precision: time_evidence.precision,
-                                    at_until: time_evidence.until,
+                                    at_quality: time_accuracy.quality,
+                                    at_precision: time_accuracy.precision,
+                                    at_until: time_accuracy.until,
                                     after: Some(id.clone()),
                                     range: None,
                                     data,

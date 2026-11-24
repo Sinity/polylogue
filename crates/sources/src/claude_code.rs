@@ -381,15 +381,15 @@ impl ClaudeCode {
         parser_state.names.insert(key, name.to_owned());
         if let Some(session) = session_id(stem) {
             out.events.push({
-                let (at, time_evidence) =
+                let (at, time_accuracy) =
                     crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
                 Event {
                     session: Some(session),
                     kind: kind.to_owned(),
                     at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
+                    at_quality: time_accuracy.quality,
+                    at_precision: time_accuracy.precision,
+                    at_until: time_accuracy.until,
                     after: parser_state.last.clone(),
                     range: Some(range(record)),
                     data,
@@ -414,15 +414,15 @@ impl ClaudeCode {
             return RecordOutcome::unreadable("session ID is empty");
         };
         out.events.push({
-            let (at, time_evidence) =
+            let (at, time_accuracy) =
                 crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
             Event {
                 session: Some(session),
                 kind: kind.to_owned(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: parser_state.last.clone(),
                 range: Some(range(record)),
                 data: context_boundary(kind, v),
@@ -508,7 +508,7 @@ impl ClaudeCode {
                     out.messages.len(),
                     context_blocks
                         .into_iter()
-                        .map(|(block, source_index)| polylogue_model::HookFieldClaim {
+                        .map(|(block, source_index)| polylogue_model::ParsedHookField {
                             block,
                             start: record.offset,
                             end: range(record).1,
@@ -524,7 +524,7 @@ impl ClaudeCode {
                 end: range(record).1,
                 id_kind,
                 message: {
-                    let (at, time_evidence) =
+                    let (at, time_accuracy) =
                         crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
                     Message {
                         id: id.clone(),
@@ -532,9 +532,9 @@ impl ClaudeCode {
                         parent: written_parent(v),
                         role: Role::System,
                         at,
-                        at_quality: time_evidence.quality,
-                        at_precision: time_evidence.precision,
-                        at_until: time_evidence.until,
+                        at_quality: time_accuracy.quality,
+                        at_precision: time_accuracy.precision,
+                        at_until: time_accuracy.until,
                         model: None,
                         prompt_kind: Some(if injected_context {
                             PromptKind::InjectedContext
@@ -659,7 +659,7 @@ impl ClaudeCode {
             })
             .flatten();
         let message = {
-            let (at, time_evidence) =
+            let (at, time_accuracy) =
                 crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
             Message {
                 id: id.clone(),
@@ -667,9 +667,9 @@ impl ClaudeCode {
                 parent: written_parent(v),
                 role,
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 model,
                 prompt_kind: if harness {
                     Some(PromptKind::Harness)
@@ -811,7 +811,7 @@ fn link_at(
         how: None,
         parent,
         child,
-        at,
+        branch_point: at,
         call_id,
         evidence: evidence.to_owned(),
     });

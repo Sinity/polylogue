@@ -1,6 +1,6 @@
 use super::*;
 use polylogue_model::bundle::fragments::{
-    TextCoverage, TextFragment, TextFragmentProvenance, TextFragmentRecord, TextSpanOrigin,
+    TextCoverage, TextFragment, TextFragmentRecord, TextFragmentSource, TextSpanOrigin,
 };
 use polylogue_model::{Reference, SpanUnit};
 
@@ -25,7 +25,7 @@ pub(crate) fn record(
         },
         text: text.into(),
         text_hash: BlobHash::of(text.as_bytes()),
-        provenance: TextFragmentProvenance {
+        provenance: TextFragmentSource {
             spans: vec![TextSpanOrigin {
                 reference: Reference::Span {
                     container: Box::new(container),
@@ -286,7 +286,7 @@ fn streamed_chain_scratch_keeps_stated_fragments() {
     ));
     let expected = output.clone();
     let mut step = crate::ParseStep::new(output, Default::default(), 0..9, true);
-    let mut reading = crate::writer::ChainReading::new().unwrap();
+    let mut reading = crate::writer::ChainParse::new().unwrap();
     reading.push(&mut step).unwrap();
     let mut visits = 0;
     reading

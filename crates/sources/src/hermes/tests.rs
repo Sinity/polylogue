@@ -205,7 +205,7 @@ fn compression_parents_use_nonempty_ancestor_and_its_leaf() {
     assert_eq!(link.kind, LinkKind::Continuation);
     assert!(link.parent.native().as_str().starts_with("parent@"));
     assert_eq!(
-        link.at.as_ref(),
+        link.branch_point.as_ref(),
         Some(&parsed.output.messages[0].message.id)
     );
 }
@@ -452,7 +452,7 @@ fn fork_marker_does_not_invent_a_branch_point() {
     ]);
     assert_eq!(parsed.output.links.len(), 1);
     assert_eq!(parsed.output.links[0].kind, LinkKind::Fork);
-    assert!(parsed.output.links[0].at.is_none());
+    assert!(parsed.output.links[0].branch_point.is_none());
     assert_eq!(parsed.output.messages.len(), 3);
 }
 

@@ -40,7 +40,7 @@ fn links_over_a_corrupt_stored_link_kind_is_a_store_failure() {
 }
 
 // The original query is the independent result and negative work control.
-const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.reading_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session parent ON parent.pk=m.session_pk JOIN session_prefix p ON p.parent_id=parent.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN reading_message s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
+const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parse_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session parent ON parent.pk=m.session_pk JOIN session_prefix p ON p.parent_id=parent.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_pk=m.pk JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
 
 fn copied_archive() -> (
     crate::fixture::writer::WriterArchive,
@@ -86,7 +86,7 @@ fn old_copies(
                 source: PrefixSource {
                     input: r.get(1)?,
                     chain: r.get(2)?,
-                    reading_version: r.get(3)?,
+                    parse_version: r.get(3)?,
                 },
                 position: [r.get(4)?, r.get(5)?],
             })
@@ -107,7 +107,7 @@ fn copied_messages_keep_sources_and_branch_points() {
         how: None,
         parent: sid("parent"),
         child: sid("branched"),
-        at: Some(id.clone()),
+        branch_point: Some(id.clone()),
         call_id: None,
         evidence: "synthetic branch".into(),
     });
@@ -137,7 +137,7 @@ fn copied_messages_keep_sources_and_branch_points() {
         assert_eq!(copies[0].parent, sid("parent"));
         assert_eq!(copies[0].child, sid("copy"));
         assert_eq!(copies[0].source.input, "input-copy");
-        assert_eq!(copies[0].source.reading_version, "synthetic=1");
+        assert_eq!(copies[0].source.parse_version, "synthetic=1");
     }
     index
         .execute(
@@ -171,7 +171,7 @@ fn copied_messages_keep_sources_and_branch_points() {
         source: PrefixSource {
             input: "original-copy".into(),
             chain: 17,
-            reading_version: "synthetic=2".into(),
+            parse_version: "synthetic=2".into(),
         },
         position: [u64::MAX, 42],
     };

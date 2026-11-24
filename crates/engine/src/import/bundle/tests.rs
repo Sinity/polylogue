@@ -1,7 +1,7 @@
 use super::*;
 use polylogue_model::bundle::{
-    MessageRecord, SourceClaim, TextCoverage, TextFragment, TextFragmentProvenance,
-    TextFragmentRecord, TextSourceVersion, TextSpanOrigin,
+    MessageRecord, StatedSource, TextCoverage, TextFragment, TextFragmentRecord,
+    TextFragmentSource, TextSourceVersion, TextSpanOrigin,
 };
 use polylogue_model::{BlobHash, Message, Reference, SpanUnit};
 
@@ -21,7 +21,7 @@ fn fragment(version: BlobHash, text: &str, total: u64, source: &str) -> Record {
         },
         text: text.into(),
         text_hash: BlobHash::of(text.as_bytes()),
-        provenance: TextFragmentProvenance {
+        provenance: TextFragmentSource {
             spans: vec![TextSpanOrigin {
                 reference: Reference::Span {
                     container: Box::new(container),
@@ -32,7 +32,7 @@ fn fragment(version: BlobHash, text: &str, total: u64, source: &str) -> Record {
                 start: 0,
                 end,
             }],
-            sources: vec![SourceClaim {
+            sources: vec![StatedSource {
                 input: source.into(),
                 source: "foreign-provider".into(),
                 source_chain: 1,

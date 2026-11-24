@@ -94,7 +94,7 @@ fn delivery_order_keeps_nonmonotone_physical_item_ranges() {
                     step.checkpoint
                         .as_ref()
                         .unwrap()
-                        .matches(&plan.origin.reading_version(), raw.len() as u64)
+                        .matches(&plan.origin.parse_version(), raw.len() as u64)
                 );
             }
         }

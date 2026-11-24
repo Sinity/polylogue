@@ -62,8 +62,8 @@ pub struct Document {
 }
 
 impl Document {
-    pub fn time_evidence(&self) -> crate::TimeEvidence {
-        crate::TimeEvidence {
+    pub fn time_accuracy(&self) -> crate::TimeAccuracy {
+        crate::TimeAccuracy {
             quality: self.source_time_quality,
             precision: self.source_time_precision,
             until: self.source_time_until,
@@ -73,8 +73,8 @@ impl Document {
     pub fn set_time(
         &mut self,
         at: Option<Timestamp>,
-        accuracy: crate::TimeEvidence,
-    ) -> Result<(), crate::TimeEvidenceError> {
+        accuracy: crate::TimeAccuracy,
+    ) -> Result<(), crate::TimeAccuracyError> {
         accuracy.validate(at)?;
         self.source_time = at;
         self.source_time_quality = accuracy.quality;

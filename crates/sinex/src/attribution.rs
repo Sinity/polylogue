@@ -72,7 +72,7 @@ impl SessionAttribution {
             "git_identity",
             "terminal_identity",
             "boot_id",
-            "native_unavailable",
+            "unstated",
         ]
         .iter()
         .any(|key| body.get(key).is_some())
@@ -135,7 +135,7 @@ impl SessionAttribution {
             }
         }
         out.unavailable.extend(
-            body.array("native_unavailable")
+            body.array("unstated")
                 .into_iter()
                 .flatten()
                 .filter_map(named),

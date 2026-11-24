@@ -42,8 +42,7 @@ fn result(conn: &Connection, call_pk: i64) -> Result<Option<String>> {
     let (text, body): (Option<String>, Option<Vec<u8>>) = conn
         .prepare_cached(
             "SELECT rg.body, rt.start, rt.length, rb.body FROM tool_call t
-             LEFT JOIN message rm ON rm.id = t.result_message_id
-             LEFT JOIN block rb ON rb.message_pk = rm.pk AND rb.idx = t.result_idx
+             LEFT JOIN block rb ON rb.pk = t.result_block_pk
              LEFT JOIN text rt ON rt.id = rb.text_id
              LEFT JOIN text_group rg ON rg.id = rt.group_id WHERE t.pk = ?1",
         )?
@@ -119,8 +118,8 @@ const FINISHED_CALLS_BY_MESSAGE: &str = "SELECT t.pk, t.command
       AND t.outcome = 'ok' AND t.command IS NOT NULL
     UNION ALL
     SELECT t.pk, t.command
-    FROM message m CROSS JOIN tool_call t ON t.result_message_id = m.id
-    WHERE m.pk = ?1 AND t.session_pk = ?2
+    FROM block b CROSS JOIN tool_call t ON t.result_block_pk = b.pk
+    WHERE b.message_pk = ?1 AND t.session_pk = ?2
       AND t.outcome = 'ok' AND t.command IS NOT NULL";
 
 /// Brings the links of every session the transaction changed (`sessions`)

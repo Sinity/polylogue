@@ -16,9 +16,15 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let tx = conn.transaction().unwrap();
-    let id = intern(&tx, "walrus", 1, None, false).unwrap();
-    assert_eq!(intern(&tx, "walrus", 1, None, false).unwrap(), id);
-    assert_eq!(intern(&tx, "walrus", 2, None, false).unwrap(), id);
+    let id = intern(&tx, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap();
+    assert_eq!(
+        intern(&tx, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap(),
+        id
+    );
+    assert_eq!(
+        intern(&tx, "walrus", 2, None, &IndexUpkeep::PerTransaction).unwrap(),
+        id
+    );
     tx.commit().unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -37,7 +43,10 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
         ),
         1
     );
-    assert_eq!(intern(&conn, "walrus", 1, None, false).unwrap(), id);
+    assert_eq!(
+        intern(&conn, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap(),
+        id
+    );
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
 }
 
@@ -48,12 +57,12 @@ fn removal_and_rollback_do_not_leave_search_work() {
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     {
         let tx = conn.transaction().unwrap();
-        intern(&tx, "rolled back", 1, None, false).unwrap();
+        intern(&tx, "rolled back", 1, None, &IndexUpkeep::PerTransaction).unwrap();
     }
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
     let tx = conn.transaction().unwrap();
-    let id = intern(&tx, "removed", 1, None, false).unwrap();
+    let id = intern(&tx, "removed", 1, None, &IndexUpkeep::PerTransaction).unwrap();
     remove(&tx, id, 1).unwrap();
     tx.commit().unwrap();
     assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
@@ -66,7 +75,7 @@ fn a_failed_decode_keeps_the_pending_entry() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let id = intern(&conn, "walrus", 1, None, false).unwrap();
+    let id = intern(&conn, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap();
     replace_group_body(&conn, id, b"damaged");
     assert!(index_pending(&conn, || ()).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
@@ -78,9 +87,9 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let first = intern(&conn, "walrus", 1, None, false).unwrap();
-    let second = intern(&conn, "narwhal", 2, None, false).unwrap();
-    intern(&conn, "dolphin", 1, None, false).unwrap();
+    let first = intern(&conn, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap();
+    let second = intern(&conn, "narwhal", 2, None, &IndexUpkeep::PerTransaction).unwrap();
+    intern(&conn, "dolphin", 1, None, &IndexUpkeep::PerTransaction).unwrap();
     replace_group_body(&conn, second, b"\0");
     assert_eq!(pending_batch(&conn, 1).unwrap(), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -104,11 +113,16 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
 #[test]
 fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction() {
     for at_build_end in [false, true] {
+        let upkeep = if at_build_end {
+            IndexUpkeep::AtBuildEnd(std::sync::Arc::new(crate::key_maps::KeyMaps::default()))
+        } else {
+            IndexUpkeep::PerTransaction
+        };
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-        intern(&conn, "walrus", 1, None, at_build_end).unwrap();
-        let second = intern(&conn, "narwhal", 1, None, at_build_end).unwrap();
+        intern(&conn, "walrus", 1, None, &upkeep).unwrap();
+        let second = intern(&conn, "narwhal", 1, None, &upkeep).unwrap();
         replace_group_body(&conn, second, b"\0");
         if at_build_end {
             assert!(build_search_indexes(&conn).is_err());
@@ -123,17 +137,22 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
 #[test]
 fn build_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
     for at_build_end in [false, true] {
+        let upkeep = if at_build_end {
+            IndexUpkeep::AtBuildEnd(std::sync::Arc::new(crate::key_maps::KeyMaps::default()))
+        } else {
+            IndexUpkeep::PerTransaction
+        };
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
         let tx = conn.transaction().unwrap();
         for n in 0..SEARCH_ROWS + 3 {
-            intern(&tx, &format!("walrus{n}"), 1, None, at_build_end).unwrap();
+            intern(&tx, &format!("walrus{n}"), 1, None, &upkeep).unwrap();
         }
         let shared = "Łódź Straße Øresund";
-        let id = intern(&tx, shared, 1, None, at_build_end).unwrap();
-        assert_eq!(intern(&tx, shared, 2, None, at_build_end).unwrap(), id);
-        intern(&tx, "notindexed", 0, None, at_build_end).unwrap();
+        let id = intern(&tx, shared, 1, None, &upkeep).unwrap();
+        assert_eq!(intern(&tx, shared, 2, None, &upkeep).unwrap(), id);
+        intern(&tx, "notindexed", 0, None, &upkeep).unwrap();
         tx.commit().unwrap();
         if at_build_end {
             build_search_indexes(&conn).unwrap();
@@ -417,13 +436,23 @@ fn search_work_follows_the_queue_instead_of_text_history() {
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let tx = conn.transaction().unwrap();
     for number in 0..HISTORY {
-        intern(&tx, &format!("historical text {number}"), 0, None, false).unwrap();
+        intern(
+            &tx,
+            &format!("historical text {number}"),
+            0,
+            None,
+            &IndexUpkeep::PerTransaction,
+        )
+        .unwrap();
     }
     tx.commit().unwrap();
     // A completed bulk build has history and an empty queue when analyzed.
     conn.execute_batch("ANALYZE").unwrap();
-    let id = intern(&conn, "walrus", 1, None, false).unwrap();
-    assert_eq!(intern(&conn, "walrus", 2, None, false).unwrap(), id);
+    let id = intern(&conn, "walrus", 1, None, &IndexUpkeep::PerTransaction).unwrap();
+    assert_eq!(
+        intern(&conn, "walrus", 2, None, &IndexUpkeep::PerTransaction).unwrap(),
+        id
+    );
     // A text removed before indexing must not strand the queue or enter FTS.
     conn.execute(
         "INSERT INTO search_pending(text_id,fts_table) VALUES (?1,1)",

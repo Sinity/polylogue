@@ -202,13 +202,13 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         use std::io::{Read, Seek, SeekFrom};
-        let context = if let Some(basis) = &plan.basis {
+        let context = if let Some(basis) = &plan.base {
             let mut context = self.source_read_context(
                 &plan.path,
                 plan.origin.name,
-                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                polylogue_store::primary::ReadRoute::NativeCapture,
             );
-            context.basis = Some(basis.clone());
+            context.base = Some(basis.clone());
             context
         } else {
             self.sampling_context(&plan.path, plan.origin.name)?
@@ -300,8 +300,8 @@ impl Engine {
                 blobs: Vec::new(),
                 length: plan.size,
                 parse: Vec::new(),
-                acquisition: Some(source_read),
-                basis: context.basis,
+                capture_read: Some(source_read),
+                base: context.base,
                 release: Default::default(),
             },
         )?;
@@ -415,8 +415,8 @@ impl Engine {
             blobs: pending.blobs,
             length: plan.size,
             parse: pending.steps,
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: Default::default(),
         };
         if pending.files.is_empty() {
@@ -507,14 +507,14 @@ impl ExportStep {
         step.order_from = Some(self.order_from);
         step.repeats_whole_conversations = self.repeats;
         step.reset = self.reset;
-        step.reading_version = plan.origin.reading_version();
+        step.parse_version = plan.origin.parse_version();
         if let Some(reason) = self.refused {
             step.progress = polylogue_model::batch::StepProgress::Refused { reason };
             step.stopped_attempt = Some(*stopped_attempt);
         }
         if self.done {
             step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
-                step.reading_version.clone(),
+                step.parse_version.clone(),
                 step.parsed_upto,
                 None,
             ));

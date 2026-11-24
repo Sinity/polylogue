@@ -244,7 +244,7 @@ impl<'a> Compiler<'a> {
                     self.matches_stage(stage.span, parts)?;
                 }
                 TransformKind::AsOf { .. } => return Err(relations::as_of_unavailable()),
-                _ => return Err(not_built("this shared query stage")),
+                _ => return Err(not_built("this shared query transform")),
             }
         }
         Ok(())
@@ -266,7 +266,7 @@ impl<'a> Compiler<'a> {
         } = parts;
         if scope.unit != Unit::Sessions {
             return Err(QueryError::Invalid {
-                message: "a `| UNIT where …` stage follows a session query".into(),
+                message: "a `| UNIT where …` transform follows a session query".into(),
                 position: span.start,
             });
         }
@@ -304,7 +304,7 @@ impl<'a> Compiler<'a> {
             w.push(self.lower(&filter, &next, true)?);
             self.snippet_terms.extend(search.terms);
         }
-        self.fold_bound_sessions(&next, &ntop, &mut w, true)?;
+        self.sessions_within_bounds(&next, &ntop, &mut w, true)?;
         *scope = next;
         *top = ntop;
         *where_sql = w;
@@ -939,7 +939,7 @@ impl<'a> Compiler<'a> {
     }
 
     /// Nested sources bind their own defaults, just like the outer selection.
-    pub(super) fn fold_bound_sessions(
+    pub(super) fn sessions_within_bounds(
         &self,
         scope: &RowContext,
         top: &[Condition],

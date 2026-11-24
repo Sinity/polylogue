@@ -33,7 +33,7 @@ pub fn stages(transforms: &[Transform], from: usize) -> Result<Vec<Stage>, Query
     while let Some(transform) = transforms.get(index) {
         if index > from && measures(&transforms[index - 1]) {
             return Err(QueryError::Invalid {
-                message: "`| measure WHAT` is the last stage".into(),
+                message: "`| measure WHAT` is the last transform".into(),
                 position: transform.span.start,
             });
         }

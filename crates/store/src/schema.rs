@@ -55,9 +55,15 @@ pub(crate) const QUERY_OBJECTS: &str = concat!(
 /// Read indexes added at open, or once the private build ends.
 pub(crate) const OPEN_INDEXES: &str = include_str!("schema/open_indexes.sql");
 
-/// Indexes written once from sorted rows when a private build ends. The
-/// natural-key indexes the writer looks rows up by stay throughout.
+/// Indexes written once from sorted rows when a private build ends. Natural
+/// keys come first, before the query indexes that depend on their uniqueness.
 pub(crate) const BUILT_AT_END: &[&str] = &[
+    "message_id",
+    "event_id",
+    "text_hash",
+    "message_version_hash",
+    "event_value_hash",
+    "link_value_hash",
     "text_normalized",
     "message_order",
     "tool_call_order",
@@ -110,10 +116,10 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 /// The register format version.
 pub const ARCHIVE_VERSION: u32 = 6;
 
-/// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 8;
+/// The index schema and row encoding version. Parse versions are independent.
+pub const INDEX_VERSION: u32 = 7;
 /// The primary cache's schema and row encoding version.
-pub const PRIMARY_INDEX_VERSION: u32 = 11;
+pub const PRIMARY_INDEX_VERSION: u32 = 10;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {

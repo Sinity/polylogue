@@ -69,9 +69,9 @@ fn step(
     // A step trimmed to the confirmed prefix keeps the material's tail.
     crate::input_rows::drop_front(&mut extents, offset);
     let rows = InputRows {
-        acquisition: None,
+        capture_read: None,
         input: "document".into(),
-        format: "synthetic".into(),
+        origin: "synthetic".into(),
         revision: Some(revision),
         extents,
         observation: None,
@@ -144,9 +144,9 @@ fn opaque_events_require_the_full_material_tail() {
             .collect(),
     };
     let rows = InputRows {
-        acquisition: None,
+        capture_read: None,
         input: "document".into(),
-        format: "synthetic".into(),
+        origin: "synthetic".into(),
         revision: None,
         observation: None,
         extents: vec![Extent {
@@ -197,6 +197,12 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
     let root = tempfile::tempdir().unwrap();
     let mut index = cache(&root.path().join("index.db"));
     let archive = crate::Archive::on_sinex(root.path(), &root.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     let mut writer = hashed_blobs::SegmentWriter::open(
         root.path().join("bytes"),
         "segments/chunks.hb",
@@ -230,6 +236,7 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &step(1, revision(1, "first", 1, &first), 0, &first, &one),
     )
     .unwrap();
@@ -242,6 +249,7 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &step(2, revision(2, "rewritten", 2, &second), 0, &second, &two),
     )
     .unwrap();
@@ -256,6 +264,7 @@ fn chunked_materials_catalog_each_chunk_and_their_chains_read_back() {
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &step(
             3,
             revision(3, "appended", 2, &third),

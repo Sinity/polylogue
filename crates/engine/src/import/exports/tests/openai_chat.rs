@@ -34,7 +34,7 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
                     .import_with_options(
                         std::slice::from_ref(&path),
                         &ImportOptions {
-                            format: Some("openai-chat".into()),
+                            origin: Some("openai-chat".into()),
                             explain: false,
                             ..Default::default()
                         },
@@ -65,7 +65,7 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
             );
             let ranges = r
                 .query(
-                    "SELECT source_start,source_end FROM reading_message ORDER BY source_start",
+                    "SELECT source_start,source_end FROM message_parse ORDER BY source_start",
                     &[],
                 )
                 .unwrap();
@@ -105,7 +105,7 @@ fn malformed_openai_wrapper_suffix_commits_no_prefix_messages() {
         .import_with_options(
             &[path],
             &ImportOptions {
-                format: Some("openai-chat".into()),
+                origin: Some("openai-chat".into()),
                 explain: false,
                 ..Default::default()
             },

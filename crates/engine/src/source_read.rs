@@ -1,16 +1,16 @@
 //! Only the receiving IO path creates source-read records; parser payloads do not.
 use crate::*;
-use polylogue_store::primary::{AcquisitionReceipt, AcquisitionRoute, RawRange, SourceSelector};
+use polylogue_store::primary::{CaptureRead, RawRange, ReadRoute, SourceSelector};
 /// What every source-read receipt of one source is built from: the source,
 /// how it was acquired and when.
 #[derive(Debug, Clone)]
 pub(crate) struct SourceReadContext {
     pub source: SourceSelector,
-    pub route: AcquisitionRoute,
+    pub route: ReadRoute,
     pub clock: polylogue_model::WallClock,
     /// The source position fixed before the read; none when the read states no
     /// source coordinates.
-    pub basis: Option<polylogue_store::primary::SourceBasis>,
+    pub base: Option<polylogue_store::primary::SourceBase>,
     /// The file's facts when the plan was made; the read refuses a file that
     /// no longer matches them.
     pub facts: Option<FileFacts>,
@@ -22,13 +22,9 @@ pub(crate) struct SourceReadContext {
     pub required_outcome: Option<polylogue_store::primary::CaptureOutcome>,
 }
 impl SourceReadContext {
-    pub(crate) fn finish(
-        &self,
-        range: RawRange,
-        hash: polylogue_model::BlobHash,
-    ) -> AcquisitionReceipt {
-        AcquisitionReceipt {
-            version: AcquisitionReceipt::VERSION,
+    pub(crate) fn finish(&self, range: RawRange, hash: polylogue_model::BlobHash) -> CaptureRead {
+        CaptureRead {
+            version: CaptureRead::VERSION,
             route: self.route,
             source: self.source.clone(),
             range,
@@ -36,7 +32,7 @@ impl SourceReadContext {
             observed_at: self.clock.now().into(),
             generation: None,
             raw_total: None,
-            raw_predecessor: None,
+            previous_revision: None,
             chunks: Vec::new(),
         }
     }
@@ -48,7 +44,7 @@ impl SourceReadContext {
         observed: polylogue_store::primary::FileSnapshot,
         role: polylogue_store::primary::RawStreamRole,
         window: RawRange,
-    ) -> AcquisitionReceipt {
+    ) -> CaptureRead {
         self.finish_observed(
             range,
             hash,
@@ -61,8 +57,8 @@ impl SourceReadContext {
         observed: polylogue_store::primary::FileSnapshot,
         role: polylogue_store::primary::RawStreamRole,
         window: RawRange,
-    ) -> polylogue_store::primary::SourceGeneration {
-        polylogue_store::primary::SourceGeneration::File {
+    ) -> polylogue_store::primary::ObservedState {
+        polylogue_store::primary::ObservedState::File {
             stream: polylogue_store::primary::RawStream {
                 source: self.source.clone(),
                 input,
@@ -77,13 +73,13 @@ impl SourceReadContext {
         &self,
         range: RawRange,
         hash: polylogue_model::BlobHash,
-        generation: polylogue_store::primary::SourceGeneration,
-    ) -> AcquisitionReceipt {
+        generation: polylogue_store::primary::ObservedState,
+    ) -> CaptureRead {
         let window = generation.window();
         let mut record = self.finish(range, hash);
         record.generation = Some(generation);
         record.raw_total = (range.end == window.end).then_some(window.end);
-        record.raw_predecessor = self.previous_body.clone();
+        record.previous_revision = self.previous_body.clone();
         record
     }
 }
@@ -131,11 +127,8 @@ impl Engine {
                 std::io::Error::other("source file changed before the spool lookup").into(),
             );
         }
-        let context = self.source_read_context(
-            &plan.path,
-            &plan.input.format,
-            AcquisitionRoute::NativeCapture,
-        );
+        let context =
+            self.source_read_context(&plan.path, &plan.input.format, ReadRoute::NativeCapture);
         let generation = context.observed_file(
             plan.input.clone(),
             file_snapshot(&metadata)?,
@@ -178,7 +171,7 @@ impl Engine {
     pub(crate) fn record_byte_read_status(
         &mut self,
         plan: &crate::plan::Plan,
-        source_read: Option<&AcquisitionReceipt>,
+        source_read: Option<&CaptureRead>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let Some(byte_read) = &plan.byte_read else {
@@ -228,7 +221,7 @@ impl Engine {
         }
         match cursor.outcome() {
             Some(polylogue_store::primary::CaptureOutcome::Prepared) => pass.capture_pending = true,
-            Some(polylogue_store::primary::CaptureOutcome::UnresolvedBasisConflict) => {
+            Some(polylogue_store::primary::CaptureOutcome::UnresolvedBaseConflict) => {
                 pass.errors.push(format!(
                     "bytes kept in the spool for {}; source acceptance unresolved",
                     plan.input.id
@@ -303,7 +296,7 @@ impl Engine {
         &mut self,
         group: &str,
         input: &InputKey,
-        source_read: &polylogue_store::primary::AcquisitionReceipt,
+        source_read: &polylogue_store::primary::CaptureRead,
     ) -> Result<Option<String>, EngineError> {
         let mut after = None;
         let mut found = None;
@@ -319,7 +312,7 @@ impl Engine {
                     continue;
                 };
                 if captured.rows.input == input.id
-                    && captured.rows.format == input.format
+                    && captured.rows.origin == input.format
                     && captured.generation == source_read.generation
                     && captured.raw_range == Some(source_read.range)
                     && captured.hash == source_read.hash
@@ -349,16 +342,16 @@ impl Engine {
         path: &Path,
         origin: &str,
     ) -> Result<SourceReadContext, EngineError> {
-        let mut context = self.source_read_context(path, origin, AcquisitionRoute::NativeCapture);
+        let mut context = self.source_read_context(path, origin, ReadRoute::NativeCapture);
         let snapshot = self.writer.source_snapshot(context.source.clone())?;
-        context.basis = Some(snapshot.basis);
+        context.base = Some(snapshot.base);
         Ok(context)
     }
     pub(crate) fn source_read_context(
         &self,
         path: &Path,
         origin: &str,
-        route: AcquisitionRoute,
+        route: ReadRoute,
     ) -> SourceReadContext {
         SourceReadContext {
             source: SourceSelector {
@@ -368,7 +361,7 @@ impl Engine {
             },
             route,
             clock: self.config.clock.clone(),
-            basis: None,
+            base: None,
             facts: None,
             previous_body: None,
             required_outcome: None,

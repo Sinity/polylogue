@@ -333,10 +333,10 @@ impl DocumentParser for Capture {
         }
         if let Some(session) = session {
             let provenance = capture.get("provenance").cloned().unwrap_or(Json::Null);
-            sink.out.events.push({ let (at,time_evidence)=crate::time::parts(provenance.get("captured_at").and_then(time_of).map(crate::time::SourceTime::captured)); Event {
+            sink.out.events.push({ let (at,time_accuracy)=crate::time::parts(provenance.get("captured_at").and_then(time_of).map(crate::time::SourceTime::captured)); Event {
                 session: Some(session),
                 kind: "browser_capture".into(),
- at, at_quality:time_evidence.quality, at_precision:time_evidence.precision, at_until:time_evidence.until,
+ at, at_quality:time_accuracy.quality, at_precision:time_accuracy.precision, at_until:time_accuracy.until,
                 after: None,
                 range: None,
                 data: serde_json::json!({
@@ -458,7 +458,7 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
             continue;
         };
         let message = {
-            let (at, time_evidence) = crate::time::parts(turn.get("timestamp").and_then(time_of));
+            let (at, time_accuracy) = crate::time::parts(turn.get("timestamp").and_then(time_of));
             Message {
                 id,
                 session: sid.clone(),
@@ -468,9 +468,9 @@ fn turns(origin: &str, session: &Json, sink: &mut Sink<'_>) {
                     .and_then(|p| message_id(origin, p)),
                 role,
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 model: turn
                     .str("model")
                     .filter(|s| !s.is_empty())

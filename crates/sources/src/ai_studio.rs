@@ -383,14 +383,14 @@ impl ExportParser for AiStudio {
                     }
                     sink.out.sessions.push(session);
                     sink.out.events.push({
-                        let (at, time_evidence) = crate::time::parts(None);
+                        let (at, time_accuracy) = crate::time::parts(None);
                         Event {
                             session: Some(sid.clone()),
                             kind: "run_settings".into(),
                             at,
-                            at_quality: time_evidence.quality,
-                            at_precision: time_evidence.precision,
-                            at_until: time_evidence.until,
+                            at_quality: time_accuracy.quality,
+                            at_precision: time_accuracy.precision,
+                            at_until: time_accuracy.until,
                             after: None,
                             range: Some((0, self.state.length)),
                             data: doc.get("runSettings").cloned().unwrap_or(Json::Null),
@@ -400,14 +400,14 @@ impl ExportParser for AiStudio {
                     attrs.remove("runSettings");
                     if !attrs.is_empty() {
                         sink.out.events.push({
-                            let (at, time_evidence) = crate::time::parts(None);
+                            let (at, time_accuracy) = crate::time::parts(None);
                             Event {
                                 session: Some(sid.clone()),
                                 kind: "prompt_metadata".into(),
                                 at,
-                                at_quality: time_evidence.quality,
-                                at_precision: time_evidence.precision,
-                                at_until: time_evidence.until,
+                                at_quality: time_accuracy.quality,
+                                at_precision: time_accuracy.precision,
+                                at_until: time_accuracy.until,
                                 after: None,
                                 range: Some((0, self.state.length)),
                                 data: Json::Object(attrs),
@@ -472,7 +472,7 @@ impl ExportParser for AiStudio {
                     how: None,
                     parent,
                     child: sid.clone(),
-                    at: None,
+                    branch_point: None,
                     call_id: None,
                     evidence: "branchParent.promptId".into(),
                 });
@@ -687,16 +687,16 @@ fn plain(
     blocks: Vec<Block>,
 ) -> Message {
     {
-        let (at, time_evidence) = crate::time::parts(None);
+        let (at, time_accuracy) = crate::time::parts(None);
         Message {
             id,
             session,
             parent: None,
             role,
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             model: None,
             prompt_kind: None,
             blocks,

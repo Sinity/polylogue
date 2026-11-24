@@ -1,9 +1,9 @@
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
-fn message_sources(w: &ClaudeHome) -> Vec<polylogue_model::Json> {
+fn message_parses(w: &ClaudeHome) -> Vec<polylogue_model::Json> {
     let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
-    pool.reader().unwrap().query("SELECT m.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.hash) AS version FROM reading_message s JOIN message m ON m.id=s.message_id JOIN input_ref r ON r.pk=s.input_pk ORDER BY m.id,r.id,s.chain,s.source_start",&[]).unwrap()
+    pool.reader().unwrap().query("SELECT m.id,r.id AS input,s.chain,s.source_start,s.source_end,hex((SELECT version_hash FROM message_version WHERE pk=s.version_pk)) AS version FROM message_parse s JOIN message m ON m.pk=s.message_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY m.id,r.id,s.chain,s.source_start",&[]).unwrap()
 }
 
 #[test]
@@ -20,7 +20,7 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
             e.import_with_options(
                 std::slice::from_ref(&path),
                 &ImportOptions {
-                    format: Some("claude-code".into()),
+                    origin: Some("claude-code".into()),
                     explain: false,
                     ..Default::default()
                 }
@@ -31,7 +31,7 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
             .is_empty()
         );
     }
-    let before = message_sources(&w);
+    let before = message_parses(&w);
     assert_eq!(before.len(), 2);
     assert_eq!(w.texts("s").len(), 2);
     drop(e);
@@ -41,7 +41,7 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
     let (mut e, _lock) = engine(&w, 64);
     let first = e.run_pass().unwrap();
     assert!(first.errors.is_empty(), "{first:?}");
-    assert_eq!(message_sources(&w), before);
+    assert_eq!(message_parses(&w), before);
     assert_eq!(w.texts("s").len(), 2);
     assert!(e.inputs.is_empty());
     let quiet = e.run_pass().unwrap();
@@ -268,7 +268,7 @@ fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions()
         serde_json::json!({
             "messages": reader.messages(&id, false).unwrap(),
             "sessions": reader.query("SELECT id FROM session WHERE stub=0 ORDER BY id", &[]).unwrap(),
-            "sources": reader.query("SELECT m.id,s.source_start,s.source_end FROM reading_message s JOIN message m ON m.id=s.message_id ORDER BY m.id", &[]).unwrap(),
+            "sources": reader.query("SELECT m.id,s.source_start,s.source_end FROM message_parse s JOIN message m ON m.pk=s.message_pk ORDER BY m.id", &[]).unwrap(),
         })
     }
     let w = ClaudeHome::new();

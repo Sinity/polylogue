@@ -16,7 +16,7 @@ fn source_time_encodings_keep_declared_precision() {
         let time = value.unwrap();
         assert_eq!(
             time.accuracy(),
-            TimeEvidence {
+            TimeAccuracy {
                 quality: TimeQuality::Intrinsic,
                 precision: Some(precision),
                 until: None
@@ -29,7 +29,7 @@ fn source_time_encodings_keep_declared_precision() {
 #[test]
 fn clock_without_seconds_has_minute_precision() {
     let time = rfc3339(&json!("2026-01-02T03:04Z")).unwrap();
-    assert_eq!(time.accuracy(), TimeEvidence::intrinsic(Precision::Minute));
+    assert_eq!(time.accuracy(), TimeAccuracy::intrinsic(Precision::Minute));
     assert_eq!(time.timestamp().unix_ms() / 1000, 1767323040);
 }
 
@@ -59,7 +59,7 @@ fn unreadable_or_unzoned_times_stay_unknown() {
     }
     assert_eq!(epoch_millis(&json!("5")), None);
     assert_eq!(epoch_millis(&json!(1.5)), None);
-    assert_eq!(parts(None), (None, TimeEvidence::UNKNOWN));
+    assert_eq!(parts(None), (None, TimeAccuracy::UNKNOWN));
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn persisted_parser_time_rejects_inconsistent_accuracy() {
     // Only the precision differs from the readable value, so a rejection
     // cannot come from a misspelled key or a wrong JSON type.
     let mut invalid = serde_json::to_value(valid).unwrap();
-    invalid["evidence"]["precision"] = Json::Null;
+    invalid["accuracy"]["precision"] = Json::Null;
     assert!(serde_json::from_value::<SourceTime>(invalid).is_err());
     assert_eq!(
         serde_json::from_value::<SourceTime>(serde_json::to_value(valid).unwrap()).unwrap(),

@@ -12,8 +12,8 @@ fn append(conn: &Connection, input: &str, id: &str, seq: i64, from: i64, end: i6
     .unwrap();
     InputRows {
         input: input.into(),
-        format: "synthetic".into(),
-        acquisition: None,
+        origin: "synthetic".into(),
+        capture_read: None,
         revision: Some(Revision {
             number: 1,
             produced: "first".into(),

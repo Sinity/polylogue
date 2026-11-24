@@ -61,13 +61,10 @@ fn unparsed_database_commits_rows_and_capture_progress() {
     assert!(progress.length > 0);
     assert_eq!(progress.parsed_upto, progress.length);
     let state = reader
-        .query(
-            "SELECT status,reading_version,records FROM parse_state",
-            &[],
-        )
+        .query("SELECT status,parse_version,records FROM parse_state", &[])
         .unwrap();
     assert_eq!(state[0]["status"], "no_parser_yet");
-    assert_ne!(state[0]["reading_version"], "");
+    assert_ne!(state[0]["parse_version"], "");
     assert_eq!(state[0]["records"], 2);
     assert_eq!(
         reader

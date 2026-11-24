@@ -22,31 +22,65 @@ fn reading(text: &str) -> Batch {
     );
     batch.change = Change::Reparse { chain: 1 };
     batch.observation = None;
-    batch.parse[0].reading_version = "synthetic=1".into();
+    batch.parse[0].parse_version = "synthetic=1".into();
     batch
 }
 
 /// Writes the local rows of a re-parse of a confirmed chain, as the serial
 /// writer does after the parsed events are in the spool.
-fn write_local(index: &mut Connection, _archive: &Archive, mut batch: Batch) {
+fn write_local(index: &mut Connection, archive: &Archive, mut batch: Batch) {
     batch.parse[0].prepare();
-    let Change::Reparse { chain } = batch.change else {
-        panic!("a re-parse names its chain");
-    };
+    let resolver =
+        resolve::Resolver::new(archive, index, resolve::IndexUpkeep::PerTransaction).unwrap();
+    resolver.batches(&mut [&mut batch]).unwrap();
+    let texts = crate::text_rows::TextIds::new(
+        index,
+        false,
+        crate::archive::MemoryBudget::default().keys() / 3,
+    )
+    .unwrap();
+    let text_transaction = texts.transaction();
     let tx = index.transaction().unwrap();
     let counter = bump_counter(&tx).unwrap();
-    let step = batch.parse[0].clone();
-    write_test_rows(&tx, &batch, &step, chain, counter, false).unwrap();
+    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
+    let step = &batch.parse[0];
+    write_rows(
+        &tx,
+        &batch,
+        step,
+        rows::ReadingWrite {
+            texts: &texts,
+            resolution: step.resolution.as_ref().unwrap(),
+            counter,
+            upkeep: &resolve::IndexUpkeep::PerTransaction,
+            source_commit: Some(&fixture_commit()),
+            changes: &changes,
+            retraction: false,
+            replacement: false,
+        },
+    )
+    .unwrap();
+    rows::finish(
+        &tx,
+        &changes,
+        &resolve::IndexUpkeep::PerTransaction,
+        &texts,
+        counter,
+    )
+    .unwrap();
     tx.commit().unwrap();
+    text_transaction.commit();
 }
 
 /// Applies one confirmed position holding `changes` for the event `event`.
 fn apply_position(
     index: &mut Connection,
-    _archive: &Archive,
+    archive: &Archive,
     position: i64,
     changes: Vec<(String, ConfirmedChange)>,
 ) {
+    let resolver =
+        resolve::Resolver::new(archive, index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let mut events = changes
         .into_iter()
         .enumerate()
@@ -76,6 +110,7 @@ fn apply_position(
         )
         .unwrap(),
         index,
+        &resolver,
         &events,
     )
     .unwrap();

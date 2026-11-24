@@ -21,7 +21,7 @@ inputs AS MATERIALIZED (
                 s.imported,
                 COALESCE(f.format, i.format),
                 COALESCE(f.path, o.path),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.reading_version, p.status, p.at_length, p.reason, p.stopped_attempt,
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.parse_version, p.status, p.at_length, p.reason, p.stopped_attempt,
                 CASE WHEN f.path IS NOT NULL THEN f.path_bytes ELSE o.path_bytes END
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
@@ -38,5 +38,5 @@ inputs AS MATERIALIZED (
                 OR (?2 AND p.status IN ('refused','failed') AND p.at_length=c.length)
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
-                      AND json_extract(expected.value, '$[1]') IS NOT p.reading_version)))
+                      AND json_extract(expected.value, '$[1]') IS NOT p.parse_version)))
             ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC;

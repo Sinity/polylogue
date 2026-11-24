@@ -1,7 +1,7 @@
 //! Signal runtime values use the common evaluator and delivery schemas. The
 //! daemon computes these values; they are not an authored rule or a bypass of
 //! the final host policy. Bundles keep them as historical state.
-use crate::{BlobHash, Timestamp, authored::ExecutionEligibility, user};
+use crate::{BlobHash, Timestamp, authored::RunsHere, user};
 use serde::{Deserialize, Serialize};
 use shared_signals::notifications::{Notice, NotificationReceipt, NotificationState};
 use shared_signals::{ActiveRule, Delivery, DeliveryReceipt, Evaluator, HostPolicy};
@@ -38,12 +38,12 @@ pub struct Metadata {
     pub notice: Notice,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outlet: Option<Outlet>,
-    pub execution: ExecutionEligibility,
+    pub execution: RunsHere,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Outbox {
+pub struct PendingDelivery {
     pub record: user::Delivery,
     pub metadata: Metadata,
 }
@@ -83,7 +83,7 @@ pub struct EventRecord {
     pub event: Event,
 }
 
-/// Checkpoint, immutable outbox entries and returned receipts commit together.
+/// Checkpoint, immutable pending_delivery entries and returned receipts commit together.
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Commit {
@@ -91,7 +91,7 @@ pub struct Commit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prior: Option<BlobHash>,
     pub checkpoint: Checkpoint,
-    pub outbox: Vec<Outbox>,
+    pub pending_delivery: Vec<PendingDelivery>,
     pub events: Vec<Event>,
 }
 
@@ -103,10 +103,10 @@ impl Checkpoint {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StoredOutbox {
+pub struct StoredPendingDelivery {
     pub id: String,
     pub at: Timestamp,
-    pub outbox: Outbox,
+    pub pending_delivery: PendingDelivery,
     pub events: Vec<EventRecord>,
 }
 
@@ -121,7 +121,7 @@ impl<'de> Deserialize<'de> for Commit {
             #[serde(default)]
             prior: Option<BlobHash>,
             checkpoint: Checkpoint,
-            outbox: Vec<Outbox>,
+            pending_delivery: Vec<PendingDelivery>,
             events: Vec<Event>,
         }
         let value = serde_json::Value::deserialize(deserializer)?;
@@ -129,7 +129,7 @@ impl<'de> Deserialize<'de> for Commit {
         Ok(Self {
             prior: fields.prior,
             checkpoint: fields.checkpoint,
-            outbox: fields.outbox,
+            pending_delivery: fields.pending_delivery,
             events: fields.events,
         })
     }

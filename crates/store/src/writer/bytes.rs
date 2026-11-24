@@ -103,9 +103,9 @@ fn input_rows_at(
 ) -> Result<(Option<i64>, InputRows)> {
     let next = latest.as_ref().map_or(1, |l| l.0 + 1);
     let mut rows = InputRows {
-        acquisition: b.acquisition.clone(),
+        capture_read: b.capture_read.clone(),
         input: b.input.id.clone(),
-        format: b.input.format.clone(),
+        origin: b.input.format.clone(),
         revision: None,
         extents: Vec::new(),
         observation: None,
@@ -118,7 +118,7 @@ fn input_rows_at(
         if b.continues
             || b.new_blob.is_some()
             || b.blobs.iter().any(|blob| {
-                !b.acquisition.as_ref().is_some_and(|capture_read| {
+                !b.capture_read.as_ref().is_some_and(|capture_read| {
                     capture_read.hash == blob.hash
                         && capture_read.range.length().ok() == Some(blob.size)
                 })

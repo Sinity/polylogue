@@ -6,7 +6,7 @@ use crate::OptionExt as _;
 use crate::{Result, StoreError, source::Source};
 use polylogue_model::{
     DeliverySender,
-    authored::{AuthoredEffect, DeliveryRecord, ExecutionEligibility},
+    authored::{AuthoredEffect, DeliveryRecord, RunsHere},
     signal::{Checkpoint, Commit, EventRecord, Metadata},
     user::{UserOutcome, UserRequest},
 };
@@ -77,7 +77,7 @@ pub(crate) fn write(
         return Err(StoreError::Conflict("signal checkpoint changed".into()));
     }
     let mut ids = BTreeSet::new();
-    for pending in &commit.outbox {
+    for pending in &commit.pending_delivery {
         check_pending_identity(&pending.metadata)?;
         if pending.record.sender != DeliverySender::Signal.as_str() {
             return Err(StoreError::Invalid(
@@ -85,7 +85,7 @@ pub(crate) fn write(
             ));
         }
         let id = pending.metadata.delivery.id().to_owned();
-        if !ids.insert(id.clone()) || pending.metadata.execution != ExecutionEligibility::Live {
+        if !ids.insert(id.clone()) || pending.metadata.execution != RunsHere::Live {
             return Err(StoreError::Invalid(
                 "each new pending delivery must have one live identity".into(),
             ));
@@ -313,7 +313,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
                     "signal receipts beyond the recorded request".into(),
                 ));
             }
-            for pending in &commit.outbox {
+            for pending in &commit.pending_delivery {
                 if !effect.deliveries.iter().any(|d| {
                     d.delivery.id == pending.metadata.delivery.id()
                         && d.delivery.signal.as_ref() == Some(&pending.metadata)

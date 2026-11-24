@@ -34,7 +34,7 @@ impl<'a> Compiler<'a> {
                 if let Some(cond) = &cond {
                     parts.push(self.cond(cond, scope, false)?);
                 }
-                self.fold_bound_sessions(scope, &top, &mut parts, cond.is_some())?;
+                self.sessions_within_bounds(scope, &top, &mut parts, cond.is_some())?;
                 Ok::<_, QueryError>(parts)
             })();
             self.saved_stack.pop();
@@ -178,7 +178,7 @@ impl Compiler<'_> {
         };
         if condition.is_some() || !query.attach.is_empty() {
             return Err(QueryError::Invalid {
-                message: "A kept result takes stages, not conditions or attached rows".into(),
+                message: "A kept result takes transforms, not conditions or attached rows".into(),
                 position: 0,
             });
         }
@@ -237,7 +237,7 @@ impl Compiler<'_> {
             }
         }
         let native_unit =
-            named_unit.filter(|_| !matched && kept.native_identity && shape == Shape::Rows);
+            named_unit.filter(|_| !matched && kept.row_identity && shape == Shape::Rows);
         let row_kind = if let Some(unit) = native_unit {
             let mut identity = vec![];
             let count = units::spec(unit).identity.len();

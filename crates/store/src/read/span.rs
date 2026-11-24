@@ -6,7 +6,7 @@ use crate::{Reader, Result, StoreError};
 use polylogue_model::bundle::{
     TextSpanOrigin,
     fragments::seek::{
-        NativeSpanSeek, NativeTextBody, NativeTextPiece, NativeTextPosition, TextField,
+        SourceSpanSeek, SourceTextBody, SourceTextPiece, SourceTextPosition, TextField,
     },
 };
 use polylogue_model::{
@@ -24,7 +24,7 @@ pub struct SpanSource<'reader, 'pool> {
     version: TextSourceVersion,
     coverage: TextCoverage,
     committed: Option<u64>,
-    seek: NativeSpanSeek,
+    seek: SourceSpanSeek,
 }
 impl SpanSource<'_, '_> {
     pub fn container(&self) -> &Reference {
@@ -40,7 +40,7 @@ impl SpanSource<'_, '_> {
         self.committed
     }
 
-    pub fn seek(&self) -> NativeSpanSeek {
+    pub fn seek(&self) -> SourceSpanSeek {
         self.seek
     }
 
@@ -50,7 +50,7 @@ impl SpanSource<'_, '_> {
         mut visit: impl FnMut(&str) -> Result<ControlFlow<()>>,
     ) -> Result<ControlFlow<()>> {
         self.reader.check()?;
-        if self.seek.start.piece == NativeTextPiece::Empty {
+        if self.seek.start.piece == SourceTextPiece::Empty {
             return Ok(ControlFlow::Continue(()));
         }
         let mut first = true;
@@ -136,7 +136,7 @@ impl<'pool> Reader<'pool> {
                 && bound <= next
                 && (start_position.is_none() || bound == bytes)
             {
-                start_position = Some(NativeTextPosition {
+                start_position = Some(SourceTextPosition {
                     piece,
                     byte: bound - bytes,
                 });
@@ -146,7 +146,7 @@ impl<'pool> Reader<'pool> {
                 && bound <= next
                 && end_position.is_none()
             {
-                end_position = Some(NativeTextPosition {
+                end_position = Some(SourceTextPosition {
                     piece,
                     byte: bound - bytes,
                 });
@@ -163,11 +163,11 @@ impl<'pool> Reader<'pool> {
             return Ok(None);
         }
         let range = bounds.finish().map_err(crate::StoreError::invalid)?;
-        let empty = NativeTextPosition {
-            piece: NativeTextPiece::Empty,
+        let empty = SourceTextPosition {
+            piece: SourceTextPiece::Empty,
             byte: 0,
         };
-        let seek = NativeSpanSeek {
+        let seek = SourceSpanSeek {
             start: start_position.unwrap_or(empty),
             end: end_position.unwrap_or(empty),
         };
@@ -191,7 +191,7 @@ impl<'pool> Reader<'pool> {
         &'reader self,
         origin: &TextSpanOrigin,
         version: &TextSourceVersion,
-        seek: NativeSpanSeek,
+        seek: SourceSpanSeek,
     ) -> Result<SpanSource<'reader, 'pool>> {
         self.check()?;
         let Reference::Span { container, .. } = &origin.reference else {
@@ -217,12 +217,12 @@ impl<'pool> Reader<'pool> {
         }
         for position in [seek.start, seek.end] {
             match position.piece {
-                NativeTextPiece::Body { body } => self.require_span_field(container, body)?,
-                NativeTextPiece::Separator { before, after } => {
+                SourceTextPiece::Body { body } => self.require_span_field(container, body)?,
+                SourceTextPiece::Separator { before, after } => {
                     self.require_span_field(container, before)?;
                     self.require_span_field(container, after)?;
                 }
-                NativeTextPiece::Empty => {}
+                SourceTextPiece::Empty => {}
             }
         }
         Ok(SpanSource {
@@ -234,7 +234,7 @@ impl<'pool> Reader<'pool> {
             seek,
         })
     }
-    fn require_span_field(&self, container: &Reference, body: NativeTextBody) -> Result<()> {
+    fn require_span_field(&self, container: &Reference, body: SourceTextBody) -> Result<()> {
         let kind: Option<String> = match container {
             Reference::Message(id) | Reference::Block { message: id, .. } => self.conn()?.scalar_optional("SELECT b.kind FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2", params![id.to_string(), body.block.to_string()])?,
             Reference::Document(id) => {

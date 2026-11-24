@@ -18,8 +18,8 @@ use crate::blobs::{Change, FileFacts, NewBlob};
 use crate::{Result, StoreError};
 use polylogue_model::LockExt;
 use polylogue_model::{
-    BlobHash, Block, ErrorReason, Event, Json, Link, Message, Output, RecordCounts, Session,
-    SessionId, Timestamp, ToolAction, ToolOutcome,
+    BlobHash, Block, ErrorReason, Event, Json, Link, Message, MessageRow, Output, RecordCounts,
+    Session, SessionId, Timestamp, ToolAction, ToolOutcome,
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use std::collections::HashMap;
@@ -49,26 +49,26 @@ pub use query_objects::HistorySlot;
 mod saved;
 mod scoped;
 mod source_snapshot;
-pub(crate) use readings::Touched;
-pub(crate) use retractions::{apply_source_retractions, check_source_retractions};
+pub(crate) use retractions::{apply_source_retractions, prepare_source_retractions};
 pub(crate) use rows::finish as finish_rows;
 mod hook_fields;
-pub(crate) mod identity;
-pub(crate) use readings::{read_message, shown_message};
-pub(crate) mod readings;
+pub(crate) mod resolve;
 mod rows;
 mod search;
-mod shown;
 mod staging;
 mod user_queue;
-pub use chain::ChainReading;
+pub use chain::ChainParse;
 
-use crate::encoding::{PreparedDocument, PreparedMessage, block_text, unpack_block};
+#[cfg(test)]
+use crate::encoding::pack_block;
+use crate::encoding::{PreparedDocument, PreparedMessage};
+use crate::encoding::{block_text, unpack_block};
 pub use batch::{
     Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep,
     WriteReport,
 };
 use bytes::*;
+use rows::*;
 use search::*;
 
 enum StoreGroup {
@@ -102,13 +102,7 @@ enum Msg {
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
-    ReplaceChain(
-        InputKey,
-        i64,
-        u64,
-        Box<ChainReading>,
-        SyncSender<Result<u64>>,
-    ),
+    ReplaceChain(InputKey, i64, u64, Box<ChainParse>, SyncSender<Result<u64>>),
     /// Record one older chain's reading from a newer chain of the same
     /// input holding the same bytes.
     CopyReading(crate::ReadingCopy, SyncSender<Result<Result<bool>>>),
@@ -201,7 +195,7 @@ struct WriterQueue {
     /// bulk sender waits for room, so a user write always sends its wake.
     wake: Arc<Mutex<Option<SyncSender<Msg>>>>,
     users: Arc<user_queue::UserQueue>,
-    location: Archive,
+    resolver: Arc<resolve::Resolver>,
     commits: crate::completion::CommitEvents,
     sinex: Option<Arc<dyn crate::primary::Sinex>>,
     stop: crate::cancellation::Cancellation,
@@ -234,7 +228,7 @@ impl From<polylogue_model::user::UserRequest> for UserSubmission {
 enum UserMsg {
     Request(
         Box<UserSubmission>,
-        SyncSender<Result<crate::user_writes::UserReceipt>>,
+        SyncSender<Result<crate::user_writes::WriteResult>>,
     ),
     QueryObject(
         Box<polylogue_model::query_objects::QueryObject>,
@@ -260,7 +254,7 @@ impl WriterQueue {
     fn new(
         bulk: SyncSender<Msg>,
         users: Arc<user_queue::UserQueue>,
-        location: Archive,
+        resolver: Arc<resolve::Resolver>,
         commits: crate::completion::CommitEvents,
         sinex: Option<Arc<dyn crate::primary::Sinex>>,
         stop: crate::cancellation::Cancellation,
@@ -270,7 +264,7 @@ impl WriterQueue {
             wake: Arc::new(Mutex::new(Some(bulk.clone()))),
             bulk: Arc::new(Mutex::new(Some(bulk))),
             users,
-            location,
+            resolver,
             commits,
             sinex,
             stop,
@@ -454,6 +448,14 @@ impl Writer {
         };
         crate::chain_progress::open(&index, !archive.is_primary())?;
         record_build_progress(archive, &index)?;
+        let upkeep = if building {
+            resolve::IndexUpkeep::AtBuildEnd(Arc::new(crate::key_maps::KeyMaps::load_with_budget(
+                &index,
+                archive.memory_budget().keys() / 3,
+            )?))
+        } else {
+            resolve::IndexUpkeep::PerTransaction
+        };
         let texts =
             crate::text_rows::TextIds::new(&index, building, archive.memory_budget().keys() / 3)?;
         let segment = if sinex.is_none() {
@@ -461,6 +463,7 @@ impl Writer {
         } else {
             None
         };
+        let resolver = resolve::Resolver::new(archive, &index, upkeep)?;
         let stream_source = sinex.clone();
         let commits = crate::completion::CommitEvents::default();
         #[cfg(any(test, feature = "fixture"))]
@@ -471,7 +474,7 @@ impl Writer {
         let queue = WriterQueue::new(
             tx,
             Arc::clone(&users),
-            archive.clone(),
+            Arc::clone(&resolver),
             commits.clone(),
             sinex.clone(),
             stop.clone(),
@@ -483,7 +486,7 @@ impl Writer {
             dispatch: dispatch.clone(),
             stop: stop.clone(),
             commits: commits.clone(),
-            at_build_end: building,
+            resolver: Arc::clone(&resolver),
             segment,
             archive: archive_conn,
             index,
@@ -581,7 +584,7 @@ impl Writer {
 /// Where [`WriterSender::try_enqueue_user`] left a request.
 pub enum Queued {
     /// In the queue; the receiver gets its outcome once committed.
-    Committing(Receiver<Result<crate::user_writes::UserReceipt>>),
+    Committing(Receiver<Result<crate::user_writes::WriteResult>>),
     /// The queue was full: the complete submission, handed back.
     Full(Box<UserSubmission>),
 }
@@ -626,8 +629,8 @@ impl WriterSender {
                 if matches!(item.batch.change, Change::Reparse { .. })
                     && !item.batch.parse.is_empty()
                 {
-                    primary_capture::validate(item, &self.0.location)?;
-                    let index = crate::archive::open_read(&self.0.location.index_db())?;
+                    primary_capture::validate(item, self.0.resolver.location())?;
+                    let index = crate::archive::open_read(&self.0.resolver.location().index_db())?;
                     primary::validate_primary_reading(&index, &item.batch)?;
                     drop(index);
                     let mut bodies = Vec::new();
@@ -647,13 +650,13 @@ impl WriterSender {
                 }
             }
         }
-        let primary = self.0.location.is_primary();
+        let primary = self.0.resolver.location().is_primary();
         let mut batches: Vec<_> = group
             .iter_mut()
             .filter(|item| !primary || matches!(item.batch.change, Change::Reparse { .. }))
             .map(|item| &mut item.batch)
             .collect();
-        prepare_batches(&self.0.location, &mut batches)?;
+        self.0.resolver.batches(&mut batches)?;
         let (reply, wait) = sync_channel(1);
         self.0
             .send(Msg::StoreGroup(StoreGroup::Prepared(group, store, reply)))
@@ -665,8 +668,10 @@ impl WriterSender {
         if self.0.sinex.is_some() && matches!(batch.change, Change::Reparse { .. }) {
             self.spool_primary_batch(&mut batch)?;
         }
-        if !self.0.location.is_primary() || matches!(batch.change, Change::Reparse { .. }) {
-            prepare_batches(&self.0.location, &mut [&mut batch])?;
+        if !self.0.resolver.location().is_primary()
+            || matches!(batch.change, Change::Reparse { .. })
+        {
+            self.0.resolver.batches(&mut [&mut batch])?;
         }
         self.0
             .send(Msg::Batch(Box::new(batch)))
@@ -679,7 +684,7 @@ impl WriterSender {
         input: InputKey,
         chain: i64,
         length: u64,
-        reading: ChainReading,
+        reading: ChainParse,
     ) -> Result<u64> {
         self.queue_chain(input, chain, length, reading)?
             .recv()
@@ -692,13 +697,13 @@ impl WriterSender {
         input: InputKey,
         chain: i64,
         length: u64,
-        mut reading: ChainReading,
+        mut reading: ChainParse,
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
         if self.0.sinex.is_some() {
             self.spool_primary_reading(&input, chain, length, &mut reading)?;
         }
-        reading.check(&input.id, chain)?;
+        reading.resolve(&self.0.resolver, &input, chain, length)?;
         let (reply, wait) = sync_channel(1);
         if self
             .0
@@ -729,7 +734,7 @@ impl WriterSender {
     pub fn user_receipt(
         &self,
         submission: impl Into<UserSubmission>,
-    ) -> Result<crate::user_writes::UserReceipt> {
+    ) -> Result<crate::user_writes::WriteResult> {
         let (reply, wait) = sync_channel(1);
         self.0
             .send_user(UserMsg::Request(Box::new(submission.into()), reply))
@@ -837,9 +842,7 @@ struct Inner {
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::DispatchPauses,
     commits: crate::completion::CommitEvents,
-    /// The index being written is a first build's, whose search entries and
-    /// derived values are written when it ends.
-    at_build_end: bool,
+    resolver: Arc<resolve::Resolver>,
     segment: Option<hashed_blobs::SegmentWriter>,
     archive: Connection,
     index: Connection,
@@ -1220,7 +1223,7 @@ impl Inner {
                 // A caller with no new reading must not wait for an unrelated
                 // computation, including the work preparing that computation.
                 let _ = reply.send(pending);
-                if requested && !self.at_build_end {
+                if requested && !self.resolver.upkeep().at_build_end() {
                     self.request_derive(derive_thread::Waiting::Nobody);
                 }
             }
@@ -1307,7 +1310,7 @@ impl Inner {
                 // Whatever a flush reports written is also derived, except in
                 // a first build, which a flush in the middle of a pass (each
                 // import item, each run of the parse pool) must not end.
-                if derive && !self.at_build_end {
+                if derive && !self.resolver.upkeep().at_build_end() {
                     self.request_derive(derive_thread::Waiting::Flush(reply, Box::new(report)));
                 } else {
                     let _ = reply.send(Ok(report));
@@ -1490,7 +1493,7 @@ impl Inner {
                     return Err(StoreError::WriterGone);
                 }
                 inner.project_alternate_text()?;
-                if !inner.at_build_end {
+                if !inner.resolver.upkeep().at_build_end() {
                     crate::text_rows::index_pending(&inner.index, || ())?;
                 }
                 crate::derive::mark_moved_versions(&mut inner.index)
@@ -1556,7 +1559,7 @@ impl Inner {
     /// and the writer continues on it. A stop or failure before the install
     /// leaves the build to resume at the next start.
     fn finish_build(&mut self) -> Result<()> {
-        if !self.at_build_end || self.stop.is_cancelled() {
+        if !self.resolver.upkeep().at_build_end() || self.stop.is_cancelled() {
             return Ok(());
         }
         let finished = self.until_stopped(Inner::build_deferred);
@@ -1564,7 +1567,8 @@ impl Inner {
             return finished.map(drop);
         }
         self.install_build()?;
-        self.at_build_end = false;
+        self.resolver
+            .set_upkeep(resolve::IndexUpkeep::PerTransaction);
         self.search.ready();
         self.commits
             .committed(crate::completion::Committed::CONTENT);
@@ -1711,7 +1715,7 @@ impl Inner {
         request: &polylogue_model::user::UserRequest,
         scope: Option<&crate::ReadScopeToken>,
         preparation: Option<&crate::user_writes::PreparationContext>,
-    ) -> Result<crate::user_writes::UserReceipt> {
+    ) -> Result<crate::user_writes::WriteResult> {
         crate::fault::check("write.user", &request.id)?;
         scoped::require_current(&self.location, scope)?;
         let prepared_scope = self.preflight_saved(request, preparation, scope)?;
@@ -1784,6 +1788,7 @@ impl Inner {
         &mut self,
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
+        let upkeep = self.resolver.upkeep();
         let primary = self.sinex.is_some();
         if primary {
             for batch in batches.clone() {
@@ -1884,46 +1889,48 @@ impl Inner {
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&itx)?;
         let changes = crate::change_summary::ChangeSummary::start(&itx)?;
-        let mut touched = readings::Touched::default();
-        let mut batches = 0u64;
+        let (mut batches, mut messages) = (0u64, 0u64);
         for (b, chain) in indexed.iter().zip(chains) {
             if let Some(chain) = chain {
                 for p in &b.parse {
+                    let resolution = p
+                        .resolution
+                        .as_ref()
+                        .filter(|resolution| resolution.chain == chain)
+                        .ok_or_else(|| {
+                            StoreError::Invalid(
+                                "a parsed step was not resolved for its input chain".into(),
+                            )
+                        })?;
                     let source_commit = crate::source::Source::reading_commit(
                         &itx,
                         &b.input.id,
                         chain,
                         p.parsed_upto,
                     )?;
-                    rows::write_step(
+                    messages += write_rows(
                         &itx,
                         b,
                         p,
-                        rows::StepWrite {
+                        rows::ReadingWrite {
                             texts: &self.texts,
+                            resolution,
                             counter,
-                            chain,
+                            upkeep: &upkeep,
                             source_commit: Some(&source_commit),
-                            replacement: false,
-                            retraction: false,
-                            primary,
                             changes: &changes,
+                            retraction: false,
+                            replacement: false,
                         },
-                        &mut touched,
                     )?;
+                }
+                if b.parse.iter().any(|p| p.progress.reached_end()) {
+                    rows::prune_sessions(&itx, &b.input.id, chain, counter)?;
                 }
             }
             batches += 1;
         }
-        let (messages, read) = rows::finish(
-            &itx,
-            touched,
-            &changes,
-            &self.texts,
-            self.at_build_end,
-            counter,
-        )?;
-        self.report.item_units_read += read;
+        self.report.item_units_read += rows::finish(&itx, &changes, &upkeep, &self.texts, counter)?;
         let source_changed = if !primary {
             let changed = crate::chain_progress::recorded(&self.archive)?;
             crate::chain_progress::refresh(&itx, &changed)?;
@@ -1991,29 +1998,4 @@ fn cancellable_replay(batch: &Batch) -> bool {
                     | polylogue_model::batch::StepProgress::Failed { .. }
             )
         })
-}
-
-/// Packs each step's rows and settles its attachment references on the
-/// sending thread, before the writer takes the batches: references name only
-/// bytes the archive holds (`writer/attachments.rs`).
-fn prepare_batches(location: &Archive, batches: &mut [&mut Batch]) -> Result<()> {
-    if batches.iter().all(|batch| batch.parse.is_empty()) {
-        return Ok(());
-    }
-    for batch in batches.iter_mut() {
-        for step in &mut batch.parse {
-            step.prepare();
-            step.check_events(&batch.input.id)?;
-        }
-    }
-    let archive = crate::archive::open_read(&location.archive_db())?;
-    let pending: HashMap<_, _> = batches
-        .iter()
-        .flat_map(|batch| batch.new_blob.iter().chain(&batch.blobs))
-        .map(|blob| (blob.hash, blob.size))
-        .collect();
-    for batch in batches.iter_mut() {
-        attachments::normalize(batch, &archive, &pending)?;
-    }
-    Ok(())
 }

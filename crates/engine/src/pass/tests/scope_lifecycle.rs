@@ -25,11 +25,7 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
         .reads
         .reader()
         .unwrap()
-        .parser_checkpoint(
-            &input,
-            chain,
-            &engine.inputs[&path].origin.reading_version(),
-        )
+        .parser_checkpoint(&input, chain, &engine.inputs[&path].origin.parse_version())
         .unwrap();
     assert!(
         checkpoint
@@ -53,11 +49,7 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
             .reads
             .reader()
             .unwrap()
-            .parser_checkpoint(
-                &input,
-                chain,
-                &engine.inputs[&path].origin.reading_version()
-            )
+            .parser_checkpoint(&input, chain, &engine.inputs[&path].origin.parse_version())
             .unwrap(),
         checkpoint
     );
@@ -650,8 +642,8 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         // installed index.
         let before_reply = home.read(|reader| {
             inputs.iter().map(|input| {
-                let message_sources = reader.query(
-                    "SELECT count(*) AS n FROM reading_message m JOIN input_ref i ON i.pk=m.input_pk WHERE i.id=?1",
+                let message_parses = reader.query(
+                    "SELECT count(*) AS n FROM message_parse m JOIN input_ref i ON i.pk=m.input_pk WHERE i.id=?1",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
                 )?[0]["n"].as_u64().unwrap();
                 let markers = reader.query(
@@ -662,7 +654,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
                     "SELECT max(length) AS n FROM a.revision WHERE input=?1",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
                 )?[0]["n"].as_u64().unwrap();
-                Ok((input.path.clone(), message_sources, markers, captured))
+                Ok((input.path.clone(), message_parses, markers, captured))
             }).collect::<polylogue_store::Result<Vec<_>>>()
         });
         let response = answer.recv_timeout(Duration::from_secs(5));
@@ -683,7 +675,7 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
         // committed message sources independently identify the completed job.
         let completed: Vec<_> = before_reply
             .iter()
-            .filter(|(_, message_sources, _, _)| *message_sources == 2)
+            .filter(|(_, message_parses, _, _)| *message_parses == 2)
             .collect();
         assert_eq!(
             completed.len(),
@@ -691,10 +683,10 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             "unstarted reads ran before the import: {before_reply:?}"
         );
         let first = completed[0].0.clone();
-        for (path, message_sources, markers, captured) in before_reply {
+        for (path, message_parses, markers, captured) in before_reply {
             assert_eq!(markers, 0, "a request is not a stopped reading: {path:?}");
             assert_eq!(
-                message_sources,
+                message_parses,
                 if path == first { 2 } else { u64::from(!kept) }
             );
             let input = inputs.iter().find(|input| input.path == path).unwrap();

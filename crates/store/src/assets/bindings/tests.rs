@@ -4,12 +4,12 @@ use crate::{
     Writer,
     assets::AssetRow,
     export_items::ExportItems,
-    primary::{AcquisitionReceipt, AcquisitionRoute, RawRange, SourceSelector},
+    primary::{CaptureRead, RawRange, ReadRoute, SourceSelector},
     staging::PreparedBatch,
 };
 use polylogue_model::{
     Message, MessageRow, Output, RecordCounts, RecordOutcome, Session, SessionKind,
-    attachment_binding::{AttachmentCandidate, AttachmentSourceClaim},
+    attachment_binding::{AttachmentCandidate, StatedAttachmentSource},
 };
 use serde_json::json;
 
@@ -92,7 +92,7 @@ impl Fixture {
             0..bytes.len() as u64,
             true,
         );
-        step.reading_version = "binding-fixture=1".into();
+        step.parse_version = "binding-fixture=1".into();
         batch.parse.push(step);
         self.capture(batch, &bytes);
         BindingContext {
@@ -113,9 +113,9 @@ impl Fixture {
             Change::First,
             bytes.len(),
         );
-        batch.acquisition = Some(AcquisitionReceipt {
-            version: AcquisitionReceipt::VERSION,
-            route: AcquisitionRoute::ExplicitImport,
+        batch.capture_read = Some(CaptureRead {
+            version: CaptureRead::VERSION,
+            route: ReadRoute::ExplicitImport,
             source: SourceSelector {
                 origin: batch.input.format.clone(),
                 machine: "synthetic".into(),
@@ -129,7 +129,7 @@ impl Fixture {
             observed_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
             generation: None,
             raw_total: None,
-            raw_predecessor: None,
+            previous_revision: None,
             chunks: Vec::new(),
         });
         self.capture(batch, bytes);
@@ -200,8 +200,8 @@ fn raw(input: &str, namespace: Option<&str>, member: &str, change: Change, lengt
         blobs: Vec::new(),
         length: length as u64,
         parse: Vec::new(),
-        acquisition: None,
-        basis: None,
+        capture_read: None,
+        base: None,
         release: Default::default(),
     }
 }
@@ -212,7 +212,7 @@ fn record(bytes: &[u8]) -> MessageRecord {
         "bindings":[{"source_version":version,
             "namespace":{"input":"original-message-source","chain":4,"import_id":"original-scope"},
             "exported_from":{"input":"export-message-source","chain":5,"import_id":"export-scope"},
-            "prior_exports":[{"input":"supplied-prior-source","chain":2,"import_id":"supplied-prior-scope"}],"block":0,"attachment":0,"source_id":"opaque:λ/#id","candidates":[AttachmentCandidate { hash:BlobHash::of(bytes),size:bytes.len() as u64,sources:vec![AttachmentSourceClaim { namespace:None,input:"historical-source".into(),chain:4,source_version:"historical-version".into(),members:vec!["old/member".into()],names:vec!["original name".into()],media_types:vec!["application/octet-stream".into()],declared_sizes:vec![999] }] }]}]})).unwrap()
+            "prior_exports":[{"input":"supplied-prior-source","chain":2,"import_id":"supplied-prior-scope"}],"block":0,"attachment":0,"source_id":"opaque:λ/#id","candidates":[AttachmentCandidate { hash:BlobHash::of(bytes),size:bytes.len() as u64,sources:vec![StatedAttachmentSource { namespace:None,input:"historical-source".into(),chain:4,source_version:"historical-version".into(),members:vec!["old/member".into()],names:vec!["original name".into()],media_types:vec!["application/octet-stream".into()],declared_sizes:vec![999] }] }]}]})).unwrap()
 }
 fn source<'a>(sources: &'a [ObservedMember], input: &str) -> &'a ObservedMember {
     sources

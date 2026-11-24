@@ -54,14 +54,14 @@ pub struct AttachmentBinding {
 pub struct AttachmentCandidate {
     pub hash: BlobHash,
     pub size: u64,
-    pub sources: Vec<AttachmentSourceClaim>,
+    pub sources: Vec<StatedAttachmentSource>,
 }
 
 /// Historical provenance supplied by the exporting archive. These fields never
 /// grant access to a receiving archive's inputs, chains, or import namespaces.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct AttachmentSourceClaim {
+pub struct StatedAttachmentSource {
     /// Unknown historical provenance stays unknown; ingress never substitutes
     /// the receiving namespace for an original source claim.
     #[serde(default, skip_serializing_if = "Option::is_none")]

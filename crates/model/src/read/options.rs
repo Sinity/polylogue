@@ -172,7 +172,7 @@ pub struct ReadOptions {
     pub alternates: Vec<String>,
     /// Spawned sessions at their calls: hidden, a card, or inline.
     #[serde(default = "spawn_cards")]
-    pub spawns: SpawnFold,
+    pub spawns: SpawnDisplay,
     /// The context meter on model message headers.
     #[serde(default)]
     pub context_meter: bool,
@@ -205,8 +205,8 @@ fn output_lines() -> u64 {
 fn enabled() -> bool {
     true
 }
-fn spawn_cards() -> SpawnFold {
-    SpawnFold::Card
+fn spawn_cards() -> SpawnDisplay {
+    SpawnDisplay::Card
 }
 impl Default for ReadOptions {
     fn default() -> Self {
@@ -301,7 +301,7 @@ impl ShowKind {
 /// How spawned sessions appear at their spawning call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum SpawnFold {
+pub enum SpawnDisplay {
     Hidden,
     /// A delegation card with the call that reads the child.
     Card,
@@ -368,12 +368,12 @@ impl ReadOptions {
                 ShowKind::Branches => self.branches = true,
                 ShowKind::Spawns => {
                     self.spawns = match (level, number) {
-                        ("card", _) => SpawnFold::Card,
-                        (_, Some(depth)) => SpawnFold::Inline {
+                        ("card", _) => SpawnDisplay::Card,
+                        (_, Some(depth)) => SpawnDisplay::Inline {
                             // A depth past u32::MAX reaches every level a session tree has.
                             depth: Some(u32::try_from(depth).unwrap_or(u32::MAX)),
                         },
-                        _ => SpawnFold::Inline { depth: None },
+                        _ => SpawnDisplay::Inline { depth: None },
                     }
                 }
                 ShowKind::Annotations => self.annotations = true,
@@ -389,7 +389,7 @@ impl ReadOptions {
                 ShowKind::Harness => self.harness = Some(Expansion::None),
                 ShowKind::Inherited => self.inherited = false,
                 ShowKind::Branches => self.branches = false,
-                ShowKind::Spawns => self.spawns = SpawnFold::Hidden,
+                ShowKind::Spawns => self.spawns = SpawnDisplay::Hidden,
                 ShowKind::Annotations => self.annotations = false,
                 ShowKind::Turns => self.turns = false,
                 ShowKind::Context => self.context_meter = false,
@@ -439,13 +439,13 @@ impl ReadOptions {
         }
         let spawns = ShowKind::Spawns.name();
         match self.spawns {
-            SpawnFold::Card => {}
-            SpawnFold::Hidden => hide.push(spawns.into()),
-            SpawnFold::Inline { depth: None } => show.push(format!("{spawns}:full")),
+            SpawnDisplay::Card => {}
+            SpawnDisplay::Hidden => hide.push(spawns.into()),
+            SpawnDisplay::Inline { depth: None } => show.push(format!("{spawns}:full")),
             // Depth zero places no inline reading: the same as cards, and the
             // table accepts only positive depths.
-            SpawnFold::Inline { depth: Some(0) } => show.push(format!("{spawns}:card")),
-            SpawnFold::Inline { depth: Some(depth) } => show.push(format!("{spawns}:{depth}")),
+            SpawnDisplay::Inline { depth: Some(0) } => show.push(format!("{spawns}:card")),
+            SpawnDisplay::Inline { depth: Some(depth) } => show.push(format!("{spawns}:{depth}")),
         }
         (show, hide)
     }
@@ -540,7 +540,7 @@ impl ReadOptions {
                 "transcript, dialogue, context, changes, raw",
             ),
             (
-                matches!(self.spawns, SpawnFold::Inline { .. }) && self.view == View::Context,
+                matches!(self.spawns, SpawnDisplay::Inline { .. }) && self.view == View::Context,
                 "spawns",
                 "transcript, dialogue, changes, raw",
             ),

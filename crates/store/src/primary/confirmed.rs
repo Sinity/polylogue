@@ -3,13 +3,13 @@ pub(crate) const SCHEMA: &str = concat!("
 CREATE TABLE confirmed_event (
  event TEXT PRIMARY KEY, committed INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
  state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
- product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, reading_version TEXT, session TEXT, sinex_context BLOB, value_hash BLOB, material TEXT, record_hash TEXT, sinex_kind TEXT
+ product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, parse_version TEXT, session TEXT, sinex_context BLOB, value_hash BLOB, material TEXT, record_hash TEXT, sinex_kind TEXT
 ) STRICT;
 CREATE INDEX confirmed_event_chain ON confirmed_event(input,chain,committed,event);
 CREATE INDEX confirmed_event_session ON confirmed_event(session,kind,state,committed);
 CREATE INDEX confirmed_event_live_material ON confirmed_event(material,event) WHERE state='live';
-CREATE INDEX confirmed_event_value ON confirmed_event(input,chain,reading_version,reference,value_hash,state);
-CREATE INDEX confirmed_event_reading_progress ON confirmed_event(input,chain,reading_version,step_start,step_end) WHERE kind='reading_progress';
+CREATE INDEX confirmed_event_value ON confirmed_event(input,chain,parse_version,reference,value_hash,state);
+CREATE INDEX confirmed_event_reading_progress ON confirmed_event(input,chain,parse_version,step_start,step_end) WHERE kind='reading_progress';
 ", include_str!("confirmed/read_indexes.sql"), "
 CREATE TABLE confirmed_event_blob (
  event TEXT NOT NULL REFERENCES confirmed_event(event), hash BLOB NOT NULL,
@@ -180,7 +180,7 @@ impl ConfirmedEventRow {
         })
     }
     fn insert(&self, index: &Connection, table: &str) -> Result<()> {
-        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,committed,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,reading_version,session,sinex_context,value_hash,material,record_hash,sinex_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),params![self.event,self.committed,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session,self.sinex_context,self.value_hash,self.material,self.record_hash,self.sinex_kind])?;
+        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,committed,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,parse_version,session,sinex_context,value_hash,material,record_hash,sinex_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),params![self.event,self.committed,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session,self.sinex_context,self.value_hash,self.material,self.record_hash,self.sinex_kind])?;
         Ok(())
     }
     fn tombstoned(event: String, position: i64, order: i64) -> Self {
@@ -349,7 +349,7 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
                             "a reading range exceeds SQLite's signed integer range".into(),
                         )
                     })?;
-                let version = reading.map(|r| r.reading_version.clone());
+                let version = reading.map(|r| r.parse_version.clone());
                 let value_hash = match product.as_ref() {
                     Product::Interpreted { record, .. } => Some(record.value_hash.0.to_vec()),
                     _ => None,
@@ -606,8 +606,8 @@ fn plan(index: &Connection) -> Result<Plan> {
             blobs: Vec::new(),
             length,
             parse: vec![absent],
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: Default::default(),
         });
     }
@@ -964,15 +964,7 @@ pub(crate) fn apply_prepared(
     coverage(&tx, &plan)?;
     refusals(&tx, next)?;
     let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-    let mut retracted = crate::writer::Touched::default();
-    crate::writer::apply_source_retractions(
-        texts,
-        &tx,
-        &plan.retractions,
-        counter,
-        &changes,
-        &mut retracted,
-    )?;
+    crate::writer::apply_source_retractions(texts, &tx, &plan.retractions, counter, &changes)?;
     bindings(&tx, &plan)?;
     // Variants are authored records, so only a request can change them.
     if plan.requests != StateChange::Unchanged {
@@ -996,7 +988,13 @@ pub(crate) fn apply_prepared(
     for session in touched {
         changes.whole_session(session);
     }
-    crate::writer::finish_rows(&tx, retracted, &changes, texts, false, counter)?;
+    crate::writer::finish_rows(
+        &tx,
+        &changes,
+        &crate::writer::resolve::IndexUpkeep::PerTransaction,
+        texts,
+        counter,
+    )?;
     crate::fault::check("primary.before_commit", "")?;
     tx.commit()?;
     text_transaction.commit();
@@ -1008,14 +1006,15 @@ pub(crate) fn apply_prepared(
 pub(crate) fn apply(
     texts: &crate::text_rows::TextIds,
     index: &mut Connection,
+    resolver: &std::sync::Arc<crate::writer::resolve::Resolver>,
     events: &[Confirmed],
 ) -> Result<i64> {
     let mut step = stage_next(index, events)?;
     loop {
         match step {
             Step::Complete(position) => return Ok(position),
-            Step::Prepare(prepared) => {
-                crate::writer::check_source_retractions(&prepared.retractions)?;
+            Step::Prepare(mut prepared) => {
+                crate::writer::prepare_source_retractions(resolver, &mut prepared.retractions)?;
                 step = apply_prepared(texts, index, *prepared)?;
             }
         }

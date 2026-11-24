@@ -1186,7 +1186,7 @@ impl Compiler<'_> {
                 .iter()
                 .any(|source| source.prefix.is_empty())
         {
-            return Err(not_built("this unit stage after a change of row grain"));
+            return Err(not_built("this unit transform after a change of row grain"));
         }
         if let TransformKind::Combine {
             how: Combination::Intersect | Combination::Except,

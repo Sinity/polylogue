@@ -40,55 +40,55 @@ fn nanosecond_creation_refuses_values_outside_supported_instants() {
 #[test]
 fn time_accuracy_tells_unknown_instants_from_periods() {
     let at = Timestamp::parse_rfc3339("2026-01-02T03:04:05.123456789Z").unwrap();
-    assert!(TimeEvidence::UNKNOWN.validate(None).is_ok());
+    assert!(TimeAccuracy::UNKNOWN.validate(None).is_ok());
     assert_eq!(
-        TimeEvidence::UNKNOWN.validate(Some(at)),
-        Err(TimeEvidenceError::UnknownQuality)
+        TimeAccuracy::UNKNOWN.validate(Some(at)),
+        Err(TimeAccuracyError::UnknownQuality)
     );
-    let instant = TimeEvidence::intrinsic(Precision::Instant);
+    let instant = TimeAccuracy::intrinsic(Precision::Instant);
     assert!(instant.validate(Some(at)).is_ok());
-    assert_eq!(instant.validate(None), Err(TimeEvidenceError::MissingTime));
+    assert_eq!(instant.validate(None), Err(TimeAccuracyError::MissingTime));
     let until = Timestamp::from_unix_ns(at.unix_ns() + 1).unwrap();
-    let period = TimeEvidence {
+    let period = TimeAccuracy {
         quality: TimeQuality::Intrinsic,
         precision: Some(Precision::Bounded),
         until: Some(until),
     };
     assert!(period.validate(Some(at)).is_ok());
     assert_eq!(
-        TimeEvidence {
+        TimeAccuracy {
             until: Some(at),
             ..period
         }
         .validate(Some(at)),
-        Err(TimeEvidenceError::InvalidBounds)
+        Err(TimeAccuracyError::InvalidBounds)
     );
     assert_eq!(
-        TimeEvidence {
+        TimeAccuracy {
             until: None,
             ..period
         }
         .validate(Some(at)),
-        Err(TimeEvidenceError::MissingBounds)
+        Err(TimeAccuracyError::MissingBounds)
     );
     assert_eq!(
-        TimeEvidence {
+        TimeAccuracy {
             until: Some(until),
             ..instant
         }
         .validate(Some(at)),
-        Err(TimeEvidenceError::InstantHasBounds)
+        Err(TimeAccuracyError::InstantHasBounds)
     );
     assert_eq!(
-        TimeEvidence {
+        TimeAccuracy {
             precision: None,
             ..instant
         }
         .validate(Some(at)),
-        Err(TimeEvidenceError::MissingPrecision)
+        Err(TimeAccuracyError::MissingPrecision)
     );
     let encoded = serde_json::to_string(&(at, period)).unwrap();
-    let decoded: (Timestamp, TimeEvidence) = serde_json::from_str(&encoded).unwrap();
+    let decoded: (Timestamp, TimeAccuracy) = serde_json::from_str(&encoded).unwrap();
     assert_eq!(decoded, (at, period));
     assert_eq!(decoded.0.unix_ns(), at.unix_ns());
 }

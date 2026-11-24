@@ -24,7 +24,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
         kind: LinkKind::Continuation,
         copies_prefix: false,
         how: None,
-        at: None,
+        branch_point: None,
         call_id: None,
         evidence: "synthetic explicit marker".into(),
     });
@@ -36,7 +36,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
     let before = relationship_version(&w);
     assert_ne!(before, empty);
     let mut replacement = original.clone();
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     reading.push(&mut replacement.parse[0]).unwrap();
     w.writer
         .replace_chain(replacement.input, stored.chain, replacement.length, reading)
@@ -49,7 +49,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
     );
     let mut removed = original;
     removed.parse[0].output.links.clear();
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     reading.push(&mut removed.parse[0]).unwrap();
     w.writer
         .replace_chain(removed.input, stored.chain, removed.length, reading)
@@ -65,7 +65,7 @@ fn relation(parent: &str, child: &str) -> polylogue_model::Link {
         kind: LinkKind::Continuation,
         copies_prefix: false,
         how: None,
-        at: None,
+        branch_point: None,
         call_id: None,
         evidence: "synthetic explicit marker".into(),
     }
@@ -133,7 +133,7 @@ fn alias_reidentification_changes_visible_relations_and_the_cursor_version() {
 }
 
 #[test]
-fn relations_read_in_coordinate_order_whatever_was_stored_first() {
+fn changing_only_relation_order_invalidates_the_cursor() {
     let w = test_archive();
     let mut partial = batch("partial", Route::Live, 0, vec![], &["root", "a"]);
     partial.parse[0].output.links.push(relation("root", "a"));
@@ -145,7 +145,7 @@ fn relations_read_in_coordinate_order_whatever_was_stored_first() {
     w.store_reading(other, Some(&SOURCE_RECORD)).unwrap();
     let mut precise = batch("precise", Route::Live, 0, vec![], &["root", "a"]);
     let mut anchored = relation("root", "a");
-    anchored.at = Some(MessageId::parse("claude-code:anchor").unwrap());
+    anchored.branch_point = Some(MessageId::parse("claude-code:anchor").unwrap());
     precise.parse[0].output.links.push(anchored);
     w.store_reading(precise, Some(&SOURCE_RECORD)).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
@@ -156,15 +156,13 @@ fn relations_read_in_coordinate_order_whatever_was_stored_first() {
         ["claude-code:a", "claude-code:b"]
     );
     partial.parse[0].output.links.clear();
-    let mut reading = ChainReading::new().unwrap();
+    let mut reading = ChainParse::new().unwrap();
     reading.push(&mut partial.parse[0]).unwrap();
     w.writer
         .replace_chain(partial.input, stored.chain, partial.length, reading)
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
-    // The anchored statement of root -> a remains; the relations and their
-    // order are the coordinates', not the order the rows were stored in.
-    assert_eq!(child_relations(&w, "root"), links);
-    // The statements behind the relation changed, and with them its cursor.
+    let reordered = child_relations(&w, "root");
+    assert_eq!(reordered, [links[1].clone(), links[0].clone()]);
     assert_ne!(relationship_version(&w), before);
 }

@@ -95,7 +95,7 @@ fn chat_action(events: Vec<ChatEvent>) -> ChatAction {
         stage_only: false,
         needs_approval: false,
         created_at: 0,
-        execution: crate::authored::ExecutionEligibility::Live,
+        execution: crate::authored::RunsHere::Live,
         attachments: vec![],
         events,
     }

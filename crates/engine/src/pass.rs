@@ -149,7 +149,7 @@ impl Engine {
         );
         step.reset = false;
         step.progress = progress;
-        step.reading_version = plan.origin.reading_version();
+        step.parse_version = plan.origin.parse_version();
         step.stopped_attempt = Some(self.stopped_attempt);
         step.prepare();
         let batch = polylogue_store::Batch {
@@ -166,8 +166,8 @@ impl Engine {
             blobs: Vec::new(),
             length: plan.stored_upto,
             parse: vec![step],
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             release: Default::default(),
         };
         let recorded = self
@@ -549,12 +549,12 @@ impl Engine {
                         .source_read_context(
                             &path,
                             self.inputs[&path].origin.name,
-                            polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                            polylogue_store::primary::ReadRoute::NativeCapture,
                         )
                         .source;
                     let snapshot = self.writer.source_snapshot(source)?;
                     if snapshot.pending.head.is_some()
-                        || snapshot.basis.status != polylogue_store::primary::SourceStatus::Ready
+                        || snapshot.base.status != polylogue_store::primary::SourceStatus::Ready
                     {
                         pass.capture_pending = true;
                         seen.insert(path.clone());
@@ -568,7 +568,7 @@ impl Engine {
                 // A gone observation names the confirmed source, never an old
                 // cached identity ahead of a pending capture read or an unreadable range.
                 let ready = snapshot.as_ref().is_none_or(|snapshot| {
-                    snapshot.basis.status == polylogue_store::primary::SourceStatus::Ready
+                    snapshot.base.status == polylogue_store::primary::SourceStatus::Ready
                         && snapshot.pending.head.is_none()
                         && snapshot
                             .confirmed
@@ -590,8 +590,8 @@ impl Engine {
                         blobs: vec![],
                         length: state.stored,
                         parse: Vec::new(),
-                        acquisition: None,
-                        basis: snapshot.map(|snapshot| snapshot.basis),
+                        capture_read: None,
+                        base: snapshot.map(|snapshot| snapshot.base),
                         release: Default::default(),
                     };
                     if self.archive.is_primary() {
@@ -919,7 +919,7 @@ impl Engine {
         &mut self,
         path: &Path,
         now: FileFacts,
-        basis: polylogue_store::primary::SourceBasis,
+        base: polylogue_store::primary::SourceBase,
     ) -> Result<Option<Plan>, EngineError> {
         let state = &self.inputs[path];
         let batch = polylogue_store::Batch {
@@ -936,8 +936,8 @@ impl Engine {
             blobs: vec![],
             length: state.stored,
             parse: Vec::new(),
-            acquisition: None,
-            basis: Some(basis),
+            capture_read: None,
+            base: Some(base),
             release: Default::default(),
         };
         if self.archive.is_primary() {
@@ -977,7 +977,7 @@ impl Engine {
             .source_read_context(
                 path,
                 origin.name,
-                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                polylogue_store::primary::ReadRoute::NativeCapture,
             )
             .source;
         let snapshot = self.writer.source_snapshot(source)?;
@@ -1005,11 +1005,11 @@ impl Engine {
                 false,
             );
             plan.pending = Some(working.group.clone());
-            plan.basis = Some(snapshot.basis);
+            plan.base = Some(snapshot.base);
             return Ok(Some(plan));
         }
         let source_uncertain =
-            snapshot.basis.status != polylogue_store::primary::SourceStatus::Ready;
+            snapshot.base.status != polylogue_store::primary::SourceStatus::Ready;
         let obs = self.observation(path, Some(now));
         let st = self.inputs.get_mut(path).expect("tracked input");
         if st.unread == Some(now) {
@@ -1064,7 +1064,7 @@ impl Engine {
             st.facts = Some(now);
         }
         if back {
-            return self.observe_back(path, now, snapshot.basis);
+            return self.observe_back(path, now, snapshot.base);
         }
         if change == Change::Unchanged && st.stored < now.size {
             // Stored only in part (a stop in the middle of a large file).
@@ -1135,7 +1135,7 @@ impl Engine {
         }
         Ok(Some(Plan {
             byte_read: None,
-            basis: Some(snapshot.basis),
+            base: Some(snapshot.base),
             pending: None,
             checkpoint: None,
             path: path.to_path_buf(),
@@ -1287,7 +1287,7 @@ impl Engine {
                     matches!(
                         reason,
                         CompletenessReason::MissingCheckpoint
-                            | CompletenessReason::ReadingVersionChanged
+                            | CompletenessReason::ParseVersionChanged
                             | CompletenessReason::ParserBehind
                     )
                 }),
@@ -1439,7 +1439,7 @@ impl Engine {
                 && self.copied_later(
                     &plan.input.id,
                     state.chain,
-                    &origin.reading_version(),
+                    &origin.parse_version(),
                     plan.input_finished,
                 )?
             {
@@ -1516,7 +1516,7 @@ impl Engine {
             let copy = self.copy_now(
                 &plan.input.id,
                 chain,
-                &plan.origin.reading_version(),
+                &plan.origin.parse_version(),
                 plan.input_finished,
             )?;
             // Only a parser reading ranges in order continues from a copy.
@@ -1619,12 +1619,12 @@ impl Engine {
             && matches!(parser, Some(polylogue_sources::Parse::Lines(_)))
             && origin.support == Support::Parsed
         {
-            let version = origin.reading_version();
+            let version = origin.parse_version();
             self.reads
                 .reader()?
                 .parser_checkpoint(&input.id, state.chain, &version)?
                 .filter(|stored| {
-                    stored.reading_version == version
+                    stored.parse_version == version
                         && stored.parsed_upto == state.parsed_upto
                         && stored.checkpoint.is_some()
                         && stored.progress == polylogue_model::batch::ParseProgress::Parsing
@@ -1671,7 +1671,7 @@ impl Engine {
                     &plan.input.id,
                     chain,
                     plan.parse_pos,
-                    &plan.origin.reading_version(),
+                    &plan.origin.parse_version(),
                 )?;
             }
             return Ok(true);
@@ -1687,8 +1687,8 @@ impl Engine {
         if !whole(plan.origin, &plan.path) && plan.origin.support == Support::Parsed {
             let reader = self.reads.reader()?;
             if let Some(stored) =
-                reader.parser_checkpoint(&plan.input.id, chain, &plan.origin.reading_version())?
-                && stored.reading_version == plan.origin.reading_version()
+                reader.parser_checkpoint(&plan.input.id, chain, &plan.origin.parse_version())?
+                && stored.parse_version == plan.origin.parse_version()
                 && stored.parsed_upto > 0
             {
                 plan.parse_pos = stored.parsed_upto;
@@ -1703,7 +1703,7 @@ impl Engine {
                     &plan.input.id,
                     chain,
                     stored.parsed_upto,
-                    &stored.reading_version,
+                    &stored.parse_version,
                 )?;
                 decoded = false;
             }
@@ -1994,14 +1994,14 @@ impl Engine {
                     if matches!(job.source, pool::Bytes::File) {
                         let mut context = if plan.byte_read.is_none()
                             && !plan.storing_started
-                            && plan.basis.is_some()
+                            && plan.base.is_some()
                         {
                             let mut context = self.source_read_context(
                                 &job.path,
                                 &job.input.format,
-                                polylogue_store::primary::AcquisitionRoute::NativeCapture,
+                                polylogue_store::primary::ReadRoute::NativeCapture,
                             );
-                            context.basis = plan.basis.clone();
+                            context.base = plan.base.clone();
                             context
                         } else {
                             self.sampling_context(&job.path, &job.input.format)?
@@ -2016,7 +2016,7 @@ impl Engine {
                                 if cursor.outcome()
                                     != Some(polylogue_store::primary::CaptureOutcome::Prepared)
                                 {
-                                    context.required_outcome = Some(polylogue_store::primary::CaptureOutcome::UnresolvedBasisConflict);
+                                    context.required_outcome = Some(polylogue_store::primary::CaptureOutcome::UnresolvedBaseConflict);
                                 }
                             }
                         }
@@ -2193,13 +2193,13 @@ impl Engine {
         let Change::Reparse { chain } = plan.change else {
             return Ok(());
         };
-        let version = plan.origin.reading_version();
+        let version = plan.origin.parse_version();
         let stored = self
             .reads
             .reader()?
             .parser_checkpoint(&plan.input.id, chain, &version)?;
         let Some(stored) = stored.filter(|stored| {
-            stored.reading_version == version
+            stored.parse_version == version
                 && stored.parsed_upto == plan.parse_pos
                 && stored.progress.at_length() == Some(plan.size)
         }) else {
@@ -2236,13 +2236,13 @@ impl Engine {
             )
             .into());
         };
-        let version = plan.origin.reading_version();
+        let version = plan.origin.parse_version();
         let cursor = self
             .reads
             .reader()?
             .parser_checkpoint(&plan.input.id, chain, &version)?;
         Ok(cursor.is_some_and(|cursor| {
-            if cursor.reading_version != version {
+            if cursor.parse_version != version {
                 return false;
             }
             if let Some(length) = cursor.progress.at_length() {
@@ -2707,7 +2707,7 @@ impl Engine {
                         &paths,
                         &ImportOptions {
                             authorship: Some(authorship),
-                            format,
+                            origin: format,
                             dry_run,
                             ..Default::default()
                         },

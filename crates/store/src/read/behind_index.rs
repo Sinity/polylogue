@@ -61,7 +61,7 @@ const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
                 s.imported,
                 COALESCE(f.format, i.format),
                 COALESCE(f.path, o.path),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.reading_version, p.status, p.at_length, p.reason, p.stopped_attempt,
+                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.parse_version, p.status, p.at_length, p.reason, p.stopped_attempt,
                 CASE WHEN f.path IS NOT NULL THEN f.path_bytes ELSE o.path_bytes END
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
@@ -78,7 +78,7 @@ const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
                 OR (?2 AND p.status IN ('refused','failed') AND p.at_length=c.length)
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
-                      AND json_extract(expected.value, '$[1]') IS NOT p.reading_version)))
+                      AND json_extract(expected.value, '$[1]') IS NOT p.parse_version)))
             "#;
 
 fn planning_sql(selected: bool, chains: RevisionChains) -> String {
@@ -171,7 +171,7 @@ impl Reader<'_> {
                      LIMIT 1),i.format) AS format FROM source_input i
              )
              SELECT coalesce(sum(c.length),0),coalesce(sum(
-                 CASE WHEN p.reading_version=json_extract(e.value,'$[1]')
+                 CASE WHEN p.parse_version=json_extract(e.value,'$[1]')
                       THEN min(c.length,p.parsed_upto) ELSE 0 END),0)
              FROM newest c JOIN formats f ON f.id=c.input
              JOIN json_each(?1) e ON json_extract(e.value,'$[0]')=f.format
@@ -186,7 +186,7 @@ impl Reader<'_> {
     }
 
     /// Every chain whose index is behind its stored bytes. Waiting at the
-    /// recorded source length is current for that reading version; a refusal
+    /// recorded source length is current for that parse version; a refusal
     /// or failure recorded there is too, unless `stopped` asks for it again.
     /// `selected=None` visits all inputs; an empty selection visits none.
     pub fn chains_behind_index(

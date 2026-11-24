@@ -101,7 +101,7 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
     tx.execute("INSERT INTO input_ref(id) VALUES ('a')", [])
         .unwrap();
     for chain in 1..=chains {
-        tx.execute("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,reading_version,checkpoint,reason)
+        tx.execute("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,parse_version,checkpoint,reason)
             SELECT pk,?1,?2,?3,?4,'old',zeroblob(16384),?5 FROM input_ref WHERE id='a'",
             params![chain, match chain%4 {0=>"waiting",1=>"parsing",2=>"refused",_=>"done"},
                 if chain%4==3 {100+appends} else {0},

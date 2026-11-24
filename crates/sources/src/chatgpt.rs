@@ -297,14 +297,14 @@ fn conversation_with_sessions(
         ("conversation_settings", Json::Object(settings)),
         ("conversation_facts", conversation_facts(conv, native)),
     ] {
-        let (at, time_evidence) = crate::time::parts(conv.get("update_time").and_then(time_of));
+        let (at, time_accuracy) = crate::time::parts(conv.get("update_time").and_then(time_of));
         sink.out.events.push(Event {
             session: Some(sid.clone()),
             kind: kind.into(),
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             after: None,
             range: None,
             data,
@@ -414,7 +414,7 @@ fn conversation_with_sessions(
             how: None,
             parent,
             child: sid.clone(),
-            at: Some(at.id),
+            branch_point: Some(at.id),
             call_id: None,
             evidence: "message IDs repeated from the parent conversation".into(),
         });
@@ -427,14 +427,14 @@ fn conversation_with_sessions(
         && let Some(id) = message_id(ORIGIN, &leaf)
     {
         sink.out.events.push({
-            let (at, time_evidence) = crate::time::parts(None);
+            let (at, time_accuracy) = crate::time::parts(None);
             Event {
                 session: Some(sid),
                 kind: "active_leaf".into(),
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 after: Some(id),
                 range: None,
                 data: Json::Null,
@@ -668,7 +668,7 @@ fn message(
                 .flatten()
         });
     Ok({
-        let (at, time_evidence) = crate::time::parts(msg.get("create_time").and_then(time_of));
+        let (at, time_accuracy) = crate::time::parts(msg.get("create_time").and_then(time_of));
         Message {
             id,
             session: sid.clone(),
@@ -677,9 +677,9 @@ fn message(
                 .and_then(|p| message_id(ORIGIN, &p)),
             role,
             at,
-            at_quality: time_evidence.quality,
-            at_precision: time_evidence.precision,
-            at_until: time_evidence.until,
+            at_quality: time_accuracy.quality,
+            at_precision: time_accuracy.precision,
+            at_until: time_accuracy.until,
             model,
             prompt_kind,
             blocks,

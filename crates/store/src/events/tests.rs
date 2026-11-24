@@ -13,12 +13,12 @@ fn unreadable_event_coordinates_are_stored_value_failures() {
             Some("negative event source coordinate"),
         ),
         (
-            "UPDATE reading_event SET source_start=-1,source_end=1",
+            "UPDATE event_parse SET source_start=-1,source_end=1",
             3,
             None,
         ),
         (
-            "UPDATE reading_event SET committed=-1",
+            "UPDATE event_parse SET committed=-1",
             6,
             Some("invalid event commit position"),
         ),
@@ -33,7 +33,7 @@ fn unreadable_event_coordinates_are_stored_value_failures() {
             .unwrap();
         fixture.event(session, "marker", None).unwrap();
         let conn = crate::archive::open_write(&fixture.archive.index_db(), 1).unwrap();
-        conn.execute("UPDATE reading_event SET committed=1", [])
+        conn.execute("UPDATE event_parse SET committed=1", [])
             .unwrap();
         let pool = ReadPool::open(&fixture.archive).unwrap();
         {

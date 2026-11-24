@@ -30,6 +30,18 @@ struct Before {
 
 struct MessageChange {
     before: Option<Before>,
+    /// The fresh insert already holds these values. Tool outcomes are read
+    /// after pairing; other bodies need no reading back.
+    installed: Option<Installed>,
+}
+
+/// What a message inserted in this transaction holds while its row is the
+/// one the insert wrote: any later replacement or removal clears it.
+struct Installed {
+    session: i64,
+    parent: Option<String>,
+    counts: crate::derive::counts::Counts,
+    has_calls: bool,
 }
 
 struct SessionBefore {
@@ -105,8 +117,11 @@ impl ChangeSummary {
         matches!(changed.items.get(&pk), None | Some(MessageItems::Metadata))
     }
 
-    /// Starts the summary of a transaction.
-    pub(crate) fn start(_conn: &Connection) -> Result<Self> {
+    /// Starts the summary of a transaction on `conn`, which from now on
+    /// also records the version bodies, values and texts whose references
+    /// it removes ([`crate::versions::remove_unreferenced`]).
+    pub(crate) fn start(conn: &Connection) -> Result<Self> {
+        crate::versions::track_unreferenced(conn)?;
         Ok(Self {
             changed: RefCell::default(),
         })
@@ -125,6 +140,7 @@ impl ChangeSummary {
     /// Placement and visibility change without changing the selected content.
     pub(crate) fn message_metadata(&self, conn: &Connection, pk: i64) -> Result<()> {
         self.record_message(conn, pk)?;
+        self.forget_installed(pk)?;
         self.changed
             .borrow_mut()
             .items
@@ -165,28 +181,30 @@ impl ChangeSummary {
         if let Some(before) = &before {
             self.session(conn, before.session)?;
         }
-        self.changed
-            .borrow_mut()
-            .messages
-            .insert(pk, MessageChange { before });
+        self.changed.borrow_mut().messages.insert(
+            pk,
+            MessageChange {
+                before,
+                installed: None,
+            },
+        );
         Ok(())
+    }
+
+    pub(crate) fn has_message_change(&self, pk: i64) -> bool {
+        self.changed.borrow().messages.contains_key(&pk)
     }
 
     pub(crate) fn new_message(&self, pk: i64) {
         let mut changed = self.changed.borrow_mut();
-        changed
-            .messages
-            .entry(pk)
-            .or_insert(MessageChange { before: None });
+        changed.messages.entry(pk).or_insert(MessageChange {
+            before: None,
+            installed: None,
+        });
         changed.items.entry(pk).or_insert(MessageItems::Content);
     }
 
-    /// Records an event the transaction inserted.
-    pub(crate) fn new_event(&self, pk: i64) {
-        self.changed.borrow_mut().events.entry(pk).or_insert(None);
-    }
-
-    /// Records an event before its row changes or is deleted.
+    /// Records an event before its row changes or is inserted.
     pub(crate) fn event(&self, conn: &Connection, pk: i64) -> Result<()> {
         if self.changed.borrow().events.contains_key(&pk) {
             return Ok(());
@@ -326,9 +344,12 @@ impl ChangeSummary {
                 continue;
             }
             let before = &change.before;
-            let after: Option<(i64, Option<String>)> = now
-                .query_row([pk], |row| <(_, _)>::try_from(row))
-                .optional()?;
+            let after: Option<(i64, Option<String>)> = match &change.installed {
+                Some(installed) => Some((installed.session, installed.parent.clone())),
+                None => now
+                    .query_row([pk], |row| <(_, _)>::try_from(row))
+                    .optional()?,
+            };
             let before = before.as_ref().map(|b| (b.session, b.parent.clone()));
             for (session, parent) in before.iter().chain(after.iter()) {
                 let change = out.entry(*session).or_default();

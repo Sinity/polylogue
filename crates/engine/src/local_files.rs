@@ -165,10 +165,10 @@ impl Engine {
                     parse: vec![polylogue_store::ParseStep::without_parser(
                         0..prepared.len(),
                         true,
-                        origin.reading_version(),
+                        origin.parse_version(),
                     )],
-                    acquisition: None,
-                    basis: None,
+                    capture_read: None,
+                    base: None,
                     release: Default::default(),
                 };
                 self.writer
@@ -243,8 +243,8 @@ impl Engine {
             blobs: Vec::new(),
             length: prepared.len(),
             parse: Vec::new(),
-            acquisition: Some(source_read),
-            basis: context.basis,
+            capture_read: Some(source_read),
+            base: context.base,
             release: Default::default(),
         };
         if !exists {

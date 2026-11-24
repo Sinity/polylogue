@@ -17,7 +17,7 @@ pub(crate) fn open(
     archive: &polylogue_store::Archive,
     input: &str,
     chain: Option<i64>,
-    reading_version: &str,
+    parse_version: &str,
     start: u64,
 ) -> polylogue_store::Result<Option<Names>> {
     if start == 0 {
@@ -27,7 +27,7 @@ pub(crate) fn open(
         return Ok(None);
     };
     Ok(
-        ChainRows::open(archive, input, chain, reading_version, start)?
+        ChainRows::open(archive, input, chain, parse_version, start)?
             .map(|rows| Formed::new(Committed(Some(rows)))),
     )
 }

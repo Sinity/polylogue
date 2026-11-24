@@ -14,7 +14,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
     );
     doc.set_time(
         Timestamp::from_unix_ms(1),
-        polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant),
+        polylogue_model::TimeAccuracy::intrinsic(polylogue_model::Precision::Instant),
     )
     .unwrap();
     doc.blocks = vec![
@@ -132,7 +132,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
     assert!(!full.status.success(), "{full:?}");
     doc.set_time(
         Timestamp::from_unix_ms(2),
-        polylogue_model::TimeEvidence::intrinsic(polylogue_model::Precision::Instant),
+        polylogue_model::TimeAccuracy::intrinsic(polylogue_model::Precision::Instant),
     )
     .unwrap();
     doc.blocks = vec![Block::Text {

@@ -4,8 +4,8 @@ use super::*;
 fn unknown_event_time_has_unknown_accuracy() {
     let old = r#"{"session":"hermes:native","kind":"observation","data":{"n":7}}"#;
     let event: Event = serde_json::from_str(old).unwrap();
-    assert_eq!(event.time_evidence(), crate::TimeEvidence::UNKNOWN);
-    assert!(event.time_evidence().validate(event.at).is_ok());
+    assert_eq!(event.time_accuracy(), crate::TimeAccuracy::UNKNOWN);
+    assert!(event.time_accuracy().validate(event.at).is_ok());
     let unbound = Event {
         session: None,
         range: Some((10, 20)),
@@ -25,7 +25,7 @@ fn link_statement_identity_preserves_recorded_coordinates() {
         how: None,
         parent: s("claude-code:p"),
         child: s("claude-code:agent-1"),
-        at: None,
+        branch_point: None,
         call_id: None,
         evidence: "agentId".into(),
     };
@@ -54,7 +54,7 @@ fn link_statement_identity_preserves_recorded_coordinates() {
     different.child = s("claude-code:agent-2");
     assert_ne!(baseline, different.selection_tag());
     let mut different = from_parent.clone();
-    different.at = Some(MessageId::parse("claude-code:m1").unwrap());
+    different.branch_point = Some(MessageId::parse("claude-code:m1").unwrap());
     assert_ne!(baseline, different.selection_tag());
     let mut different = from_parent;
     different.kind = LinkKind::Reference;

@@ -28,7 +28,7 @@ impl Stored {
             .store_bytes(
                 self.archive.prepare_bytes(bytes).unwrap(),
                 Batch {
-                    basis: None,
+                    base: None,
                     required_outcome: None,
                     input: InputKey {
                         id: input.into(),
@@ -57,7 +57,7 @@ impl Stored {
                     length: bytes.len() as u64,
                     parse: vec![],
                     release: Default::default(),
-                    acquisition: None,
+                    capture_read: None,
                 },
             )
             .unwrap();

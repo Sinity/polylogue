@@ -80,7 +80,7 @@ fn passed_without_result(conn: &Connection, session_pk: i64) -> Result<Vec<(i64,
                    AND later.session_order > cm.session_order),
                  outcome_reason
              FROM tool_call
-             WHERE session_pk = ?1 AND result_message_id IS NULL AND outcome = 'unknown'
+             WHERE session_pk = ?1 AND result_block_pk IS NULL AND outcome = 'unknown'
                AND outcome_reason IN ('no_result', 'passed_without_result')",
         )?
         .query_map([session_pk], |r| <(_, _, _)>::try_from(r))?

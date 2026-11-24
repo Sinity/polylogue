@@ -127,9 +127,11 @@ fn parsed(conn: &Connection) -> Vec<String> {
     [
         "SELECT * FROM parse_state ORDER BY input_pk,chain",
         "SELECT * FROM message ORDER BY pk",
-        "SELECT * FROM reading_message ORDER BY input_pk,chain,message_id",
+        "SELECT * FROM message_parse ORDER BY message_pk,input_pk,chain",
         "SELECT * FROM block ORDER BY pk",
-        "SELECT * FROM reading_text ORDER BY input_pk,chain,document,item,idx",
+        "SELECT * FROM message_version ORDER BY pk",
+        "SELECT * FROM message_version_body ORDER BY version_pk",
+        "SELECT * FROM message_block_selection ORDER BY version_pk",
         "SELECT key,value FROM meta WHERE key LIKE '%generation%' ORDER BY key",
     ]
     .map(|sql| digest(conn, sql))

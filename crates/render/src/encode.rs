@@ -658,7 +658,7 @@ pub(crate) fn trace_lines(card: &polylogue_model::read::TraceCard) -> Vec<String
             ChainStep::Record{reference}=>format!("Record: {reference}"),
             ChainStep::InputRecord{input,chain,start,end,route,shown}=>format!("Input: {input}, chain {chain}, bytes {start}..{end}, route {}{}",route.as_str(),if *shown {" (shown source)"}else{" (additional source)"}),
             ChainStep::StoredBytes{blob,size,offset,length,blob_offset}=>format!("Stored bytes: b3:{blob}, {size} bytes; chain offset {offset}, length {length}, blob offset {blob_offset}"),
-            ChainStep::ReaderVersion{reading_version,status,parsed_upto}=>format!("Reader checkpoint: {reading_version}, {status}, parsed through byte {parsed_upto}"),
+            ChainStep::ReaderVersion{parse_version,status,parsed_upto}=>format!("Reader checkpoint: {parse_version}, {status}, parsed through byte {parsed_upto}"),
             ChainStep::Unavailable{reason}=>format!("Unavailable: {reason}"),
         });
     }
@@ -856,7 +856,7 @@ pub(crate) fn session_lines(
         format!(
             "{} · started {}",
             session.kind.as_str(),
-            recorded_time(session.started, session.time_evidence(), zone)
+            recorded_time(session.started, session.time_accuracy(), zone)
         ),
         format!(
             "working directories: {}",
@@ -924,7 +924,7 @@ pub(crate) fn message_time(time: &TimeValue, zone: &jiff::tz::TimeZone) -> Strin
 
 pub(crate) fn recorded_time(
     at: Option<polylogue_model::Timestamp>,
-    accuracy: polylogue_model::TimeEvidence,
+    accuracy: polylogue_model::TimeAccuracy,
     zone: &jiff::tz::TimeZone,
 ) -> String {
     let time = at

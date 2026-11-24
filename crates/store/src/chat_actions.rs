@@ -139,7 +139,7 @@ pub(crate) fn read(conn: &Connection, table_prefix: &str, id: &str) -> Result<Op
         stage_only,
         needs_approval,
         created_at,
-        execution: polylogue_model::authored::ExecutionEligibility::from_name(&execution)
+        execution: polylogue_model::authored::RunsHere::from_name(&execution)
             .ok_or_else(|| StoreError::stored(6, "unknown execution eligibility"))?,
         attachments,
         events,

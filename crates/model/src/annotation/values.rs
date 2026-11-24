@@ -103,22 +103,22 @@ impl<T: schemars::JsonSchema> schemars::JsonSchema for Structured<T> {
         schema
     }
 }
-record!(WithPredecessor {
+record!(WithPrevious {
     text: String,
     predecessor: Json
 });
-record!(OptionalWithPredecessor {text:Option<String>,predecessor:Json});
+record!(OptionalWithPrevious {text:Option<String>,predecessor:Json});
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum TextValue {
     Plain(String),
-    WithPredecessor(WithPredecessor),
+    WithPrevious(WithPrevious),
 }
 impl TextValue {
     pub fn text(&self) -> &str {
         match self {
             Self::Plain(text) => text,
-            Self::WithPredecessor(value) => &value.text,
+            Self::WithPrevious(value) => &value.text,
         }
     }
 }
@@ -132,13 +132,13 @@ impl Eq for TextValue {}
 #[serde(untagged)]
 pub enum OptionalTextValue {
     Plain(Option<String>),
-    WithPredecessor(OptionalWithPredecessor),
+    WithPrevious(OptionalWithPrevious),
 }
 impl OptionalTextValue {
     pub fn text(&self) -> Option<&str> {
         match self {
             Self::Plain(text) => text.as_deref(),
-            Self::WithPredecessor(value) => value.text.as_deref(),
+            Self::WithPrevious(value) => value.text.as_deref(),
         }
     }
 }
@@ -230,7 +230,7 @@ pub enum Outcome {
     Abandoned,
 }
 
-record!(OutcomeWithPredecessor {
+record!(OutcomeWithPrevious {
     text: Outcome,
     predecessor: Json
 });
@@ -238,13 +238,13 @@ record!(OutcomeWithPredecessor {
 #[serde(untagged)]
 pub enum OutcomeValue {
     Plain(Outcome),
-    WithPredecessor(OutcomeWithPredecessor),
+    WithPrevious(OutcomeWithPrevious),
 }
 impl OutcomeValue {
     pub fn outcome(&self) -> Outcome {
         match self {
             Self::Plain(value) => *value,
-            Self::WithPredecessor(value) => value.text,
+            Self::WithPrevious(value) => value.text,
         }
     }
 }
@@ -606,8 +606,8 @@ pub fn decode(
                 match value {
                     OptionalTextValue::Plain(None) => Value::Absent,
                     OptionalTextValue::Plain(Some(text)) => Value::Text(TextValue::Plain(text)),
-                    OptionalTextValue::WithPredecessor(value) => match value.text {
-                        Some(text) => Value::Text(TextValue::WithPredecessor(WithPredecessor {
+                    OptionalTextValue::WithPrevious(value) => match value.text {
+                        Some(text) => Value::Text(TextValue::WithPrevious(WithPrevious {
                             text,
                             predecessor: value.predecessor,
                         })),

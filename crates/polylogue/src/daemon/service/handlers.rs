@@ -651,7 +651,7 @@ pub(crate) fn save_selection(
         }),
     };
     let intended = UserWrite::Save(Box::new(save.clone()));
-    let present = |receipt: polylogue_store::user_writes::UserReceipt| {
+    let present = |receipt: polylogue_store::user_writes::WriteResult| {
         let mut report = receipt
             .save
             .expect("Save transaction returns its resolved outcomes");
@@ -663,7 +663,7 @@ pub(crate) fn save_selection(
     match repeated_request(&reader, &request_id, &intended, invocation) {
         Ok(Some(previous)) => {
             drop(reader);
-            return Ok(super::answers::submit_receipt(
+            return Ok(super::answers::submit_result(
                 d,
                 invocation,
                 request_id,
@@ -709,7 +709,7 @@ pub(crate) fn save_selection(
     let read_at = serde_json::json!({ "now": kept["now"], "position":kept["read_at"] }).to_string();
     save.rows_json = kept.to_string();
     save.read_at = read_at;
-    Ok(super::answers::submit_receipt(
+    Ok(super::answers::submit_result(
         d,
         invocation,
         request_id,

@@ -1,8 +1,6 @@
 use super::super::*;
 use crate::input_rows::{InputRows, ObservationRow};
-use crate::primary::{
-    AcquisitionReceipt, AcquisitionRoute, RawRange, SourceSelector, SourceStatus,
-};
+use crate::primary::{CaptureRead, RawRange, ReadRoute, SourceSelector, SourceStatus};
 
 fn observation(id: &str, bytes: Option<Vec<u8>>) -> ObservationRow {
     ObservationRow {
@@ -28,9 +26,9 @@ fn observation(id: &str, bytes: Option<Vec<u8>>) -> ObservationRow {
 }
 fn rows(id: &str, bytes: Option<Vec<u8>>) -> InputRows {
     InputRows {
-        acquisition: None,
+        capture_read: None,
         input: id.into(),
-        format: "synthetic".into(),
+        origin: "synthetic".into(),
         revision: None,
         extents: Vec::new(),
         observation: Some(observation(id, bytes)),
@@ -106,16 +104,16 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
     for primary in [false, true] {
         let conn = database(primary);
         let source = Source::of(&conn).unwrap();
-        let source_read = AcquisitionReceipt {
+        let source_read = CaptureRead {
             version: 1,
-            route: AcquisitionRoute::NativeCapture,
+            route: ReadRoute::NativeCapture,
             source: selector(b"/home/op/\xff"),
             range: RawRange { start: 4, end: 12 },
             hash: polylogue_model::BlobHash::of(b"abcdefgh"),
             observed_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
             generation: None,
             raw_total: None,
-            raw_predecessor: None,
+            previous_revision: None,
             chunks: Vec::new(),
         };
         conn.execute(
@@ -125,7 +123,7 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
         )
         .unwrap();
         let mut row = rows("native", Some(source_read.source.path_bytes.clone()));
-        row.acquisition = Some(source_read.clone());
+        row.capture_read = Some(source_read.clone());
         row.revision = Some(crate::input_rows::Revision {
             number: 1,
             produced: "first".into(),
@@ -142,13 +140,13 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
         row.insert(&conn, 7).unwrap();
         let packed: Vec<u8> = conn
             .query_row(
-                &source.sql("SELECT acquisition FROM @source.extent"),
+                &source.sql("SELECT capture_read FROM @source.extent"),
                 [],
                 |r| r.get(0),
             )
             .unwrap();
         assert_eq!(
-            crate::encoding::unpack_json::<AcquisitionReceipt>(&packed).unwrap(),
+            crate::encoding::unpack_json::<CaptureRead>(&packed).unwrap(),
             source_read
         );
         row.extents.clear();
@@ -166,7 +164,7 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
         let details: serde_json::Value = serde_json::from_str(&details).unwrap();
         assert_eq!(details["import"], "kept");
         assert_eq!(
-            serde_json::from_value::<AcquisitionReceipt>(details["acquisition"].clone()).unwrap(),
+            serde_json::from_value::<CaptureRead>(details["capture_read"].clone()).unwrap(),
             source_read
         );
         row.observation = None;
@@ -208,9 +206,9 @@ fn queued_source_snapshot_and_reader_keep_the_same_observation() {
     drop(conn);
     let writer = crate::Writer::start(&archive).unwrap();
     let snapshot = writer.source_snapshot(selector(path)).unwrap();
-    assert_eq!(snapshot.basis.status, SourceStatus::Ready);
-    assert_eq!(snapshot.basis.confirmed.as_deref(), Some("native"));
-    assert_eq!(snapshot.basis.pending, None);
+    assert_eq!(snapshot.base.status, SourceStatus::Ready);
+    assert_eq!(snapshot.base.confirmed.as_deref(), Some("native"));
+    assert_eq!(snapshot.base.pending, None);
     assert_eq!(
         snapshot
             .confirmed

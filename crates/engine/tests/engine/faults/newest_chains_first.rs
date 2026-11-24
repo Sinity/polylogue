@@ -42,15 +42,15 @@ fn readings(w: &ClaudeHome) -> (Vec<Vec<polylogue_model::bundle::Record>>, serde
     let rows = serde_json::json!({
         "sources": reader.query(
             "SELECT m.id AS message, i.id AS input, s.chain, s.source_start, s.source_end,
-                    s.completion, hex(s.hash) AS version
-             FROM held_message_reading s JOIN message m ON m.id = s.message_id
+                    s.main, s.completion, hex((SELECT version_hash FROM message_version WHERE pk=s.version_pk)) AS version
+             FROM message_parse s JOIN message m ON m.pk = s.message_pk
              JOIN input_ref i ON i.pk = s.input_pk
              ORDER BY m.id, i.id, s.chain, s.source_start",
             &[],
         ).unwrap(),
         "parse_state": reader.query(
             "SELECT i.id AS input, p.chain, p.status, p.parsed_upto, p.at_length, p.records,
-                    p.used, p.skipped, p.unreadable, p.reading_version
+                    p.used, p.skipped, p.unreadable, p.parse_version
              FROM parse_state p JOIN input_ref i ON i.pk = p.input_pk
              ORDER BY i.id, p.chain",
             &[],
@@ -287,7 +287,7 @@ fn a_range_the_writer_refuses_fails_its_chain_and_the_build_ends() {
     fault::release();
     let pass = pass.join().unwrap().unwrap();
     fault::clear();
-    let refusal = "wire declarations changed without a reading version change";
+    let refusal = "wire declarations changed without a parse version change";
     assert!(
         pass.errors.iter().any(|error| error.contains(refusal)),
         "{:?}",

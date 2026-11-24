@@ -2,7 +2,7 @@
 
 use crate::{Result, StoreError};
 use polylogue_model::{
-    Block, Document, DocumentId, Event, Message, MessageId, Timestamp, bundle::MessageProjection,
+    Block, Document, DocumentId, Event, Message, MessageId, Timestamp, bundle::ShownBlocks,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use std::cell::RefCell;
@@ -106,7 +106,7 @@ pub(crate) fn pack_json(value: &impl Serialize) -> Result<Vec<u8>> {
 /// Source time; SQL milliseconds are only query caches.
 pub(crate) fn time_bytes(
     at: Option<Timestamp>,
-    accuracy: polylogue_model::TimeEvidence,
+    accuracy: polylogue_model::TimeAccuracy,
 ) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&(at, accuracy))?)
 }
@@ -238,7 +238,7 @@ impl Columns for rusqlite::Row<'_> {
 pub(crate) fn read_time(
     row: &rusqlite::Row<'_>,
     column: usize,
-) -> rusqlite::Result<(Option<Timestamp>, polylogue_model::TimeEvidence)> {
+) -> rusqlite::Result<(Option<Timestamp>, polylogue_model::TimeAccuracy)> {
     let bytes: Vec<u8> = row.get(column)?;
     serde_json::from_slice(&bytes).map_err(|error| {
         rusqlite::Error::FromSqlConversionFailure(
@@ -254,7 +254,7 @@ pub(crate) fn read_time(
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
-    pub(crate) block_selection: MessageProjection,
+    pub(crate) block_selection: ShownBlocks,
     pub(crate) time: Vec<u8>,
     pub(crate) body: Vec<u8>,
     /// Item estimates from the typed content, before payloads are released.
@@ -314,10 +314,7 @@ impl PreparedMessage {
         RowPacker::new()?.pack_message(message)
     }
 
-    pub(crate) fn projected(
-        message: &Message,
-        block_selection: &MessageProjection,
-    ) -> Result<Self> {
+    pub(crate) fn projected(message: &Message, block_selection: &ShownBlocks) -> Result<Self> {
         RowPacker::new()?.pack_projected_message(message, block_selection)
     }
 }
@@ -370,7 +367,7 @@ impl RowPacker {
     }
 
     pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
-        let block_selection = MessageProjection {
+        let block_selection = ShownBlocks {
             source_version: message.content_hash()?,
             block_count: message.blocks.len() as u64,
             block_ordinals: (0..message.blocks.len() as u64).collect(),
@@ -381,7 +378,7 @@ impl RowPacker {
     pub(crate) fn pack_projected_message(
         &mut self,
         message: &Message,
-        block_selection: &MessageProjection,
+        block_selection: &ShownBlocks,
     ) -> Result<PreparedMessage> {
         block_selection.validate(message.blocks.len())?;
         if block_selection.block_count == message.blocks.len() as u64
@@ -395,12 +392,12 @@ impl RowPacker {
     fn pack_message_value(
         &mut self,
         message: &Message,
-        block_selection: &MessageProjection,
+        block_selection: &ShownBlocks,
     ) -> Result<PreparedMessage> {
         Ok(PreparedMessage {
             id: message.id.clone(),
             block_selection: block_selection.clone(),
-            time: time_bytes(message.at, message.time_evidence())?,
+            time: time_bytes(message.at, message.time_accuracy())?,
             body: self.pack_version(message, &message.blocks)?,
             items: polylogue_model::read::message_entries(
                 message,
@@ -429,7 +426,7 @@ impl RowPacker {
             .as_bytes();
         Ok(PreparedDocument {
             id: document.id.clone(),
-            time: time_bytes(document.source_time, document.time_evidence())?,
+            time: time_bytes(document.source_time, document.time_accuracy())?,
             body: self.pack_version(document, &document.blocks)?,
             fields: self.pack_json(&fields)?,
             content: self.pack_content(&document.blocks, hash)?,
@@ -685,35 +682,3 @@ pub(crate) fn session_order(
 
 #[cfg(test)]
 mod tests;
-
-/// A message reading's block layout: the original block count and the
-/// ordinals of the blocks it holds.
-pub(crate) fn message_layout(block_selection: &MessageProjection) -> Result<Vec<u8>> {
-    Ok(serde_json::to_vec(&(
-        block_selection.block_count,
-        &block_selection.block_ordinals,
-    ))?)
-}
-
-/// The block selection a stored layout states for version `hash`; no layout
-/// means every one of `blocks` blocks.
-pub(crate) fn message_block_selection(
-    hash: &[u8],
-    layout: Option<&[u8]>,
-    blocks: usize,
-) -> Result<MessageProjection> {
-    let source_version = polylogue_model::BlobHash(hash.try_into().map_err(|_| {
-        crate::StoreError::Invalid("a message source version is not a BLAKE3 hash".into())
-    })?);
-    let (block_count, block_ordinals) = match layout {
-        Some(layout) => read_json::<(u64, Vec<u64>)>(layout)?,
-        None => (blocks as u64, (0..blocks as u64).collect()),
-    };
-    let block_selection = MessageProjection {
-        source_version,
-        block_count,
-        block_ordinals,
-    };
-    block_selection.validate(block_selection.block_ordinals.len())?;
-    Ok(block_selection)
-}

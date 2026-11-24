@@ -13,7 +13,7 @@ impl WriterSender {
         if bodies.is_empty() {
             return Ok(());
         }
-        let location = &self.0.location;
+        let location = self.0.resolver.location();
         let token = location.read_scope.token()?;
         let commits = self.completion_commits();
         loop {
@@ -35,7 +35,7 @@ impl WriterSender {
         if batch.parse.is_empty() {
             return Ok(());
         }
-        let location = &self.0.location;
+        let location = self.0.resolver.location();
         let token = location.read_scope.token()?;
         let mut index = self.open_current(&token)?;
         let chain = validate_primary_reading(&index, batch)?;
@@ -88,9 +88,9 @@ impl WriterSender {
         input: &InputKey,
         chain: i64,
         length: u64,
-        source: &mut ChainReading,
+        source: &mut ChainParse,
     ) -> Result<()> {
-        let location = &self.0.location;
+        let location = self.0.resolver.location();
         let token = location.read_scope.token()?;
         let commits = self.completion_commits();
         let mut version = None;
@@ -107,13 +107,13 @@ impl WriterSender {
             }
             if version
                 .as_ref()
-                .is_some_and(|old| old != &step.reading_version)
+                .is_some_and(|old| old != &step.parse_version)
             {
                 return Err(StoreError::Invalid(
-                    "one replacement has several reading versions".into(),
+                    "one replacement has several parse versions".into(),
                 ));
             }
-            version.get_or_insert_with(|| step.reading_version.clone());
+            version.get_or_insert_with(|| step.parse_version.clone());
             parsed_through = parsed_through.max(step.parsed_upto);
             complete = step.progress.reached_end() && step.parsed_upto == length;
             partial = matches!(step.progress, polylogue_model::batch::StepProgress::AtEnd)
@@ -130,7 +130,7 @@ impl WriterSender {
             input: input.clone(),
             chain,
             length,
-            reading_version: version.or_invalid("a replacement has no reading")?,
+            parse_version: version.or_invalid("a replacement has no reading")?,
         };
         key.validate()?;
 
@@ -165,7 +165,7 @@ impl WriterSender {
             &self.open_current(&token)?,
             &input.id,
             chain,
-            &key.reading_version,
+            &key.parse_version,
         )?;
         if let Some(required) = previous.filter(|required| *required > parsed_through) {
             return Err(StoreError::Invalid(format!(
@@ -184,8 +184,8 @@ impl WriterSender {
                     length,
                     parse: vec![step.clone()],
                     release: Default::default(),
-                    acquisition: None,
-                    basis: None,
+                    capture_read: None,
+                    base: None,
                     required_outcome: None,
                 };
                 self.spool_primary_batch(&mut batch)
@@ -233,7 +233,7 @@ impl WriterSender {
         if self.0.stop.is_cancelled() {
             return Err(StoreError::Stopped);
         }
-        let location = &self.0.location;
+        let location = self.0.resolver.location();
         scoped::require_current(location, Some(token))?;
         let index = crate::archive::open_read(&location.index_db())?;
         crate::primary::scope::require_readable(&index)?;

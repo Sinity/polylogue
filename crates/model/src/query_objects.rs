@@ -2,7 +2,7 @@
 
 use crate::bundle::{
     TextCoverage, TextFragmentError, TextSourceVersion, TextSpanOrigin,
-    fragments::seek::NativeSpanSeek,
+    fragments::seek::SourceSpanSeek,
 };
 use crate::{ChangePosition, Timestamp, authorship::Authorship};
 use query_language::{
@@ -40,7 +40,7 @@ pub struct QueryObject {
     pub parameters: BTreeMap<String, String>,
     pub query: Query,
     pub source_outputs: Vec<SourceOutput>,
-    pub definitions: Vec<FrozenQueryDefinition>,
+    pub definitions: Vec<SavedQueryDefinition>,
     pub dependencies: Vec<QuestionId>,
     pub edges: Vec<QueryEdge>,
 }
@@ -66,7 +66,7 @@ impl QueryObject {
 /// The complete semantic body of a dependency, addressed by its own hash.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct FrozenQueryDefinition {
+pub struct SavedQueryDefinition {
     pub question: QuestionId,
     pub normal_form: serde_json::Value,
     pub parameters: BTreeMap<String, String>,
@@ -246,13 +246,13 @@ impl ReadSpanBinding {
 pub struct NormalizedReadSpan {
     pub origin: TextSpanOrigin,
     pub version: TextSourceVersion,
-    pub seek: NativeSpanSeek,
+    pub seek: SourceSpanSeek,
 }
 impl NormalizedReadSpan {
     pub fn new(
         origin: TextSpanOrigin,
         version: TextSourceVersion,
-        seek: NativeSpanSeek,
+        seek: SourceSpanSeek,
     ) -> Result<Self, TextFragmentError> {
         let value = Self {
             origin,

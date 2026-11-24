@@ -527,9 +527,9 @@ fn produce<H: Streams>(
     H::produce(arguments, &call, context, output)
 }
 
-pub(crate) enum NativeReply {
+pub(crate) enum HandlerReply {
     Refused(Answer<Value>),
-    Answer(NativeAnswer, Answer<Value>),
+    Answer(HandlerAnswer, Answer<Value>),
     Stream {
         request: RunnableRequest,
         accepted: Box<crate::operation::Accepted>,
@@ -538,7 +538,7 @@ pub(crate) enum NativeReply {
     },
 }
 
-pub(crate) struct NativeAnswer {
+pub(crate) struct HandlerAnswer {
     pub web_request: Option<Arc<RunnableRequest>>,
     pub scope: Option<polylogue_store::ReadScopeToken>,
     pub publication_deadline: Option<std::time::Instant>,
@@ -554,7 +554,7 @@ pub(crate) async fn dispatch_native(
     mut accepted: crate::operation::Accepted,
     via: Via,
     http_get: bool,
-) -> NativeReply {
+) -> HandlerReply {
     use crate::daemon::service::line::Line;
     use crate::protocol::line::{Rows, Step};
     let surface = match via {
@@ -575,7 +575,7 @@ pub(crate) async fn dispatch_native(
         let registration = row.registration().expect("native daemon command");
         let policy = match registration.admit(&request.arguments, row, &caller) {
             Ok(policy) => policy,
-            Err(failure) => return NativeReply::Refused(failure.answer()),
+            Err(failure) => return HandlerReply::Refused(failure.answer()),
         };
         request.deadline = policy.deadline(request.deadline);
         let (trusted, ready) = match prepare_native_answer(
@@ -588,12 +588,12 @@ pub(crate) async fn dispatch_native(
             policy,
         ) {
             Ok(call) => call,
-            Err(error) => return NativeReply::Refused(super::service::store_error(&error)),
+            Err(error) => return HandlerReply::Refused(super::service::store_error(&error)),
         };
         let answer = table
             .call_as(request, table_via, trusted, Default::default())
             .await;
-        return NativeReply::Answer(ready, answer);
+        return HandlerReply::Answer(ready, answer);
     }
 
     let mut ready = None;
@@ -622,7 +622,7 @@ pub(crate) async fn dispatch_native(
                         let mut request = raw.clone();
                         request.deadline = deadline;
                         let rows = rows.clone();
-                        return Ok(ControlFlow::Break(NativeReply::Stream {
+                        return Ok(ControlFlow::Break(HandlerReply::Stream {
                             request,
                             accepted: Box::new(accepted),
                             policy,
@@ -639,17 +639,17 @@ pub(crate) async fn dispatch_native(
                     Ok(ControlFlow::Continue((trusted, deadline)))
                 };
                 admit().unwrap_or_else(|failure| {
-                    ControlFlow::Break(NativeReply::Refused(failure.answer()))
+                    ControlFlow::Break(HandlerReply::Refused(failure.answer()))
                 })
             },
         )
         .await;
     match answer {
-        Err(error) => NativeReply::Refused(Failure::bad_request(error).answer()),
+        Err(error) => HandlerReply::Refused(Failure::bad_request(error).answer()),
         Ok(ControlFlow::Break(reply)) => reply,
         Ok(ControlFlow::Continue(answer)) => match ready {
-            Some(ready) => NativeReply::Answer(ready, answer),
-            None => NativeReply::Refused(answer),
+            Some(ready) => HandlerReply::Answer(ready, answer),
+            None => HandlerReply::Refused(answer),
         },
     }
 }
@@ -662,7 +662,7 @@ fn prepare_native_answer(
     mut accepted: crate::operation::Accepted,
     via: Via,
     policy: Policy,
-) -> polylogue_store::Result<(command_surface::Caller, NativeAnswer)> {
+) -> polylogue_store::Result<(command_surface::Caller, HandlerAnswer)> {
     if policy.read_only {
         accepted.read_scope = Some(daemon.reads.scope_token()?);
     }
@@ -698,7 +698,7 @@ fn prepare_native_answer(
         .with_access(Access::Write);
     Ok((
         trusted,
-        NativeAnswer {
+        HandlerAnswer {
             web_request,
             scope,
             publication_deadline,

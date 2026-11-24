@@ -1,21 +1,21 @@
 use super::*;
 #[test]
 fn seek_keeps_ordinals_and_separator_positions() {
-    let body = NativeTextBody {
+    let body = SourceTextBody {
         block: 7,
         field: TextField::ToolOutput,
     };
-    let after = NativeTextBody {
+    let after = SourceTextBody {
         block: 11,
         field: TextField::Thinking,
     };
-    let seek = NativeSpanSeek {
-        start: NativeTextPosition {
-            piece: NativeTextPiece::Body { body },
+    let seek = SourceSpanSeek {
+        start: SourceTextPosition {
+            piece: SourceTextPiece::Body { body },
             byte: 3,
         },
-        end: NativeTextPosition {
-            piece: NativeTextPiece::Separator {
+        end: SourceTextPosition {
+            piece: SourceTextPiece::Separator {
                 before: body,
                 after,
             },
@@ -30,7 +30,7 @@ fn seek_keeps_ordinals_and_separator_positions() {
     };
     seek.validate(&container, &coverage).unwrap();
     assert_eq!(
-        serde_json::from_str::<NativeSpanSeek>(&serde_json::to_string(&seek).unwrap()).unwrap(),
+        serde_json::from_str::<SourceSpanSeek>(&serde_json::to_string(&seek).unwrap()).unwrap(),
         seek
     );
     let mut bad = seek;
@@ -39,9 +39,9 @@ fn seek_keeps_ordinals_and_separator_positions() {
         bad.validate(&container, &coverage),
         Err(TextFragmentError::Origin)
     );
-    let reversed = NativeSpanSeek {
-        start: NativeTextPosition {
-            piece: NativeTextPiece::Body { body: after },
+    let reversed = SourceSpanSeek {
+        start: SourceTextPosition {
+            piece: SourceTextPiece::Body { body: after },
             byte: 0,
         },
         end: seek.start,
@@ -50,7 +50,7 @@ fn seek_keeps_ordinals_and_separator_positions() {
         reversed.validate(&container, &coverage),
         Err(TextFragmentError::Origin)
     );
-    let reversed_separator = NativeSpanSeek {
+    let reversed_separator = SourceSpanSeek {
         start: seek.end,
         end: seek.start,
     };
@@ -64,16 +64,16 @@ fn seek_keeps_ordinals_and_separator_positions() {
         Err(TextFragmentError::Origin)
     );
     let inside_body = |block: u64| {
-        let position = |byte| NativeTextPosition {
-            piece: NativeTextPiece::Body {
-                body: NativeTextBody {
+        let position = |byte| SourceTextPosition {
+            piece: SourceTextPiece::Body {
+                body: SourceTextBody {
                     block,
                     field: TextField::ToolOutput,
                 },
             },
             byte,
         };
-        NativeSpanSeek {
+        SourceSpanSeek {
             start: position(0),
             end: position(9),
         }
@@ -86,11 +86,11 @@ fn seek_keeps_ordinals_and_separator_positions() {
 }
 #[test]
 fn accessible_empty_invents_no_body_or_coverage() {
-    let position = NativeTextPosition {
-        piece: NativeTextPiece::Empty,
+    let position = SourceTextPosition {
+        piece: SourceTextPiece::Empty,
         byte: 0,
     };
-    let seek = NativeSpanSeek {
+    let seek = SourceSpanSeek {
         start: position,
         end: position,
     };
@@ -116,7 +116,7 @@ fn accessible_empty_invents_no_body_or_coverage() {
         Err(TextFragmentError::Origin)
     );
     assert!(
-        serde_json::from_str::<NativeTextBody>(r#"{"block":7,"field":"text","body":"unselected"}"#)
+        serde_json::from_str::<SourceTextBody>(r#"{"block":7,"field":"text","body":"unselected"}"#)
             .is_err()
     );
 }

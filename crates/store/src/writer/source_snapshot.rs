@@ -1,6 +1,6 @@
 use super::Inner;
 use crate::Result;
-use crate::primary::{PendingSource, SourceBasis, SourceSelector, SourceSnapshot, SourceStatus};
+use crate::primary::{PendingSource, SourceBase, SourceSelector, SourceSnapshot, SourceStatus};
 
 impl Inner {
     pub(super) fn source_snapshot(&mut self, source: SourceSelector) -> Result<SourceSnapshot> {
@@ -32,7 +32,7 @@ impl Inner {
             _ => SourceStatus::Ready,
         };
         token.check()?;
-        let base = SourceBasis {
+        let base = SourceBase {
             boundary,
             resolved: None,
             source,
@@ -41,7 +41,7 @@ impl Inner {
             pending: pending.head.as_ref().map(|value| value.identity.clone()),
         };
         Ok(SourceSnapshot {
-            basis: base,
+            base,
             confirmed,
             pending,
         })
@@ -50,7 +50,7 @@ impl Inner {
     /// later position or treating a missing original record as present.
     pub(super) fn sampled_base_matches(
         &self,
-        base: &SourceBasis,
+        base: &SourceBase,
         source: &SourceSelector,
         input: &str,
     ) -> Result<bool> {

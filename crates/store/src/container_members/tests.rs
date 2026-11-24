@@ -47,8 +47,8 @@ fn stage(
         blobs: vec![],
         length: prepared.len(),
         parse: vec![],
-        acquisition: None,
-        basis: None,
+        capture_read: None,
+        base: None,
         release: InFlight::default(),
     };
     PreparedBatch {

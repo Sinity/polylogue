@@ -40,13 +40,13 @@ fn recover(
 ) -> polylogue_store::Result<()> {
     let reader = d.reads.reader()?;
     reader.visit_signals(|stored| {
-        let metadata = stored.outbox.metadata;
+        let metadata = stored.pending_delivery.metadata;
         let attempted = state.attempt(&stored.id).is_some()
             || stored
                 .events
                 .iter()
                 .any(|event| matches!(event.event, Event::Desktop { .. }));
-        if metadata.execution == ExecutionEligibility::Live
+        if metadata.execution == RunsHere::Live
             && metadata.delivery.decision.interrupts()
             && !attempted
         {

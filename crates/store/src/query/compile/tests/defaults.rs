@@ -47,7 +47,7 @@ fn session_rows_keep_source_meaning_and_retained_identity() {
         Kept {
             output_metadata: Default::default(),
             shape: Some(Shape::Rows),
-            native_identity: true,
+            row_identity: true,
             unit: "sessions".into(),
             columns: c("sessions").columns,
             match_columns: vec![],

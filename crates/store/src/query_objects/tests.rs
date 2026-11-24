@@ -346,7 +346,7 @@ fn result_output_schemas_require_the_kept_columns() {
         polylogue_query::Kept {
             output_metadata: Default::default(),
             shape: None,
-            native_identity: false,
+            row_identity: false,
             unit: "sessions".into(),
             columns: columns.clone(),
             match_columns: vec![],
@@ -497,7 +497,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
     use polylogue_model::bundle::{
         TextSourceVersion, TextSpanOrigin,
         fragments::seek::{
-            NativeSpanSeek, NativeTextBody, NativeTextPiece, NativeTextPosition, TextField,
+            SourceSpanSeek, SourceTextBody, SourceTextPiece, SourceTextPosition, TextField,
         },
     };
     use polylogue_model::query_objects::NormalizedReadSpan;
@@ -516,19 +516,19 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
             record: polylogue_model::Reference::parse("message:codex:synthetic").unwrap(),
             hash: polylogue_model::BlobHash::of(b"kept version metadata"),
         },
-        NativeSpanSeek {
-            start: NativeTextPosition {
-                piece: NativeTextPiece::Body {
-                    body: NativeTextBody {
+        SourceSpanSeek {
+            start: SourceTextPosition {
+                piece: SourceTextPiece::Body {
+                    body: SourceTextBody {
                         block: 7,
                         field: TextField::Text,
                     },
                 },
                 byte: 1,
             },
-            end: NativeTextPosition {
-                piece: NativeTextPiece::Body {
-                    body: NativeTextBody {
+            end: SourceTextPosition {
+                piece: SourceTextPiece::Body {
+                    body: SourceTextBody {
                         block: 7,
                         field: TextField::Text,
                     },

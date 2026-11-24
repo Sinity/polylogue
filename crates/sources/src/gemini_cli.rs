@@ -196,7 +196,7 @@ impl ExportParser for GeminiCli {
             "gemini" => Role::Assistant,
             "info" | "error" => {
                 sink.out.events.push({
-                    let (at, time_evidence) =
+                    let (at, time_accuracy) =
                         crate::time::parts(m.get("timestamp").and_then(time_of));
                     Event {
                         session: Some(sid.clone()),
@@ -207,9 +207,9 @@ impl ExportParser for GeminiCli {
                         }
                         .into(),
                         at,
-                        at_quality: time_evidence.quality,
-                        at_precision: time_evidence.precision,
-                        at_until: time_evidence.until,
+                        at_quality: time_accuracy.quality,
+                        at_precision: time_accuracy.precision,
+                        at_until: time_accuracy.until,
                         after: self.state.previous.clone(),
                         range: None,
                         data: m.get("content").cloned().unwrap_or(Json::Null),
@@ -234,16 +234,16 @@ impl ExportParser for GeminiCli {
             return Ok(());
         };
         let message = {
-            let (at, time_evidence) = crate::time::parts(m.get("timestamp").and_then(time_of));
+            let (at, time_accuracy) = crate::time::parts(m.get("timestamp").and_then(time_of));
             Message {
                 id: id.clone(),
                 session: sid.clone(),
                 parent: self.state.previous.replace(id),
                 role,
                 at,
-                at_quality: time_evidence.quality,
-                at_precision: time_evidence.precision,
-                at_until: time_evidence.until,
+                at_quality: time_accuracy.quality,
+                at_precision: time_accuracy.precision,
+                at_until: time_accuracy.until,
                 model: m.str("model").filter(|s| !s.is_empty()).map(str::to_owned),
                 prompt_kind: (role == Role::User).then_some(PromptKind::Prose),
                 blocks: blocks(m),
@@ -310,14 +310,14 @@ impl GeminiCli {
         sink.records.record("session", &RecordOutcome::Used);
         if let Some(hash) = doc.str("projectHash").filter(|s| !s.is_empty()) {
             sink.out.events.push({
-                let (at, time_evidence) = crate::time::parts(None);
+                let (at, time_accuracy) = crate::time::parts(None);
                 Event {
                     session: Some(sid.clone()),
                     kind: "project".into(),
                     at,
-                    at_quality: time_evidence.quality,
-                    at_precision: time_evidence.precision,
-                    at_until: time_evidence.until,
+                    at_quality: time_accuracy.quality,
+                    at_precision: time_accuracy.precision,
+                    at_until: time_accuracy.until,
                     after: None,
                     range: None,
                     data: serde_json::json!({"project_hash": hash}),

@@ -68,7 +68,7 @@ fn hook_carrier_batches_keep_bytes_duplicate_paths_members_and_repeat() {
         .collect();
     let (mut engine, _lock) = engine(&home, 64);
     let options = ImportOptions {
-        format: Some("hook-spool".into()),
+        origin: Some("hook-spool".into()),
         ..Default::default()
     };
     let first = engine
@@ -143,7 +143,7 @@ fn spool_tree(root: &Path) {
 #[test]
 fn older_hook_lines_and_browser_captures_import_when_named() {
     let options = |format: &str| ImportOptions {
-        format: Some(format.into()),
+        origin: Some(format.into()),
         ..Default::default()
     };
     let w = polylogue_testkit::ClaudeHome::new();

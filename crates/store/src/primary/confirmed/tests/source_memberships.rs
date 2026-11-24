@@ -41,7 +41,13 @@ fn complete_positions_rebuild_container_memberships_with_their_original_observat
     let dir = tempfile::tempdir().unwrap();
     let mut index = cache(&dir.path().join("index.db"));
     index.pragma_update(None, "foreign_keys", true).unwrap();
-    let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
+    let resolver = crate::writer::resolve::Resolver::new(
+        &archive,
+        &index,
+        crate::writer::resolve::IndexUpkeep::PerTransaction,
+    )
+    .unwrap();
     apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -50,6 +56,7 @@ fn complete_positions_rebuild_container_memberships_with_their_original_observat
         )
         .unwrap(),
         &mut index,
+        &resolver,
         &[
             input(1, "container"),
             member(2, "first", 0),
@@ -71,6 +78,7 @@ fn complete_positions_rebuild_container_memberships_with_their_original_observat
             )
             .unwrap(),
             &mut index,
+            &resolver,
             &[
                 Confirmed {
                     sinex_context: None,

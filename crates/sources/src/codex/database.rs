@@ -80,8 +80,8 @@ fn row_session(row: &Json, field: &str) -> Option<polylogue_model::SessionId> {
         .and_then(session_id)
 }
 
-static ROW_ENVELOPE: crate::fields::Fields = crate::fields::Fields::new(
-    "row_envelope",
+static ROW_WRAPPER: crate::fields::Fields = crate::fields::Fields::new(
+    "row_wrapper",
     &[
         (
             "t",
@@ -210,7 +210,7 @@ impl Parser for Database {
             );
         }
         let row = v.get("r").unwrap_or(&Json::Null);
-        records.fields(table, &crate::fields::header(v, &["r"]), &ROW_ENVELOPE);
+        records.fields(table, &crate::fields::header(v, &["r"]), &ROW_WRAPPER);
         match table {
             "threads" => {
                 records.fields("threads", row, &THREAD_FIELDS);
@@ -276,7 +276,7 @@ impl Parser for Database {
                     how: None,
                     parent,
                     child,
-                    at: None,
+                    branch_point: None,
                     call_id: None,
                     evidence: "thread_spawn_edges".into(),
                 });
@@ -299,14 +299,14 @@ impl Parser for Database {
                     )
                 };
                 out.events.push({
-                    let (at, time_evidence) = crate::time::parts(at);
+                    let (at, time_accuracy) = crate::time::parts(at);
                     Event {
                         session: Some(session),
                         kind: kind.into(),
                         at,
-                        at_quality: time_evidence.quality,
-                        at_precision: time_evidence.precision,
-                        at_until: time_evidence.until,
+                        at_quality: time_accuracy.quality,
+                        at_precision: time_accuracy.precision,
+                        at_until: time_accuracy.until,
                         after: None,
                         range: Some((record.offset, record.offset + record.bytes.len() as u64)),
                         data: row.clone(),

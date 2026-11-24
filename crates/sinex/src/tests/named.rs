@@ -151,8 +151,8 @@ fn named_query_phases_survive_restart_until_applied() {
             .find(|d| d.kind.name == kind)
             .unwrap();
         let version = match kind {
-            "polylogue.query" => 2,
-            "polylogue.query_run" => 8,
+            "polylogue.query" => 3,
+            "polylogue.query_run" => 9,
             "polylogue.query_run_outcome" => 2,
             other => panic!("unexpected named query phase kind: {other}"),
         };

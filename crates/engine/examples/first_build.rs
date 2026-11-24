@@ -474,8 +474,8 @@ fn capture_only(home: &Path, root: &Path) -> polylogue_store::Result<()> {
             length,
             parse: Vec::new(),
             release: Default::default(),
-            acquisition: None,
-            basis: None,
+            capture_read: None,
+            base: None,
             required_outcome: None,
         };
         writer.store_bytes(prepared, batch)?;

@@ -1,5 +1,5 @@
 //! How far each stored revision chain is parsed, kept per chain in
-//! `chain_progress` and counted by origin, reading version and state in
+//! `chain_progress` and counted by origin, parse version and state in
 //! `chain_progress_count`, so whether the index has caught up is a read of
 //! those counts rather than a walk of every chain.
 //!
@@ -42,7 +42,7 @@ fn chain_rows(chains: &str) -> String {
                 ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
                          o.rowid DESC
                 LIMIT 1), i.format) END,
-            COALESCE(p.reading_version, ''),
+            COALESCE(p.parse_version, ''),
             CASE WHEN p.input_pk IS NULL THEN 'no_checkpoint'
                  WHEN p.status = 'no_parser_yet' THEN 'no_parser'
                  WHEN p.status = 'partial' THEN 'partial'
@@ -100,12 +100,12 @@ fn refresh_sql(chains: &str, scope: &str) -> [String; 2] {
 /// `SELECT` it follows (its upsert parsing rule); it is not a filter.
 fn update_counts(chains: &str) -> String {
     format!(
-        "INSERT INTO chain_progress(input, chain, origin, reading_version, state)
+        "INSERT INTO chain_progress(input, chain, origin, parse_version, state)
          SELECT * FROM ({rows}) WHERE true
          ON CONFLICT(input, chain) DO UPDATE SET origin = excluded.origin,
-             reading_version = excluded.reading_version, state = excluded.state
+             parse_version = excluded.parse_version, state = excluded.state
          WHERE chain_progress.origin <> excluded.origin
-            OR chain_progress.reading_version <> excluded.reading_version
+            OR chain_progress.parse_version <> excluded.parse_version
             OR chain_progress.state <> excluded.state",
         rows = chain_rows(chains)
     )
@@ -142,7 +142,7 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
     if kept.as_deref() != Some(CURRENT) {
         tx.execute_batch(&format!(
             "DELETE FROM chain_progress;
-             INSERT INTO chain_progress(input, chain, origin, reading_version, state) {};",
+             INSERT INTO chain_progress(input, chain, origin, parse_version, state) {};",
             chain_rows(&chain_lengths(""))
         ))?;
     }
@@ -171,7 +171,7 @@ pub(crate) fn install_triggers(index: &Connection, source: bool) -> Result<()> {
         ),
         (
             "parse_changed",
-            "UPDATE OF reading_version, status, parsed_upto, at_length ON main.parse_state",
+            "UPDATE OF parse_version, status, parsed_upto, at_length ON main.parse_state",
             chain_sql(&parse_input("NEW"), "NEW.chain"),
         ),
         (
@@ -315,12 +315,11 @@ pub(crate) fn forget(archive: &Connection, changes: &SourceChanges) -> Result<()
     Ok(())
 }
 
-/// The chains counted by origin, reading version (empty without a parse
+/// The chains counted by origin, parse version (empty without a parse
 /// state) and state, for [`crate::read::completeness`].
 pub(crate) fn counts(conn: &Connection) -> Result<Vec<(String, String, State, u64)>> {
-    let mut statement = conn.prepare_cached(
-        "SELECT origin, reading_version, state, n FROM main.chain_progress_count",
-    )?;
+    let mut statement = conn
+        .prepare_cached("SELECT origin, parse_version, state, n FROM main.chain_progress_count")?;
     let mut rows = statement.query([])?;
     let mut counts = Vec::new();
     while let Some(row) = rows.next()? {

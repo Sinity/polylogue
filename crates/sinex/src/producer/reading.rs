@@ -178,7 +178,7 @@ impl Sinex {
                 until: None,
                 declarations,
                 parser_build: build_id()?,
-                parser_version: key.reading_version.clone(),
+                parser_version: key.parse_version.clone(),
                 expected_live_hash: selection.expected_live_hash,
                 batches: vec![sinex_protocol::ReplayBatch {
                     events,

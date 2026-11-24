@@ -4,11 +4,11 @@ use super::{
 };
 use crate::tests::{body, capture, client};
 use polylogue_store::primary::{
-    FileSnapshot, FileTime, RawRange, RawStream, RawStreamRole, SourceGeneration,
+    FileSnapshot, FileTime, ObservedState, RawRange, RawStream, RawStreamRole,
 };
 
-fn generation(size: u64) -> SourceGeneration {
-    SourceGeneration::File {
+fn generation(size: u64) -> ObservedState {
+    ObservedState::File {
         stream: RawStream {
             source: source(b"/home/op/raw.jsonl"),
             input: polylogue_store::InputKey {
@@ -42,7 +42,7 @@ fn generation(size: u64) -> SourceGeneration {
 fn capture_ranges(
     sinex: &Sinex,
     root: &std::path::Path,
-    generation: &SourceGeneration,
+    generation: &ObservedState,
     intent: &str,
     ranges: &[RawRange],
 ) -> CaptureResult {
@@ -60,10 +60,10 @@ fn capture_ranges(
 fn capture_ranges_on(
     sinex: &Sinex,
     root: &std::path::Path,
-    generation: &SourceGeneration,
+    generation: &ObservedState,
     intent: &str,
     ranges: &[RawRange],
-    base: polylogue_store::primary::SourceBasis,
+    base: polylogue_store::primary::SourceBase,
     previous: Option<String>,
 ) -> CaptureResult {
     sinex
@@ -83,10 +83,10 @@ fn capture_ranges_on(
                     input.rows.extents.clear();
                     input.rows.input = generation.stream().input.id.clone();
                     input.raw_range = Some(range);
-                    input.raw_predecessor = (ordinal == 0).then(|| previous.clone()).flatten();
+                    input.previous_revision = (ordinal == 0).then(|| previous.clone()).flatten();
                     input.generation = Some(generation.clone());
                     input.raw_total = (range.end == generation.window().end).then_some(range.end);
-                    input.basis = Some(base.clone());
+                    input.base = Some(base.clone());
                     emit(input, vec![body(root, &bytes)])?;
                 }
                 Ok(())
@@ -171,7 +171,7 @@ fn unresolved_siblings_keep_previous_body_refs() {
         .head
         .unwrap()
         .identity;
-    let CaptureResult::UnresolvedBasisConflict { spooled } = capture_ranges(
+    let CaptureResult::UnresolvedBaseConflict { spooled } = capture_ranges(
         &sinex,
         root.path(),
         &generation,
@@ -191,7 +191,7 @@ fn unresolved_siblings_keep_previous_body_refs() {
         let Capture::Input(next) = &pair[1].captured else {
             panic!()
         };
-        assert_eq!(next.raw_predecessor.as_ref(), Some(&pair[0].identity));
+        assert_eq!(next.previous_revision.as_ref(), Some(&pair[0].identity));
     }
     let cursor = sinex
         .byte_cursor(&polylogue_store::primary::ByteCursorQuery {
@@ -203,7 +203,7 @@ fn unresolved_siblings_keep_previous_body_refs() {
     assert!(cursor.is_complete_window());
     assert_eq!(
         cursor.outcome(),
-        Some(CaptureOutcome::UnresolvedBasisConflict)
+        Some(CaptureOutcome::UnresolvedBaseConflict)
     );
     assert_eq!(cursor.last_body(), page.headers[2].identity);
     assert_eq!(
@@ -250,7 +250,7 @@ fn byte_cursor_refuses_holes_changes_and_corrupt_bodies() {
             .is_none()
     );
     let mut changed = generation.clone();
-    let SourceGeneration::File { observed, .. } = &mut changed else {
+    let ObservedState::File { observed, .. } = &mut changed else {
         unreachable!()
     };
     observed.changed.nanos += 1;
@@ -302,7 +302,7 @@ fn byte_cursor_refuses_holes_changes_and_corrupt_bodies() {
 fn first_body(sinex: &Sinex, result: CaptureResult) -> String {
     let group = match result {
         CaptureResult::Accepted { write } => write.identity,
-        CaptureResult::UnresolvedBasisConflict { spooled } => spooled.identity,
+        CaptureResult::UnresolvedBaseConflict { spooled } => spooled.identity,
     };
     sinex
         .pending_group_headers(&group, None, 1)
@@ -364,7 +364,7 @@ fn tail_body_keeps_equal_reads_apart_after_restart() {
     );
     let mut selected = Vec::new();
     for (tail, outcome) in [
-        (old, CaptureOutcome::UnresolvedBasisConflict),
+        (old, CaptureOutcome::UnresolvedBaseConflict),
         (new, CaptureOutcome::Prepared),
     ] {
         let query = polylogue_store::primary::ByteCursorQuery {

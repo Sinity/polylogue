@@ -1,6 +1,6 @@
 use super::observations::Phase;
 use super::*;
-use polylogue_model::signal::Outbox;
+use polylogue_model::signal::PendingDelivery;
 
 #[test]
 fn rule_duration_uses_shared_parser_without_overflow() {
@@ -118,8 +118,8 @@ fn a_tick_with_a_stored_checkpoint_writes_no_clock_heartbeat() {
     );
 }
 
-pub(super) fn outbox(name: &str) -> Outbox {
-    polylogue_store::fixture::signals::outbox("synthetic", name, 0, true)
+pub(super) fn pending_delivery(name: &str) -> PendingDelivery {
+    polylogue_store::fixture::signals::pending_delivery("synthetic", name, 0, true)
 }
 
 #[test]
@@ -132,8 +132,8 @@ fn restart_recovers_confirmed_deliveries_and_unknown_attempts() {
         ),
     );
     fixture.pause_signals();
-    let ready = outbox("confirmed-before-worker");
-    let unknown = outbox("interrupted-after-unknown");
+    let ready = pending_delivery("confirmed-before-worker");
+    let unknown = pending_delivery("interrupted-after-unknown");
     let ready_id = ready.metadata.delivery.id().to_owned();
     let unknown_id = unknown.metadata.delivery.id().to_owned();
     let mut state = NotificationState::default();

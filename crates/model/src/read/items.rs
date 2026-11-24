@@ -1,5 +1,5 @@
 use super::{BranchState, ItemPlace, View};
-use crate::{Author, Block, MessageId, Session, SessionId, TimeEvidence, Timestamp};
+use crate::{Author, Block, MessageId, Session, SessionId, TimeAccuracy, Timestamp};
 use serde::{Deserialize, Serialize};
 
 /// Missing states carry no value; zero is an ordinary measured value.
@@ -116,13 +116,13 @@ impl Source {
 pub struct TimeValue {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Timestamp>,
-    pub evidence: TimeEvidence,
+    pub evidence: TimeAccuracy,
 }
 impl TimeValue {
     pub fn unknown() -> Self {
         Self {
             at: None,
-            evidence: TimeEvidence::UNKNOWN,
+            evidence: TimeAccuracy::UNKNOWN,
         }
     }
 }
