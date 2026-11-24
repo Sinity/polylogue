@@ -15,6 +15,9 @@ pub enum Action {
     /// Block the thread at the point until the test calls [`release`], so the
     /// test can act while the code is stopped at a known step ([`held`]).
     Hold,
+    /// Let the thread pass and record which thread reached the point
+    /// ([`recorded`]).
+    Record,
 }
 
 #[cfg(feature = "faults")]
@@ -35,6 +38,28 @@ mod armed {
             .push((point.to_owned(), subject.to_owned(), action, skip, times));
     }
 
+    /// `(point, subject, thread name)` of each reach of a point armed with
+    /// [`Action::Record`].
+    static RECORDED: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
+
+    pub(super) fn record(point: &str, subject: &str) {
+        let thread = std::thread::current().name().unwrap_or("").to_owned();
+        RECORDED
+            .locked()
+            .push((point.to_owned(), subject.to_owned(), thread));
+    }
+
+    /// The reaches of `point` recorded so far, in order, as
+    /// `(subject, thread name)`.
+    pub fn recorded(point: &str) -> Vec<(String, String)> {
+        RECORDED
+            .locked()
+            .iter()
+            .filter(|(p, _, _)| p == point)
+            .map(|(_, subject, thread)| (subject.clone(), thread.clone()))
+            .collect()
+    }
+
     /// Disarms every point and resets the hold. A thread released from a
     /// hold that has not woken yet would wait again, so a test clears only
     /// after the held thread has gone past its point (joined, or its work
@@ -42,6 +67,7 @@ mod armed {
     pub fn clear() {
         POINTS.locked().clear();
         *HOLD.locked() = Hold::default();
+        RECORDED.locked().clear();
     }
 
     #[derive(Default)]
@@ -69,12 +95,27 @@ mod armed {
         HOLD.locked().held
     }
 
-    /// Blocks until a thread has reached a point armed with [`Action::Hold`].
-    pub fn wait_held() {
+    /// Blocks until a thread has reached a point armed with [`Action::Hold`],
+    /// or `timeout` passes. Returns whether a thread is held.
+    pub fn wait_held_within(timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
         let mut state = HOLD.locked();
         while !state.held {
-            state = polylogue_model::unpoisoned(HOLD_CHANGED.wait(state));
+            let Some(left) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return false;
+            };
+            state = polylogue_model::unpoisoned(HOLD_CHANGED.wait_timeout(state, left)).0;
         }
+        true
+    }
+
+    /// Blocks until a thread has reached a point armed with [`Action::Hold`];
+    /// panics if none does within a minute, so a test never hangs.
+    pub fn wait_held() {
+        assert!(
+            wait_held_within(std::time::Duration::from_secs(60)),
+            "no thread reached the held point"
+        );
     }
 
     /// Lets the thread stopped at an [`Action::Hold`] point continue.
@@ -99,7 +140,7 @@ mod armed {
 }
 
 #[cfg(feature = "faults")]
-pub use armed::{arm, clear, held, release, wait_held};
+pub use armed::{arm, clear, held, recorded, release, wait_held, wait_held_within};
 
 /// Reaching `point` for `subject` (a path, a table): fails, panics, stops the
 /// process or holds the thread if a test armed it (a hold or stop returns only
@@ -120,6 +161,7 @@ pub fn check(point: &str, subject: &str) -> crate::Result<()> {
             stop_process();
         }
         Some(Action::Hold) => armed::hold(),
+        Some(Action::Record) => armed::record(point, subject),
         None => {}
     }
     let _ = (point, subject);

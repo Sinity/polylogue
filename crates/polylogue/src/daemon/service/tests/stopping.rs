@@ -22,9 +22,10 @@ fn stop_during_a_pass_keeps_committed_rows() {
             .collect();
         std::fs::write(project.join(format!("{name}.jsonl")), records).unwrap();
     }
-    while !fault::held() {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    assert!(
+        fault::wait_held_within(std::time::Duration::from_secs(30)),
+        "no thread reached the held point"
+    );
     // The held parser returns once the stop is made; the stop does not wait
     // for the queued sessions.
     let _release = daemon.daemon.archive.stop().on_cancel(fault::release);
@@ -127,14 +128,10 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
         Some(polylogue_testkit::stopped_attempt()),
     )
     .unwrap();
-    let started = Instant::now();
-    while !fault::held() {
-        assert!(
-            started.elapsed() < Duration::from_secs(30),
-            "rebuild did not reach index transaction"
-        );
-        std::thread::yield_now();
-    }
+    assert!(
+        fault::wait_held_within(std::time::Duration::from_secs(30)),
+        "no thread reached the held point"
+    );
     let mut idle = runtime.idle();
     runtime.stop_accepting();
     fault::release();
@@ -277,9 +274,10 @@ fn a_stop_during_an_import_is_not_reported_done_and_importing_again_finishes_it(
     };
     use std::io::{BufRead, Write};
     writeln!(client, "{}", serde_json::to_string(&request).unwrap()).unwrap();
-    while !fault::held() {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    assert!(
+        fault::wait_held_within(std::time::Duration::from_secs(30)),
+        "no thread reached the held point"
+    );
     daemon.stop().unwrap();
     fault::clear();
     let mut line = String::new();

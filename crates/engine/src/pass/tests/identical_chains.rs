@@ -44,11 +44,10 @@ fn a_user_request_yields_between_complete_copies_and_resume_selects_only_the_rem
     engine.requests = Some(Requests::new(receive));
     fault::arm("write.copy_table", "unused", Action::Hold, 0, 1);
     let enqueue = std::thread::spawn(move || {
-        let started = Instant::now();
-        while !fault::held() {
-            assert!(started.elapsed() < Duration::from_secs(30));
-            std::thread::yield_now();
-        }
+        assert!(
+            fault::wait_held_within(std::time::Duration::from_secs(30)),
+            "no thread reached the held point"
+        );
         let (reply, _wait) = std::sync::mpsc::sync_channel(1);
         let sent = send.send(LoopMsg::Import {
             paths: Vec::new(),

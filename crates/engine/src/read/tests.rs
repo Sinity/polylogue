@@ -412,9 +412,10 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     fault::clear();
     fault::arm("parse", "room-0", Action::Hold, 0, 1);
     assert!(pool.submit(started));
-    while !fault::held() {
-        std::thread::sleep(Duration::from_millis(1));
-    }
+    assert!(
+        fault::wait_held_within(std::time::Duration::from_secs(30)),
+        "no thread reached the held point"
+    );
     // With the worker held, this job stays queued and the budget is full.
     assert!(pool.submit(queued));
     let (submitted, answer) = channel();
