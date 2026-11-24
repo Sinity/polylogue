@@ -181,14 +181,14 @@ impl<'a> Compiler<'a> {
         )?;
         w.push(format!("({parent_rows})"));
         let parent_pk = parent.a.expand(units::spec(parent.unit).key);
-        let (child_pk, child_cols) =
+        let (child_key, child_cols) =
             row_columns(unit, &child.a, self.opts.clock.now.as_millisecond());
         let parent_ref = row_reference(parent)?;
         let child_ref = row_reference(&child)?;
         let child_order = self.default_order(&child);
         let parent_order = self.default_order(parent);
         let mut select = vec![
-            format!("{child_pk} AS _pk"),
+            format!("{child_key} AS _pk"),
             format!("{parent_pk} AS _match_parent_pk"),
             format!("{parent_ref} AS parent"),
             format!(

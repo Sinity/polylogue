@@ -54,7 +54,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
                 "--json",
                 "dev",
                 "sql",
-                "SELECT r.id AS input FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk WHERE d.id='claude-ai:project:p:doc:d'",
+                "SELECT r.id AS input FROM reading_document s JOIN input_ref r ON r.pk=s.input_pk WHERE s.document_id='claude-ai:project:p:doc:d'",
             ],
         );
         assert!(sources.status.success(), "{sources:?}");
@@ -85,7 +85,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
             .to_string()
             .contains("project_document")
     );
-    let sources_sql = "SELECT d.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.version_hash) AS version FROM document_source s JOIN document d ON d.pk=s.document_pk JOIN input_ref r ON r.pk=s.input_pk ORDER BY d.id,r.id,s.chain,s.source_start";
+    let sources_sql = "SELECT s.document_id AS id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.hash) AS version FROM reading_document s JOIN input_ref r ON r.pk=s.input_pk ORDER BY s.document_id,r.id,s.chain,s.source_start";
     let sources = cli(&env, &["--json", "dev", "sql", sources_sql]);
     assert!(sources.status.success(), "{sources:?}");
     let sources = json(&sources);

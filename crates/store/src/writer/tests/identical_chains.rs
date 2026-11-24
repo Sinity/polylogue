@@ -217,7 +217,7 @@ fn a_copied_document_source_equals_its_parse_and_is_not_shown() {
             // The commit position names the shown, newer chain's reading.
             let newer_committed: Option<i64> = reader
                 .query(
-                    "SELECT ds.committed AS n FROM document_source ds JOIN document d ON d.pk=ds.document_pk WHERE d.id=?1 AND ds.chain=?2",
+                    "SELECT ds.committed AS n FROM reading_document ds WHERE ds.document_id=?1 AND ds.chain=?2",
                     &[
                         crate::SqlValue::Text(id.to_string()),
                         crate::SqlValue::Int(newer),

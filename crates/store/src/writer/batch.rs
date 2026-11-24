@@ -115,10 +115,6 @@ pub struct ParseStep {
     /// Default leaves the complete parsed values available for writer fallback.
     #[serde(skip)]
     pub(crate) prepared: PreparedRows,
-    /// Row identities and chosen versions, set by the resolver before the
-    /// step reaches the writer of `index.db` rows.
-    #[serde(skip)]
-    pub(crate) resolution: Option<super::resolve::Resolution>,
     pub(crate) comparison: Option<crate::tool_databases::RowComparison>,
 }
 
@@ -185,7 +181,6 @@ impl ParseStep {
             parsed_upto: range.end,
             progress: polylogue_model::batch::StepProgress::parsed(at_end),
             prepared: PreparedRows::default(),
-            resolution: None,
             comparison: None,
         }
     }

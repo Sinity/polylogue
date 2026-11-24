@@ -1,10 +1,10 @@
 //! A session's own columns (kind, title, working directories, branch,
 //! tool version, start, repository named by its records) from the facts
-//! every input states about it (`session_record`), by rules that depend on
+//! every input states about it (`reading_session`), by rules that depend on
 //! the records and their times, never on which input arrived first:
 //!
 //! - an input's time is the span of the messages it holds for the session
-//!   (`message_source`); an input with none has no time and sorts after
+//!   (`reading_message`); an input with none has no time and sorts after
 //!   every timed one;
 //! - kind: the earliest input's (a resumed or copied session's later files
 //!   restate the kind the first one recorded);
@@ -87,11 +87,11 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Facts> {
         .query_row([session_pk], |r| r.get(0))?;
     let mut statement = conn.prepare_cached(
         "SELECT r.input_pk,r.facts,
-                (SELECT MIN(m.at) FROM message_source ms JOIN message m ON m.pk=ms.message_pk
-                 WHERE ms.input_pk=r.input_pk AND m.session_pk=r.session_pk),
-                (SELECT MAX(m.at) FROM message_source ms JOIN message m ON m.pk=ms.message_pk
-                 WHERE ms.input_pk=r.input_pk AND m.session_pk=r.session_pk)
-         FROM session_record r WHERE r.session_pk=?1
+                (SELECT MIN(m.at) FROM reading_message ms JOIN message m ON m.id=ms.message_id
+                 WHERE ms.input_pk=r.input_pk AND m.session_pk=x.session_pk),
+                (SELECT MAX(m.at) FROM reading_message ms JOIN message m ON m.id=ms.message_id
+                 WHERE ms.input_pk=r.input_pk AND m.session_pk=x.session_pk)
+         FROM session_stated x JOIN reading_session r ON r.session_id=x.stated_id WHERE x.session_pk=?1
          ORDER BY r.input_pk,r.chain",
     )?;
     let mut rows = statement.query([session_pk])?;

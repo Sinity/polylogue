@@ -133,7 +133,7 @@ fn alias_reidentification_changes_visible_relations_and_the_cursor_version() {
 }
 
 #[test]
-fn changing_only_relation_order_invalidates_the_cursor() {
+fn relations_read_in_coordinate_order_whatever_was_stored_first() {
     let w = test_archive();
     let mut partial = batch("partial", Route::Live, 0, vec![], &["root", "a"]);
     partial.parse[0].output.links.push(relation("root", "a"));
@@ -162,7 +162,9 @@ fn changing_only_relation_order_invalidates_the_cursor() {
         .replace_chain(partial.input, stored.chain, partial.length, reading)
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
-    let reordered = child_relations(&w, "root");
-    assert_eq!(reordered, [links[1].clone(), links[0].clone()]);
+    // The anchored statement of root -> a remains; the relations and their
+    // order are the coordinates', not the order the rows were stored in.
+    assert_eq!(child_relations(&w, "root"), links);
+    // The statements behind the relation changed, and with them its cursor.
     assert_ne!(relationship_version(&w), before);
 }

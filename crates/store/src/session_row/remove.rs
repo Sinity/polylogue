@@ -11,10 +11,6 @@ pub(crate) fn remove(i: &Transaction<'_>, pk: i64, id: &str, counter: i64) -> Re
          ON CONFLICT(session_id) DO UPDATE SET changed=excluded.changed",
         params![id, counter],
     )?;
-    i.execute(
-        "DELETE FROM message_source WHERE message_pk IN (SELECT pk FROM message WHERE session_pk=?1)",
-        [pk],
-    )?;
     // Search entries go before their tool-call rows. Only one command/path pair
     // is decoded at a time; the tool-call table is unchanged during this cursor.
     let mut calls = i.prepare("SELECT pk,command,path FROM tool_call WHERE session_pk=?1")?;

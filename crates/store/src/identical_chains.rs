@@ -48,19 +48,20 @@ impl StoredParseState {
 
 /// The index tables that hold one chain's reading, keyed by `input_pk` and
 /// `chain`. Copying a reading copies each table's rows of the other chain.
-const READING_TABLES: [&str; 20] = [
+const READING_TABLES: [&str; 21] = [
     "parse_state",
-    "parsed",
-    "session_record",
-    "session_alias",
-    "message_source",
-    "document_source",
-    "event_source",
-    "link_source",
+    "reading_session",
+    "reading_session_alias",
+    "reading_message",
+    "reading_text",
+    "reading_alias",
+    "reading_event",
+    "reading_link",
+    "reading_document",
+    "reading_call_outcome",
     "text_fragment_source",
     "message_injection_field",
     "unused",
-    "message_alias",
     "wire_reading",
     "wire_occurrence",
     "wire_shape",
@@ -184,9 +185,6 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
                     .iter()
                     .map(|column| match column.as_str() {
                         "chain" => "?3".to_owned(),
-                        // The shown document source is the newest chain's
-                        // (`documents::apply_choice`); the older copy never is.
-                        "shown" if table == "document_source" => "0".to_owned(),
                         // When this write committed the row, as a parse
                         // of the chain would record its own write.
                         "commit_seq" | "committed" => {
@@ -286,7 +284,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
         *reaches_end,
     )?;
     tx.execute(
-        "UPDATE session SET changed = ?3 WHERE pk IN (SELECT session_pk FROM parsed WHERE input_pk = ?1 AND chain = ?2)",
+        "UPDATE session SET changed = ?3 WHERE id IN (SELECT session_id FROM reading_session WHERE input_pk = ?1 AND chain = ?2)",
         params![input_pk, to, counter],
     )?;
     Ok(true)

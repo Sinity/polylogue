@@ -138,9 +138,9 @@ impl Compiler<'_> {
                 "WITH RECURSIVE tree(pk) AS (\
                  SELECT pk FROM {scope_rows} WHERE {mode}<>0 UNION \
                  SELECT min(pk) FROM {scope_rows} WHERE {mode}=0 UNION \
-                 SELECT l.child_pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
+                 SELECT c.pk FROM tree t CROSS JOIN session p ON p.pk=t.pk \
                  CROSS JOIN session_link l ON l.parent_id=p.id AND l.kind IN ({STRUCTURAL_KINDS}) \
-                 WHERE l.child_pk IS NOT NULL UNION \
+                 CROSS JOIN session c ON c.id=l.child_id UNION \
                  SELECT (SELECT min(pk) FROM {scope_rows} WHERE pk>t.pk) \
                  FROM tree t WHERE {mode}=0 AND t.pk IS NOT NULL) \
                  SELECT b.pk AS block,b.text_id FROM tree t \

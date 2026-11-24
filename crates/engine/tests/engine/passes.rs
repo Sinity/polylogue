@@ -298,7 +298,7 @@ fn a_session_growing_across_range_boundaries_stays_one_chain() {
         records.len() as i64
     );
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM message_source"),
+        w.count("SELECT count(*) AS n FROM reading_message"),
         records.len() as i64,
         "each record is read once"
     );
