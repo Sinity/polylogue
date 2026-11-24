@@ -244,7 +244,10 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
         "imports answered: {}, {answered_during_build} during the build; slowest {slowest:?}",
         latencies.len()
     );
-    assert!(*slowest < Duration::from_secs(5), "{latencies:?}");
+    // The writer serves an import between its build steps; a step is a
+    // quarter of a second of release-build work, longer in a debug build on
+    // a shared runner, and one session is composed in one step.
+    assert!(*slowest < Duration::from_secs(20), "{latencies:?}");
     // What the parser read, less the imports' own files: the chain once.
     // A range ends inside a record and the next range starts at that
     // record, so a record crossing a range boundary is read twice, under

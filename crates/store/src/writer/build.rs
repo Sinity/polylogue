@@ -25,8 +25,12 @@ const SCRATCH_CACHE_KIB: i64 = 64 << 10;
 /// Sessions composed per transaction.
 const SESSIONS_PER_TRANSACTION: usize = 512;
 
-/// Rows the merge writes per transaction.
+/// Rows the merge writes per transaction, at most.
 const ROWS_PER_TRANSACTION: u64 = 200_000;
+
+/// How long one step of the writer's build work runs before it commits
+/// and lets the writer serve what waits.
+const STEP_TIME: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The streams of a build, by the first byte of a record's key.
 const INPUTS: u8 = 0;
@@ -607,7 +611,8 @@ enum Stage {
     Load(Box<Load>),
     TextHolders(Box<TextHolders>),
     Indexes(usize),
-    Compose,
+    /// The sessions to compose, and the next one.
+    Compose(Vec<String>, usize),
     FullText(crate::text_rows::SearchBuild),
     Deferred(Vec<String>),
     Install,
@@ -748,12 +753,16 @@ impl Inner {
                 }
                 None => {
                     job.phase("compose");
-                    Stage::Compose
+                    Stage::Compose(self.stated_sessions()?, 0)
                 }
             },
-            Stage::Compose => {
-                let sessions = self.compose_all()?;
-                job.count(sessions);
+            Stage::Compose(sessions, next) if next == 0 || next < sessions.len() => {
+                self.compose_chunk(&sessions, next)?;
+                let after = (next + SESSIONS_PER_TRANSACTION).min(sessions.len());
+                job.count((after - next) as u64);
+                Stage::Compose(sessions, after.max(1))
+            }
+            Stage::Compose(..) => {
                 job.phase("full text");
                 // The search entries are written from every text's marks;
                 // entries queued by upkeep writes during the build would
@@ -843,11 +852,14 @@ impl Inner {
     /// Loads up to a transaction's worth of records; false once the runs
     /// are read.
     fn load_step(&mut self, job: &mut BuildJob, load: &mut Load) -> Result<bool> {
+        let started = std::time::Instant::now();
         let t = Transaction::new_unchecked(&self.index, TransactionBehavior::Immediate)?;
         let mut written = 0u64;
         let mut values = Vec::new();
         let more = loop {
-            if written == ROWS_PER_TRANSACTION {
+            if written == ROWS_PER_TRANSACTION
+                || (written % 1024 == 1023 && started.elapsed() > STEP_TIME)
+            {
                 break true;
             }
             let Some((key, value)) = load.merged.next()? else {
@@ -975,10 +987,13 @@ impl Inner {
     /// Loads up to a transaction's worth of reading text rows; false once
     /// they are all loaded.
     fn holders_step(&mut self, job: &mut BuildJob, holders: &mut TextHolders) -> Result<bool> {
+        let started = std::time::Instant::now();
         let t = Transaction::new_unchecked(&self.index, TransactionBehavior::Immediate)?;
         let mut written = 0u64;
         let more = loop {
-            if written == ROWS_PER_TRANSACTION {
+            if written == ROWS_PER_TRANSACTION
+                || (written % 1024 == 1023 && started.elapsed() > STEP_TIME)
+            {
                 break true;
             }
             let Some((key, value)) = holders.merged.next()? else {
@@ -996,8 +1011,9 @@ impl Inner {
 
     /// Composes every session the readings state once, in key order, with
     /// the composition upkeep uses; the sessions composed.
-    fn compose_all(&mut self) -> Result<u64> {
-        let sessions: Vec<String> = self
+    /// The sessions the readings state, in key order.
+    fn stated_sessions(&self) -> Result<Vec<String>> {
+        Ok(self
             .index
             .prepare(
                 "SELECT session_id FROM session_record UNION SELECT session_id FROM message_parse
@@ -1007,13 +1023,16 @@ impl Inner {
                  UNION SELECT session_id FROM call_outcome ORDER BY 1",
             )?
             .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        let mut first = true;
-        let count = sessions.len() as u64;
-        let mut chunks = sessions.chunks(SESSIONS_PER_TRANSACTION).peekable();
-        while first || chunks.peek().is_some() {
-            self.stop.check()?;
-            let chunk = chunks.next().unwrap_or_default();
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Composes the next transaction's worth of sessions, from `next`, with
+    /// the composition upkeep uses; the first step also composes what no
+    /// session holds (input events, documents).
+    fn compose_chunk(&mut self, sessions: &[String], next: usize) -> Result<()> {
+        let first = next == 0;
+        let chunk = &sessions[next..sessions.len().min(next + SESSIONS_PER_TRANSACTION)];
+        {
             let text_transaction = self.texts.transaction();
             let tx = self
                 .index
@@ -1064,13 +1083,12 @@ impl Inner {
                 {
                     touched.documents.insert(row?);
                 }
-                first = false;
             }
             rows::finish(&tx, touched, &changes, &self.texts, true, counter)?;
             tx.commit()?;
             text_transaction.commit();
         }
-        Ok(count)
+        Ok(())
     }
 }
 
