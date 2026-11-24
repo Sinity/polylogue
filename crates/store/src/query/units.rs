@@ -186,7 +186,8 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
              ancestors(hit_session,block,at,message,rank) AS (\
                SELECT hit_session,block,at,message,rank FROM owned UNION \
                SELECT parent.pk,child.block,child.at,child.message,child.rank FROM ancestors child \
-               CROSS JOIN session_link l ON l.child_pk=child.hit_session AND l.kind IN ({STRUCTURAL_KINDS}) \
+               CROSS JOIN session cs ON cs.pk=child.hit_session \
+               CROSS JOIN session_link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
                CROSS JOIN session parent ON parent.id=l.parent_id) \
              SELECT hit_session AS session_pk,block,at,rank FROM ({inherited}))",
             h.block_kind("xb"),
@@ -204,7 +205,8 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
          ancestors(session_pk, rank) AS (\
            SELECT session_pk, rank FROM matched UNION \
            SELECT parent.pk, child.rank FROM ancestors child \
-           CROSS JOIN session_link l ON l.child_pk=child.session_pk AND l.kind IN ({STRUCTURAL_KINDS}) \
+           CROSS JOIN session cs ON cs.pk=child.session_pk \
+           CROSS JOIN session_link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
            CROSS JOIN session parent ON parent.id=l.parent_id) \
          SELECT session_pk, min(rank) AS rank FROM ancestors GROUP BY session_pk)",
             h.block_kind("xb"),
@@ -319,7 +321,7 @@ fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
         return None;
     }
     let from = format!(
-        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk IN ({t}.call_block_pk, {t}.result_block_pk)",
+        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk = {t}.call_block_pk OR (xb.idx = {t}.result_idx AND xb.message_pk = (SELECT xr.pk FROM message xr WHERE xr.id = {t}.result_message_id))",
         cte = h.cte,
         t = a.t
     );
@@ -591,7 +593,7 @@ static BLOCKS: UnitSpec = UnitSpec {
             "call",
             Unit::ToolCalls,
             Via::Exists {
-                cond: "EXISTS (SELECT 1 FROM {from} WHERE ({nt}.call_block_pk = {b}.pk OR {nt}.result_block_pk = {b}.pk) AND {cond})",
+                cond: "EXISTS (SELECT 1 FROM {from} WHERE ({nt}.call_block_pk = {b}.pk OR ({nt}.result_idx = {b}.idx AND {nt}.result_message_id = (SELECT xr.id FROM message xr WHERE xr.pk = {b}.message_pk))) AND {cond})",
                 value: None,
             },
         ),
@@ -620,7 +622,7 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
     time: "{t}.at",
     newest_first: false,
     session_order: false,
-    since: Some("({t}.at >= {v} OR {t}.result_block_pk IS NULL)"),
+    since: Some("({t}.at >= {v} OR {t}.result_message_id IS NULL)"),
     until: Some("{t}.at < {v}"),
     session_pk: "{t}.session_pk",
     session_scope: None,
@@ -634,7 +636,7 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
             "child",
             Unit::Sessions,
             Via::Exists {
-                cond: "EXISTS (SELECT 1 FROM session_link lc JOIN {from} ON {ns}.pk = lc.child_pk \
+                cond: "EXISTS (SELECT 1 FROM session_link lc JOIN {from} ON {ns}.id = lc.child_id \
                        WHERE lc.kind = 'spawn' AND lc.parent_id = {s}.id \
                        AND lc.spawning_call = {t}.call_id AND {cond})",
                 value: None,
@@ -769,7 +771,7 @@ static ANNOTATIONS: UnitSpec = UnitSpec {
 
 static LINKS: UnitSpec = UnitSpec {
     from: Expr::Template(
-        "session_link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.pk = {r}.child_pk",
+        "session_link {r} LEFT JOIN session {r}p ON {r}p.id = {r}.parent_id LEFT JOIN session {r}c ON {r}c.id = {r}.child_id",
     ),
     key: "{r}.pk",
     identity: &[
@@ -795,7 +797,7 @@ static LINKS: UnitSpec = UnitSpec {
     since: None,
     until: None,
     session_pk: "{r}.session_pk",
-    session_scope: Some("({r}.child_pk IN ({sessions}) OR {r}p.pk IN ({sessions}))"),
+    session_scope: Some("({r}c.pk IN ({sessions}) OR {r}p.pk IN ({sessions}))"),
     search: Search::None,
     relations: &[
         rel("parent", Unit::Sessions, Via::Session("{r}p")),

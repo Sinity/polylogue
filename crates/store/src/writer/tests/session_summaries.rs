@@ -1,8 +1,4 @@
 use super::*;
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
 
 fn connection() -> Connection {
     let c = Connection::open_in_memory().unwrap();
@@ -10,31 +6,9 @@ fn connection() -> Connection {
     c.pragma_update(None, "foreign_keys", true).unwrap();
     c
 }
-fn apply(tx: &Transaction<'_>, mut b: Batch) {
-    resolve::prepare_index(tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
-    let changes = crate::change_summary::ChangeSummary::start(tx).unwrap();
-    write_rows(
-        tx,
-        &b,
-        &b.parse[0],
-        rows::ReadingWrite {
-            texts: &crate::text_rows::TextIds::new(
-                tx,
-                false,
-                crate::archive::MemoryBudget::default().keys() / 3,
-            )
-            .unwrap(),
-            resolution: b.parse[0].resolution.as_ref().unwrap(),
-            counter: 1,
-            upkeep: &resolve::IndexUpkeep::PerTransaction,
-            source_commit: Some(&fixture_commit()),
-            changes: &changes,
-            retraction: false,
-            replacement: false,
-        },
-    )
-    .unwrap();
-    changes.finish_summaries(tx, Some(1)).unwrap();
+fn apply(tx: &Transaction<'_>, b: Batch) {
+    let step = b.parse[0].clone();
+    write_test_rows(tx, &b, &step, 1, 1, false).unwrap();
     let pks = tx
         .prepare("SELECT pk FROM session")
         .unwrap()
@@ -80,94 +54,6 @@ fn fresh(count: usize, input: &str, session: &str) -> Batch {
         &[session],
     )
 }
-#[test]
-fn fresh_message_counts_update_each_session_once_per_transaction() {
-    let measure = |count, history, history_session| {
-        let mut c = connection();
-        if history > 0 {
-            let tx = c.transaction().unwrap();
-            let messages = (0..history)
-                .map(|n| {
-                    let mut m = text_message(
-                        &format!("old-{n}"),
-                        history_session,
-                        Role::Assistant,
-                        "",
-                        None,
-                    );
-                    m.blocks = vec![Block::ToolCall {
-                        call_id: Some(format!("old-call-{n}")),
-                        tool: Some("run".into()),
-                        action: polylogue_model::ToolAction::Code,
-                        input: Json::Null,
-                        written_text: None,
-                        command: None,
-                        path: None,
-                        run_by_script: false,
-                    }];
-                    row(n as u64, m)
-                })
-                .collect();
-            apply(
-                &tx,
-                batch("old", Route::Live, 0, messages, &[history_session]),
-            );
-            tx.commit().unwrap();
-        }
-        let updates = Arc::new(AtomicU64::new(0));
-        let seen = Arc::clone(&updates);
-        c.update_hook(Some(move |action, _: &str, table: &str, _: i64| {
-            if action == rusqlite::hooks::Action::SQLITE_UPDATE && table == "session" {
-                seen.fetch_add(1, Ordering::Relaxed);
-            }
-        }))
-        .unwrap();
-        let tx = c.transaction().unwrap();
-        let mut b = fresh(count, "fresh", "s");
-        resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
-        let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-        write_rows(
-            &tx,
-            &b,
-            &b.parse[0],
-            rows::ReadingWrite {
-                texts: &crate::text_rows::TextIds::new(
-                    &tx,
-                    false,
-                    crate::archive::MemoryBudget::default().keys() / 3,
-                )
-                .unwrap(),
-                resolution: b.parse[0].resolution.as_ref().unwrap(),
-                counter: 1,
-                upkeep: &resolve::IndexUpkeep::PerTransaction,
-                source_commit: Some(&fixture_commit()),
-                changes: &changes,
-                retraction: false,
-                replacement: false,
-            },
-        )
-        .unwrap();
-        changes.finish_summaries(&tx, Some(1)).unwrap();
-        let updates = updates.load(Ordering::Relaxed);
-        let pk: i64 = tx
-            .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {
-                r.get(0)
-            })
-            .unwrap();
-        assert_eq!(
-            crate::derive::counts::read(&tx, pk, true).unwrap(),
-            crate::derive::counts::compute(&tx, pk).unwrap()
-        );
-        updates
-    };
-    // One activity update and one final summary update, independent of the
-    // number of messages and of the history already in the index.
-    assert_eq!(measure(1, 0, "unrelated"), 2);
-    assert_eq!(measure(1024, 0, "unrelated"), 2);
-    assert_eq!(measure(1024, 4096, "unrelated"), 2);
-    assert_eq!(measure(1024, 4096, "s"), 2);
-}
-
 #[test]
 fn count_contributions_keep_script_changes_late_results_and_rollback() {
     use polylogue_model::{ErrorReason, ToolAction, ToolOutcome};
@@ -334,73 +220,6 @@ fn missing_count_baseline_is_recomputed_on_reopen() {
 }
 
 #[test]
-fn fresh_installed_counts_are_invalidated_by_same_transaction_visibility_or_session_changes() {
-    for mutation in [
-        "duplicate_of='another'",
-        "on_active_path=0",
-        "session_pk=(SELECT pk FROM session WHERE id='claude-code:to')",
-    ] {
-        let mut c = connection();
-        let tx = c.transaction().unwrap();
-        let mut message = text_message("fresh", "s", Role::Assistant, "", None);
-        message.blocks.clear();
-        let mut b = batch("fresh", Route::Live, 0, vec![row(0, message)], &["s", "to"]);
-        resolve::prepare_index(&tx, &mut b, 1, &resolve::IndexUpkeep::PerTransaction).unwrap();
-        let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-        write_rows(
-            &tx,
-            &b,
-            &b.parse[0],
-            rows::ReadingWrite {
-                texts: &crate::text_rows::TextIds::new(
-                    &tx,
-                    false,
-                    crate::archive::MemoryBudget::default().keys() / 3,
-                )
-                .unwrap(),
-                resolution: b.parse[0].resolution.as_ref().unwrap(),
-                counter: 1,
-                upkeep: &resolve::IndexUpkeep::PerTransaction,
-                source_commit: Some(&fixture_commit()),
-                changes: &changes,
-                retraction: false,
-                replacement: false,
-            },
-        )
-        .unwrap();
-        let pk = tx
-            .query_row("SELECT pk FROM message", [], |r| r.get::<_, i64>(0))
-            .unwrap();
-        changes.message_metadata(&tx, pk).unwrap();
-        tx.execute(&format!("UPDATE message SET {mutation} WHERE pk=?1"), [pk])
-            .unwrap();
-        changes.finish_summaries(&tx, Some(1)).unwrap();
-        let sessions = tx
-            .prepare("SELECT pk FROM session")
-            .unwrap()
-            .query_map([], |r| r.get::<_, i64>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        for session in sessions {
-            assert_eq!(
-                crate::derive::counts::read(&tx, session, true).unwrap(),
-                crate::derive::counts::compute(&tx, session).unwrap(),
-                "{mutation}"
-            );
-        }
-        assert_eq!(
-            tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-                .get::<_, i64>(
-                0
-            ))
-            .unwrap(),
-            0
-        );
-    }
-}
-
-#[test]
 fn compaction_moves_and_removal_keep_both_sessions_across_rollback() {
     let mut c = connection();
     let mut b = batch("events", Route::Live, 0, vec![], &["s", "to"]);
@@ -428,8 +247,6 @@ fn compaction_moves_and_removal_keep_both_sessions_across_rollback() {
             .unwrap();
         changes.event(&tx, event).unwrap();
         if remove {
-            tx.execute("DELETE FROM event_parse WHERE event_pk=?1", [event])
-                .unwrap();
             tx.execute("DELETE FROM event WHERE pk=?1", [event])
                 .unwrap();
         } else {

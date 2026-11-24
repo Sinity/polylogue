@@ -33,7 +33,7 @@ impl PreparedObjects {
 /// Space reserved before a read, consumed by its completed execution record.
 /// Dropping it returns capacity without creating a run.
 pub struct HistorySlot {
-    slot: super::user_queue::Reservation,
+    slot: super::user_queue::QueueSlot,
     writer: WriterQueue,
 }
 

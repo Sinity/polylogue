@@ -3,8 +3,8 @@
 //! and the alias rows readers resolve a record's name through.
 //!
 //! Three things a reading's rows keep for this, each as the source wrote
-//! it: the response key of a message (`message_source.response_key`), the
-//! content name of a content-named message (`message_source.content_name`)
+//! it: the response key of a message (`message_parse.response_key`), the
+//! content name of a content-named message (`message_parse.content_name`)
 //! and the alias rows (`message_alias`).
 use crate::ConnExt as _;
 use crate::{Archive, Result, StoreError};
@@ -21,7 +21,7 @@ pub struct ChainRows {
 
 impl ChainRows {
     /// The rows of `chain` of `input`, when its committed reading is under
-    /// `reading_version` and stands exactly at `cursor`. `None` otherwise:
+    /// `parse_version` and stands exactly at `cursor`. `None` otherwise:
     /// the step does not continue that reading and is read from the start.
     pub fn open(
         archive: &Archive,
@@ -51,38 +51,34 @@ impl ChainRows {
 
     /// The message the chain's rows of `session` with this response key form.
     pub fn response(&mut self, session: &SessionId, key: &str) -> Result<Option<MessageRow>> {
-        let rows = self
+        let row = self
             .conn
             .prepare_cached(
-                "SELECT s.version_pk,v.version_hash,s.source_start,s.source_end
-                 FROM message_parse s JOIN message_version v ON v.pk=s.version_pk
-                 WHERE s.input_pk=?1 AND s.chain=?2 AND s.response_key=?3",
+                "SELECT message_id,source_start,source_end FROM message_parse
+                 WHERE input_pk=?1 AND chain=?2 AND response_key=?3 AND session_id=?4
+                 ORDER BY source_start LIMIT 1",
             )?
-            .query_map(params![self.input_pk, self.chain, key], |row| {
-                <(i64, Vec<u8>, i64, i64)>::try_from(row)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (pk, hash, offset, end) in rows {
-            let (message, _) = crate::versions::read_message_by_key(&self.conn, pk, &hash)?
-                .ok_or_else(|| {
-                    StoreError::Invalid("a response's message version is absent".into())
-                })?;
-            if message.session != *session {
-                continue;
-            }
-            let position = |value: i64| {
-                u64::try_from(value).map_err(|_| StoreError::stored(0, "negative source position"))
-            };
-            return Ok(Some(MessageRow {
-                offset: position(offset)?,
-                end: position(end)?,
-                id_kind: IdKind::Native,
-                page_text: false,
-                response: Some(key.to_owned()),
-                message,
-            }));
-        }
-        Ok(None)
+            .query_row(
+                params![self.input_pk, self.chain, key, session.to_string()],
+                |row| <(String, i64, i64)>::try_from(row),
+            )
+            .optional()?;
+        let Some((id, offset, end)) = row else {
+            return Ok(None);
+        };
+        let (message, _) = crate::writer::read_message(&self.conn, self.input_pk, self.chain, &id)?
+            .ok_or_else(|| StoreError::Invalid("a response's reading is absent".into()))?;
+        let position = |value: i64| {
+            u64::try_from(value).map_err(|_| StoreError::stored(0, "negative source position"))
+        };
+        Ok(Some(MessageRow {
+            offset: position(offset)?,
+            end: position(end)?,
+            id_kind: IdKind::Native,
+            page_text: false,
+            response: Some(key.to_owned()),
+            message,
+        }))
     }
 
     /// What an alias row of the chain says `name` stands for.
@@ -135,10 +131,9 @@ impl ChainRows {
         let id = self
             .conn
             .prepare_cached(
-                "SELECT m.id FROM message_parse s JOIN session ss ON ss.pk=s.session_pk
-                 JOIN message m ON m.pk=s.message_pk
-                 WHERE s.input_pk=?1 AND s.chain=?2 AND ss.id=?3
-                 ORDER BY s.source_start DESC LIMIT 1",
+                "SELECT message_id FROM message_parse
+                 WHERE input_pk=?1 AND chain=?2 AND session_id=?3
+                 ORDER BY source_start DESC LIMIT 1",
             )?
             .query_row(
                 params![self.input_pk, self.chain, session.to_string()],
@@ -154,9 +149,8 @@ impl ChainRows {
         let id = self
             .conn
             .prepare_cached(
-                "SELECT ss.id FROM message m JOIN message_parse s ON s.message_pk=m.pk
-                 JOIN session ss ON ss.pk=s.session_pk
-                 WHERE m.id=?1 AND s.input_pk=?2 AND s.chain=?3 LIMIT 1",
+                "SELECT session_id FROM message_parse
+                 WHERE message_id=?1 AND input_pk=?2 AND chain=?3",
             )?
             .query_row(
                 params![message.to_string(), self.input_pk, self.chain],
@@ -200,7 +194,7 @@ pub(crate) fn resolved_message_sql(
 ) -> String {
     let original = bind(id.to_string());
     format!(
-        "CASE WHEN EXISTS(SELECT 1 FROM message direct JOIN message_parse ds ON ds.message_pk=direct.pk WHERE direct.id={original}) THEN {original} ELSE pl_source_alias((SELECT json_group_array(DISTINCT a.target) FROM message_alias a JOIN parse_state ps ON ps.input_pk=a.input_pk AND ps.chain=a.chain WHERE a.name={original}),{original}) END"
+        "CASE WHEN EXISTS(SELECT 1 FROM message direct WHERE direct.id={original}) THEN {original} ELSE pl_source_alias((SELECT json_group_array(DISTINCT a.target) FROM message_alias a JOIN parse_state ps ON ps.input_pk=a.input_pk AND ps.chain=a.chain WHERE a.name={original}),{original}) END"
     )
 }
 

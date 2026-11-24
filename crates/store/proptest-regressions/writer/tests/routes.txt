@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 55a914d4c9931bf299a76fb16a3b4828e152468494ba34219ccb4f4ea4d58d9c # shrinks to readings = [Generated { route: Live, page_text: false, text: 0, at: None, model: None, output: None, stop: false }, Generated { route: Live, page_text: false, text: 0, at: None, model: None, output: None, stop: false }], rotation = 0

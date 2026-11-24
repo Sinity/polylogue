@@ -46,12 +46,6 @@ fn scope_change_waits_for_a_new_completion_marker() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(
-        &archive,
-        &index,
-        crate::writer::resolve::IndexUpkeep::PerTransaction,
-    )
-    .unwrap();
     std::fs::write(
         root.path().join("embeddings.db"),
         b"paid content hash vectors",
@@ -72,7 +66,6 @@ fn scope_change_waits_for_a_new_completion_marker() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[
             input(1, "private"),
             completion_marker(1),
@@ -93,7 +86,7 @@ fn scope_change_waits_for_a_new_completion_marker() {
         .unwrap();
     let cache_identity = super::super::cache_identity(&index).unwrap();
     let token = archive.read_scope.token().unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "narrow", false).unwrap());
+    assert!(reset(&mut index, &archive, "narrow", false).unwrap());
     assert!(matches!(token.check(), Err(StoreError::ScopeChanged)));
     assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
     for table in [
@@ -133,7 +126,7 @@ fn scope_change_waits_for_a_new_completion_marker() {
             .unwrap(),
         before
     );
-    assert!(!reset(&mut index, &archive, &resolver, "narrow", false).unwrap());
+    assert!(!reset(&mut index, &archive, "narrow", false).unwrap());
     confirmed::apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -142,7 +135,6 @@ fn scope_change_waits_for_a_new_completion_marker() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[completion_marker(0)],
     )
     .unwrap();
@@ -150,7 +142,7 @@ fn scope_change_waits_for_a_new_completion_marker() {
     drop(index);
     let mut index = Connection::open(archive.index_db()).unwrap();
     assert_eq!(current(&index).unwrap().as_deref(), Some("narrow"));
-    assert!(reset(&mut index, &archive, &resolver, "wide", false).unwrap());
+    assert!(reset(&mut index, &archive, "wide", false).unwrap());
     assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
     confirmed::apply(
         &crate::text_rows::TextIds::new(
@@ -160,7 +152,6 @@ fn scope_change_waits_for_a_new_completion_marker() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[input(1, "private"), completion_marker(1)],
     )
     .unwrap();
@@ -186,12 +177,6 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(
-        &archive,
-        &index,
-        crate::writer::resolve::IndexUpkeep::PerTransaction,
-    )
-    .unwrap();
     confirmed::apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -200,12 +185,11 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[input(1, "private"), completion_marker(1)],
     )
     .unwrap();
     index.execute_batch("CREATE TRIGGER stop_reset BEFORE DELETE ON source_input BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "changed", false).is_err());
+    assert!(reset(&mut index, &archive, "changed", false).is_err());
     assert!(matches!(
         archive.read_scope.token(),
         Err(StoreError::ScopeChanged)
@@ -226,7 +210,7 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
         Err(StoreError::ScopeChanged)
     ));
     index.execute_batch("DROP TRIGGER stop_reset").unwrap();
-    assert!(reset(&mut index, &reopened, &resolver, "changed", false).unwrap());
+    assert!(reset(&mut index, &reopened, "changed", false).unwrap());
     assert!(pool.reader().unwrap().query("SELECT 1", &[]).is_ok());
     assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
 }
@@ -236,12 +220,6 @@ fn unsaved_sinex_control_blocks_current_reads() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(
-        &archive,
-        &index,
-        crate::writer::resolve::IndexUpkeep::PerTransaction,
-    )
-    .unwrap();
     confirmed::apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -250,12 +228,11 @@ fn unsaved_sinex_control_blocks_current_reads() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[input(1, "private"), completion_marker(1)],
     )
     .unwrap();
     index.execute_batch("CREATE TRIGGER stop_control BEFORE INSERT ON meta WHEN new.key='confirmed_scope_pending' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "changed", false).is_err());
+    assert!(reset(&mut index, &archive, "changed", false).is_err());
     assert!(matches!(
         archive.read_scope.token(),
         Err(StoreError::ScopeChanged)
@@ -264,7 +241,7 @@ fn unsaved_sinex_control_blocks_current_reads() {
     assert_eq!(current(&index).unwrap(), None);
     assert_eq!(confirmed::checkpoint(&index).unwrap(), Some(1));
     index.execute_batch("DROP TRIGGER stop_control").unwrap();
-    assert!(reset(&mut index, &archive, &resolver, "changed", false).unwrap());
+    assert!(reset(&mut index, &archive, "changed", false).unwrap());
     assert!(archive.read_scope.token().is_ok());
 }
 
@@ -277,12 +254,6 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     let root = tempfile::tempdir().unwrap();
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
-    let resolver = crate::writer::resolve::Resolver::new(
-        &archive,
-        &index,
-        crate::writer::resolve::IndexUpkeep::PerTransaction,
-    )
-    .unwrap();
     confirmed::apply(
         &crate::text_rows::TextIds::new(
             &index,
@@ -291,7 +262,6 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[input(1, "private"), completion_marker(1)],
     )
     .unwrap();
@@ -314,14 +284,14 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     })
     .unwrap();
     fail.store(true, Ordering::SeqCst);
-    assert!(reset(&mut index, &archive, &resolver, "new", false).is_err());
+    assert!(reset(&mut index, &archive, "new", false).is_err());
     assert_eq!(confirmed::checkpoint(&index).unwrap(), Some(1));
     assert!(matches!(
         require_readable(&index),
         Err(StoreError::ScopeChanged)
     ));
     fail.store(false, Ordering::SeqCst);
-    assert!(reset(&mut index, &archive, &resolver, "new", false).unwrap());
+    assert!(reset(&mut index, &archive, "new", false).unwrap());
     assert_eq!(std::fs::read(&pointer).unwrap(), b"unavailable");
     assert!(matches!(
         old.with_current(|| {

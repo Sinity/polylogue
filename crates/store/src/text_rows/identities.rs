@@ -130,12 +130,6 @@ impl TextIds {
         ))
     }
 
-    #[cfg(test)]
-    pub(crate) fn text(&self, conn: &Connection, hash: &[u8; 32]) -> Result<Option<i64>> {
-        self.refresh(conn)?;
-        Ok(self.known.borrow().get(hash)?.filter(|id| *id > 0))
-    }
-
     /// A confirmed scope change discards cached identities; the allocator's
     /// high-water mark stays above every ID this process has used.
     pub(crate) fn discard_cached(&self) {

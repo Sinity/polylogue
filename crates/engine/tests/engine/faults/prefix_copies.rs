@@ -202,7 +202,7 @@ fn rebuild_history(
     );
     assert_eq!(
         w.count(&format!(
-            "SELECT count(DISTINCT s.chain) AS n FROM message_parse s JOIN message m ON m.pk = s.message_pk WHERE m.id = '{message}'"
+            "SELECT count(DISTINCT s.chain) AS n FROM message_parse s WHERE s.message_id = '{message}'"
         )),
         5
     );

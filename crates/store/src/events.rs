@@ -28,8 +28,8 @@ impl Reader<'_> {
     pub fn event_record(&self, id: &str) -> Result<Option<InputEventRecord>> {
         let stored: Option<StoredEvent> = self
             .conn()?
-            .query_row("SELECT e.pk,e.fields,e.data,i.id,e.source_chain,e.source_end,selected.committed FROM event e JOIN input_ref i ON i.pk=e.input_pk
-                LEFT JOIN event_parse selected ON selected.event_pk=e.pk AND selected.input_pk=e.input_pk AND selected.chain=e.source_chain WHERE e.id=?1", [id], |r| {
+            .query_row("SELECT e.pk,e.fields,e.data,i.id,e.source_chain,e.source_end,NULL FROM event e JOIN input_ref i ON i.pk=e.input_pk
+                WHERE e.id=?1", [id], |r| {
                 Ok(StoredEvent{pk:r.get(0)?,fields:r.get(1)?,data:r.get(2)?,input:r.get(3)?,chain:r.get(4)?,end:r.get(5)?,committed:r.get(6)?})
             })
             .optional()?;
@@ -46,6 +46,11 @@ impl Reader<'_> {
             return Ok(None);
         };
         let event = decode_event(&fields, &data)?;
+        let readings = crate::writer::readings::event_readings(self.conn()?, pk)?;
+        let selected = readings
+            .iter()
+            .find(|r| r.input == input && r.chain == chain);
+        let committed = committed.or(selected.and_then(|r| r.committed));
         let through = end
             .map(u64::try_from)
             .transpose()
@@ -60,15 +65,24 @@ impl Reader<'_> {
             })?,
         };
         let mut sources = Vec::new();
-        let mut statement = self.conn()?.prepare_cached(
-            "SELECT i.id,i.format,s.chain,s.source_start,s.source_end,s.imported_sources
-             FROM event_parse s JOIN event e ON e.pk=s.event_pk
-             JOIN event_parse selected ON selected.event_pk=e.pk AND selected.input_pk=e.input_pk AND selected.chain=e.source_chain
-             JOIN input_ref i ON i.pk=s.input_pk
-             WHERE s.event_pk=?1 AND s.value_pk=selected.value_pk AND s.fields=selected.fields ORDER BY i.id,s.chain")?;
-        let rows = statement.query_map([pk], |r| {
-            <(String, String, i64, Option<u64>, Option<u64>, String)>::try_from(r)
-        })?;
+        let mut rows: Vec<_> = readings
+            .iter()
+            .filter(|r| selected.is_some_and(|s| s.hash == r.hash && s.fields == r.fields))
+            .map(|r| {
+                Ok::<_, StoreError>((
+                    r.input.clone(),
+                    r.format.clone(),
+                    r.chain,
+                    r.start,
+                    r.end,
+                    r.imported.clone(),
+                ))
+            })
+            .collect();
+        rows.sort_by(|a, b| match (a, b) {
+            (Ok(a), Ok(b)) => (&a.0, a.2).cmp(&(&b.0, b.2)),
+            _ => std::cmp::Ordering::Equal,
+        });
         for row in rows {
             let (input, source, source_chain, start, end, original) = row?;
             sources.push(StatedSource {

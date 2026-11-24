@@ -312,8 +312,7 @@ fn a_response_growing_across_appends_is_joined_from_the_chains_rows() {
     // for each later record (docs/sessions.md, Names and references).
     assert_eq!(
         column(
-            "SELECT s.response_key,m.id FROM message_parse s JOIN message m ON m.pk=s.message_pk
-             WHERE s.response_key IS NOT NULL"
+            "SELECT s.response_key,s.message_id FROM message_parse s WHERE s.response_key IS NOT NULL"
         ),
         [("response-a".to_owned(), "claude-code:first".to_owned())]
     );
@@ -334,8 +333,8 @@ fn a_response_growing_across_appends_is_joined_from_the_chains_rows() {
     assert_eq!(
         index
             .query_row(
-                "SELECT count(*) FROM message_version v
-                 WHERE NOT EXISTS(SELECT 1 FROM message_parse s WHERE s.version_pk=v.pk)",
+                "SELECT count(*) FROM text t
+                 WHERE NOT EXISTS(SELECT 1 FROM parse_text r WHERE r.text_id=t.id)",
                 [],
                 |r| r.get::<_, i64>(0)
             )
@@ -605,7 +604,7 @@ fn an_appended_sessionless_event_follows_the_resumed_sessions_response() {
     let reader = engine.reads.reader().unwrap();
     let placed = reader
         .query(
-            "SELECT m.id FROM event e JOIN message m ON m.pk=e.after_message_pk WHERE e.kind='file_history'",
+            "SELECT m.id FROM event e JOIN message m ON m.id=e.after_message_id WHERE e.kind='file_history'",
             &[],
         )
         .unwrap();

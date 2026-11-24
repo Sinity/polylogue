@@ -113,12 +113,12 @@ impl<'a> ReferenceText<'a> {
     ) -> Result<polylogue_model::bundle::ShownBlocks> {
         let conn = self.original;
         let (hash, layout, blocks): (Option<Vec<u8>>, Option<Vec<u8>>, i64) = conn.query_row(
-            "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk),p.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk) FROM message m LEFT JOIN message_parse s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE m.pk=?1",
+            "SELECT m.version_hash,m.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk) FROM message m WHERE m.pk=?1",
             [message], |row| <(_, _, _)>::try_from(row),
         )?;
         let hash =
             hash.ok_or_else(|| unavailable(reference, "the source version is unavailable"))?;
-        crate::versions::message_block_selection(
+        crate::encoding::message_block_selection(
             &hash,
             layout.as_deref(),
             usize::try_from(blocks)

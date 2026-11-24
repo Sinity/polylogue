@@ -65,7 +65,7 @@ fn ai_studio_deleted_chunk_reads_a_c_d() {
         .reader()
         .unwrap()
         .query(
-            "SELECT count(*) AS n FROM message_parse s JOIN message m ON m.pk=s.message_pk WHERE m.id='claude-code:b'",
+            "SELECT count(*) AS n FROM message WHERE id='claude-code:b'",
             &[],
         )
         .unwrap();

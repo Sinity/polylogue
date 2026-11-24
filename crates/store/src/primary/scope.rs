@@ -30,7 +30,6 @@ fn quoted(name: &str) -> String {
 pub(crate) fn reset(
     index: &mut Connection,
     archive: &Archive,
-    resolver: &crate::writer::resolve::Resolver,
     scope: &str,
     replace: bool,
 ) -> Result<bool> {
@@ -42,10 +41,7 @@ pub(crate) fn reset(
     if !replace && current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
         return Ok(false);
     }
-    with_reads_blocked(index, archive, scope, |index| {
-        clear(index, archive, resolver, scope)
-    })
-    .map(|()| true)
+    with_reads_blocked(index, archive, scope, |index| clear(index, archive, scope)).map(|()| true)
 }
 
 /// An empty pending scope records that Sinex granted no reads. Only a later
@@ -80,13 +76,7 @@ fn with_reads_blocked(
     result.and_then(|()| restored.map(|_| ()).map_err(Into::into))
 }
 
-fn clear(
-    index: &mut Connection,
-    archive: &Archive,
-    resolver: &crate::writer::resolve::Resolver,
-    scope: &str,
-) -> Result<()> {
-    resolver.discard_cached()?;
+fn clear(index: &mut Connection, archive: &Archive, scope: &str) -> Result<()> {
     index.flush_prepared_statement_cache();
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     tx.pragma_update(None, "defer_foreign_keys", true)?;
