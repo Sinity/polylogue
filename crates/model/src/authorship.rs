@@ -76,20 +76,20 @@ impl<'de> Deserialize<'de> for Author {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Channel {
-    Mcp,
-    Cli,
-    Web,
-    Extension,
-    Desktop,
-    Hook,
-    Markup,
-    Import,
-    Daemon,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Channel {
+        Mcp => "mcp",
+        Cli => "cli",
+        Web => "web",
+        Extension => "extension",
+        Desktop => "desktop",
+        Hook => "hook",
+        Markup => "markup",
+        Import => "import",
+        Daemon => "daemon",
+    }
 }
-stored_names!(Channel {Mcp=>"mcp",Cli=>"cli",Web=>"web",Extension=>"extension",Desktop=>"desktop",Hook=>"hook",Markup=>"markup",Import=>"import",Daemon=>"daemon"});
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

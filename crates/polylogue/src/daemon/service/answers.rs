@@ -111,7 +111,7 @@ pub(crate) fn context(
     d: &Daemon,
     request_id: String,
     ask: &Ask,
-    sender: Option<String>,
+    sender: Option<polylogue_model::DeliverySender>,
     budget_tokens: command_surface::TokenBudget,
     operation: &Arc<Context>,
 ) -> Answer<crate::protocol::context::Answer> {
@@ -292,7 +292,7 @@ pub(crate) fn context(
             },
             recipient_id: ask.recipient().map(ToString::to_string),
             sender,
-            event: prepared.event.clone(),
+            event: prepared.event,
             cwd: ask.cwd().map(|c| c.to_string_lossy().into_owned()),
             text: prepared.text.clone(),
             refs: prepared.refs.clone(),

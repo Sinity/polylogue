@@ -36,7 +36,7 @@ impl Cooldowns {
 
 pub fn empty() -> Prepared {
     Prepared {
-        event: polylogue_model::DeliveryEvent::Advice.as_str().into(),
+        event: polylogue_model::DeliveryEvent::Advice,
         text: String::new(),
         refs: Vec::new(),
         left_out: Vec::new(),
@@ -275,7 +275,7 @@ pub fn prepare(
             crate::brief::archive_json(&pointer)
         );
         return Ok(Prepared {
-            event: polylogue_model::DeliveryEvent::Advice.as_str().into(),
+            event: polylogue_model::DeliveryEvent::Advice,
             text,
             refs: vec![stored_reference, target.to_string()],
             left_out: Vec::new(),

@@ -317,12 +317,13 @@ pub(crate) fn apply_object(conn: &Connection, object: &QueryObject, commit_seq: 
         ],
     )?;
     for edge in &object.edges {
-        let (uses, how) = match edge {
-            QueryEdge::Saved { query } => (format!("query:{query}"), "saved"),
-            QueryEdge::Combine { query } => (format!("query:{query}"), "combine"),
-            QueryEdge::In { query } => (format!("query:{query}"), "in"),
-            QueryEdge::Result { result } => (format!("result:{result}"), "result"),
+        let uses = match edge {
+            QueryEdge::Saved { query } | QueryEdge::Combine { query } | QueryEdge::In { query } => {
+                format!("query:{query}")
+            }
+            QueryEdge::Result { result } => format!("result:{result}"),
         };
+        let how = edge.kind().as_str();
         conn.execute(
             &source
                 .sql("INSERT OR IGNORE INTO @source.query_edge(query,uses,how,edge) VALUES (?1,?2,?3,?4)"),

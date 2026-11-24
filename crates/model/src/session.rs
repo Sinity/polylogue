@@ -1,55 +1,38 @@
 use crate::{SessionId, Timestamp};
 use serde::{Deserialize, Serialize};
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionKind {
-    /// A conversation or agent run the operator started.
-    #[default]
-    Main,
-    /// A session another session spawned (a Claude Code subagent).
-    Subagent,
-    /// A side conversation kept inside its parent's file.
-    Sidechain,
-    /// The model call that compacted another session's history (a Claude
-    /// Code `agent-acompact` file): the summarize prompt and the summary.
-    Compaction,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum SessionKind {
+        /// A conversation or agent run the operator started.
+        #[default]
+        Main => "main",
+        /// A session another session spawned (a Claude Code subagent).
+        Subagent => "subagent",
+        /// A side conversation kept inside its parent's file.
+        Sidechain => "sidechain",
+        /// The model call that compacted another session's history (a Claude
+        /// Code `agent-acompact` file): the summarize prompt and the summary.
+        Compaction => "compaction",
+    }
 }
 
-stored_names!(SessionKind {
-    Main => "main",
-    Subagent => "subagent",
-    Sidechain => "sidechain",
-    Compaction => "compaction",
-});
-
-/// Where a title came from, highest precedence first.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum TitleSource {
-    /// The operator renamed it.
-    Custom,
-    /// The tool generated it.
-    Generated,
-    /// The tool's summary line.
-    Summary,
-    /// The agent's name, for a spawned session.
-    AgentName,
-    /// The imported file's name, used when no recorded title is available.
-    FileName,
+stored_names! {
+    /// Where a title came from, highest precedence first.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum TitleSource {
+        /// The operator renamed it.
+        Custom => "custom",
+        /// The tool generated it.
+        Generated => "generated",
+        /// The tool's summary line.
+        Summary => "summary",
+        /// The agent's name, for a spawned session.
+        AgentName => "agent_name",
+        /// The imported file's name, used when no recorded title is available.
+        FileName => "file_name",
+    }
 }
-
-stored_names!(TitleSource {
-    Custom => "custom",
-    Generated => "generated",
-    Summary => "summary",
-    AgentName => "agent_name",
-    FileName => "file_name",
-});
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Title {

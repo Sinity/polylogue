@@ -1,81 +1,4 @@
-use crate::{
-    Block, BlockKind, LINK_HOW_NAMES, LINK_KIND_NAMES, LinkKind, PromptKind, Role, SessionKind,
-    ToolAction,
-};
-
-fn serde_name<T: serde::Serialize>(v: T) -> String {
-    serde_json::to_value(v)
-        .unwrap()
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-
-macro_rules! check {
-    ($ty:ty) => {
-        for (v, name) in <$ty>::ALL.iter().zip(<$ty>::NAMES) {
-            assert_eq!(serde_name(*v), *name, "{} serde name", stringify!($ty));
-            assert_eq!(<$ty as crate::StoredName>::from_name(name), Some(*v));
-        }
-    };
-}
-
-/// Every enum declared with `stored_names!` stores, queries and serializes
-/// under one name per variant: `from_name` reads each name back, and serde
-/// writes the same name.
-#[test]
-fn stored_name_round_trips_for_every_enum() {
-    use crate::alternate::{AlternateKind, AlternateRelation};
-    use crate::annotation::{AnnotationKind, LinkRole};
-    use crate::authored::RunsHere;
-    use crate::batch::IdKind;
-    use crate::block::CallOutcome;
-    use crate::document::{DocumentAuthorship, DocumentPurpose};
-    use crate::live::channel::{Channel as LiveChannel, HostProtocol};
-    use crate::live::{Activity, Aspect, LiveState, Stall, WaitingOn};
-    use crate::message::WrittenBy;
-    use crate::settings::EmbeddingProvider;
-    use crate::{DeliveryEvent, DeliveryOutcome, DeliverySender};
-    check!(SessionKind);
-    check!(crate::TitleSource);
-    check!(Role);
-    check!(PromptKind);
-    check!(WrittenBy);
-    check!(ToolAction);
-    check!(CallOutcome);
-    check!(BlockKind);
-    check!(AnnotationKind);
-    check!(LinkRole);
-    check!(crate::authorship::Channel);
-    check!(RunsHere);
-    check!(IdKind);
-    check!(DocumentPurpose);
-    check!(DocumentAuthorship);
-    check!(DeliveryEvent);
-    check!(DeliverySender);
-    check!(DeliveryOutcome);
-    check!(LiveState);
-    check!(Activity);
-    check!(WaitingOn);
-    check!(Stall);
-    check!(Aspect);
-    check!(LiveChannel);
-    check!(HostProtocol);
-    check!(EmbeddingProvider);
-    check!(crate::freshness::FreshnessState);
-    check!(AlternateKind);
-    check!(AlternateRelation);
-    check!(crate::read::IndicatorKind);
-    check!(crate::read::TargetKind);
-    check!(crate::read::Format);
-    check!(crate::read::View);
-    check!(crate::read::EntryKind);
-    check!(LinkKind);
-    check!(crate::ReferenceReason);
-    check!(crate::Route);
-    check!(crate::FieldGroup);
-    check!(crate::Completion);
-}
+use crate::{Block, BlockKind, DeliverySender, LINK_HOW_NAMES, LINK_KIND_NAMES, ToolAction};
 
 #[test]
 fn block_kind_names_are_the_serde_tags() {
@@ -129,4 +52,19 @@ fn link_names_cover_every_kind_once() {
         ["spawn", "fork", "continuation", "resume", "reference"]
     );
     assert_eq!(LINK_HOW_NAMES, ["briefing", "send", "mention"]);
+}
+
+/// The declared name is the serialized form, and a name outside the set is
+/// refused when read.
+#[test]
+fn declared_names_are_the_serde_form() {
+    assert_eq!(
+        serde_json::to_value(DeliverySender::Send).unwrap(),
+        serde_json::json!("send")
+    );
+    assert_eq!(
+        serde_json::from_value::<DeliverySender>(serde_json::json!("act")).unwrap(),
+        DeliverySender::Act
+    );
+    assert!(serde_json::from_value::<DeliverySender>(serde_json::json!("Send")).is_err());
 }

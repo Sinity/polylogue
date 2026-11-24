@@ -47,7 +47,7 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("archive.db");
     let standalone = Connection::open(&path).unwrap();
-    standalone.execute_batch(crate::schema::ARCHIVE).unwrap();
+    standalone.execute_batch(&crate::schema::ARCHIVE).unwrap();
     standalone
         .execute("INSERT INTO input(id,format) VALUES ('i','test')", [])
         .unwrap();
@@ -114,7 +114,7 @@ fn later_chunks_keep_their_commit_when_a_revision_grows() {
         if primary {
             conn.execute_batch(&schema().unwrap().ddl).unwrap();
         } else {
-            conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+            conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
         }
         let source = Source::of(&conn).unwrap();
         let hash = polylogue_model::BlobHash::of(b"synthetic");
@@ -319,7 +319,7 @@ fn source_reference_namespace_keeps_archive_metadata_distinct_from_index_metadat
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("archive.db");
     let standalone = Connection::open(&path).unwrap();
-    standalone.execute_batch(crate::schema::ARCHIVE).unwrap();
+    standalone.execute_batch(&crate::schema::ARCHIVE).unwrap();
     standalone
         .execute(
             "INSERT INTO meta(key,value) VALUES('namespace','archive')",

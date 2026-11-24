@@ -14,8 +14,8 @@ fn pending_notices_are_selected_by_directory_scope_and_acknowledgement() {
                 UserWrite::Deliver(Delivery {
                     recipient_kind: "operator".into(),
                     recipient_id: None,
-                    sender: "signal".into(),
-                    event: "signal".into(),
+                    sender: polylogue_model::DeliverySender::Signal,
+                    event: polylogue_model::DeliveryEvent::Signal,
                     cwd: cwd.map(str::to_owned),
                     text: format!("{id} {}", "body".repeat(10000)),
                     refs: vec![],
@@ -144,4 +144,59 @@ fn open_items_are_worded_once_in_flag_order() {
         ]
     );
     assert!(OpenItems::default().phrases().is_empty());
+}
+
+/// A stored delivery whose sender or event is outside its closed set is
+/// refused as unreadable stored data, never read as a free string.
+#[test]
+fn delivery_sender_and_event_refuse_unknown_values() {
+    let archive = WriterArchive::new();
+    archive
+        .writer
+        .user(operator_request(
+            "to-session".into(),
+            UserWrite::Deliver(Delivery {
+                recipient_kind: "session".into(),
+                recipient_id: Some("claude-code:s1".into()),
+                sender: polylogue_model::DeliverySender::Send,
+                event: polylogue_model::DeliveryEvent::Message,
+                cwd: None,
+                text: "hello".into(),
+                refs: vec![],
+                left_out: vec![],
+            }),
+        ))
+        .unwrap();
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let row = pool
+        .reader()
+        .unwrap()
+        .deliveries_to("claude-code:s1")
+        .unwrap();
+    assert_eq!(row[0].sender, polylogue_model::DeliverySender::Send);
+    assert_eq!(row[0].event, polylogue_model::DeliveryEvent::Message);
+    let register = rusqlite::Connection::open(archive.archive.root.join("archive.db")).unwrap();
+    for (column, value) in [("sender", "pager"), ("event", "takeover")] {
+        register
+            .execute(
+                "UPDATE delivery SET sender='send', event='message' WHERE id='to-session'",
+                [],
+            )
+            .unwrap();
+        register
+            .execute(
+                &format!("UPDATE delivery SET {column}=?1 WHERE id='to-session'"),
+                [value],
+            )
+            .unwrap();
+        let error = pool
+            .reader()
+            .unwrap()
+            .deliveries_to("claude-code:s1")
+            .unwrap_err();
+        assert!(
+            matches!(error, crate::StoreError::StoredValue { .. }),
+            "{column}: {error:?}"
+        );
+    }
 }

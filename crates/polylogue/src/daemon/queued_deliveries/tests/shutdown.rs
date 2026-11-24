@@ -20,8 +20,8 @@ fn prepared_outcome(daemon: &crate::test_daemon::TestDaemon, prefix: &str) -> Us
             UserWrite::Deliver(Delivery {
                 recipient_kind: "session".into(),
                 recipient_id: Some("claude-code:s1".into()),
-                sender: "hook".into(),
-                event: "session_start".into(),
+                sender: polylogue_model::DeliverySender::Hook,
+                event: polylogue_model::DeliveryEvent::SessionStart,
                 cwd: None,
                 text: "synthetic stop brief".into(),
                 refs: vec![],

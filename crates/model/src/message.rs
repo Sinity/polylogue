@@ -1,53 +1,38 @@
 use crate::{Block, MessageId, SessionId, Timestamp, Usage};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum Role {
-    User,
-    Assistant,
-    System,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum Role {
+        User => "user",
+        Assistant => "assistant",
+        System => "system",
+    }
 }
 
-stored_names!(Role {
-    User => "user",
-    Assistant => "assistant",
-    System => "system",
-});
-
-/// A user prompt's category. `Harness` also marks runtime-written notices
-/// carried under another native role; the other kinds remain user categories.
-/// This keeps harness material out of counts of what a person or model wrote.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptKind {
-    /// Prose a person typed.
-    #[default]
-    Prose,
-    /// A slash command, shell escape or memory line.
-    Command,
-    /// Text the harness wrote: tool results, interruption notices, local
-    /// command output, injected reminders or assistant-shaped runtime notices.
-    Harness,
-    /// Context supplied by a hook, skill or recorded delivery.
-    InjectedContext,
-    /// The harness's summary at a recorded context boundary.
-    CompactionSummary,
-    /// Text another model wrote as this session's prompt: a subagent's
-    /// task, a coordinator's follow-up, a peer agent's message.
-    Model,
+stored_names! {
+    /// A user prompt's category. `Harness` also marks runtime-written notices
+    /// carried under another native role; the other kinds remain user categories.
+    /// This keeps harness material out of counts of what a person or model wrote.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum PromptKind {
+        /// Prose a person typed.
+        #[default]
+        Prose => "prose",
+        /// A slash command, shell escape or memory line.
+        Command => "command",
+        /// Text the harness wrote: tool results, interruption notices, local
+        /// command output, injected reminders or assistant-shaped runtime notices.
+        Harness => "harness",
+        /// Context supplied by a hook, skill or recorded delivery.
+        InjectedContext => "injected_context",
+        /// The harness's summary at a recorded context boundary.
+        CompactionSummary => "compaction_summary",
+        /// Text another model wrote as this session's prompt: a subagent's
+        /// task, a coordinator's follow-up, a peer agent's message.
+        Model => "model",
+    }
 }
-
-stored_names!(PromptKind {
-    Prose => "prose",
-    Command => "command",
-    Harness => "harness",
-    InjectedContext => "injected_context",
-    CompactionSummary => "compaction_summary",
-    Model => "model",
-});
 
 impl PromptKind {
     pub fn is_harness(self) -> bool {
@@ -63,24 +48,17 @@ pub fn is_harness_message(role: Role, prompt_kind: Option<PromptKind>) -> bool {
     role == Role::System || prompt_kind.is_some_and(PromptKind::is_harness)
 }
 
-/// Who wrote a message's text, from its role and prompt kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum WrittenBy {
-    Human,
-    Model,
-    Harness,
-    Tool,
-    Unknown,
+stored_names! {
+    /// Who wrote a message's text, from its role and prompt kind.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum WrittenBy {
+        Human => "human",
+        Model => "model",
+        Harness => "harness",
+        Tool => "tool",
+        Unknown => "unknown",
+    }
 }
-
-stored_names!(WrittenBy {
-    Human => "human",
-    Model => "model",
-    Harness => "harness",
-    Tool => "tool",
-    Unknown => "unknown",
-});
 
 impl WrittenBy {
     pub fn of(message: &Message) -> Self {

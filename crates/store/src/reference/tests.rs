@@ -345,7 +345,7 @@ fn preparation_hashes_source_text_and_overlay_text() {
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let scratch = rusqlite::Connection::open_in_memory().unwrap();
-    scratch.execute_batch(crate::schema::ARCHIVE).unwrap();
+    scratch.execute_batch(&crate::schema::ARCHIVE).unwrap();
 
     let fact = AnnotationFact {
         id: "pending".into(),

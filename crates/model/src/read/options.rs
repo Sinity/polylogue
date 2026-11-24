@@ -64,33 +64,22 @@ impl std::fmt::Display for ReadAt {
     }
 }
 
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum View {
-    #[default]
-    Transcript,
-    Dialogue,
-    Overview,
-    Context,
-    Tree,
-    Changes,
-    Live,
-    Raw,
-    Trace,
+stored_names! {
+    name, parse;
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub enum View {
+        #[default]
+        Transcript => "transcript",
+        Dialogue => "dialogue",
+        Overview => "overview",
+        Context => "context",
+        Tree => "tree",
+        Changes => "changes",
+        Live => "live",
+        Raw => "raw",
+        Trace => "trace",
+    }
 }
-stored_names!(View, name, parse {
-    Transcript => "transcript",
-    Dialogue => "dialogue",
-    Overview => "overview",
-    Context => "context",
-    Tree => "tree",
-    Changes => "changes",
-    Live => "live",
-    Raw => "raw",
-    Trace => "trace",
-});
 impl View {
     /// The metadata filter and layout consult this same rule.
     pub const fn block_kinds(self) -> &'static [BlockKind] {

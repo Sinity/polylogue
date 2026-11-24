@@ -798,8 +798,8 @@ fn literal_deliveries_keep_the_same_recorded_result() {
         let body = polylogue_model::user::Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some("future-session".into()),
-            sender: "hook".into(),
-            event: "advice".into(),
+            sender: polylogue_model::DeliverySender::Hook,
+            event: polylogue_model::DeliveryEvent::Advice,
             cwd: None,
             text: "Synthetic advice\nwith original line breaks".into(),
             refs: vec!["message:codex:future".into()],
@@ -912,8 +912,8 @@ fn literal_deliveries_preserve_variant_reads_without_rebuilding_other_work() {
         let body = polylogue_model::user::Delivery {
             recipient_kind: "operator".into(),
             recipient_id: None,
-            sender: "hook".into(),
-            event: "advice".into(),
+            sender: polylogue_model::DeliverySender::Hook,
+            event: polylogue_model::DeliveryEvent::Advice,
             cwd: None,
             text: "A delivery unrelated to alternate history".into(),
             refs: vec![],

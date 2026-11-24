@@ -90,10 +90,10 @@ pub struct KindSpec {
 }
 macro_rules! annotation_kinds {
     ($($kind:ident => ($name:literal,$value:ident,$uniqueness:ident,$about:ident,$key:ident)),+ $(,)?) => {
-        #[derive(Debug,Clone,Copy,PartialEq,Eq,Hash,Serialize,Deserialize,schemars::JsonSchema)]
-        #[serde(rename_all="snake_case")]
-        pub enum AnnotationKind {$($kind),+}
-        stored_names!(AnnotationKind {$($kind=>$name),+});
+        stored_names! {
+            #[derive(Debug,Clone,Copy,PartialEq,Eq,Hash)]
+            pub enum AnnotationKind {$($kind=>$name),+}
+        }
         impl AnnotationKind {
             pub fn spec(self)->KindSpec {match self {$(
                 Self::$kind=>KindSpec {value:ValueShape::$value,uniqueness:$uniqueness,about:About::$about,key:KeyShape::$key}
@@ -144,42 +144,30 @@ impl KindSpec {
             .is_some_and(|uniqueness| uniqueness.components == ["about"])
     }
 }
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    PartialOrd,
-    Ord,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum LinkRole {
-    About,
-    Evidence,
-    Scope,
-    Origin,
-    Revises,
-    Withdraws,
-    RepliesTo,
-    Challenges,
-    Supports,
-    Qualifies,
-    Corrects,
-    DerivedFrom,
-    Blocks,
-    SlotOf,
-    MemberOf,
-    RoleOf,
-    Mentions,
-    Cites,
-    Embeds,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub enum LinkRole {
+        About => "about",
+        Evidence => "evidence",
+        Scope => "scope",
+        Origin => "origin",
+        Revises => "revises",
+        Withdraws => "withdraws",
+        RepliesTo => "replies_to",
+        Challenges => "challenges",
+        Supports => "supports",
+        Qualifies => "qualifies",
+        Corrects => "corrects",
+        DerivedFrom => "derived_from",
+        Blocks => "blocks",
+        SlotOf => "slot_of",
+        MemberOf => "member_of",
+        RoleOf => "role_of",
+        Mentions => "mentions",
+        Cites => "cites",
+        Embeds => "embeds",
+    }
 }
-stored_names!(LinkRole {About=>"about",Evidence=>"evidence",Scope=>"scope",Origin=>"origin",Revises=>"revises",Withdraws=>"withdraws",RepliesTo=>"replies_to",Challenges=>"challenges",Supports=>"supports",Qualifies=>"qualifies",Corrects=>"corrects",DerivedFrom=>"derived_from",Blocks=>"blocks",SlotOf=>"slot_of",MemberOf=>"member_of",RoleOf=>"role_of",Mentions=>"mentions",Cites=>"cites",Embeds=>"embeds"});
 impl LinkRole {
     /// Identity-only graph operations do not bind a text reading. Other roles
     /// record a hash when the addressed source supplies recorded text.

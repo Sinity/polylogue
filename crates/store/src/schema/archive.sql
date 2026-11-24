@@ -125,8 +125,8 @@ CREATE TABLE delivery (
   id                TEXT PRIMARY KEY,       -- UUIDv7 chosen when prepared; also in the injected reference line
   recipient_kind    TEXT NOT NULL,          -- session | operator
   recipient_id      TEXT,                   -- session id when recipient_kind = session (the session may arrive later)
-  sender            TEXT NOT NULL,          -- hook | mcp | signal (model DeliverySender)
-  event             TEXT NOT NULL,          -- session_start | resume | compaction | takeover | recall | signal | advice
+  sender            TEXT NOT NULL,          -- model DeliverySender
+  event             TEXT NOT NULL,          -- model DeliveryEvent
   cwd               TEXT,                   -- where the recipient was working, when known
   at                INTEGER NOT NULL,       -- prepared at
   content_hash      BLOB NOT NULL,          -- BLAKE3 of the delivered text
@@ -144,7 +144,7 @@ CREATE INDEX delivery_commit_seq ON delivery(commit_seq);
 -- What happened to a prepared delivery: delivered | failed | not_sent | used.
 CREATE TABLE delivery_event (
   delivery          TEXT NOT NULL REFERENCES delivery(id),
-  what              TEXT NOT NULL CHECK (what IN ('delivered','failed','not_sent','used')),
+  what              TEXT NOT NULL CHECK (what IN (@names(DeliveryOutcome))),
   at                INTEGER NOT NULL,
   detail            TEXT,                   -- failed/not_sent: the reason; used: the evidence
   request           TEXT NOT NULL,       -- original authored request identity
@@ -166,7 +166,7 @@ CREATE TABLE chat_action (
   stage_only        INTEGER NOT NULL,       -- 1: fill the composer and stop; a submit is refused
   needs_approval    INTEGER NOT NULL,       -- 1: a submit into an existing conversation waits for the operator
   created_at        INTEGER NOT NULL,
-  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
+  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN (@names(RunsHere))),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX chat_action_commit_seq ON chat_action(commit_seq);
@@ -221,7 +221,7 @@ CREATE TABLE import_job (
   provider          TEXT NOT NULL,          -- the web chat, by the extension's name for it (chatgpt, claude-ai, grok)
   since             INTEGER,                -- only conversations the provider changed at or after this time; NULL: all
   created_at        INTEGER NOT NULL,
-  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN ('live','historical')),
+  execution         TEXT NOT NULL DEFAULT 'live' CHECK(execution IN (@names(RunsHere))),
   commit_seq        INTEGER NOT NULL
 ) STRICT;
 CREATE INDEX import_job_commit_seq ON import_job(commit_seq);

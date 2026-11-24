@@ -381,7 +381,7 @@ fn reading(input: &str, chain: i64, length: u64) -> PreparedBatch {
 
 fn kept() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     conn.execute("INSERT INTO input VALUES ('input','synthetic')", [])
         .unwrap();
     conn

@@ -328,7 +328,7 @@ pub(crate) fn counts(conn: &Connection) -> Result<Vec<(String, String, State, u6
         counts.push((
             row.get(0)?,
             row.get(1)?,
-            State::from_stored(&state).ok_or_else(|| {
+            State::from_name(&state).ok_or_else(|| {
                 crate::StoreError::stored(2, format!("chain progress state {state:?} is not known"))
             })?,
             u64::try_from(n)
@@ -338,25 +338,14 @@ pub(crate) fn counts(conn: &Connection) -> Result<Vec<(String, String, State, u6
     Ok(counts)
 }
 
-/// A chain's parse state as `chain_progress` stores it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) enum State {
-    NoCheckpoint,
-    Current,
-    NoParser,
-    Partial,
-    Behind,
-}
-
-impl State {
-    fn from_stored(state: &str) -> Option<Self> {
-        Some(match state {
-            "no_checkpoint" => Self::NoCheckpoint,
-            "current" => Self::Current,
-            "no_parser" => Self::NoParser,
-            "partial" => Self::Partial,
-            "behind" => Self::Behind,
-            _ => return None,
-        })
+polylogue_model::stored_names! {
+    /// A chain's parse state as `chain_progress` stores it.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub(crate) enum State {
+        NoCheckpoint => "no_checkpoint",
+        Current => "current",
+        NoParser => "no_parser",
+        Partial => "partial",
+        Behind => "behind",
     }
 }

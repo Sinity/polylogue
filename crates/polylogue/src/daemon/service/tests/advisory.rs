@@ -31,7 +31,7 @@ fn call_with_limit(w: &TestDaemon, id: &str, session: &str, limit: &ReadLimit) -
             &w.daemon,
             id.into(),
             &ask,
-            Some("mcp".into()),
+            Some(polylogue_model::DeliverySender::Mcp),
             Default::default(),
             &operation,
         )

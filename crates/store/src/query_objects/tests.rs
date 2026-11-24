@@ -640,7 +640,7 @@ fn object_run_has_no_question_and_query_run_cannot_omit_one() {
     };
     validate_run(&object_run).unwrap();
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::QUERY_OBJECTS).unwrap();
+    conn.execute_batch(&crate::schema::QUERY_OBJECTS).unwrap();
     apply_run(&conn, &object_run, 1, 0).unwrap();
     assert_eq!(
         conn.query_row("SELECT count(*) FROM query", [], |row| row.get::<_, i64>(0))

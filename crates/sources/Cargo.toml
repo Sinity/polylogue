@@ -29,3 +29,6 @@ workspace = true
 [[example]]
 name = "scan"
 test = true
+
+[[example]]
+name = "extension_providers"

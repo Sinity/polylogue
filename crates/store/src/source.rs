@@ -45,7 +45,7 @@ pub(crate) fn schema() -> Result<&'static SourceSchema> {
     if let Some(schema) = SCHEMA.get() {
         return Ok(schema);
     }
-    let _ = SCHEMA.set(from_archive(crate::schema::ARCHIVE)?);
+    let _ = SCHEMA.set(from_archive(&crate::schema::ARCHIVE)?);
     Ok(SCHEMA.get().expect("source schema initialized"))
 }
 

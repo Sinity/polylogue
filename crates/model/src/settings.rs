@@ -174,14 +174,14 @@ impl Value {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum EmbeddingProvider {
-    Off,
-    Local,
-    Voyage,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum EmbeddingProvider {
+        Off => "off",
+        Local => "local",
+        Voyage => "voyage",
+    }
 }
-stored_names!(EmbeddingProvider { Off => "off", Local => "local", Voyage => "voyage" });
 
 impl Declaration {
     pub fn choices(&self) -> &'static [&'static str] {

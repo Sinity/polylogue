@@ -3,13 +3,14 @@ use crate::encoding::unpack_block;
 use polylogue_model::{Attachment, BlobHash, Block, MessageId};
 use std::collections::BTreeSet;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AttachmentState {
-    Available,
-    Ambiguous,
-    Unavailable,
-    Unknown,
+polylogue_model::stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AttachmentState {
+        Available => "available",
+        Ambiguous => "ambiguous",
+        Unavailable => "unavailable",
+        Unknown => "unknown",
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

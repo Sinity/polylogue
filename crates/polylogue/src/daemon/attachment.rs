@@ -156,12 +156,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
     };
     let Some(found) = found else {
         let message = if resolution.matches.is_empty() {
-            let state = match resolution.state {
-                polylogue_store::assets::AttachmentState::Available => "available",
-                polylogue_store::assets::AttachmentState::Ambiguous => "ambiguous",
-                polylogue_store::assets::AttachmentState::Unavailable => "unavailable",
-                polylogue_store::assets::AttachmentState::Unknown => "unknown",
-            };
+            let state = resolution.state.as_str();
             format!("the attachment has no stored file (availability: {state})")
         } else {
             "select one of the stored files with --input".to_string()

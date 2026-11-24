@@ -3,11 +3,7 @@
 // about another conversation; the host then checks the message belongs to
 // that archived conversation.
 
-import { PROVIDERS } from "./tabs.js";
-
-// The path segment before a conversation's ID, as the content scripts read it
-// (a ChatGPT project conversation is `/g/<project>/c/<id>`).
-const PATHS = { chatgpt: "c", "claude-ai": "chat", grok: "c", gemini: "app" };
+import { PROVIDERS } from "./providers.js";
 
 export function notePayload(note, sender) {
   if (!sender?.tab || (sender.frameId !== undefined && sender.frameId !== 0)) throw new Error("note_not_from_a_chat_page");
@@ -17,7 +13,9 @@ export function notePayload(note, sender) {
   const url = new URL(pageUrl);
   const parts = url.pathname.split("/").filter(Boolean);
   const site = PROVIDERS[source.provider];
-  const marker = parts.indexOf(PATHS[source.provider]);
+  // The segment before the ID, wherever it is: a ChatGPT project
+  // conversation is `/g/<project>/c/<id>`.
+  const marker = site ? parts.indexOf(site.path) : -1;
   const shown = marker >= 0 ? parts[marker + 1] : null;
   // Gemini also names the conversation in a query parameter.
   const named = shown ?? (source.provider === "gemini" ? url.searchParams.get("conversation") : null);

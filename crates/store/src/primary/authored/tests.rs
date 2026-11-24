@@ -535,8 +535,8 @@ fn pending_authored_records_are_never_confirmed() {
             UserWrite::DeliveredAdvice(Delivery {
                 recipient_kind: "operator".into(),
                 recipient_id: None,
-                sender: "hook".into(),
-                event: "advice".into(),
+                sender: polylogue_model::DeliverySender::Hook,
+                event: polylogue_model::DeliveryEvent::Advice,
                 cwd: None,
                 text: "example advice".into(),
                 refs: vec!["annotation:note".into()],
@@ -874,8 +874,8 @@ fn reverse_full_snapshot_restore_keeps_event_order_and_disabled_execution() {
             UserWrite::DeliveredAdvice(Delivery {
                 recipient_kind: "operator".into(),
                 recipient_id: None,
-                sender: "hook".into(),
-                event: "advice".into(),
+                sender: polylogue_model::DeliverySender::Hook,
+                event: polylogue_model::DeliveryEvent::Advice,
                 cwd: None,
                 text: "example".into(),
                 refs: vec![],
@@ -1035,8 +1035,8 @@ fn literal_delivery(advice: bool) -> UserRequest {
     let body = Delivery {
         recipient_kind: "session".into(),
         recipient_id: Some("session:later:arrival".into()),
-        sender: "hook".into(),
-        event: "advice".into(),
+        sender: polylogue_model::DeliverySender::Hook,
+        event: polylogue_model::DeliveryEvent::Advice,
         cwd: Some("/home/op/project".into()),
         text: "First line\nSecond line: café\u{0000}tail".into(),
         refs: vec![
@@ -1071,7 +1071,7 @@ fn delivery_from_transaction(index: &Connection, request: &UserRequest) -> Prepa
             UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery) => delivery,
             _ => unreachable!(),
         };
-        tx.execute("INSERT INTO source_delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,1)", params![request.id,delivery.recipient_kind,delivery.recipient_id,delivery.sender,delivery.event,delivery.cwd,request.at.unix_ms(),blake3::hash(delivery.text.as_bytes()).as_bytes().as_slice(),delivery.text.len() as i64,crate::encoding::pack_text(&delivery.text)?,serde_json::to_string(&delivery.refs)?,serde_json::to_string(&delivery.left_out)?])?;
+        tx.execute("INSERT INTO source_delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,1)", params![request.id,delivery.recipient_kind,delivery.recipient_id,delivery.sender.as_str(),delivery.event.as_str(),delivery.cwd,request.at.unix_ms(),blake3::hash(delivery.text.as_bytes()).as_bytes().as_slice(),delivery.text.len() as i64,crate::encoding::pack_text(&delivery.text)?,serde_json::to_string(&delivery.refs)?,serde_json::to_string(&delivery.left_out)?])?;
         if matches!(request.write, UserWrite::DeliveredAdvice(_)) {
             tx.execute("INSERT INTO source_delivery_event(delivery,what,at,detail,request,commit_seq) VALUES(?1,'delivered',?2,'written to the harness hook output',?1,1)",params![request.id,request.at.unix_ms()])?;
         }

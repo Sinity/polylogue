@@ -25,8 +25,8 @@ fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some("claude-code:s1".into()),
-            sender: DeliverySender::Send.as_str().into(),
-            event: DeliveryEvent::Message.as_str().into(),
+            sender: DeliverySender::Send,
+            event: DeliveryEvent::Message,
             cwd: None,
             text: text.into(),
             refs: vec![],
@@ -504,8 +504,8 @@ fn resume_with_missing_directory_is_refused_by_name() {
             UserWrite::Deliver(Delivery {
                 recipient_kind: "session".into(),
                 recipient_id: Some(session.into()),
-                sender: DeliverySender::Send.as_str().into(),
-                event: DeliveryEvent::Message.as_str().into(),
+                sender: DeliverySender::Send,
+                event: DeliveryEvent::Message,
                 cwd: None,
                 text: "rebase".into(),
                 refs: vec![],

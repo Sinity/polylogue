@@ -9,24 +9,27 @@
 use crate::{Result, StoreError};
 use rusqlite::{Connection, fallible_iterator::FallibleIterator as _};
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
-pub const ARCHIVE: &str = concat!(
-    include_str!("schema/archive.sql"),
-    "\n",
-    include_str!("schema/archive_result_index.sql"),
-    "\n",
-    include_str!("schema/client_requests.sql"),
-    "\n",
-    include_str!("schema/annotations.sql"),
-    "\n",
-    include_str!("schema/alternates.sql"),
-    "\n",
-    include_str!("schema/query_objects.sql"),
-    "\n",
-    include_str!("schema/query_runs.sql"),
-    "\n",
-    include_str!("schema/signals.sql")
-);
+pub static ARCHIVE: LazyLock<String> = LazyLock::new(|| {
+    with_names(concat!(
+        include_str!("schema/archive.sql"),
+        "\n",
+        include_str!("schema/archive_result_index.sql"),
+        "\n",
+        include_str!("schema/client_requests.sql"),
+        "\n",
+        include_str!("schema/annotations.sql"),
+        "\n",
+        include_str!("schema/alternates.sql"),
+        "\n",
+        include_str!("schema/query_objects.sql"),
+        "\n",
+        include_str!("schema/query_runs.sql"),
+        "\n",
+        include_str!("schema/signals.sql")
+    ))
+});
 pub const INDEX: &str = concat!(
     include_str!("schema/index.sql"),
     "\n",
@@ -47,11 +50,53 @@ pub const INDEX: &str = concat!(
     include_str!("schema/lineage.sql")
 );
 #[cfg(test)]
-pub(crate) const QUERY_OBJECTS: &str = concat!(
-    include_str!("schema/query_objects.sql"),
-    "\n",
-    include_str!("schema/query_runs.sql")
-);
+pub(crate) static QUERY_OBJECTS: LazyLock<String> = LazyLock::new(|| {
+    with_names(concat!(
+        include_str!("schema/query_objects.sql"),
+        "\n",
+        include_str!("schema/query_runs.sql")
+    ))
+});
+
+/// The closed sets the schema text lists. `@names(Type)` in a schema file
+/// becomes that type's `NAMES` as a quoted SQL list when the text is
+/// assembled, so a `CHECK` list and the enum it holds are one declaration.
+const NAMED_SETS: &[(&str, &[&str])] = &[
+    ("DeliveryOutcome", polylogue_model::DeliveryOutcome::NAMES),
+    ("RunsHere", polylogue_model::authored::RunsHere::NAMES),
+    (
+        "QueryEdgeKind",
+        polylogue_model::query_objects::QueryEdgeKind::NAMES,
+    ),
+    (
+        "ConfirmedState",
+        crate::primary::confirmed::ConfirmedState::NAMES,
+    ),
+];
+
+/// Schema text with each `@names(Type)` replaced by that type's names.
+pub(crate) fn with_names(sql: &str) -> String {
+    const OPEN: &str = "@names(";
+    let mut out = String::with_capacity(sql.len());
+    let mut rest = sql;
+    while let Some(start) = rest.find(OPEN) {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start + OPEN.len()..];
+        let end = tail
+            .find(')')
+            .expect("a schema names placeholder is closed");
+        let set = &tail[..end];
+        let (_, names) = NAMED_SETS
+            .iter()
+            .find(|(name, _)| *name == set)
+            .unwrap_or_else(|| panic!("the schema names an undeclared set {set}"));
+        let quoted: Vec<String> = names.iter().map(|name| format!("'{name}'")).collect();
+        out.push_str(&quoted.join(","));
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
 /// Read indexes added at open, or once the private build ends.
 pub(crate) const OPEN_INDEXES: &str = include_str!("schema/open_indexes.sql");
 
@@ -211,7 +256,7 @@ pub fn create_index(conn: &Connection) -> Result<()> {
 
 fn add_primary(conn: &Connection) -> Result<()> {
     conn.execute_batch(&crate::source::schema()?.ddl)?;
-    conn.execute_batch(crate::primary::confirmed::SCHEMA)?;
+    conn.execute_batch(&crate::primary::confirmed::SCHEMA)?;
     Ok(())
 }
 
@@ -357,12 +402,12 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
         let tx =
             rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         tx.pragma_update(None, "application_id", FORMAT_ID)?;
-        tx.execute_batch(ARCHIVE)?;
+        tx.execute_batch(&ARCHIVE)?;
         set_version(&tx, ARCHIVE_VERSION)?;
         tx.commit()?;
         return Ok(());
     }
-    if found != ARCHIVE_VERSION || !same_schema(conn, &[ARCHIVE])? {
+    if found != ARCHIVE_VERSION || !same_schema(conn, &[&ARCHIVE])? {
         return Err(StoreError::OtherFormat {
             database: "archive",
             found,

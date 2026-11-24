@@ -145,7 +145,7 @@ impl Ask {
 /// Prepared context, not yet delivered.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Prepared {
-    pub event: String,
+    pub event: polylogue_model::DeliveryEvent,
     pub text: String,
     /// References included, in order.
     pub refs: Vec<String>,
@@ -222,10 +222,10 @@ fn repo_names(dirs: &[String], recorded: Vec<String>) -> Vec<String> {
 /// The deliveries that set the point a resume or compaction brief reports
 /// changes since, once delivered: takeovers, messages and other hand-overs to
 /// the session do not.
-pub(crate) const BRIEF_EVENTS: [&str; 3] = [
-    polylogue_model::DeliveryEvent::SessionStart.as_str(),
-    polylogue_model::DeliveryEvent::Resume.as_str(),
-    polylogue_model::DeliveryEvent::Compaction.as_str(),
+pub(crate) const BRIEF_EVENTS: [polylogue_model::DeliveryEvent; 3] = [
+    polylogue_model::DeliveryEvent::SessionStart,
+    polylogue_model::DeliveryEvent::Resume,
+    polylogue_model::DeliveryEvent::Compaction,
 ];
 
 /// The latest brief a session received: when, and the archive's write
@@ -1122,7 +1122,7 @@ fn session_start(
                 .deliveries_to(s)?
                 .into_iter()
                 .find(|d| {
-                    BRIEF_EVENTS.contains(&d.event.as_str())
+                    BRIEF_EVENTS.contains(&d.event)
                         && d.events.iter().any(|what| {
                             what == polylogue_model::DeliveryOutcome::Delivered.as_str()
                         })
@@ -1418,9 +1418,7 @@ fn session_start(
             StartSource::Startup | StartSource::Clear => DeliveryEvent::SessionStart,
             StartSource::Resume => DeliveryEvent::Resume,
             StartSource::Compact => DeliveryEvent::Compaction,
-        }
-        .as_str()
-        .into(),
+        },
         text,
         refs,
         left_out,
@@ -1588,7 +1586,7 @@ fn takeover(
         |_| Ok(None),
     )?;
     Ok(Prepared {
-        event: DeliveryEvent::SessionBrief.as_str().into(),
+        event: DeliveryEvent::SessionBrief,
         text,
         refs,
         left_out,
@@ -1893,7 +1891,7 @@ fn recall(
     );
     let (out, refs, left_out) = fit.finish(&closing, |_| Ok(None))?;
     Ok(Prepared {
-        event: DeliveryEvent::SearchBrief.as_str().into(),
+        event: DeliveryEvent::SearchBrief,
         text: out,
         refs,
         left_out,

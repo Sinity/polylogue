@@ -287,8 +287,8 @@ fn advice_history_waits_for_confirmed_application() {
     let delivery = Delivery {
         recipient_kind: "session".into(),
         recipient_id: Some("codex:recipient".into()),
-        sender: "hook".into(),
-        event: "advice".into(),
+        sender: polylogue_model::DeliverySender::Hook,
+        event: polylogue_model::DeliveryEvent::Advice,
         cwd: Some("/synthetic/repo".into()),
         text: "one file pointer".into(),
         refs: vec![

@@ -46,7 +46,7 @@ fn annotation(
 fn archive() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.pragma_update(None, "foreign_keys", true).unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
 
     conn
 }

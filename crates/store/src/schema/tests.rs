@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[test]
 fn every_schema_applies_to_an_empty_database() {
@@ -336,3 +337,118 @@ fn parse_standings_require_their_length_and_reason() {
 }
 
 mod embeddings;
+
+/// The `CHECK(column IN ('a','b',...))` lists of every table, by table and
+/// column, read back from `sqlite_master`.
+fn check_lists(conn: &Connection) -> BTreeMap<(String, String), BTreeSet<String>> {
+    let mut lists = BTreeMap::new();
+    for (kind, table, sql) in schema_rows(conn).unwrap() {
+        if kind != "table" {
+            continue;
+        }
+        let mut rest = sql.as_str();
+        while let Some(start) = rest.find("CHECK") {
+            rest = &rest[start + "CHECK".len()..];
+            let Some(inner) = rest.trim_start().strip_prefix('(') else {
+                continue;
+            };
+            let Some((column, list)) = inner.trim_start().split_once(" IN") else {
+                continue;
+            };
+            let column = column.trim();
+            let Some(list) = list.trim_start().strip_prefix("('") else {
+                continue;
+            };
+            if !column
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_')
+            {
+                continue;
+            }
+            let Some((list, after)) = list.split_once("')") else {
+                continue;
+            };
+            if !after.trim_start().starts_with(')') {
+                continue;
+            }
+            let names = list
+                .split(',')
+                .map(|name| name.trim().trim_matches('\'').to_owned());
+            lists.insert((table.clone(), column.to_owned()), names.collect());
+        }
+    }
+    lists
+}
+
+/// Every closed set the archive, the index and the primary cache constrain
+/// with a `CHECK` list is exactly its enum's `NAMES`.
+#[test]
+fn schema_check_lists_come_from_names() {
+    use polylogue_model::{
+        Completion, DeliveryOutcome, FieldGroup, IdKind, Route, authored::RunsHere,
+        batch::ParseStatus, query_objects::QueryEdgeKind,
+    };
+    let archive = Connection::open_in_memory().unwrap();
+    ensure_archive(&archive).unwrap();
+    let index = Connection::open_in_memory().unwrap();
+    ensure_primary_index(&index).unwrap();
+    let mut found = check_lists(&archive);
+    found.extend(check_lists(&index));
+    // The content group's route is the message's main route, so
+    // `message_route` records every other group.
+    let routed: Vec<&str> = FieldGroup::ALL
+        .iter()
+        .filter(|group| **group != FieldGroup::Content)
+        .map(|group| group.as_str())
+        .collect();
+    // The primary cache holds the record's tables as `source_` tables.
+    let record: &[(&str, &str, &[&str])] = &[
+        ("delivery_event", "what", DeliveryOutcome::NAMES),
+        ("chat_action", "execution", RunsHere::NAMES),
+        ("import_job", "execution", RunsHere::NAMES),
+        ("query_edge", "how", QueryEdgeKind::NAMES),
+    ];
+    let source: Vec<(String, &str, &[&str])> = record
+        .iter()
+        .map(|(table, column, names)| (format!("source_{table}"), *column, *names))
+        .collect();
+    let index_sets: [(&str, &str, &[&str]); 12] = [
+        ("input_ref", "route", Route::NAMES),
+        ("message_parse", "id_kind", IdKind::NAMES),
+        ("message_parse", "route", Route::NAMES),
+        ("document_parse", "route", Route::NAMES),
+        ("event_parse", "route", Route::NAMES),
+        ("link_parse", "route", Route::NAMES),
+        ("message_parse", "completion", Completion::NAMES),
+        ("message_route", "field_group", &routed[..]),
+        ("parse_state", "status", ParseStatus::NAMES),
+        ("session_time", "party", crate::measure::time::Party::NAMES),
+        (
+            "chain_progress",
+            "state",
+            crate::chain_progress::State::NAMES,
+        ),
+        (
+            "confirmed_event",
+            "state",
+            crate::primary::confirmed::ConfirmedState::NAMES,
+        ),
+    ];
+    let expected: BTreeMap<(String, String), BTreeSet<String>> = index_sets
+        .into_iter()
+        .map(|(table, column, names)| (table.to_owned(), column, names))
+        .chain(
+            record
+                .iter()
+                .map(|(table, column, names)| ((*table).to_owned(), *column, *names)),
+        )
+        .chain(source)
+        .map(|(table, column, names)| {
+            (
+                (table, column.to_owned()),
+                names.iter().map(|name| (*name).to_owned()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(found, expected);
+}

@@ -2,41 +2,27 @@
 use crate::{Block, DocumentId, Json, Timestamp};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum DocumentPurpose {
-    Instruction,
-    Context,
-    Memory,
-    Transcript,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum DocumentPurpose {
+        Instruction => "instruction",
+        Context => "context",
+        Memory => "memory",
+        Transcript => "transcript",
+    }
 }
 
-stored_names!(DocumentPurpose {
-    Instruction => "instruction",
-    Context => "context",
-    Memory => "memory",
-    Transcript => "transcript",
-});
-
-/// A purpose, project creator or upload does not by itself establish a writer.
-#[derive(
-    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum DocumentAuthorship {
-    #[default]
-    Unknown,
-    Human,
-    Model,
-    Harness,
+stored_names! {
+    /// A purpose, project creator or upload does not by itself establish a writer.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub enum DocumentAuthorship {
+        #[default]
+        Unknown => "unknown",
+        Human => "human",
+        Model => "model",
+        Harness => "harness",
+    }
 }
-
-stored_names!(DocumentAuthorship {
-    Unknown => "unknown",
-    Human => "human",
-    Model => "model",
-    Harness => "harness",
-});
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Document {

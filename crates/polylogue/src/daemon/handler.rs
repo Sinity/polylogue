@@ -67,7 +67,7 @@ impl Call<'_> {
 
     /// The prepared-context sender a request from this surface is recorded
     /// under; none for the command line and HTTP.
-    pub fn sender(&self) -> Option<String> {
+    pub fn sender(&self) -> Option<polylogue_model::DeliverySender> {
         self.caller.sender()
     }
 

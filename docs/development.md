@@ -15,6 +15,7 @@ input. Change the compiler version in common and both products together.
 | `cargo xtask warm` | build every test binary and both Clippy configurations without running tests |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |
+| `cargo xtask extension-providers` | rewrite the browser extension's provider table (`extension/src/background/providers.js`) from the origin registry; a sources test fails while the checked-in table differs |
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
 | `cargo fmt --all` | format |
 | `nix flake check` | locked package, source, module and VM checks |

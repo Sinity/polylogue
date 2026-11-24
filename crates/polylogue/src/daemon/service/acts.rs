@@ -486,8 +486,8 @@ fn send_message(
             UserWrite::Deliver(Delivery {
                 recipient_kind: "session".into(),
                 recipient_id: Some(session.to_string()),
-                sender: DeliverySender::Send.as_str().into(),
-                event: DeliveryEvent::Message.as_str().into(),
+                sender: DeliverySender::Send,
+                event: DeliveryEvent::Message,
                 cwd,
                 text: pack.clone(),
                 refs: vec![format!("annotation:{message}")],
@@ -726,7 +726,7 @@ fn answer(
     let earlier = reader
         .deliveries_to(&session.to_string())?
         .into_iter()
-        .filter(|row| row.event == DeliveryEvent::Control.as_str())
+        .filter(|row| row.event == DeliveryEvent::Control)
         .filter_map(|row| reader.delivery(&row.id).ok().flatten())
         .find(|(_, body)| {
             serde_json::from_str::<Value>(body)
@@ -748,8 +748,8 @@ fn answer(
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some(session.to_string()),
-            sender: DeliverySender::Act.as_str().into(),
-            event: DeliveryEvent::Control.as_str().into(),
+            sender: DeliverySender::Act,
+            event: DeliveryEvent::Control,
             cwd: state.cwd.clone(),
             text: body.to_string(),
             refs: vec![reference.clone()],
@@ -810,7 +810,7 @@ fn permission(
     let standing = reader
         .deliveries_to(&session.to_string())?
         .into_iter()
-        .filter(|row| row.event == DeliveryEvent::Control.as_str())
+        .filter(|row| row.event == DeliveryEvent::Control)
         .filter_map(|row| reader.delivery(&row.id).ok().flatten())
         .filter_map(|(row, body)| Some((row, serde_json::from_str::<Value>(&body).ok()?)))
         // An answer given ahead applies once: to the next request for the
@@ -869,8 +869,8 @@ fn interrupt(
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some(session.to_string()),
-            sender: DeliverySender::Act.as_str().into(),
-            event: DeliveryEvent::Control.as_str().into(),
+            sender: DeliverySender::Act,
+            event: DeliveryEvent::Control,
             cwd: state.cwd.clone(),
             text: json!({"interrupt": true}).to_string(),
             refs: Vec::new(),
@@ -1122,8 +1122,8 @@ fn start_session(
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some(session.to_string()),
-            sender: DeliverySender::Act.as_str().into(),
-            event: DeliveryEvent::FirstTurn.as_str().into(),
+            sender: DeliverySender::Act,
+            event: DeliveryEvent::FirstTurn,
             cwd: Some(new.cwd.to_string_lossy().into_owned()),
             text: first,
             refs: new.refs,

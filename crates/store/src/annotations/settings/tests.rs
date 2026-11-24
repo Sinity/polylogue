@@ -9,7 +9,7 @@ fn reference(value: &str) -> Reference {
 }
 fn db() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     conn
 }
 fn setting(

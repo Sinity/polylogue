@@ -112,19 +112,18 @@ impl PathShape {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum CoverageStatus {
-    Complete,
-    Incomplete,
-    Partial,
-    Unreadable,
-    Refused,
-    NoParserYet,
-    Failed,
-    Unknown,
+polylogue_model::stored_names! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum CoverageStatus {
+        Complete => "complete",
+        Incomplete => "incomplete",
+        Partial => "partial",
+        Unreadable => "unreadable",
+        Refused => "refused",
+        NoParserYet => "no_parser_yet",
+        Failed => "failed",
+        Unknown => "unknown",
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Coverage {
