@@ -33,7 +33,7 @@ impl Health {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Status {
     pub endpoint: String,
     pub family: Option<String>,
@@ -74,19 +74,9 @@ impl Sinex {
         )
         .with_scope(applied_scope))
     }
+    /// The producer's observations: the spool's counts and refusals, read
+    /// from the spool, and the connection's health ([`Self::observe`]).
     pub fn status(&self) -> Result<Status> {
-        let (reachable, error, sinex_position, sinex_position_seconds_ago, family) = {
-            let health = self.health.locked();
-            (
-                health.reachable,
-                health.error(),
-                health.sinex_position,
-                health
-                    .position_observed
-                    .map(|at| at.elapsed().as_secs_f64()),
-                health.family.clone(),
-            )
-        };
         let queue = self.spool.locked();
         // From the spool, so a restart during an outage still says how long
         // Sinex has been silent.
@@ -118,20 +108,36 @@ impl Sinex {
             .transpose()?
             .flatten()
             .and_then(|ack| ack.refusal().map(|(_, reason)| reason.to_owned()));
-        Ok(Status {
+        let mut status = Status {
             endpoint: self.config.nats.clone(),
-            family,
+            family: None,
             producer: self.config.producer.clone(),
-            reachable,
-            error,
+            reachable: None,
+            error: None,
             last_ack_seconds_ago,
-            sinex_position,
-            sinex_position_seconds_ago,
+            sinex_position: None,
+            sinex_position_seconds_ago: None,
             prepared_materials: counts.0,
             prepared_writes: counts.1,
             prepared_bytes: counts.2,
             refused_operations,
             last_refusal,
-        })
+        };
+        self.observe(&mut status);
+        Ok(status)
+    }
+
+    /// Brings `status`'s connection health up to date from memory, without
+    /// reading the spool: a status answer reads the spool's counts from its
+    /// snapshot and the health as it is now.
+    pub fn observe(&self, status: &mut Status) {
+        let health = self.health.locked();
+        status.reachable = health.reachable;
+        status.error = health.error();
+        status.sinex_position = health.sinex_position;
+        status.sinex_position_seconds_ago = health
+            .position_observed
+            .map(|at| at.elapsed().as_secs_f64());
+        status.family = health.family.clone();
     }
 }

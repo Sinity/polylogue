@@ -252,7 +252,7 @@ fn runtime_shutdown_wakes_signals_releases_lock_and_refuses_old_handles() {
         .unwrap();
     thread.join().unwrap();
     assert!(
-        matches!(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(crate::test_daemon::Call::new("rows", serde_json::json!({"selection": "sessions"})).answer(&daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
     assert!(
         Archive::open_or_create(&root).is_ok(),
@@ -367,8 +367,8 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    // Status can use every ordinary place plus the reserved interactive one.
-    // Confirm all remaining places are held before any request can start.
+    // Every ordinary connection and the reserved interactive one are held
+    // before any request can start.
     let (held, acquired) = std::sync::mpsc::channel();
     let mut holders = Vec::new();
     for _ in 0..daemon.reads.max_readers() {
@@ -400,7 +400,8 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
         let entered = Arc::clone(&entered);
         requests.push(std::thread::spawn(move || {
             entered.wait();
-            crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon)
+            crate::test_daemon::Call::new("rows", serde_json::json!({"selection": "sessions"}))
+                .answer(&daemon)
         }));
     }
     entered.wait();
@@ -423,7 +424,7 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
         Err(StoreError::Stopped)
     ));
     assert!(
-        matches!(crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
+        matches!(crate::test_daemon::Call::new("rows", serde_json::json!({"selection": "sessions"})).answer(&daemon), command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("shutting_down"))
     );
 }
 

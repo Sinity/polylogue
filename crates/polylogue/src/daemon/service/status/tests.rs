@@ -10,15 +10,17 @@ fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
         bytes: 900,
         bytes_read: 100,
     };
-    for detail in [false, true] {
-        let answer = building(&daemon.daemon, progress.clone(), detail, false);
+    for vectors in [None, Some(Err(progress.to_string()))] {
+        let requested = vectors.is_some();
+        let answer = unread(&daemon.daemon, Some(progress.clone()), vectors, false);
         assert_eq!(answer.exit_code(), 5);
         let status = answer.value().unwrap();
         assert_eq!(status.index_build, Some(progress.clone()));
+        assert_eq!(status.totals_error, Some(progress.to_string()));
         assert!(status.vectors.is_none() && status.verification.is_none());
         assert_eq!(
             status.vectors_error,
-            detail.then(|| progress.to_string()),
+            requested.then(|| progress.to_string()),
             "the unread reason is the build's progress"
         );
     }
@@ -27,9 +29,7 @@ fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
 #[test]
 fn verification_retains_runtime_pending_and_named_problem_outcomes() {
     let daemon = crate::test_daemon::start("synthetic source");
-    let reader = daemon.daemon.reads.reader().unwrap();
-    let status = answer(&daemon.daemon, &reader, false, false);
-    drop(reader);
+    let status = answer(&daemon.daemon, None, false);
     let mut status = status.map(|mut status| {
         status.pending_writes.delivery_outcomes = 2;
         status.pending_writes.last_error = Some("synthetic retry pending".into());
@@ -96,4 +96,122 @@ fn status_carries_the_recent_log_and_log_returns_every_kept_record() {
         .collect();
     assert_eq!(progress.len(), 30);
     assert_eq!(progress.first(), Some(&"synthetic progress 0"));
+}
+
+/// Status is answered from the daemon's snapshot and its own state, so
+/// repeated requests through the socket while a pass ingests a large corpus
+/// each arrive within the status class's default deadline, also while every
+/// read connection is held, as reads waiting on a disk busy with the
+/// writer's I/O hold them (docs/operations.md#status,
+/// docs/latency.md#warm-state).
+#[test]
+fn status_answers_within_its_default_deadline_while_a_pass_ingests_a_large_corpus() {
+    use std::sync::Arc;
+    const SESSIONS: usize = 400;
+    const TURNS: usize = 60;
+    /// Status requests sent while every read connection is held.
+    const WHILE_HELD: usize = 20;
+    let daemon = crate::test_daemon::start("synthetic source");
+    // Neutral generated text, about 40 MB in all, written beside the
+    // session the daemon has already read so its next pass ingests it.
+    let project = daemon.home.join(".claude/projects/-corpus");
+    std::fs::create_dir_all(&project).unwrap();
+    let words = [
+        "parse", "index", "archive", "record", "stream", "column", "window",
+    ];
+    for s in 0..SESSIONS {
+        let session = format!("corpus-{s}");
+        let mut text = String::new();
+        for t in 0..TURNS {
+            let line: String = (0..120)
+                .map(|w| words[(s + t + w) % words.len()])
+                .collect::<Vec<_>>()
+                .join(" ");
+            text.push_str(&polylogue_testkit::claude_user(
+                &format!("{session}-u{t}"),
+                &session,
+                &line,
+            ));
+            text.push_str(&polylogue_testkit::claude_assistant(
+                &format!("{session}-a{t}"),
+                &session,
+                &line,
+            ));
+        }
+        std::fs::write(project.join(format!("{session}.jsonl")), text).unwrap();
+    }
+    let total = 1 + (SESSIONS * TURNS * 2) as u64;
+    let socket = daemon.daemon.archive.socket();
+    let status = || {
+        let request = crate::client::request(
+            "status",
+            serde_json::json!({}),
+            polylogue_store::user_writes::new_request_id(),
+        );
+        assert_eq!(request.deadline, command_surface::Deadline::Default);
+        crate::client::call(&socket, &request).unwrap()
+    };
+    let mut late = Vec::new();
+    let mut during_ingest = 0;
+    let mut held_replies = 0;
+    loop {
+        let answer = status();
+        let Some(value) = answer.value() else {
+            late.push(format!("{:?}", answer.outcome));
+            continue;
+        };
+        let messages = value["store"]["messages"].as_u64();
+        if value["busy"] == true && messages.is_some_and(|n| n > 1 && n < total) {
+            during_ingest += 1;
+        }
+        if messages == Some(total) && value["busy"] == false {
+            break;
+        }
+        if during_ingest != 1 || held_replies > 0 {
+            continue;
+        }
+        // Every connection, the interactive one included, held by a read
+        // that does not end until released.
+        let readers = daemon.daemon.reads.max_readers() + 1;
+        let (held, acquired) = std::sync::mpsc::channel();
+        let holders: Vec<_> = (0..readers)
+            .map(|_| {
+                let d = Arc::clone(&daemon.daemon);
+                let held = held.clone();
+                let (release, released) = std::sync::mpsc::sync_channel::<()>(0);
+                let thread = std::thread::spawn(move || {
+                    polylogue_store::reserved_reads(|| {
+                        let reader = d.reads.reader().unwrap();
+                        reader.query("SELECT 1 AS n", &[]).unwrap();
+                        held.send(()).unwrap();
+                        released.recv().unwrap();
+                    });
+                });
+                (release, thread)
+            })
+            .collect();
+        for _ in 0..readers {
+            acquired.recv().unwrap();
+        }
+        for _ in 0..WHILE_HELD {
+            let answer = status();
+            if answer.value().is_none() {
+                late.push(format!("while held: {:?}", answer.outcome));
+            }
+            held_replies += 1;
+        }
+        for (release, thread) in holders {
+            release.send(()).unwrap();
+            thread.join().unwrap();
+        }
+    }
+    assert_eq!(
+        late,
+        Vec::<String>::new(),
+        "status replies past the deadline"
+    );
+    assert!(
+        during_ingest > 0 && held_replies == WHILE_HELD,
+        "status replies while the pass was ingesting: {during_ingest}, while reads were held: {held_replies}"
+    );
 }

@@ -378,6 +378,7 @@ pub fn start(
         ),
         warm,
         scope: crate::daemon::scope::SharedScopeIndex::default(),
+        status_snapshot: Default::default(),
         queued_deliveries: crate::daemon::queued_deliveries::QueuedDeliveries::default(),
         live_spool: Default::default(),
         advisories: crate::advisory::Cooldowns::default(),

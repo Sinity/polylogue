@@ -314,6 +314,55 @@ pub struct RunningSession {
     pub cwd: Option<String>,
 }
 
+/// A session's live facts as read, before its state is computed.
+#[derive(Debug, Clone)]
+struct RunningCandidate {
+    session: String,
+    facts: Option<LiveFacts>,
+    grew_at: Option<i64>,
+    cwd: Option<String>,
+}
+
+/// The sessions [`crate::Reader::running_candidates`] read; their states
+/// depend only on the time asked, so they can be computed again later
+/// without reading the archive.
+#[derive(Debug, Clone, Default)]
+pub struct RunningCandidates(Vec<RunningCandidate>);
+
+impl RunningCandidates {
+    /// The running sessions at `now`: waiting first, then by how long each
+    /// has been in its state.
+    pub fn at(&self, now: i64) -> Vec<RunningSession> {
+        let mut out = Vec::new();
+        for candidate in &self.0 {
+            let facts = candidate.facts.as_ref();
+            let v = live::view(facts, candidate.grew_at, now);
+            if !v.state.running() {
+                continue;
+            }
+            out.push(RunningSession {
+                session: candidate.session.clone(),
+                state: v.state,
+                since: v.since,
+                waiting_on: v.waiting_on,
+                stall: v.stall,
+                open_tool: facts.and_then(|f| f.open_call.as_ref().map(|c| c.tool.clone())),
+                task: facts.and_then(|f| f.task.clone()),
+                edited_files: facts.map_or(0, |f| f.edited_files.len()),
+                cwd: candidate.cwd.clone(),
+            });
+        }
+        out.sort_by(|a, b| {
+            (a.state.rank(), a.since.unwrap_or(i64::MAX), &a.session).cmp(&(
+                b.state.rank(),
+                b.since.unwrap_or(i64::MAX),
+                &b.session,
+            ))
+        });
+        out
+    }
+}
+
 /// A session whose root process is alive by its live events: what the
 /// process watcher watches.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,9 +402,11 @@ impl crate::Reader<'_> {
         Ok(out)
     }
 
-    /// The running sessions at `now` (working, waiting, idle, unknown):
-    /// waiting first, then by how long each has been in its state.
-    pub fn running(&self, now: i64) -> Result<Vec<RunningSession>> {
+    /// The sessions that may be running at `now`: those with live events or
+    /// activity inside the live window, or an open root. Their states are
+    /// computed at a later time by [`RunningCandidates::at`]; a session that
+    /// enters the window later does so through a new commit.
+    pub fn running_candidates(&self, now: i64) -> Result<RunningCandidates> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(
             "SELECT id, live_facts, last_activity_at, cwd FROM session
@@ -372,36 +423,18 @@ impl crate::Reader<'_> {
             ],
             |r| <(String, Option<String>, Option<i64>, Option<String>)>::try_from(r),
         )?;
-        let mut out = Vec::new();
+        let mut sessions = Vec::new();
         for row in rows {
             let (session, facts, grew_at, cwd) = row?;
             let facts: Option<LiveFacts> = facts.map(|f| serde_json::from_str(&f)).transpose()?;
-            let v = live::view(facts.as_ref(), grew_at, now);
-            if !v.state.running() {
-                continue;
-            }
-            out.push(RunningSession {
+            sessions.push(RunningCandidate {
                 session,
-                state: v.state,
-                since: v.since,
-                waiting_on: v.waiting_on,
-                stall: v.stall,
-                open_tool: facts
-                    .as_ref()
-                    .and_then(|f| f.open_call.as_ref().map(|c| c.tool.clone())),
-                task: facts.as_ref().and_then(|f| f.task.clone()),
-                edited_files: facts.as_ref().map_or(0, |f| f.edited_files.len()),
+                facts,
+                grew_at,
                 cwd,
             });
         }
-        out.sort_by(|a, b| {
-            (a.state.rank(), a.since.unwrap_or(i64::MAX), &a.session).cmp(&(
-                b.state.rank(),
-                b.since.unwrap_or(i64::MAX),
-                &b.session,
-            ))
-        });
-        Ok(out)
+        Ok(RunningCandidates(sessions))
     }
 
     /// One session's live facts, its view at `now` and its last working

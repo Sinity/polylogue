@@ -1590,7 +1590,14 @@ fn running_keeps_a_silent_session_whose_root_is_alive() {
     .unwrap();
     // A live root does not age out: three days of silence is still running.
     let now = 1_000 + 3 * 86_400_000;
-    let running = f.reads().unwrap().reader().unwrap().running(now).unwrap();
+    let running = f
+        .reads()
+        .unwrap()
+        .reader()
+        .unwrap()
+        .running_candidates(now)
+        .unwrap()
+        .at(now);
     let ids: Vec<&str> = running.iter().map(|r| r.session.as_str()).collect();
     assert_eq!(ids, ["test:silent"]);
 }

@@ -299,24 +299,20 @@ impl Handler for Status {
             .as_deref()
             .map(|path| call.path(path, "manifest path"))
             .transpose()?;
-        // Drop the reader before waiting for idle-priority verification.
-        let mut status = match call.reader() {
-            Ok(reader) => status::answer(
-                call.daemon,
-                &reader,
-                status_is_deep(&arguments),
-                arguments.log,
-            ),
-            Err(failure) => match call.daemon.archive.index_build() {
-                Some(build) if failure.code() == "index_building" => status::building(
-                    call.daemon,
-                    build,
-                    status_is_deep(&arguments),
-                    arguments.log,
-                ),
-                _ => failure.answer(),
-            },
-        };
+        // Only vector counts take a reader, dropped before waiting for
+        // idle-priority verification; everything else is the daemon's
+        // snapshot and its own state.
+        let vectors = status_is_deep(&arguments).then(|| {
+            call.reader()
+                .map_err(|failure| failure.error.message)
+                .and_then(|reader| {
+                    reader
+                        .vectors()
+                        .and_then(|vectors| vectors.status())
+                        .map_err(|error| error.to_string())
+                })
+        });
+        let mut status = status::answer(call.daemon, vectors, arguments.log);
         if arguments.verify
             && status
                 .value()

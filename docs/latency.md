@@ -51,7 +51,7 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 |---|---|---|---|
 | catalog (memory, and published as a file) | completion, short IDs, reference resolution, picker candidates, `help`'s filled lines; it holds the verbs valid per unit, tag names with counts, saved and shipped query names with their one line, and settings | archive write position | incrementally from each committed batch, published within 2 s |
 | sorted session index with titles, last activity, origin, repository, first prompt, shortest unique prefixes | short IDs, prefixes, `latest`, the picker | write position | batch delta |
-| status snapshot | bare `polylogue`, `status`, `status --line` | write position and live-state change | after each batch and each hook event |
+| status snapshot | bare `polylogue`, `status`, `status --line` | write position and live-state change | after each commit (each batch and each hook event); a reply reads the latest snapshot and never waits for the next |
 | compiled plans, the shipped saved queries' precompiled | every query | normal form, definitions and options | on definition change |
 | first pages, next pages and counts | repeated listings, page turns, footers, the count preview, `--dry-run` counts | question hash and read position | evicted on write; a live page cell's result stays until the change feed touches one of its sources ([pages.md](pages.md#queries-on-pages)) |
 | saved-query names and kept-result shapes | compiling | write position | on user write |
