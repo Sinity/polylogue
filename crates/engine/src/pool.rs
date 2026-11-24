@@ -543,7 +543,14 @@ fn work(
                 }
                 let mut bytes_read = 0;
                 let reading = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_chain(&mut plan, archive, store, chains, shared, &mut bytes_read)
+                    run_chain(
+                        &mut plan,
+                        archive,
+                        store,
+                        chains,
+                        Some(shared),
+                        &mut bytes_read,
+                    )
                 }))
                 .unwrap_or_else(|_| {
                     Err(EngineError::Parse("the replacement parser panicked".into()))
@@ -792,12 +799,15 @@ fn flush(
         .is_ok()
 }
 
-fn run_chain(
+/// Parses a stored chain end to end into a reading. Decoded bytes stay
+/// with the reading, counted against the pool's bytes in flight when the
+/// pool runs it (`shared`).
+pub(crate) fn run_chain(
     plan: &mut Plan,
     archive: &Archive,
     blobs: &Arc<polylogue_store::blobs::Blobs>,
     settings: &ChainSettings,
-    shared: &Arc<Shared>,
+    shared: Option<&Arc<Shared>>,
     bytes_read: &mut u64,
 ) -> Result<Option<ChainParse>, EngineError> {
     let stop = archive.stop();
@@ -941,7 +951,13 @@ fn run_chain(
     Ok(Some(reading))
 }
 
-fn keep_decoded(reading: &mut ChainParse, shared: &Arc<Shared>, mut batch: PreparedBatch) {
+fn keep_decoded(reading: &mut ChainParse, shared: Option<&Arc<Shared>>, mut batch: PreparedBatch) {
+    let Some(shared) = shared else {
+        if !batch.batch.blobs.is_empty() {
+            reading.decoded(batch);
+        }
+        return;
+    };
     if !batch.batch.blobs.is_empty() {
         // Decoded payloads are files; only their batch and chunk descriptors stay in memory.
         let bytes = (std::mem::size_of::<PreparedBatch>()

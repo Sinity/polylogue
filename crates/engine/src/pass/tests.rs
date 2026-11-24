@@ -14,7 +14,6 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 #[cfg(feature = "faults")]
 mod build_memory;
 #[cfg(feature = "faults")]
-mod identical_chains;
 #[cfg(feature = "faults")]
 mod live_queue;
 #[cfg(feature = "faults")]

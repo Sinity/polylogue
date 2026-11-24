@@ -1,16 +1,22 @@
 use super::*;
 use polylogue_store::fault::{self, Action};
 
+/// While a build prepares, its progress counts the chains and bytes it
+/// found due a reading and those it has read whole.
 #[test]
-fn build_progress_counts_committed_bytes_inside_a_chain() {
+fn build_progress_counts_chains_read_whole() {
     let home = ClaudeHome::new();
     let first = claude_user("first", "progress", "first chunk");
     let second = claude_user("second", "progress", "second chunk");
-    let third = claude_user("third", "progress", "third chunk");
     home.append(
         "progress.jsonl",
-        &[first.as_str(), second.as_str(), third.as_str()].concat(),
+        &[first.as_str(), second.as_str()].concat(),
     );
+    {
+        let (mut engine, _lock) = home.engine(1 << 20);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+    polylogue_testkit::delete_index(&home.root);
     let (mut engine, lock) = home.engine(first.len() as u64);
     engine.config.workers = 1;
     let archive = engine.archive.clone();
@@ -29,21 +35,49 @@ fn build_progress_counts_committed_bytes_inside_a_chain() {
     fault::release();
     let pass = running.join().unwrap().unwrap();
     fault::clear();
-    assert!(
-        held,
-        "the second range waits after the first range committed"
-    );
-    let progress = progress.expect("the index remains private while its chain is incomplete");
+    assert!(held, "the chain's second range waits");
+    let progress = progress.expect("the index stays private while the build prepares");
     assert_eq!(
-        progress.bytes,
-        (first.len() + second.len() + third.len()) as u64
+        (progress.chains, progress.chains_read),
+        (1, 0),
+        "{progress:?}"
     );
-    assert_eq!(progress.bytes_read, first.len() as u64);
+    assert_eq!(progress.bytes, (first.len() + second.len()) as u64);
+    assert_eq!(progress.bytes_read, 0);
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-    assert_eq!(
-        home.texts("progress"),
-        ["first chunk", "second chunk", "third chunk"]
+    assert_eq!(home.texts("progress"), ["first chunk", "second chunk"]);
+}
+
+/// A build reads the record as it stood when it started; the pass that
+/// installs it then reads what arrived since, continuing each chain from
+/// the build's position (docs/architecture.md, one path).
+#[test]
+fn a_build_installed_behind_its_record_is_brought_forward_by_upkeep() {
+    let home = ClaudeHome::new();
+    home.append(
+        "forward.jsonl",
+        &claude_user("one", "forward", "before the build"),
     );
+    {
+        let (mut engine, _lock) = home.engine(1 << 20);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+    polylogue_testkit::delete_index(&home.root);
+    home.append(
+        "forward.jsonl",
+        &claude_user("two", "forward", "after the position"),
+    );
+    home.append("later.jsonl", &claude_user("three", "later", "a new input"));
+    let (mut engine, _lock) = home.engine(1 << 20);
+    assert!(engine.archive.index_build().is_some());
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(engine.archive.index_build().is_none());
+    assert_eq!(
+        home.texts("forward"),
+        ["before the build", "after the position"]
+    );
+    assert_eq!(home.texts("later"), ["a new input"]);
 }
 
 #[test]

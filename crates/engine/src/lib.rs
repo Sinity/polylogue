@@ -36,6 +36,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod build;
 mod build_log;
 mod chain_names;
 mod collectors;
@@ -463,6 +464,8 @@ struct Requests {
 
 pub struct Engine {
     requests: Option<Requests>,
+    /// A build that yielded to a request, resumed by the next pass.
+    build_progress: Option<build::BuildProgress>,
     collectors: collectors::Collectors,
     pub config: Config,
     pub archive: Archive,
@@ -578,6 +581,7 @@ impl Engine {
             lookups_at: None,
             collectors: collectors::Collectors::default(),
             requests: None,
+            build_progress: None,
         })
     }
 

@@ -500,7 +500,7 @@ fn a_stop_keeps_the_bytes_in_hand_without_reading_the_whole_input() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_finishes_them() {
+fn an_import_answers_before_queued_captures_start_and_the_next_turn_finishes_them() {
     use polylogue_model::authorship::{Author, Authorship, Channel};
     use polylogue_store::fault::{self, Action};
     use std::sync::mpsc::sync_channel;
@@ -520,7 +520,11 @@ fn an_import_answers_before_queued_captures_or_replays_start_and_the_next_turn_f
             .unwrap()
             .1
     };
-    for kept in [false, true] {
+    // Stored chains read again after the index is deleted are the build's
+    // work, which yields to a request between ranges
+    // (queued_import_yields_then_resumes_from_saved_positions).
+    {
+        let kept = false;
         let home = ClaudeHome::new();
         let files: Vec<_> = (0..12)
             .map(|n| {

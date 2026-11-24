@@ -29,6 +29,9 @@ fn an_older_chain_parse_failure_waits_across_restart_until_the_executable_change
         delete_index(&w.root);
         fault::arm("parse", "history.jsonl", Action::Panic, 1, 1);
         let (mut engine, lock) = w.engine(64 << 20);
+        // One worker reads the newest chain first, so the second parse,
+        // the one that fails, is the older chain's.
+        engine.config.workers = 1;
         let first = engine.run_pass().unwrap();
         assert_eq!(first.errors.len(), 1, "{:?}", first.errors);
         assert!(first.errors[0].contains("panicked"));

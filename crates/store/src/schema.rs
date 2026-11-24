@@ -316,20 +316,18 @@ fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<
         create_index_in(&tx, primary, deferring)?;
     } else {
         // Read indexes are added before the shape check, so an index missing
-        // only those is completed rather than refused. A build still in
-        // progress leaves out the ones it defers: it builds each once from a
-        // sorted scan when it ends, and building one here would read the
-        // whole table at every restart.
-        execute_index_sql(&tx, OPEN_INDEXES, deferring)?;
+        // only those is completed rather than refused. A build file is always
+        // created fresh, so only an installed index is opened here.
+        if deferring {
+            return Err(StoreError::Invalid(
+                "a build file is created, never opened again".into(),
+            ));
+        }
+        execute_index_sql(&tx, OPEN_INDEXES, false)?;
         if primary {
             tx.execute_batch(include_str!("primary/confirmed/read_indexes.sql"))?;
         }
-        let matches = if deferring {
-            same_build_schema_in(&tx, primary)?
-        } else {
-            same_index_schema_in(&tx, primary)?
-        };
-        if !matches {
+        if !same_index_schema_in(&tx, primary)? {
             return Err(StoreError::OtherFormat {
                 database: "index",
                 found,
@@ -530,24 +528,6 @@ fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
         && expected.iter().all(|item| {
             (item.0 == "index" && open_indexes.contains(&item.1)) || found.contains(item)
         }))
-}
-
-/// A pending first build may lack only the indexes the writer deferred.
-fn same_build_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
-    let expected = Connection::open_in_memory()?;
-    base_index(&expected)?;
-    expected.execute_batch(OPEN_INDEXES)?;
-    if primary {
-        add_primary(&expected)?;
-    }
-    let found = schema_rows(conn)?;
-    let mut wanted = schema_rows(&expected)?;
-    wanted.retain(|(kind, name, _)| {
-        kind != "index"
-            || !BUILT_AT_END.contains(&name.as_str())
-            || found.iter().any(|(_, present, _)| present == name)
-    });
-    Ok(found == wanted)
 }
 
 fn schema_rows(conn: &Connection) -> Result<Vec<(String, String, String)>> {

@@ -303,7 +303,6 @@ fn private_readers_hydrate_authored_membership_in_temp_tables() {
             &[(LinkRole::About, "session:claude-code:synthetic")],
         ),
     );
-    assert!(archive.archive.index_build().is_some());
     let pool = ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let reference = Reference::Annotation(polylogue_model::RevisionReference::exact(

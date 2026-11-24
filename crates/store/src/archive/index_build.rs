@@ -1,20 +1,22 @@
 //! Building `index.db` in a private file. Every standalone build, a first
 //! build or one replacing an index from another schema, writes
-//! `index-build/index.db` with a disk rollback journal and no transaction syncs. Only the build
-//! pipeline opens that file: the writer, its resolver and parser-context
-//! reads, the engine's planning reads and tool-database catalog reads. When
-//! the build ends the file is synced, closed, switched to WAL and renamed
-//! over `index.db`; serving readers then open the new file. Pipeline readers
-//! use `built.db` after its first rename. Path metadata and both renames
-//! share the build-state lock, so each selected path still names its file.
+//! `index-build/index.db` with no transaction syncs: the engine prepares
+//! each chain's reading into a run file under `index-build/runs/`, and the
+//! writer loads the runs, composes every session and creates the indexes
+//! and search entries ([`crate::writer::build`]). Only the build pipeline
+//! opens the build file: the writer, the engine's planning reads and
+//! tool-database catalog reads. When the build ends the file is synced,
+//! closed, switched to WAL and renamed over `index.db`; serving readers then
+//! open the new file. Pipeline readers use `built.db` after its first
+//! rename. Path metadata and both renames share the build-state lock, so
+//! each selected path still names its file. An archive whose register holds
+//! no input has nothing to build: its index is created in place.
 //!
 //! Crash states, each handled by [`prepare`] at the next open:
 //! - `built.db` present: the build was finished, synced and switched to WAL
 //!   but not yet installed, and it is installed now;
-//! - `unsynced` present: the build file may hold unsynced pages, so it is
-//!   discarded and the build starts again from the stored bytes;
-//! - the build file without `unsynced`: a clean stop synced it, or it was
-//!   never written unsynced, and the build resumes in it.
+//! - otherwise a build file or runs: a build that did not finish, discarded
+//!   with its runs; the build starts again from the stored bytes.
 //!
 //! An index that is replaced is moved into the build directory as
 //! `previous.db` when the build starts. While its schema identity is this
@@ -66,7 +68,8 @@ pub(crate) struct Paths {
     pub build: PathBuf,
     /// The finished build, synced and in WAL, until it is renamed into place.
     pub built: PathBuf,
-    pub unsynced: PathBuf,
+    /// The run files a build prepares its chains' readings into.
+    pub runs: PathBuf,
     pub previous: PathBuf,
     pub index: PathBuf,
 }
@@ -77,7 +80,7 @@ impl Paths {
         Self {
             build: dir.join("index.db"),
             built: dir.join("built.db"),
-            unsynced: dir.join("unsynced"),
+            runs: dir.join("runs"),
             previous: dir.join("previous.db"),
             index: root.join("index.db"),
             dir,
@@ -295,6 +298,12 @@ impl Archive {
         self.with_index_path(Reads::Serving, |path| Ok(path.to_path_buf()))
     }
 
+    /// Records how many chains a build has found due a reading and how
+    /// many of them it has read.
+    pub fn record_build_progress(&self, chains: u64, chains_read: u64) {
+        self.index_build.record_progress(chains, chains_read);
+    }
+
     /// Record byte progress from newest chains' stored parser positions.
     pub fn record_build_bytes(&self, bytes: u64, bytes_read: u64) {
         let mut inner = self.index_build.inner();
@@ -322,7 +331,7 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
     let paths = Paths::of(&archive.root);
     if paths.built.exists() {
         install(archive)?;
-    } else if paths.unsynced.exists() {
+    } else if paths.dir.exists() {
         discard(&paths)?;
     }
     let mut replaced = None;
@@ -350,43 +359,43 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
             }
         }
     }
+    if replaced.is_none() && !holds_inputs(archive)? {
+        // Nothing is stored, so the empty index is the built one.
+        let index =
+            crate::archive::open_runtime_writer(&paths.index, crate::archive::cache::SETUP)?;
+        archive.ensure_index(&index, false)?;
+        sync_directory(&archive.root)?;
+        archive.index_build.set(None, false);
+        crate::fault::check("index.after_creation", "")?;
+        return crate::archive::generation::open(archive, &index);
+    }
     if create_build_dir(&paths)? {
         sync_directory(&archive.root)?;
     }
-    let mut build = None;
-    if paths.build.exists() {
-        let conn = open_setup(&paths.build)?;
-        match archive.ensure_index(&conn, true) {
-            Ok(()) => build = Some(conn),
-            // A build file from another binary is discarded like any other
-            // derived file this build cannot open.
-            Err(error) if crate::archive::index_rebuild::reason(&error).is_some() => {}
-            Err(error) => return Err(error),
-        }
+    let build = open_setup(&paths.build)?;
+    archive.ensure_index(&build, true)?;
+    if let Some((reason, previous)) = replaced {
+        crate::archive::index_rebuild::record(
+            &build,
+            reason,
+            previous,
+            schema::build_index_identity(false)?,
+        )?;
     }
-    let build = if let Some(build) = build {
-        build
-    } else {
-        remove_database(&paths.build)?;
-        let build = open_setup(&paths.build)?;
-        archive.ensure_index(&build, true)?;
-        if let Some((reason, previous)) = replaced {
-            crate::archive::index_rebuild::record(
-                &build,
-                reason,
-                previous,
-                schema::build_index_identity(false)?,
-            )?;
-        }
-        sync_directory(&paths.dir)?;
-        build
-    };
+    sync_directory(&paths.dir)?;
     let serving_previous = paths.previous.exists() && servable(&paths.previous)?;
     archive
         .index_build
         .set(Some(BuildFile::Writing), serving_previous);
     crate::fault::check("index.after_creation", "")?;
     crate::archive::generation::open(archive, &build)
+}
+
+/// Whether the register holds any input, so an index built from it can
+/// hold rows.
+fn holds_inputs(archive: &Archive) -> Result<bool> {
+    let register = crate::archive::open_read(&archive.archive_db())?;
+    register.exists("SELECT EXISTS(SELECT 1 FROM input)", [])
 }
 
 /// Whether `previous` can be read by this build: its schema identity is
@@ -397,7 +406,7 @@ fn servable(previous: &Path) -> Result<bool> {
 }
 
 /// A connection to the build file for schema setup: a rollback journal on
-/// disk with every commit synced, so setup needs no `unsynced` marker.
+/// disk with every commit synced.
 fn open_setup(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(
         path,
@@ -412,13 +421,12 @@ fn open_setup(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// The writer's connection to the build file. `unsynced` is created and
-/// synced before this connection may write anything: its commits do not
-/// sync, so a lost process or boot can
-/// leave the file torn. A failed transaction still rolls back in process.
+/// The writer's connection to the build file. Its commits do not sync: a
+/// lost process or boot discards the file at the next open, and the build
+/// starts again from the stored bytes. A failed transaction still rolls
+/// back in process.
 pub(crate) fn open_writer(archive: &Archive) -> Result<Connection> {
     let paths = Paths::of(&archive.root);
-    mark_unsynced(&paths)?;
     let conn = Connection::open_with_flags(
         &paths.build,
         OpenFlags::SQLITE_OPEN_READ_WRITE
@@ -430,27 +438,7 @@ pub(crate) fn open_writer(archive: &Archive) -> Result<Connection> {
     conn.pragma_update(None, "temp_store", "file")?;
     conn.busy_timeout(crate::archive::BUSY_TIMEOUT)?;
     crate::archive::writer_settings(&conn, archive.memory_budget().writer_cache_mib())?;
-    crate::fault::check("index.build.after_marker", &archive.root.to_string_lossy())?;
     Ok(conn)
-}
-
-fn mark_unsynced(paths: &Paths) -> Result<()> {
-    File::create(&paths.unsynced)?.sync_all()?;
-    sync_directory(&paths.dir)
-}
-
-/// A clean stop during a build: what the writer committed reaches the disk,
-/// then `unsynced` goes, so the next start resumes in the build file. The
-/// writer has no transaction open.
-pub(crate) fn keep_progress(archive: &Archive) -> Result<()> {
-    let paths = Paths::of(&archive.root);
-    File::open(&paths.build)?.sync_all()?;
-    crate::fault::check(
-        "index.build.after_stop_sync",
-        &archive.root.to_string_lossy(),
-    )?;
-    remove(&paths.unsynced)?;
-    sync_directory(&paths.dir)
 }
 
 /// Ends a build whose rows, search and indexes have committed: syncs the
@@ -499,8 +487,6 @@ pub(crate) fn finish(archive: &Archive) -> Result<()> {
         inner.file = Some(BuildFile::Ready);
         sync_directory(&paths.dir)?;
     }
-    remove(&paths.unsynced)?;
-    sync_directory(&paths.dir)?;
     crate::fault::check("index.build.before_rename", &archive.root.to_string_lossy())?;
     install(archive)
 }
@@ -566,11 +552,27 @@ fn remove_database(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Discards a build a crash may have torn. The previous index stays.
+/// Discards a build that did not finish, with its runs. The previous index
+/// stays.
 fn discard(paths: &Paths) -> Result<()> {
     remove_database(&paths.build)?;
-    remove(&paths.unsynced)?;
+    remove_runs(paths)?;
     sync_directory(&paths.dir)
+}
+
+/// Removes one run file and the text map beside it.
+pub(crate) fn remove_run(path: &Path) -> Result<()> {
+    remove(path)?;
+    remove(&path.with_extension("texts"))
+}
+
+/// Removes the run files of a build.
+pub(crate) fn remove_runs(paths: &Paths) -> Result<()> {
+    match fs::remove_dir_all(&paths.runs) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn remove_build_files(paths: &Paths) -> Result<()> {
@@ -580,7 +582,7 @@ fn remove_build_files(paths: &Paths) -> Result<()> {
     for path in [&paths.build, &paths.built, &paths.previous] {
         remove_database(path)?;
     }
-    remove(&paths.unsynced)?;
+    remove_runs(paths)?;
     match fs::remove_dir(&paths.dir) {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
