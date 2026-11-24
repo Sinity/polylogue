@@ -586,6 +586,33 @@ fn comparison_values_use_the_normalized_conditions_binding() {
 }
 
 #[test]
+fn a_malformed_session_reference_is_refused() {
+    let text = "annotations where   about:\"session:\"";
+    let error = prepare(text, &Bindings::default(), |_| Ok(())).unwrap_err();
+    let QueryError::BadValue {
+        field,
+        value,
+        position,
+        ..
+    } = error
+    else {
+        panic!("expected a refused reference value, got {error:?}");
+    };
+    assert_eq!((field.as_str(), value.as_str()), ("about", "session:"));
+    // The refusal points at the condition holding the value.
+    assert_eq!(&text[position..], "about:\"session:\"");
+    // Text with no kind, or an unknown kind, is left for the field to compare.
+    for value in ["plain", "unknown-kind:value"] {
+        prepare(
+            &format!("annotations where about:\"{value}\""),
+            &Bindings::default(),
+            |_| Ok(()),
+        )
+        .unwrap();
+    }
+}
+
+#[test]
 fn annotation_history_roots_bind_natural_references_to_the_stored_family_identity() {
     let bare = prepare(
         "annotations where root:first withdrawn:*",

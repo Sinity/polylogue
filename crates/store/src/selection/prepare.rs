@@ -233,11 +233,11 @@ pub(crate) fn named_definitions(
             }
         }
     }
-    // `query:<prefix>`: a unique prefix of 12 or more hex characters names the
+    // `query:<prefix>`: a unique prefix of 8 or more hex characters names the
     // saved question it starts. Saved names are never all hex, so a prefix
     // cannot shadow one.
     for name in &names {
-        let prefix = (12..64).contains(&name.len())
+        let prefix = (8..64).contains(&name.len())
             && name
                 .bytes()
                 .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase());

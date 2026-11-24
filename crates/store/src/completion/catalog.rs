@@ -736,14 +736,17 @@ impl CatalogReader {
         // A prefix of only combining marks has an empty key, which would match every title.
         let key = text_key(prefix);
         if sessions.is_empty() && !key.is_empty() {
-            let pattern = fuzzy_pattern(&key);
-            sessions = self
-                .conn
-                .prepare(&format!(
-                    "SELECT {SESSION_COLUMNS} FROM session WHERE title_key LIKE ?1 ESCAPE '\\' ORDER BY last_activity IS NULL,last_activity DESC,id"
-                ))?
-                .query_map([pattern], session)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
+            // The prefix's characters appear in order in the title; compared here
+            // because a LIKE pattern has a length limit and a prefix has none.
+            let mut statement = self.conn.prepare(&format!(
+                "SELECT {SESSION_COLUMNS},title_key FROM session ORDER BY last_activity IS NULL,last_activity DESC,id"
+            ))?;
+            let mut rows = statement.query([])?;
+            while let Some(row) = rows.next()? {
+                if in_order(&key, &row.get::<_, String>(7)?) {
+                    sessions.push(session(row)?);
+                }
+            }
         }
         Ok(sessions)
     }
@@ -841,16 +844,9 @@ fn prefix_end(prefix: &str) -> Option<String> {
     }
     None
 }
-fn fuzzy_pattern(prefix: &str) -> String {
-    let mut pattern = String::from("%");
-    for c in prefix.chars() {
-        if matches!(c, '%' | '_' | '\\') {
-            pattern.push('\\');
-        }
-        pattern.push(c);
-        pattern.push('%');
-    }
-    pattern
+fn in_order(needle: &str, haystack: &str) -> bool {
+    let mut rest = haystack.chars();
+    needle.chars().all(|c| rest.any(|h| h == c))
 }
 struct Temporary(PathBuf);
 impl Drop for Temporary {

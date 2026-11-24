@@ -32,10 +32,7 @@ pub fn stages(transforms: &[Transform], from: usize) -> Result<Vec<Stage>, Query
     let mut index = from;
     while let Some(transform) = transforms.get(index) {
         if index > from && measures(&transforms[index - 1]) {
-            return Err(QueryError::Invalid {
-                message: "`| measure WHAT` is the last transform".into(),
-                position: transform.span.start,
-            });
+            return Err(after_measure(transform.span.start));
         }
         let (end, kind) = match &transform.kind {
             TransformKind::Group { .. }
@@ -65,6 +62,33 @@ pub fn stages(transforms: &[Transform], from: usize) -> Result<Vec<Stage>, Query
         index = end;
     }
     Ok(stages)
+}
+
+fn after_measure(position: usize) -> QueryError {
+    QueryError::Invalid {
+        message: "`| measure WHAT` is the last transform".into(),
+        position,
+    }
+}
+
+/// Refuses a transform after a measure at its place in the text as written.
+/// `expanded` is the question with saved sources inlined, so its saved body
+/// comes first and `written` holds only the caller's own transforms.
+pub(crate) fn check_measure_last(
+    expanded: &[Transform],
+    written: &[Transform],
+) -> Result<(), QueryError> {
+    let inlined = expanded.len().saturating_sub(written.len());
+    for index in 1..expanded.len() {
+        if measures(&expanded[index - 1]) {
+            let at = index
+                .checked_sub(inlined)
+                .and_then(|index| written.get(index))
+                .unwrap_or(&expanded[index]);
+            return Err(after_measure(at.span.start));
+        }
+    }
+    Ok(())
 }
 
 pub(crate) fn measures(transform: &Transform) -> bool {

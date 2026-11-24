@@ -702,6 +702,15 @@ impl Binder<'_> {
         let lower = field.to_ascii_lowercase();
         if let Comparison::Match(Value::Scalar { text, .. }) = &comparison {
             let rows = |reference: String| Filter::Rows { reference, span };
+            // `tool:<session>#<call id>` names one call; a tool's name has no `#`.
+            if lower == "tool"
+                && matches!(
+                    polylogue_model::Reference::parse(&format!("tool:{text}")),
+                    Ok(polylogue_model::Reference::ToolCall(..))
+                )
+            {
+                return Ok(rows(format!("tool:{text}")));
+            }
             if (lower == "message" && text.contains(".."))
                 || (lower == "event" && unit != Unit::Deliveries)
                 || matches!(

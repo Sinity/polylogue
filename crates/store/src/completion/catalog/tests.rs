@@ -131,6 +131,25 @@ fn prefix_updates_include_neighbors_unicode_and_removed_sessions() {
     );
 }
 #[test]
+fn a_long_title_prefix_still_matches() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let mut writer = writer(&path);
+    let title = "a".repeat(100_000);
+    writer
+        .update(&metadata(2), |writer| {
+            let mut long = session("codex:long", "m", 1);
+            long.title = title.clone();
+            writer.put_session(&long)?;
+            writer.put_session(&session("codex:short", "m", 1))
+        })
+        .unwrap();
+    let reader = CatalogReader::open(&path, "synthetic").unwrap().unwrap();
+    let rows = reader.sessions(&title).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, "codex:long");
+}
+#[test]
 fn read_only_snapshot_never_writes_and_saved_and_kept_lookups_are_exact() {
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();

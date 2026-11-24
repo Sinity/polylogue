@@ -293,7 +293,7 @@ fn hash_prefix_resolves() {
         )
     };
     let by_hash = prepare(&format!("query:{full}")).unwrap();
-    for length in [12, 20, 63] {
+    for length in [8, 12, 20, 63] {
         let by_prefix = prepare(&format!("query:{}", &full[..length])).unwrap();
         assert_eq!(
             by_prefix.definitions()[0].question_id,
@@ -302,9 +302,10 @@ fn hash_prefix_resolves() {
         );
         assert_eq!(by_prefix.question_id(), by_hash.question_id(), "{length}");
     }
-    // Shorter than 12 characters is not a hash, and no saved query has that name.
+    // Shorter than 8 characters is not a hash, and no saved query has that name
+    // (docs/saved-queries.md: a unique prefix of at least eight hex characters).
     assert_eq!(
-        prepare(&format!("query:{}", &full[..11]))
+        prepare(&format!("query:{}", &full[..7]))
             .unwrap_err()
             .code(),
         polylogue_model::Code::InvalidQuery

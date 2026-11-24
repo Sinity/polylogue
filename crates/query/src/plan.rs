@@ -191,6 +191,9 @@ fn prepare_inner(
         }
         let mut catalog = options.catalog();
         let mut query = crate::parse::with_catalog(text, &catalog)?;
+        // Binding rewrites the question into its canonical spelling and moves
+        // every span with it; the parse still locates the text as written.
+        let mut written = query.clone();
         walk(
             &mut query,
             &mut |query| {
@@ -245,7 +248,8 @@ fn prepare_inner(
         let bound = query_language::bind::bind(&query, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
         query = bound.query().clone();
-        values::normalize(&mut query, bound.typing())?;
+        values::normalize(&mut query, bound.typing())
+            .map_err(|error| error.at_written(&mut query, &mut written))?;
         walk(&mut query, &mut |_| Ok(()), &mut |condition| {
             resolve(&mut condition.kind)
         })?;
@@ -253,7 +257,8 @@ fn prepare_inner(
         let original = query_language::bind::bind(&query, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
         let mut identity = original.query().clone();
-        values::check(&mut identity, original.typing())?;
+        values::check(&mut identity, original.typing())
+            .map_err(|error| error.at_written(&mut identity, &mut written))?;
         for name in referenced_saved_names(&identity) {
             if identities.contains_key(&name) {
                 continue;
@@ -366,6 +371,7 @@ fn prepare_inner(
             .map_err(|e| QueryError::language(e, text))?;
         let expanded_text = query_language::format::format_query(expanded.query(), &catalog)
             .map_err(|e| QueryError::language(e, text))?;
+        crate::stages::check_measure_last(&expanded.query().transforms, &written.transforms)?;
         let mut bindings = options.clone();
         // Names are presentation bindings, never additional stored results.
         // Every source in this plan now names the resolved immutable ID.
@@ -386,6 +392,53 @@ fn prepare_inner(
             question_id,
         })
     })
+}
+
+impl QueryError {
+    /// A value refusal located in the bound question's canonical spelling,
+    /// moved to the same condition in the question as written.
+    fn at_written(self, bound: &mut Query, written: &mut Query) -> Self {
+        let Self::BadValue {
+            field,
+            value,
+            position,
+            message,
+        } = self
+        else {
+            return self;
+        };
+        // Positions in the bound spelling are not those of its conditions'
+        // starts, so the refused condition is found by its field and value and
+        // placed by its order among the conditions.
+        let conditions = |query: &mut Query| {
+            let mut conditions = vec![];
+            let _ = walk(query, &mut |_| Ok(()), &mut |condition| {
+                let holds = matches!(
+                    &condition.kind,
+                    ConditionKind::Match { field: name, value: Value::Scalar { text, .. } }
+                        if *name == field && *text == value
+                ) || matches!(
+                    &condition.kind,
+                    ConditionKind::Match { field: name, value: Value::Set { values } }
+                        if *name == field && values.iter().any(|member| matches!(member, Value::Scalar { text, .. } if *text == value))
+                );
+                conditions.push((condition.span.start, holds));
+                Ok(())
+            });
+            conditions
+        };
+        let (bound, written) = (conditions(bound), conditions(written));
+        let position = match bound.iter().position(|(_, holds)| *holds) {
+            Some(index) if bound.len() == written.len() => written[index].0,
+            _ => position,
+        };
+        Self::BadValue {
+            field,
+            value,
+            position,
+            message,
+        }
+    }
 }
 
 pub(crate) fn walk(

@@ -739,24 +739,24 @@ fields! {
         Number,
         "own tool calls with outcome error",
     ),
-    SessionsInputTokens = f(Sessions, "input_tokens", Number, "summed over own messages"),
+    SessionsInputTokens = f(Sessions, "input_tokens", Number, "summed over own model responses; unknown when none reports it"),
     SessionsOutputTokens = f(
         Sessions,
         "output_tokens",
         Number,
-        "summed over own messages",
+        "summed over own model responses; unknown when none reports it",
     ),
     SessionsCacheReadTokens = f(
         Sessions,
         "cache_read_tokens",
         Number,
-        "summed over own messages",
+        "summed over own model responses; unknown when none reports it",
     ),
     SessionsCacheWriteTokens = f(
         Sessions,
         "cache_write_tokens",
         Number,
-        "summed over own messages",
+        "summed over own model responses; unknown when none reports it",
     ),
     SessionsCost = f(
         Sessions,

@@ -182,7 +182,7 @@ fn comparison_value(
                 && let Some(field) = crate::fields::lookup(unit, field)
                 && field.declaration().reference_argument
             {
-                reference_value(value, field);
+                reference_value(value, field, position)?;
             }
             return Ok(());
         }
@@ -218,8 +218,14 @@ fn comparison_value(
     })
 }
 
-/// A reference value is compared in its canonical spelling.
-fn reference_value(value: &mut Value, field: crate::fields::FieldId) {
+/// A reference value is compared in its canonical spelling. Text with no kind
+/// or an unknown kind is left as written; a value that names a known kind and
+/// is malformed matches nothing and is refused.
+fn reference_value(
+    value: &mut Value,
+    field: crate::fields::FieldId,
+    position: usize,
+) -> Result<(), QueryError> {
     match value {
         Value::Scalar { text, .. } => match polylogue_model::Reference::parse(text) {
             Ok(polylogue_model::Reference::Annotation(revision))
@@ -231,13 +237,25 @@ fn reference_value(value: &mut Value, field: crate::fields::FieldId) {
             // family through its public reference instead of its raw root ID.
             _ if field == crate::fields::FieldId::AnnotationsRoot => {}
             Ok(reference) => *text = reference.to_string(),
-            _ => {}
+            Err(
+                polylogue_model::ReferenceError::NoKind(_)
+                | polylogue_model::ReferenceError::UnknownKind(_),
+            ) => {}
+            Err(error) => {
+                return Err(QueryError::BadValue {
+                    field: field.declaration().name.to_owned(),
+                    value: text.clone(),
+                    position,
+                    message: error.to_string(),
+                });
+            }
         },
         Value::Set { values } => {
             for value in values {
-                reference_value(value, field);
+                reference_value(value, field, position)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }

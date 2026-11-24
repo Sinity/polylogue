@@ -263,12 +263,12 @@ pub fn is_reference(c: &Condition, unit: Unit, origins: &[String]) -> bool {
     }
 }
 
-/// At least 8 characters of hex digits and dashes, containing a digit or
-/// a dash: the shape of a pasted native ID.
+/// At least 8 characters of hex digits and dashes, one of them a hex digit:
+/// the shape of a pasted native ID (docs/references.md).
 pub fn id_shaped(word: &str) -> bool {
     word.len() >= 8
         && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
-        && word.chars().any(|c| c.is_ascii_digit() || c == '-')
+        && word.chars().any(|c| c.is_ascii_hexdigit())
 }
 #[cfg(test)]
 mod tests;
