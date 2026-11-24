@@ -296,6 +296,57 @@ fn ends_open_each_fact() {
     );
 }
 
+/// A failure is recovered by a later passing run of the same command
+/// (docs/measures.md, tool outcomes); a later failure is not recovery.
+#[test]
+fn a_failure_is_recovered_only_by_a_later_success() {
+    let d = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(d.path()).unwrap();
+    let pk = f
+        .session(SessionFacts {
+            id: "test:work",
+            kind: "main",
+            last: Some(0),
+            ..Default::default()
+        })
+        .unwrap();
+    let m = f
+        .message(
+            pk,
+            MessageFacts {
+                id: "test:work-m",
+                role: "assistant",
+                written_by: "model",
+                text: Some("work"),
+                at: Some(0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    for (command, outcome, at) in [
+        ("cargo test", "error", 1),
+        ("cargo test", "error", 2),
+        ("cargo build", "error", 3),
+        ("cargo build", "ok", 4),
+    ] {
+        f.tool_call(
+            pk,
+            m,
+            CallFacts {
+                tool: "Bash",
+                action: "shell",
+                command: Some(command),
+                outcome,
+                at: Some(at),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
+    let got = rows(&f, "sessions where id:test:work", &["unrecovered_failures"]);
+    assert_eq!(got[0]["unrecovered_failures"], 1);
+}
+
 #[test]
 fn triage_score_sums_named_facts() {
     let d = tempfile::tempdir().unwrap();

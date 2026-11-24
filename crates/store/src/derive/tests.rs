@@ -616,26 +616,20 @@ fn forked_subagent(w: &mut WriterArchive, description: Option<&str>) {
 }
 
 #[test]
-fn fork_title_from_meta_description() {
-    let mut w = WriterArchive::new();
-    forked_subagent(&mut w, Some("Audit the identity schemes"));
-    assert_eq!(
-        one(
-            &w,
-            "SELECT derived_title FROM session WHERE id = 'claude-code:agent-fork'"
-        ),
-        json!({"derived_title": "Audit the identity schemes"})
-    );
-    // Without metadata the fork instructions are still never the title.
-    let mut w = WriterArchive::new();
-    forked_subagent(&mut w, None);
-    assert_eq!(
-        one(
-            &w,
-            "SELECT derived_title FROM session WHERE id = 'claude-code:agent-fork'"
-        ),
-        json!({"derived_title": null})
-    );
+fn a_display_title_without_a_prose_prompt_is_unknown() {
+    // The fork instructions are not a prompt, and the spawning call's
+    // description is not a title: the display title stays unknown.
+    for description in [Some("Audit the identity schemes"), None] {
+        let mut w = WriterArchive::new();
+        forked_subagent(&mut w, description);
+        assert_eq!(
+            one(
+                &w,
+                "SELECT derived_title FROM session WHERE id = 'claude-code:agent-fork'"
+            ),
+            json!({"derived_title": null})
+        );
+    }
 }
 
 #[test]

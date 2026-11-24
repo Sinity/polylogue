@@ -180,6 +180,11 @@ fn quota_text(o: &Value) -> String {
         }
         out.push('\n');
         out.push_str(&recorded_usage(&t["recorded_usage"], "  "));
+        if let Some(n) = t["stale_readings"].as_u64().filter(|&n| n > 0) {
+            out.push_str(&format!(
+                "  {n} stale readings ignored (reset earlier than the reading)\n"
+            ));
+        }
         for reading in t["unplaced"].as_array().into_iter().flatten() {
             out.push_str(&format!(
                 "  {}: {} recorded use; provider time and reset unknown\n",
@@ -225,7 +230,9 @@ fn quota_text(o: &Value) -> String {
                     tokens(w["projected_tokens"].as_u64().unwrap_or(0))
                 ));
                 if let Some(usd) = amount(&w["api_cost_per_hour"]) {
-                    out.push_str(&format!(" · {usd}/h API-equivalent"));
+                    out.push_str(&format!(
+                        " · at least {usd}/h API-equivalent (priced responses only)"
+                    ));
                 }
                 out.push('\n');
             }

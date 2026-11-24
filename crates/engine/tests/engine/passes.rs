@@ -737,7 +737,7 @@ fn gemini_and_codex_shell_and_file_calls_reach_failing_commands_and_files() {
 }
 
 #[test]
-fn rebuilding_multiple_inputs_without_provider_files_preserves_order_and_title() {
+fn equal_timestamps_order_by_input_and_position_through_a_rebuild() {
     let w = ClaudeHome::new();
     w.append(
         "a.jsonl",
@@ -773,14 +773,35 @@ fn rebuilding_multiple_inputs_without_provider_files_preserves_order_and_title()
         assert!(rebuilt.errors.is_empty(), "{:?}", rebuilt.errors);
         assert!(rebuilt.bytes_read > 0);
     }
-    // The three messages share one timestamp, so their order is not fixed;
-    // the shared message is stored once.
-    let mut texts = before.0.clone();
-    texts.sort();
-    assert_eq!(
-        texts,
-        ["First question", "Last question", "Shared question"]
-    );
+    // The three messages share one timestamp, so docs/sessions.md orders
+    // them by input ID, then position in the input; the shared message is
+    // placed by the earliest of its two readings.
+    let reads = w.reads();
+    let r = reads.reader().unwrap();
+    let input_of = |native: &str| -> String {
+        let rows = r
+            .query(
+                &format!(
+                    "SELECT i.id FROM message m JOIN input_ref i ON i.pk = m.input_pk
+                     WHERE m.id LIKE '%:{native}'"
+                ),
+                &[],
+            )
+            .unwrap();
+        rows[0]["id"].as_str().unwrap().to_owned()
+    };
+    let (in_a, in_z) = (input_of("first"), input_of("last"));
+    let mut placed = vec![
+        ((in_a.clone(), 0), "First question"),
+        (
+            std::cmp::min((in_a.clone(), 1), (in_z.clone(), 0)),
+            "Shared question",
+        ),
+        ((in_z, 1), "Last question"),
+    ];
+    placed.sort();
+    let expected: Vec<&str> = placed.into_iter().map(|(_, text)| text).collect();
+    assert_eq!(before.0, expected);
     assert_eq!(view(), before);
 }
 
