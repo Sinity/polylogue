@@ -41,7 +41,7 @@ impl SpoolStatus {
             Err(error) => {
                 let lines = bytes.iter().filter(|byte| **byte == b'\n').count() as u64;
                 if !previously_failed {
-                    crate::log::log!(
+                    polylogue_store::log!(
                         warning,
                         "{stream} spool write failed; {lines} lines kept for retry: {error}"
                     );
@@ -51,7 +51,7 @@ impl SpoolStatus {
             Ok(()) => {
                 self.0.remove(stream);
                 if previously_failed {
-                    crate::log::log!(info, "{stream} spool write recovered");
+                    polylogue_store::log!(info, "{stream} spool write recovered");
                 }
             }
         }

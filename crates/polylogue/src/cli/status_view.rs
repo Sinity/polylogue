@@ -1,0 +1,821 @@
+//! `polylogue status` as text: a header line, then sections with their
+//! labels in a left column, each left out when it has nothing to say. The
+//! plain style has the same layout without color, with ASCII bars.
+use crate::protocol::status::{Answer, Mode, Notices, Running};
+use command_surface::TextStyle;
+use polylogue_model::freshness::{CompletenessDimension, IndexFreshness};
+use polylogue_render::short_duration;
+use polylogue_render::terminal::escape as clean;
+use polylogue_store::log::Priority;
+
+/// The label column's width.
+const LABEL: usize = 11;
+/// The widest a progress bar gets.
+const BAR: usize = 30;
+
+/// How the view is drawn.
+pub(crate) struct View<'a> {
+    pub style: TextStyle,
+    /// Columns available; lines longer than this are cut.
+    pub width: usize,
+    pub now_ms: i64,
+    pub zone: &'a jiff::tz::TimeZone,
+    /// Print every log record whole instead of cutting them to the width.
+    pub whole_log: bool,
+}
+
+/// The view of `status` with `problems`, the answer's degraded reasons and
+/// notes.
+pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> String {
+    let mut out = String::new();
+    out.push_str(&view.cut(&header(status, view)));
+    out.push('\n');
+    if let Mode::Blocked { path, error, .. } = &status.mode {
+        out.push_str(&view.cut(&view.warning(&format!("blocked: {}: {error}", path.display()))));
+        out.push('\n');
+    }
+    let building = status.index_build.is_some();
+    let sections: [(&str, Vec<String>); 13] = [
+        ("ARCHIVE", archive(status, view)),
+        (
+            "READING",
+            if building {
+                Vec::new()
+            } else {
+                reading(status, view)
+            },
+        ),
+        ("BUILD", build(status, view)),
+        ("PRIMARY", primary(status, view)),
+        ("LAST PASS", last_pass(status, view)),
+        ("RUNNING", running(status, view)),
+        ("NOTICES", notices(status, view)),
+        ("RULES", rules(status, view)),
+        ("PENDING", pending(status, view)),
+        ("CAPTURE", capture(status, view)),
+        ("UNUSED", unused(status)),
+        ("RECENT", recent(status, view)),
+        (
+            "NOTES",
+            problems.iter().map(|note| view.warning(note)).collect(),
+        ),
+    ];
+    for (label, lines) in sections {
+        if lines.is_empty() {
+            continue;
+        }
+        out.push('\n');
+        for (n, line) in lines.iter().enumerate() {
+            let label = if n == 0 { label } else { "" };
+            let padded = format!("{label:<LABEL$}");
+            let value = if label == "RECENT" && view.whole_log {
+                line.clone()
+            } else {
+                view.cut_to(line, view.width.saturating_sub(LABEL))
+            };
+            out.push_str(&view.label(&padded));
+            out.push_str(&value);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn header(status: &Answer, view: &View<'_>) -> String {
+    let mode = match &status.mode {
+        Mode::Standalone => "standalone",
+        Mode::Primary => "primary",
+        Mode::Blocked { .. } => "blocked",
+    };
+    let mut parts = vec![
+        mode.to_owned(),
+        format!("daemon {}", status.pid),
+        format!(
+            "up {}",
+            short_duration(i64::try_from(status.uptime_seconds).unwrap_or(i64::MAX) * 1000)
+        ),
+    ];
+    if status.loop_status.busy {
+        parts.push("busy".into());
+    }
+    if let Some(archive) = &status.archive {
+        parts.push(clean(&archive.display().to_string()));
+    }
+    format!("{}  {}", view.label("polylogue"), parts.join(" · "))
+}
+
+fn archive(status: &Answer, view: &View<'_>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(store) = &status.store {
+        lines.push(format!(
+            "{} sessions   {} messages   {} tool calls   {} documents",
+            count(store.sessions),
+            count(store.messages),
+            count(store.tool_calls),
+            count(store.documents)
+        ));
+        lines.push(format!(
+            "{} inputs · {} stored · {} revisions",
+            count(store.inputs),
+            bytes(store.stored_bytes),
+            count(store.revisions)
+        ));
+    } else if status.index_build.is_none()
+        && let Some(error) = &status.totals_error
+    {
+        lines.push(view.error(&format!("totals unavailable: {error}")));
+    }
+    if let Some(vectors) = &status.vectors {
+        for key in &vectors.keys {
+            let mut line = format!(
+                "vectors {}: {} for {} texts, {} dimensions",
+                clean(&key.key),
+                count(key.vectors),
+                count(key.texts),
+                key.dims
+            );
+            if key.failures > 0 {
+                line.push_str(&format!(" · {} failed", count(key.failures)));
+            }
+            lines.push(line);
+        }
+    }
+    if status.index_build.is_none()
+        && let Some(error) = &status.vectors_error
+    {
+        lines.push(view.error(&format!("vector counts unavailable: {error}")));
+    }
+    lines
+}
+
+/// The parse states as the view words them, in the order it lists them.
+const PARSE_STATES: [(&str, &str); 6] = [
+    ("parsing", "parsing"),
+    ("waiting", "waiting to grow"),
+    ("partial", "partly read"),
+    ("refused", "refused"),
+    ("failed", "failed"),
+    ("no_parser_yet", "without a parser"),
+];
+
+fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
+    let Some(store) = &status.store else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    let total: u64 = store.parse_states.values().sum();
+    if total > 0 {
+        let done = store.parse_states.get("done").copied().unwrap_or(0);
+        lines.push(format!(
+            "{}  {}   {} of {} chains read",
+            view.bar(done, total),
+            percent(done, total),
+            count(done),
+            count(total)
+        ));
+        let mut others: Vec<String> = PARSE_STATES
+            .iter()
+            .filter_map(|(state, words)| {
+                store
+                    .parse_states
+                    .get(*state)
+                    .map(|n| format!("{} {words}", count(*n)))
+            })
+            .collect();
+        others.extend(
+            store
+                .parse_states
+                .iter()
+                .filter(|(state, _)| {
+                    *state != "done" && !PARSE_STATES.iter().any(|(known, _)| known == state)
+                })
+                .map(|(state, n)| format!("{} {}", count(*n), clean(state))),
+        );
+        if !others.is_empty() {
+            lines.push(others.join(" · "));
+        }
+    }
+    let local = &status.freshness.local;
+    let mut words = Vec::new();
+    for (name, dimension) in [
+        ("parsing", &local.parsing),
+        ("derivation", &local.derivation),
+        ("search", &local.search),
+        ("confirmed stream", &local.confirmed_stream),
+    ] {
+        let reasons = |reasons: &[polylogue_model::freshness::CompletenessReason]| {
+            reasons
+                .iter()
+                .map(|reason| reason.text())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match dimension {
+            CompletenessDimension::Complete => words.push(format!("{name} current")),
+            CompletenessDimension::Incomplete(found) => {
+                words.push(format!("{name} behind: {}", reasons(found)));
+            }
+            CompletenessDimension::Unknown(found) => {
+                words.push(format!("{name} unknown: {}", reasons(found)));
+            }
+            CompletenessDimension::NotApplicable => {}
+        }
+    }
+    if store.search_pending > 0 {
+        words.push(format!(
+            "{} texts awaiting search",
+            count(store.search_pending)
+        ));
+    }
+    lines.push(words.join(" · "));
+    lines
+}
+
+fn build(status: &Answer, view: &View<'_>) -> Vec<String> {
+    let Some(build) = &status.index_build else {
+        return Vec::new();
+    };
+    let (done, total) = if build.bytes > 0 {
+        (build.bytes_read, build.bytes)
+    } else {
+        (build.chains_read, build.chains)
+    };
+    let mut lines = vec![format!(
+        "{}  {}   {} of {} · {} of {} chains",
+        view.bar(done, total),
+        percent(done, total),
+        bytes(build.bytes_read),
+        bytes(build.bytes),
+        count(build.chains_read),
+        count(build.chains)
+    )];
+    let Some(progress) = &status.build_progress else {
+        return lines;
+    };
+    // The rates measure reading; once every byte is read the phase line
+    // says what the build is doing.
+    if let (Some(rate), Some(seconds)) = (progress.bytes_per_second, progress.rate_seconds)
+        && build.bytes_read < build.bytes
+    {
+        let mut line = format!(
+            "{:.1} MB/s over the last {}",
+            rate / 1e6,
+            // Whole minutes are rounded: 119 s reads as 2m, not 1m.
+            short_duration(if seconds < 60. {
+                (seconds * 1000.) as i64
+            } else {
+                ((seconds / 60.).round() * 60_000.) as i64
+            })
+        );
+        if let Some(chains) = progress.chains_per_second.filter(|rate| *rate > 0.) {
+            line.push_str(&format!(" · {} chains/s", decimal(chains)));
+        }
+        if let Some(eta) = progress.eta_seconds {
+            line.push_str(&format!(" · {}", left(eta)));
+        } else if progress.rate_varying {
+            line.push_str(" · rate varying");
+        }
+        lines.push(line);
+    }
+    let mut parts = Vec::new();
+    if let Some(phase) = &progress.phase {
+        let mut part = format!("phase {}", clean(phase));
+        if let Some(since) = progress.phase_since {
+            part.push_str(&format!(
+                " for {}",
+                short_duration(view.now_ms.saturating_sub(since.unix_ms()))
+            ));
+        }
+        lines.push(part);
+    }
+    if let Some(busy) = progress.writer_busy {
+        parts.push(format!("writer busy {:.0}%", busy * 100.));
+    }
+    if !progress.worker_cpu_seconds.is_empty() {
+        let workers = progress.worker_cpu_seconds.len();
+        let each = progress.worker_cpu_seconds.iter().sum::<f64>() / workers as f64;
+        parts.push(format!(
+            "{workers} {}, {each:.1} s CPU/min each",
+            if workers == 1 { "worker" } else { "workers" }
+        ));
+    }
+    if !parts.is_empty() {
+        lines.push(parts.join(" · "));
+    }
+    if build.serving_previous {
+        lines.push("reads are answered from the previous index meanwhile".into());
+    }
+    lines
+}
+
+fn primary(status: &Answer, view: &View<'_>) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let IndexFreshness::Primary {
+        applied_position,
+        lag_positions,
+        state,
+        error,
+        ..
+    } = &status.freshness.sinex
+    {
+        let mut parts = vec![format!("Sinex {}", state.as_str())];
+        if let Some(applied) = applied_position {
+            parts.push(format!("applied position {applied}"));
+        }
+        if let Some(lag) = lag_positions {
+            parts.push(format!(
+                "{} positions behind",
+                count(u64::try_from(*lag).unwrap_or(0))
+            ));
+        }
+        lines.push(parts.join(" · "));
+        if let Some(error) = error {
+            lines.push(view.error(error));
+        }
+    }
+    #[cfg(feature = "sinex")]
+    match &status.primary {
+        Some(crate::protocol::status::Primary::Observed {
+            refused_events,
+            last_refused,
+            position_error,
+            ..
+        }) => {
+            if let Some(refused) = refused_events.filter(|n| *n > 0) {
+                let mut line = format!("{} refused events stay in Sinex", count(refused));
+                if let Some(last) = last_refused {
+                    line.push_str(&format!("; last: {last}"));
+                }
+                lines.push(view.warning(&line));
+            }
+            if let Some(error) = position_error {
+                lines.push(view.error(error));
+            }
+        }
+        Some(crate::protocol::status::Primary::Unavailable { error }) => {
+            lines.push(view.error(&format!("unavailable: {error}")));
+        }
+        None => {}
+    }
+    lines
+}
+
+fn last_pass(status: &Answer, view: &View<'_>) -> Vec<String> {
+    let looped = &status.loop_status;
+    if looped.passes == 0 {
+        return Vec::new();
+    }
+    let pass = &looped.last_pass;
+    let mut parts = Vec::new();
+    if let Some(at) = looped.last_pass_at {
+        parts.push(view.time(at.unix_ms()));
+    }
+    parts.push(format!("{} s", decimal(pass.seconds)));
+    parts.push(format!(
+        "{} of {} inputs changed",
+        count(pass.inputs_changed),
+        count(pass.inputs_seen)
+    ));
+    let mut work = vec![
+        format!("{} read", bytes(pass.bytes_read)),
+        format!("{} messages written", count(pass.messages_written)),
+    ];
+    if pass.sessions_derived > 0 {
+        work.push(format!("{} sessions derived", count(pass.sessions_derived)));
+    }
+    let mut lines = vec![parts.join(" · "), work.join(" · ")];
+    if let Some(first) = pass.errors.first() {
+        let more = match pass.errors.len() {
+            1 => String::new(),
+            n => format!(" (and {} more)", n - 1),
+        };
+        lines.push(view.error(&format!("{first}{more}")));
+    }
+    if !pass.unreadable_roots.is_empty() {
+        let roots: Vec<String> = pass
+            .unreadable_roots
+            .iter()
+            .map(|root| root.display().to_string())
+            .collect();
+        lines.push(view.warning(&format!("unreadable: {}", roots.join(", "))));
+    }
+    lines
+}
+
+fn running(status: &Answer, view: &View<'_>) -> Vec<String> {
+    match &status.running {
+        Running::Measured { sessions, .. } if !sessions.is_empty() => {
+            let mut lines = vec![status.running.line(view.now_ms)];
+            for session in sessions {
+                use polylogue_model::live::LiveState;
+                let mark = match session.state {
+                    LiveState::Waiting => "◆",
+                    LiveState::Working => "●",
+                    _ => "○",
+                };
+                let age = session
+                    .since
+                    .map(|since| short_duration(view.now_ms.saturating_sub(since)))
+                    .unwrap_or_default();
+                let mut detail = Vec::new();
+                if let Some(on) = session.waiting_on {
+                    detail.push(format!("on {}", on.as_str()));
+                }
+                if let Some(stall) = session.stall {
+                    detail.push(format!("stalled: {}", stall.as_str().replace('_', " ")));
+                }
+                if let Some(tool) = &session.open_tool {
+                    detail.push(clean(tool));
+                }
+                if let Some(task) = &session.task {
+                    detail.push(clean(task));
+                }
+                if session.edited_files > 0 {
+                    detail.push(format!(
+                        "{} {} edited",
+                        session.edited_files,
+                        if session.edited_files == 1 {
+                            "file"
+                        } else {
+                            "files"
+                        }
+                    ));
+                }
+                let line = format!(
+                    "{mark} {:<8} {age:>5}  {}  {}",
+                    session.state.as_str(),
+                    clean(&session.session),
+                    detail.join(" · ")
+                );
+                lines.push(line.trim_end().to_owned());
+            }
+            lines
+        }
+        Running::Unavailable { error } if status.index_build.is_none() => {
+            vec![view.error(&format!("unavailable: {error}"))]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn notices(status: &Answer, view: &View<'_>) -> Vec<String> {
+    match &status.notices {
+        Notices::Measured { last_day, latest } if *last_day > 0 => {
+            let mut line = format!("{last_day} in the last day");
+            if let Some(newest) = latest.first() {
+                line.push_str(&format!(
+                    " · {} {}",
+                    view.time(newest.at.unix_ms()),
+                    clean(&newest.text)
+                ));
+            }
+            vec![line]
+        }
+        Notices::Unavailable { error } if status.index_build.is_none() => {
+            vec![view.error(&format!("unavailable: {error}"))]
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The signal rules in force, the ones refused and the signals held.
+fn rules(status: &Answer, view: &View<'_>) -> Vec<String> {
+    use crate::protocol::status::Signals;
+    let (rules, unusable, held) = match &status.signals {
+        Some(Signals::Observed {
+            rules,
+            unusable,
+            held,
+        }) => (rules.as_slice(), unusable.as_slice(), held.as_slice()),
+        Some(Signals::Held { held }) => (&[][..], &[][..], held.as_slice()),
+        None => return Vec::new(),
+    };
+    let mut lines: Vec<String> = rules
+        .iter()
+        .map(|rule| format!("{} · by {}", clean(&rule.name), clean(&rule.author)))
+        .collect();
+    lines.extend(
+        unusable
+            .iter()
+            .map(|rule| view.warning(&format!("rule {} not used: {}", rule.id, rule.reason))),
+    );
+    lines.extend(
+        held.iter()
+            .map(|signal| view.warning(&format!("signals held: {}", signal.reason))),
+    );
+    lines
+}
+
+fn pending(status: &Answer, view: &View<'_>) -> Vec<String> {
+    let pending = &status.pending_writes;
+    let mut parts = Vec::new();
+    if pending.delivery_outcomes > 0 {
+        parts.push(format!(
+            "{} delivery outcomes",
+            count(pending.delivery_outcomes)
+        ));
+    }
+    if pending.live_event_lines > 0 {
+        parts.push(format!(
+            "{} live event lines",
+            count(pending.live_event_lines)
+        ));
+    }
+    let mut lines = Vec::new();
+    if !parts.is_empty() {
+        lines.push(format!("{} awaiting a write", parts.join(" · ")));
+    }
+    if let Some(error) = &pending.last_error {
+        lines.push(view.error(error));
+    }
+    lines
+}
+
+fn capture(status: &Answer, view: &View<'_>) -> Vec<String> {
+    use polylogue_model::capture::{Accessibility, Classification};
+    let Some(store) = &status.store else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    for coverage in &store.capture_coverage {
+        let roots = coverage.roots.len();
+        let mut parts = vec![format!(
+            "{}: {roots} {} walked {}",
+            clean(&coverage.machine),
+            if roots == 1 { "root" } else { "roots" },
+            view.time(coverage.observed_at.unix_ms())
+        )];
+        for (state, word) in [
+            (Accessibility::Absent, "absent"),
+            (Accessibility::Unavailable, "unavailable"),
+            (Accessibility::Incomplete, "incomplete"),
+        ] {
+            let n = coverage
+                .roots
+                .iter()
+                .filter(|root| root.status == state)
+                .count();
+            if n > 0 {
+                parts.push(format!("{n} {word}"));
+            }
+        }
+        let mut ignored = std::collections::BTreeMap::<&str, u64>::new();
+        let mut unrecognized = 0;
+        for entry in coverage.roots.iter().flat_map(|root| &root.entries) {
+            match entry.class {
+                Classification::Ignored => {
+                    *ignored
+                        .entry(entry.reason.as_deref().unwrap_or("ignored"))
+                        .or_default() += entry.files;
+                }
+                Classification::Unrecognized => unrecognized += entry.files,
+                Classification::Collected => {}
+            }
+        }
+        let ignored_files: u64 = ignored.values().sum();
+        if ignored_files > 0 {
+            let (top, _) = ignored
+                .iter()
+                .max_by_key(|(reason, files)| (**files, std::cmp::Reverse(**reason)))
+                .expect("ignored entries are present");
+            parts.push(format!(
+                "{} files ignored, most as {}",
+                count(ignored_files),
+                clean(top)
+            ));
+        }
+        if unrecognized > 0 {
+            lines.push(parts.join(" · "));
+            lines.push(view.warning(&format!(
+                "{} unrecognized files on {}",
+                count(unrecognized),
+                coverage.machine
+            )));
+        } else {
+            lines.push(parts.join(" · "));
+        }
+    }
+    lines
+}
+
+fn unused(status: &Answer) -> Vec<String> {
+    let Some(store) = &status.store else {
+        return Vec::new();
+    };
+    let Some((field, n)) = store.unused.first() else {
+        return Vec::new();
+    };
+    let more = store.unused.len() - 1;
+    let mut line = format!("{} ×{} not yet read", clean(field), count(*n));
+    if more > 0 {
+        line.push_str(&format!(" · {more} more in --json"));
+    }
+    vec![line]
+}
+
+fn recent(status: &Answer, view: &View<'_>) -> Vec<String> {
+    status
+        .recent_log
+        .iter()
+        .map(|record| {
+            let text = match record.priority {
+                Priority::Error => view.error(&record.text),
+                Priority::Warning => view.warning(&record.text),
+                Priority::Info => clean(&record.text),
+            };
+            format!("{}  {text}", view.time(record.at.unix_ms()))
+        })
+        .collect()
+}
+
+impl View<'_> {
+    fn paint(&self, code: &str, text: &str) -> String {
+        match self.style {
+            TextStyle::Ansi => format!("\x1b[{code}m{text}\x1b[0m"),
+            _ => text.to_owned(),
+        }
+    }
+
+    fn label(&self, text: &str) -> String {
+        if text.trim().is_empty() {
+            text.to_owned()
+        } else {
+            self.paint("1;2", text)
+        }
+    }
+
+    fn warning(&self, text: &str) -> String {
+        self.paint("33", &format!("⚠ {}", clean(text)))
+    }
+
+    fn error(&self, text: &str) -> String {
+        self.paint("31", &format!("✖ {}", clean(text)))
+    }
+
+    /// A bar `done` of `total` long, in eighths with color, `#` without.
+    fn bar(&self, done: u64, total: u64) -> String {
+        let width = BAR.min(self.width.saturating_sub(LABEL + 50)).max(10);
+        let share = if total == 0 {
+            0.
+        } else {
+            (done.min(total) as f64 / total as f64).clamp(0., 1.)
+        };
+        let eighths = (share * (width * 8) as f64).floor() as usize;
+        match self.style {
+            TextStyle::Ansi => {
+                let mut bar = "█".repeat(eighths / 8);
+                if !eighths.is_multiple_of(8) {
+                    bar.push(['▏', '▎', '▍', '▌', '▋', '▊', '▉'][eighths % 8 - 1]);
+                }
+                let empty = width - bar.chars().count();
+                bar.push_str(&"░".repeat(empty));
+                bar
+            }
+            _ => {
+                let full = eighths / 8;
+                format!("{}{}", "#".repeat(full), ".".repeat(width - full))
+            }
+        }
+    }
+
+    /// The time of day for today, the date and time before.
+    fn time(&self, ms: i64) -> String {
+        let (Ok(at), Ok(now)) = (
+            jiff::Timestamp::from_millisecond(ms),
+            jiff::Timestamp::from_millisecond(self.now_ms),
+        ) else {
+            return "unknown time".into();
+        };
+        let at = at.to_zoned(self.zone.clone());
+        if at.date() == now.to_zoned(self.zone.clone()).date() {
+            at.strftime("%H:%M:%S").to_string()
+        } else {
+            at.strftime("%Y-%m-%d %H:%M").to_string()
+        }
+    }
+
+    fn cut(&self, line: &str) -> String {
+        self.cut_to(line, self.width)
+    }
+
+    /// `line` cut to `columns` visible characters, color sequences kept;
+    /// the last column of a cut line holds `…`.
+    fn cut_to(&self, line: &str, columns: usize) -> String {
+        if strip(line).chars().count() <= columns {
+            return line.to_owned();
+        }
+        let mut visible = 0;
+        let mut out = String::new();
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                out.push(c);
+                for c in chars.by_ref() {
+                    out.push(c);
+                    if c == 'm' {
+                        break;
+                    }
+                }
+            } else if visible + 1 < columns {
+                out.push(c);
+                visible += 1;
+            } else {
+                break;
+            }
+        }
+        out.push('…');
+        if self.style == TextStyle::Ansi {
+            out.push_str("\x1b[0m");
+        }
+        out
+    }
+}
+
+/// `text` without color sequences.
+fn strip(text: &str) -> String {
+    let mut out = String::new();
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Counts with thousands separators below a million, then in millions
+/// and billions with two decimals.
+fn count(n: u64) -> String {
+    match n {
+        0..1_000_000 => {
+            let digits = n.to_string();
+            let mut out = String::new();
+            for (i, c) in digits.chars().enumerate() {
+                if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                    out.push(',');
+                }
+                out.push(c);
+            }
+            out
+        }
+        1_000_000..1_000_000_000 => format!("{:.2}M", n as f64 / 1e6),
+        _ => format!("{:.2}B", n as f64 / 1e9),
+    }
+}
+
+/// Bytes in binary units.
+fn bytes(n: u64) -> String {
+    const UNITS: [&str; 5] = ["KiB", "MiB", "GiB", "TiB", "PiB"];
+    if n < 1024 {
+        return format!("{n} B");
+    }
+    let mut value = n as f64 / 1024.;
+    let mut unit = 0;
+    while value >= 1024. && unit + 1 < UNITS.len() {
+        value /= 1024.;
+        unit += 1;
+    }
+    format!("{value:.1} {}", UNITS[unit])
+}
+
+/// One decimal below ten, none above.
+fn decimal(value: f64) -> String {
+    if value < 10. {
+        format!("{value:.1}")
+    } else {
+        format!("{value:.0}")
+    }
+}
+
+/// A share as a whole percentage, with a decimal between 99 and 100 so an
+/// unfinished share never reads as 100%.
+fn percent(done: u64, total: u64) -> String {
+    if total == 0 {
+        return "0%".into();
+    }
+    let share = done.min(total) as f64 * 100. / total as f64;
+    if done < total && share >= 99. {
+        format!("{:.1}%", (share * 10.).floor() / 10.)
+    } else {
+        format!("{:.0}%", share.floor())
+    }
+}
+
+/// The estimate in words: `about 26 min left`.
+fn left(seconds: u64) -> String {
+    let minutes = seconds.div_ceil(60);
+    if minutes < 60 {
+        format!("about {minutes} min left")
+    } else {
+        format!("about {} h {} min left", minutes / 60, minutes % 60)
+    }
+}
+
+#[cfg(test)]
+mod tests;

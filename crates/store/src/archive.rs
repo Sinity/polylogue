@@ -1,5 +1,6 @@
 //! The archive directory, its single-writer lock and connection settings.
 
+pub mod build_progress;
 pub(crate) mod generation;
 pub mod index_build;
 pub mod index_rebuild;

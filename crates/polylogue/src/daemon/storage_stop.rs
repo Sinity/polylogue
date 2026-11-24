@@ -53,7 +53,7 @@ pub(crate) fn remember(paths: &crate::config::Paths, root: &Path, failure: &Stor
             )
         });
     if let Err(error) = written {
-        crate::log::log!(
+        polylogue_store::log!(
             error,
             "record the storage failure at {}: {error}",
             path.display()

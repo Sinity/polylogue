@@ -140,7 +140,7 @@ impl ScopeWorker {
                         error.clone()
                     };
                     if last_error.as_ref() != Some(&condition) {
-                        crate::log::log!(warning, "scope index: {error}");
+                        polylogue_store::log!(warning, "scope index: {error}");
                         last_error = Some(condition);
                     }
                     // Nothing is readable until the index being built is
@@ -165,7 +165,7 @@ impl ScopeWorker {
                 if let Some(writes) = &daemon.writes
                     && let Err(error) = daemon.queued_deliveries.hand_over(writes)
                 {
-                    crate::log::log!(warning, "queued deliveries: {error}");
+                    polylogue_store::log!(warning, "queued deliveries: {error}");
                 }
                 match &subscription {
                     Some(subscription) => {
@@ -220,7 +220,7 @@ impl ScopeWorker {
 impl Drop for ScopeWorker {
     fn drop(&mut self) {
         if let Err(error) = self.shutdown() {
-            crate::log::log!(error, "scope worker shutdown: {error}");
+            polylogue_store::log!(error, "scope worker shutdown: {error}");
         }
     }
 }

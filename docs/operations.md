@@ -91,7 +91,7 @@ A halt survives a restart and clears only when what it depends on changes: a new
 
 ## Status
 
-`polylogue status [--line] [--vectors] [--verify [--manifest FILE]]` is the health of the daemon and the archive. Without `--verify` or `--vectors` it replies in the status latency class from the daemon's status snapshot, which the daemon refreshes after each batch and each hook event ([latency.md#warm-state](latency.md#warm-state)). Bare `polylogue` off a terminal prints the same block; on a terminal it prints the orientation screen, which is built from the same snapshot ([terminal.md](terminal.md#the-orientation-screen)).
+`polylogue status [--line] [--vectors] [--verify [--manifest FILE]] [--log] [--watch]` is the health of the daemon and the archive. Without `--verify` or `--vectors` it replies in the status latency class from the daemon's status snapshot, which the daemon refreshes after each batch and each hook event ([latency.md#warm-state](latency.md#warm-state)). Bare `polylogue` off a terminal prints the same block; on a terminal it prints the orientation screen, which is built from the same snapshot ([terminal.md](terminal.md#the-orientation-screen)).
 
 `status` shows, in order:
 1. **Daemon:** pid, uptime, binary version (crate version and commit), parse versions in force, the previous run's end, warming, I/O rates, and pacing under I/O pressure with the pressure measured.
@@ -106,6 +106,14 @@ A halt survives a restart and clears only when what it depends on changes: a new
 10. **Watches and rules:** every enabled watch (a saved query saved with `--watch`) and signal rule, with its author and when it last fired. Rules written by anyone but the operator that he has not judged are marked; they are rows of the shipped saved query `review`, so `polylogue review pick judge accept` settles them ([judging.md](judging.md#verdicts-on-annotations)).
 11. **Settings** written by anyone but the operator that he has not judged, the same way.
 12. **Harnesses:** for each installed harness, whether its hooks and MCP entry are installed, and the last hook line and MCP call seen; per-event detail is `polylogue 'sessions | measure hooks'` ([installing.md#installing](installing.md#installing)).
+
+**The view.** On the command line `status` prints a header (mode, daemon pid, uptime, whether the loop is busy, the archive) and then sections, each left out when it has nothing to say: `ARCHIVE` (sessions, messages, tool calls, documents; inputs, stored bytes, revisions; vector counts when requested), `READING` (chains read of those stored as a bar, the other parse states, and each freshness dimension in words) or, while an index is built, `BUILD`, then `PRIMARY`, `LAST PASS`, `RUNNING`, `NOTICES`, `RULES` (signal rules in force, refused rules and held signals), `PENDING`, `CAPTURE`, `UNUSED` (the most frequent unread source field; the others are in `--json`), `RECENT` (the daemon's latest log records, warnings and errors marked) and `NOTES` (the reasons the reply is degraded). Counts have thousands separators below a million, then two decimals with `M`; sizes are in binary units; times are local, the time of day for today and the date before. On a color terminal bars use eighth blocks; the plain style has the same layout with `#` bars. Archived text is printed with its terminal controls escaped. Lines are cut to the terminal's width (100 columns off a terminal).
+
+**Build progress.** While an index is built, `build_progress` reports the phase the build is in and since when, the bytes and chains read per second over the last five minutes, writer busy time over the last minute and each parse worker's CPU seconds per minute. Samples are taken where the build records its progress, at most one per 10 seconds, kept for 15 minutes. An estimate (`eta_seconds`, shown as `about 26 min left`) is given only from at least a minute of samples with a positive rate whose two halves differ by no more than a fifth; otherwise the view says `rate varying`, and with too few samples it says nothing.
+
+**The daemon's log.** Every daemon log record goes to the journal with its priority and is kept in memory, the last 200. `recent_log` carries the last 20; `--log` returns every kept one, and the view prints them whole.
+
+**`--watch`** redraws the view every two seconds until interrupted, each frame a new request; the daemon keeps nothing between them. It needs a color terminal and cannot be combined with `--line`, `--verify` or `--json`; MCP and HTTP refuse it.
 
 `--line` cannot be combined with `--vectors` or `--verify`. `--manifest` requires `--verify`. MCP and HTTP accept ordinary status and explicit vector counts, but refuse verification before reading stored bytes or creating a manifest.
 

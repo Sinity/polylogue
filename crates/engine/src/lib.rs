@@ -359,6 +359,9 @@ pub struct LoopStatus {
     /// Passes finished since the loop started.
     pub passes: u64,
     pub last_pass: Pass,
+    /// When `last_pass` ended.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_pass_at: Option<polylogue_model::Timestamp>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, serde::Deserialize)]

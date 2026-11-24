@@ -453,7 +453,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
                     }
                 });
                 if let Err(error) = client {
-                    crate::log::log!(error, "start a host client worker: {error}");
+                    polylogue_store::log!(error, "start a host client worker: {error}");
                 }
             }
         })?
@@ -532,7 +532,7 @@ pub fn serve(config: &HostConfig) -> std::io::Result<()> {
         remove(dir, key);
     }
     if let Err(error) = spool_result {
-        crate::log::log!(error, "host live event spool drain: {error}");
+        polylogue_store::log!(error, "host live event spool drain: {error}");
         failure = Some(std::io::Error::other(match failure.take() {
             Some(previous) => format!("{previous}; host live event spool drain: {error}"),
             None => format!("host live event spool drain: {error}"),

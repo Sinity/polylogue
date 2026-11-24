@@ -166,7 +166,9 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
         assert!(!text.is_empty(), "{args:?} printed nothing");
         safe(text);
         if args == ["status"] {
-            assert!(text.contains("\\u007f"), "{text:?}");
+            // The rule's name is in the view's RULES section, its controls
+            // escaped (docs/operations.md#status).
+            assert!(text.contains("\\x1b]0;title\\x07"), "{text:?}");
         }
         safe(&terminal(&env, &args, true));
     }

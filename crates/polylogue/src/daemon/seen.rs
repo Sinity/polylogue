@@ -9,7 +9,7 @@ pub fn record(daemon: &Daemon, invocation: &Invocation, marks: Vec<SeenMark>) {
         return;
     }
     let Some(writes) = &daemon.writes else {
-        eprintln!("polylogue: seen marks: writer is unavailable");
+        polylogue_store::log!(warning, "seen marks: writer is unavailable");
         return;
     };
     let request = invocation.request(
@@ -19,7 +19,7 @@ pub fn record(daemon: &Daemon, invocation: &Invocation, marks: Vec<SeenMark>) {
     match writes.try_enqueue_user(request) {
         // A dropped receiver leaves commit ownership with the writer, which records a failure.
         Ok(Queued::Committing(_)) => {}
-        Ok(Queued::Full(_)) => eprintln!("polylogue: seen marks: writer queue is full"),
-        Err(error) => eprintln!("polylogue: seen marks: {error}"),
+        Ok(Queued::Full(_)) => polylogue_store::log!(warning, "seen marks: writer queue is full"),
+        Err(error) => polylogue_store::log!(error, "seen marks: {error}"),
     }
 }

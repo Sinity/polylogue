@@ -81,7 +81,10 @@ impl CatalogPointer {
                 if !damaged {
                     return Err(error);
                 }
-                eprintln!("polylogue: completion catalog: cannot resume ({error}); rebuilding");
+                crate::log!(
+                    warning,
+                    "completion catalog: cannot resume ({error}); rebuilding"
+                );
                 None
             }
         };

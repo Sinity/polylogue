@@ -83,8 +83,9 @@ impl PhaseClock {
             peak_memory: peak_memory(),
             items,
         };
-        eprintln!(
-            "polylogue: index build: {} took {:.1} s; {} items; {:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
+        crate::log!(
+            info,
+            "index build: {} took {:.1} s; {} items; {:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
             phase.name,
             phase.seconds,
             phase.items,

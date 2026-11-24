@@ -18,7 +18,16 @@ pub struct Arguments {
     pub verify: bool,
     /// Write the checked revisions to this manifest
     pub manifest: Option<PathBuf>,
+    /// Every log record the daemon keeps (200), not only the last 20
+    #[serde(default)]
+    pub log: bool,
+    /// Redraw the view every 2 seconds until interrupted (CLI on a color terminal only)
+    #[serde(default)]
+    pub watch: bool,
 }
+
+/// How many log records an ordinary status answer carries.
+pub const RECENT_LOG: usize = 20;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct Answer {
@@ -31,6 +40,9 @@ pub struct Answer {
     /// The build of `index.db` in progress, with its progress.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_build: Option<polylogue_store::archive::index_build::IndexBuild>,
+    /// The build's phase, rates and estimate, beside its counts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_progress: Option<polylogue_store::archive::build_progress::BuildProgress>,
     pub totals_error: Option<String>,
     /// Exact stored counts, requested with --vectors or --verify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -51,6 +63,10 @@ pub struct Answer {
     pub freshness: polylogue_model::freshness::ReadFreshness,
     #[cfg(feature = "sinex")]
     pub primary: Option<Primary>,
+    /// The daemon's latest log records, oldest first: the last
+    /// [`RECENT_LOG`], or every kept one with `--log`.
+    #[serde(default)]
+    pub recent_log: Vec<polylogue_store::log::Record>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
