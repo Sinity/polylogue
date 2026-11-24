@@ -9,7 +9,6 @@ use polylogue_testkit::{Morrow, Set, session};
 use std::fs;
 
 mod identical_chains;
-mod newest_chains_first;
 mod older_chains;
 mod prefix_copies;
 mod reparse;

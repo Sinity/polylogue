@@ -244,12 +244,12 @@ const CREATED_WITH_THE_INDEX: &[&str] = &[
     "key=Text(\"cursor_key\")",
 ];
 
-/// A rebuild records an older chain that holds exactly a newer chain's
-/// bytes from that chain's reading instead of parsing it. The index equals
-/// the one a rebuild that parses every chain writes, sources included
-/// (docs/archive.md, versioned rows): every table, row for row.
+/// A rebuild reads an older chain that holds exactly a newer chain's bytes
+/// whole, like every chain; allowing copies changes nothing, sources
+/// included (docs/archive.md, versioned rows; docs/architecture.md, one
+/// path): every table, row for row.
 #[test]
-fn identical_older_chain_is_recorded_as_its_parse() {
+fn a_rebuild_reads_an_identical_older_chain_whole_with_or_without_copies() {
     fault::clear();
     let w = ClaudeHome::new();
     // Chains 1 and 3 hold `a`, chains 2 and 4 hold `b`; `a` has a message
@@ -309,22 +309,14 @@ fn identical_older_chain_is_recorded_as_its_parse() {
     };
     let (parsed, every_chain_parsed) = rebuild(false);
     assert_eq!((parsed.readings_copied, parsed.bytes_copied), (0, 0));
+    // A build reads every chain from its first byte and copies no reading
+    // (docs/architecture.md, one path): with copies allowed it reads the
+    // same bytes and writes the same rows.
     let (copied, with_copies) = rebuild(true);
-    // In each input chain 1 is recorded from chain 3 and chain 2 from chain
-    // 4. Chains `a` and `b` of the transcript also share their first record,
-    // so chain 3 is recorded from chain 4 through it and parses only the
-    // rest (docs/archive.md, versioned rows); the capture logs share no
-    // complete capture, and chain 3 of the log is parsed whole.
-    assert_eq!(copied.readings_copied, 5);
-    let first = user("u1", "same", "first prompt").len() as u64;
     let both = (a.len() + b.len() + captured_a.len() + captured_b.len()) as u64;
-    // Chain 4's parse stops at the end of the record the chains share and
-    // reads on from there, so no byte is read twice.
     assert_eq!(parsed.bytes_read, 2 * both);
-    assert_eq!(copied.bytes_read, both - first);
-    // Chains 1 and 2 of each input are read whole by their copies, chain 3
-    // of the transcript through its first record.
-    assert_eq!(copied.bytes_copied, both + first);
+    assert_eq!((copied.readings_copied, copied.bytes_copied), (0, 0));
+    assert_eq!(copied.bytes_read, 2 * both);
     let differing: Vec<String> = every_chain_parsed
         .iter()
         .filter(|(table, rows)| with_copies.get(*table) != Some(rows))

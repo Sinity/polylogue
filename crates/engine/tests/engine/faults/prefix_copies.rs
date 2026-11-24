@@ -42,36 +42,15 @@ impl History {
             join(&[a, b, d]),
         ]
     }
-
-    /// What a rebuild parses when every older chain is recorded from a
-    /// newer chain's reading over the bytes they share: chain 6 whole, its
-    /// parse stopping at the end of `a` for chain 5 and at the end of `b`
-    /// for chains 1 and 4, and chain 5's own bytes after `a`.
-    fn parsed_with_copies(&self) -> u64 {
-        let [.., six] = self.states();
-        six.len() as u64 + self.c.len() as u64
-    }
-
-    /// The bytes of older chains those copies read: chain 5 through `a`,
-    /// chains 1 and 4 (`a+b`) whole while chain 6 is parsed, and chain 3
-    /// (`a+c`) whole from chain 5 once it is read.
-    fn copied(&self) -> u64 {
-        // The first state is chain 1 before it grew.
-        let [_, one, three, four, ..] = self.states();
-        self.a.len() as u64 + (one.len() + four.len()) as u64 + three.len() as u64
-    }
 }
 
-/// A rebuild parses each byte of an input's history once: an older chain
-/// whose bytes begin like a newer chain's is recorded from the newer
-/// chain's reading at the point they stop being alike, decided by the bytes
-/// (not by how they were cut into blobs), and parses on from there; the
-/// rows equal those of a rebuild that parses every chain whole
-/// (docs/archive.md, versioned rows). A later record that changes an
-/// earlier row (the second part of a response) does not reach the older
-/// chain that never held it.
+/// A rebuild reads every chain of an input's history whole and gives the
+/// same rows whether or not copies of older chains' readings are allowed
+/// (docs/archive.md, versioned rows; docs/architecture.md, one path). A
+/// later record that changes an earlier row (the second part of a response)
+/// does not reach the older chain that never held it.
 #[test]
-fn older_transcript_chains_are_recorded_from_the_bytes_they_share_and_parse_only_their_own() {
+fn a_rebuild_reads_older_transcript_chains_whole_with_or_without_copies() {
     let transcript = History {
         a: [
             user("u1", "same", "first prompt"),
@@ -104,7 +83,7 @@ fn older_transcript_chains_are_recorded_from_the_bytes_they_share_and_parse_only
 /// The same for a browser capture log, whose frames each hold a whole
 /// conversation.
 #[test]
-fn older_capture_log_chains_are_recorded_from_the_bytes_they_share_and_parse_only_their_own() {
+fn a_rebuild_reads_older_capture_log_chains_whole_with_or_without_copies() {
     let frames = |captures: &[&[&str]]| {
         capture_log(captures)[polylogue_model::capture_log::MAGIC.len()..].to_vec()
     };
@@ -172,13 +151,12 @@ fn rebuild_history(
     assert_eq!((parsed.readings_copied, parsed.bytes_copied), (0, 0));
     let every_chain: u64 = history.states()[1..].iter().map(|s| s.len() as u64).sum();
     assert_eq!(parsed.bytes_read, every_chain);
+    // A build reads every chain from its first byte and copies no reading
+    // (docs/architecture.md, one path): with copies allowed it reads the
+    // same bytes and writes the same rows.
     let (copied, with_copies) = rebuild(true);
-    // Chain 5 at the end of `a`, chains 1 and 4 at their ends while chain 6
-    // is parsed, and chain 3 from chain 5 once it is read.
-    assert_eq!(copied.readings_copied, 4);
-    assert_eq!(copied.bytes_read, history.parsed_with_copies());
-    assert_eq!(copied.bytes_copied, history.copied());
-    assert_eq!(copied.bytes_read + copied.bytes_copied, every_chain);
+    assert_eq!((copied.readings_copied, copied.bytes_copied), (0, 0));
+    assert_eq!(copied.bytes_read, every_chain);
     let differing: Vec<String> = every_chain_parsed
         .iter()
         .filter(|(table, rows)| with_copies.get(*table) != Some(rows))

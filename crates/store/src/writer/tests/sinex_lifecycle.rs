@@ -69,12 +69,8 @@ fn apply_position(
         })),
     });
     crate::primary::confirmed::apply(
-        &crate::text_rows::TextIds::new(
-            index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         index,
         &events,
     )

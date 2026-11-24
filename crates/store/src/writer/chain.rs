@@ -245,14 +245,7 @@ impl Inner {
         if has_step && all_replayed {
             return Ok(0);
         }
-        reader.rewind()?;
-        // Attachment references name only bytes the archive holds, as of
-        // this transaction.
-        let mut known = HashMap::new();
-        while let Some(step) = read_step(&mut reader)? {
-            attachments::remember(&step, &self.archive, &HashMap::new(), &mut known)?;
-        }
-        reader.rewind()?;
+        drop(reader);
         let text_transaction = self.texts.transaction();
         let tx = self
             .index
@@ -260,76 +253,26 @@ impl Inner {
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&tx)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-        let mut batch = Batch {
-            required_outcome: None,
-            input,
-            change: Change::Reparse { chain },
-            observation: None,
-            continues: false,
-            new_blob: None,
-            blobs: Vec::new(),
-            length,
-            parse: Vec::new(),
-            acquisition: None,
-            basis: None,
-            release: Default::default(),
-        };
         let mut touched = super::readings::Touched::default();
-        let mut first = true;
-        while let Some(mut step) = read_step(&mut reader)? {
-            if first && !step.reset {
-                return Err(StoreError::Invalid(
-                    "a chain replacement must start at its first record".into(),
-                ));
-            }
-            if !first && step.reset {
-                return Err(StoreError::Invalid(
-                    "a chain replacement resets twice".into(),
-                ));
-            }
-            attachments::normalize_known(&mut step, &known)?;
-            let replacement = first && step.delivery.is_none();
-            first = false;
-            let source_commit = crate::source::Source::reading_commit(
-                &tx,
-                &batch.input.id,
-                chain,
-                step.parsed_upto,
-            )?;
-            rows::write_step(
-                &tx,
-                &batch,
-                &step,
-                rows::StepWrite {
-                    texts: &self.texts,
-                    counter,
-                    chain,
-                    source_commit: Some(&source_commit),
-                    replacement,
-                    retraction: false,
-                    primary: self.sinex.is_some(),
-                    changes: &changes,
-                },
-                &mut touched,
-            )?;
-        }
-        if first {
-            return Err(StoreError::Invalid(
-                "a chain replacement has no reading".into(),
-            ));
-        }
-        let (written, read) = rows::finish(
+        write_reading(
             &tx,
-            touched,
-            &changes,
-            &self.texts,
-            self.at_build_end,
-            counter,
+            ReadingWrite {
+                register: &self.archive,
+                texts: &self.texts,
+                counter,
+                primary: self.sinex.is_some(),
+                changes: &changes,
+            },
+            &input,
+            chain,
+            length,
+            &reading,
+            &mut touched,
         )?;
+        let (written, read) = rows::finish(&tx, touched, &changes, &self.texts, false, counter)?;
         self.report.item_units_read += read;
-        batch.parse.clear();
         crate::fault::check("write.index_commit", "")?;
-        crate::fault::check("reparse.commit", &batch.input.id)?;
+        crate::fault::check("reparse.commit", &input.id)?;
         crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
         text_transaction.commit();
         self.commits
@@ -338,4 +281,89 @@ impl Inner {
         self.report.transactions += 1;
         Ok(written)
     }
+}
+
+/// What a chain's reading is written with.
+pub(super) struct ReadingWrite<'a> {
+    /// Answers which attachment bytes the archive holds.
+    pub register: &'a Connection,
+    pub texts: &'a crate::text_rows::TextIds,
+    pub counter: i64,
+    pub primary: bool,
+    pub changes: &'a crate::change_summary::ChangeSummary,
+}
+
+/// Writes a chain's reading, step by step from its first record, into the
+/// reading tables of `tx`'s index, recording what it states in `touched`.
+pub(super) fn write_reading(
+    tx: &Transaction<'_>,
+    w: ReadingWrite<'_>,
+    input: &InputKey,
+    chain: i64,
+    length: u64,
+    reading: &ChainReading,
+    touched: &mut super::readings::Touched,
+) -> Result<()> {
+    let mut reader = BufReader::new(std::fs::File::open(&reading.path)?);
+    // Attachment references name only bytes the archive holds, as of
+    // this transaction.
+    let mut known = HashMap::new();
+    while let Some(step) = read_step(&mut reader)? {
+        attachments::remember(&step, w.register, &HashMap::new(), &mut known)?;
+    }
+    reader.rewind()?;
+    let batch = Batch {
+        required_outcome: None,
+        input: input.clone(),
+        change: Change::Reparse { chain },
+        observation: None,
+        continues: false,
+        new_blob: None,
+        blobs: Vec::new(),
+        length,
+        parse: Vec::new(),
+        acquisition: None,
+        basis: None,
+        release: Default::default(),
+    };
+    let mut first = true;
+    while let Some(mut step) = read_step(&mut reader)? {
+        if first && !step.reset {
+            return Err(StoreError::Invalid(
+                "a chain replacement must start at its first record".into(),
+            ));
+        }
+        if !first && step.reset {
+            return Err(StoreError::Invalid(
+                "a chain replacement resets twice".into(),
+            ));
+        }
+        attachments::normalize_known(&mut step, &known)?;
+        let replacement = first && step.delivery.is_none();
+        first = false;
+        let source_commit =
+            crate::source::Source::reading_commit(tx, &batch.input.id, chain, step.parsed_upto)?;
+        rows::write_step(
+            tx,
+            &batch,
+            &step,
+            rows::StepWrite {
+                texts: w.texts,
+                counter: w.counter,
+                chain,
+                source_commit: Some(&source_commit),
+                replacement,
+                retraction: false,
+                primary: w.primary,
+                changes: w.changes,
+            },
+            touched,
+        )?;
+    }
+    if first {
+        return Err(StoreError::Invalid(
+            "a chain replacement has no reading".into(),
+        ));
+    }
+    Ok(())
 }

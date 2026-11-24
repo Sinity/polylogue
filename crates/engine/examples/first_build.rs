@@ -7,6 +7,9 @@
 //!
 //! `--max-rss-mb N` fails the run when its peak resident memory exceeds N.
 //!
+//! `--from-record` stores the corpus first, unmeasured, and removes the
+//! index; the measured pass then builds the index from the stored record.
+//!
 //! `--generate-mb` writes a corpus shaped like the operator's: file sizes
 //! drawn from the measured size list (`stat.tsv` from the corpus
 //! measurement: kind, bytes, ...; Claude Code session and subagent rows),
@@ -304,6 +307,13 @@ fn main() {
         capture_only(&home, &dir.join("archive")).unwrap();
         return;
     }
+    let from_record = args.iter().any(|arg| arg == "--from-record");
+    if from_record {
+        capture_only(&home, &dir.join("archive")).unwrap();
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(dir.join(format!("archive/index.db{suffix}")));
+        }
+    }
     let io_before = fs::read_to_string("/proc/self/io").ok();
     let cpu_before = fs::read_to_string("/proc/self/stat").ok();
     let started = Instant::now();
@@ -313,6 +323,8 @@ fn main() {
     // The measured tree is exactly `--home`; the tools' own directory
     // variables point at the real one.
     config.tool_dirs.clear();
+    // The stored corpus is the record; its files are not discovered again.
+    config.reads_sources = !from_record;
     let input = input_size(&config);
     if let Some(w) = arg("--workers") {
         config.workers = w.parse().unwrap();

@@ -2,10 +2,6 @@ use super::*;
 use crate::archive::{cache, open_write};
 use crate::fixture::Fixture;
 
-fn hash_of(text: &str) -> [u8; 32] {
-    *blake3::hash(text.as_bytes()).as_bytes()
-}
-
 fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |row| row.get(0)).unwrap()
 }
@@ -181,145 +177,11 @@ fn build_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
 }
 
 #[test]
-fn build_texts_share_rows_without_sql_readback_or_prefix_aliasing() {
-    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
-    let conn = Connection::open_in_memory().unwrap();
-    crate::schema::create_index(&conn).unwrap();
-    let first = TextIds::new(
-        &conn,
-        true,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )
-    .unwrap();
-    let one = [7; 32];
-    let mut two = one;
-    two[31] = 8;
-    let a = first
-        .resolve(
-            &conn,
-            &one,
-            PreparedTexts::pack(["first"])
-                .unwrap()
-                .get(&hash_of("first")),
-            None,
-        )
-        .unwrap();
-    let b = first
-        .resolve(
-            &conn,
-            &two,
-            PreparedTexts::pack(["second"])
-                .unwrap()
-                .get(&hash_of("second")),
-            None,
-        )
-        .unwrap();
-    assert_ne!(a, b);
-    // Both hits must compare full hashes in writer memory, even when the
-    // eight-byte prefixes are equal. SQLite refuses any text-table read.
-    conn.flush_prepared_statement_cache();
-    conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
-        AuthAction::Read {
-            table_name: "text", ..
-        } => Authorization::Deny,
-        _ => Authorization::Allow,
-    }))
-    .unwrap();
-    assert_eq!(first.resolve(&conn, &one, None, None).unwrap(), a);
-    assert_eq!(first.resolve(&conn, &two, None, None).unwrap(), b);
-    conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
-        .unwrap();
-    assert!(matches!(
-        first.resolve(&conn, &[9; 32], None, None),
-        Err(crate::StoreError::Invalid(_))
-    ));
-}
-
-#[test]
-fn failed_text_transaction_reloads_presence_without_reassigning_known_ids() {
-    let mut conn = Connection::open_in_memory().unwrap();
-    crate::schema::create_index(&conn).unwrap();
-    let first = TextIds::new(
-        &conn,
-        true,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )
-    .unwrap();
-    let gone = [1; 32];
-    let kept = [2; 32];
-    let old;
-    {
-        let _texts = first.transaction();
-        let tx = conn.transaction().unwrap();
-        old = first
-            .resolve(
-                &tx,
-                &gone,
-                PreparedTexts::pack(["rolled back"])
-                    .unwrap()
-                    .get(&hash_of("rolled back")),
-                None,
-            )
-            .unwrap();
-        // The transaction and its text-map changes are both discarded.
-    }
-    let texts = first.transaction();
-    let tx = conn.transaction().unwrap();
-    let new = first
-        .resolve(
-            &tx,
-            &kept,
-            PreparedTexts::pack(["committed"])
-                .unwrap()
-                .get(&hash_of("committed")),
-            None,
-        )
-        .unwrap();
-    assert_ne!(old, new);
-    assert!(first.resolve(&tx, &gone, None, None).is_err());
-    tx.commit().unwrap();
-    texts.commit();
-    assert_eq!(first.resolve(&conn, &kept, None, None).unwrap(), new);
-    assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
-    let transaction = first.transaction();
-    let tx = conn.transaction().unwrap();
-    assert_eq!(
-        first
-            .resolve(
-                &tx,
-                &gone,
-                PreparedTexts::pack(["restored"])
-                    .unwrap()
-                    .get(&hash_of("restored")),
-                None
-            )
-            .unwrap(),
-        old
-    );
-    tx.commit().unwrap();
-    transaction.commit();
-    assert_eq!(count(&conn, "SELECT count(*) FROM text"), 2);
-    let normalized: Vec<u8> = conn
-        .query_row("SELECT normalized_hash FROM text WHERE id=?1", [old], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_eq!(
-        normalized,
-        crate::encoding::normalized_text_hash("restored")
-    );
-}
-
-#[test]
 fn cached_text_identity_records_no_payload_write() {
     let mut conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let identities = TextIds::new(
-        &conn,
-        true,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )
-    .unwrap();
+    let identities =
+        TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3).unwrap();
     let text = "shared synthetic text";
     let hash = *blake3::hash(text.as_bytes()).as_bytes();
     let prepared = PreparedTexts::pack([text]).unwrap();
@@ -331,14 +193,10 @@ fn cached_text_identity_records_no_payload_write() {
     tx.commit().unwrap();
     let cached = identities.resolve(&conn, &hash, prepared, None).unwrap();
     assert_eq!(cached, written);
-    let preloaded = TextIds::new(
-        &conn,
-        true,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )
-    .unwrap()
-    .resolve(&conn, &hash, None, None)
-    .unwrap();
+    let preloaded = TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3)
+        .unwrap()
+        .resolve(&conn, &hash, None, None)
+        .unwrap();
     assert_eq!(preloaded, written);
 }
 
@@ -346,12 +204,8 @@ fn cached_text_identity_records_no_payload_write() {
 fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
     let mut conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let identities = TextIds::new(
-        &conn,
-        true,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )
-    .unwrap();
+    let identities =
+        TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3).unwrap();
     let text = "synthetic tool output";
     let hash = *blake3::hash(text.as_bytes()).as_bytes();
     let prepared = PreparedTexts::pack([text]).unwrap();

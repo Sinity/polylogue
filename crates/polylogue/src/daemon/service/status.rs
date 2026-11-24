@@ -152,15 +152,15 @@ pub(super) fn building(
     let mode = mode(d);
     let freshness = ReadFreshness {
         local: ReadCompleteness {
-            parsing: CompletenessDimension::Incomplete(vec![CompletenessReason::FirstBuild]),
+            parsing: CompletenessDimension::Incomplete(vec![CompletenessReason::IndexBuilding]),
             derivation: CompletenessDimension::Incomplete(vec![
                 CompletenessReason::DerivationBehind,
             ]),
-            search: CompletenessDimension::Incomplete(vec![CompletenessReason::FirstBuild]),
+            search: CompletenessDimension::Incomplete(vec![CompletenessReason::IndexBuilding]),
             // Primary mode cannot say what the stream has applied before
             // the index exists.
             confirmed_stream: if d.archive.is_primary() {
-                CompletenessDimension::Unknown(vec![CompletenessReason::FirstBuild])
+                CompletenessDimension::Unknown(vec![CompletenessReason::IndexBuilding])
             } else {
                 CompletenessDimension::NotApplicable
             },

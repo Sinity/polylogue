@@ -101,64 +101,6 @@ fn a_refused_open_names_the_pid_of_the_holder() {
 }
 
 #[test]
-fn a_same_boot_build_keeps_its_rows_and_resumes() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("a");
-    let (archive, lock) = Archive::open_or_create(&root).unwrap();
-    let writer = crate::Writer::start(&archive).unwrap();
-    writer.flush().unwrap();
-    // A stop in the middle of a build keeps it for the next start.
-    drop(writer);
-    drop(lock);
-    let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    assert!(archive.index_build().is_some());
-    let writer = crate::Writer::start(&archive).unwrap();
-    writer.derive().unwrap();
-    assert!(archive.index_build().is_none());
-}
-
-/// Reopening an index whose first build is in progress leaves the indexes
-/// that build defers to its end; building them at open would read whole
-/// tables at every restart.
-#[test]
-fn reopening_a_build_does_not_build_its_deferred_indexes() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("a");
-    let (archive, lock) = Archive::open_or_create(&root).unwrap();
-    assert!(archive.index_build().is_some());
-    let index = rusqlite::Connection::open(archive.index_db()).unwrap();
-    // As the writer leaves them while the build runs.
-    for &name in crate::schema::BUILT_AT_END {
-        index
-            .execute_batch(&format!("DROP INDEX IF EXISTS {name}"))
-            .unwrap();
-    }
-    // These read paths are used by derivation during the first build too.
-    index
-        .execute_batch("DROP INDEX block_original_ordinal; DROP INDEX message_duplicate")
-        .unwrap();
-    drop(index);
-    drop(lock);
-    let (archive, _lock) = Archive::open_or_create(&root).unwrap();
-    let index = open_read(&archive.index_db()).unwrap();
-    let present: Vec<String> = index
-        .prepare("SELECT name FROM sqlite_master WHERE type='index'")
-        .unwrap()
-        .query_map([], |row| row.get(0))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    let rebuilt: Vec<&str> = crate::schema::BUILT_AT_END
-        .iter()
-        .copied()
-        .filter(|name| present.iter().any(|p| p == name))
-        .collect();
-    assert_eq!(rebuilt, Vec::<&str>::new());
-    assert!(present.iter().any(|p| p == "block_original_ordinal"));
-    assert!(present.iter().any(|p| p == "message_duplicate"));
-}
-
-#[test]
 fn an_archive_newer_or_with_unknown_tables_is_refused_and_left_as_it_is() {
     let newer = format!("PRAGMA user_version = {}", schema::ARCHIVE_VERSION + 1);
     let older = format!("PRAGMA user_version = {}", schema::ARCHIVE_VERSION - 1);
@@ -265,54 +207,6 @@ fn an_exhausted_counter_refuses_instead_of_reusing_a_position() {
 }
 
 mod hash_order;
-
-#[test]
-fn a_build_from_another_boot_resumes_rows_with_a_new_generation() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let writer = crate::Writer::start(&archive).unwrap();
-    drop(writer);
-    let conn = rusqlite::Connection::open(archive.index_db()).unwrap();
-    let before: String = conn
-        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    conn.execute_batch("UPDATE meta SET value='another-boot' WHERE key='boot_id'; INSERT INTO meta VALUES ('kept-marker','present')").unwrap();
-    drop(conn);
-    drop(lock);
-    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    let conn = open_read(&archive.index_db()).unwrap();
-    assert_eq!(
-        conn.query_row("SELECT value FROM meta WHERE key='kept-marker'", [], |r| {
-            r.get::<_, String>(0)
-        })
-        .unwrap(),
-        "present"
-    );
-    let after: String = conn
-        .query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    assert_ne!(after, before);
-    assert!(archive.index_build().is_some());
-    drop(conn);
-    let writer = crate::Writer::start(&archive).unwrap();
-    writer.derive().unwrap();
-    drop(writer);
-    drop(lock);
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    let conn = open_read(&archive.index_db()).unwrap();
-    assert_eq!(
-        conn.query_row("SELECT value FROM meta WHERE key='generation'", [], |r| {
-            r.get::<_, String>(0)
-        })
-        .unwrap(),
-        after
-    );
-    assert!(archive.index_build().is_none());
-}
 
 #[test]
 fn a_stopped_process_resumes_its_committed_parse_positions() {
@@ -655,7 +549,7 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
         std::process::exit(0);
     }
     let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
+    let (archive, _lock) = due_a_build(&dir.path().join("archive"));
     let path = archive.index_db();
     {
         let conn = index_build::open_writer(&archive).unwrap();
@@ -775,7 +669,10 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
             );
         }
     }
-    crate::Writer::start(&archive).unwrap().derive().unwrap();
+    crate::Writer::start(&archive)
+        .unwrap()
+        .build(Vec::new())
+        .unwrap();
     assert!(archive.index_build().is_none());
     assert!(
         archive
@@ -794,4 +691,25 @@ fn private_index_readers_recover_journals_without_accepting_writes() {
             .is_readonly(rusqlite::MAIN_DB)
             .unwrap()
     );
+}
+
+/// An archive whose register records an input and whose index file is
+/// gone, opened so that a build is due.
+fn due_a_build(root: &std::path::Path) -> (Archive, crate::ArchiveLock) {
+    {
+        let (archive, _lock) = Archive::open_or_create(root).unwrap();
+        open_write(&archive.archive_db(), cache::SETUP)
+            .unwrap()
+            .execute(
+                "INSERT INTO input(id,format) VALUES ('synthetic','claude-code')",
+                [],
+            )
+            .unwrap();
+    }
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = fs::remove_file(root.join(format!("index.db{suffix}")));
+    }
+    let (archive, lock) = Archive::open_or_create(root).unwrap();
+    assert!(archive.index_build().is_some());
+    (archive, lock)
 }

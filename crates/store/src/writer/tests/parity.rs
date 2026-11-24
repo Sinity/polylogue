@@ -346,17 +346,28 @@ fn replies(w: &TestArchive) -> Vec<String> {
     out
 }
 
+/// How a capture's steps are read.
+#[derive(Clone, Copy)]
+enum Reading {
+    /// Bytes only.
+    Never,
+    /// Each step's rows with its bytes (upkeep).
+    Each,
+    /// Bytes only for the first steps; then the index is built from the
+    /// record, and each later step's rows come with its bytes.
+    BuildAfter(usize),
+}
+
 /// Stores the inputs' records divided at `cuts`, in the order `picks`
-/// chooses, each step its own transaction, with its rows when `parse`.
+/// chooses, each step its own transaction, read as `reading` says.
 /// Returns the archive's chain of each input's chain.
 fn capture(
-    w: &TestArchive,
+    mut w: TestArchive,
     inputs: &[Input],
     cuts: &[bool],
     picks: &[u32],
-    parse: bool,
-) -> std::collections::BTreeMap<(usize, usize), i64> {
-    let store = Arc::new(w.archive.blobs().unwrap());
+    reading: Reading,
+) -> (TestArchive, std::collections::BTreeMap<(usize, usize), i64>) {
     let mut steps: Vec<std::collections::VecDeque<(usize, usize, usize)>> = inputs
         .iter()
         .enumerate()
@@ -379,33 +390,84 @@ fn capture(
         })
         .collect();
     let mut chains = std::collections::BTreeMap::new();
+    let mut stored_records = std::collections::BTreeMap::new();
     let mut pick = picks.iter().cycle();
+    let mut taken = 0;
     while steps.iter().any(|ranges| !ranges.is_empty()) {
+        if matches!(reading, Reading::BuildAfter(k) if k == taken) && taken > 0 {
+            w = build_from_record(w, inputs, &chains, &stored_records);
+        }
+        let parse = match reading {
+            Reading::Never => false,
+            Reading::Each => true,
+            Reading::BuildAfter(k) => taken >= k,
+        };
+        taken += 1;
         let waiting: Vec<usize> = (0..steps.len()).filter(|&n| !steps[n].is_empty()).collect();
         let n = waiting[*pick.next().unwrap() as usize % waiting.len()];
         let (chain, from, to) = steps[n].pop_front().unwrap();
-        let mut step = stored_step(w, n, &inputs[n], chain, from, to);
+        let mut step = stored_step(&w, n, &inputs[n], chain, from, to);
         if !parse {
             step.batch.parse.clear();
         }
-        let results = w
-            .writer
-            .store_group(vec![step], Arc::clone(&store))
-            .unwrap();
+        let store = Arc::new(w.archive.blobs().unwrap());
+        let results = w.writer.store_group(vec![step], store).unwrap();
         let [Ok(stored)] = &results[..] else {
             panic!("{results:?}");
         };
         chains.insert((n, chain), stored.chain);
+        stored_records.insert((n, chain), to);
         w.writer.flush().unwrap();
     }
-    chains
+    if matches!(reading, Reading::BuildAfter(k) if k >= taken) && taken > 0 {
+        w = build_from_record(w, inputs, &chains, &stored_records);
+    }
+    (w, chains)
+}
+
+/// Opens the archive again without its index, so a build is due, and
+/// builds it from the stored record: each chain read whole, as the record
+/// holds it, into one of two runs, then loaded, composed and installed.
+fn build_from_record(
+    w: TestArchive,
+    inputs: &[Input],
+    chains: &std::collections::BTreeMap<(usize, usize), i64>,
+    stored_records: &std::collections::BTreeMap<(usize, usize), usize>,
+) -> TestArchive {
+    let w = w.reopened_without_index();
+    let sender = w.writer.sender();
+    let mut runs = [
+        crate::writer::build::BuildRun::create(&w.archive, 0).unwrap(),
+        crate::writer::build::BuildRun::create(&w.archive, 1).unwrap(),
+    ];
+    for (i, (&(n, chain), &stored)) in chains.iter().enumerate() {
+        let records = stored_records[&(n, chain)];
+        let mut batch = step(n, &inputs[n], chain, 0, records);
+        let mut reading = ChainReading::new().unwrap();
+        for step in &mut batch.parse {
+            reading.push(step).unwrap();
+        }
+        runs[i % 2]
+            .write(&sender, &batch.input, stored, batch.length, reading)
+            .unwrap();
+    }
+    let paths = runs
+        .into_iter()
+        .filter_map(|run| run.finish().unwrap())
+        .collect();
+    let phases = w.writer.build(paths).unwrap();
+    assert_eq!(
+        phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        ["load", "indexes", "compose", "search", "install"]
+    );
+    assert!(w.archive.index_build().is_none());
+    w
 }
 
 /// The same captures, then every chain read whole in one transaction, which
 /// composes every session from all its readings at once.
 fn reference(inputs: &[Input], cuts: &[bool], picks: &[u32]) -> Vec<String> {
-    let w = test_archive();
-    let chains = capture(&w, inputs, cuts, picks, false);
+    let (w, chains) = capture(test_archive(), inputs, cuts, picks, Reading::Never);
     let group = chains
         .iter()
         .map(|(&(n, chain), &stored)| {
@@ -431,8 +493,20 @@ fn reference(inputs: &[Input], cuts: &[bool], picks: &[u32]) -> Vec<String> {
 /// The inputs' records divided at `cuts` and sent in the order `picks`
 /// chooses, each step its own transaction.
 fn upkeep(inputs: &[Input], cuts: &[bool], picks: &[u32]) -> Vec<String> {
-    let w = test_archive();
-    capture(&w, inputs, cuts, picks, true);
+    let (w, _) = capture(test_archive(), inputs, cuts, picks, Reading::Each);
+    replies(&w)
+}
+
+/// The index built from the record after the first `built` steps, the
+/// rest read by upkeep.
+fn built_then_upkeep(inputs: &[Input], cuts: &[bool], picks: &[u32], built: usize) -> Vec<String> {
+    let (w, _) = capture(
+        test_archive(),
+        inputs,
+        cuts,
+        picks,
+        Reading::BuildAfter(built),
+    );
     replies(&w)
 }
 
@@ -450,6 +524,20 @@ proptest! {
     ) {
         let expected = reference(&inputs, &cuts, &picks);
         prop_assert_eq!(upkeep(&inputs, &cuts, &picks), expected);
+    }
+
+    /// A build reads the record at one position and upkeep reads what
+    /// arrived after it; together they give the replies upkeep alone gives
+    /// (docs/architecture.md, one path).
+    #[test]
+    fn a_build_equals_upkeep_for_the_same_record(
+        inputs in prop::collection::vec(input(), 1..4),
+        cuts in prop::collection::vec(any::<bool>(), 8),
+        picks in prop::collection::vec(any::<u32>(), 6),
+        built in 1usize..12,
+    ) {
+        let expected = reference(&inputs, &cuts, &picks);
+        prop_assert_eq!(built_then_upkeep(&inputs, &cuts, &picks, built), expected);
     }
 }
 

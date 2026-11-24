@@ -26,7 +26,7 @@ pub(super) struct StoredPlanning {
 
 /// Why `origin`'s parser does not read the bytes recorded at `path`, when
 /// it does not.
-fn unread_path(origin: &OriginSpec, path: &Path) -> Option<String> {
+pub(crate) fn unread_path(origin: &OriginSpec, path: &Path) -> Option<String> {
     (origin.support == Support::Parsed && (origin.open)(path).is_none()).then(|| {
         format!(
             "no {} parser reads the recorded path {}",
@@ -321,7 +321,27 @@ impl Engine {
         self.lookups_at = None;
     }
 
+    /// One pass. A standalone archive without a current index builds it
+    /// first, from the record as it stands; the pass then reads what
+    /// arrived since.
     fn one_pass(
+        &mut self,
+        discover: bool,
+        paths: &std::collections::BTreeSet<PathBuf>,
+    ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
+        let built = if !self.archive.is_primary() && self.archive.index_build().is_some() {
+            Some(self.build_index()?.0)
+        } else {
+            None
+        };
+        let (mut pass, seen) = self.read_pass(discover, paths)?;
+        if let Some(built) = built {
+            pass.add(built);
+        }
+        Ok((pass, seen))
+    }
+
+    fn read_pass(
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
@@ -1598,7 +1618,7 @@ impl Engine {
     /// checkpoint; anything else parses from the start as a replacement of
     /// the chain's reading, so a line parser rebuilds its state. The parser
     /// state itself is restored as the plan starts ([`Engine::load_stored`]).
-    fn reparse_plan(
+    pub(crate) fn reparse_plan(
         &self,
         path: PathBuf,
         origin: &'static OriginSpec,

@@ -181,8 +181,10 @@ they reached the disk. Recovery starts with a reboot
 of its own, without syncing as it goes, and installs them by rename when it
 ends; until then nothing but the build opens them. A build never changes the
 record or the stored bytes, so losing one costs the build and nothing else: a
-start that finds a build a crash left (its files may hold unsynced pages) discards its files and builds again, one that a clean stop synced resumes in them, and
-a start that finds a finished build not yet installed installs it. While a
+start that finds a build a crash or a stop left discards its files and builds
+again from the stored bytes, and a start that finds a finished build not yet
+installed installs it. An archive whose record holds no input has nothing to
+build: its empty index is created in place. While a
 build runs, reads are served from the installed index when this build of
 Polylogue can read it, and otherwise reply `index_building` with the build's
 progress
@@ -358,7 +360,8 @@ the transaction being written.
 opened; the daemon makes it on `SIGTERM`. Each request's cancellation is a
 child of it. Every reader checks it and every blocking wait wakes on it. Work
 that can be done again from stored bytes (a build, a reading in progress,
-derivation) is dropped at the stop and resumes from its last commit; captured
+derivation) is dropped at the stop; a build starts again from the stored
+bytes, and the others resume from their last commit; captured
 bytes in hand and writes already handed to the writer commit. The next open
 resumes from committed positions ([operations](operations.md#the-daemon)).
 

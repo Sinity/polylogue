@@ -109,7 +109,7 @@ impl Reader<'_> {
         };
         let mut search_missing = Vec::new();
         if self.pool.reads_build() {
-            search_missing.push(CompletenessReason::FirstBuild);
+            search_missing.push(CompletenessReason::IndexBuilding);
         }
         if conn.exists("SELECT EXISTS(SELECT 1 FROM search_pending)", [])? {
             search_missing.push(CompletenessReason::SearchPending);

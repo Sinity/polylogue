@@ -1,9 +1,9 @@
-//! Text identities belong to the serial writer, including IDs whose rows
-//! temporarily lose their last reference. Sorted spill files keep these
-//! identities without retaining a map that grows with the archive.
+//! Text identities belong to the serial writer. A text row is found by its
+//! hash, or inserted with the next identity. Identities only increase while
+//! the writer runs, so one a removed or rolled-back text had is not given to
+//! another text while a mark or a search entry may still name it.
 use crate::ConnExt as _;
 use crate::OptionExt as _;
-use crate::key_maps::KeyRows;
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::cell::{Cell, RefCell};
@@ -15,61 +15,38 @@ struct TextMark {
 }
 
 pub(crate) struct TextIds {
-    /// A positive ID has a row; its negative form keeps the allocation after
-    /// removal or rollback, so a later text cannot reuse that identity.
-    known: RefCell<KeyRows>,
     marked: RefCell<HashMap<i64, TextMark>>,
     marked_entries: usize,
     groups: super::StoredGroups,
     next: Cell<i64>,
+    /// The table may hold rows this writer did not write (a confirmed scope
+    /// change): the next identity is taken above them before it is used.
     reload: Cell<bool>,
-    complete: Cell<bool>,
 }
 
 impl TextIds {
-    pub(crate) fn new(conn: &Connection, preload: bool, bytes: u64) -> Result<Self> {
-        let max: i64 = conn.scalar("SELECT coalesce(max(id),0) FROM text", [])?;
+    pub(crate) fn new(conn: &Connection, bytes: u64) -> Result<Self> {
         let ids = Self {
-            known: RefCell::new(KeyRows::new(bytes / 2)?),
             marked: RefCell::new(HashMap::new()),
             marked_entries: (bytes / 4 / 64).max(1) as usize,
             groups: super::StoredGroups::new(bytes / 4),
-            next: Cell::new(next(max)?),
-            reload: Cell::new(preload),
-            complete: Cell::new(false),
+            next: Cell::new(1),
+            reload: Cell::new(true),
         };
         ids.refresh(conn)?;
         Ok(ids)
     }
 
     fn refresh(&self, conn: &Connection) -> Result<()> {
-        if !self.reload.get() {
-            return Ok(());
+        if self.reload.replace(false) {
+            let max: i64 = conn.scalar("SELECT coalesce(max(id),0) FROM text", [])?;
+            self.next.set(self.next.get().max(next(max)?));
         }
-        let mut known = self.known.borrow_mut();
-        known.transform_values(|id| -id.abs())?;
-        let mut statement = conn.prepare("SELECT hash,id FROM text ORDER BY id")?;
-        let mut rows = statement.query([])?;
-        while let Some(row) = rows.next()? {
-            let hash = crate::encoding::Columns::hash(row, 0)?;
-            let id: i64 = row.get(1)?;
-            if known.get(&hash)?.is_some_and(|prior| prior.abs() != id) {
-                return Err(StoreError::Invalid(
-                    "a text hash has conflicting row identities".into(),
-                ));
-            }
-            known.set(hash, id)?;
-            self.next.set(self.next.get().max(next(id)?));
-        }
-        self.complete.set(true);
-        self.reload.set(false);
         Ok(())
     }
 
-    /// Resolves a complete text hash. An empty build has no earlier text to
-    /// probe: its dictionary already includes every row written in the build.
-    /// In an installed index, a prepared body first tries the unique insert;
-    /// only a conflicting or bodyless lookup reads the stored hash index.
+    /// The row of a complete text hash: the stored one, or a new row holding
+    /// the prepared body.
     pub(crate) fn resolve(
         &self,
         conn: &Connection,
@@ -78,73 +55,47 @@ impl TextIds {
         membership: Option<&super::NewMembership<'_>>,
     ) -> Result<i64> {
         self.refresh(conn)?;
-        let known = self.known.borrow().get(hash)?;
-        if let Some(id) = known.filter(|id| *id > 0) {
+        let stored = conn
+            .prepare_cached("SELECT id FROM text WHERE hash=?1")?
+            .query_row([hash.as_slice()], |row| row.get::<_, i64>(0))
+            .optional()?;
+        if let Some(id) = stored {
             return Ok(id);
         }
-        let allocated = known.map(i64::abs);
-        if let Some(body) = body {
-            let id = allocated.unwrap_or(self.next.get());
-            let after = next(id)?;
-            let bits = membership
-                .and_then(|membership| membership.bits.get(hash))
-                .copied()
-                .unwrap_or(0);
-            if super::groups::insert(conn, &self.groups, Some(id), hash, body, bits)?.is_some() {
-                if bits != 0 {
-                    if !membership.is_some_and(|membership| membership.at_build_end) {
-                        for bit in [1, 2].into_iter().filter(|bit| bits & bit != 0) {
-                            super::queue_entry(conn, id, bit)?;
-                        }
-                    }
-                    self.mark(id, bits);
-                }
-                self.next.set(self.next.get().max(after));
-                self.known.borrow_mut().set(*hash, id)?;
-                return Ok(id);
-            }
+        let body =
+            body.ok_or_else(|| StoreError::Invalid("a new text has no prepared bytes".into()))?;
+        let id = self.next.get();
+        let bits = membership
+            .and_then(|membership| membership.bits.get(hash))
+            .copied()
+            .unwrap_or(0);
+        if super::groups::insert(conn, &self.groups, Some(id), hash, body, bits)?.is_none() {
+            return Err(StoreError::Invalid(
+                "allocated text identity conflicts with stored rows".into(),
+            ));
         }
-        if !self.complete.get() {
-            let stored = conn
-                .prepare_cached("SELECT id FROM text WHERE hash=?1")?
-                .query_row([hash.as_slice()], |row| row.get::<_, i64>(0))
-                .optional()?;
-            if let Some(id) = stored {
-                if allocated.is_some_and(|prior| prior != id) {
-                    return Err(StoreError::Invalid(
-                        "a text hash has conflicting row identities".into(),
-                    ));
+        if bits != 0 {
+            if !membership.is_some_and(|membership| membership.at_build_end) {
+                for bit in [1, 2].into_iter().filter(|bit| bits & bit != 0) {
+                    super::queue_entry(conn, id, bit)?;
                 }
-                self.known.borrow_mut().set(*hash, id)?;
-                self.next.set(self.next.get().max(next(id)?));
-                return Ok(id);
             }
+            self.mark(id, bits);
         }
-        Err(StoreError::Invalid(
-            if body.is_some() {
-                "allocated text identity conflicts with stored rows"
-            } else {
-                "a new text has no prepared bytes"
-            }
-            .into(),
-        ))
+        self.next.set(next(id)?);
+        Ok(id)
     }
 
-    /// A confirmed scope change discards cached identities; the allocator's
-    /// high-water mark stays above every ID this process has used.
+    /// A confirmed scope change replaced rows this writer did not write.
     pub(crate) fn discard_cached(&self) {
-        self.known.borrow_mut().clear();
         self.marked.borrow_mut().clear();
         self.groups.clear();
         self.reload.set(true);
-        self.complete.set(false);
     }
 
-    pub(crate) fn removed(&self, hash: &[u8; 32], id: i64) -> Result<()> {
+    pub(crate) fn removed(&self, id: i64) {
         self.groups.clear();
-        self.known.borrow_mut().set(*hash, -id)?;
         self.marked.borrow_mut().remove(&id);
-        Ok(())
     }
 
     pub(super) fn is_marked(&self, id: i64, bit: i64) -> bool {
@@ -197,7 +148,6 @@ impl Drop for TextTransaction<'_> {
     fn drop(&mut self) {
         self.texts.marked.borrow_mut().clear();
         if !self.committed {
-            self.texts.reload.set(true);
             self.texts.groups.clear();
         }
     }

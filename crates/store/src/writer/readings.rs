@@ -1057,22 +1057,20 @@ pub(super) fn remove_released_texts(
     at_build_end: bool,
 ) -> Result<()> {
     for &id in released {
-        let row: Option<(i64, [u8; 32])> = tx
+        let indexed: Option<i64> = tx
             .prepare_cached(
-                "SELECT t.indexed,t.hash FROM text t WHERE t.id=?1
+                "SELECT t.indexed FROM text t WHERE t.id=?1
                  AND NOT EXISTS(SELECT 1 FROM reading_text r WHERE r.text_id=t.id)",
             )?
-            .query_row([id], |r| {
-                Ok((r.get(0)?, crate::encoding::Columns::hash(r, 1)?))
-            })
+            .query_row([id], |r| r.get(0))
             .optional()?;
-        let Some((indexed, hash)) = row else { continue };
+        let Some(indexed) = indexed else { continue };
         if at_build_end {
             crate::text_rows::remove_unindexed(tx, id)?;
         } else {
             crate::text_rows::remove(tx, id, indexed)?;
         }
-        texts.removed(&hash, id)?;
+        texts.removed(id);
     }
     Ok(())
 }

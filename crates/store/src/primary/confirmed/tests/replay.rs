@@ -36,12 +36,8 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     crate::primary::scope::reset(&mut index, &archive, "scope", false).unwrap();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(1, "obsolete"), complete_at(1)],
     )
@@ -64,24 +60,16 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         }),
     ];
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &page,
     )
     .unwrap();
     // A lost reply can repeat the same already-staged page.
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &page,
     )
@@ -100,7 +88,6 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         apply(
             &crate::text_rows::TextIds::new(
                 &index,
-                false,
                 crate::archive::MemoryBudget::default().keys() / 3
             )
             .unwrap(),
@@ -123,7 +110,6 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         apply(
             &crate::text_rows::TextIds::new(
                 &index,
-                false,
                 crate::archive::MemoryBudget::default().keys() / 3
             )
             .unwrap(),
@@ -149,12 +135,8 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
     index.execute_batch("DROP TRIGGER stop_snapshot").unwrap();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[],
     )
@@ -178,12 +160,8 @@ fn snapshot_pages_resume_hidden_and_install_with_their_completion() {
         "a snapshot completion marker is not a stream delivery"
     );
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[completed(8, 20)],
     )
@@ -204,12 +182,8 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
     let mut index = cache(&path);
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(3, "source"), delivered(7)],
     )
@@ -228,12 +202,8 @@ fn a_staged_delivery_survives_reopen_without_advancing_the_applied_position() {
     );
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 0);
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[complete_at(3), delivered(8)],
     )
@@ -249,12 +219,8 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     let mut index = cache(&dir.path().join("index.db"));
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(2, "source"), complete_at(2), delivered(9)],
     )
@@ -262,12 +228,8 @@ fn a_restarted_consumer_redelivers_applied_positions_without_changing_them() {
     assert_eq!(checkpoint(&index).unwrap(), Some(2));
     // A Sinex retry may repeat an already applied delivery.
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(2, "source"), complete_at(2), delivered(4)],
     )
@@ -290,12 +252,8 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     let mut index = cache(&dir.path().join("index.db"));
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[
             Confirmed {
@@ -321,12 +279,8 @@ fn an_event_erased_before_this_index_read_it_is_recorded_as_tombstoned() {
     assert_eq!(product, None);
     // A tombstoned event never becomes live again.
     let refused = apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[
             Confirmed {
@@ -353,7 +307,6 @@ fn scope_reset_cannot_share_a_page_with_events() {
         apply(
             &crate::text_rows::TextIds::new(
                 &index,
-                false,
                 crate::archive::MemoryBudget::default().keys() / 3
             )
             .unwrap(),
@@ -376,12 +329,8 @@ fn an_unreadable_event_in_the_middle_of_a_page_is_refused_and_later_events_apply
     let mut index = cache(&dir.path().join("index.db"));
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[
             input(1, "before"),
@@ -453,12 +402,8 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         confirmed
     };
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[
             observed(2, "first-observation"),
@@ -476,12 +421,8 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         crate::archive::open_write(&archive.index_db(), crate::archive::cache::SETUP).unwrap();
     assert!(boundary(&index).is_none());
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[complete_at(2)],
     )
@@ -491,12 +432,8 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
     let mut append = observed(4, "later-observation");
     append.event = "event-first-append".into();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[append, input(5, "next"), complete_at(5)],
     )
@@ -523,7 +460,6 @@ fn source_boundary_needs_complete_scope_and_survives_commits() {
         apply(
             &crate::text_rows::TextIds::new(
                 &index,
-                false,
                 crate::archive::MemoryBudget::default().keys() / 3,
             )
             .unwrap(),
@@ -580,12 +516,8 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         },
     };
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[
             input(1, "known"),
@@ -597,12 +529,8 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
     .unwrap();
     let previous = boundary(&index).unwrap();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[refused(3, "possible-input", true), complete_at(3)],
     )
@@ -621,24 +549,16 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         change,
     };
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[lifecycle(4, ConfirmedChange::Archived), complete_at(4)],
     )
     .unwrap();
     assert!(boundary(&index).is_some());
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[lifecycle(5, ConfirmedChange::Restored), complete_at(5)],
     )
@@ -647,12 +567,8 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
     let mut replacement = input(6, "recovered");
     replacement.event = "possible-input".into();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[replacement, complete_at(6)],
     )
@@ -680,12 +596,8 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
         1
     );
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[refused(7, "erased-input", true), complete_at(7)],
     )
@@ -694,12 +606,8 @@ fn unreadable_input_blocks_absence_until_its_real_lifecycle_or_readable_replacem
     let mut erased = lifecycle(8, ConfirmedChange::Tombstoned);
     erased.event = "erased-input".into();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[erased, complete_at(8)],
     )
@@ -739,23 +647,15 @@ fn completion_marker_survives_pages_and_rolls_back() {
     let mut index = cache(&path);
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(2, "first"), completed(2, 5), delivered(5)],
     )
     .unwrap();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(3, "later"), delivered(7)],
     )
@@ -769,12 +669,8 @@ fn completion_marker_survives_pages_and_rolls_back() {
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
     // A repeated old completion marker may appear after the newer partial data.
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[completed(2, 8), delivered(8)],
     )
@@ -792,7 +688,6 @@ fn completion_marker_survives_pages_and_rolls_back() {
         apply(
             &crate::text_rows::TextIds::new(
                 &index,
-                false,
                 crate::archive::MemoryBudget::default().keys() / 3
             )
             .unwrap(),
@@ -809,12 +704,8 @@ fn completion_marker_survives_pages_and_rolls_back() {
     assert_eq!(rows(&index, "SELECT count(*) FROM source_input"), 1);
     index.execute_batch("DROP TRIGGER stop_progress").unwrap();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[],
     )
@@ -831,12 +722,8 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
     let mut index = cache(&dir.path().join("index.db"));
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[
             input(2, "first"),
@@ -857,12 +744,8 @@ fn a_new_completion_after_higher_pending_data_cannot_become_a_restart_boundary()
         1
     );
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[completed(3, 9)],
     )
@@ -883,12 +766,8 @@ fn malformed_completion_markers_refuse_visible_progress() {
     let mut index = cache(&dir.path().join("index.db"));
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(2, "first"), delivered(5)],
     )
@@ -911,7 +790,6 @@ fn malformed_completion_markers_refuse_visible_progress() {
             apply(
                 &crate::text_rows::TextIds::new(
                     &index,
-                    false,
                     crate::archive::MemoryBudget::default().keys() / 3
                 )
                 .unwrap(),
@@ -928,12 +806,8 @@ fn malformed_completion_markers_refuse_visible_progress() {
     }
     index.execute("DELETE FROM primary_complete", []).unwrap();
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[completed(2, 5)],
     )

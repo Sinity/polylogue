@@ -59,12 +59,8 @@ fn scope_change_waits_for_a_new_completion_marker() {
     )
     .unwrap();
     confirmed::apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[
             input(1, "private"),
@@ -128,12 +124,8 @@ fn scope_change_waits_for_a_new_completion_marker() {
     );
     assert!(!reset(&mut index, &archive, "narrow", false).unwrap());
     confirmed::apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[completion_marker(0)],
     )
@@ -145,12 +137,8 @@ fn scope_change_waits_for_a_new_completion_marker() {
     assert!(reset(&mut index, &archive, "wide", false).unwrap());
     assert_eq!(confirmed::checkpoint(&index).unwrap(), None);
     confirmed::apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(1, "private"), completion_marker(1)],
     )
@@ -178,12 +166,8 @@ fn a_failed_scope_transaction_keeps_readers_blocked_until_retry_commits() {
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     confirmed::apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(1, "private"), completion_marker(1)],
     )
@@ -221,12 +205,8 @@ fn unsaved_sinex_control_blocks_current_reads() {
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     confirmed::apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(1, "private"), completion_marker(1)],
     )
@@ -255,12 +235,8 @@ fn cache_clear_cannot_commit_until_registered_outputs_are_invalidated() {
     let archive = Archive::on_sinex(root.path(), &root.path().join("sinex"));
     let mut index = cache(&archive);
     confirmed::apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[input(1, "private"), completion_marker(1)],
     )
