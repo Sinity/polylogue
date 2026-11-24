@@ -1208,6 +1208,7 @@ impl Parser for ClaudeCode {
             && v.str("subtype").filter(|s| !s.is_empty()) == Some("stop_hook_summary"))
         .then(|| hook_text(v));
         let message_record = matches!(ty, "user" | "assistant")
+            || (ty == "summary" && v.get("message").is_some())
             || hook
                 .as_ref()
                 .is_some_and(|summary| !summary.blocks.is_empty());
@@ -1249,7 +1250,8 @@ impl Parser for ClaudeCode {
         if ty == "continued-in" {
             records.fields(ty, v, &fields::CONTINUATION_FIELDS);
         }
-        let summary = ty == "user" && v.bool("isCompactSummary") == Some(true);
+        let summary = (ty == "user" && v.bool("isCompactSummary") == Some(true))
+            || (ty == "summary" && v.get("message").is_some());
         if !summary && let Some(mut boundary) = parser_state.pending_boundary.take() {
             boundary.range = boundary.range.map(|(start, _)| (start, range(record).1));
             out.events.push(boundary);
@@ -1345,9 +1347,14 @@ impl Parser for ClaudeCode {
             }
             "custom-title" => self.title(v, "customTitle", TitleSource::Custom, out),
             "ai-title" => self.title(v, "aiTitle", TitleSource::Generated, out),
-            // A `summary` record titles the session (`leafUuid` names the
-            // message it summarizes); compactions are `isCompactSummary`
-            // user records.
+            // A `summary` line with only its text titles the session
+            // (`leafUuid` names the message it summarizes). One carrying a
+            // `message` is the summary a compaction replay wrote.
+            "summary" if v.get("message").is_some() => {
+                let mut value = v.clone();
+                value["isCompactSummary"] = Json::Bool(true);
+                self.compaction_summary(parser_state, record, &value, out, records)
+            }
             "summary" => self.title(v, "summary", TitleSource::Summary, out),
             "continued-in" => {
                 let (Some(parent), Some(child)) = (
