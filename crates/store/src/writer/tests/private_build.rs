@@ -244,6 +244,14 @@ fn private_build_crash_child() {
     let chains = due_a_build(root, &inputs);
     let (archive, _lock) = Archive::open_or_create(root).unwrap();
     let writer = Writer::start(&archive).unwrap();
+    // Preparing the second input stops the process with the first input's
+    // run already written; the other points are reached by the load.
+    let subject = if point == "index.build.prepare" {
+        "second"
+    } else {
+        ""
+    };
+    crate::fault::arm(&point, subject, crate::fault::Action::StopProcess, 0, 1);
     let mut runs = runs(&archive, &writer, &inputs[..1], &chains[..1]);
     let mut second = crate::writer::build::BuildWorker::create(&archive, 1, 32 << 20).unwrap();
     let mut batch = one_message("second", "second-m", "second text");
@@ -256,7 +264,6 @@ fn private_build_crash_child() {
     }
     open.finish().unwrap();
     runs.extend(second.finish().unwrap());
-    crate::fault::arm(&point, "", crate::fault::Action::StopProcess, 0, 1);
     writer.build(runs).unwrap();
     panic!("the configured durability boundary was not reached");
 }
@@ -310,35 +317,40 @@ fn wait_stopped(pid: libc::pid_t) -> i32 {
     }
 }
 
-/// A build killed in the middle of its load leaves no index
-/// and no partial build: the next open starts it again from the stored
-/// bytes (docs/architecture.md, Durability).
+/// A build killed while preparing an input and a build killed in the middle
+/// of its load each leave no index and no partial build: the next open starts
+/// it again from the stored bytes (docs/architecture.md, Durability).
 #[cfg(feature = "faults")]
 #[test]
-fn a_killed_build_restarts_from_stored_bytes_and_leaves_no_partial_index() {
-    let directory = crash_at("index.build.loading");
-    let paths = Paths::of(directory.path());
-    assert!(paths.runs.exists());
-    assert!(!paths.index.exists());
-    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
-    assert!(!paths.runs.exists());
-    assert!(!paths.index.exists());
-    assert!(matches!(
-        serving(&archive).reader().err(),
-        Some(StoreError::IndexBuilding(_))
-    ));
-    let pipeline = ReadPool::open(&archive).unwrap();
-    let reader = pipeline.reader().unwrap();
-    // The stored bytes survive in the archive; the build file holds nothing
-    // of the loaded run.
-    assert_eq!(reader.status().unwrap().messages, 0);
-    assert_eq!(reader.status().unwrap().inputs, 2);
-    drop(reader);
-    let writer = Writer::start(&archive).unwrap();
-    let chains = [1, 1];
-    let runs = runs(&archive, &writer, &["crashed", "second"], &chains);
-    writer.build(runs).unwrap();
-    assert_eq!(messages(&serving(&archive)), 2);
+fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
+    for point in ["index.build.prepare", "index.build.loading"] {
+        let directory = crash_at(point);
+        let paths = Paths::of(directory.path());
+        assert!(paths.runs.exists(), "{point}");
+        assert!(!paths.index.exists(), "{point}");
+        let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+        assert!(!paths.runs.exists(), "{point}");
+        assert!(!paths.index.exists(), "{point}");
+        assert!(
+            matches!(
+                serving(&archive).reader().err(),
+                Some(StoreError::IndexBuilding(_))
+            ),
+            "{point}"
+        );
+        let pipeline = ReadPool::open(&archive).unwrap();
+        let reader = pipeline.reader().unwrap();
+        // The stored bytes survive in the archive; the build file holds
+        // nothing of the prepared runs.
+        assert_eq!(reader.status().unwrap().messages, 0, "{point}");
+        assert_eq!(reader.status().unwrap().inputs, 2, "{point}");
+        drop(reader);
+        let writer = Writer::start(&archive).unwrap();
+        let chains = [1, 1];
+        let runs = runs(&archive, &writer, &["crashed", "second"], &chains);
+        writer.build(runs).unwrap();
+        assert_eq!(messages(&serving(&archive)), 2, "{point}");
+    }
 }
 
 #[cfg(feature = "faults")]

@@ -1,5 +1,6 @@
 use super::*;
 use polylogue_model::bundle::ShownBlocks;
+use polylogue_model::read::EntryKind::{Call, Header, Other, Result as Output, Text};
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 mod order;
 
@@ -78,6 +79,11 @@ fn sparse_original_positions_survive_reopen_and_streaming_reads() {
     let expected = part.clone();
     write(&w, projected_batch("partial", part.0, part.1));
     assert_eq!(current(&w, &message.id), expected);
+    super::items::assert_entry_kinds(
+        &w,
+        "s",
+        &[(None, Header), (Some(1), Call), (Some(3), Other)],
+    );
     let TestArchive {
         writer,
         _lock,
@@ -143,7 +149,14 @@ fn compatible_partials_union_without_downgrading_full_or_pinned_readings() {
         pinned.message_with_block_selection(&message.id).unwrap(),
         Some(first.clone())
     );
-    super::items::assert_matches_rows(&w, "s");
+    super::items::assert_entry_kinds(&w, "s", &[(None, Header), (Some(2), Output)]);
+    let all = [
+        (None, Header),
+        (Some(0), Text),
+        (Some(1), Call),
+        (Some(2), Output),
+        (Some(3), Other),
+    ];
     let second = selected(&message, &[0, 1, 3]);
     write(
         &w,
@@ -156,12 +169,12 @@ fn compatible_partials_union_without_downgrading_full_or_pinned_readings() {
     drop(pinned);
     let full = selected(&message, &[0, 1, 2, 3]);
     assert_eq!(current(&w, &message.id), full);
-    super::items::assert_matches_rows(&w, "s");
+    super::items::assert_entry_kinds(&w, "s", &all);
     let mut replay = projected_batch("second", second.0, second.1);
     replay.change = Change::Reparse { chain: 1 };
     write(&w, replay);
     assert_eq!(current(&w, &message.id), full);
-    super::items::assert_matches_rows(&w, "s");
+    super::items::assert_entry_kinds(&w, "s", &all);
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader

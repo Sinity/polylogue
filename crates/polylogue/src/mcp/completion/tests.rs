@@ -22,11 +22,26 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
     assert!(!rich.is_empty());
     let values = reply["result"]["completion"]["values"].as_array().unwrap();
     assert_eq!(values.len(), rich.len());
-    assert!(
-        values
-            .iter()
-            .all(|value| value.as_str().unwrap().ends_with(" | measure count"))
-    );
+    // Each value is the query text with the span before the cursor
+    // replaced by the completion, so the text after the cursor is kept.
+    let text = "live: | measure count";
+    let completions = reply["result"]["_meta"]["polylogue/completions"]
+        .as_array()
+        .unwrap();
+    for (value, completion) in values.iter().zip(completions) {
+        let start = completion["replace"]["start"].as_u64().unwrap() as usize;
+        let end = completion["replace"]["end"].as_u64().unwrap() as usize;
+        assert!(end <= 5, "{completion}");
+        assert_eq!(
+            value.as_str().unwrap(),
+            format!(
+                "{}{}{}",
+                &text[..start],
+                completion["value"].as_str().unwrap(),
+                &text[end..]
+            )
+        );
+    }
     let (_, direct, failed) = run(
         archive,
         command_surface::RunnableRequest::new(
@@ -96,17 +111,30 @@ fn completion_without_a_position_completes_at_the_end_of_the_text() {
             .answer(archive)
             .unwrap();
         assert!(reply.get("error").is_none(), "{reply}");
-        reply["result"]["completion"]["values"].clone()
+        reply["result"].clone()
     };
     let default = complete(json!({}));
-    let values = default.as_array().expect("completion values are an array");
+    let values = default["completion"]["values"]
+        .as_array()
+        .expect("completion values are an array");
     assert!(!values.is_empty());
-    assert!(
-        values
-            .iter()
-            .all(|value| value.as_str().unwrap().starts_with("live:")),
-        "{values:?}"
-    );
+    // Completing at the end of the text replaces a span that ends there, so
+    // each value is the text before the span, then the completion.
+    let completions = default["_meta"]["polylogue/completions"]
+        .as_array()
+        .unwrap();
+    for (value, completion) in values.iter().zip(completions) {
+        let start = completion["replace"]["start"].as_u64().unwrap() as usize;
+        assert_eq!(completion["replace"]["end"], text.len(), "{completion}");
+        assert_eq!(
+            value.as_str().unwrap(),
+            format!(
+                "{}{}",
+                &text[..start],
+                completion["value"].as_str().unwrap()
+            )
+        );
+    }
     let explicit = complete(json!({"polylogue/position": text.len()}));
-    assert_eq!(default, explicit);
+    assert_eq!(default["completion"], explicit["completion"]);
 }

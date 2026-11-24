@@ -74,35 +74,29 @@ fn frames(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
         })
         .collect()
 }
-fn streamed(d: &Daemon, id: &str) -> (ReadBegin, ReadRecord, ReadComplete) {
-    streamed_request(d, &read(id))
-}
-fn streamed_request(
-    d: &Daemon,
-    request: &crate::test_daemon::Call,
-) -> (ReadBegin, ReadRecord, ReadComplete) {
-    let rows: crate::protocol::line::Rows =
-        serde_json::from_value(request.arguments.clone()).unwrap();
-    let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
-        panic!("one read")
-    };
-    let request = &crate::daemon::service::read::request_of(
-        crate::daemon::verbs::read::arguments(read, rows.selection.unwrap()).unwrap(),
-        None,
+/// The stream of a read as the daemon's socket delivers it: the transfer's
+/// begin, its one record and its completion (docs/interfaces.md, finite
+/// transfers), then the line's step report and answer.
+fn streamed(d: &test_daemon::TestDaemon, id: &str) -> (ReadBegin, ReadRecord, ReadComplete) {
+    let request = crate::client::request("rows", read(id).arguments, format!("stream-{id}"));
+    let mut frames = Vec::new();
+    crate::client::stream::run_call(
+        &d.daemon.archive,
+        &request,
+        Some(std::time::Duration::from_secs(10)),
+        |frame| {
+            let done = frame.event == "answer";
+            frames.push((frame.event, serde_json::from_str(&frame.data).unwrap()));
+            Ok(done)
+        },
     )
     .unwrap();
-    let operation = d.operation_context(&actor()).unwrap();
-    let mut bytes = Vec::new();
-    let reader = d.reads.reader().unwrap();
-    polylogue_reading::stream(&reader, d, request, &operation, &mut bytes).unwrap();
-    let frames = frames(&bytes);
-    assert_eq!(
-        frames
-            .iter()
-            .map(|(event, _)| event.as_str())
-            .collect::<Vec<_>>(),
-        ["begin", "record", "complete"]
-    );
+    let events: Vec<&str> = frames
+        .iter()
+        .map(|(event, _): &(String, serde_json::Value)| event.as_str())
+        .collect();
+    assert_eq!(events[..3], ["begin", "record", "complete"]);
+    assert_eq!(events[3..], ["steps", "answer"]);
     (
         serde_json::from_value(frames[0].1.clone()).unwrap(),
         serde_json::from_value(frames[1].1.clone()).unwrap(),
@@ -137,7 +131,7 @@ fn no_effect_request_read_records_one_object_run_and_roundtrips_through_director
     let mut d = test_daemon::start("synthetic input");
     d.pause_signals();
     repeat_write_with_no_effect(&d.daemon, "no-effect");
-    let (begin, record, complete) = streamed(&d.daemon, "no-effect");
+    let (begin, record, complete) = streamed(&d, "no-effect");
     assert_eq!(complete.counts.authored, 1);
     let Some(Record::Authored(original)) = record.record() else {
         panic!("whole accepted request omitted")

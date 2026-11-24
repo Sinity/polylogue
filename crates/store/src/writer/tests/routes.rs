@@ -117,7 +117,14 @@ fn routes_merge_by_field() {
     for order in [[0, 1], [1, 0]] {
         let w = store(&readings, &order);
         assert_eq!(shown(&w), expected, "order {order:?}");
-        super::items::assert_matches_rows(&w, "s");
+        super::items::assert_entry_kinds(
+            &w,
+            "s",
+            &[
+                (None, polylogue_model::read::EntryKind::Header),
+                (Some(0), polylogue_model::read::EntryKind::Text),
+            ],
+        );
         assert_eq!(
             routes(&w),
             (
@@ -211,10 +218,32 @@ fn composed_rows(w: &TestArchive) -> Vec<String> {
     rows
 }
 
-#[derive(Debug, Clone)]
-struct Generated {
+/// A reading's route as the precedence names it: page text is its own class.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Class {
     route: Route,
     page_text: bool,
+}
+
+/// The route precedence of docs/sessions.md, step 3: `live`, `capture`,
+/// `recorded`, `export`, `copy`, then `page_text`.
+fn precedence(class: Class) -> usize {
+    if class.page_text {
+        return 5;
+    }
+    match class.route {
+        Route::Live => 0,
+        Route::Capture => 1,
+        Route::Recorded => 2,
+        Route::Export => 3,
+        Route::Copy => 4,
+        Route::PageText => 5,
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Generated {
+    class: Class,
     text: u8,
     at: Option<i64>,
     model: Option<u8>,
@@ -222,63 +251,119 @@ struct Generated {
     stop: bool,
 }
 
-fn generated() -> impl Strategy<Value = Generated> {
+impl Generated {
+    fn message(&self) -> Message {
+        let mut message = answer(&format!("text {}", self.text));
+        if let Some(ms) = self.at {
+            message = timed(message, ms);
+        }
+        message.model = self.model.map(|m| format!("model-{m}"));
+        message.usage.output = self.output;
+        message.stop_reason = self.stop.then(|| "end_turn".into());
+        message
+    }
+}
+
+/// The shown message by docs/sessions.md steps 1 and 3: each field group is
+/// taken from the highest-precedence reading that has it. The classes of one
+/// case are distinct, so the same-route and content-hash tie-breaks never
+/// apply. Returns the message and the class that supplied its content.
+fn precedence_model(readings: &[Generated]) -> (Message, Class) {
+    let supplier = |has: fn(&Message) -> bool| {
+        readings
+            .iter()
+            .filter(|r| has(&r.message()))
+            .min_by_key(|r| precedence(r.class))
+    };
+    let content = supplier(|_| true).unwrap();
+    let mut shown = content.message();
+    if let Some(r) = supplier(|m| m.at.is_some()) {
+        let m = r.message();
+        (shown.at, shown.at_quality, shown.at_precision) = (m.at, m.at_quality, m.at_precision);
+    }
+    if let Some(r) = supplier(|m| m.model.is_some()) {
+        shown.model = r.message().model;
+    }
+    if let Some(r) = supplier(|m| m.usage.output.is_some()) {
+        shown.usage = r.message().usage;
+    }
+    if let Some(r) = supplier(|m| m.stop_reason.is_some()) {
+        shown.stop_reason = r.message().stop_reason;
+    }
+    (shown, content.class)
+}
+
+fn generated() -> impl Strategy<Value = Vec<Generated>> {
+    let classes = [
+        (Route::Live, false),
+        (Route::Capture, false),
+        (Route::Export, false),
+        (Route::Copy, false),
+        (Route::Capture, true),
+    ]
+    .map(|(route, page_text)| Class { route, page_text });
     (
-        prop::sample::select(vec![
-            Route::Live,
-            Route::Capture,
-            Route::Export,
-            Route::Copy,
-        ]),
-        any::<bool>(),
-        0u8..3,
-        prop::option::of(1_000i64..1_003),
-        prop::option::of(0u8..2),
-        prop::option::of(1u64..3),
-        any::<bool>(),
+        prop::sample::subsequence(classes.to_vec(), 2..=4),
+        prop::collection::vec(
+            (
+                0u8..3,
+                prop::option::of(1_000i64..1_003),
+                prop::option::of(0u8..2),
+                prop::option::of(1u64..3),
+                any::<bool>(),
+            ),
+            4,
+        ),
     )
-        .prop_map(
-            |(route, page_text, text, at, model, output, stop)| Generated {
-                route,
-                page_text,
-                text,
-                at,
-                model,
-                output,
-                stop,
-            },
-        )
+        .prop_map(|(classes, fields)| {
+            classes
+                .into_iter()
+                .zip(fields)
+                .map(|(class, (text, at, model, output, stop))| Generated {
+                    class,
+                    text,
+                    at,
+                    model,
+                    output,
+                    stop,
+                })
+                .collect()
+        })
 }
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(24))]
 
-    /// Readings arriving in any order produce identical rows.
+    /// Readings arriving in any order show the message the route precedence
+    /// composes and write identical rows.
     #[test]
     fn arrival_order_property_identical_rows(
-        readings in prop::collection::vec(generated(), 2..4),
+        readings in generated(),
         rotation in 0usize..4,
     ) {
         let batches: Vec<_> = readings
             .iter()
             .enumerate()
             .map(|(n, r)| {
-                let mut message = answer(&format!("text {}", r.text));
-                if let Some(ms) = r.at {
-                    message = timed(message, ms);
-                }
-                message.model = r.model.map(|m| format!("model-{m}"));
-                message.usage.output = r.output;
-                message.stop_reason = r.stop.then(|| "end_turn".into());
-                reading(&format!("input-{n}"), r.route, message, r.page_text)
+                reading(&format!("input-{n}"), r.class.route, r.message(), r.class.page_text)
             })
             .collect();
         let forward: Vec<usize> = (0..batches.len()).collect();
         let reversed: Vec<usize> = forward.iter().rev().copied().collect();
         let mut rotated = forward.clone();
         rotated.rotate_left(rotation % batches.len());
-        let expected = composed_rows(&store(&batches, &forward));
-        prop_assert_eq!(&composed_rows(&store(&batches, &reversed)), &expected);
-        prop_assert_eq!(&composed_rows(&store(&batches, &rotated)), &expected);
+        let (expected, content) = precedence_model(&readings);
+        let main = {
+            let n = readings.iter().position(|r| r.class == content).unwrap();
+            input_id(&format!("input-{n}"), content.route)
+        };
+        let mut first_rows = None;
+        for order in [&forward, &reversed, &rotated] {
+            let w = store(&batches, order);
+            prop_assert_eq!(&shown(&w), &expected, "order {:?}", order);
+            prop_assert_eq!(&routes(&w).0, &main, "order {:?}", order);
+            let rows = composed_rows(&w);
+            prop_assert_eq!(first_rows.get_or_insert_with(|| rows.clone()), &rows);
+        }
     }
 }

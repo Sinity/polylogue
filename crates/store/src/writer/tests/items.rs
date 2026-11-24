@@ -6,6 +6,25 @@ fn stored(w: &TestArchive, session: &str) -> crate::items::StoredItems {
     reader.item_index(&sid(session)).unwrap().expect("indexed")
 }
 
+/// The stored index lists a header, then one entry per stored block, each
+/// named by its source block position (`EntryKind`: one message gives a
+/// header entry and one entry per stored block): `(block, kind)` in order.
+pub(super) fn assert_entry_kinds(
+    w: &TestArchive,
+    session: &str,
+    expected: &[(Option<u64>, polylogue_model::read::EntryKind)],
+) {
+    let found: Vec<_> = stored(w, session)
+        .entries
+        .iter()
+        .map(|entry| match &entry.key {
+            polylogue_model::read::EntryKey::Message { block, .. } => (*block, entry.kind),
+            other => panic!("unexpected key {other:?}"),
+        })
+        .collect();
+    assert_eq!(found, expected, "session {session}");
+}
+
 /// The stored index equals entries computed from the rows alone.
 pub(super) fn assert_matches_rows(w: &TestArchive, session: &str) {
     let pool = ReadPool::open(&w.archive).unwrap();
