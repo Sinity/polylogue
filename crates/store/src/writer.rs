@@ -1616,6 +1616,9 @@ impl Inner {
             Ok(None) => job.finish(Err(StoreError::Stopped)),
             Err(error) if job.installing => job.finish(Err(error)),
             Err(error) => {
+                // The full-text fill's threads write the files the restart
+                // removes: they end first.
+                job.search = None;
                 let error = match self.restart_build() {
                     Ok(()) => error,
                     Err(restart) => StoreError::Invalid(format!(
