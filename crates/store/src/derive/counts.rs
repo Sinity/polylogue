@@ -49,9 +49,7 @@ impl Counts {
                 .checked_mul(sign)
                 .and_then(|n| value.checked_add(n))
                 .ok_or_else(|| {
-                    crate::StoreError::Invalid(
-                        "session count exceeds SQLite's integer range".into(),
-                    )
+                    crate::StoreError::internal("session count exceeds SQLite's integer range")
                 })?;
         }
         Ok(())

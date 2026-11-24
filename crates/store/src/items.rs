@@ -516,7 +516,7 @@ fn events_from(
             })
             .optional()?
             .ok_or_else(|| {
-                StoreError::Invalid(format!(
+                StoreError::internal(format!(
                     "indexed event {pk} left session {session_pk} unchanged"
                 ))
             })?;
@@ -549,8 +549,8 @@ pub(crate) fn computed_entries(conn: &Connection, session_pk: i64) -> Result<Vec
                 out.push(event_item(&id, &kind, at, data_bytes, data.as_deref())?);
             }
             Unit::Kept { .. } => {
-                return Err(StoreError::Invalid(
-                    "a session read whole takes every event from its row".into(),
+                return Err(StoreError::internal(
+                    "a session read whole takes every event from its row",
                 ));
             }
         }
@@ -635,6 +635,8 @@ pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
                     if !matches!(
                         error,
                         StoreError::Invalid(_)
+                            | StoreError::Refused(_)
+                            | StoreError::Internal(_)
                             | StoreError::StoredValue { .. }
                             | StoreError::Json(_)
                     ) {
@@ -1083,8 +1085,8 @@ fn unit_entries(
                     Some(entries) => entries,
                     None if changes.reuses_items(*pk) => stored_message_entries(conn, *pk)?,
                     None => {
-                        return Err(StoreError::Invalid(
-                            "changed message items were not prepared".into(),
+                        return Err(StoreError::internal(
+                            "changed message items were not prepared",
                         ));
                     }
                 },
@@ -1095,11 +1097,11 @@ fn unit_entries(
                 }
             };
             if entries.is_empty() {
-                return Err(StoreError::Invalid(
-                    "changed message items were not prepared".into(),
+                return Err(StoreError::stored_data(
+                    "changed message items were not prepared",
                 ));
             }
-            let id = MessageId::parse(id).map_err(crate::StoreError::invalid)?;
+            let id = MessageId::parse(id).map_err(crate::StoreError::stored_data)?;
             for entry in &mut entries {
                 if let polylogue_model::read::EntryKey::Message { message, .. } = &mut entry.key {
                     *message = id.clone();
@@ -1196,10 +1198,8 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
 /// present. Its worker prepares the shown value under its snapshot;
 /// the existing derive token protects these entries when the writer applies it.
 pub(crate) fn prepare_stored_message(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
-    let (mut message, block_selection) =
-        crate::writer::shown_message(conn, pk)?.ok_or_else(|| {
-            StoreError::Invalid("revealed message has no kept selected version".into())
-        })?;
+    let (mut message, block_selection) = crate::writer::shown_message(conn, pk)?
+        .ok_or_else(|| StoreError::internal("revealed message has no kept selected version"))?;
     conn.prepare_cached(
         "SELECT m.id,s.id,m.role,m.prompt_kind,m.model,m.at,m.input_tokens,m.cache_read_tokens,m.cache_write_tokens
          FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.pk=?1"
@@ -1460,7 +1460,7 @@ impl<'c> Run<'c> {
                 RowPlace::Event(id, row.get(2)?)
             }
             (None, None) if starts_unit => {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::stored_data(format!(
                     "session item {seq} names no stored message or event"
                 )));
             }
@@ -1516,7 +1516,7 @@ impl<'c> Run<'c> {
     ) -> Result<&'h IndexEntry> {
         if let std::collections::hash_map::Entry::Vacant(vacant) = headers.entry(start) {
             let Some(Some(message)) = self.starts.get(&start) else {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::stored_data(format!(
                     "session item {start} is not the first entry of a message"
                 )));
             };
@@ -1547,7 +1547,7 @@ impl<'c> Run<'c> {
             })
             .optional()?;
         let Some((start, entry, call_id, Some(id))) = found else {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::stored_data(format!(
                 "session item {seq} follows no message header"
             )));
         };
@@ -1558,7 +1558,7 @@ impl<'c> Run<'c> {
 }
 
 fn message_id(id: &str) -> Result<MessageId> {
-    MessageId::parse(id).map_err(crate::StoreError::invalid)
+    MessageId::parse(id).map_err(crate::StoreError::stored_data)
 }
 
 /// The counts stored on the unit whose first entry is at `seq`.
@@ -1570,7 +1570,7 @@ fn unit_counts(conn: &Connection, session_pk: i64, seq: i64) -> Result<ItemCount
         .flatten();
     match counts {
         Some(counts) => decode_counts(&counts),
-        None => Err(StoreError::Invalid(format!(
+        None => Err(StoreError::stored_data(format!(
             "session item {seq} is not the first entry of a unit"
         ))),
     }
@@ -1590,10 +1590,10 @@ fn encode_counts(counts: &ItemCounts) -> Vec<u8> {
 }
 
 fn decode_counts(bytes: &[u8]) -> Result<ItemCounts> {
-    let invalid = || StoreError::invalid("malformed session item counts");
+    let malformed = || StoreError::stored_data("malformed session item counts");
     let mut input = entry_bytes::Input { bytes, at: 0 };
     let mut counts = ItemCounts {
-        tokens_full: input.leb128().ok_or_else(invalid)?,
+        tokens_full: input.leb128().ok_or_else(malformed)?,
         ..ItemCounts::default()
     };
     while !input.done() {
@@ -1601,10 +1601,10 @@ fn decode_counts(bytes: &[u8]) -> Result<ItemCounts> {
             .leb128()
             .and_then(|bits| u16::try_from(bits).ok())
             .and_then(EntryClass::from_bits)
-            .ok_or_else(invalid)?;
-        let count = input.leb128().ok_or_else(invalid)?;
+            .ok_or_else(malformed)?;
+        let count = input.leb128().ok_or_else(malformed)?;
         if counts.classes.insert(class, count).is_some() {
-            return Err(invalid());
+            return Err(malformed());
         }
     }
     Ok(counts)
@@ -1625,7 +1625,7 @@ fn class_of(bits: i64) -> Result<EntryClass> {
     u16::try_from(bits)
         .ok()
         .and_then(EntryClass::from_bits)
-        .ok_or_else(|| StoreError::Invalid(format!("unknown session item class {bits}")))
+        .ok_or_else(|| StoreError::stored_data(format!("unknown session item class {bits}")))
 }
 
 fn position(seq: u64) -> Result<i64> {
@@ -1724,7 +1724,7 @@ impl Reader<'_> {
                     ?3)", params![input_pk, chain, start])?,
         };
         let (Ok(start), Ok(end)) = (u64::try_from(start), u64::try_from(end)) else {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::stored_data(format!(
                 "{id} has a negative source range"
             )));
         };
@@ -1757,7 +1757,7 @@ impl Reader<'_> {
             return Ok(None);
         };
         let Some(versions) = self.item_versions_of(pk)? else {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::internal(format!(
                 "session {id} has no item index"
             )));
         };
@@ -1784,7 +1784,7 @@ impl Reader<'_> {
             .query_row([pk], |row| <(_, _, _, _)>::try_from(row))
             .optional()?;
         let Some((append_seq, rewrite_version, entries, counts)) = state else {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::stored_data(format!(
                 "session {id} has no item index"
             )));
         };

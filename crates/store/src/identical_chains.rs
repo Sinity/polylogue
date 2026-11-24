@@ -208,7 +208,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
             if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) {
                 StoreError::Sqlite(error)
             } else {
-                StoreError::Invalid(format!("copy {table}: {error}"))
+                StoreError::internal(format!("copy {table}: {error}"))
             }
         })?;
     }
@@ -263,7 +263,7 @@ pub(crate) fn copy_reading(tx: &Connection, copy: &ReadingCopy, counter: i64) ->
             .map(i64::try_from)
             .transpose()
             .map_err(|_| {
-                StoreError::Invalid("a stored length exceeds SQLite's integer range".into())
+                StoreError::internal("a stored length exceeds SQLite's integer range")
             })?
     ])?;
     let commit = Source::reading_commit(tx, input, to, upto)?;

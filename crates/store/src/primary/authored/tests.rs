@@ -370,7 +370,9 @@ fn refusal_creates_no_prepared_or_applied_state() {
     );
     assert!(matches!(
         prepare_with(&conn, &r, &[], &[]),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::Refused(
+            polylogue_model::Reason::BadAnnotationLinks { .. }
+        ))
     ));
     assert_eq!(count(&conn, "client_request"), 0);
     assert_eq!(count(&conn, "annotation"), 0);
@@ -596,7 +598,7 @@ fn pending_authored_records_are_never_confirmed() {
     let tx = rebuilt.transaction().unwrap();
     assert!(matches!(
         apply(&tx, &invalid, 9),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::Internal(_))
     ));
 }
 #[test]
@@ -624,7 +626,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_through_primary_apply
     let tx = fresh.transaction().unwrap();
     assert!(matches!(
         apply(&tx, &malformed, 1),
-        Err(StoreError::Invalid(message)) if message.starts_with("kept result \"kept\" field rows_json: ")
+        Err(StoreError::Refused(polylogue_model::Reason::BadKeptResult { id, field, .. })) if id == "kept" && field == "rows_json"
     ));
     drop(tx);
     assert_eq!(count(&fresh, "kept_result"), 0);
@@ -735,7 +737,7 @@ fn inconsistent_event_delta_is_refused_before_application() {
     p.effect.chats[0].added_events[0].request = "another-request".into();
     let mut destination = cache();
     let tx = destination.transaction().unwrap();
-    assert!(matches!(apply(&tx, &p, 1), Err(StoreError::Invalid(_))));
+    assert!(matches!(apply(&tx, &p, 1), Err(StoreError::Internal(_))));
     tx.commit().unwrap();
     assert_eq!(count(&destination, "chat_action"), 0);
 }
@@ -1235,13 +1237,13 @@ fn restored_delivery_keeps_later_history_not_live() {
                 |visit| visit(&live),
                 |_| Ok(())
             ),
-            Err(StoreError::Invalid(_))
+            Err(StoreError::Internal(_))
         ));
         let mut target = cache();
         let tx = target.transaction().unwrap();
         assert!(matches!(
             apply(&tx, &prepared, 1),
-            Err(StoreError::Invalid(_))
+            Err(StoreError::Internal(_))
         ));
         assert_eq!(count(&tx, "delivery"), 0);
         restore(&tx, &prepared, 1).unwrap();
@@ -1281,12 +1283,12 @@ fn literal_delivery_refuses_effects_that_change_content_references_or_receipts()
                         detail: None,
                     }),
             }
-            assert!(matches!(validate(&changed), Err(StoreError::Invalid(_))));
+            assert!(matches!(validate(&changed), Err(StoreError::Internal(_))));
             let mut target = cache();
             let tx = target.transaction().unwrap();
             assert!(matches!(
                 apply(&tx, &changed, 1),
-                Err(StoreError::Invalid(_))
+                Err(StoreError::Internal(_))
             ));
             tx.rollback().unwrap();
             assert_eq!(count(&target, "delivery"), 0);

@@ -56,7 +56,7 @@ fn apply_step(conn: &mut Connection, length: u64, step: &ParseStep) -> Result<()
 }
 fn assert_rejected(result: Result<()>, reason: &str) {
     match result {
-        Err(StoreError::Invalid(message)) => assert_eq!(message, reason),
+        Err(StoreError::Internal(message)) => assert_eq!(message, reason),
         other => panic!("expected the rejection {reason:?}, got {other:?}"),
     }
 }

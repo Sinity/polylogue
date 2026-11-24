@@ -37,13 +37,13 @@ fn invalid_conversions_keep_the_description() {
     assert_eq!(to_u64(42_i64, "count").unwrap(), 42);
     for result in [
         to_i64(u64::MAX, "count"),
-        None::<i64>.or_invalid("count"),
-        Err::<i64, _>(()).or_invalid("count"),
+        None::<i64>.or_internal("count"),
+        Err::<i64, _>(()).or_internal("count"),
     ] {
-        assert!(matches!(result, Err(StoreError::Invalid(message)) if message == "count"));
+        assert!(matches!(result, Err(StoreError::Internal(message)) if message == "count"));
     }
     assert!(
-        matches!(to_u64(-1_i64, "position"), Err(StoreError::Invalid(message)) if message == "position")
+        matches!(to_u64(-1_i64, "position"), Err(StoreError::Internal(message)) if message == "position")
     );
 }
 #[test]

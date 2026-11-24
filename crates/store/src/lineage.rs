@@ -112,7 +112,7 @@ pub(crate) fn compute_lineage(conn: &Connection, session: i64) -> Result<Option<
     let Some((root, depth, root_pending, problem, at, parents)) = row else {
         return Ok(None);
     };
-    let parse = |id: &str| SessionId::parse(id).map_err(crate::StoreError::invalid);
+    let parse = |id: &str| SessionId::parse(id).map_err(crate::StoreError::stored_data);
     let child = parse(&at)?;
     let parents: Vec<String> = serde_json::from_str(&parents)?;
     let issue = match problem.as_deref() {
@@ -196,7 +196,7 @@ impl crate::read::Reader<'_> {
         match cached {
             Some((root, depth, root_pending, issue)) => Ok(Some(SessionLineage {
                 root: root
-                    .map(|id| SessionId::parse(&id).map_err(crate::StoreError::invalid))
+                    .map(|id| SessionId::parse(&id).map_err(crate::StoreError::stored_data))
                     .transpose()?,
                 depth,
                 root_pending,
@@ -238,7 +238,7 @@ impl crate::read::Reader<'_> {
                 .parent_links(&session)?
                 .into_iter()
                 .filter(|link| !link.is_reference())
-                .map(|link| SessionId::parse(&link.parent).map_err(crate::StoreError::invalid))
+                .map(|link| SessionId::parse(&link.parent).map_err(crate::StoreError::stored_data))
                 .collect::<Result<Vec<_>>>()?
                 .into_iter()
                 .filter(|id| unique.insert(id.clone()))

@@ -48,7 +48,7 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
     }
     let Some(delivery) = step.delivery.as_ref() else {
         if previous.is_some_and(|old| old.export_cursor.is_some() || old.refused_export) {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "an export reading cannot switch to byte ranges",
             ));
         }
@@ -57,7 +57,7 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
     step.validate_export()?;
     match delivery.source {
         ExportDeliverySource::Item { end, .. } if end > length => {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "export item lies outside its immutable stored source",
             ));
         }
@@ -69,13 +69,13 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
                 || step.parsed_upto != length
                 || !step.progress.reached_end()
             {
-                return Err(StoreError::invalid(
+                return Err(StoreError::internal(
                     "export completion differs from its verified source length",
                 ));
             }
         }
         _ if step.start != 0 || step.parsed_upto != 0 || step.progress.reached_end() => {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "an export callback cannot acknowledge a partial byte cursor",
             ));
         }
@@ -83,14 +83,14 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
     }
     let refused = is_refusal(step);
     if refused && (step.output != polylogue_model::Output::default() || step.checkpoint.is_some()) {
-        return Err(StoreError::invalid(
+        return Err(StoreError::internal(
             "an unreadable export header cannot carry facts or a completion checkpoint",
         ));
     }
     let previous = match previous {
         Some(old) if old.length < length && delivery.ordinal == 0 => None,
         Some(old) if old.length != length => {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "export control belongs to another stored source length",
             ));
         }
@@ -102,33 +102,33 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
         if refused && old.last_hash == delivery.body_hash.to_string() {
             return Ok(false);
         }
-        return Err(StoreError::invalid(
+        return Err(StoreError::internal(
             "a refused immutable source cannot change its callback without a new source length",
         ));
     }
     let first = if let Some(old) = previous {
         let cursor = old.export_cursor.as_ref().ok_or_else(|| {
-            StoreError::Invalid(
-                "historical byte control cannot authenticate an export callback prefix".into(),
+            StoreError::internal(
+                "historical byte control cannot authenticate an export callback prefix",
             )
         })?;
-        cursor.validate().map_err(crate::StoreError::invalid)?;
+        cursor.validate().map_err(crate::StoreError::internal)?;
         if refused {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "an unreadable scan cannot replace a stored export callback prefix",
             ));
         }
         if delivery.ordinal <= cursor.last_ordinal {
             if delivery.ordinal == cursor.last_ordinal && delivery.prefix_hash != cursor.prefix_hash
             {
-                return Err(StoreError::invalid(
+                return Err(StoreError::internal(
                     "replayed export prefix differs from the committed callback body",
                 ));
             }
             if matches!(delivery.source, ExportDeliverySource::Complete { .. })
                 && delivery.ordinal != cursor.last_ordinal
             {
-                return Err(StoreError::invalid(
+                return Err(StoreError::internal(
                     "export replay completed before its kept callback prefix",
                 ));
             }
@@ -140,23 +140,23 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
                 source: ExportDeliverySource::Complete { .. }
             }
         ) {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "a completed immutable export cannot acquire another callback",
             ));
         }
         cursor
             .advance(delivery)
-            .map_err(crate::StoreError::invalid)?;
+            .map_err(crate::StoreError::internal)?;
         if step.reset {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "an export continuation cannot reset committed callback effects",
             ));
         }
         old.first.covered
     } else {
-        ExportCursor::from_first(delivery).map_err(crate::StoreError::invalid)?;
+        ExportCursor::from_first(delivery).map_err(crate::StoreError::internal)?;
         if !step.reset {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "the first export callback must begin its reading",
             ));
         }
@@ -179,7 +179,7 @@ fn accept(previous: Option<&Reading>, length: u64, step: &ParseStep) -> Result<b
         if delivery_count != delivery.ordinal
             || item_count.checked_add(headers) != Some(delivery.ordinal)
         {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "export completion does not account for its committed callbacks",
             ));
         }

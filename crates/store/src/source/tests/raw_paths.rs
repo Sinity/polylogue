@@ -168,7 +168,7 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
             source_read
         );
         row.observation = None;
-        let refused = "the capture read does not describe these source rows";
+        let refused = "the capture read does not describe these source rows; this is a Polylogue bug; report it with the request ID";
         assert_eq!(row.insert(&conn, 9).unwrap_err().to_string(), refused);
         row.extents = vec![crate::input_rows::Extent {
             chain: 1,

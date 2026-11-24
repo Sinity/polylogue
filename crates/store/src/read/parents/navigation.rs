@@ -3,7 +3,7 @@ use super::*;
 use crate::ResultExt as _;
 
 fn message_count(count: i64) -> Result<usize> {
-    usize::try_from(count).or_invalid("the message count exceeds address space")
+    usize::try_from(count).or_internal("the message count exceeds address space")
 }
 
 impl MessageSelection<'_, '_> {
@@ -150,8 +150,8 @@ impl MessageSelection<'_, '_> {
                     continue;
                 }
                 let id: String = row.get(1)?;
-                let id =
-                    polylogue_model::MessageId::parse(&id).map_err(crate::StoreError::invalid)?;
+                let id = polylogue_model::MessageId::parse(&id)
+                    .map_err(crate::StoreError::stored_data)?;
                 return self.locate(Some(&id));
             }
         }

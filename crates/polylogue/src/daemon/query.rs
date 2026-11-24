@@ -1048,7 +1048,7 @@ fn answer(
                 .map(|row| {
                     program.session_rows.logical(row).ok_or_else(|| {
                         Failure::new(
-                            polylogue_model::Code::Store,
+                            polylogue_model::Code::Internal,
                             "a selected session has no physical/logical coordinate",
                         )
                     })
@@ -1071,7 +1071,7 @@ fn answer(
         .map(|row| match row {
             Value::Object(fields) => Ok(fields),
             _ => Err(Failure::new(
-                polylogue_model::Code::Store,
+                polylogue_model::Code::Internal,
                 "a query row is not a record",
             )),
         })

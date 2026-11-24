@@ -23,7 +23,10 @@ impl Reader<'_> {
             Some(key),
             raw.as_ref(),
         )
-        .map_err(|error| StoreError::invalid(error.to_string()))?;
+        .map_err(|error| polylogue_model::Reason::BadAnnotationValue {
+            kind: AnnotationKind::Tag.as_str().into(),
+            problem: error.to_string(),
+        })?;
         let mut statement = conn.prepare_cached(&source.sql(
             "SELECT EXISTS(SELECT 1 FROM @source.annotation_slot s JOIN @source.revision_state r ON r.id=s.id WHERE s.slot=?1 AND r.current=1 AND r.withdrawn=0)",
         ))?;
@@ -38,8 +41,8 @@ impl Reader<'_> {
                 author,
                 None,
             )
-            .map_err(|error| StoreError::invalid(error.to_string()))?
-            .ok_or_else(|| StoreError::invalid("a tag has no uniqueness slots"))?;
+            .map_err(|error| StoreError::stored_data(error.to_string()))?
+            .ok_or_else(|| StoreError::stored_data("a tag has no uniqueness slots"))?;
             for slot in unique.slots {
                 let held: bool =
                     statement.query_row([slot.digest().as_slice()], |row| row.get(0))?;
@@ -95,7 +98,7 @@ impl Reader<'_> {
             self.check()?;
             let linked = row.get::<_, String>(2)?;
             let mut target = Reference::parse(&linked)
-                .map_err(|error| StoreError::invalid(error.to_string()))?;
+                .map_err(|error| StoreError::stored_data(error.to_string()))?;
             while target != reference {
                 let Some(container) = target.container() else {
                     break;
@@ -147,7 +150,7 @@ impl Reader<'_> {
         match state.heads.into_iter().next() {
             Some(Reference::Annotation(exact)) => Ok(Some(exact)),
             None => Ok(None),
-            Some(_) => Err(crate::StoreError::invalid(
+            Some(_) => Err(crate::StoreError::stored_data(
                 "annotation family contains another reference kind",
             )),
         }
@@ -161,7 +164,7 @@ impl Reader<'_> {
         let id = exact
             .revision
             .as_ref()
-            .ok_or_else(|| crate::StoreError::invalid("annotation revision is not exact"))?;
+            .ok_or_else(|| crate::StoreError::stored_data("annotation revision is not exact"))?;
         let row = get(self.conn()?, id)?.filter(|row| row.fact.root == exact.root);
         self.check()?;
         Ok(row)

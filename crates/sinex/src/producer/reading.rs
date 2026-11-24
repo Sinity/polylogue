@@ -105,7 +105,7 @@ impl Sinex {
             visit(&mut |write| {
                 crate::products::require_reading(&write.product, key)?;
                 if write.location.is_none() {
-                    return Err(polylogue_store::StoreError::invalid(
+                    return Err(polylogue_store::StoreError::internal(
                         "a parsed event needs its original record offset",
                     ));
                 }

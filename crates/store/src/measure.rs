@@ -88,9 +88,7 @@ impl Selection {
     /// time-bounded selection is refused.
     fn session_condition(&self, column: &str) -> Result<(String, Vec<rusqlite::types::Value>)> {
         if self.since.is_some() || self.until.is_some() || self.undated {
-            return Err(crate::StoreError::Invalid(
-                "per-session measures take no time bounds".into(),
-            ));
+            return Err(polylogue_model::Reason::MeasureTakesNoTimeBounds {}.into());
         }
         let mut clauses = vec!["1".to_owned()];
         let mut params: Vec<rusqlite::types::Value> = vec![];

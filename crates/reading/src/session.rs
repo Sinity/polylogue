@@ -10,6 +10,7 @@ use super::ReadRequest;
 use super::records::SelectedRecord;
 use super::{layout_facts, output};
 use crate::{Error, ReadServices};
+use polylogue_model::Reason;
 use polylogue_model::{MessageId, Reference, SessionId, bundle::Record, read::*};
 use polylogue_store::Reader;
 use polylogue_store::items::{ItemLookup, ItemVersions};
@@ -42,11 +43,13 @@ impl Scope {
 /// the logical session whose root is REF.
 pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, Error> {
     if let Some(root) = target.strip_prefix("root:") {
-        let reference = Reference::parse(&format!("session:{root}")).map_err(Error::bad_request)?;
+        let reference =
+            Reference::parse(&format!("session:{root}")).map_err(|error| Reason::BadReference {
+                text: target.to_owned(),
+                problem: error.to_string(),
+            })?;
         let Reference::Session(session) = reference else {
-            return Err(Error::bad_request(
-                "root: names a session, the root of a logical session",
-            ));
+            return Err(Reason::RootNamesSession {}.into());
         };
         return Ok(Some(Scope {
             session,
@@ -76,9 +79,7 @@ pub(super) fn scope(reader: &Reader<'_>, target: &str) -> Result<Option<Scope>, 
         Reference::MessageRange { first, last } => {
             let session = session_of(&first)?;
             if session_of(&last)? != session {
-                return Err(Error::bad_request(
-                    "a message range is read inside one session",
-                ));
+                return Err(Reason::RangeAcrossSessions {}.into());
             }
             Some(Scope {
                 session,
@@ -412,7 +413,7 @@ fn compose(
             let start = header(first)?;
             let last_at = header(last)?;
             if last_at < start {
-                return Err(Error::bad_request("a message range ends before it starts"));
+                return Err(Reason::RangeEndsBeforeStart {}.into());
             }
             // `--around N`: N messages either side, as far as there are.
             let (start, last_at) = if around > 0 {
@@ -861,10 +862,10 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
         let back: usize = match rest.strip_prefix(':') {
             Some(n) => n
                 .parse()
-                .map_err(|_| Error::bad_request("compaction:N takes a count"))?,
+                .map_err(|_| Reason::CompactionCount { text: n.to_owned() })?,
             None if rest.is_empty() => 1,
             None => {
-                return Err(Error::bad_request("diff takes a message or compaction[:N]"));
+                return Err(Reason::DiffTarget {}.into());
             }
         };
         let mut boundaries = Vec::new();
@@ -891,7 +892,12 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
             entry: boundary.entry - 1,
         }
     } else {
-        place_of(&MessageId::parse(diff).map_err(Error::bad_request)?)?
+        place_of(
+            &MessageId::parse(diff).map_err(|error| Reason::BadReference {
+                text: diff.to_owned(),
+                problem: error.to_string(),
+            })?,
+        )?
     };
     let (earlier, later) = if other < at {
         (context_at(&composed.parts, entries, other), context)
@@ -1001,9 +1007,7 @@ pub(super) fn stream(
 ) -> Result<ReadComplete, Error> {
     let options = &request.options;
     if options.physical && !scope.logical {
-        return Err(Error::bad_request(
-            "--physical applies to root:REF; a session reference is already one physical session",
-        ));
+        return Err(Reason::PhysicalNeedsRoot {}.into());
     }
     let scope = Scope {
         logical: scope.logical && !options.physical,
@@ -1051,8 +1055,9 @@ pub(super) fn stream(
         still_wanted()
     };
     let begin = ReadBegin {
-        format: Format::parse(&request.format)
-            .ok_or_else(|| Error::bad_request("unknown read format"))?,
+        format: Format::parse(&request.format).ok_or_else(|| Reason::UnknownReadFormat {
+            format: request.format.clone(),
+        })?,
         snapshot,
         header,
         options: options.clone(),
@@ -1269,17 +1274,21 @@ fn trim_owner(
             !logical || current == owner
         })
         .collect();
-    let (key, whole_message) = match Reference::parse(after).map_err(Error::bad_request)? {
-        Reference::Message(message) => (EntryKey::header(&message), true),
-        Reference::Block { message, n } => (
-            EntryKey::Message {
-                message,
-                block: Some(n),
-            },
-            false,
-        ),
-        _ => return Err(Error::conflict("the seen mark is not a message or block")),
-    };
+    let (key, whole_message) =
+        match Reference::parse(after).map_err(|error| Reason::BadReference {
+            text: after.to_owned(),
+            problem: error.to_string(),
+        })? {
+            Reference::Message(message) => (EntryKey::header(&message), true),
+            Reference::Block { message, n } => (
+                EntryKey::Message {
+                    message,
+                    block: Some(n),
+                },
+                false,
+            ),
+            _ => return Err(Error::conflict("the seen mark is not a message or block")),
+        };
     // Inline children can split one physical owner into several parts.
     // Find the last such segment beginning no later than the accepted item.
     for at in (0..composed.parts.len()).rev() {
@@ -1353,9 +1362,7 @@ pub(super) fn page(
     let bound_physical =
         opened.is_some() && options.view == View::Context && options.annotation_at().is_some();
     if options.physical && !target.starts_with("root:") && !bound_physical {
-        return Err(Error::bad_request(
-            "--physical applies to root:REF; a session reference is already one physical session",
-        ));
+        return Err(Reason::PhysicalNeedsRoot {}.into());
     }
     let scope = match session_read(request).filter(|bound| opened.is_some() && bound.logical) {
         Some(bound) => Scope {

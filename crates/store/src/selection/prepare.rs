@@ -413,6 +413,9 @@ fn saved_queries_from(
                             error,
                             StoreError::NotFound(_)
                                 | StoreError::Invalid(_)
+                                | StoreError::Refused(_)
+                                | StoreError::Internal(_)
+                                | StoreError::StoredValue { .. }
                                 | StoreError::ReferenceUnavailable { .. }
                                 | StoreError::Ambiguous { .. }
                         ) =>

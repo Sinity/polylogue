@@ -32,8 +32,8 @@ fn candidates(
                 revision: Some(id), ..
             }) = reference
             else {
-                return Err(crate::StoreError::invalid(
-                    "setting head is not an exact annotation",
+                return Err(crate::StoreError::stored_data(
+                    "a setting head is not an exact annotation",
                 ));
             };
             let row = get(conn, id)?.ok_or_else(|| StoreError::NotFound(reference.to_string()))?;
@@ -43,10 +43,10 @@ fn candidates(
             let values::Value::Setting(value) = row
                 .fact
                 .validate()
-                .map_err(|error| crate::StoreError::invalid(error.to_string()))?
+                .map_err(|error| crate::StoreError::stored_data(error.to_string()))?
             else {
-                return Err(crate::StoreError::invalid(
-                    "setting annotation has another value shape",
+                return Err(crate::StoreError::stored_data(
+                    "a setting annotation has another value shape",
                 ));
             };
             if value.fields.machine.as_deref() == target {
@@ -118,8 +118,7 @@ fn history_boundaries(
 
 impl crate::Reader<'_> {
     pub fn setting_current(&self, key: &str, machine: &str) -> Result<settings::Current> {
-        let spec = settings::declaration(key)
-            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+        let spec = settings::declaration(key).map_err(polylogue_model::Reason::from)?;
         let conn = self.conn()?;
         let primary = matches!(Source::of(conn)?, Source::Cache);
         if primary && spec.standalone_only {
@@ -134,8 +133,8 @@ impl crate::Reader<'_> {
                 conflicts: Vec::new(),
             });
         }
-        let target = settings::target_machine(key, None, machine)
-            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+        let target =
+            settings::target_machine(key, None, machine).map_err(polylogue_model::Reason::from)?;
         let (mut candidates, conflicts) =
             candidates(conn, key, target.as_deref(), roots(conn, key)?, |root| {
                 Ok(self
@@ -150,7 +149,9 @@ impl crate::Reader<'_> {
             .default
             .map(|text| settings::parse(key, text, settings::SettingMode::Standalone))
             .transpose()
-            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+            .map_err(|error| {
+                crate::StoreError::internal(format!("a declared setting default: {error}"))
+            })?;
         let (value, authored) = if conflicts.is_empty() {
             if let Some((reference, fact, value)) = candidates.pop() {
                 (
@@ -184,10 +185,9 @@ impl crate::Reader<'_> {
 
     /// Setting history is a display order; only revision links choose the current value.
     pub fn setting_details(&self, key: &str, machine: &str) -> Result<settings::Details> {
-        let spec = settings::declaration(key)
-            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
-        let target = settings::target_machine(key, None, machine)
-            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+        let spec = settings::declaration(key).map_err(polylogue_model::Reason::from)?;
+        let target =
+            settings::target_machine(key, None, machine).map_err(polylogue_model::Reason::from)?;
         let current = self.setting_current(key, machine)?;
         let conn = self.conn()?;
         let source = Source::reading(conn)?;
@@ -202,10 +202,10 @@ impl crate::Reader<'_> {
             let values::Value::Setting(value) = annotation
                 .fact
                 .validate()
-                .map_err(|error| crate::StoreError::invalid(error.to_string()))?
+                .map_err(|error| crate::StoreError::stored_data(error.to_string()))?
             else {
-                return Err(crate::StoreError::invalid(
-                    "setting revision has another value shape",
+                return Err(crate::StoreError::stored_data(
+                    "a setting revision has another value shape",
                 ));
             };
             // A record's machine says who wrote it; the value's machine is
@@ -215,7 +215,7 @@ impl crate::Reader<'_> {
             }
             let revision = RevisionReference::exact(annotation.fact.root.clone(), id.clone());
             let state = self.annotation_revision_state(&revision)?.ok_or_else(|| {
-                crate::StoreError::invalid("setting revision has no current-revision state")
+                crate::StoreError::stored_data("a setting revision has no current-revision state")
             })?;
             history.push(settings::HistoryEntry {
                 authored: settings::Authored {
@@ -249,10 +249,9 @@ impl crate::Reader<'_> {
         key: &str,
         until: Timestamp,
     ) -> Result<Vec<(Timestamp, SettingAt)>> {
-        let spec = settings::declaration(key)
-            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+        let spec = settings::declaration(key).map_err(polylogue_model::Reason::from)?;
         if spec.scope != settings::Scope::Archive {
-            return Err(crate::StoreError::invalid(
+            return Err(crate::StoreError::internal(
                 "archive setting history requires an archive-scoped key",
             ));
         }
@@ -273,7 +272,7 @@ pub(crate) enum SettingAt {
 
 fn history(conn: &Connection, key: &str, until: Timestamp) -> Result<Vec<(Timestamp, SettingAt)>> {
     if conn.is_autocommit() {
-        return Err(crate::StoreError::invalid(
+        return Err(crate::StoreError::internal(
             "setting history requires a pinned read transaction",
         ));
     }

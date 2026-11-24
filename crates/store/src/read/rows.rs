@@ -17,7 +17,7 @@ impl Reader<'_> {
             .next()?
             .map(<(i64, i64)>::try_from)
             .transpose()?
-            .ok_or_else(|| StoreError::invalid("count query returned no row"))?;
+            .ok_or_else(|| StoreError::internal("count query returned no row"))?;
         let count = |value| crate::to_u64(value, "query returned a negative count");
         Ok((count(total)?, count(without)?))
     }
@@ -87,7 +87,7 @@ impl Reader<'_> {
 
 fn require_readonly(stmt: &rusqlite::Statement<'_>) -> Result<()> {
     if !stmt.readonly() {
-        return Err(StoreError::Invalid("reader queries may only read".into()));
+        return Err(StoreError::internal("reader queries may only read"));
     }
     Ok(())
 }

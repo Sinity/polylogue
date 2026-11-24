@@ -155,9 +155,7 @@ impl ChangeSummary {
             .map(|mut before| {
                 before.values = crate::session_values::of_message(conn, pk, before.session)?;
                 before.counts = crate::derive::counts::message(conn, pk)?
-                    .ok_or_else(|| {
-                        crate::StoreError::Invalid("changed message disappeared".into())
-                    })?
+                    .ok_or_else(|| crate::StoreError::internal("changed message disappeared"))?
                     .1;
                 Ok::<_, crate::StoreError>(before)
             })
@@ -224,7 +222,7 @@ impl ChangeSummary {
                     "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='relationship_revision'),0)",
                 )?.query_row([], |row| row.get(0))?;
                 let next = previous.checked_add(1).ok_or_else(|| {
-                    crate::StoreError::Invalid("relationship revision exhausted".into())
+                    crate::StoreError::internal("relationship revision exhausted")
                 })?;
                 crate::meta_set(conn, "relationship_revision", next.to_string())?;
                 break;

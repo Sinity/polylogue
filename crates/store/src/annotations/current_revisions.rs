@@ -103,7 +103,7 @@ fn family(conn: &Connection, root: &str) -> Result<Option<FamilyState>> {
 /// rows belong to the pinned read transaction.
 pub(crate) fn prepare_history(conn: &Connection, cutoff: i64) -> Result<()> {
     if conn.is_autocommit() {
-        return Err(crate::StoreError::invalid(
+        return Err(crate::StoreError::internal(
             "as-of annotation state requires a pinned read transaction",
         ));
     }
@@ -116,8 +116,11 @@ pub(crate) fn prepare_history(conn: &Connection, cutoff: i64) -> Result<()> {
             PRIMARY KEY(cutoff,id)
         ) STRICT, WITHOUT ROWID;",
     )?;
-    let until = Timestamp::from_unix_ms(cutoff)
-        .ok_or_else(|| crate::StoreError::invalid("as-of annotation cutoff is out of range"))?;
+    let until = Timestamp::from_unix_ms(cutoff).ok_or_else(|| {
+        polylogue_model::Reason::OutsideCalendar {
+            problem: format!("the as-of cutoff {cutoff} is out of range"),
+        }
+    })?;
     let source = Source::reading(conn)?;
     let roots = conn
         .prepare_cached(&source.sql("SELECT DISTINCT root FROM @source.annotation ORDER BY root"))?
@@ -144,7 +147,7 @@ pub(crate) fn prepare_history(conn: &Connection, cutoff: i64) -> Result<()> {
 impl Reader<'_> {
     pub fn annotation_family_state(&self, root: &RevisionReference) -> Result<Option<FamilyState>> {
         if root.revision.is_some() {
-            return Err(crate::StoreError::invalid(
+            return Err(crate::StoreError::internal(
                 "family state requires an annotation root",
             ));
         }
@@ -157,7 +160,7 @@ impl Reader<'_> {
         revision: &RevisionReference,
     ) -> Result<Option<RevisionState>> {
         let Some(id) = &revision.revision else {
-            return Err(crate::StoreError::invalid(
+            return Err(crate::StoreError::internal(
                 "revision state requires an exact annotation",
             ));
         };

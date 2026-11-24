@@ -44,7 +44,7 @@ pub fn stored_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequ
     let Some((hash, body, outcome, effect)) = stored else {
         return Ok(None);
     };
-    let missing = || StoreError::Invalid(format!("request {id} has no complete recorded outcome"));
+    let missing = || StoreError::internal(format!("request {id} has no complete recorded outcome"));
     let prepared = PreparedRequest {
         request: crate::encoding::unpack_json(&body)?,
         outcome: crate::encoding::unpack_json(&outcome.ok_or_else(missing)?)?,
@@ -54,9 +54,7 @@ pub fn stored_request(conn: &Connection, id: &str) -> Result<Option<PreparedRequ
         return Err(StoreError::Conflict(id.into()));
     }
     if prepared.outcome.pending {
-        return Err(StoreError::Invalid(
-            "pending is not a confirmed outcome".into(),
-        ));
+        return Err(StoreError::internal("pending is not a confirmed outcome"));
     }
     Ok(Some(prepared))
 }
@@ -183,8 +181,8 @@ pub fn prepare(
             .insert(blob.hash, blob.size)
             .is_some_and(|size| size != blob.size)
         {
-            return Err(StoreError::Invalid(
-                "a pending blob has conflicting lengths".into(),
+            return Err(StoreError::internal(
+                "a pending blob has conflicting lengths",
             ));
         }
         Ok(())
@@ -226,7 +224,7 @@ pub fn prepare(
                     effect: AuthoredEffect::default(),
                 })
             }
-            None => Err(StoreError::invalid("prepared request was not recorded")),
+            None => Err(StoreError::internal("prepared request was not recorded")),
         }
     })
 }
@@ -278,9 +276,9 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
         let parts = save
             .outcomes
             .as_ref()
-            .or_invalid("recorded Save has no resolved outcomes")?;
+            .or_internal("recorded Save has no resolved outcomes")?;
         let [kept] = prepared.effect.kept_results.as_slice() else {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "recorded Save must carry one kept effect",
             ));
         };
@@ -301,7 +299,7 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
             || kept.read_at != save.read_at
             || kept.rows_json != save.rows_json
         {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "recorded Save outcomes differ from its kept effect",
             ));
         }
@@ -332,13 +330,13 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
                         fact.id == *id && fact.kind == kind && fact.key.as_ref() == Some(name)
                     }))
             {
-                return Err(StoreError::invalid(
+                return Err(StoreError::internal(
                     "recorded Save has inconsistent annotation outcomes",
                 ));
             }
         }
         if parts.saved.as_ref().is_some_and(|part| part.revision == 0) {
-            return Err(StoreError::invalid("saved revision numbers start at one"));
+            return Err(StoreError::internal("saved revision numbers start at one"));
         }
     }
     // Restored records can include later events written by other requests.
@@ -352,14 +350,14 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
                 .retain(|event| event.request == prepared.request.id);
         }
         if effect != expected.effect || prepared.outcome != expected.outcome {
-            return Err(StoreError::Invalid(
-                "delivery effect differs from its committed request".into(),
+            return Err(StoreError::internal(
+                "delivery effect differs from its committed request",
             ));
         }
     }
     crate::signals::validate(prepared)?;
     for fact in &prepared.effect.annotations {
-        fact.validate().map_err(crate::StoreError::invalid)?;
+        fact.validate().map_err(crate::StoreError::internal)?;
     }
     fn events<T: PartialEq>(
         all: &[T],
@@ -371,15 +369,15 @@ pub fn validate(prepared: &PreparedRequest) -> Result<()> {
         for event in all {
             let id = identity(event);
             if id.is_empty() || !seen.insert(id) {
-                return Err(StoreError::Invalid(
-                    "authored history has a duplicate or empty request identity".into(),
+                return Err(StoreError::internal(
+                    "authored history has a duplicate or empty request identity",
                 ));
             }
         }
         for event in added {
             if identity(event) != request || !all.contains(event) {
-                return Err(StoreError::Invalid(
-                    "authored event additions disagree with their recorded history".into(),
+                return Err(StoreError::internal(
+                    "authored event additions disagree with their recorded history",
                 ));
             }
         }
@@ -417,12 +415,12 @@ fn validate_live(prepared: &PreparedRequest) -> Result<()> {
     if let UserWrite::Save(save) = &prepared.request.write {
         let parts = save.outcomes.as_ref().expect("Save validated");
         if parts.saved.is_some() != save.name.is_some() {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "a new named Save accepts its question as well as its rows",
             ));
         }
         if parts.kept.result != format!("result:{}", prepared.request.id) {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "a new Save keeps rows under its request identity",
             ));
         }
@@ -441,13 +439,13 @@ fn validate_live(prepared: &PreparedRequest) -> Result<()> {
             .collect::<Vec<_>>();
         for (index, id) in created.iter().enumerate() {
             if **id != authored::write_id(&prepared.request.id, index + 1, created.len()) {
-                return Err(StoreError::invalid(
+                return Err(StoreError::internal(
                     "a new Save numbers its annotations within the request",
                 ));
             }
         }
         if prepared.effect.annotations.len() != created.len() {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "a new Save carries exactly its accepted annotation parts",
             ));
         }
@@ -455,8 +453,8 @@ fn validate_live(prepared: &PreparedRequest) -> Result<()> {
     if let Some(expected) = crate::user_writes::prepare_delivery(&prepared.request)
         && prepared.effect != expected.effect
     {
-        return Err(StoreError::Invalid(
-            "a new delivery carries events from other requests".into(),
+        return Err(StoreError::internal(
+            "a new delivery carries events from other requests",
         ));
     }
     Ok(())
@@ -486,9 +484,7 @@ pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> 
         };
     }
     if prepared.outcome.pending {
-        return Err(StoreError::Invalid(
-            "pending is not a confirmed outcome".into(),
-        ));
+        return Err(StoreError::internal("pending is not a confirmed outcome"));
     }
     validate_live(prepared)?;
     records::apply(tx, &prepared.effect, counter, false)?;
@@ -511,9 +507,7 @@ pub fn restore(
         return Ok(outcome);
     }
     if prepared.outcome.pending {
-        return Err(StoreError::Invalid(
-            "pending is not a restorable outcome".into(),
-        ));
+        return Err(StoreError::internal("pending is not a restorable outcome"));
     }
     validate(prepared)?;
     records::apply(tx, &prepared.effect, counter, true)?;
@@ -607,7 +601,7 @@ pub(crate) fn pending_delivery(
     let record = records::delivery_from(conn, Source::Cache, id)?;
     let metadata = record
         .signal
-        .or_invalid("delivery has no signal metadata")?;
+        .or_internal("delivery has no signal metadata")?;
     Ok(polylogue_model::signal::StoredPendingDelivery {
         id: record.id,
         at: record.at,

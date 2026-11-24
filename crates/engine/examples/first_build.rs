@@ -590,7 +590,7 @@ struct BuildDatabase {
 /// measurement of a first build.
 fn checkpoint_build(archive: &Archive) -> polylogue_store::Result<Vec<BuildDatabase>> {
     if let Some(build) = archive.index_build() {
-        return Err(polylogue_store::StoreError::invalid(format!(
+        return Err(polylogue_store::StoreError::internal(format!(
             "the pass ended before installing the built index: {build}"
         )));
     }
@@ -615,7 +615,7 @@ fn checkpoint_build(archive: &Archive) -> polylogue_store::Result<Vec<BuildDatab
         conn.busy_timeout(std::time::Duration::ZERO)?;
         let busy: i64 = conn.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
         if busy != 0 {
-            return Err(polylogue_store::StoreError::invalid(format!(
+            return Err(polylogue_store::StoreError::internal(format!(
                 "completed build still has a reader of {name}"
             )));
         }
@@ -624,7 +624,7 @@ fn checkpoint_build(archive: &Archive) -> polylogue_store::Result<Vec<BuildDatab
         drop(conn);
         let after = wal_bytes()?;
         if after != 0 {
-            return Err(polylogue_store::StoreError::invalid(format!(
+            return Err(polylogue_store::StoreError::internal(format!(
                 "completed build left {after} WAL bytes in {name}"
             )));
         }

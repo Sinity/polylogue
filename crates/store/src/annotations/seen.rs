@@ -66,9 +66,10 @@ fn later_item(
     next: Option<&str>,
 ) -> Result<bool> {
     let Some(next) = next else { return Ok(false) };
-    let next = Reference::parse(next).map_err(|error| StoreError::invalid(error.to_string()))?;
+    let next =
+        Reference::parse(next).map_err(|error| StoreError::stored_data(error.to_string()))?;
     let target =
-        Reference::parse(target).map_err(|error| StoreError::invalid(error.to_string()))?;
+        Reference::parse(target).map_err(|error| StoreError::stored_data(error.to_string()))?;
     if let (Reference::Session(session), Some((next_message, next_block))) =
         (&target, message_item(&next))
     {
@@ -76,8 +77,8 @@ fn later_item(
             crate::read::compare_session_messages(conn, session, next_message, next_message)?;
             return Ok(true);
         };
-        let previous =
-            Reference::parse(previous).map_err(|error| StoreError::invalid(error.to_string()))?;
+        let previous = Reference::parse(previous)
+            .map_err(|error| StoreError::stored_data(error.to_string()))?;
         let Some((previous_message, previous_block)) = message_item(&previous) else {
             return Ok(false);
         };
@@ -86,15 +87,13 @@ fn later_item(
         return Ok(order.is_lt() || order.is_eq() && next_block > previous_block);
     }
     if matches!(target, Reference::Session(_)) {
-        return Err(StoreError::invalid(
-            "a seen mark on a session names a message or block",
-        ));
+        return Err(polylogue_model::Reason::SeenMarkNeedsItem {}.into());
     }
     let Some(previous) = previous else {
         return Ok(true);
     };
     let previous =
-        Reference::parse(previous).map_err(|error| StoreError::invalid(error.to_string()))?;
+        Reference::parse(previous).map_err(|error| StoreError::stored_data(error.to_string()))?;
     if let (Some((previous, previous_block)), Some((next, next_block))) =
         (message_item(&previous), message_item(&next))
     {
@@ -178,7 +177,10 @@ pub(crate) fn advancing(
         .iter()
         .map(|mark| {
             let target = Reference::parse(&mark.target)
-                .map_err(|error| StoreError::invalid(error.to_string()))?
+                .map_err(|error| polylogue_model::Reason::BadReference {
+                    text: mark.target.clone(),
+                    problem: error.to_string(),
+                })?
                 .to_string();
             let item = mark
                 .item
@@ -186,7 +188,12 @@ pub(crate) fn advancing(
                 .map(|item| {
                     Reference::parse(item)
                         .map(|item| item.to_string())
-                        .map_err(|error| StoreError::invalid(error.to_string()))
+                        .map_err(|error| {
+                            StoreError::from(polylogue_model::Reason::BadReference {
+                                text: item.into(),
+                                problem: error.to_string(),
+                            })
+                        })
                 })
                 .transpose()?;
             Ok(SeenMark {
@@ -207,12 +214,10 @@ pub(crate) fn advancing(
     let mut accepted = BTreeMap::new();
     for mark in &proposed {
         if mark.at.generation != generation {
-            return Err(StoreError::invalid(
-                "seen mark belongs to a stale index generation",
-            ));
+            return Err(polylogue_model::Reason::SeenFromAnotherGeneration {}.into());
         }
         if ChangePosition::parse(&mark.at.to_string()).is_none() {
-            return Err(StoreError::invalid("invalid seen change position"));
+            return Err(StoreError::stored_data("invalid seen change position"));
         }
         if !current.contains_key(&mark.target) {
             later_item(index, &mark.target, None, mark.item.as_deref())?;

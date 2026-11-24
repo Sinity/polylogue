@@ -1,17 +1,25 @@
 //! The error every daemon operation returns before it becomes an answer.
 
 /// A failed operation inside the daemon, as every surface reports it. The
-/// shared failure is wrapped only so that store, selection and query errors
-/// convert into it with `?`.
+/// shared failure is wrapped so that store, selection and query errors
+/// convert into it with `?`, and so that a refusal keeps its typed reason.
 #[derive(Debug)]
 pub struct Failure {
     pub error: command_surface::Failure,
+    /// Why a request the caller can correct was refused.
+    pub reason: Option<Box<polylogue_model::Reason>>,
 }
 
 impl Failure {
     pub fn new(code: polylogue_model::Code, message: impl ToString) -> Self {
+        Self::from(crate::protocol::failure(code, message.to_string()))
+    }
+
+    /// A refusal with its typed reason, under the reason's code.
+    pub fn refusal(reason: polylogue_model::Reason) -> Self {
         Self {
-            error: crate::protocol::failure(code, message.to_string()),
+            error: crate::protocol::failure(reason.code(), reason.to_string()),
+            reason: Some(Box::new(reason)),
         }
     }
 
@@ -51,8 +59,15 @@ impl Failure {
     pub fn io(message: impl ToString) -> Self {
         Self::new(polylogue_model::Code::Io, message)
     }
+    /// A state no request can cause: reported as a Polylogue bug.
     pub fn internal(message: impl ToString) -> Self {
-        Self::new(polylogue_model::Code::Internal, message)
+        Self::new(
+            polylogue_model::Code::Internal,
+            format!(
+                "{}; this is a Polylogue bug; report it with the request ID",
+                message.to_string()
+            ),
+        )
     }
     pub fn sinex_unavailable(message: impl ToString) -> Self {
         Self::new(polylogue_model::Code::SinexUnavailable, message)
@@ -64,6 +79,10 @@ impl Failure {
     pub fn store(error: &polylogue_store::StoreError) -> Self {
         Self {
             error: crate::protocol::store_failure(error),
+            reason: match error {
+                polylogue_store::StoreError::Refused(reason) => Some(Box::new(reason.clone())),
+                _ => None,
+            },
         }
     }
 
@@ -86,7 +105,16 @@ impl std::ops::Deref for Failure {
 
 impl From<command_surface::Failure> for Failure {
     fn from(error: command_surface::Failure) -> Self {
-        Self { error }
+        Self {
+            error,
+            reason: None,
+        }
+    }
+}
+
+impl From<polylogue_model::Reason> for Failure {
+    fn from(reason: polylogue_model::Reason) -> Self {
+        Self::refusal(reason)
     }
 }
 
@@ -125,10 +153,13 @@ impl<T> From<Failure> for command_surface::Answer<T> {
 
 impl From<super::executor::Panicked> for Failure {
     fn from(panic: super::executor::Panicked) -> Self {
-        Self::internal(format!(
-            "a Polylogue bug stopped this request: {}; report it with the request ID",
-            panic.message
-        ))
+        Self::new(
+            polylogue_model::Code::Internal,
+            format!(
+                "a Polylogue bug stopped this request: {}; report it with the request ID",
+                panic.message
+            ),
+        )
     }
 }
 
@@ -145,6 +176,7 @@ impl From<polylogue_reading::Error> for Failure {
             Error::Store(error) => Self::from(error),
             Error::Selection(error) => Self::from(error),
             Error::Operation(error) => Self::from(error),
+            Error::BadRequest(reason) => Self::refusal(reason),
             error => {
                 let hint = match &error {
                     Error::Layout(polylogue_model::read::ReadError::UnsupportedTarget {
@@ -164,9 +196,7 @@ impl From<polylogue_reading::Error> for Failure {
                     }) => Some(format!("set {option} to full")),
                     _ => None,
                 };
-                let code = polylogue_model::Code::from_name(error.code())
-                    .expect("reading error has a product code");
-                let mut failure = Self::new(code, error);
+                let mut failure = Self::new(error.code(), error);
                 if hint.is_some() {
                     failure.error.hint = hint;
                 }

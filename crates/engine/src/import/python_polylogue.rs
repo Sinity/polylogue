@@ -237,12 +237,12 @@ impl Engine {
         };
         store.for_each(dims, |id, values| {
             let Some(address) = parse_address(id) else {
-                return Err(polylogue_store::StoreError::invalid(format!(
+                return Err(polylogue_store::StoreError::stored_data(format!(
                     "vector {id} is not named by a 32-byte address"
                 )));
             };
             let Some(identity) = by_address.get(&address) else {
-                return Err(polylogue_store::StoreError::invalid(format!(
+                return Err(polylogue_store::StoreError::stored_data(format!(
                     "vector {id} has no metadata row"
                 )));
             };

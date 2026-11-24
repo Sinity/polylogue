@@ -87,8 +87,8 @@ pub static MEASURES: &[Measure] = &[
         argument: Some("family"),
         metrics: &[],
         run: |_, _| {
-            Err(polylogue_store::StoreError::Invalid(
-                "facets requires query paging".into(),
+            Err(polylogue_store::StoreError::internal(
+                "facets runs through query paging",
             ))
         },
         text: |data, _| text::json(data),

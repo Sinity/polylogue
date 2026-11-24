@@ -8,7 +8,7 @@ pub use stored_names::StoredName;
 mod helpers;
 pub use helpers::{JsonExt, LockExt, hex, spawn_named, unpoisoned};
 pub mod failure;
-pub use failure::Code;
+pub use failure::{Code, Names, Reason};
 
 pub mod annotation;
 pub mod atomic_write;

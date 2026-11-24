@@ -255,9 +255,7 @@ impl Fixture {
             .checked_sub(32)
             .and_then(|start| order.get(start..start + 16))
             .and_then(|digits| u64::from_str_radix(digits, 16).ok())
-            .ok_or_else(|| {
-                crate::StoreError::Invalid("a session order without a sequence".into())
-            })?;
+            .ok_or_else(|| crate::StoreError::internal("a session order without a sequence"))?;
         Ok((seq ^ (1 << 63)) as i64)
     }
 
@@ -286,7 +284,7 @@ impl Fixture {
             }
             None => {}
             Some(other) => {
-                return Err(crate::StoreError::invalid(format!(
+                return Err(crate::StoreError::internal(format!(
                     "unsupported waiting_on {other:?}"
                 )));
             }
@@ -607,7 +605,7 @@ impl Fixture {
             at_precision: accuracy.precision,
             at_until: accuracy.until,
             session: Some(
-                polylogue_model::SessionId::parse(&session).map_err(crate::StoreError::invalid)?,
+                polylogue_model::SessionId::parse(&session).map_err(crate::StoreError::internal)?,
             ),
             kind: kind.into(),
             at: source_at,
@@ -791,8 +789,9 @@ impl Fixture {
         };
         self.commit_seq += 1;
         let id = format!("n{}", self.commit_seq);
-        let kind = AnnotationKind::from_name(kind).or_invalid("unknown fixture annotation kind")?;
-        let target = Reference::parse(target).or_invalid("invalid fixture annotation target")?;
+        let kind =
+            AnnotationKind::from_name(kind).or_internal("unknown fixture annotation kind")?;
+        let target = Reference::parse(target).or_internal("invalid fixture annotation target")?;
         let fact = AnnotationFact {
             id: id.clone(),
             root: id.clone(),

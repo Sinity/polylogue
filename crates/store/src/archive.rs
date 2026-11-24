@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
     let next: i64 = crate::session_values::write_counter(tx)?
         .checked_add(1)
-        .or_invalid("write counter exhausted")?;
+        .or_internal("write counter exhausted")?;
     crate::meta_set(tx, "write_counter", next.to_string())?;
     Ok(next)
 }
@@ -378,10 +378,10 @@ impl Archive {
             Some(Mode::Standalone) => Self::at(root),
             Some(Mode::Primary) => Self::primary_cache(root),
             None => {
-                return Err(StoreError::Invalid(format!(
-                    "archive {} has no recorded mode; fix its configuration before creating it",
-                    root.display()
-                )));
+                return Err(polylogue_model::Reason::ArchiveModeMissing {
+                    archive: root.display().to_string(),
+                }
+                .into());
             }
         };
         Self::open_configured(archive, |archive| {

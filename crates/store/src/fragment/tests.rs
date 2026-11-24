@@ -141,7 +141,7 @@ fn fragment_preparation_binds_ranges_and_never_uses_sender_commit() {
         })
         .unwrap();
     match prepared.apply(&conn, 1, 1, 8, |_| Ok(None)) {
-        Err(StoreError::Invalid(message)) => {
+        Err(StoreError::Internal(message)) => {
             assert_eq!(message, "fragment extends beyond its receiving reading");
         }
         other => panic!("expected an invalid fragment, got {other:?}"),
@@ -246,10 +246,10 @@ fn malformed_fragments_fail_before_writer_apply() {
             _ => None,
         };
         match (error, expected) {
-            (Some(StoreError::Invalid(message)), Some(expected)) => {
+            (Some(StoreError::Internal(message)), Some(expected)) => {
                 assert_eq!(message, expected, "case {case}");
             }
-            (Some(StoreError::Invalid(_)), None) => {}
+            (Some(StoreError::Internal(_)), None) => {}
             (error, _) => panic!("case {case}: expected an invalid fragment, got {error:?}"),
         }
     }

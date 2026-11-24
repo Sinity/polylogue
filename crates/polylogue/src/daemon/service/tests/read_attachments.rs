@@ -159,7 +159,7 @@ fn page_read_never_touches_blob_bodies() {
     assert!(open.is_some());
     assert!(
         matches!(&refused.outcome, command_surface::Outcome::Error(error)
-            if error.code.as_deref() == Some("store")),
+            if error.code.as_deref() == Some("blob_corrupt")),
         "{refused:?}"
     );
 }

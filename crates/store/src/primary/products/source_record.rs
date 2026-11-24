@@ -202,21 +202,21 @@ pub(crate) fn previous_reading_bound(
         {
             continue;
         }
-        let invalid = || {
-            crate::StoreError::Invalid(
-                "an earlier parsed event has an unmapped material source range".into(),
+        let inconsistent = || {
+            crate::StoreError::internal(
+                "an earlier parsed event has an unmapped material source range",
             )
         };
         let bound = if family == Some("parse_progress") {
             0
         } else if let Some(end) = row.get::<_, Option<i64>>(2)? {
-            u64::try_from(end).map_err(|_| invalid())?
+            u64::try_from(end).map_err(|_| inconsistent())?
         } else {
-            let offset = u64::try_from(row.get::<_, i64>(3)?).map_err(|_| invalid())?;
-            let length = u64::try_from(row.get::<_, i64>(4)?).map_err(|_| invalid())?;
-            let blob_offset = u64::try_from(row.get::<_, i64>(5)?).map_err(|_| invalid())?;
+            let offset = u64::try_from(row.get::<_, i64>(3)?).map_err(|_| inconsistent())?;
+            let length = u64::try_from(row.get::<_, i64>(4)?).map_err(|_| inconsistent())?;
+            let blob_offset = u64::try_from(row.get::<_, i64>(5)?).map_err(|_| inconsistent())?;
             if blob_offset > length {
-                return Err(invalid());
+                return Err(inconsistent());
             }
             // The mapped slice may omit the material's prefix and tail. Its
             // start in the source is offset - blob_offset; events without a
@@ -225,7 +225,7 @@ pub(crate) fn previous_reading_bound(
             offset
                 .checked_sub(blob_offset)
                 .and_then(|start| start.checked_add(length))
-                .ok_or_else(invalid)?
+                .ok_or_else(inconsistent)?
         };
         required = Some(required.unwrap_or(0).max(bound));
     }

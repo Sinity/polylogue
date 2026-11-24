@@ -5,7 +5,7 @@
 //! frames, copied with the log into the importing archive's folder and the
 //! copy read.
 
-use crate::{Result, StoreError};
+use crate::Result;
 use rusqlite::{Connection, OpenFlags};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -52,7 +52,9 @@ fn open_source(
         let folder = copies.as_ref().expect("copy folder").path();
         let name = path
             .file_name()
-            .ok_or_else(|| StoreError::Invalid("a database path has no file name".into()))?;
+            .ok_or_else(|| polylogue_model::Reason::PathHasNoFileName {
+                path: path.display().to_string(),
+            })?;
         let copy = folder.join(name);
         std::fs::copy(path, &copy)?;
         std::fs::copy(&log, PathBuf::from(format!("{}-wal", copy.display())))?;

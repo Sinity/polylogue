@@ -192,7 +192,9 @@ fn alternate_source_binding_cannot_be_changed_by_a_revision() {
         assert!(
             matches!(
                 crate::user_writes::apply(&tx, &changed, 2),
-                Err(StoreError::Invalid(_))
+                Err(StoreError::Refused(
+                    polylogue_model::Reason::AlternateRevisionChanges {}
+                ))
             ),
             "changing {field} must be refused"
         );

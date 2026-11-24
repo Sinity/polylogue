@@ -92,7 +92,7 @@ impl ExtentList {
         let mut conn = self
             .conn
             .lock()
-            .map_err(|_| crate::StoreError::invalid("stored extents lock poisoned"))?;
+            .map_err(|_| crate::StoreError::internal("stored extents lock poisoned"))?;
         if conn.is_none() {
             *conn = Some(self.reopen()?);
         }
@@ -115,13 +115,13 @@ impl ExtentList {
                 })
             })
             .optional()?;
-        let extent = row.ok_or_else(|| crate::StoreError::invalid("stored extent missing"))?;
+        let extent = row.ok_or_else(|| crate::StoreError::stored_data("stored extent missing"))?;
         if extent
             .offset
             .checked_add(extent.length)
             .is_none_or(|end| end <= at)
         {
-            return Err(crate::StoreError::invalid("stored extent gap"));
+            return Err(crate::StoreError::stored_data("stored extent gap"));
         }
         Ok(extent)
     }
@@ -140,7 +140,7 @@ impl ExtentList {
             self.length,
         )?;
         if checked.rows != self.loaded {
-            return Err(crate::StoreError::invalid(
+            return Err(crate::StoreError::internal(
                 "stored extents changed since the chain was loaded",
             ));
         }
@@ -194,7 +194,9 @@ fn check(
             || blob_offset.checked_add(len).is_none_or(|end| end > size)
             || previous_end.is_some_and(|end| offset < end)
         {
-            return Err(crate::StoreError::invalid("invalid stored extent bounds"));
+            return Err(crate::StoreError::stored_data(
+                "invalid stored extent bounds",
+            ));
         }
         previous_end = Some(offset + len);
         for value in [offset, len, blob_offset, size] {

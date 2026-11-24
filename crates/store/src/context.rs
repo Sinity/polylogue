@@ -432,9 +432,7 @@ impl Reader<'_> {
     ) -> Result<Option<polylogue_model::settings::Value>> {
         let current = self.setting_current(key, machine)?;
         if current.supplier == "sinex" {
-            return Err(crate::StoreError::Invalid(
-                polylogue_model::settings::Error::SinexOwned(key.into()).to_string(),
-            ));
+            return Err(polylogue_model::Reason::SettingOwnedBySinex { key: key.into() }.into());
         }
         if !current.conflicts.is_empty() {
             return Err(crate::StoreError::Ambiguous {

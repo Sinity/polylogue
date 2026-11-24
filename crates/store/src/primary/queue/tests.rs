@@ -316,9 +316,13 @@ fn a_format_one_queue_is_refused_with_its_drain_step() {
         )
         .unwrap();
     drop(connection);
-    let Err(StoreError::Invalid(reason)) = Queue::open(&path) else {
+    let Err(StoreError::Refused(reason)) = Queue::open(&path) else {
         panic!("a format-1 queue cannot open")
     };
-    assert!(reason.contains("format 1"), "{reason}");
-    assert!(reason.contains("set the empty queue aside"), "{reason}");
+    assert_eq!(
+        reason,
+        polylogue_model::Reason::ProducerQueueFormat {
+            path: path.display().to_string()
+        }
+    );
 }

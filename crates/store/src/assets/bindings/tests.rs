@@ -814,7 +814,7 @@ fn member_classification_fills_unknowns_and_refuses_conflicts() {
         );
         assert!(matches!(
             fixture.writer.import_assets(staged),
-            Err(StoreError::Conflict(_))
+            Err(StoreError::Internal(_))
         ));
         assert_eq!(fixture.reads.reader().unwrap().query("SELECT import_id,input,member,source_id,sidecar FROM import_member WHERE input='member-a'",&[]).unwrap(),before);
     }

@@ -105,7 +105,7 @@ fn refresh_session(
         } else if n < 0 {
             let taken = take.execute(params![session_pk, field, value, -n, counter])?;
             if taken != 1 {
-                return Err(crate::StoreError::Invalid(format!(
+                return Err(crate::StoreError::internal(format!(
                     "session {session_pk} had no stored {field} {value} to take away"
                 )));
             }

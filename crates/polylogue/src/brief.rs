@@ -662,9 +662,10 @@ impl Fitter {
         );
         let bytes = usize::try_from(budget.saturating_mul(4)).unwrap_or(usize::MAX);
         if header.len() > bytes {
-            return Err(StoreError::Invalid(
-                "context budget cannot fit the required header; increase budget_tokens".into(),
-            ));
+            return Err(polylogue_model::Reason::BudgetTooSmall {
+                part: "the required header".into(),
+            }
+            .into());
         }
         Ok(Self {
             room: bytes - header.len(),
@@ -721,9 +722,10 @@ impl Fitter {
         }
         let _ = writeln!(tail, "{closing}");
         if tail.len() > self.room {
-            return Err(StoreError::Invalid(
-                "context budget cannot fit the required entry map; increase budget_tokens".into(),
-            ));
+            return Err(polylogue_model::Reason::BudgetTooSmall {
+                part: "the required entry map".into(),
+            }
+            .into());
         }
         let mut available = self.room - tail.len();
         let mut shown: Vec<Vec<Option<usize>>> = Vec::new();
@@ -748,9 +750,10 @@ impl Fitter {
             shown.push(lengths);
         }
         if !self.sections.is_empty() && shown.iter().flatten().all(Option::is_none) {
-            return Err(StoreError::Invalid(
-                "context budget cannot fit one candidate entry; increase budget_tokens".into(),
-            ));
+            return Err(polylogue_model::Reason::BudgetTooSmall {
+                part: "one candidate entry".into(),
+            }
+            .into());
         }
         first_lines(&self.sections, &mut shown, &mut available);
         // Only selected candidates may read their stored summaries or bodies,
@@ -1361,7 +1364,7 @@ fn session_start(
     };
     let (text, refs, left_out) = fit.finish(closing, |item| {
         if let Some(Expansion::Annotation(reference)) = &item.expansion {
-            let note = eligible_note(reader, reference, context)?.ok_or_else(|| StoreError::Invalid("annotation eligibility changed before expansion".into()))?;
+            let note = eligible_note(reader, reference, context)?.ok_or_else(|| StoreError::internal("annotation eligibility changed before expansion"))?;
             return annotation_item(reader, &note, context).map(Some);
         }
 
@@ -1691,9 +1694,10 @@ fn recall(
         );
         match answer {
             Ok(page) => {
-                let rows = page.value.into_rows().map_err(|f| {
-                    StoreError::Invalid(format!("recall query {query:?}: {}", f.message))
-                })?;
+                let rows = page
+                    .value
+                    .into_rows()
+                    .map_err(|f| recall_failure(&query, &f))?;
                 break Some((rows, indexes));
             }
             // The provider could not embed the text: the words still search.
@@ -1701,12 +1705,7 @@ fn recall(
                 similarity = false;
                 similarity_failed = Some(f.error.message);
             }
-            Err(f) => {
-                return Err(StoreError::Invalid(format!(
-                    "recall query {query:?}: {}",
-                    f.message
-                )));
-            }
+            Err(f) => return Err(recall_failure(&query, &f)),
         }
     };
     let mut page: Vec<Hit> = Vec::new();
@@ -1903,3 +1902,15 @@ fn recall(
 
 #[cfg(test)]
 mod tests;
+
+/// A recall query's failure keeps the code it failed with.
+fn recall_failure(query: &str, failure: &command_surface::Failure) -> StoreError {
+    StoreError::Selection {
+        code: failure
+            .code
+            .as_deref()
+            .and_then(polylogue_model::Code::from_name)
+            .unwrap_or(polylogue_model::Code::Internal),
+        message: format!("recall query {query:?}: {}", failure.message),
+    }
+}

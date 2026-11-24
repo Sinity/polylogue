@@ -883,14 +883,20 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
                 );
             } else {
                 assert!(
-                    matches!(error, crate::StoreError::StoredValue { column: 1, .. }),
+                    matches!(
+                        error,
+                        crate::StoreError::StoredValue {
+                            column: Some(1),
+                            ..
+                        }
+                    ),
                     "{error}"
                 );
             }
             let error = crate::items::refresh(&tx, &changes)
                 .expect_err("a transaction cannot commit unprepared content changes");
             assert!(
-                matches!(&error, crate::StoreError::Invalid(reason)
+                matches!(&error, crate::StoreError::Internal(reason)
                 if reason == "changed message items were not prepared"),
                 "{error}"
             );

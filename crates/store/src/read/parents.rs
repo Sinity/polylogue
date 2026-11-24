@@ -362,15 +362,22 @@ pub(crate) fn compare_session_messages(
         [target.to_string()],
         |row| row.get::<_, bool>(0),
     )? {
-        return Err(StoreError::invalid(format!(
-            "seen items are not in session:{target}"
-        )));
+        return Err(polylogue_model::Reason::NotInSession {
+            item: "the seen items".into(),
+            session: format!("session:{target}"),
+        }
+        .into());
     }
     let (keys, issues) = parent_keys(conn, target_pk, target)?;
     let locate = |id: &str| -> Result<usize> {
         keys.iter().position(|key| key.id == id).ok_or_else(|| {
             issues.first().map_or_else(
-                || StoreError::invalid(format!("message:{id} is not in session:{target}")),
+                || {
+                    StoreError::from(polylogue_model::Reason::NotInSession {
+                        item: format!("message:{id}"),
+                        session: format!("session:{target}"),
+                    })
+                },
                 |issue| StoreError::IncompleteParents(Box::new(issue.clone())),
             )
         })
@@ -572,9 +579,7 @@ impl MessageSelection<'_, '_> {
                 }
             })?;
         if missing {
-            return Err(StoreError::Invalid(
-                "the message has no source reading".into(),
-            ));
+            return Err(StoreError::stored_data("the message has no source reading"));
         }
         Ok(last)
     }

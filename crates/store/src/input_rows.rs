@@ -155,8 +155,8 @@ impl InputRows {
                     .length
                     .and_then(|length| u64::try_from(length).ok())
                     .ok_or_else(|| {
-                        crate::StoreError::Invalid(
-                            "a prefix observation needs its observed byte length".into(),
+                        crate::StoreError::internal(
+                            "a prefix observation needs its observed byte length",
                         )
                     })?;
                 if o.revision.is_some()
@@ -165,9 +165,8 @@ impl InputRows {
                         && crate::source::Source::committed_through(tx, &self.input, chain, length)?
                             .is_none()
                 {
-                    return Err(crate::StoreError::Invalid(
-                        "a prefix observation needs a committed chain prefix and no revision number"
-                            .into(),
+                    return Err(crate::StoreError::internal(
+                        "a prefix observation needs a committed chain prefix and no revision number",
                     ));
                 }
             }
@@ -226,25 +225,22 @@ impl InputRows {
             route: polylogue_model::Route::Live,
         })?;
         let length = source_read.range.length()?;
-        let invalid = || {
-            crate::StoreError::Invalid(
-                "the capture read does not describe these source rows".into(),
-            )
-        };
+        let inconsistent =
+            || crate::StoreError::internal("the capture read does not describe these source rows");
         if source_read.version != crate::primary::CaptureRead::VERSION
             || source_read.source.origin != self.origin
             || source_read.source.machine.is_empty()
         {
-            return Err(invalid());
+            return Err(inconsistent());
         }
         if let Some(observation) = &self.observation
             && (observation.machine != source_read.source.machine
                 || observation.path_bytes.as_ref() != Some(&source_read.source.path_bytes))
         {
-            return Err(invalid());
+            return Err(inconsistent());
         }
         if self.extents.is_empty() && self.observation.is_none() {
-            return Err(invalid());
+            return Err(inconsistent());
         }
         // Each extent lies inside one blob of the acquired body, at its
         // place: the body itself, or the chunk the body was stored as there.
@@ -258,17 +254,17 @@ impl InputRows {
             &source_read.chunks[..]
         };
         if blobs.iter().map(|chunk| chunk.size).sum::<u64>() != length {
-            return Err(invalid());
+            return Err(inconsistent());
         }
         let mut next = None;
         for extent in &self.extents {
-            let start = u64::try_from(extent.offset).map_err(|_| invalid())?;
-            let size = u64::try_from(extent.length).map_err(|_| invalid())?;
-            let offset = u64::try_from(extent.blob_offset).map_err(|_| invalid())?;
+            let start = u64::try_from(extent.offset).map_err(|_| inconsistent())?;
+            let size = u64::try_from(extent.length).map_err(|_| inconsistent())?;
+            let offset = u64::try_from(extent.blob_offset).map_err(|_| inconsistent())?;
             let at = start
                 .checked_sub(source_read.range.start)
-                .ok_or_else(invalid)?;
-            let end = at.checked_add(size).ok_or_else(invalid)?;
+                .ok_or_else(inconsistent)?;
+            let end = at.checked_add(size).ok_or_else(inconsistent)?;
             let mut blob_start = 0u64;
             let placed = blobs.iter().any(|blob| {
                 let here = blob_start;
@@ -276,7 +272,7 @@ impl InputRows {
                 blob.hash == extent.blob && here <= at && end <= blob_start && offset == at - here
             });
             if !placed || next.is_some_and(|next| next != start) {
-                return Err(invalid());
+                return Err(inconsistent());
             }
             next = Some(start + size);
         }
@@ -297,16 +293,16 @@ impl InputRows {
             .map(serde_json::from_str::<serde_json::Value>)
             .transpose()?
             .unwrap_or_else(|| serde_json::json!({}));
-        let object = details.as_object_mut().ok_or_else(|| {
-            crate::StoreError::Invalid("observation details must be an object".into())
-        })?;
+        let object = details
+            .as_object_mut()
+            .ok_or_else(|| crate::StoreError::internal("observation details must be an object"))?;
         let source_read = serde_json::to_value(source_read)?;
         if object
             .get("capture_read")
             .is_some_and(|prior| prior != &source_read)
         {
-            return Err(crate::StoreError::Invalid(
-                "the observation's capture read conflicts".into(),
+            return Err(crate::StoreError::internal(
+                "the observation's capture read conflicts",
             ));
         }
         object.insert("capture_read".into(), source_read);

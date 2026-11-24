@@ -56,8 +56,8 @@ fn begin(
     scope: Option<&crate::read::scope::ReadScopeState>,
 ) -> Result<()> {
     if boot.is_empty() {
-        return Err(crate::StoreError::Invalid(
-            "the current boot has no identity".into(),
+        return Err(crate::StoreError::internal(
+            "the current boot has no identity",
         ));
     }
     with_full_sync(index, || {

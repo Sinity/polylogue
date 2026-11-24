@@ -1,7 +1,7 @@
 //! Read-time grouped session counts. No separate facet rows are stored.
 use super::Selection;
 use crate::session_sql;
-use crate::{Reader, Result, StoreError};
+use crate::{Reader, Result};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -31,15 +31,15 @@ pub fn families(options: &str) -> Result<Vec<&'static str>> {
             .copied()
             .filter(|f| *f == name)
             .collect()),
-        _ => Err(StoreError::Invalid(format!(
-            "facets takes basic, deep or a family: {}",
-            BASIC
-                .iter()
-                .chain(DEEP)
-                .copied()
-                .collect::<Vec<_>>()
-                .join(",")
-        ))),
+        name => Err(polylogue_model::Reason::UnknownChoice {
+            field: "facets".into(),
+            value: name.into(),
+            known: ["basic", "deep"]
+                .into_iter()
+                .chain(BASIC.iter().chain(DEEP).copied())
+                .collect(),
+        }
+        .into()),
     }
 }
 

@@ -277,7 +277,7 @@ pub(crate) fn undo_line(
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
-            Failure { error }
+            Failure::from(error)
         })
 }
 

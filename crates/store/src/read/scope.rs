@@ -58,7 +58,7 @@ impl ScopeReset<'_> {
 }
 
 fn poisoned() -> StoreError {
-    StoreError::Invalid("scope publication fence poisoned".into())
+    StoreError::internal("scope publication fence poisoned")
 }
 #[derive(Debug, Clone)]
 pub struct ReadScopeToken {
@@ -156,7 +156,7 @@ impl ReadScopeState {
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |epoch| {
                 epoch.checked_add(1)
             })
-            .or_invalid("read scope epoch exhausted")?;
+            .or_internal("read scope epoch exhausted")?;
         Ok(ScopeReset { callbacks })
     }
     pub(crate) fn finish_reset(&self) {

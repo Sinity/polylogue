@@ -291,16 +291,15 @@ impl ReadPool {
             .ok()
             .and_then(|n| n.checked_mul(3 * 1024))
             .filter(|n| *n != 0)
-            .ok_or_else(|| {
-                StoreError::Invalid("read pool needs a positive connection limit".into())
+            .ok_or_else(|| polylogue_model::Reason::NotPositive {
+                field: "the read pool's connection limit".into(),
             })?;
         let cache_kib = i64::try_from(memory_bytes / divisor)
             .ok()
             .filter(|n| *n > 0)
-            .ok_or_else(|| {
-                StoreError::Invalid(
-                    "read pool budget needs at least 1 KiB per database per connection".into(),
-                )
+            .ok_or_else(|| polylogue_model::Reason::BadConfiguration {
+                problem: "the read pool budget needs at least 1 KiB per database per connection"
+                    .into(),
             })?;
         let state = Arc::new(Mutex::new(PoolState::default()));
         let available = Arc::new(Condvar::new());
@@ -580,7 +579,7 @@ fn wake_all(state: &Mutex<PoolState>, available: &Condvar) {
 }
 
 fn pool_poisoned() -> StoreError {
-    StoreError::Invalid("read pool lock poisoned".into())
+    StoreError::internal("read pool lock poisoned")
 }
 
 impl Drop for Reader<'_> {
@@ -684,7 +683,7 @@ impl Reader<'_> {
             )
         };
         if code != rusqlite::ffi::SQLITE_OK {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::internal(format!(
                 "page read count is unavailable (SQLite code {code})"
             )));
         }
@@ -731,7 +730,7 @@ impl Reader<'_> {
     ) -> Result<std::cell::RefMut<'_, crate::vectors::Vectors>> {
         self.conn()?;
         let mut vectors = self.vectors.try_borrow_mut().map_err(|_| {
-            StoreError::Invalid("this reader already has an embeddings database guard".into())
+            StoreError::internal("this reader already has an embeddings database guard")
         })?;
         if vectors.as_ref().is_some_and(|v| writable && !v.writable()) {
             // Close before reopening, so a slot never owns two auxiliary connections.
@@ -1140,9 +1139,7 @@ impl Reader<'_> {
             None => None,
         };
         if from.is_some() && start.is_none() {
-            return Err(StoreError::Invalid(
-                "the read starts at a message the session does not hold".into(),
-            ));
+            return Err(polylogue_model::Reason::ReadStartOutsideSession {}.into());
         }
         let (prefix, join, ordinal) = match content.order {
             RecordOrder::Skip => (String::new(), "", "NULL".to_owned()),
@@ -1238,11 +1235,12 @@ impl Reader<'_> {
                 continue;
             }
             let named = id.to_string();
-            let invalid = |what: &str| StoreError::stored(0, format!("message {named} has {what}"));
+            let unreadable =
+                |what: &str| StoreError::stored(0, format!("message {named} has {what}"));
             let attrs: Option<serde_json::Value> = attrs
                 .map(|a| serde_json::from_str(&a))
                 .transpose()
-                .map_err(|_| invalid("unparseable attributes"))?;
+                .map_err(|_| unreadable("unparseable attributes"))?;
             let visible = match content.visibility {
                 None => true,
                 Some(filter) if filter.prompts && !polylogue_model::is_prompt(role, kind) => false,
@@ -1268,7 +1266,7 @@ impl Reader<'_> {
                 parent: parent
                     .map(|p| MessageId::parse(&p))
                     .transpose()
-                    .map_err(|_| invalid("an invalid parent ID"))?,
+                    .map_err(|_| unreadable("an invalid parent ID"))?,
                 role,
                 at: at.0,
                 at_quality: at.1.quality,
@@ -1297,14 +1295,14 @@ impl Reader<'_> {
                 attrs: match attrs.as_ref().and_then(|value| value.get("attrs")) {
                     None => Default::default(),
                     Some(serde_json::Value::Object(map)) => map.clone(),
-                    Some(_) => return Err(invalid("unparseable attributes")),
+                    Some(_) => return Err(unreadable("unparseable attributes")),
                 },
                 production: attrs
                     .as_ref()
                     .and_then(|a| a.get("production"))
                     .map(|p| serde_json::from_value(p.clone()))
                     .transpose()
-                    .map_err(|_| invalid("an unparseable production record"))?
+                    .map_err(|_| unreadable("an unparseable production record"))?
                     .unwrap_or_default(),
             };
             let block_selection = hash
@@ -1425,7 +1423,10 @@ impl Reader<'_> {
         let current = if asset.size == 0 {
             let latest: Option<(i64,i64)> = self.conn()?.query_row("SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1", [&asset.input], |row| <(_, _)>::try_from(row)).optional()?;
             if latest != Some((asset.chain,0)) {
-                return Err(StoreError::Conflict("the attachment's stored bytes changed; select it again".into()));
+                return Err(polylogue_model::Reason::AttachmentChanged {
+                    input: asset.input.clone(),
+                }
+                .into());
             }
             crate::assets::empty::source(
                 self.conn()?,
@@ -1479,8 +1480,8 @@ impl Reader<'_> {
     ) -> Result<Vec<u8>> {
         self.current_attachment(asset)?;
         if range.start > range.end || range.end > asset.size {
-            return Err(StoreError::Invalid(
-                "attachment range is outside the stored bytes".into(),
+            return Err(StoreError::stored_data(
+                "attachment range is outside the stored bytes",
             ));
         }
         if asset.size == 0 {
@@ -1526,8 +1527,8 @@ impl Reader<'_> {
             length += count as u64;
         }
         if length != asset.size {
-            return Err(StoreError::Invalid(
-                "the stored attachment length differs".into(),
+            return Err(StoreError::stored_data(
+                "the stored attachment length differs",
             ));
         }
         Ok(polylogue_model::BlobHash(*hasher.finalize().as_bytes()))

@@ -22,14 +22,17 @@ fn resolve(
 ) -> polylogue_store::Result<Availability> {
     reader.check()?;
     let block_index = usize::try_from(block)
-        .map_err(|_| StoreError::Invalid("attachment block exceeds host address space".into()))?;
+        .map_err(|_| StoreError::internal("an attachment block exceeds host address space"))?;
     let attachment_index = usize::try_from(index)
-        .map_err(|_| StoreError::Invalid("attachment index exceeds host address space".into()))?;
+        .map_err(|_| StoreError::internal("an attachment index exceeds host address space"))?;
     let resolution = reader.attachment(message, block_index, attachment_index)?;
     if resolution.source != *attachment {
-        return Err(StoreError::Conflict(
-            "attachment descriptor differs from the selected source".into(),
-        ));
+        return Err(polylogue_model::Reason::AttachmentDescriptorMismatch {
+            message: message.to_string(),
+            block,
+            attachment: index,
+        }
+        .into());
     }
     if let Some(hash) = attachment.blob {
         let extent = reader.blob_reader()?.extent(&hashed_blobs::Hash(hash.0))?;
@@ -37,8 +40,8 @@ fn resolve(
             .size
             .is_some_and(|size| size != extent.decoded_len)
         {
-            return Err(StoreError::Invalid(
-                "attachment size differs from its stored size".into(),
+            return Err(StoreError::stored_data(
+                "an attachment's recorded size differs from its stored size",
             ));
         }
         return Ok(Availability::Present { input: None });
@@ -55,8 +58,8 @@ fn resolve(
         )),
         AttachmentState::Available => {
             let [asset] = resolution.matches.as_slice() else {
-                return Err(StoreError::Conflict(
-                    "an available attachment must match exactly one stored file".into(),
+                return Err(StoreError::internal(
+                    "an available attachment must match exactly one stored file",
                 ));
             };
             Ok(Availability::Present {
@@ -100,8 +103,8 @@ pub(super) fn prepare(
             | StoreError::Blobs(_)
             | StoreError::BlobCorrupt(_)
             | StoreError::NotFound(_)
-            | StoreError::Conflict(_)
-            | StoreError::Invalid(_)),
+            | StoreError::Refused(_)
+            | StoreError::StoredValue { .. }),
         ) => {
             // A cancellation or scope change outranks a simultaneous byte error.
             reader.check()?;

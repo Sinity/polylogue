@@ -80,7 +80,7 @@ impl Reader<'_> {
                 let run = self.query_run(id, None)?;
                 let outcome = self.query_run_outcome(id, None)?;
                 if outcome.as_ref().is_some_and(|outcome| &outcome.run != id) {
-                    return Err(StoreError::invalid(
+                    return Err(StoreError::stored_data(
                         "stored run completion names another run",
                     ));
                 }
@@ -97,7 +97,7 @@ impl Reader<'_> {
                     });
                 };
                 if &run.id != id {
-                    return Err(StoreError::invalid(
+                    return Err(StoreError::stored_data(
                         "stored run beginning names another run",
                     ));
                 }
@@ -107,7 +107,7 @@ impl Reader<'_> {
                     if outcome.binding_hash != run.binding_hash()?
                         || outcome.run_hash != run.record_hash()?
                     {
-                        return Err(StoreError::invalid(
+                        return Err(StoreError::stored_data(
                             "stored run completion belongs to another execution",
                         ));
                     }
@@ -118,8 +118,8 @@ impl Reader<'_> {
                 }))
             }
             _ => {
-                return Err(StoreError::Invalid(
-                    "object preparation requires a request or run reference".into(),
+                return Err(StoreError::internal(
+                    "object preparation requires a request or run reference",
                 ));
             }
         };
@@ -131,7 +131,7 @@ impl Reader<'_> {
         };
         let encoded = match &record {
             ObjectRecord::Request(record) => {
-                record.validate().map_err(crate::StoreError::invalid)?;
+                record.validate().map_err(crate::StoreError::stored_data)?;
                 digest.hash.update(b"polylogue-exact-request-read-v1\0");
                 serde_json::to_writer(&mut digest, record)
             }

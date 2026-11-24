@@ -76,7 +76,7 @@ pub(super) fn validate_context(context: &SinexEventContext) -> Result<()> {
         .flatten()
         .any(|value| value.is_empty())
     {
-        return Err(crate::StoreError::invalid(
+        return Err(crate::StoreError::internal(
             "confirmed Sinex context has inconsistent metadata",
         ));
     }
@@ -87,7 +87,7 @@ fn validate_snapshot(state: &ReplayState, snapshot: &AppliedSnapshot) -> Result<
     let progress = state
         .snapshot_progress
         .as_ref()
-        .ok_or_else(|| crate::StoreError::invalid("a snapshot completion has no start"))?;
+        .ok_or_else(|| crate::StoreError::internal("a snapshot completion has no start"))?;
     if snapshot.position < progress.origin
         || progress
             .position
@@ -99,7 +99,7 @@ fn validate_snapshot(state: &ReplayState, snapshot: &AppliedSnapshot) -> Result<
             .as_ref()
             .is_some_and(|last| last.sequence == 0 || !hash(&last.fingerprint))
     {
-        return Err(crate::StoreError::invalid(
+        return Err(crate::StoreError::internal(
             "a snapshot completion differs from its staged pages",
         ));
     }
@@ -111,7 +111,7 @@ fn validate_delivery(delivery: &CompletedDelivery) -> Result<()> {
         || delivery.stream_sequence == 0
         || !hash(&delivery.fingerprint)
     {
-        return Err(crate::StoreError::invalid(
+        return Err(crate::StoreError::internal(
             "a completed delivery needs its stream message identity",
         ));
     }
@@ -125,7 +125,7 @@ pub(super) fn stage_control(
 ) -> Result<()> {
     match control {
         ReplayControl::Reset { .. } | ReplayControl::SnapshotStart { .. } => {
-            return Err(crate::StoreError::invalid(
+            return Err(crate::StoreError::internal(
                 "a scope reset must be a separate control page",
             ));
         }
@@ -133,12 +133,12 @@ pub(super) fn stage_control(
             let progress = state
                 .snapshot_progress
                 .as_mut()
-                .ok_or_else(|| crate::StoreError::invalid("a snapshot page has no start"))?;
+                .ok_or_else(|| crate::StoreError::internal("a snapshot page has no start"))?;
             if *position < progress.origin
                 || cursor.is_empty()
                 || progress.position.is_some_and(|old| old != *position)
             {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "a snapshot page changed its position or did not advance",
                 ));
             }
@@ -151,7 +151,7 @@ pub(super) fn stage_control(
         }
         ReplayControl::LatestPosition { position } => {
             if *position < 0 {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "Sinex's commit position cannot be negative",
                 ));
             }
@@ -159,12 +159,12 @@ pub(super) fn stage_control(
         }
         ReplayControl::Delivered { delivery } => {
             if state.snapshot_progress.is_some() {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "a partial snapshot cannot acknowledge stream deliveries",
                 ));
             }
             if delivery.stream_instance.is_empty() || delivery.stream_sequence == 0 {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "a staged delivery needs its stream position",
                 ));
             }
@@ -174,12 +174,12 @@ pub(super) fn stage_control(
         }
         ReplayControl::Completion { position, delivery } => {
             if state.snapshot_progress.is_some() {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "a snapshot needs its last page before a stream completion",
                 ));
             }
             if *position < 0 {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "a completed position cannot be negative",
                 ));
             }
@@ -187,7 +187,7 @@ pub(super) fn stage_control(
                 .applied_position
                 .is_some_and(|applied| *position < applied)
             {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "a completion moved behind the applied position",
                 ));
             }
@@ -231,7 +231,7 @@ pub(super) fn complete(conn: &Connection, position: i64) -> Result<()> {
         Some(CompletionMarker::Snapshot(snapshot)) => {
             validate_snapshot(&state, &snapshot)?;
             if snapshot.position != position {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "snapshot completion changed position",
                 ));
             }
@@ -242,7 +242,7 @@ pub(super) fn complete(conn: &Connection, position: i64) -> Result<()> {
         }
         delivery => {
             if state.snapshot_progress.is_some() {
-                return Err(crate::StoreError::invalid(
+                return Err(crate::StoreError::internal(
                     "a snapshot completion needs its last page",
                 ));
             }

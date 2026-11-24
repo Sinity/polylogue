@@ -236,9 +236,9 @@ fn object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
             )
         });
         let expected = if scope_reset {
-            "scope_changed"
+            polylogue_model::Code::ScopeChanged
         } else {
-            "cancelled"
+            polylogue_model::Code::Cancelled
         };
         assert!(
             matches!(&response, Err(failure) if failure.code() == expected),

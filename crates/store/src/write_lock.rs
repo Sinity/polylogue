@@ -71,16 +71,16 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
             _ => path.with_file_name("archive.db"),
         },
         _ => {
-            return Err(StoreError::Invalid(
-                "the write lock needs a standalone archive or index connection".into(),
+            return Err(StoreError::internal(
+                "the write lock needs a standalone archive or index connection",
             ));
         }
     };
     let file = OpenOptions::new().read(true).open(archive_db)?;
     let key = identity(&file)?;
     if HELD.with(|held| held.get().is_some()) {
-        return Err(StoreError::Invalid(
-            "this thread already holds the write lock".into(),
+        return Err(StoreError::internal(
+            "this thread already holds the write lock",
         ));
     }
     file.lock()?;
@@ -172,8 +172,8 @@ pub(crate) fn wait_shared(
     let file = OpenOptions::new().read(true).open(archive.archive_db())?;
     let key = identity(&file)?;
     if HELD.with(|held| held.get() == Some(key)) {
-        return Err(StoreError::Invalid(
-            "cannot start a read while this thread holds the write lock".into(),
+        return Err(StoreError::internal(
+            "cannot start a read while this thread holds the write lock",
         ));
     }
     loop {

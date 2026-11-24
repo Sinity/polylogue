@@ -39,7 +39,7 @@ fn a_register_transaction_takes_the_lock_only_to_commit() {
     let outer = hold(&tx).unwrap();
     assert!(matches!(
         commit(tx),
-        Err(crate::StoreError::Invalid(reason)) if reason == "this thread already holds the write lock"
+        Err(crate::StoreError::Internal(reason)) if reason == "this thread already holds the write lock"
     ));
     drop(outer);
 }

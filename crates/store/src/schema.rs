@@ -212,7 +212,7 @@ fn execute_index_sql(conn: &Connection, sql: &str, deferring: bool) -> Result<()
     while let Some(mut prepared) = batch.next()? {
         let sql = prepared
             .expanded_sql()
-            .ok_or_else(|| StoreError::Invalid("a schema statement has no SQL".into()))?;
+            .ok_or_else(|| StoreError::internal("a schema statement has no SQL"))?;
         let normalized = statement(&sql);
         let index = normalized
             .strip_prefix("CREATE UNIQUE INDEX ")

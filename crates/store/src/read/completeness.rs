@@ -42,15 +42,15 @@ impl Reader<'_> {
             if contract.origin().is_empty()
                 || declared.insert(contract.origin(), contract).is_some()
             {
-                return Err(StoreError::Invalid(
-                    "reading contracts need unique nonempty origins".into(),
+                return Err(StoreError::internal(
+                    "reading contracts need unique nonempty origins",
                 ));
             }
             if let ReadingContract::Expected { version, .. } = contract
                 && version.is_empty()
             {
-                return Err(StoreError::Invalid(
-                    "an expected reading needs its declared version".into(),
+                return Err(StoreError::internal(
+                    "an expected reading needs its declared version",
                 ));
             }
         }

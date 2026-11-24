@@ -161,7 +161,7 @@ impl Reader<'_> {
             let mut cache = self
                 .count_cache()
                 .lock()
-                .or_invalid("count cache lock poisoned")?;
+                .or_internal("count cache lock poisoned")?;
             if cache.position.as_ref() == Some(&position) {
                 if let Some((_, count)) = cache.entries.iter().find(|(entry, _)| *entry == key) {
                     return Ok(*count);
@@ -178,7 +178,7 @@ impl Reader<'_> {
         let mut cache = self
             .count_cache()
             .lock()
-            .or_invalid("count cache lock poisoned")?;
+            .or_internal("count cache lock poisoned")?;
         if cache.position.as_ref() == Some(&position) {
             // This bounded cache evicts reusable answers, never query rows.
             if cache.entries.len() == 64 {

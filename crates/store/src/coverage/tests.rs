@@ -42,7 +42,7 @@ fn completed_walks_replace_all_roots_regardless_of_source_time() {
     rejected.roots.push(rejected.roots[0].clone());
     assert!(matches!(
         apply(&db, &rejected),
-        Err(StoreError::Invalid(message)) if message == "coverage roots must be nonempty and unique"
+        Err(StoreError::Refused(polylogue_model::Reason::BadCoverage { problem })) if problem == "coverage roots must be nonempty and unique"
     ));
     assert_eq!(stored(), fact, "a rejected walk leaves the stored one");
     clear(&db).unwrap();

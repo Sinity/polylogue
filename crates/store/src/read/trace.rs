@@ -55,12 +55,10 @@ impl Reader<'_> {
                 }
                 ids.into_iter()
                     .next()
-                    .map(|id| MessageId::parse(&id).map_err(StoreError::invalid))
+                    .map(|id| MessageId::parse(&id).map_err(StoreError::stored_data))
                     .transpose()
             }
-            _ => Err(StoreError::Invalid(
-                "trace needs a message, block, tool call or text span".into(),
-            )),
+            _ => Err(polylogue_model::Reason::TraceTarget {}.into()),
         }
     }
 
@@ -111,15 +109,15 @@ impl Reader<'_> {
             });
         }
         for (input, chain, start, end, route, shown, version, status, parsed_upto) in sources {
-            let start = u64::try_from(start).map_err(StoreError::invalid)?;
-            let end = u64::try_from(end).map_err(StoreError::invalid)?;
+            let start = u64::try_from(start).map_err(StoreError::stored_data)?;
+            let end = u64::try_from(end).map_err(StoreError::stored_data)?;
             if end < start {
-                return Err(StoreError::invalid(
+                return Err(StoreError::stored_data(
                     "record source byte end precedes its start",
                 ));
             }
             let route = Route::from_name(&route)
-                .ok_or_else(|| StoreError::invalid("unknown source route"))?;
+                .ok_or_else(|| StoreError::stored_data("unknown source route"))?;
             card.chain.push(ChainStep::InputRecord {
                 input: input.clone(),
                 chain,

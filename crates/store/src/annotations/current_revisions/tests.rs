@@ -249,12 +249,13 @@ fn a_single_valued_mark_over_several_rows_is_refused_and_writes_nothing() {
     };
     let before = world.count("annotation");
     match world.write(outcome(vec![r("session:codex:a"), r("session:codex:b")])) {
-        Err(StoreError::Invalid(message)) => {
-            assert_eq!(
-                message,
-                "single_valued_bulk: `outcome` holds one value per target and is not written over 2 rows; label rows with a rubric field (annotation) instead"
-            )
-        }
+        Err(StoreError::Refused(reason)) => assert_eq!(
+            reason,
+            polylogue_model::Reason::SingleValuedBulk {
+                kind: "outcome".into(),
+                rows: 2,
+            }
+        ),
         other => panic!("expected single_valued_bulk, got {other:?}"),
     }
     assert_eq!(world.count("annotation"), before);

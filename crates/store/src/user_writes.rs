@@ -33,7 +33,7 @@ impl WriteResult {
         let save =
             match &prepared.request.write {
                 UserWrite::Save(save) => Some(save.outcomes.clone().ok_or_else(|| {
-                    StoreError::invalid("accepted Save has no resolved outcomes")
+                    StoreError::internal("accepted Save has no resolved outcomes")
                 })?),
                 _ => None,
             };
@@ -386,26 +386,24 @@ pub(crate) fn apply_using(
                 .iter()
                 .any(|link| link.role == LinkRole::About)
             {
-                return Err(StoreError::Invalid(
-                    "a query annotation cannot supply its own about links".into(),
-                ));
+                return Err(polylogue_model::Reason::QueryAnnotationAboutLinks {}.into());
             }
             // One deliberate write of a single-valued mark revises it; a bulk
             // write over several rows never does. Systematic labelling goes
             // through a rubric field, whose slot includes its author.
             if annotation.kind.spec().single_valued_mark() && resolved.len() > 1 {
-                return Err(StoreError::Invalid(format!(
-                    "single_valued_bulk: `{}` holds one value per target and is not written over {} rows; label rows with a rubric field (annotation) instead",
-                    annotation.kind.as_str(),
-                    resolved.len()
-                )));
+                return Err(polylogue_model::Reason::SingleValuedBulk {
+                    kind: annotation.kind.as_str().into(),
+                    rows: resolved.len(),
+                }
+                .into());
             }
             let mut targets = std::collections::BTreeSet::new();
             let mut statements = Vec::with_capacity(resolved.len());
             for reference in resolved {
                 if !targets.insert(reference) {
-                    return Err(StoreError::Invalid(
-                        "a query annotation contains duplicate resolved targets".into(),
+                    return Err(StoreError::internal(
+                        "a query annotation contains duplicate resolved targets",
                     ));
                 }
                 let mut statement = annotation.clone();
@@ -566,7 +564,7 @@ pub(crate) fn apply_using(
             machine,
         } => {
             let value = polylogue_model::settings::parse(key, value, mode)
-                .map_err(crate::StoreError::invalid)?;
+                .map_err(polylogue_model::Reason::from)?;
             let statement = polylogue_model::annotation::NewAnnotation {
                 kind: polylogue_model::annotation::AnnotationKind::Setting,
                 key: Some(key.clone()),

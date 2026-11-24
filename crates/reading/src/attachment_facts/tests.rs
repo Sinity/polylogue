@@ -48,12 +48,15 @@ fn changed_attachment_slot_is_unavailable() {
     if let ItemKind::Attachment { attachment, .. } = &mut changed.kind {
         attachment.source_id = Some("file-Unrelated".into());
     }
+    let block = format!("{message} block 0");
     for (item, index, reason) in [
-        (original, 1, "selected block has no such attachment"),
+        (original, 1, format!("{block} has no attachment 1")),
         (
             changed,
             0,
-            "request attachment descriptor differs from the selected source was already used for different content",
+            format!(
+                "the attachment descriptor for {block} attachment 0 differs from the one its source records"
+            ),
         ),
     ] {
         let prepared = prepare(&reader, item, index, &|_, _, _, _| {
@@ -69,12 +72,7 @@ fn changed_attachment_slot_is_unavailable() {
         else {
             unreachable!()
         };
-        assert_eq!(
-            availability,
-            ValueState::Unavailable {
-                reason: reason.into()
-            }
-        );
+        assert_eq!(availability, ValueState::Unavailable { reason });
         assert_eq!(verified_hash, None);
         assert_eq!(open, None);
     }
@@ -98,4 +96,30 @@ fn attachment_metadata_obeys_cancellation() {
             Err(Error::Store(StoreError::ReadCancelled))
         ));
     });
+}
+
+#[test]
+fn attachment_descriptor_mismatch_names_the_mismatch() {
+    let (writer, message) = fixture();
+    let pool = ReadPool::open(&writer.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut stated = reader.attachment(&message, 0, 0).unwrap().source;
+    stated.source_id = Some("file-Unrelated".into());
+    let Err(StoreError::Refused(reason)) = resolve(&reader, &message, 0, 0, &stated) else {
+        panic!("a stated descriptor that differs from its source is refused")
+    };
+    assert_eq!(
+        reason,
+        polylogue_model::Reason::AttachmentDescriptorMismatch {
+            message: message.to_string(),
+            block: 0,
+            attachment: 0,
+        }
+    );
+    assert_eq!(
+        reason.to_string(),
+        format!(
+            "the attachment descriptor for {message} block 0 attachment 0 differs from the one its source records"
+        )
+    );
 }

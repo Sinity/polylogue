@@ -649,7 +649,7 @@ impl Reader<'_> {
             self.conn()?;
             let id: String = row.get(0)?;
             let session = SessionId::parse(&id).map_err(|_| {
-                StoreError::Invalid("a message membership has an invalid session identity".into())
+                StoreError::internal("a message membership has an invalid session identity")
             })?;
             if visit(session)?.is_break() {
                 break;
@@ -856,7 +856,10 @@ pub(crate) fn kept_results_named<'a>(
         "SELECT id,rows_json FROM @source.kept_result WHERE id IN (SELECT value FROM json_each(?1))",
     ));
     let mut statement = conn.prepare_cached(&sql)?;
-    decode_kept(statement.query([serde_json::to_string(&ids)?])?)
+    decode_kept(statement.query([serde_json::to_string(&ids)?])?).map_err(|error| match error {
+        StoreError::Refused(reason) => StoreError::stored_data(reason),
+        error => error,
+    })
 }
 
 /// Refuses a kept body that [`kept_results_named`] cannot decode, so a stored kept
@@ -867,11 +870,7 @@ pub(crate) fn check_kept_body(
     rows_json: &str,
 ) -> crate::Result<()> {
     let mut statement = conn.prepare_cached(&kept_sql("SELECT ?1 AS id,?2 AS rows_json"))?;
-    match decode_kept(statement.query(rusqlite::params![id, rows_json])?) {
-        Ok(_) => Ok(()),
-        Err(StoreError::Json(error)) => Err(StoreError::Invalid(error.to_string())),
-        Err(error) => Err(error),
-    }
+    decode_kept(statement.query(rusqlite::params![id, rows_json])?).map(drop)
 }
 
 /// The kept-column query over `stored`, which yields `id` and `rows_json`.
@@ -887,10 +886,14 @@ fn decode_kept(
     let mut values = BTreeMap::new();
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
+        // A body that does not decode is refused at write; read back, the
+        // reader reports it as stored data.
         let damaged = |field: &str, message: &dyn std::fmt::Display| {
-            StoreError::Json(<serde_json::Error as serde::de::Error>::custom(format!(
-                "kept result {id:?} field {field}: {message}"
-            )))
+            StoreError::from(polylogue_model::Reason::BadKeptResult {
+                id: id.clone(),
+                field: field.into(),
+                problem: message.to_string(),
+            })
         };
         if !row.get::<_, bool>(5)? {
             return Err(damaged("rows_json", &"invalid JSON"));

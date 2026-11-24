@@ -175,7 +175,7 @@ pub(crate) fn require_range(
     range: std::ops::Range<u64>,
 ) -> Result<()> {
     if range.start > range.end {
-        return Err(StoreError::Invalid("invalid stored range".into()));
+        return Err(StoreError::stored_data("invalid stored range"));
     }
     let length: Option<i64> = conn
         .scalar_optional(

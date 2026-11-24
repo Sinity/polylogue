@@ -142,8 +142,8 @@ ORDER BY r.format,s.parse_version,s.record_kind,s.path,json_extract(s.table_key,
             known_kinds: declarations(row, 8)?,
             unknown_kind_count: integer(row, 9)?,
             unknown_table_count: integer(row, 10)?,
-            first: occurrence(row, 11)?.or_invalid("wire shape has no first occurrence")?,
-            last: occurrence(row, 12)?.or_invalid("wire shape has no last occurrence")?,
+            first: occurrence(row, 11)?.or_stored("wire shape has no first occurrence")?,
+            last: occurrence(row, 12)?.or_stored("wire shape has no last occurrence")?,
             complete_presence: occurrence(row, 13)?,
             present_in_latest: row.get(14)?,
             unused_count: integer(row, 15)?,
@@ -173,12 +173,10 @@ ORDER BY r.format,t.parse_version,t.record_kind,t.path,json_extract(t.table_key,
             row.get(5)?,
             TypeObservation {
                 count: integer(row, 6)?,
-                first: occurrence(row, 7)?.ok_or_else(|| {
-                    StoreError::Invalid("wire type has no first occurrence".into())
-                })?,
-                last: occurrence(row, 8)?.ok_or_else(|| {
-                    StoreError::Invalid("wire type has no last occurrence".into())
-                })?,
+                first: occurrence(row, 7)?
+                    .ok_or_else(|| StoreError::stored_data("wire type has no first occurrence"))?,
+                last: occurrence(row, 8)?
+                    .ok_or_else(|| StoreError::stored_data("wire type has no last occurrence"))?,
             },
         );
         Ok(())
@@ -286,12 +284,12 @@ fn latest_occurrence(drift: &Drift) -> i64 {
         .unwrap_or(drift.shape.last.sequence)
 }
 fn integer(row: &rusqlite::Row<'_>, at: usize) -> Result<u64> {
-    u64::try_from(row.get::<_, i64>(at)?).or_invalid("negative wire count in index")
+    u64::try_from(row.get::<_, i64>(at)?).or_stored("negative wire count in index")
 }
 fn decimal(row: &rusqlite::Row<'_>, at: usize) -> Result<u64> {
     row.get::<_, String>(at)?
         .parse()
-        .or_invalid("invalid wire count in index")
+        .or_stored("invalid wire count in index")
 }
 fn occurrence(row: &rusqlite::Row<'_>, at: usize) -> Result<Option<Occurrence>> {
     row.get::<_, Option<String>>(at)?

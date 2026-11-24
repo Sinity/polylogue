@@ -111,7 +111,7 @@ fn source_position(conn: &Connection) -> Result<Option<u64>> {
     )?;
     if let Some(position) = position {
         return position.parse::<u64>().map(Some).map_err(|_| {
-            StoreError::Invalid("source commit position is not a nonnegative integer".into())
+            StoreError::stored_data("source commit position is not a nonnegative integer")
         });
     }
     let empty: bool = conn.scalar(

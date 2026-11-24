@@ -537,3 +537,21 @@ impl Plan {
 
 #[cfg(test)]
 mod tests;
+
+impl From<Error> for crate::Reason {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Conflict { key, revisions } => Self::SettingConflict {
+                key,
+                revisions: revisions.iter().collect(),
+            },
+            Error::UnknownKey(key) => Self::UnknownSetting { key },
+            Error::Blank(key) => Self::BlankSetting { key },
+            Error::Invalid { key, expected } => Self::BadSettingValue {
+                key,
+                expected: expected.into(),
+            },
+            Error::SinexOwned(key) => Self::SettingOwnedBySinex { key },
+        }
+    }
+}

@@ -79,7 +79,9 @@ fn reference_text_streams_original_blocks_and_hashes_the_declared_plain_text() {
     );
     assert!(matches!(
         reader.reference_hash(&r("message:claude-code:s-m2..claude-code:s-m1")),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::Refused(
+            polylogue_model::Reason::RangeEndsBeforeStart {}
+        ))
     ));
 }
 #[test]
@@ -114,7 +116,7 @@ fn spans_use_source_offsets_and_refuse_half_characters_before_emitting() {
                 emitted = true;
                 Ok(ControlFlow::Continue(()))
             }),
-            Err(StoreError::Invalid(_))
+            Err(StoreError::Refused(polylogue_model::Reason::BadSpan { .. }))
         ));
         assert!(!emitted);
     }
@@ -321,7 +323,7 @@ fn document_spans_share_original_body_offsets_without_loading_structured_results
             emitted = true;
             Ok(ControlFlow::Continue(()))
         }),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::Refused(polylogue_model::Reason::BadSpan { .. }))
     ));
     assert!(!emitted);
 }

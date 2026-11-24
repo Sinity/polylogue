@@ -69,8 +69,8 @@ fn asset_source(
                         .is_none_or(|end| end > blob_size)
             })
         {
-            return Err(StoreError::Invalid(
-                "the asset's stored extents are incomplete".into(),
+            return Err(StoreError::stored_data(
+                "the asset's stored extents are incomplete",
             ));
         }
         let bytes: Vec<u8> = row.get(2)?;
@@ -99,8 +99,8 @@ fn asset_source(
         };
     }
     if end != length || count == 0 {
-        return Err(StoreError::Invalid(
-            "the asset's stored extents are incomplete".into(),
+        return Err(StoreError::stored_data(
+            "the asset's stored extents are incomplete",
         ));
     }
     Ok(Some(AssetSource {
@@ -278,8 +278,8 @@ pub(crate) fn visit_import_members(
                 continue;
             }
             if !membership.is_valid() {
-                return Err(StoreError::Invalid(
-                    "unsupported or invalid import membership".into(),
+                return Err(StoreError::internal(
+                    "unsupported or invalid import membership",
                 ));
             }
             visit(ObservedMember {
@@ -330,8 +330,8 @@ pub(crate) fn project_member(
                 .zip(sidecar)
                 .is_some_and(|(old, new)| old != new)
         {
-            return Err(StoreError::Conflict(
-                "conflicting identity or classification for one import member".into(),
+            return Err(StoreError::internal(
+                "conflicting identity or classification for one import member",
             ));
         }
         // A member seen again only changes when it learns an identity or a
@@ -500,8 +500,8 @@ pub(crate) fn install(
                     .map(|source| source.version.as_str())
                     != Some(recorded.as_str())
                 {
-                    return Err(StoreError::Conflict(
-                        "asset sidecar changed while it was parsed".into(),
+                    return Err(StoreError::internal(
+                        "asset sidecar changed while it was parsed",
                     ));
                 }
                 let changed = put_sidecar(&tx, &input, &sidecar, &recorded, error.as_deref())?;

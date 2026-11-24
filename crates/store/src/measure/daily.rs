@@ -123,10 +123,12 @@ pub fn daily(
 ) -> Result<Series> {
     let (cond, params) = selection.condition();
     let Some((_, expr, from)) = DAILY.iter().find(|(name, _, _)| *name == metric) else {
-        return Err(crate::StoreError::Invalid(format!(
-            "no daily metric `{metric}`: {}",
-            DAILY_METRICS.join(", ")
-        )));
+        return Err(polylogue_model::Reason::UnknownChoice {
+            field: "a daily series".into(),
+            value: metric.into(),
+            known: DAILY_METRICS.iter().collect(),
+        }
+        .into());
     };
     let measured = matches!(metric, "tokens" | "api_cost");
     let mut response_unknown = measured
@@ -155,9 +157,9 @@ pub fn daily(
     let mut by_day: BTreeMap<jiff::civil::Date, i64> = BTreeMap::new();
     let mut add = |date: jiff::civil::Date, value: i64| -> Result<()> {
         let sum = by_day.entry(date).or_default();
-        *sum = sum
-            .checked_add(value)
-            .ok_or_else(|| crate::StoreError::Invalid(format!("daily {metric} sum exceeds i64")))?;
+        *sum = sum.checked_add(value).ok_or_else(|| {
+            crate::StoreError::stored_data(format!("daily {metric} sum exceeds i64"))
+        })?;
         Ok(())
     };
     let mut sessions: BTreeMap<jiff::civil::Date, std::collections::HashSet<i64>> = BTreeMap::new();
@@ -198,12 +200,12 @@ pub fn daily(
                 .flatten()
                 {
                     sum = Some(sum.unwrap_or(0).checked_add(n).ok_or_else(|| {
-                        crate::StoreError::Invalid("daily recorded token sum exceeds u64".into())
+                        crate::StoreError::stored_data("daily recorded token sum exceeds u64")
                     })?);
                 }
                 sum.map(|n| {
                     i64::try_from(n).map_err(|_| {
-                        crate::StoreError::Invalid("daily recorded token sum exceeds i64".into())
+                        crate::StoreError::stored_data("daily recorded token sum exceeds i64")
                     })
                 })
                 .transpose()?
@@ -234,7 +236,7 @@ pub fn daily(
         let mut d = first;
         while d <= last {
             days.push((d.to_string(), by_day.get(&d).copied().unwrap_or(0)));
-            d = d.tomorrow().map_err(crate::StoreError::invalid)?;
+            d = d.tomorrow().map_err(crate::StoreError::internal)?;
         }
     }
     let xs: Vec<f64> = days.iter().map(|d| d.1 as f64).collect();
@@ -307,7 +309,7 @@ pub fn rhythm(reader: &Reader<'_>, selection: &Selection, day: &DaySetting) -> R
         let local = ts.to_zoned(zone.clone());
         let wd = day
             .logical_day(ts)
-            .map_err(crate::StoreError::invalid)?
+            .map_err(crate::StoreError::internal)?
             .weekday()
             .to_monday_zero_offset() as usize;
         grid[wd][local.hour() as usize] += 1;

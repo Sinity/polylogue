@@ -96,9 +96,7 @@ impl ExportItems {
 
     fn ensure_no_open_scan(&self) -> Result<()> {
         if self.scan_group.is_some() {
-            return Err(StoreError::Invalid(
-                "export scan group is incomplete".into(),
-            ));
+            return Err(StoreError::internal("export scan group is incomplete"));
         }
         Ok(())
     }
@@ -238,8 +236,8 @@ impl ExportItems {
     /// One scan group can be accepted or discarded before ordered reading.
     pub fn begin_scan(&mut self) -> Result<()> {
         if self.scan_group.is_some() || self.cursor.is_some() {
-            return Err(StoreError::Invalid(
-                "an export scan group is already active or items are being read".into(),
+            return Err(StoreError::internal(
+                "an export scan group is already active or items are being read",
             ));
         }
         let at = self.payload.stream_position()?;
@@ -248,13 +246,13 @@ impl ExportItems {
         Ok(())
     }
     pub fn commit_scan(&mut self) -> Result<()> {
-        self.scan_group.or_invalid("no export scan group")?;
+        self.scan_group.or_internal("no export scan group")?;
         self.db.execute_batch("RELEASE scan_group")?;
         self.scan_group = None;
         Ok(())
     }
     pub fn rollback_scan(&mut self) -> Result<()> {
-        let (ordinal, at) = self.scan_group.or_invalid("no export scan group")?;
+        let (ordinal, at) = self.scan_group.or_internal("no export scan group")?;
         self.db
             .execute_batch("ROLLBACK TO scan_group; RELEASE scan_group")?;
         self.payload.set_len(at)?;
@@ -282,7 +280,7 @@ impl ExportItems {
         )?;
         SessionId::parse(&message_first_session)
             .map(Some)
-            .map_err(crate::StoreError::invalid)
+            .map_err(crate::StoreError::stored_data)
     }
     pub fn last_message(&self, session: &SessionId) -> Result<Option<MessageId>> {
         let message: Option<String> = self.db.scalar_optional(
@@ -290,7 +288,7 @@ impl ExportItems {
             [session.to_string()],
         )?;
         message
-            .map(|id| MessageId::parse(&id).map_err(crate::StoreError::invalid))
+            .map(|id| MessageId::parse(&id).map_err(crate::StoreError::stored_data))
             .transpose()
     }
     pub fn set_last_message(&mut self, session: &SessionId, message: &MessageId) -> Result<()> {

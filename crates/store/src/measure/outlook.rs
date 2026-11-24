@@ -93,20 +93,20 @@ enum PlanAt {
 fn plans(reader: &Reader<'_>, provider: &str, now: i64) -> Result<Vec<(i64, PlanAt)>> {
     use crate::annotations::settings::SettingAt;
     let now = polylogue_model::Timestamp::from_unix_ms(now)
-        .or_invalid("plan history time is out of range")?;
+        .or_stored("plan history time is out of range")?;
     let mut result = Vec::new();
     for (at, value) in reader.archive_setting_history(&format!("plan.{provider}"), now)? {
         let plan = match value {
             SettingAt::Value(Some(polylogue_model::settings::Value::Plan(plan))) => {
                 validate_plan(&plan).map_err(|error| {
-                    StoreError::Invalid(format!("plan.{provider} set at {at}: {error}"))
+                    StoreError::stored_data(format!("plan.{provider} set at {at}: {error}"))
                 })?;
                 PlanAt::Set(plan)
             }
             SettingAt::Value(None) => PlanAt::Unset,
             SettingAt::Conflict(_) => PlanAt::Conflict,
             SettingAt::Value(Some(_)) => {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::stored_data(format!(
                     "plan.{provider} has another setting type"
                 )));
             }
@@ -371,15 +371,14 @@ fn as_i64(value: Option<u64>) -> Result<Option<i64>> {
 }
 fn add(a: i64, b: i64) -> Result<i64> {
     a.checked_add(b)
-        .or_invalid("billing sum exceeds SQLite's integer range")
+        .or_internal("billing sum exceeds SQLite's integer range")
 }
 fn ratio(amount: i64, numerator: i64, denominator: i64) -> Result<i64> {
     if denominator <= 0 {
         return Ok(amount);
     }
-    i64::try_from(i128::from(amount) * i128::from(numerator) / i128::from(denominator)).map_err(
-        |_| StoreError::Invalid("billing projection exceeds SQLite's integer range".into()),
-    )
+    i64::try_from(i128::from(amount) * i128::from(numerator) / i128::from(denominator))
+        .map_err(|_| StoreError::internal("billing projection exceeds SQLite's integer range"))
 }
 
 #[derive(Default)]
@@ -501,7 +500,7 @@ fn pressure(
         .zip(budget.overage_rate_nusd_per_unit)
         .map(|(a, b)| {
             a.checked_mul(b).ok_or_else(|| {
-                StoreError::Invalid("budget overage exceeds SQLite's integer range".into())
+                StoreError::internal("budget overage exceeds SQLite's integer range")
             })
         })
         .transpose()?;
@@ -530,19 +529,22 @@ fn validate_method(method: &str) -> Result<()> {
     if matches!(method, "linear" | "trailing-7d-mean") {
         Ok(())
     } else {
-        Err(StoreError::Invalid(
-            "outlook method is linear or trailing-7d-mean".into(),
-        ))
+        Err(polylogue_model::Reason::UnknownChoice {
+            field: "the outlook method".into(),
+            value: method.into(),
+            known: ["linear", "trailing-7d-mean"].into_iter().collect(),
+        }
+        .into())
     }
 }
 fn validate_plan(plan: &Plan) -> Result<()> {
-    plan.validate().map_err(crate::StoreError::invalid)
+    plan.validate().map_err(crate::StoreError::stored_data)
 }
 
 fn window(now: i64, anchor: i8) -> Result<Window> {
-    let invalid = |e| StoreError::Invalid(format!("billing window: {e}"));
+    let outside_window = |e| StoreError::internal(format!("billing window: {e}"));
     let date = jiff::Timestamp::from_millisecond(now)
-        .map_err(invalid)?
+        .map_err(outside_window)?
         .to_zoned(jiff::tz::TimeZone::UTC)
         .date();
     let first = jiff::civil::date(date.year(), date.month(), 1);
@@ -556,7 +558,7 @@ fn window(now: i64, anchor: i8) -> Result<Window> {
         };
         Ok(date
             .to_zoned(jiff::tz::TimeZone::UTC)
-            .map_err(invalid)?
+            .map_err(outside_window)?
             .timestamp()
             .as_millisecond())
     };
@@ -564,7 +566,7 @@ fn window(now: i64, anchor: i8) -> Result<Window> {
     let start_month = if this > now {
         first
             .checked_sub(jiff::Span::new().months(1))
-            .map_err(invalid)?
+            .map_err(outside_window)?
     } else {
         first
     };
@@ -573,7 +575,7 @@ fn window(now: i64, anchor: i8) -> Result<Window> {
         end: anchor_in(
             start_month
                 .checked_add(jiff::Span::new().months(1))
-                .map_err(invalid)?,
+                .map_err(outside_window)?,
         )?,
         now,
     })

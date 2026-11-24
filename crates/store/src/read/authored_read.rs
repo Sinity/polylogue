@@ -301,8 +301,8 @@ impl Reader<'_> {
 /// identify their local commit and cannot establish a family association.
 fn prepare_membership(conn: &Connection, check: &mut dyn FnMut() -> Result<()>) -> Result<()> {
     if conn.is_autocommit() {
-        return Err(StoreError::Invalid(
-            "authored membership requires a pinned Reader".into(),
+        return Err(StoreError::internal(
+            "authored membership requires a pinned Reader",
         ));
     }
     conn.execute_batch("CREATE TEMP TABLE IF NOT EXISTS authored_effect_request(kind TEXT NOT NULL,id TEXT NOT NULL,member TEXT NOT NULL,request TEXT NOT NULL,PRIMARY KEY(kind,id,member,request)) STRICT, WITHOUT ROWID;

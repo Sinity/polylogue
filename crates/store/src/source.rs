@@ -56,8 +56,8 @@ pub(crate) fn from_archive(archive: &str) -> Result<SourceSchema> {
         .query_map([],|row|row.get(0))?.collect::<rusqlite::Result<_>>()?;
     for name in &tables {
         if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-            return Err(StoreError::Invalid(
-                "source schema contains an invalid identifier".into(),
+            return Err(StoreError::internal(
+                "source schema contains an invalid identifier",
             ));
         }
         conn.execute_batch(&format!(
@@ -166,9 +166,8 @@ impl Source {
         through: u64,
     ) -> Result<Option<u64>> {
         let source = Self::of(conn)?;
-        let through = i64::try_from(through).map_err(|_| {
-            StoreError::Invalid("source position exceeds SQLite's integer range".into())
-        })?;
+        let through = i64::try_from(through)
+            .map_err(|_| StoreError::internal("source position exceeds SQLite's integer range"))?;
         let mut query = conn.prepare(&source.sql("SELECT offset,length,commit_seq FROM @source.extent WHERE input=?1 AND chain=?2 AND offset<?3 ORDER BY offset"))?;
         let mut rows = query.query(rusqlite::params![input, chain, through])?;
         let mut covered = 0i64;
@@ -188,7 +187,7 @@ impl Source {
             }
             covered = offset
                 .checked_add(length)
-                .or_invalid("source extent endpoint overflow")?;
+                .or_stored("source extent endpoint overflow")?;
             committed = committed.max(position);
             if covered >= through {
                 return Ok(Some(committed as u64));
@@ -219,15 +218,12 @@ impl Source {
         through: u64,
     ) -> Result<crate::wire_shapes::ReadingCommit> {
         let source = Self::of(conn)?;
-        let through = i64::try_from(through).map_err(|_| {
-            StoreError::Invalid("source position exceeds SQLite's integer range".into())
-        })?;
-        let sequence =
-            Self::committed_through(conn, input, chain, through as u64)?.ok_or_else(|| {
-                StoreError::Invalid("a reading has no committed source prefix".into())
-            })?;
+        let through = i64::try_from(through)
+            .map_err(|_| StoreError::internal("source position exceeds SQLite's integer range"))?;
+        let sequence = Self::committed_through(conn, input, chain, through as u64)?
+            .ok_or_else(|| StoreError::internal("a reading has no committed source prefix"))?;
         let sequence = i64::try_from(sequence).map_err(|_| {
-            StoreError::Invalid("source commit position exceeds SQLite's integer range".into())
+            StoreError::internal("source commit position exceeds SQLite's integer range")
         })?;
         let observation = conn.query_row(&source.sql("SELECT o.id,o.seen_at FROM @source.observation o LEFT JOIN @source.revision r ON r.input=o.input AND r.number=o.revision WHERE o.input=?1 AND coalesce(o.chain,r.chain)=?2 AND o.length>=?3 ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1"),rusqlite::params![input,chain,through],|row| <(_, _)>::try_from(row)).optional()?;
         let (observation, observed_at_ms) =

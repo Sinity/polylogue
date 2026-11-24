@@ -218,7 +218,7 @@ fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
         pool.reader()
             .unwrap()
             .completeness(&[expected("unparsed-provider", "")]),
-        Err(crate::StoreError::Invalid(_))
+        Err(crate::StoreError::Internal(_))
     ));
 }
 

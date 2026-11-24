@@ -22,9 +22,7 @@ impl Source {
         through: Option<u64>,
     ) -> Result<(SourceStatus, Option<ConfirmedSource>)> {
         let through = through.map(i64::try_from).transpose().map_err(|_| {
-            crate::StoreError::Invalid(
-                "source commit position exceeds archive address space".into(),
-            )
+            crate::StoreError::internal("source commit position exceeds archive address space")
         })?;
         let source = Self::reading(conn)?;
         let by_path_bytes: Option<(i64, String, ObservationRow)> = conn.query_row(
@@ -65,9 +63,7 @@ impl Source {
     ) -> Result<bool> {
         let source = Self::reading(conn)?;
         let through = through.map(i64::try_from).transpose().map_err(|_| {
-            crate::StoreError::Invalid(
-                "source commit position exceeds archive address space".into(),
-            )
+            crate::StoreError::internal("source commit position exceeds archive address space")
         })?;
         conn.exists(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.observation o JOIN @source.input i ON i.id=o.input WHERE o.id=?1 AND i.format=?2 AND o.machine=?3 AND o.path_bytes=?4 AND (?5 IS NULL OR o.commit_seq<=?5))"), params![observation, selector.origin, selector.machine, selector.path_bytes, through])
     }
@@ -79,9 +75,7 @@ impl Source {
     ) -> Result<Option<crate::primary::SourceSubject>> {
         let source = Self::reading(conn)?;
         let through = i64::try_from(through).map_err(|_| {
-            crate::StoreError::Invalid(
-                "source commit position exceeds archive address space".into(),
-            )
+            crate::StoreError::internal("source commit position exceeds archive address space")
         })?;
         Ok(conn.query_row(&source.sql("SELECT id FROM @source.observation WHERE input=?1 AND commit_seq<=?2 ORDER BY rowid DESC LIMIT 1"),
             params![input, through], |row| Ok(crate::primary::SourceSubject {input:input.into(), observation:row.get(0)?})).optional()?)

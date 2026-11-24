@@ -358,7 +358,7 @@ pub fn page(
 ) -> Result<Value> {
     let day = &clock.day;
     let limit = crate::to_i64(
-        size.checked_add(1).or_invalid("page size exceeds i64")?,
+        size.checked_add(1).or_internal("page size exceeds i64")?,
         "page size exceeds i64",
     )?;
     let mut found = Vec::new();
@@ -479,9 +479,7 @@ pub fn undated_responses(
     )?;
     rows.first()
         .and_then(|row| row["records"].as_u64())
-        .ok_or_else(|| {
-            crate::StoreError::Invalid("response count is not an unsigned integer".into())
-        })
+        .ok_or_else(|| crate::StoreError::stored_data("response count is not an unsigned integer"))
 }
 
 #[cfg(test)]

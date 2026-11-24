@@ -392,7 +392,7 @@ fn invalid_dependency_declarations_are_refused_before_any_rows_change() {
             .unwrap();
         let error = super::run_all(&mut index, &synthetic_catalog("same"), &rules).unwrap_err();
         assert!(
-            matches!(error, crate::StoreError::Invalid(ref detail) if detail.contains(reason)),
+            matches!(error, crate::StoreError::Internal(ref detail) if detail.contains(reason)),
             "{error}"
         );
         assert_eq!(

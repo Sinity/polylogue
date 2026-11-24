@@ -156,7 +156,7 @@ fn read_metadata(conn: &Connection, archive: &str) -> Result<Option<Metadata>> {
         position: serde_json::from_str(&get("position")?)?,
         written_at: get("written_at")?
             .parse()
-            .or_invalid("invalid completion time")?,
+            .or_stored("invalid completion time")?,
     }))
 }
 
@@ -180,7 +180,7 @@ impl CatalogWriter {
     ) -> Result<Self> {
         let parent = path
             .parent()
-            .or_invalid("completion catalog has no parent")?;
+            .or_internal("completion catalog has no parent")?;
         fs::create_dir_all(parent)?;
         let temporary = parent.join(format!(".catalog-{}", uuid::Uuid::now_v7()));
         let guard = Temporary(temporary.clone());
@@ -219,11 +219,11 @@ impl CatalogWriter {
         // itself after resolving its directory, not the configured directory.
         let database = fs::canonicalize(
             path.parent()
-                .or_invalid("completion catalog has no parent")?,
+                .or_internal("completion catalog has no parent")?,
         )?
         .join(
             path.file_name()
-                .or_invalid("completion catalog has no file name")?,
+                .or_internal("completion catalog has no file name")?,
         );
         let conn = Connection::open_with_flags(
             database,
@@ -339,7 +339,7 @@ impl CatalogWriter {
                 } else {
                     let kept: polylogue_query::Kept = serde_json::from_str(&payload)?;
                     kept.validate_output_metadata()
-                        .map_err(|error| StoreError::Invalid(error.to_string()))?;
+                        .map_err(|error| StoreError::internal(error.to_string()))?;
                     vocabulary.kept.insert(id, kept);
                 }
             }
@@ -610,8 +610,8 @@ impl CatalogWriter {
     }
     pub fn put_setting(&mut self, item: &Setting) -> Result<()> {
         if item.key != item.value.key {
-            return Err(StoreError::Invalid(
-                "setting cache key differs from its typed value".into(),
+            return Err(StoreError::internal(
+                "setting cache key differs from its typed value",
             ));
         }
         self.put_item("setting", &item.key, &item.key, item)

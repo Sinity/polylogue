@@ -34,9 +34,7 @@ pub(crate) fn reset(
     replace: bool,
 ) -> Result<bool> {
     if scope.is_empty() {
-        return Err(StoreError::Invalid(
-            "a confirmed scope cannot be empty".into(),
-        ));
+        return Err(StoreError::internal("a confirmed scope cannot be empty"));
     }
     if !replace && current(index)?.as_deref() == Some(scope) && require_readable(index).is_ok() {
         return Ok(false);

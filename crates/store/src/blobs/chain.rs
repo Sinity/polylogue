@@ -60,7 +60,7 @@ impl StoredChain {
         length: u64,
     ) -> Result<Self> {
         if start > length || length > i64::MAX as u64 {
-            return Err(StoreError::Invalid("invalid stored range".into()));
+            return Err(StoreError::stored_data("invalid stored range"));
         }
         let (extents, single) = ExtentList::capture(source, input, chain, start, length)?;
         Ok(Self {
@@ -90,18 +90,18 @@ impl StoredChain {
     /// Read a range-sized result; missing or corrupt selected bytes are errors.
     pub fn read_range(&self, store: &crate::blobs::Blobs, start: u64, end: u64) -> Result<Vec<u8>> {
         let end = end.min(self.length);
-        let length = end.checked_sub(start).or_invalid("invalid stored range")?;
-        let length = usize::try_from(length).or_invalid("stored range exceeds address space")?;
+        let length = end.checked_sub(start).or_stored("invalid stored range")?;
+        let length = usize::try_from(length).or_stored("stored range exceeds address space")?;
         let mut out = Vec::new();
         out.try_reserve_exact(length)
-            .map_err(|e| StoreError::Invalid(format!("allocate stored range: {e}")))?;
+            .map_err(|e| StoreError::internal(format!("allocate stored range: {e}")))?;
         out.resize(length, 0);
         let mut cursor = Cursor::range(start, end);
         let mut at = 0;
         while at < out.len() {
             let n = cursor.read(&mut out[at..], self.extents.as_deref(), store)?;
             if n == 0 {
-                return Err(StoreError::Invalid("stored byte range missing".into()));
+                return Err(StoreError::stored_data("stored byte range missing"));
             }
             at += n;
         }
@@ -151,7 +151,7 @@ fn fill(
     while at < out.len() {
         let n = cursor.read(&mut out[at..], extents, store)?;
         if n == 0 {
-            return Err(StoreError::Invalid("stored byte range missing".into()));
+            return Err(StoreError::stored_data("stored byte range missing"));
         }
         at += n;
     }

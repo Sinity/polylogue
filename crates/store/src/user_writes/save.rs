@@ -1,6 +1,7 @@
 //! One accepted Save: immutable rows and any changed saved query and watch.
 use super::*;
 use crate::annotations::{SavedInput, SavedResolver, WriteContext, single_named_current};
+use polylogue_model::Reason;
 use polylogue_model::user::{KeptPart, SaveReport, SavedPart, WatchPart};
 use polylogue_model::{
     Reference, RevisionReference,
@@ -93,23 +94,23 @@ pub(super) fn apply(
 ) -> Result<SaveReport> {
     let request = context.request;
     if save.name.is_none() && save.watch.is_some() {
-        return Err(StoreError::invalid("a watch needs a saved query name"));
+        return Err(Reason::WatchNeedsName {}.into());
     }
     if save.name.is_none() && save.denominator.is_some() {
-        return Err(StoreError::invalid("a figure needs a saved query name"));
+        return Err(Reason::FigureNeedsName {}.into());
     }
     if let Some(watch) = &save.watch
         && let Some(hold) = &watch.hold
         && query_language::time::duration_ms(hold).is_none_or(|duration| duration < 0)
     {
-        return Err(StoreError::invalid("a watch needs a duration such as 20m"));
+        return Err(Reason::WatchDuration { text: hold.clone() }.into());
     }
     crate::kept::validate_body(&request.id, &save.rows_json)?;
     crate::selection::check_kept_body(conn, &request.id, &save.rows_json)?;
     let body: serde_json::Value = serde_json::from_str(&save.rows_json)?;
     let rows = body["rows"]
         .as_array()
-        .ok_or_else(|| StoreError::invalid("kept result has no rows"))?
+        .ok_or(Reason::KeptRowsMissing {})?
         .len() as u64;
     let mut statements = Vec::new();
     let mut saved_part = None;
@@ -118,9 +119,7 @@ pub(super) fn apply(
     let mut watch_position = None;
     if let Some(name) = &save.name {
         if !polylogue_model::annotation::policy::valid_saved_name(name) {
-            return Err(StoreError::invalid(format!(
-                "{name:?} is not a saved query name"
-            )));
+            return Err(Reason::BadSavedName { name: name.clone() }.into());
         }
         let previous = single_named_current(conn, AnnotationKind::SavedQuery, name)?;
         let previous_value = previous
@@ -130,7 +129,7 @@ pub(super) fn apply(
                     row.fact
                         .value
                         .clone()
-                        .ok_or_else(|| StoreError::invalid("saved query has no value"))?,
+                        .ok_or_else(|| StoreError::stored_data("a saved query has no value"))?,
                 )
                 .map_err(StoreError::from)
             })
@@ -165,7 +164,7 @@ pub(super) fn apply(
         let revision = if changed {
             old_revision
                 .checked_add(1)
-                .ok_or_else(|| StoreError::invalid("saved revision number is out of range"))?
+                .ok_or_else(|| StoreError::internal("a saved revision number is out of range"))?
         } else {
             old_revision
         };
@@ -199,7 +198,7 @@ pub(super) fn apply(
                 });
             let object = rule
                 .as_object_mut()
-                .ok_or_else(|| StoreError::invalid("saved watch rule is not an object"))?;
+                .ok_or_else(|| StoreError::stored_data("a saved watch rule is not an object"))?;
             object.insert("query".into(), format!("query:{name}@{revision}").into());
             if let Some(watch) = &save.watch {
                 if let Some(hold) = &watch.hold {
@@ -240,7 +239,7 @@ pub(super) fn apply(
     if !statements.is_empty() {
         let parts = crate::annotations::write_parts_preparing(conn, &statements, context, resolve)?;
         if parts.len() != statements.len() {
-            return Err(StoreError::invalid(
+            return Err(StoreError::internal(
                 "Save did not accept every requested part",
             ));
         }
