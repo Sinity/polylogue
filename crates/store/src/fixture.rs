@@ -148,7 +148,7 @@ impl Fixture {
 
     /// Commits queued search work through the normal bounded indexer.
     pub fn commit_search(&self) -> Result<u64> {
-        crate::text_rows::index_pending(&self.index, || ())
+        crate::text_rows::index_pending(&self.index)
     }
 
     /// Runs all derivations over the raw rows written so far.
@@ -317,7 +317,7 @@ impl Fixture {
         )?;
         let id = crate::text_rows::intern(&tx, body, search_index, None, false)?;
         tx.commit()?;
-        crate::text_rows::index_pending(&self.index, || ())?;
+        crate::text_rows::index_pending(&self.index)?;
         Ok(id)
     }
 
@@ -554,7 +554,7 @@ impl Fixture {
             )?;
         }
         tx.commit()?;
-        crate::text_rows::index_pending(&self.index, || ())?;
+        crate::text_rows::index_pending(&self.index)?;
         Ok(pks)
     }
 

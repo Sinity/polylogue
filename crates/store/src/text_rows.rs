@@ -116,34 +116,45 @@ fn queue_entry(conn: &Connection, id: i64, bit: i64) -> Result<()> {
     Ok(())
 }
 
-// Limit the search thread's transaction work independently of compressed
-// row sizes. A single oversized text is still decoded whole and ends its
-// transaction.
+// Limit each batch of search entries independently of compressed row sizes.
+// A single oversized text is still decoded whole and ends its batch.
 const SEARCH_ROWS: i64 = 2_000;
-const SEARCH_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const SEARCH_BYTES: usize = 16 * 1024 * 1024;
 
-/// Drains committed search work in bounded transactions, each inside what
-/// `turn` returns (the search thread's turn at writing the index).
-pub(crate) fn index_pending<T>(conn: &Connection, mut turn: impl FnMut() -> T) -> Result<u64> {
-    let mut written = 0;
-    loop {
-        let held = turn();
-        let count = pending_batch(conn, SEARCH_BYTES)?;
-        drop(held);
-        written += count;
-        if count == 0 {
-            return Ok(written);
-        }
+/// Search entries computed from committed rows on a read connection, for
+/// the index writer to apply ([`apply_entries`]).
+#[derive(Debug, Default)]
+pub(crate) struct SearchEntries {
+    entries: Vec<SearchEntry>,
+    /// The queue holds entries whose text rows are gone.
+    orphans: bool,
+}
+
+#[derive(Debug)]
+struct SearchEntry {
+    text_id: i64,
+    fts_table: i64,
+    /// The text's content hash when it was read: an entry applies only to
+    /// the same content.
+    hash: Vec<u8>,
+    folded: String,
+}
+
+impl SearchEntries {
+    /// Nothing to apply: the queue was empty when it was read.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty() && !self.orphans
     }
 }
 
-fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
-    // Immediate: a deferred reader cannot wait to upgrade its writer lock.
-    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let before = tx.total_changes();
+/// Reads the next queued search entries and their folded text, up to
+/// `byte_limit` of text, in one read transaction. Writes nothing.
+pub(crate) fn pending_entries(conn: &Connection, byte_limit: usize) -> Result<SearchEntries> {
+    let tx = conn.unchecked_transaction()?;
     // Read the ordered queue first; a join can instead scan all historical
-    // texts and sort on every batch. Finish the cursor before removal. Bodies
-    // are fetched individually, so the row limit does not multiply text held.
+    // texts and sort on every batch. Finish the cursor before reading
+    // bodies, which are fetched individually, so the row limit does not
+    // multiply text held.
     let ids: Vec<(i64, i64)> = tx
         .prepare_cached(
             "SELECT p.text_id, p.fts_table FROM search_pending p
@@ -152,21 +163,53 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
         )?
         .query_map([SEARCH_ROWS], |r| <(_, _)>::try_from(r))?
         .collect::<rusqlite::Result<_>>()?;
-    if ids.is_empty() {
+    let orphans = ids.is_empty() && tx.exists("SELECT EXISTS(SELECT 1 FROM search_pending)", [])?;
+    let mut entries = Vec::new();
+    let mut bytes = 0;
+    for (text_id, fts_table) in ids {
+        let hash = tx
+            .prepare_cached("SELECT hash FROM text WHERE id = ?1")?
+            .query_row([text_id], |r| r.get(0))?;
+        let (folded, length) = folded_text(read(&tx, text_id)?);
+        bytes += length;
+        entries.push(SearchEntry {
+            text_id,
+            fts_table,
+            hash,
+            folded,
+        });
+        if bytes >= byte_limit {
+            break;
+        }
+    }
+    tx.finish()?;
+    Ok(SearchEntries { entries, orphans })
+}
+
+/// Writes computed search entries in one transaction, with the number
+/// written. An entry whose queue row is gone, or whose text now holds other
+/// content, was settled by a write after it was read and is skipped.
+pub(crate) fn apply_entries(conn: &Connection, computed: &SearchEntries) -> Result<u64> {
+    // Immediate: a deferred reader cannot wait to upgrade its writer lock.
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    let before = tx.total_changes();
+    if computed.orphans {
         tx.execute(
             "DELETE FROM search_pending WHERE text_id NOT IN (SELECT id FROM text)",
             [],
         )?;
     }
     let mut written = 0;
-    let mut bytes = 0;
-    for (id, bit) in ids {
-        bytes += write_entry(&tx, id, bit, read(&tx, id)?)?;
-        tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2")?
-            .execute(params![id, bit])?;
-        written += 1;
-        if bytes >= byte_limit {
-            break;
+    for entry in &computed.entries {
+        let removed = tx
+            .prepare_cached(
+                "DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2
+                 AND EXISTS(SELECT 1 FROM text WHERE id = ?1 AND hash = ?3)",
+            )?
+            .execute(params![entry.text_id, entry.fts_table, entry.hash])?;
+        if removed != 0 {
+            insert_entry(&tx, entry.text_id, entry.fts_table, &entry.folded)?;
+            written += 1;
         }
     }
     if tx.total_changes() != before {
@@ -176,10 +219,21 @@ fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
     Ok(written)
 }
 
-fn write_entry(conn: &Connection, id: i64, bit: i64, text: String) -> Result<usize> {
-    let (folded, length) = folded_text(text);
-    insert_entry(conn, id, bit, &folded)?;
-    Ok(length)
+/// Drains committed search work in bounded transactions on one connection
+/// that both reads and writes the index.
+pub(crate) fn index_pending(conn: &Connection) -> Result<u64> {
+    let mut written = 0;
+    loop {
+        let count = pending_batch(conn, SEARCH_BYTES)?;
+        written += count;
+        if count == 0 {
+            return Ok(written);
+        }
+    }
+}
+
+fn pending_batch(conn: &Connection, byte_limit: usize) -> Result<u64> {
+    apply_entries(conn, &pending_entries(conn, byte_limit)?)
 }
 
 /// A stored text as the search indexes hold it, and its length in bytes.

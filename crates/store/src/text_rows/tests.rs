@@ -18,7 +18,7 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
     tx.commit().unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
-    assert_eq!(index_pending(&conn, || ()).unwrap(), 2);
+    assert_eq!(index_pending(&conn).unwrap(), 2);
     assert_eq!(
         count(
             &conn,
@@ -34,7 +34,7 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
         1
     );
     assert_eq!(intern(&conn, "walrus", 1, None, false).unwrap(), id);
-    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
+    assert_eq!(index_pending(&conn).unwrap(), 0);
 }
 
 #[test]
@@ -47,12 +47,12 @@ fn removal_and_rollback_do_not_leave_search_work() {
         intern(&tx, "rolled back", 1, None, false).unwrap();
     }
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
-    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
+    assert_eq!(index_pending(&conn).unwrap(), 0);
     let tx = conn.transaction().unwrap();
     let id = intern(&tx, "removed", 1, None, false).unwrap();
     remove(&tx, id, 1).unwrap();
     tx.commit().unwrap();
-    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
+    assert_eq!(index_pending(&conn).unwrap(), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 0);
 }
@@ -64,7 +64,7 @@ fn a_failed_decode_keeps_the_pending_entry() {
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let id = intern(&conn, "walrus", 1, None, false).unwrap();
     replace_group_body(&conn, id, b"damaged");
-    assert!(index_pending(&conn, || ()).is_err());
+    assert!(index_pending(&conn).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 0);
 }
@@ -80,13 +80,13 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
     replace_group_body(&conn, second, b"\0");
     assert_eq!(pending_batch(&conn, 1).unwrap(), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
-    assert!(index_pending(&conn, || ()).is_err());
+    assert!(index_pending(&conn).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM output_fts"), 0);
     assert_eq!(count(&conn, "SELECT rowid FROM text_fts"), first);
     replace_group_body(&conn, second, &alone("narwhal"));
-    assert_eq!(index_pending(&conn, || ()).unwrap(), 2);
-    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
+    assert_eq!(index_pending(&conn).unwrap(), 2);
+    assert_eq!(index_pending(&conn).unwrap(), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 2);
     assert_eq!(
         count(
@@ -109,7 +109,7 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
         if at_build_end {
             assert!(build_search_indexes(&conn).is_err());
         } else {
-            assert!(index_pending(&conn, || ()).is_err());
+            assert!(index_pending(&conn).is_err());
             assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
         }
         assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 0);
@@ -134,10 +134,7 @@ fn build_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
         if at_build_end {
             build_search_indexes(&conn).unwrap();
         } else {
-            assert_eq!(
-                index_pending(&conn, || ()).unwrap(),
-                (SEARCH_ROWS + 5) as u64
-            );
+            assert_eq!(index_pending(&conn).unwrap(), (SEARCH_ROWS + 5) as u64);
         }
         assert_eq!(
             count(&conn, "SELECT count(*) FROM text_fts"),
@@ -294,7 +291,7 @@ fn search_work_follows_the_queue_instead_of_text_history() {
         }),
     )
     .unwrap();
-    assert_eq!(index_pending(&conn, || ()).unwrap(), 2);
+    assert_eq!(index_pending(&conn).unwrap(), 2);
     conn.progress_handler(0, None::<fn() -> bool>).unwrap();
     // Even one VM instruction per unrelated historical text exceeds the
     // complete budget for two queued entries and the orphan's removal.
@@ -313,5 +310,65 @@ fn search_work_follows_the_queue_instead_of_text_history() {
             id
         );
     }
-    assert_eq!(index_pending(&conn, || ()).unwrap(), 0);
+    assert_eq!(index_pending(&conn).unwrap(), 0);
+}
+
+#[test]
+fn computed_entries_apply_only_to_the_queue_and_text_they_were_read_from() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
+    let walrus = intern(&conn, "walrus", 1, None, false).unwrap();
+    let narwhal = intern(&conn, "narwhal", 2, None, false).unwrap();
+    // The writer indexed the queue itself after the search thread read it.
+    let stale = pending_entries(&conn, SEARCH_BYTES).unwrap();
+    assert_eq!(index_pending(&conn).unwrap(), 2);
+    assert_eq!(apply_entries(&conn, &stale).unwrap(), 0);
+    assert_eq!(count(&conn, "SELECT count(*) FROM text_fts"), 1);
+    assert_eq!(count(&conn, "SELECT count(*) FROM output_fts"), 1);
+
+    // A text removed and its key given to other content after the read.
+    let orca = intern(&conn, "orca", 1, None, false).unwrap();
+    let stale = pending_entries(&conn, SEARCH_BYTES).unwrap();
+    remove(&conn, orca, 0).unwrap();
+    insert_alone(
+        &conn,
+        Some(orca),
+        b"beluga-hash",
+        b"beluga-norm",
+        "beluga",
+        1,
+    );
+    queue_entry(&conn, orca, 1).unwrap();
+    assert_eq!(apply_entries(&conn, &stale).unwrap(), 0);
+    assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
+    assert_eq!(index_pending(&conn).unwrap(), 1);
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT rowid FROM text_fts WHERE text_fts MATCH 'beluga'"
+        ),
+        orca
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'orca'"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT rowid FROM text_fts WHERE text_fts MATCH 'walrus'"
+        ),
+        walrus
+    );
+    assert_eq!(
+        count(
+            &conn,
+            "SELECT rowid FROM output_fts WHERE output_fts MATCH 'narwhal'"
+        ),
+        narwhal
+    );
 }

@@ -84,7 +84,7 @@ fn built_search_vocabulary_matches_incremental_writes() {
         .map(|(n, (text, bits))| (n as i64 + 1, bits, text.to_owned()))
         .collect();
     assert_eq!(visited, expected);
-    index_pending(&incremental, || ()).unwrap();
+    index_pending(&incremental).unwrap();
     assert!(vocabulary(&built, "fts_vocab_output").is_empty());
     build_search_indexes(&built).unwrap();
     for table in ["fts_vocab_text", "fts_vocab_output"] {
@@ -115,7 +115,7 @@ fn built_search_vocabulary_matches_incremental_writes() {
             [],
         )
         .unwrap();
-        index_pending(conn, || ()).unwrap();
+        index_pending(conn).unwrap();
         crate::text_rows::remove(conn, 2, 2).unwrap();
     }
     let reopened = crate::archive::open_read(&dir.path().join("built.db")).unwrap();
@@ -160,7 +160,7 @@ fn failed_search_rebuild_preserves_both_tables_and_reader_snapshots() {
                 )
                 .unwrap();
             }
-            index_pending(&conn, || ()).unwrap();
+            index_pending(&conn).unwrap();
         }
     }
     let before = [

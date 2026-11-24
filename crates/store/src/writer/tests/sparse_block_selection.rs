@@ -415,7 +415,11 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
         ),
     );
     let mut index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
-    let tx = index.transaction().unwrap();
+    // Immediate: the writer may still be applying search entries, and a
+    // deferred transaction that read before its commit could not write.
+    let tx = index
+        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+        .unwrap();
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
             table_name: "message_parse",

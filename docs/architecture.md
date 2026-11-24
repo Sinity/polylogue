@@ -356,6 +356,11 @@ input boundaries: a growing file is read and committed in steps, and each
 record lies whole inside one transaction. A user's write waits for at most
 the transaction being written.
 
+One connection writes the index: the writer's. Derivation and full-text
+entries are computed beside it on read connections from committed rows, and
+the writer applies the values in its own transactions, so no write waits on
+another writer's lock.
+
 **Stopping.** A process has one stop request, carried by the archive it
 opened; the daemon makes it on `SIGTERM`. Each request's cancellation is a
 child of it. Every reader checks it and every blocking wait wakes on it. Work
