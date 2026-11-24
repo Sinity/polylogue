@@ -63,9 +63,9 @@ polylogue demo ./morrow
 ```sh
 polylogue daemon                          # run the daemon (normally a user service)
 polylogue                                 # what is waiting, running and recent, with the lines to type next
-polylogue 'repo:morrow since:7d'          # a query: this week's sessions in a repository
+polylogue 'repo:morrow since:2026-10-05'  # a query: a repository's sessions since a date
 polylogue chrono                          # a plain word searches for it
-polylogue @1 read --to browser            # open row 1 of the last list in the workbench
+polylogue @1 read                         # read row 1 of the last list
 polylogue @1 note 'chrono parsing fixed' --as decision
 ```
 

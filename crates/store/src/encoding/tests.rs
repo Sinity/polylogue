@@ -362,6 +362,7 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
 }
 
 mod columns;
+mod dictionary;
 
 proptest::proptest! {
     /// Comparing two session orders compares (order time, input ID,

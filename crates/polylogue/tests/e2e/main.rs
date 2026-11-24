@@ -10,6 +10,7 @@ mod cli;
 mod completion;
 mod hook;
 mod onboarding;
+mod readme;
 
 const BIN: &str = env!("CARGO_BIN_EXE_polylogue");
 
