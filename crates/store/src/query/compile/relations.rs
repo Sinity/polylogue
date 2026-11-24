@@ -1,5 +1,7 @@
 //! Relational stage boundaries. Logical output names are independent of SQL slots.
 use super::*;
+use polylogue_query::bound::{RelationCondition, RelationLeaf, RelationTest, StageBinding};
+use polylogue_query::filter::Filter;
 use polylogue_query::stages::{Stage, StageKind};
 
 mod order;
@@ -18,12 +20,6 @@ pub(super) struct Relation {
     pub open_fields: bool,
     /// The step holding the rows, once a stage has read them.
     step: Option<String>,
-    patterns: Vec<Condition>,
-}
-
-struct ConditionScope<'a> {
-    fields: Option<&'a query_language::scope::Scope>,
-    path: query_language::scope::NodePath,
 }
 
 impl Relation {
@@ -45,7 +41,6 @@ impl Relation {
             sources,
             open_fields,
             step: None,
-            patterns: vec![],
         }
     }
     pub fn field(
@@ -192,16 +187,17 @@ pub(super) fn as_of_unavailable() -> QueryError {
 impl<'a> Compiler<'a> {
     pub(super) fn program_with(
         self,
-        query: &Query,
+        bound: &Bound,
         preset: Option<MatchRel>,
         reading: Reading,
     ) -> Result<Program, QueryError> {
-        let Some(selection) = Selection::of(query, &self.binder(), &self.opts.fields)? else {
+        let query = &bound.query;
+        let Some(selection) = &bound.selection else {
             return Err(not_built("this shared query source"));
         };
         let Some(first) = selection.relations_from else {
             let stages = &query.transforms[selection.stages_from..];
-            return self.unit_rows_program_with(&selection, stages, preset, reading);
+            return self.unit_rows_program_with(selection, stages, preset, reading);
         };
         if reading.answer
             && selection.stages_from == first
@@ -209,28 +205,20 @@ impl<'a> Compiler<'a> {
             && super::search::recent_sort(selection.unit, &query.transforms[first..])
         {
             return self.unit_rows_program_with(
-                &selection,
+                selection,
                 &query.transforms[first..],
                 preset,
                 reading,
             );
         }
-        let source_order = match &query.source {
-            Source::Unit {
-                condition: Some(c), ..
-            } if contains_order(c) => Some(c),
-            _ => None,
-        };
         let mut compiler = self.nested(self.text);
-        compiler.query_scope = self.query_scope.clone();
-        compiler.typing = self.typing.clone();
         let unit_stages = &query.transforms[selection.stages_from.min(first)..first];
         // The stages read the selection's rows whole.
         let reading = Reading {
             answer: false,
             ..reading
         };
-        let mut program = self.unit_rows_program_with(&selection, unit_stages, preset, reading)?;
+        let mut program = self.unit_rows_program_with(selection, unit_stages, preset, reading)?;
         compiler.params = std::mem::take(&mut program.params);
         compiler.similar_text = program.near.clone();
         let relation = Relation::new(program);
@@ -239,47 +227,47 @@ impl<'a> Compiler<'a> {
             .iter()
             .position(|stage| stage.transforms.start >= first)
             .unwrap_or(selection.stages.len());
-        compiler.finish_relations(query, &selection.stages[after..], relation, source_order)
+        compiler.finish_relations(
+            bound,
+            &selection.stages[after..],
+            relation,
+            bound.source_condition.as_ref(),
+        )
     }
 
     /// Lowers `stages` over `relation`, each to one step reading the step
     /// before it by name.
     pub(super) fn finish_relations(
         mut self,
-        query: &Query,
+        bound: &Bound,
         stages: &[Stage],
         mut relation: Relation,
-        source_order: Option<&Condition>,
+        source_order: Option<&RelationCondition>,
     ) -> Result<Program, QueryError> {
-        if let Source::Unit {
-            condition: Some(condition),
-            ..
-        } = &query.source
-        {
-            relation.patterns = match_patterns(condition);
-        }
+        let query = &bound.query;
         if let Some(condition) = source_order {
-            let scope = self.query_scope.as_ref().map(|query| query.source.clone());
-            self.relation_where(
-                &mut relation,
-                condition,
-                scope.as_ref(),
-                query_language::scope::NodePath::default()
-                    .field("source")
-                    .field("condition"),
-            )?;
+            self.relation_where(&mut relation, condition)?;
         }
         for stage in stages {
             let transforms = &query.transforms[stage.transforms.clone()];
             match (stage.kind, transforms) {
                 (StageKind::Fusion, _) => {
                     let mut pending = combine::PendingFusion::default();
-                    for transform in transforms {
+                    for (offset, transform) in transforms.iter().enumerate() {
                         let TransformKind::Combine { how, query: other } = &transform.kind else {
                             unreachable!("a fusion holds unions and fuses");
                         };
-                        let operand =
-                            self.combined_rows(other, relation.program.unit, transform.span.start)?;
+                        let StageBinding::Query(other_bound) =
+                            &bound.stages[stage.transforms.start + offset]
+                        else {
+                            unreachable!("a combination binds its query");
+                        };
+                        let operand = self.combined_rows(
+                            other,
+                            other_bound,
+                            relation.program.unit,
+                            transform.span.start,
+                        )?;
                         match how {
                             Combination::Union => pending.unions.push(operand),
                             _ => pending.fuses.push(operand),
@@ -309,9 +297,11 @@ impl<'a> Compiler<'a> {
                     relation.program.derived_mut().count = None;
                     relation.program.derived_mut().members = None;
                 }
-                (_, [transform]) => {
-                    self.relation_stage(&mut relation, transform, query, stage.transforms.start)?
-                }
+                (_, [transform]) => self.relation_stage(
+                    &mut relation,
+                    transform,
+                    &bound.stages[stage.transforms.start],
+                )?,
                 _ => unreachable!("a stage of one transform"),
             }
         }
@@ -403,10 +393,13 @@ impl<'a> Compiler<'a> {
         &mut self,
         relation: &mut Relation,
         stage: &Transform,
-        query: &Query,
-        index: usize,
+        binding: &StageBinding,
     ) -> Result<(), QueryError> {
         let at = stage.span.start;
+        let other = || match binding {
+            StageBinding::Query(bound) => bound.as_ref().map_err(Clone::clone),
+            _ => unreachable!("this transform binds its query"),
+        };
         match &stage.kind {
             TransformKind::AsOf { .. } => return Err(as_of_unavailable()),
             TransformKind::Fields { columns } => {
@@ -444,23 +437,11 @@ impl<'a> Compiler<'a> {
                 relation.program.time_text_columns.clear();
                 relation.open_fields = false;
             }
-            TransformKind::Where { condition } => {
-                let scope = self
-                    .query_scope
-                    .as_ref()
-                    .and_then(|query| query.transforms.get(index))
-                    .map(|transform| transform.before.clone());
-                self.relation_where(
-                    relation,
-                    condition,
-                    scope.as_ref(),
-                    query_language::scope::NodePath::default()
-                        .field("transforms")
-                        .index(index)
-                        .field("kind")
-                        .field("condition"),
-                )?;
-                relation.patterns.extend(match_patterns(condition));
+            TransformKind::Where { .. } => {
+                let StageBinding::Where(condition) = binding else {
+                    unreachable!("a where stage binds its condition");
+                };
+                self.relation_where(relation, condition)?;
             }
             TransformKind::Sort { keys } => {
                 let input = self.input(relation);
@@ -527,15 +508,16 @@ impl<'a> Compiler<'a> {
             TransformKind::Aggregate { aggregates } => {
                 self.relation_aggregate(relation, None, aggregates, at)?
             }
-            TransformKind::Join { query, on } => {
-                let inner = Relation::new(self.other_query(query, at, None)?);
+            TransformKind::Join { on, .. } => {
+                let inner = Relation::new(self.other_query(other()?, at, None)?);
                 self.rel_join_pair(relation, inner, on, at)?;
             }
-            TransformKind::Diff { query } => self.relation_diff(relation, query, at)?,
-            TransformKind::Scope { unit, condition } => {
-                self.relation_scope(relation, unit, condition.as_ref(), at)?
+            TransformKind::Diff { .. } => self.relation_diff(relation, other()?, at)?,
+            TransformKind::Scope { unit, .. } => {
+                let target = bind_unit(unit)?;
+                self.relation_scope(relation, target, binding, at)?
             }
-            _ => self.relation_unit_rows_stage(relation, stage, query)?,
+            _ => self.relation_unit_rows_stage(relation, stage, binding)?,
         }
         if !matches!(
             stage.kind,
@@ -550,23 +532,11 @@ impl<'a> Compiler<'a> {
     fn relation_where(
         &mut self,
         relation: &mut Relation,
-        condition: &Condition,
-        scope: Option<&query_language::scope::Scope>,
-        path: query_language::scope::NodePath,
+        condition: &RelationCondition,
     ) -> Result<(), QueryError> {
         let input = relation.clone();
         let mut exposed = None;
-        let predicate = self.relation_condition(
-            relation,
-            &input,
-            condition,
-            &ConditionScope {
-                fields: scope,
-                path,
-            },
-            condition.exposed_order(),
-            &mut exposed,
-        )?;
+        let predicate = self.relation_condition(relation, &input, condition, &mut exposed)?;
         self.relation_filter(relation, &predicate);
         exposed
             .unwrap_or_else(|| RelationOutput::capture(&input))
@@ -578,14 +548,13 @@ impl<'a> Compiler<'a> {
         &mut self,
         relation: &mut Relation,
         input: &Relation,
-        condition: &Condition,
-        scope: &ConditionScope<'_>,
-        selected: Option<&Condition>,
+        condition: &RelationCondition,
         exposed: &mut Option<RelationOutput>,
     ) -> Result<String, QueryError> {
         query_language::depth::deeper(|| {
+            let at = condition.span.start;
             if input.open_fields
-                && !contains_order(condition)
+                && !condition.has_order
                 && !materialized_condition(condition, &input.program.column_slots)
                 && input
                     .sources
@@ -599,7 +568,8 @@ impl<'a> Compiler<'a> {
                     unit: source.unit,
                     a: self.fresh(),
                 };
-                let predicate = self.cond(condition, &context, Cx::plain(false))?;
+                let predicate =
+                    self.lower(&condition.unit_filter()?, &context, Cx::plain(false))?;
                 let key = context.a.expand(units::spec(context.unit).key);
                 return Ok(format!(
                     "(SELECT ({predicate}) FROM {} WHERE {key} = r.{})",
@@ -608,165 +578,126 @@ impl<'a> Compiler<'a> {
                 ));
             }
             Ok(match &condition.kind {
-                ConditionKind::Order {
+                RelationTest::Order {
                     relation: order,
-                    query,
                     within,
-                    at,
+                    at: point,
                     scope,
                     pick,
+                    query,
+                    exposed: exposes,
                 } => {
-                    let inner =
-                        Relation::new(self.other_query(query, condition.span.start, None)?);
+                    let inner = Relation::new(self.other_query(
+                        query.as_ref().map_err(Clone::clone)?,
+                        at,
+                        None,
+                    )?);
                     let predicate = self.rel_order_pair(
                         relation,
                         inner,
                         *order,
                         within.as_ref(),
-                        *at,
+                        *point,
                         scope.as_deref(),
                         pick,
-                        condition.span.start,
+                        at,
                     )?;
-                    if selected.is_some_and(|selected| std::ptr::eq(selected, condition)) {
+                    if *exposes {
                         *exposed = Some(RelationOutput::capture(relation));
                     }
                     RelationOutput::capture(input).install(relation);
                     predicate
                 }
-                ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
-                    let op = if matches!(condition.kind, ConditionKind::And { .. }) {
+                RelationTest::All(parts) | RelationTest::Any(parts) => {
+                    let op = if matches!(condition.kind, RelationTest::All(_)) {
                         " AND "
                     } else {
                         " OR "
                     };
-                    let values = conditions
+                    let values = parts
                         .iter()
-                        .enumerate()
-                        .map(|(index, c)| {
-                            self.relation_condition(
-                                relation,
-                                input,
-                                c,
-                                &ConditionScope {
-                                    fields: scope.fields,
-                                    path: scope.path.field("kind").field("conditions").index(index),
-                                },
-                                selected,
-                                exposed,
-                            )
-                        })
+                        .map(|part| self.relation_condition(relation, input, part, exposed))
                         .collect::<Result<Vec<_>, _>>()?;
                     format!("({})", values.join(op))
                 }
-                ConditionKind::Not { condition } => {
+                RelationTest::Not(inner) => {
                     format!(
                         "NOT ({})",
-                        self.relation_condition(
-                            relation,
-                            input,
-                            condition,
-                            &ConditionScope {
-                                fields: scope.fields,
-                                path: scope.path.field("kind").field("condition")
-                            },
-                            selected,
-                            exposed
-                        )?
+                        self.relation_condition(relation, input, inner, exposed)?
                     )
                 }
-                ConditionKind::Compare { left, op, right } => {
-                    let info = self
-                        .typing
-                        .as_ref()
-                        .and_then(|typing| typing.operand(&scope.path.field("kind").field("left")))
-                        .map(|operand| operand.result.clone());
-                    let path = *op == Op::Prefix
-                        && info.as_ref().is_some_and(|info| {
-                            info.field.natural_match()
-                                == query_language::catalog::NaturalMatch::Subtree
-                        });
-                    if path {
-                        self.natural_comparison(
-                            left,
-                            right,
-                            query_language::catalog::NaturalMatch::Subtree,
-                            condition.span.start,
-                            &mut |compiler, name, at| input.field(compiler, name, at),
-                        )?
-                    } else {
-                        self.expression_comparison(
-                            left,
-                            *op,
-                            right,
-                            condition.span.start,
-                            &mut |compiler, name, at| input.field(compiler, name, at),
-                        )?
-                    }
-                }
-                ConditionKind::Between { left, from, to } => {
-                    let lo = self.expression_comparison(
-                        left,
-                        Op::Ge,
-                        &Expression::value(from.clone()),
-                        condition.span.start,
-                        &mut |compiler, name, at| input.field(compiler, name, at),
-                    )?;
-                    let hi = self.expression_comparison(
-                        left,
-                        Op::Le,
-                        &Expression::value(to.clone()),
-                        condition.span.start,
-                        &mut |compiler, name, at| input.field(compiler, name, at),
-                    )?;
-                    format!("({lo}) AND ({hi})")
-                }
-                ConditionKind::Match {
-                    field,
-                    value: Value::Unknown | Value::Known,
-                } => {
-                    let (sql, _) = input.field(self, field, condition.span.start)?;
-                    format!(
-                        "({sql}) IS {}NULL",
-                        if matches!(
-                            condition.kind,
-                            ConditionKind::Match {
-                                value: Value::Known,
-                                ..
-                            }
-                        ) {
-                            "NOT "
-                        } else {
-                            ""
-                        }
-                    )
-                }
-                ConditionKind::Match { field, value } => {
-                    let info = scope.fields.and_then(|scope| scope.field(field));
-                    if !matches!(value, Value::Any)
-                        && info.is_some_and(|info| {
-                            matches!(info.field.kind, query_language::catalog::FieldKind::List(_))
-                        })
-                    {
-                        return Err(not_built("natural matching on list-valued derived columns"));
-                    }
-                    let natural = info
-                        .map(|info| info.field.natural_match())
-                        .unwrap_or(query_language::catalog::NaturalMatch::Equal);
-                    if matches!(value, Value::Any) {
-                        "1".into()
-                    } else {
-                        self.natural_comparison(
-                            &Expression::field(field),
-                            &Expression::value(value.clone()),
-                            natural,
-                            condition.span.start,
-                            &mut |compiler, name, at| input.field(compiler, name, at),
-                        )?
-                    }
-                }
-                _ => return Err(not_built("this condition on a derived relation")),
+                RelationTest::Leaf { leaf, .. } => self.relation_leaf(input, leaf, at)?,
             })
+        })
+    }
+
+    /// A condition on one value of a derived relation's rows.
+    fn relation_leaf(
+        &mut self,
+        input: &Relation,
+        leaf: &RelationLeaf,
+        at: usize,
+    ) -> Result<String, QueryError> {
+        Ok(match leaf {
+            RelationLeaf::Compare {
+                left,
+                right,
+                subtree: true,
+                ..
+            } => self.natural_comparison(
+                left,
+                right,
+                query_language::catalog::NaturalMatch::Subtree,
+                at,
+                &mut |compiler, name, at| input.field(compiler, name, at),
+            )?,
+            RelationLeaf::Compare {
+                left, op, right, ..
+            } => self.expression_comparison(left, *op, right, at, &mut |compiler, name, at| {
+                input.field(compiler, name, at)
+            })?,
+            RelationLeaf::Between { left, from, to } => {
+                let lo = self.expression_comparison(
+                    left,
+                    Op::Ge,
+                    &Expression::value(from.clone()),
+                    at,
+                    &mut |compiler, name, at| input.field(compiler, name, at),
+                )?;
+                let hi = self.expression_comparison(
+                    left,
+                    Op::Le,
+                    &Expression::value(to.clone()),
+                    at,
+                    &mut |compiler, name, at| input.field(compiler, name, at),
+                )?;
+                format!("({lo}) AND ({hi})")
+            }
+            RelationLeaf::Presence { field, known } => {
+                let (sql, _) = input.field(self, field, at)?;
+                format!("({sql}) IS {}NULL", if *known { "NOT " } else { "" })
+            }
+            RelationLeaf::Match {
+                value: Value::Any, ..
+            } => "1".into(),
+            RelationLeaf::Match { list: true, .. } => {
+                return Err(not_built("natural matching on list-valued derived columns"));
+            }
+            RelationLeaf::Match {
+                field,
+                value,
+                natural,
+                ..
+            } => self.natural_comparison(
+                &Expression::field(field),
+                &Expression::value(value.clone()),
+                *natural,
+                at,
+                &mut |compiler, name, at| input.field(compiler, name, at),
+            )?,
+            RelationLeaf::Other(_) => {
+                return Err(not_built("this condition on a derived relation"));
+            }
         })
     }
 }
@@ -1186,7 +1117,7 @@ impl Compiler<'_> {
         &mut self,
         relation: &mut Relation,
         stage: &Transform,
-        _original: &Query,
+        binding: &StageBinding,
     ) -> Result<(), QueryError> {
         if !matches!(relation.program.row_kind, RowKind::UnitRows { .. })
             || !relation
@@ -1196,12 +1127,19 @@ impl Compiler<'_> {
         {
             return Err(not_built("this unit transform after a change of row grain"));
         }
-        if let TransformKind::Combine {
-            how: Combination::Intersect | Combination::Except,
-            query,
-        } = &stage.kind
+        if let (
+            TransformKind::Combine {
+                how: Combination::Intersect | Combination::Except,
+                ..
+            },
+            StageBinding::Query(other),
+        ) = (&stage.kind, binding)
         {
-            let other = self.other_query(query, stage.span.start, None)?;
+            let other = self.other_query(
+                other.as_ref().map_err(Clone::clone)?,
+                stage.span.start,
+                None,
+            )?;
             let yes = matches!(
                 stage.kind,
                 TransformKind::Combine {
@@ -1217,37 +1155,10 @@ impl Compiler<'_> {
             self.relation_filter(relation, &predicate);
             return Ok(());
         }
-        debug_assert!(!matches!(stage.kind, TransformKind::Combine { .. }));
-        let condition =
-            if matches!(stage.kind, TransformKind::Matches) && !relation.patterns.is_empty() {
-                Some(Condition {
-                    kind: ConditionKind::And {
-                        conditions: relation.patterns.clone(),
-                    },
-                    span: stage.span,
-                })
-            } else {
-                None
-            };
-        let pattern_unit = relation
-            .patterns
-            .iter()
-            .find_map(|condition| match &condition.kind {
-                ConditionKind::Exists { unit, .. } | ConditionKind::Sequence { unit, .. } => {
-                    bind_unit(unit).ok()
-                }
-                _ => None,
-            });
-        let parent_unit = relation.program.unit;
-        let unit_query = Query {
-            source: Source::Unit {
-                unit: relation.program.unit.name().into(),
-                implicit: false,
-                condition,
-            },
-            transforms: vec![stage.clone()],
-            attach: vec![],
+        let StageBinding::UnitRows(selection) = binding else {
+            unreachable!("a unit transform binds its unit rows");
         };
+        let parent_unit = relation.program.unit;
         let input = self.input(relation);
         let mut parent_input = relation.program.clone();
         if matches!(stage.kind, TransformKind::Matches) {
@@ -1259,13 +1170,19 @@ impl Compiler<'_> {
         let mut compiler = self.nested(self.text);
         compiler.params = std::mem::take(&mut self.params);
         compiler.similar_text = self.similar_text.clone().or(relation.program.near.clone());
-        let Some(selection) = Selection::of(&unit_query, &compiler.binder(), &self.opts.fields)?
-        else {
-            unreachable!("a unit source");
-        };
+        let selection = selection.as_ref().map_err(Clone::clone)?;
+        // The rows of the unit the matched patterns read.
+        let pattern_unit = selection
+            .conjuncts()
+            .into_iter()
+            .find_map(|pattern| match pattern {
+                Filter::Exists { rows, .. } => Some(rows.unit),
+                Filter::Sequence { .. } => Some(Unit::ToolCalls),
+                _ => None,
+            });
         let mut result = compiler.unit_rows_program_with(
-            &selection,
-            &unit_query.transforms[selection.stages_from..],
+            selection,
+            &std::slice::from_ref(stage)[selection.stages_from..],
             None,
             Reading {
                 within: Some(parent_input.rows().to_owned()),
@@ -1325,7 +1242,7 @@ impl Compiler<'_> {
     fn relation_diff(
         &mut self,
         relation: &mut Relation,
-        query: &Query,
+        query: &Bound,
         at: usize,
     ) -> Result<(), QueryError> {
         let mut before = Relation::new(self.other_query(query, at, None)?);
@@ -1435,11 +1352,10 @@ impl Compiler<'_> {
     fn relation_scope(
         &mut self,
         relation: &mut Relation,
-        unit: &str,
-        condition: Option<&Condition>,
+        target: Unit,
+        binding: &StageBinding,
         at: usize,
     ) -> Result<(), QueryError> {
-        let target = bind_unit(unit)?;
         let Some(source) = relation
             .sources
             .iter()
@@ -1508,20 +1424,15 @@ impl Compiler<'_> {
             base_from(target, &target_context.a),
             column_sql(&source.key),
         );
-        let query = Query {
-            source: Source::Unit {
-                unit: target.name().into(),
-                implicit: false,
-                condition: condition.cloned(),
-            },
-            transforms: vec![],
-            attach: vec![],
+        let StageBinding::Query(related) = binding else {
+            unreachable!("a scope stage binds the related unit's query");
         };
+        let related = related.as_ref().map_err(Clone::clone)?;
         let mut compiler = self.nested(self.text);
         compiler.params = std::mem::take(&mut self.params);
         compiler.similar_text = self.similar_text.clone().or(relation.program.near.clone());
         let mut program = compiler.program(
-            &query,
+            related,
             Reading {
                 answer: false,
                 within: Some(keys),
@@ -1546,23 +1457,8 @@ impl Compiler<'_> {
             .resolved_times
             .extend(relation.program.resolved_times.iter().cloned());
         *relation = Relation::new(program);
-        if let Some(condition) = condition {
-            relation.patterns = match_patterns(condition);
-        }
         Ok(())
     }
-}
-
-fn match_patterns(condition: &Condition) -> Vec<Condition> {
-    top_level(condition)
-        .into_iter()
-        .filter(|condition| {
-            matches!(
-                condition.kind,
-                ConditionKind::Exists { .. } | ConditionKind::Sequence { .. }
-            )
-        })
-        .collect()
 }
 
 fn materialized_expression(
@@ -1580,24 +1476,35 @@ fn materialized_expression(
         Expression::Value { .. } => false,
     })
 }
+/// A condition naming a column the relation's own rows hold, which their
+/// unit's fields cannot answer.
 fn materialized_condition(
-    condition: &Condition,
+    condition: &RelationCondition,
     columns: &std::collections::BTreeMap<String, String>,
 ) -> bool {
     query_language::depth::deeper(|| match &condition.kind {
-        ConditionKind::And { conditions } | ConditionKind::Or { conditions } => conditions
+        RelationTest::All(parts) | RelationTest::Any(parts) => parts
             .iter()
-            .any(|condition| materialized_condition(condition, columns)),
-        ConditionKind::Not { condition } => materialized_condition(condition, columns),
-        ConditionKind::Match { field, .. }
-        | ConditionKind::Since { field, .. }
-        | ConditionKind::Until { field, .. } => columns.contains_key(field),
-        ConditionKind::Compare { left, right, .. } => {
-            materialized_expression(left, columns) || materialized_expression(right, columns)
-        }
-        ConditionKind::Between { left, .. }
-        | ConditionKind::TimeRange { left, .. }
-        | ConditionKind::In { left, .. } => materialized_expression(left, columns),
-        _ => false,
+            .any(|part| materialized_condition(part, columns)),
+        RelationTest::Not(inner) => materialized_condition(inner, columns),
+        RelationTest::Order { .. } => false,
+        RelationTest::Leaf { leaf, .. } => match leaf {
+            RelationLeaf::Presence { field, .. } | RelationLeaf::Match { field, .. } => {
+                columns.contains_key(field)
+            }
+            RelationLeaf::Compare { left, right, .. } => {
+                materialized_expression(left, columns) || materialized_expression(right, columns)
+            }
+            RelationLeaf::Between { left, .. } => materialized_expression(left, columns),
+            RelationLeaf::Other(condition) => match &condition.kind {
+                ConditionKind::Since { field, .. } | ConditionKind::Until { field, .. } => {
+                    columns.contains_key(field)
+                }
+                ConditionKind::TimeRange { left, .. } | ConditionKind::In { left, .. } => {
+                    materialized_expression(left, columns)
+                }
+                _ => false,
+            },
+        },
     })
 }

@@ -22,6 +22,6 @@ pub mod ast {
 pub use compile::{
     Attach, ColKind, Column, ColumnReference, Definition, DerivedRows, IdCheck, Kept, KeyedRows,
     Measure, Near, OrderKey, PageColumns, Param, Program, RANK_FUSION_OFFSET, RowKind, SavedQuery,
-    Shape, SnippetTerms, Statements, WhyClause, compile, lower,
+    Shape, SnippetTerms, Statements, WhyClause, compile, lower, lower_bound,
 };
 pub use polylogue_query::{Options, QueryError, catalog, parse};

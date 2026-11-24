@@ -80,7 +80,11 @@ fn selection_holds_the_stages_after_its_filters() {
         )
         .unwrap(),
     );
-    let selection = plan.selection(&[], &clock, None).unwrap().unwrap();
+    let selection = plan
+        .bound(&crate::Options::fixture(clock, vec![]))
+        .unwrap()
+        .selection
+        .unwrap();
     assert_eq!(
         selection.stages,
         vec![Stage {

@@ -3,6 +3,7 @@
 //! Parsing and binding produce a typed Plan. Store alone lowers and executes it.
 
 pub mod ast;
+pub mod bound;
 pub mod catalog;
 pub mod compile;
 pub mod defaults;

@@ -312,6 +312,24 @@ impl Definitions for Bindings {
     }
 }
 impl Options {
+    /// Options with only a clock and origin names, for binding in tests.
+    #[cfg(any(test, feature = "fixture"))]
+    pub fn fixture(clock: Clock, origins: Vec<String>) -> Self {
+        Self {
+            clock,
+            origins,
+            page_size: None,
+            random_seed: None,
+            embeddings: false,
+            self_session: None,
+            here: None,
+            seen_marks_of: None,
+            saved: Default::default(),
+            fields: vec![],
+            kept: Default::default(),
+            provider_catalog: None,
+        }
+    }
     pub fn bindings(&self) -> Bindings {
         Bindings {
             origins: self.origins.clone(),

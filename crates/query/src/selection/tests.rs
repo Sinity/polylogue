@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     Bindings,
+    defaults::{self, DefaultId},
     plan::prepare,
     search::{SnippetIndex, SnippetTerms},
 };
@@ -27,18 +28,26 @@ fn clock() -> crate::time::Clock {
     )
 }
 
+fn options(fields: &[String]) -> crate::Options {
+    crate::Options {
+        fields: fields.to_vec(),
+        ..crate::Options::fixture(clock(), bindings().origins)
+    }
+}
+
 fn selection_with(text: &str, fields: &[String]) -> Selection {
     prepare(text, &bindings(), |_| Ok(()))
         .unwrap()
-        .selection(fields, &clock(), None)
+        .bound(&options(fields))
         .unwrap()
+        .selection
         .unwrap()
 }
 
 fn error(text: &str) -> QueryError {
     prepare(text, &bindings(), |_| Ok(()))
         .unwrap()
-        .selection(&[], &clock(), None)
+        .bound(&options(&[]))
         .unwrap_err()
 }
 
@@ -105,13 +114,15 @@ fn where_stages_that_change_meaning_stay_stages() {
 #[test]
 fn defaults_come_from_the_source_alone() {
     let all = defaults::declared(Unit::Sessions).to_vec();
-    assert_eq!(selection("sessions").defaults, all);
+    assert_eq!(selection("sessions").defaults.plain, all);
     assert_eq!(
-        selection("sessions where hidden:true").defaults,
+        selection("sessions where hidden:true").defaults.plain,
         vec![DefaultId::LogicalSessions, DefaultId::NotStub]
     );
     assert_eq!(
-        selection("sessions where repo:morrow | where hidden:true").defaults,
+        selection("sessions where repo:morrow | where hidden:true")
+            .defaults
+            .plain,
         all
     );
 }

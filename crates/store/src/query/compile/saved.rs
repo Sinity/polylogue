@@ -15,18 +15,12 @@ impl Compiler<'_> {
         cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         let selection = &relation.selection;
-        let top = selection.top_level();
-        let mut parts = self.defaults(scope, &top, cx.measured);
+        let defaults = selection.defaults.get(cx.measured);
+        let mut parts = self.defaults(scope, defaults);
         if let Some(filter) = &selection.filter {
             parts.push(self.lower(filter, scope, cx.inner())?);
         }
-        self.sessions_within_bounds(
-            scope,
-            cx.measured,
-            &top,
-            &mut parts,
-            selection.filter.is_some(),
-        )?;
+        self.sessions_within_bounds(scope, defaults, &mut parts, selection.filter.is_some());
         let used = Definition {
             name: relation.name.clone(),
             revision: relation.revision.clone(),
@@ -46,7 +40,8 @@ impl Compiler<'_> {
 /// `.matches`): its stored values, read as they were kept, never re-run.
 /// Only stages may follow.
 impl Compiler<'_> {
-    pub(super) fn kept_program(mut self, query: &Query) -> Result<Program, QueryError> {
+    pub(super) fn kept_program(mut self, bound: &Bound) -> Result<Program, QueryError> {
+        let query = &bound.query;
         let Source::Result {
             reference,
             part,
@@ -179,6 +174,6 @@ impl Compiler<'_> {
             measure: None,
             order: vec![OrderKey::ascending("_pk")],
         };
-        self.program_over(query, program)
+        self.program_over(bound, program)
     }
 }

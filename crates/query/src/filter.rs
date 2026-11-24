@@ -5,19 +5,25 @@
 //! spelling), so lowering is a match on the field and never reads the
 //! value's spelling again (docs/query.md: Units and fields, Times). A saved
 //! query where a condition stands binds to the relation its frozen body
-//! selects. Conditions over other rows (exists, count, membership,
-//! sequences) and computed comparisons stay as written; the store binds
-//! their inner conditions when it lowers them.
+//! selects. A condition over other rows holds those rows bound to their own
+//! unit, and a query inside a condition is bound whole ([`Bound`]), so the
+//! store lowers one bound tree and binds nothing itself. A computed
+//! comparison keeps its expressions, whose operand types the shared binder
+//! already fixed.
 use crate::{
     QueryError,
     ast::*,
+    bound::Bound,
+    defaults::Defaults,
     fields::{self, Field, FieldId, Kind},
+    selection::top_level_refs,
     time::{Clock, ResolvedTime},
 };
 
 /// What binding needs from the query: its text (for diagnostics), the
 /// origin names a reference may start with, the clock times resolve
-/// against, and the saved queries it may name.
+/// against, the saved queries it may name, the columns every selection
+/// shows, and the kept results a source may read.
 #[derive(Clone, Copy)]
 pub struct Binder<'a> {
     pub text: &'a str,
@@ -30,6 +36,11 @@ pub struct Binder<'a> {
     /// The saved queries whose bodies are being bound around this
     /// binding, outermost first.
     pub expanding: &'a [String],
+    /// The columns asked for (`--fields`), which every selection of the
+    /// query shows.
+    pub fields: &'a [String],
+    /// Kept results by ID: the unit a kept source's rows are.
+    pub kept: &'a std::collections::BTreeMap<String, crate::Kept>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -69,9 +80,56 @@ pub enum Filter {
     /// same unit, from the body its identity hashed, its parameters bound.
     /// It binds the unit's defaults by its own top-level conditions.
     Saved(Box<SavedRelation>),
-    /// A condition the store lowers as written: one over other rows or
-    /// another query, or a computed comparison.
-    Written(Condition),
+    /// `exists UNIT(…)`: some related row matches.
+    Exists {
+        rows: ChildRows,
+        span: Span,
+    },
+    /// `count(UNIT where …) OP N`: how many related rows match.
+    Count {
+        rows: ChildRows,
+        op: Op,
+        count: u64,
+        span: Span,
+    },
+    /// `seq(a -> b)`: tool calls of one session in session order, each step
+    /// bound to tool calls.
+    Sequence {
+        steps: Vec<Filter>,
+        gaps: Vec<Gap>,
+        span: Span,
+    },
+    /// `FIELD in (QUERY)`: the field's value is one the query groups by.
+    /// Shared, so copying a filter (a `--why` clause is one) never copies
+    /// the query.
+    In {
+        field: String,
+        query: std::sync::Arc<Bound>,
+        span: Span,
+    },
+    /// A comparison of computed values.
+    Compare {
+        left: Expression,
+        op: Op,
+        right: Expression,
+        span: Span,
+    },
+    Between {
+        left: Expression,
+        from: Value,
+        to: Value,
+        span: Span,
+    },
+}
+
+/// The rows of another unit a condition reads: the unit, the condition on
+/// its rows bound to it, and the defaults the condition's own top-level
+/// conditions leave in place.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChildRows {
+    pub unit: Unit,
+    pub filter: Option<Box<Filter>>,
+    pub defaults: Defaults,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -129,8 +187,8 @@ pub enum Test {
     NumberCompare(Op, String),
     NumberBetween(String, String),
     Time(TimeTest),
-    /// A field with its own rule, which reads the value as written.
-    Written(Comparison),
+    /// A field with its own rule, which reads this value.
+    Special(Special),
 }
 
 impl Test {
@@ -143,8 +201,62 @@ impl Test {
                 | Test::NumberCompare(..)
                 | Test::NumberBetween(..)
                 | Test::Time(TimeTest::Compare(..) | TimeTest::Between(..))
-                | Test::Written(Comparison::Compare(..) | Comparison::Between(..))
+                | Test::Special(Special::Compare(..) | Special::Between(..))
         )
+    }
+}
+
+/// The value of a condition on a special field, in the form its rule reads:
+/// values flattened from sets, a comparison's operator and operand, or the
+/// condition a session's tool-call field puts on its tool calls.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Special {
+    /// `F:VALUE`, and whether the value was quoted.
+    One {
+        text: String,
+        quoted: bool,
+    },
+    /// `F:(A, B)`: the set's members, `unknown`, `known` and parameters by
+    /// name.
+    Set(Vec<String>),
+    /// A parameter the caller has not supplied, by name.
+    Parameter(String),
+    Unknown,
+    Known,
+    Compare(Op, String),
+    Between(String, String),
+    /// `since:seen`: what changed since the caller last marked it seen.
+    SinceSeen,
+    /// `path:`, `tool:` or `action:` on sessions: the session made a tool
+    /// call matching this condition, bound to tool calls.
+    ToolCalls(Box<Filter>),
+}
+
+impl Special {
+    /// The values a match lists, as [`alternatives`] gives them; none for
+    /// a comparison.
+    pub fn listed(&self) -> Vec<String> {
+        match self {
+            Special::One { text, .. } => vec![text.clone()],
+            Special::Set(values) => values.clone(),
+            Special::Parameter(name) => vec![format!("${name}")],
+            Special::Unknown => vec!["unknown".into()],
+            Special::Known => vec!["known".into()],
+            Special::Compare(..)
+            | Special::Between(..)
+            | Special::SinceSeen
+            | Special::ToolCalls(_) => vec![],
+        }
+    }
+
+    /// The one value a match names, as [`value_text`] reads it.
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Special::One { text, .. } => Some(text),
+            Special::Unknown => Some("unknown"),
+            Special::Parameter(name) => Some(name),
+            _ => None,
+        }
     }
 }
 
@@ -245,16 +357,116 @@ impl Binder<'_> {
                 ConditionKind::Saved { name, arguments } => {
                     self.saved_relation(name, arguments, unit, c.span)?
                 }
-                ConditionKind::Exists { .. }
-                | ConditionKind::Count { .. }
-                | ConditionKind::In { .. }
-                | ConditionKind::Sequence { all: false, .. }
-                | ConditionKind::Compare { .. }
-                | ConditionKind::Between { .. }
-                | ConditionKind::Order { .. } => Filter::Written(c.clone()),
+                ConditionKind::Exists {
+                    unit: rows,
+                    condition,
+                } => Filter::Exists {
+                    rows: self.child_rows(rows, condition.as_deref())?,
+                    span: c.span,
+                },
+                ConditionKind::Count {
+                    unit: rows,
+                    condition,
+                    op,
+                    count,
+                } => Filter::Count {
+                    rows: self.child_rows(rows, condition.as_deref())?,
+                    op: *op,
+                    count: *count,
+                    span: c.span,
+                },
+                ConditionKind::Sequence {
+                    steps,
+                    gaps,
+                    all: false,
+                    ..
+                } => Filter::Sequence {
+                    steps: steps
+                        .iter()
+                        .map(|step| self.bind(step, Unit::ToolCalls))
+                        .collect::<Result<_, _>>()?,
+                    gaps: gaps.clone(),
+                    span: c.span,
+                },
+                ConditionKind::In { left, query } => self.membership(left, query, c.span)?,
+                ConditionKind::Compare { left, op, right } => Filter::Compare {
+                    left: left.clone(),
+                    op: *op,
+                    right: right.clone(),
+                    span: c.span,
+                },
+                ConditionKind::Between { left, from, to } => Filter::Between {
+                    left: left.clone(),
+                    from: from.clone(),
+                    to: to.clone(),
+                    span: c.span,
+                },
+                // An order condition's matching row is read by the relation
+                // holding it, never inside one unit's rows.
                 _ => return Err(not_built("this shared condition")),
             })
         })
+    }
+
+    /// The rows of `unit_name` a condition reads, `condition` bound to them.
+    fn child_rows(
+        &self,
+        unit_name: &str,
+        condition: Option<&Condition>,
+    ) -> Result<ChildRows, QueryError> {
+        let unit = bind_unit(unit_name)?;
+        let filter = condition
+            .map(|condition| self.bind(condition, unit).map(Box::new))
+            .transpose()?;
+        let top = condition.map(top_level_refs).unwrap_or_default();
+        Ok(ChildRows {
+            unit,
+            filter,
+            defaults: Defaults::bind(unit, &top, self.origins),
+        })
+    }
+
+    /// `FIELD in (QUERY)`: the query must group by one field, whose values
+    /// the field is compared with.
+    fn membership(
+        &self,
+        left: &Expression,
+        query: &Query,
+        span: Span,
+    ) -> Result<Filter, QueryError> {
+        let Expression::Field { name: field } = left else {
+            return Err(not_built("this computed field"));
+        };
+        let grouped_by_one = query.transforms.iter().rev().find_map(|s| match &s.kind {
+            TransformKind::Group { keys } => Some(keys.len() == 1),
+            _ => None,
+        });
+        if grouped_by_one != Some(true) {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "`{field} in (…)` compares {field} with the values a query groups by: \
+                     end it with `| group by FIELD` (one field)"
+                ),
+                position: span.start,
+            });
+        }
+        Ok(Filter::In {
+            field: field.clone(),
+            query: std::sync::Arc::new(self.nested_query(query)?),
+            span,
+        })
+    }
+
+    /// A query inside this one, bound on its own after its inherited unit
+    /// was bound.
+    pub fn nested_query(&self, query: &Query) -> Result<Bound, QueryError> {
+        let mut query = query.clone();
+        if let Source::Unit { implicit, .. } = &mut query.source {
+            *implicit = false;
+        }
+        let bound = query_language::bind::bind(&query, self.catalog)
+            .map_err(|error| QueryError::language(error, self.text))?;
+        Bound::of(bound.query().clone(), Some(bound.typing()), self)
     }
 
     /// `query:NAME` over `unit`'s rows: a relation (a unit and conditions,
@@ -294,6 +506,7 @@ impl Binder<'_> {
         let inner = Binder {
             text: syntax,
             expanding: &expanding,
+            fields: &[],
             ..*self
         };
         let (selected, condition) = match body.source {
@@ -348,7 +561,7 @@ impl Binder<'_> {
             transforms: vec![],
             attach: vec![],
         };
-        let selection = crate::selection::Selection::of(&query, &inner, &[])
+        let selection = crate::selection::Selection::bind(&query, &inner, false)
             .map_err(|error| error.inside_saved(name, syntax, span.start))?
             .expect("a unit source");
         if selection.semantic.is_some() {
@@ -558,7 +771,7 @@ impl Binder<'_> {
                         message: "since:seen applies to sessions and annotations".into(),
                     });
                 }
-                Test::Written(comparison)
+                Test::Special(Special::SinceSeen)
             }
             comparison if matches!(def.name, "since" | "until" | "seen_by") => {
                 let Comparison::Match(Value::Scalar { text, .. }) = &comparison else {
@@ -569,7 +782,28 @@ impl Binder<'_> {
                 };
                 Test::Time(TimeTest::Within(self.time(text, span)?))
             }
-            comparison => Test::Written(comparison),
+            comparison
+                if matches!(
+                    id,
+                    FieldId::SessionsPath | FieldId::SessionsTool | FieldId::SessionsAction
+                ) =>
+            {
+                Test::Special(Special::ToolCalls(Box::new(self.field(
+                    Unit::ToolCalls,
+                    def.name,
+                    comparison,
+                    span,
+                )?)))
+            }
+            Comparison::Match(value) => Test::Special(match value {
+                Value::Scalar { text, quoted } => Special::One { text, quoted },
+                Value::Unknown => Special::Unknown,
+                Value::Known => Special::Known,
+                Value::Parameter { name } => Special::Parameter(name),
+                set => Special::Set(alternatives(&set)),
+            }),
+            Comparison::Compare(op, value) => Test::Special(Special::Compare(op, value)),
+            Comparison::Between(from, to) => Test::Special(Special::Between(from, to)),
         };
         Ok(Filter::Field(FieldTest {
             field: id,

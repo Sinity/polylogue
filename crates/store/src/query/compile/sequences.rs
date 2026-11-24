@@ -2,31 +2,31 @@
 //! and over ordered steps within a session.
 
 use super::*;
+use polylogue_query::filter::{ChildRows, Filter};
 
 impl<'a> Compiler<'a> {
     pub(super) fn exists(
         &mut self,
-        unit: Unit,
-        cond: Option<&Condition>,
+        rows: &ChildRows,
         scope: &RowContext,
         span: Span,
         cx: Cx<'_>,
     ) -> Result<String, QueryError> {
-        let (from, rows, child) = self.related_rows(unit, cond, scope, span, cx.measured)?;
-        let top = cond.map(top_level).unwrap_or_default();
-        let Some(cond) = cond else {
-            let mut predicates = vec![rows];
-            self.sessions_within_bounds(&child, cx.measured, &top, &mut predicates, true)?;
+        let defaults = rows.defaults.get(cx.measured);
+        let (from, related, child) = self.related_rows(rows.unit, defaults, scope, span)?;
+        let Some(filter) = &rows.filter else {
+            let mut predicates = vec![related];
+            self.sessions_within_bounds(&child, defaults, &mut predicates, true);
             return Ok(format!(
                 "EXISTS (SELECT 1 FROM {from} WHERE {})",
                 and_all(&predicates)
             ));
         };
-        let inner = self.cond(cond, &child, cx.inner())?;
-        let mut matching = vec![rows.clone(), inner.clone()];
-        self.sessions_within_bounds(&child, cx.measured, &top, &mut matching, true)?;
-        let mut unknown = vec![rows, format!("({inner}) IS NULL")];
-        self.sessions_within_bounds(&child, cx.measured, &top, &mut unknown, true)?;
+        let inner = self.lower(filter, &child, cx.inner())?;
+        let mut matching = vec![related.clone(), inner.clone()];
+        self.sessions_within_bounds(&child, defaults, &mut matching, true);
+        let mut unknown = vec![related, format!("({inner}) IS NULL")];
+        self.sessions_within_bounds(&child, defaults, &mut unknown, true);
         let matching = and_all(&matching);
         let unknown = and_all(&unknown);
         // True when some child satisfies the condition, false when every
@@ -43,25 +43,19 @@ impl<'a> Compiler<'a> {
     /// is always known, so the condition and its `NOT` partition the rows.
     pub(super) fn counted(
         &mut self,
-        unit: Unit,
-        cond: Option<&Condition>,
+        rows: &ChildRows,
         (op, n): (Op, u64),
         scope: &RowContext,
         span: Span,
         cx: Cx<'_>,
     ) -> Result<String, QueryError> {
-        let (from, mut rows, child) = self.related_rows(unit, cond, scope, span, cx.measured)?;
-        if let Some(cond) = cond {
-            rows = format!("{rows} AND {}", self.cond(cond, &child, cx.inner())?);
+        let defaults = rows.defaults.get(cx.measured);
+        let (from, mut related, child) = self.related_rows(rows.unit, defaults, scope, span)?;
+        if let Some(filter) = &rows.filter {
+            related = format!("{related} AND {}", self.lower(filter, &child, cx.inner())?);
         }
-        let mut predicates = vec![rows];
-        self.sessions_within_bounds(
-            &child,
-            cx.measured,
-            &cond.map(top_level).unwrap_or_default(),
-            &mut predicates,
-            true,
-        )?;
+        let mut predicates = vec![related];
+        self.sessions_within_bounds(&child, defaults, &mut predicates, true);
         let rows = and_all(&predicates);
         let n = i64::try_from(n).unwrap_or(i64::MAX);
         Ok(format!(
@@ -70,16 +64,15 @@ impl<'a> Compiler<'a> {
         ))
     }
 
-    /// The rows of `unit` related to one row of `scope`, by `unit`'s
-    /// defaults (which `cond` may name): their FROM, their WHERE, and the
+    /// The rows of `unit` related to one row of `scope`, by the defaults
+    /// their condition leaves in place: their FROM, their WHERE, and the
     /// aliases a condition on them is compiled over.
     fn related_rows(
         &mut self,
         unit: Unit,
-        cond: Option<&Condition>,
+        defaults: &[units::DefaultId],
         scope: &RowContext,
         span: Span,
-        measured: bool,
     ) -> Result<(String, String, RowContext), QueryError> {
         let child = RowContext {
             unit,
@@ -88,8 +81,7 @@ impl<'a> Compiler<'a> {
         let key = scope.a.expand(units::spec(scope.unit).key);
         let session = self.session_alias(scope, span).map(|s| format!("{s}.pk"));
         let link = self.under_parent(scope.unit, &child, &key, session)?;
-        let top = cond.map(top_level).unwrap_or_default();
-        let mut w = self.defaults(&child, &top, measured);
+        let mut w = self.defaults(&child, defaults);
         w.push(link);
         Ok((base_from(unit, &child.a), and_all(&w), child))
     }
@@ -98,7 +90,7 @@ impl<'a> Compiler<'a> {
     /// each step a condition on one call.
     pub(super) fn seq(
         &mut self,
-        steps: &[Condition],
+        steps: &[Filter],
         gaps: &[Gap],
         scope: &RowContext,
         span: Span,
@@ -126,7 +118,7 @@ impl<'a> Compiler<'a> {
                     ..a.clone()
                 },
             };
-            conds.push(self.cond(step, &sc, cx.inner())?);
+            conds.push(self.lower(step, &sc, cx.inner())?);
             aliases.push(a);
         }
         // Build from the last step outwards: each step EXISTS inside the
@@ -166,25 +158,19 @@ impl<'a> Compiler<'a> {
     /// matching child, numbered within the parent in the child's order.
     pub(super) fn exists_matches(
         &mut self,
-        unit: Unit,
-        cond: Option<&Condition>,
+        rows: &ChildRows,
         (parent, parent_rows, parent_order): (&RowContext, &str, Vec<String>),
         span: Span,
         cx: Cx<'_>,
     ) -> Result<MatchRel, QueryError> {
-        let (child_from, children, child) =
-            self.related_rows(unit, cond, parent, span, cx.measured)?;
+        let unit = rows.unit;
+        let defaults = rows.defaults.get(cx.measured);
+        let (child_from, children, child) = self.related_rows(unit, defaults, parent, span)?;
         let mut w = vec![children];
-        if let Some(cond) = cond {
-            w.push(self.cond(cond, &child, cx.inner())?);
+        if let Some(filter) = &rows.filter {
+            w.push(self.lower(filter, &child, cx.inner())?);
         }
-        self.sessions_within_bounds(
-            &child,
-            cx.measured,
-            &cond.map(top_level).unwrap_or_default(),
-            &mut w,
-            true,
-        )?;
+        self.sessions_within_bounds(&child, defaults, &mut w, true);
         w.push(format!("({parent_rows})"));
         let parent_pk = parent.a.expand(units::spec(parent.unit).key);
         let (child_key, child_cols) =
@@ -248,7 +234,7 @@ impl<'a> Compiler<'a> {
     /// step takes the earliest call that still lets the rest complete.
     pub(super) fn seq_matches(
         &mut self,
-        steps: &[Condition],
+        steps: &[Filter],
         gaps: &[Gap],
         parent: &RowContext,
         parent_rows: &str,
@@ -266,7 +252,7 @@ impl<'a> Compiler<'a> {
                 unit: Unit::ToolCalls,
                 a: a.clone(),
             };
-            conds.push(self.cond(step, &sc, cx.inner())?);
+            conds.push(self.lower(step, &sc, cx.inner())?);
             al.push(a);
         }
         let o = |i: usize| format!("o{}", al[i].t);

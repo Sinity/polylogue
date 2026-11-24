@@ -129,11 +129,38 @@ pub fn declared(unit: Unit) -> &'static [DefaultId] {
     }
 }
 
+/// The defaults a selection binds by its own top-level conditions, for a
+/// population as listed and for one a `| measure` reads, which includes
+/// hidden sessions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Defaults {
+    pub plain: Vec<DefaultId>,
+    pub measured: Vec<DefaultId>,
+}
+
+impl Defaults {
+    pub fn bind(unit: Unit, top: &[&Condition], origins: &[String]) -> Self {
+        Self {
+            plain: bind(unit, top, origins, false),
+            measured: bind(unit, top, origins, true),
+        }
+    }
+
+    /// The defaults that apply where a measured population is read or not.
+    pub fn get(&self, measured: bool) -> &[DefaultId] {
+        if measured {
+            &self.measured
+        } else {
+            &self.plain
+        }
+    }
+}
+
 /// The defaults a source binds by its own top-level conditions `top`. Only
 /// a top-level AND condition naming a default's field lifts it; a saved
 /// relation as the source stands in for the unit's defaults; a measured
 /// population includes hidden sessions.
-pub fn bind(unit: Unit, top: &[Condition], origins: &[String], measuring: bool) -> Vec<DefaultId> {
+fn bind(unit: Unit, top: &[&Condition], origins: &[String], measuring: bool) -> Vec<DefaultId> {
     if top
         .iter()
         .any(|condition| matches!(condition.kind, ConditionKind::Saved { .. }))
@@ -157,7 +184,7 @@ pub fn bind(unit: Unit, top: &[Condition], origins: &[String], measuring: bool) 
 
 /// Field names the top-level conditions name, `session.` prefixes removed
 /// for row units.
-fn named_fields(top: &[Condition], unit: Unit) -> HashSet<String> {
+fn named_fields(top: &[&Condition], unit: Unit) -> HashSet<String> {
     let mut out = HashSet::new();
     for c in top {
         let f = match &c.kind {

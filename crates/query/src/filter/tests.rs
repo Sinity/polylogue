@@ -37,7 +37,8 @@ fn filter(text: &str) -> Result<Filter, QueryError> {
     };
     let plan = prepare(text, &bindings, |_| Ok(()))?;
     Ok(plan
-        .selection(&[], &clock(), None)?
+        .bound(&crate::Options::fixture(clock(), origins()))?
+        .selection
         .expect("a unit source")
         .filter
         .expect("a condition"))
@@ -142,7 +143,7 @@ fn fields_resolve_through_the_session_and_relations() {
         inner,
         Filter::Field(FieldTest {
             field: FieldId::SessionsRepo,
-            test: Test::Written(Comparison::Match(Value::Scalar { ref text, .. })),
+            test: Test::Special(Special::One { ref text, .. }),
             ..
         }) if text == "Morrow"
     ));
@@ -158,14 +159,12 @@ fn fields_resolve_through_the_session_and_relations() {
     ));
     assert!(matches!(
         filter("messages where session.cost > 1").unwrap(),
-        Filter::Written(Condition {
-            kind: ConditionKind::Compare {
-                left: Expression::Field { ref name },
-                op: Op::Gt,
-                right: Expression::Value { value: Value::Scalar { ref text, .. } },
-            },
+        Filter::Compare {
+            left: Expression::Field { ref name },
+            op: Op::Gt,
+            right: Expression::Value { value: Value::Scalar { ref text, .. } },
             ..
-        }) if name == "session.cost" && text == "1"
+        } if name == "session.cost" && text == "1"
     ));
 }
 
@@ -202,6 +201,8 @@ fn values_outside_the_field_are_refused() {
         saved: &Default::default(),
         catalog: &crate::catalog::catalog(&[]),
         expanding: &[],
+        fields: &[],
+        kept: &Default::default(),
     };
     // The declared spelling is what the column holds, however it was written.
     assert!(matches!(
@@ -301,6 +302,8 @@ fn declared_annotation_request_field_precedes_request_object_refusal() {
         saved: &Default::default(),
         catalog: &crate::catalog::catalog(&[]),
         expanding: &[],
+        fields: &[],
+        kept: &Default::default(),
     };
     assert_eq!(
         binder
