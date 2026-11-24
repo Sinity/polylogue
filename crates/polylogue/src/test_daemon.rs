@@ -35,7 +35,8 @@ pub(crate) fn start_runtime(
     start_with_deployment(deployment, engine, mode)
 }
 
-/// Starts a fixture runtime and waits for its initial index build before status reads.
+/// Starts a fixture runtime and waits for its initial index build and the
+/// status snapshot read after it before status reads.
 fn start_with_deployment(
     deployment: Arc<crate::config::Config>,
     engine: Config,
@@ -50,7 +51,11 @@ fn start_with_deployment(
     )?;
     // Reads answer `index_building` until the loop's first pass installs the
     // index (docs/operations.md, Replacing an index from another schema).
-    while runtime.runs_loop() && runtime.daemon.archive.index_build().is_some() {
+    // Status then answers from the snapshot read after the install.
+    while runtime.runs_loop()
+        && (runtime.daemon.archive.index_build().is_some()
+            || !runtime.daemon.status_snapshot.is_read())
+    {
         std::thread::sleep(Duration::from_millis(5));
     }
     Ok(runtime)

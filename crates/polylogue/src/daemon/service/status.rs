@@ -99,6 +99,13 @@ impl StatusSnapshot {
         *self.0.locked() = None;
     }
 
+    /// Whether a snapshot has been read since the daemon started or the
+    /// last index build began.
+    #[cfg(test)]
+    pub(crate) fn is_read(&self) -> bool {
+        self.0.locked().is_some()
+    }
+
     fn latest(&self) -> Option<std::sync::Arc<Snapshot>> {
         self.0.locked().clone()
     }
