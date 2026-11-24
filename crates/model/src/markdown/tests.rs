@@ -65,7 +65,7 @@ fn code_never_supplies_reference_links() {
 fn footnotes_cite_with_the_first_straight_or_curly_quote() {
     let text = "One.[^one] Two.[^two]\n\n\
                 [^one]: “retained *words*” <span:message:codex:m#c=0-14>\n\
-                [^two]: <message:codex:other> \"after the reference\" and \"not this\"\n";
+                [^two]: <span:message:codex:other#c=0-5> \"after the reference\" and \"not this\"\n";
     assert_eq!(
         links(text).unwrap(),
         [
@@ -77,7 +77,7 @@ fn footnotes_cite_with_the_first_straight_or_curly_quote() {
             ),
             link(
                 LinkRole::Cites,
-                "message:codex:other",
+                "span:message:codex:other#c=0-5",
                 Some("after the reference"),
                 None,
             ),
