@@ -394,6 +394,10 @@ pub(crate) struct Compiler<'a> {
     definitions: Vec<Definition>,
     /// Top-level `since:`/`until:` bounds on the sessions, for measures.
     session_window: (Option<i64>, Option<i64>),
+    /// The programs of the `in (…)` queries this compiler lowered, by the
+    /// bound query, so a query a filter and its `--why` clause share is
+    /// lowered once.
+    lowered_queries: std::collections::HashMap<*const Bound, Program>,
     /// The last relation slot or step number given out, shared by every
     /// compiler of one query, so no two slots or steps share a name.
     slots: std::rc::Rc<std::cell::Cell<usize>>,
@@ -418,6 +422,7 @@ impl<'a> Compiler<'a> {
             similar_text: None,
             definitions: vec![],
             session_window: (None, None),
+            lowered_queries: Default::default(),
             slots: Default::default(),
         }
     }

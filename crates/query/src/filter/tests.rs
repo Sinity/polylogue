@@ -203,6 +203,7 @@ fn values_outside_the_field_are_refused() {
         expanding: &[],
         fields: &[],
         kept: &Default::default(),
+        typing: None,
     };
     // The declared spelling is what the column holds, however it was written.
     assert!(matches!(
@@ -304,6 +305,7 @@ fn declared_annotation_request_field_precedes_request_object_refusal() {
         expanding: &[],
         fields: &[],
         kept: &Default::default(),
+        typing: None,
     };
     assert_eq!(
         binder

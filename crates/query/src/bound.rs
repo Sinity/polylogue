@@ -143,7 +143,164 @@ impl RelationCondition {
 struct RelationScope<'s> {
     unit: Option<Unit>,
     fields: Option<&'s Scope>,
-    typing: Option<&'s Typing>,
+    typing: Option<&'s TypingAt<'s>>,
+}
+
+/// The shared binder's scopes and operand types for a whole question, and
+/// where in it each query nested in a condition or a stage sits, so a
+/// nested query is typed from them rather than bound again.
+pub struct QuestionTyping<'t> {
+    typing: &'t Typing,
+    nested: std::collections::HashMap<Nested, NodePath>,
+}
+
+/// A query nested in the question, by the position of the condition or
+/// stage holding it: positions in one text tell its nodes apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Nested {
+    Condition(usize, usize),
+    Stage(usize, usize),
+}
+
+impl Nested {
+    pub fn condition(span: Span) -> Self {
+        Self::Condition(span.start, span.end)
+    }
+    fn stage(span: Span) -> Self {
+        Self::Stage(span.start, span.end)
+    }
+}
+
+/// The shared binder's typing for one query: the question's typing read
+/// under the path of the query's root.
+pub struct TypingAt<'t> {
+    pub typing: &'t Typing,
+    pub base: NodePath,
+}
+
+impl TypingAt<'_> {
+    fn query(&self) -> Option<&query_language::scope::QueryScope> {
+        self.typing.query(&self.base)
+    }
+
+    fn operand(&self, path: &NodePath) -> Option<&query_language::scope::TypedOperand> {
+        let mut full = self.base.clone();
+        full.0.extend(path.0.iter().cloned());
+        self.typing.operand(&full)
+    }
+}
+
+impl<'t> QuestionTyping<'t> {
+    /// The typing of `query`, which the shared binder bound as `typing`.
+    pub fn new(query: &Query, typing: &'t Typing) -> Self {
+        let mut nested = std::collections::HashMap::new();
+        nested_queries(query, &NodePath::default(), &mut nested);
+        Self { typing, nested }
+    }
+
+    /// The typing of the query nested at `at`, if this question holds one.
+    pub fn at(&self, at: Nested) -> Option<TypingAt<'t>> {
+        self.nested.get(&at).map(|base| TypingAt {
+            typing: self.typing,
+            base: base.clone(),
+        })
+    }
+}
+
+/// Where each nested query sits, by the paths the shared binder's typing
+/// uses (query-language parse/typing.rs).
+fn nested_queries(
+    query: &Query,
+    path: &NodePath,
+    out: &mut std::collections::HashMap<Nested, NodePath>,
+) {
+    query_language::depth::deeper(|| {
+        match &query.source {
+            Source::Unit {
+                condition: Some(condition),
+                ..
+            }
+            | Source::Saved {
+                condition: Some(condition),
+                ..
+            }
+            | Source::Result {
+                condition: Some(condition),
+                ..
+            } => nested_in_condition(condition, &path.field("source").field("condition"), out),
+            _ => {}
+        }
+        for (index, attachment) in query.attach.iter().enumerate() {
+            for (window_index, window) in attachment.windows.iter().enumerate() {
+                if let Window::Where(condition) = window {
+                    let at = path
+                        .field("attach")
+                        .index(index)
+                        .field("windows")
+                        .index(window_index)
+                        .field("where");
+                    nested_in_condition(condition, &at, out);
+                }
+            }
+        }
+        for (index, transform) in query.transforms.iter().enumerate() {
+            let at = path.field("transforms").index(index).field("kind");
+            match &transform.kind {
+                TransformKind::Where { condition }
+                | TransformKind::Scope {
+                    condition: Some(condition),
+                    ..
+                } => nested_in_condition(condition, &at.field("condition"), out),
+                TransformKind::Combine { query, .. }
+                | TransformKind::Join { query, .. }
+                | TransformKind::Diff { query } => {
+                    let at = at.field("query");
+                    nested_queries(query, &at, out);
+                    out.insert(Nested::stage(transform.span), at);
+                }
+                _ => {}
+            }
+        }
+    })
+}
+
+fn nested_in_condition(
+    condition: &Condition,
+    path: &NodePath,
+    out: &mut std::collections::HashMap<Nested, NodePath>,
+) {
+    query_language::depth::deeper(|| {
+        let at = path.field("kind");
+        match &condition.kind {
+            ConditionKind::And { conditions } | ConditionKind::Or { conditions } => {
+                for (index, part) in conditions.iter().enumerate() {
+                    nested_in_condition(part, &at.field("conditions").index(index), out);
+                }
+            }
+            ConditionKind::Not { condition } => {
+                nested_in_condition(condition, &at.field("condition"), out)
+            }
+            ConditionKind::In { query, .. } | ConditionKind::Order { query, .. } => {
+                let at = at.field("query");
+                nested_queries(query, &at, out);
+                out.insert(Nested::condition(condition.span), at);
+            }
+            ConditionKind::Exists {
+                condition: Some(inner),
+                ..
+            }
+            | ConditionKind::Count {
+                condition: Some(inner),
+                ..
+            } => nested_in_condition(inner, &at.field("condition"), out),
+            ConditionKind::Sequence { steps, .. } => {
+                for (index, step) in steps.iter().enumerate() {
+                    nested_in_condition(step, &at.field("steps").index(index), out);
+                }
+            }
+            _ => {}
+        }
+    })
 }
 
 impl Bound {
@@ -152,11 +309,12 @@ impl Bound {
     /// binder bound it.
     pub fn of(
         query: Query,
-        typing: Option<&Typing>,
+        typing: Option<TypingAt<'_>>,
         binder: &Binder<'_>,
     ) -> Result<Bound, QueryError> {
         let selection = Selection::of(&query, binder)?;
-        let scope = typing.and_then(|typing| typing.query(&NodePath::default()));
+        let typing = typing.as_ref();
+        let scope = typing.and_then(TypingAt::query);
         let (first, mut unit) = match (&selection, &query.source) {
             (Some(selection), _) => (selection.relations_from, Some(selection.unit)),
             (None, Source::Result { reference, .. }) => {
@@ -224,9 +382,11 @@ impl Bound {
                 }
                 TransformKind::Combine { query, .. }
                 | TransformKind::Join { query, .. }
-                | TransformKind::Diff { query } => {
-                    StageBinding::Query(binder.nested_query(query).map(Box::new))
-                }
+                | TransformKind::Diff { query } => StageBinding::Query(
+                    binder
+                        .nested_query(query, Nested::stage(transform.span))
+                        .map(Box::new),
+                ),
                 TransformKind::Scope {
                     unit: target,
                     condition,
@@ -366,7 +526,9 @@ fn relation_condition(
                 at: *at,
                 scope: order_scope.clone(),
                 pick: pick.clone(),
-                query: binder.nested_query(query).map(Box::new),
+                query: binder
+                    .nested_query(query, Nested::condition(condition.span))
+                    .map(Box::new),
                 exposed: exposed.is_some_and(|exposed| std::ptr::eq(exposed, condition)),
             },
             ConditionKind::And { conditions } => RelationTest::All(parts(conditions)),

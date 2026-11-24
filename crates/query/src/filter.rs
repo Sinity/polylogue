@@ -41,6 +41,9 @@ pub struct Binder<'a> {
     pub fields: &'a [String],
     /// Kept results by ID: the unit a kept source's rows are.
     pub kept: &'a std::collections::BTreeMap<String, crate::Kept>,
+    /// The shared binder's typing of the question whose text this binds,
+    /// which types the queries nested in it.
+    pub typing: Option<&'a crate::bound::QuestionTyping<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -452,21 +455,43 @@ impl Binder<'_> {
         }
         Ok(Filter::In {
             field: field.clone(),
-            query: std::sync::Arc::new(self.nested_query(query)?),
+            query: std::sync::Arc::new(
+                self.nested_query(query, crate::bound::Nested::condition(span))?,
+            ),
             span,
         })
     }
 
-    /// A query inside this one, bound on its own after its inherited unit
-    /// was bound.
-    pub fn nested_query(&self, query: &Query) -> Result<Bound, QueryError> {
+    /// A query inside this one, standing at `at`, after its inherited unit
+    /// was bound. The question's typing types it; a query outside that
+    /// typing (in a saved body) is bound on its own, and so are the
+    /// queries inside it.
+    pub fn nested_query(
+        &self,
+        query: &Query,
+        at: crate::bound::Nested,
+    ) -> Result<Bound, QueryError> {
         let mut query = query.clone();
         if let Source::Unit { implicit, .. } = &mut query.source {
             *implicit = false;
         }
+        if let Some(typing) = self.typing.and_then(|typing| typing.at(at)) {
+            return Bound::of(query, Some(typing), self);
+        }
         let bound = query_language::bind::bind(&query, self.catalog)
             .map_err(|error| QueryError::language(error, self.text))?;
-        Bound::of(bound.query().clone(), Some(bound.typing()), self)
+        let typing = crate::bound::TypingAt {
+            typing: bound.typing(),
+            base: Default::default(),
+        };
+        Bound::of(
+            bound.query().clone(),
+            Some(typing),
+            &Binder {
+                typing: None,
+                ..*self
+            },
+        )
     }
 
     /// `query:NAME` over `unit`'s rows: a relation (a unit and conditions,
@@ -507,6 +532,7 @@ impl Binder<'_> {
             text: syntax,
             expanding: &expanding,
             fields: &[],
+            typing: None,
             ..*self
         };
         let (selected, condition) = match body.source {
