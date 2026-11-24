@@ -684,10 +684,10 @@ impl<'c> Work<'_, 'c> {
         }
         let tx = self.tx();
         latest_readings(all, |r| {
-            Ok(tx.exists(
+            tx.exists(
                 "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk=?1 AND chain>?2 AND status IN ('done','waiting'))",
                 params![r.input_pk, r.chain],
-            )?)
+            )
         })
     }
 

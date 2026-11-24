@@ -1637,7 +1637,6 @@ impl Inner {
         state.deferred.append(&mut late);
         state.sessions += sessions as u64;
         rows::finish_summaries(&tx, &changes, counter)?;
-        drop(context);
         tx.commit()?;
         text_transaction.commit();
         Ok(())
@@ -1791,10 +1790,7 @@ fn read_session(
     let bad = || StoreError::Invalid("a composition record is malformed".into());
     let mut pending: Option<(String, Vec<MessageReading>)> = None;
     let prefix = session.len() + 2;
-    loop {
-        let Some((key, value)) = merged.peek()? else {
-            break;
-        };
+    while let Some((key, value)) = merged.peek()? {
         if !of_session(key, session) {
             break;
         }
