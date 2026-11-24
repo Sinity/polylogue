@@ -1,8 +1,8 @@
 //! A standalone build of the index (docs/architecture.md, one path): every
 //! stored chain due a reading is read from its first byte, at the length the
 //! record holds when the build starts, by as many workers as the engine
-//! parses with. Each worker writes whole chains' readings into run files of
-//! its own ([`polylogue_store::writer::build::BuildRun`]); the writer then
+//! parses with. Each worker writes whole chains' readings into sorted runs
+//! of its own ([`polylogue_store::writer::build::BuildWorker`]); the writer then
 //! loads the runs, composes every session once, writes the indexes and
 //! search entries and installs the file. A request that arrives meanwhile
 //! is answered first: workers put their chains down at the next range and
@@ -11,7 +11,7 @@
 //! Upkeep brings the installed index forward from the build's position.
 use crate::plan::Plan;
 use crate::{Engine, EngineError, Pass, has_reading, pool};
-use polylogue_store::writer::build::{BuildPhase, BuildRun, PhaseClock};
+use polylogue_store::writer::build::{BuildPhase, BuildWorker, PhaseClock};
 use polylogue_store::{Change, InputKey};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -120,6 +120,8 @@ struct Prepare<'a> {
     chunk: u64,
     plans: Mutex<Receiver<Plan>>,
     next_run: AtomicU64,
+    /// Each worker's sort buffer.
+    sort_memory: usize,
     chains: AtomicU64,
     chains_read: AtomicU64,
     bytes: AtomicU64,
@@ -166,7 +168,7 @@ impl Prepare<'_> {
     /// Takes chains until none is left, writing each into the worker's
     /// current run and starting another once that one is full.
     fn work_until_failed(&self) -> Result<(), EngineError> {
-        let mut run: Option<(u64, BuildRun)> = None;
+        let mut run: Option<(u64, BuildWorker)> = None;
         loop {
             let plan = self.plans.lock().map_err(|_| EngineError::Stopped)?.recv();
             let Ok(mut plan) = plan else { break };
@@ -201,7 +203,10 @@ impl Prepare<'_> {
                 Ok(Some(reading)) => {
                     if run.is_none() {
                         let number = self.next_run.fetch_add(1, Ordering::Relaxed);
-                        run = Some((number, BuildRun::create(self.archive, number)?));
+                        run = Some((
+                            number,
+                            BuildWorker::create(self.archive, number, self.sort_memory)?,
+                        ));
                     }
                     let (_, current) = run.as_mut().expect("a run was opened");
                     current
@@ -233,23 +238,17 @@ impl Prepare<'_> {
             self.chains_read.fetch_add(1, Ordering::Relaxed);
             self.bytes_read.fetch_add(length, Ordering::Relaxed);
             self.progress();
-            if let Some((_, current)) = &run
-                && current.full()?
-            {
-                self.close(run.take())?;
-            }
         }
         self.close(run)
     }
 
-    fn close(&self, run: Option<(u64, BuildRun)>) -> Result<(), EngineError> {
-        if let Some((number, run)) = run
-            && let Some(path) = run.finish()?
-        {
+    fn close(&self, run: Option<(u64, BuildWorker)>) -> Result<(), EngineError> {
+        if let Some((number, run)) = run {
+            let paths = run.finish()?;
             self.runs
                 .lock()
                 .map_err(|_| EngineError::Stopped)?
-                .push((number, path));
+                .extend(paths.into_iter().map(|path| (number, path)));
         }
         Ok(())
     }
@@ -295,6 +294,7 @@ impl Engine {
             chunk: self.config.chunk.max(1),
             plans: Mutex::new(plans_rx),
             next_run: AtomicU64::new(saved.next_run),
+            sort_memory: (self.archive.memory_budget().total() / 4) as usize / workers,
             chains: AtomicU64::new(saved.chains),
             chains_read: AtomicU64::new(saved.chains_read),
             bytes: AtomicU64::new(saved.bytes),
