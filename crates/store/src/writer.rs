@@ -1614,6 +1614,7 @@ impl Inner {
             Ok(Some(false)) => self.build_job = Some(job),
             Ok(Some(true)) => job.finish(Ok(())),
             Ok(None) => job.finish(Err(StoreError::Stopped)),
+            Err(error) if job.installing => job.finish(Err(error)),
             Err(error) => {
                 let error = match self.restart_build() {
                     Ok(()) => error,

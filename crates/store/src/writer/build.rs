@@ -1079,7 +1079,10 @@ pub(super) struct BuildJob {
     indexes: Vec<(String, String)>,
     after_stream: Vec<String>,
     /// The full-text files, filled while the build composes.
-    search: Option<crate::text_rows::SearchFill>,
+    pub(super) search: Option<crate::text_rows::SearchFill>,
+    /// Set once the file is complete and being installed: a failure then
+    /// leaves it for a later finish, rather than discarding it.
+    pub(super) installing: bool,
 }
 
 enum Stage {
@@ -1150,6 +1153,7 @@ impl BuildJob {
             indexes: Vec::new(),
             after_stream: Vec::new(),
             search: None,
+            installing: false,
         }
     }
 
@@ -1362,6 +1366,7 @@ impl Inner {
                 }
             }
             Stage::Install => {
+                job.installing = true;
                 self.install_build()?;
                 self.search.ready();
                 self.commits
