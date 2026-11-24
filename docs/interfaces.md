@@ -244,7 +244,7 @@ The exit and HTTP table is the common `command-surface`'s, shared with Sinex; ea
 |---|---|
 | 0 | `ok` (rows, a measure, a completed step list) |
 | 1 | `empty`: the read succeeded and matched nothing |
-| 2 | invalid input: `invalid_query`, `unknown_field`, `bad_value`, `bad_request`, `not_a_verb`, `not_a_query`, `not_yet_available`, `ambiguous`, `needs_all` (a write or act over several query rows without `--all`), `row_numbers_off_terminal`, `stale_cursor`, `not_built` |
+| 2 | invalid input: `invalid_query`, `unknown_field`, `bad_value`, `bad_request`, `not_a_verb`, `too_many_words`, `not_a_query`, `not_yet_available`, `ambiguous`, `needs_all` (a write or act over several query rows without `--all`), `row_numbers_off_terminal`, `stale_cursor`, `not_built` |
 | 3 | `refused`, with the operation's stated reason (an interrupt of a session Polylogue does not host, a blind judgment on a reference) |
 | 4 | `not_found`, `conflict` (a stale base, a late answer, an archive lock another process holds), `io` (unreadable stored data as `store`, a corrupt blob as `blob_corrupt`), `internal` (a state no request can cause: a Polylogue bug, reported with the request ID) |
 | 5 | `degraded`: rows printed but part of what was needed missing, an operation that stopped early, or a write pending in primary mode |
