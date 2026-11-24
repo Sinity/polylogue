@@ -61,7 +61,7 @@ mod search;
 mod shown;
 mod staging;
 mod user_queue;
-pub use chain::ChainParse;
+pub use chain::{ChainParse, ChainSink};
 
 use crate::encoding::{PreparedDocument, PreparedMessage, block_text, unpack_block};
 pub use batch::{

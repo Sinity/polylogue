@@ -11,6 +11,7 @@
 //! Upkeep brings the installed index forward from the build's position.
 use crate::plan::Plan;
 use crate::{Engine, EngineError, Pass, has_reading, pool};
+use polylogue_store::writer::ChainSink as _;
 use polylogue_store::writer::build::{BuildPhase, BuildWorker, PhaseClock};
 use polylogue_store::{Change, InputKey};
 use std::path::PathBuf;
@@ -193,33 +194,41 @@ impl Prepare<'_> {
                 .admit(length.min(self.chunk) * PREPARED_PER_INPUT_BYTE, || {
                     self.archive.stop().is_cancelled()
                 })?;
+            if run.is_none() {
+                let number = self.next_run.fetch_add(1, Ordering::Relaxed);
+                run = Some((
+                    number,
+                    BuildWorker::create(self.archive, number, self.sort_memory)?,
+                ));
+            }
+            let (_, worker) = run.as_mut().expect("a worker was opened");
             let mut read = 0;
-            let reading = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                pool::run_chain(
-                    &mut plan,
-                    self.archive,
-                    self.blobs,
-                    &self.settings,
-                    None,
-                    &mut read,
-                )
-            }))
-            .unwrap_or_else(|_| Err(EngineError::Parse("the parser panicked".into())));
-            let written = match reading {
-                Ok(Some(reading)) => {
-                    if run.is_none() {
-                        let number = self.next_run.fetch_add(1, Ordering::Relaxed);
-                        run = Some((
-                            number,
-                            BuildWorker::create(self.archive, number, self.sort_memory)?,
-                        ));
+            // The chain's steps go into the worker's scratch index as they
+            // are parsed; an unfinished chain leaves nothing there.
+            let written = worker
+                .begin(&self.writer, &input, chain, length)
+                .map_err(EngineError::from)
+                .and_then(|mut open| {
+                    let complete = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        pool::read_chain(
+                            &mut plan,
+                            self.archive,
+                            self.blobs,
+                            &self.settings,
+                            &mut read,
+                            &mut open,
+                            |open, batch| open.decoded(batch),
+                        )
+                    }))
+                    .unwrap_or_else(|_| Err(EngineError::Parse("the parser panicked".into())))?;
+                    if complete {
+                        open.finish()?;
                     }
-                    let (_, current) = run.as_mut().expect("a run was opened");
-                    current
-                        .write(&self.writer, &input, chain, length, reading)
-                        .map_err(EngineError::from)
-                }
-                Ok(None) => {
+                    Ok(complete)
+                });
+            let written = match written {
+                Ok(true) => Ok(()),
+                Ok(false) => {
                     // The build yields to a request: the chain is planned
                     // again, since this plan has read part of it.
                     drop(admitted);

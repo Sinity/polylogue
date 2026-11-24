@@ -543,14 +543,7 @@ fn work(
                 }
                 let mut bytes_read = 0;
                 let reading = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_chain(
-                        &mut plan,
-                        archive,
-                        store,
-                        chains,
-                        Some(shared),
-                        &mut bytes_read,
-                    )
+                    run_chain(&mut plan, archive, store, chains, shared, &mut bytes_read)
                 }))
                 .unwrap_or_else(|_| {
                     Err(EngineError::Parse("the replacement parser panicked".into()))
@@ -799,22 +792,50 @@ fn flush(
         .is_ok()
 }
 
-/// Parses a stored chain end to end into a reading. Decoded bytes stay
-/// with the reading, counted against the pool's bytes in flight when the
-/// pool runs it (`shared`).
-pub(crate) fn run_chain(
+/// Parses a stored chain end to end into a reading staged for one
+/// replacement transaction. Decoded bytes stay with the reading, counted
+/// against the pool's bytes in flight.
+fn run_chain(
     plan: &mut Plan,
     archive: &Archive,
     blobs: &Arc<polylogue_store::blobs::Blobs>,
     settings: &ChainSettings,
-    shared: Option<&Arc<Shared>>,
+    shared: &Arc<Shared>,
     bytes_read: &mut u64,
 ) -> Result<Option<ChainParse>, EngineError> {
+    let mut reading = ChainParse::new()?;
+    let read = read_chain(
+        plan,
+        archive,
+        blobs,
+        settings,
+        bytes_read,
+        &mut reading,
+        |reading, batch| {
+            keep_decoded(reading, shared, batch);
+            Ok(())
+        },
+    )?;
+    Ok(read.then_some(reading))
+}
+
+/// Parses a stored chain end to end into `sink`, step by step; decoded
+/// bytes go to `keep` before the steps that name them. False when the read
+/// yields to a request before the chain's end.
+pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
+    plan: &mut Plan,
+    archive: &Archive,
+    blobs: &Arc<polylogue_store::blobs::Blobs>,
+    settings: &ChainSettings,
+    bytes_read: &mut u64,
+    sink: &mut S,
+    mut keep: impl FnMut(&mut S, PreparedBatch) -> polylogue_store::Result<()>,
+) -> Result<bool, EngineError> {
     let stop = archive.stop();
     let yielding = &settings.yielding;
     let stopped_attempt = &settings.stopped_attempt;
     if yielding.load(std::sync::atomic::Ordering::Acquire) {
-        return Ok(None);
+        return Ok(false);
     }
     if let Bytes::Unloaded {
         chain,
@@ -836,7 +857,6 @@ pub(crate) fn run_chain(
         };
     }
     polylogue_store::fault::check("reparse.prepare", &plan.input.id)?;
-    let mut reading = ChainParse::new()?;
     if let Some(polylogue_sources::Parse::Export(mut parser)) = (plan.origin.open)(&plan.path) {
         let read = crate::import::exports::parse_export(plan, &mut *parser, blobs, |mut item| {
             // A reading commits whole, so a yield drops what was
@@ -858,12 +878,8 @@ pub(crate) fn run_chain(
                 files.extend(file);
             }
             let (mut step, cursor) = item.into_parse(plan, blobs, stopped_attempt)?;
-            polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
-                reading.push(&mut step)
-            })?;
-            keep_decoded(
-                &mut reading,
-                shared,
+            keep(
+                sink,
                 PreparedBatch {
                     batch: Batch {
                         required_outcome: None,
@@ -881,14 +897,17 @@ pub(crate) fn run_chain(
                     },
                     files,
                 },
-            );
+            )?;
+            polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
+                sink.step(&mut step)
+            })?;
             Ok(cursor)
         });
         let read = match read {
             Err(EngineError::Stopped)
                 if !stop.is_cancelled() && yielding.load(std::sync::atomic::Ordering::Acquire) =>
             {
-                return Ok(None);
+                return Ok(false);
             }
             result => result?,
         };
@@ -903,7 +922,7 @@ pub(crate) fn run_chain(
         let mut names = None;
         while !plan.finished() {
             if yielding.load(std::sync::atomic::Ordering::Acquire) {
-                return Ok(None);
+                return Ok(false);
             }
             stop.check()?;
             let job = plan.next_job(stopped_attempt);
@@ -938,26 +957,20 @@ pub(crate) fn run_chain(
             let Some(mut batch) = batch else {
                 return Err(std::io::Error::other("a replacement returned no rows").into());
             };
-            for step in &mut batch.batch.parse {
+            let mut steps = std::mem::take(&mut batch.batch.parse);
+            keep(sink, batch)?;
+            for step in &mut steps {
                 polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
-                    reading.push(step)
+                    sink.step(step)
                 })?;
             }
-            batch.batch.parse = Vec::new();
-            keep_decoded(&mut reading, shared, batch);
             plan.apply(done, true);
         }
     }
-    Ok(Some(reading))
+    Ok(true)
 }
 
-fn keep_decoded(reading: &mut ChainParse, shared: Option<&Arc<Shared>>, mut batch: PreparedBatch) {
-    let Some(shared) = shared else {
-        if !batch.batch.blobs.is_empty() {
-            reading.decoded(batch);
-        }
-        return;
-    };
+fn keep_decoded(reading: &mut ChainParse, shared: &Arc<Shared>, mut batch: PreparedBatch) {
     if !batch.batch.blobs.is_empty() {
         // Decoded payloads are files; only their batch and chunk descriptors stay in memory.
         let bytes = (std::mem::size_of::<PreparedBatch>()

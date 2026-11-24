@@ -327,60 +327,38 @@ impl BuildWorker {
         })
     }
 
-    /// Writes a chain's reading, read from its first record to `length`,
-    /// and moves its rows into the worker's stream. Bytes its parse decoded
-    /// are stored first, through the writer.
-    pub fn write(
-        &mut self,
-        writer: &WriterSender,
+    /// Opens chain `chain` of `input`, read from its first record to
+    /// `length`: its steps go into the scratch index as they are parsed, in
+    /// one transaction, and [`OpenChain::finish`] moves its rows into the
+    /// worker's stream. Dropping it unfinished leaves nothing of the chain.
+    pub fn begin<'w>(
+        &'w mut self,
+        writer: &'w WriterSender,
         input: &InputKey,
         chain: i64,
         length: u64,
-        mut reading: ChainParse,
-    ) -> Result<()> {
+    ) -> Result<OpenChain<'w>> {
         crate::fault::check("index.build.prepare", &input.id)?;
-        reading.finish()?;
-        let decoded = reading.take_decoded();
-        if !decoded.is_empty() {
-            for result in writer.store_group(decoded, Arc::clone(&self.blobs))? {
-                result?;
-            }
-        }
-        let text_transaction = self.texts.transaction();
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-        super::chain::write_reading(
-            &tx,
-            super::chain::ReadingWrite {
-                register: &self.register,
-                texts: &self.texts,
-                counter: 1,
-                primary: false,
-                changes: &changes,
-            },
-            input,
+        Ok(OpenChain {
+            steps: super::chain::ChainSteps::new(input, chain, length),
+            changes,
+            register: &self.register,
+            texts: &self.texts,
+            tx,
+            input: input.id.clone(),
             chain,
-            length,
-            &reading,
-            &mut super::readings::Touched::default(),
-        )?;
-        drop(changes);
-        move_out(
-            &tx,
-            &mut Out {
+            writer,
+            blobs: &self.blobs,
+            out: Out {
                 sorter: &mut self.sorter,
                 tables: &self.tables,
                 number: self.number,
                 groups: &mut self.groups,
             },
-            &input.id,
-            chain,
-        )?;
-        tx.commit()?;
-        text_transaction.commit();
-        Ok(())
+            text_transaction: self.texts.transaction(),
+        })
     }
 
     /// Ends the worker; its runs, for the writer to load.
@@ -394,6 +372,72 @@ impl BuildWorker {
         conn.close().map_err(|(_, error)| error)?;
         crate::archive::index_build::remove_run(&scratch)?;
         Ok(sorter.finish()?)
+    }
+}
+
+/// A chain being read into a build worker's scratch index.
+pub struct OpenChain<'w> {
+    steps: super::chain::ChainSteps,
+    changes: crate::change_summary::ChangeSummary,
+    register: &'w Connection,
+    texts: &'w crate::text_rows::TextIds,
+    tx: Transaction<'w>,
+    input: String,
+    chain: i64,
+    writer: &'w WriterSender,
+    blobs: &'w Arc<crate::blobs::Blobs>,
+    out: Out<'w>,
+    text_transaction: crate::text_rows::TextTransaction<'w>,
+}
+
+impl super::chain::ChainSink for OpenChain<'_> {
+    fn step(&mut self, step: &mut ParseStep) -> Result<()> {
+        if step.prepared != Default::default() {
+            return Err(StoreError::Invalid(
+                "a chain reading needs complete parsed values".into(),
+            ));
+        }
+        if !step.output.blobs.is_empty() {
+            return Err(StoreError::Invalid(
+                "decoded bytes must be stored before their chain reading".into(),
+            ));
+        }
+        step.counts.check()?;
+        step.reset = self.steps.is_first();
+        step.prepare();
+        let w = super::chain::ReadingWrite {
+            register: self.register,
+            texts: self.texts,
+            counter: 1,
+            primary: false,
+            changes: &self.changes,
+        };
+        self.steps
+            .write(&self.tx, &w, step, &mut super::readings::Touched::default())
+    }
+
+    fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()> {
+        if !batch.batch.blobs.is_empty() {
+            for result in self
+                .writer
+                .store_group(vec![batch], Arc::clone(self.blobs))?
+            {
+                result?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl OpenChain<'_> {
+    /// Ends the chain: moves its rows into the worker's stream and clears
+    /// the scratch index.
+    pub fn finish(mut self) -> Result<()> {
+        self.steps.finish()?;
+        move_out(&self.tx, &mut self.out, &self.input, self.chain)?;
+        self.tx.commit()?;
+        self.text_transaction.commit();
+        Ok(())
     }
 }
 
