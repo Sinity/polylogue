@@ -461,5 +461,27 @@ pub enum QueryEdge {
     In { query: QuestionId },
 }
 
+stored_names! {
+    /// How a question uses what an edge names: the `how` of a [`QueryEdge`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum QueryEdgeKind {
+        Saved => "saved",
+        Result => "result",
+        Combine => "combine",
+        In => "in",
+    }
+}
+
+impl QueryEdge {
+    pub fn kind(&self) -> QueryEdgeKind {
+        match self {
+            Self::Saved { .. } => QueryEdgeKind::Saved,
+            Self::Result { .. } => QueryEdgeKind::Result,
+            Self::Combine { .. } => QueryEdgeKind::Combine,
+            Self::In { .. } => QueryEdgeKind::In,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

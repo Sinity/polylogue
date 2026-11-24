@@ -60,6 +60,9 @@ enum Cli {
     },
     /// Return to the commit of polylogue-sinex-common that Cargo.lock pinned.
     UnlinkCommon,
+    /// Write the browser extension's provider table
+    /// (`extension/src/background/providers.js`) from the origin registry.
+    ExtensionProviders,
     #[command(flatten)]
     Shared(devkit::cli::Command),
 }
@@ -245,6 +248,32 @@ fn run(command: &str, args: &[String], steps: impl FnOnce(&mut Run) -> devkit::R
     run.finish()
 }
 
+/// The extension module is the registry example's output, written whole.
+fn extension_providers() -> Result<(), String> {
+    let output = devkit::cargo_command()
+        .args([
+            "run",
+            "--locked",
+            "--quiet",
+            "-p",
+            "polylogue-sources",
+            "--example",
+            "extension_providers",
+        ])
+        .output()
+        .map_err(|error| format!("cargo run: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "the registry example failed ({}):\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../extension/src/background/providers.js");
+    std::fs::write(&path, &output.stdout).map_err(|error| format!("{}: {error}", path.display()))
+}
+
 fn exit_code(result: Result<(), String>) -> ExitCode {
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -329,6 +358,7 @@ fn main() -> ExitCode {
         Cli::Bench(command) => bench::execute(command),
         Cli::LinkCommon { checkout } => exit_code(common_link::link(checkout)),
         Cli::UnlinkCommon => exit_code(common_link::unlink()),
+        Cli::ExtensionProviders => exit_code(extension_providers()),
         Cli::Shared(command) => devkit::cli::execute("polylogue", command),
     }
 }

@@ -64,67 +64,44 @@ pub enum Block {
     },
 }
 
-/// A block's alternate without its contents: what the index stores as the
-/// block's kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum BlockKind {
-    Text,
-    Thinking,
-    ToolCall,
-    ToolResult,
-    Image,
-    File,
-    Other,
+stored_names! {
+    /// A block's alternate without its contents: what the index stores as the
+    /// block's kind.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum BlockKind {
+        Text => "text",
+        Thinking => "thinking",
+        ToolCall => "tool_call",
+        ToolResult => "tool_result",
+        Image => "image",
+        File => "file",
+        Other => "other",
+    }
 }
 
-stored_names!(BlockKind {
-    Text => "text",
-    Thinking => "thinking",
-    ToolCall => "tool_call",
-    ToolResult => "tool_result",
-    Image => "image",
-    File => "file",
-    Other => "other",
-});
-
-/// What a tool call does. Each origin's parser maps its own tool names to
-/// one of these; everything after the parser reads only the action.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize, schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum ToolAction {
-    /// Runs a shell command; `command` holds it.
-    Shell,
-    /// Runs code in a sandbox (a Python cell, a code-mode script).
-    Code,
-    FileRead,
-    FileWrite,
-    FileEdit,
-    /// Searches files, symbols or tools.
-    Search,
-    Web,
-    /// Starts another agent.
-    Subagent,
-    /// A tool an MCP server provides.
-    Mcp,
-    #[default]
-    Other,
+stored_names! {
+    /// What a tool call does. Each origin's parser maps its own tool names to
+    /// one of these; everything after the parser reads only the action.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub enum ToolAction {
+        /// Runs a shell command; `command` holds it.
+        Shell => "shell",
+        /// Runs code in a sandbox (a Python cell, a code-mode script).
+        Code => "code",
+        FileRead => "file_read",
+        FileWrite => "file_write",
+        FileEdit => "file_edit",
+        /// Searches files, symbols or tools.
+        Search => "search",
+        Web => "web",
+        /// Starts another agent.
+        Subagent => "subagent",
+        /// A tool an MCP server provides.
+        Mcp => "mcp",
+        #[default]
+        Other => "other",
+    }
 }
-
-stored_names!(ToolAction {
-    Shell => "shell",
-    Code => "code",
-    FileRead => "file_read",
-    FileWrite => "file_write",
-    FileEdit => "file_edit",
-    Search => "search",
-    Web => "web",
-    Subagent => "subagent",
-    Mcp => "mcp",
-    Other => "other",
-});
 
 impl ToolAction {
     /// Whether a call of this action edits files or runs a command: the calls
@@ -192,23 +169,17 @@ pub enum ToolOutcome {
     },
 }
 
-/// A tool call's outcome as stored and queried: `pending` is a call with
-/// no result while the harness reports it running, decided when read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum CallOutcome {
-    Ok,
-    Error,
-    Pending,
-    Unknown,
+stored_names! {
+    /// A tool call's outcome as stored and queried: `pending` is a call with
+    /// no result while the harness reports it running, decided when read.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum CallOutcome {
+        Ok => "ok",
+        Error => "error",
+        Pending => "pending",
+        Unknown => "unknown",
+    }
 }
-
-stored_names!(CallOutcome {
-    Ok => "ok",
-    Error => "error",
-    Pending => "pending",
-    Unknown => "unknown",
-});
 
 impl ToolOutcome {
     /// The stored outcome; never `pending`, which only a read decides.

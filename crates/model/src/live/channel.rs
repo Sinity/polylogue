@@ -34,41 +34,35 @@ pub enum Act {
     Resume,
 }
 
-/// How an act reaches a session.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Channel {
-    /// A control connection Polylogue holds (a hosted session).
-    Protocol,
-    /// The harness's next context-accepting hook event, through the
-    /// mailbox; for an answer, its synchronous permission hook.
-    Hook,
-    /// A headless run of the harness's own resume command.
-    Resume,
+stored_names! {
+    /// How an act reaches a session.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Channel {
+        /// A control connection Polylogue holds (a hosted session).
+        Protocol => "protocol",
+        /// The harness's next context-accepting hook event, through the
+        /// mailbox; for an answer, its synchronous permission hook.
+        Hook => "hook",
+        /// A headless run of the harness's own resume command.
+        Resume => "resume",
+    }
 }
 
-stored_names!(Channel { Protocol => "protocol", Hook => "hook", Resume => "resume" });
-
-/// The control protocol a hosted session of a harness runs on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum HostProtocol {
-    /// Codex's shared app-server (JSON-RPC over its control socket): the
-    /// app-server keeps the thread, so Polylogue reconnects to it.
-    CodexAppServer,
-    /// Claude Code's `--print` stream-json input and output with control
-    /// requests, held by a `polylogue internal host` process.
-    ClaudeStreamJson,
-    /// The Agent Client Protocol over stdio, held by a `polylogue internal host`
-    /// process.
-    Acp,
+stored_names! {
+    /// The control protocol a hosted session of a harness runs on.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum HostProtocol {
+        /// Codex's shared app-server (JSON-RPC over its control socket): the
+        /// app-server keeps the thread, so Polylogue reconnects to it.
+        CodexAppServer => "codex_app_server",
+        /// Claude Code's `--print` stream-json input and output with control
+        /// requests, held by a `polylogue internal host` process.
+        ClaudeStreamJson => "claude_stream_json",
+        /// The Agent Client Protocol over stdio, held by a `polylogue internal host`
+        /// process.
+        Acp => "acp",
+    }
 }
-
-stored_names!(HostProtocol {
-    CodexAppServer => "codex_app_server",
-    ClaudeStreamJson => "claude_stream_json",
-    Acp => "acp",
-});
 
 impl HostProtocol {
     /// Whether the agent's stdio must be held by a `polylogue internal host`

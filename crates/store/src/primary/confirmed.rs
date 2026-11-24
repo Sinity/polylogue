@@ -1,8 +1,9 @@
 //! The primary cache applies complete confirmed positions, never producer acknowledgments.
-pub(crate) const SCHEMA: &str = concat!("
+pub(crate) static SCHEMA: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    crate::schema::with_names(concat!("
 CREATE TABLE confirmed_event (
  event TEXT PRIMARY KEY, committed INTEGER NOT NULL, changed INTEGER NOT NULL, source_order INTEGER NOT NULL,
- state TEXT NOT NULL CHECK(state IN ('live','archived','tombstoned')),
+ state TEXT NOT NULL CHECK(state IN (@names(ConfirmedState))),
  product BLOB, input TEXT, chain INTEGER, reference TEXT, kind TEXT NOT NULL, step_start INTEGER, step_end INTEGER, parse_version TEXT, session TEXT, sinex_context BLOB, value_hash BLOB, material TEXT, record_hash TEXT, sinex_kind TEXT
 ) STRICT;
 CREATE INDEX confirmed_event_chain ON confirmed_event(input,chain,committed,event);
@@ -31,10 +32,12 @@ CREATE TABLE source_material (
 ) STRICT;
 CREATE INDEX source_material_identity ON source_material(id);
 CREATE INDEX source_material_place ON source_material(input,chain,offset);
-", include_str!("confirmed/reference_index.sql"));
+", include_str!("confirmed/reference_index.sql")))
+});
 
 use super::{Confirmed, ConfirmedChange, Material, Product};
 use crate::ConnExt as _;
+use crate::encoding::Columns as _;
 mod replay;
 use crate::{Result, StoreError};
 pub(crate) use replay::save as save_replay;
@@ -133,13 +136,22 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     tx.commit()?;
     Ok(())
 }
+polylogue_model::stored_names! {
+    /// A confirmed event's lifecycle state in the primary cache.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum ConfirmedState {
+        Live => "live",
+        Archived => "archived",
+        Tombstoned => "tombstoned",
+    }
+}
 #[derive(Clone)]
 struct ConfirmedEventRow {
     event: String,
     committed: i64,
     changed: i64,
     order: i64,
-    state: String,
+    state: ConfirmedState,
     product: Option<Vec<u8>>,
     input: Option<String>,
     chain: Option<i64>,
@@ -162,7 +174,7 @@ impl ConfirmedEventRow {
             committed: row.get(1)?,
             changed: row.get(2)?,
             order: row.get(3)?,
-            state: row.get(4)?,
+            state: row.name(4)?,
             product: row.get(5)?,
             input: row.get(6)?,
             chain: row.get(7)?,
@@ -180,7 +192,7 @@ impl ConfirmedEventRow {
         })
     }
     fn insert(&self, index: &Connection, table: &str) -> Result<()> {
-        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,committed,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,parse_version,session,sinex_context,value_hash,material,record_hash,sinex_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),params![self.event,self.committed,self.changed,self.order,self.state,self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session,self.sinex_context,self.value_hash,self.material,self.record_hash,self.sinex_kind])?;
+        index.execute(&format!("INSERT OR REPLACE INTO {table}(event,committed,changed,source_order,state,product,input,chain,reference,kind,step_start,step_end,parse_version,session,sinex_context,value_hash,material,record_hash,sinex_kind) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)"),params![self.event,self.committed,self.changed,self.order,self.state.as_str(),self.product,self.input,self.chain,self.reference,self.kind,self.start,self.end,self.version,self.session,self.sinex_context,self.value_hash,self.material,self.record_hash,self.sinex_kind])?;
         Ok(())
     }
     fn tombstoned(event: String, position: i64, order: i64) -> Self {
@@ -189,7 +201,7 @@ impl ConfirmedEventRow {
             committed: position,
             changed: position,
             order,
-            state: "tombstoned".into(),
+            state: ConfirmedState::Tombstoned,
             product: None,
             input: None,
             chain: None,
@@ -209,7 +221,7 @@ impl ConfirmedEventRow {
     // The delivered event has lifecycle identity even when its body is unavailable.
     fn unreadable(event: String, position: i64, order: i64) -> Self {
         let mut row = Self::tombstoned(event, position, order);
-        row.state = "live".into();
+        row.state = ConfirmedState::Live;
         row.kind = "refused".into();
         row
     }
@@ -313,7 +325,7 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
             ConfirmedChange::Live(product) => {
                 let bytes = packed(&product)?;
                 if let Some(old) = &old {
-                    if old.state == "tombstoned" {
+                    if old.state == ConfirmedState::Tombstoned {
                         return Err(StoreError::Invalid(
                             "a tombstoned Sinex event cannot become live".into(),
                         ));
@@ -359,7 +371,7 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
                     committed: old.as_ref().map_or(position, |f| f.committed),
                     changed: position,
                     order,
-                    state: "live".into(),
+                    state: ConfirmedState::Live,
                     product: Some(bytes),
                     input,
                     chain,
@@ -377,16 +389,16 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
                 })
             }
             ConfirmedChange::Archived => old.map(|mut row| {
-                row.state = "archived".into();
+                row.state = ConfirmedState::Archived;
                 row.changed = position;
                 row
             }),
             ConfirmedChange::Restored => match old {
                 Some(mut row)
-                    if row.state != "tombstoned"
+                    if row.state != ConfirmedState::Tombstoned
                         && (row.product.is_some() || row.kind == "refused") =>
                 {
-                    row.state = "live".into();
+                    row.state = ConfirmedState::Live;
                     row.changed = position;
                     Some(row)
                 }
@@ -400,7 +412,7 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
             // An event erased before this index read it is recorded as tombstoned.
             ConfirmedChange::Tombstoned => Some(match old {
                 Some(mut row) => {
-                    row.state = "tombstoned".into();
+                    row.state = ConfirmedState::Tombstoned;
                     row.product = None;
                     row.changed = position;
                     row
@@ -664,9 +676,9 @@ fn sources(tx: &rusqlite::Transaction<'_>, plan: &Plan) -> Result<()> {
     while let Some(row) = rows.next()? {
         let event: String = row.get(0)?;
         let bytes: Option<Vec<u8>> = row.get(1)?;
-        let state: String = row.get(2)?;
+        let state: ConfirmedState = row.name(2)?;
         tx.execute("DELETE FROM source_material WHERE event=?1", [&event])?;
-        if state == "live"
+        if state == ConfirmedState::Live
             && let Some(bytes) = bytes
         {
             store_material(tx, &event, &unpacked(&bytes)?)?;

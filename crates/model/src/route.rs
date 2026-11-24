@@ -4,49 +4,28 @@
 //! routes).
 
 use crate::{Message, Role};
-use serde::{Deserialize, Serialize};
 
-/// How an input's reading of a conversation reached the archive.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Route {
-    /// The tool's own file or database, where the tool writes it.
-    Live,
-    /// The provider's own data for one conversation, fetched as it is shown:
-    /// the browser extension's capture of the page's data, a Drive revision.
-    Capture,
-    /// Records Polylogue's own hooks, process watcher and collectors write.
-    Recorded,
-    /// A provider export brought in with `polylogue import`.
-    Export,
-    /// A copy another program or archive made of a reading: an imported
-    /// tool file, a Polylogue bundle, an older archive.
-    Copy,
-    /// Text read from the page instead of the provider's data: partial
-    /// fidelity, outranked by every other route for every field.
-    PageText,
+stored_names! {
+    /// How an input's reading of a conversation reached the archive.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Route {
+        /// The tool's own file or database, where the tool writes it.
+        Live => "live",
+        /// The provider's own data for one conversation, fetched as it is shown:
+        /// the browser extension's capture of the page's data, a Drive revision.
+        Capture => "capture",
+        /// Records Polylogue's own hooks, process watcher and collectors write.
+        Recorded => "recorded",
+        /// A provider export brought in with `polylogue import`.
+        Export => "export",
+        /// A copy another program or archive made of a reading: an imported
+        /// tool file, a Polylogue bundle, an older archive.
+        Copy => "copy",
+        /// Text read from the page instead of the provider's data: partial
+        /// fidelity, outranked by every other route for every field.
+        PageText => "page_text",
+    }
 }
-
-stored_names!(Route {
-    Live => "live",
-    Capture => "capture",
-    Recorded => "recorded",
-    Export => "export",
-    Copy => "copy",
-    PageText => "page_text",
-});
 
 /// Origins whose export lists every conversation of the account, so a
 /// conversation a newer export lacks is gone upstream.
@@ -75,48 +54,27 @@ impl Route {
     }
 }
 
-/// The fields of a message that are taken together from one route.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum FieldGroup {
-    /// Role, prompt kind, blocks and the message's provider fields.
-    /// The route that supplies them is the message's main route: its
-    /// version is the stored reading.
-    Content,
-    /// The provider time and its accuracy.
-    Time,
-    Model,
-    /// Token usage, the reported cost and the reported duration.
-    Usage,
-    /// The stop reason.
-    Stop,
-    /// The message this one replies to.
-    Parent,
-    /// How the harness produced the message.
-    Production,
+stored_names! {
+    /// The fields of a message that are taken together from one route.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum FieldGroup {
+        /// Role, prompt kind, blocks and the message's provider fields.
+        /// The route that supplies them is the message's main route: its
+        /// version is the stored reading.
+        Content => "content",
+        /// The provider time and its accuracy.
+        Time => "time",
+        Model => "model",
+        /// Token usage, the reported cost and the reported duration.
+        Usage => "usage",
+        /// The stop reason.
+        Stop => "stop",
+        /// The message this one replies to.
+        Parent => "parent",
+        /// How the harness produced the message.
+        Production => "production",
+    }
 }
-
-stored_names!(FieldGroup {
-    Content => "content",
-    Time => "time",
-    Model => "model",
-    Usage => "usage",
-    Stop => "stop",
-    Parent => "parent",
-    Production => "production",
-});
 
 impl FieldGroup {
     /// The route precedence for this group: lower ranks first. Every origin
@@ -187,38 +145,21 @@ impl FieldGroup {
     }
 }
 
-/// Whether a reading's message is finished. Between two readings of the
-/// same route, a finished one wins over one of unknown completion, which
-/// wins over one still being produced.
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    Serialize,
-    Deserialize,
-    schemars::JsonSchema,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum Completion {
-    Finished,
-    /// The source does not say: an assistant message without a stop reason
-    /// from an origin that does not record one.
-    Unknown,
-    /// An assistant message without a stop reason from an origin that
-    /// records one when a response ends.
-    InProgress,
+stored_names! {
+    /// Whether a reading's message is finished. Between two readings of the
+    /// same route, a finished one wins over one of unknown completion, which
+    /// wins over one still being produced.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Completion {
+        Finished => "finished",
+        /// The source does not say: an assistant message without a stop reason
+        /// from an origin that does not record one.
+        Unknown => "unknown",
+        /// An assistant message without a stop reason from an origin that
+        /// records one when a response ends.
+        InProgress => "in_progress",
+    }
 }
-
-stored_names!(Completion {
-    Finished => "finished",
-    Unknown => "unknown",
-    InProgress => "in_progress",
-});
 
 /// Origins whose finished assistant messages always carry a stop reason.
 const RECORDS_STOP_REASON: &[&str] = &["claude-code", "claude-ai", "ai-studio", "hermes"];

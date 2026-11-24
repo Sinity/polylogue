@@ -277,18 +277,6 @@ fn coverage_status(wire: CoverageStatus, parser: Option<&str>) -> CoverageStatus
     }
 }
 
-fn name_of(status: CoverageStatus) -> &'static str {
-    match status {
-        CoverageStatus::Complete => "complete",
-        CoverageStatus::Incomplete => "incomplete",
-        CoverageStatus::Partial => "partial",
-        CoverageStatus::Unreadable => "unreadable",
-        CoverageStatus::Refused => "refused",
-        CoverageStatus::NoParserYet => "no_parser_yet",
-        CoverageStatus::Failed => "failed",
-        CoverageStatus::Unknown => "unknown",
-    }
-}
 fn latest_occurrence(drift: &Drift) -> i64 {
     drift
         .compared_with
@@ -421,7 +409,9 @@ fn register(conn: &Connection) -> Result<()> {
         let json: String = ctx.get(0)?;
         let reading: Reading = serde_json::from_str(&json).map_err(error)?;
         let parser: Option<String> = ctx.get(1)?;
-        Ok(name_of(coverage_status(reading.status(), parser.as_deref())).to_owned())
+        Ok(coverage_status(reading.status(), parser.as_deref())
+            .as_str()
+            .to_owned())
     })?;
     Ok(())
 }

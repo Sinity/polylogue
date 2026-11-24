@@ -66,37 +66,25 @@ pub struct MicrocompactionBoundary {
     pub removed_attachments: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum LinkKind {
-    Spawn,
-    Fork,
-    Continuation,
-    Resume,
-    Reference,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum LinkKind {
+        Spawn => "spawn",
+        Fork => "fork",
+        Continuation => "continuation",
+        Resume => "resume",
+        Reference => "reference",
+    }
 }
 
-stored_names!(LinkKind {
-    Spawn => "spawn",
-    Fork => "fork",
-    Continuation => "continuation",
-    Resume => "resume",
-    Reference => "reference",
-});
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ReferenceReason {
-    Briefing,
-    Send,
-    Mention,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum ReferenceReason {
+        Briefing => "briefing",
+        Send => "send",
+        Mention => "mention",
+    }
 }
-
-stored_names!(ReferenceReason {
-    Briefing => "briefing",
-    Send => "send",
-    Mention => "mention",
-});
 
 pub static LINK_KIND_NAMES: &[&str] = LinkKind::NAMES;
 pub static LINK_HOW_NAMES: &[&str] = ReferenceReason::NAMES;

@@ -321,37 +321,23 @@ pub enum ThinkingContent {
     Text { text: String },
     Absent { blocks: u64 },
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum IndicatorKind {
-    Continues,
-    Branches,
-    Compacted,
-    Microcompacted,
-    RateLimited,
-    ModelSwitch,
-    AwaySummary,
-    Harness,
-    Turn,
-    LinkIssue,
-    Stale,
-    Alternate,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum IndicatorKind {
+        Continues => "continues",
+        Branches => "branches",
+        Compacted => "compacted",
+        Microcompacted => "microcompacted",
+        RateLimited => "rate_limited",
+        ModelSwitch => "model_switch",
+        AwaySummary => "away_summary",
+        Harness => "harness",
+        Turn => "turn",
+        LinkIssue => "link_issue",
+        Stale => "stale",
+        Alternate => "alternate",
+    }
 }
-
-stored_names!(IndicatorKind {
-    Continues => "continues",
-    Branches => "branches",
-    Compacted => "compacted",
-    Microcompacted => "microcompacted",
-    RateLimited => "rate_limited",
-    ModelSwitch => "model_switch",
-    AwaySummary => "away_summary",
-    Harness => "harness",
-    Turn => "turn",
-    LinkIssue => "link_issue",
-    Stale => "stale",
-    Alternate => "alternate",
-});
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -564,28 +550,19 @@ pub struct Coverage {
     pub omitted: u64,
     pub accepted_views: Vec<View>,
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TargetKind {
-    Session,
-    Message,
-    Block,
-    Document,
-    TextFragment,
-    Event,
-    Authored,
-    Query,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TargetKind {
+        Session => "session",
+        Message => "message",
+        Block => "block",
+        Document => "document",
+        TextFragment => "text_fragment",
+        Event => "event",
+        Authored => "authored",
+        Query => "query",
+    }
 }
-stored_names!(TargetKind {
-    Session => "session",
-    Message => "message",
-    Block => "block",
-    Document => "document",
-    TextFragment => "text_fragment",
-    Event => "event",
-    Authored => "authored",
-    Query => "query",
-});
 /// A bounded page. Full reads emit the same parts without collecting a session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]

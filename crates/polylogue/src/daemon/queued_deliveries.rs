@@ -201,7 +201,7 @@ fn submit(
 ) -> Result<(), StoreError> {
     prune(state);
     if let polylogue_model::user::UserWrite::Deliver(delivery) = &request.write
-        && delivery.event == polylogue_model::DeliveryEvent::Advice.as_str()
+        && delivery.event == polylogue_model::DeliveryEvent::Advice
         && let Some(recipient) = &delivery.recipient_id
     {
         state.advice.insert(
@@ -230,7 +230,7 @@ fn submit(
     let brief = matches!(
         &request.write,
         polylogue_model::user::UserWrite::Deliver(delivery)
-            if crate::brief::BRIEF_EVENTS.contains(&delivery.event.as_str())
+            if crate::brief::BRIEF_EVENTS.contains(&delivery.event)
     );
     let recipient = recipient.filter(|_| brief).map(|(recipient, brief)| {
         state.latest.insert(

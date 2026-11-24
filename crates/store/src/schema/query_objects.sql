@@ -12,7 +12,7 @@ CREATE INDEX query_commit_seq ON query(commit_seq,hash);
 CREATE TABLE query_edge (
     query TEXT NOT NULL REFERENCES query(hash),
     uses TEXT NOT NULL,
-    how TEXT NOT NULL CHECK(how IN ('saved','result','combine','in')),
+    how TEXT NOT NULL CHECK(how IN (@names(QueryEdgeKind))),
     edge BLOB NOT NULL,
     PRIMARY KEY(query,uses,how)
 ) STRICT, WITHOUT ROWID;

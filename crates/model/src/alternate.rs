@@ -4,43 +4,28 @@
 use crate::{Author, BlobHash, Timestamp};
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AlternateKind {
-    Translation,
-    Transliteration,
-    Simplification,
-    Summary,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AlternateKind {
+        Translation => "translation",
+        Transliteration => "transliteration",
+        Simplification => "simplification",
+        Summary => "summary",
+    }
 }
 
-stored_names!(AlternateKind {
-    Translation => "translation",
-    Transliteration => "transliteration",
-    Simplification => "simplification",
-    Summary => "summary",
-});
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AlternateRelation {
-    Translates,
-    Transliterates,
-    Simplifies,
-    Summarizes,
-    Omits,
-    Expands,
-    Reorders,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AlternateRelation {
+        Translates => "translates",
+        Transliterates => "transliterates",
+        Simplifies => "simplifies",
+        Summarizes => "summarizes",
+        Omits => "omits",
+        Expands => "expands",
+        Reorders => "reorders",
+    }
 }
-
-stored_names!(AlternateRelation {
-    Translates => "translates",
-    Transliterates => "transliterates",
-    Simplifies => "simplifies",
-    Summarizes => "summarizes",
-    Omits => "omits",
-    Expands => "expands",
-    Reorders => "reorders",
-});
 
 /// One revision. Parts stream independently so an alternate of a large
 /// session never requires a session-sized collection.

@@ -11,17 +11,14 @@ use crate::{DocumentId, IdError, MessageId, RunId, SessionId};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum SpanUnit {
-    Bytes,
-    CodePoints,
-    Utf16,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    pub enum SpanUnit {
+        Bytes => "b",
+        CodePoints => "c",
+        Utf16 => "u16",
+    }
 }
-stored_names!(SpanUnit {
-    Bytes => "b",
-    CodePoints => "c",
-    Utf16 => "u16",
-});
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RevisionReference {

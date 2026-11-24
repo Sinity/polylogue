@@ -832,7 +832,7 @@ impl Reader<'_> {
         }
         let state = match contexts.as_slice() {
             [] => AttachmentState::Unknown,
-            [one] => one.state.clone(),
+            [one] => one.state,
             _ => AttachmentState::Ambiguous,
         };
         Ok(BindingContexts {

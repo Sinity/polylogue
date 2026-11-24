@@ -75,6 +75,21 @@ pub enum ParseProgress {
     Failed { error: String, length: u64 },
 }
 
+stored_names! {
+    /// The stored status word of a [`ParseProgress`]: its variant without
+    /// the length or reason.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ParseStatus {
+        Parsing => "parsing",
+        Waiting => "waiting",
+        Done => "done",
+        NoParserYet => "no_parser_yet",
+        Partial => "partial",
+        Refused => "refused",
+        Failed => "failed",
+    }
+}
+
 impl ParseProgress {
     /// The standing after a normal step over a chain of `length` stored bytes.
     pub fn after(step: StepProgress, parsed_upto: u64, length: u64) -> Self {
@@ -92,14 +107,18 @@ impl ParseProgress {
 
     /// The stored status word.
     pub fn status(&self) -> &'static str {
+        self.kind().as_str()
+    }
+
+    pub fn kind(&self) -> ParseStatus {
         match self {
-            Self::Parsing => "parsing",
-            Self::Waiting { .. } => "waiting",
-            Self::Done => "done",
-            Self::NoParserYet => "no_parser_yet",
-            Self::Partial => "partial",
-            Self::Refused { .. } => "refused",
-            Self::Failed { .. } => "failed",
+            Self::Parsing => ParseStatus::Parsing,
+            Self::Waiting { .. } => ParseStatus::Waiting,
+            Self::Done => ParseStatus::Done,
+            Self::NoParserYet => ParseStatus::NoParserYet,
+            Self::Partial => ParseStatus::Partial,
+            Self::Refused { .. } => ParseStatus::Refused,
+            Self::Failed { .. } => ParseStatus::Failed,
         }
     }
 
@@ -134,15 +153,19 @@ impl ParseProgress {
         at_length: Option<u64>,
         reason: Option<String>,
     ) -> Result<Self, String> {
-        Ok(match (status, at_length, reason) {
-            ("parsing", None, None) => Self::Parsing,
-            ("waiting", Some(length), None) => Self::Waiting { length },
-            ("done", None, None) => Self::Done,
-            ("no_parser_yet", None, None) => Self::NoParserYet,
-            ("partial", None, None) => Self::Partial,
-            ("refused", Some(length), Some(reason)) => Self::Refused { reason, length },
-            ("failed", Some(length), Some(error)) => Self::Failed { error, length },
-            (status, at_length, reason) => {
+        Ok(match (ParseStatus::from_name(status), at_length, reason) {
+            (Some(ParseStatus::Parsing), None, None) => Self::Parsing,
+            (Some(ParseStatus::Waiting), Some(length), None) => Self::Waiting { length },
+            (Some(ParseStatus::Done), None, None) => Self::Done,
+            (Some(ParseStatus::NoParserYet), None, None) => Self::NoParserYet,
+            (Some(ParseStatus::Partial), None, None) => Self::Partial,
+            (Some(ParseStatus::Refused), Some(length), Some(reason)) => {
+                Self::Refused { reason, length }
+            }
+            (Some(ParseStatus::Failed), Some(length), Some(error)) => {
+                Self::Failed { error, length }
+            }
+            (_, at_length, reason) => {
                 return Err(format!(
                     "parse status {status:?} at length {at_length:?} with reason {reason:?} is not a parse standing"
                 ));

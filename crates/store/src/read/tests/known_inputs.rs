@@ -169,7 +169,7 @@ fn confirmed_refusals_count_unconfirmed_and_live_events_and_report_the_latest() 
     // A standalone index has no primary tables; add them as primary mode does.
     let index = Connection::open(fixture.archive.index_db()).unwrap();
     index
-        .execute_batch(crate::primary::confirmed::SCHEMA)
+        .execute_batch(&crate::primary::confirmed::SCHEMA)
         .unwrap();
     assert_eq!(
         fixture

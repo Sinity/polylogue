@@ -33,26 +33,18 @@ pub const LONG_CALL_MS: i64 = 30 * 60 * 1000;
 /// `ended`, so stale sessions age out rather than accumulate.
 pub const STALE_FOR_MS: i64 = 24 * 60 * 60 * 1000;
 
-/// The live state shown for a session at an instant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LiveState {
-    Working,
-    Waiting,
-    Idle,
-    Unknown,
-    Stale,
-    Ended,
+stored_names! {
+    /// The live state shown for a session at an instant.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum LiveState {
+        Working => "working",
+        Waiting => "waiting",
+        Idle => "idle",
+        Unknown => "unknown",
+        Stale => "stale",
+        Ended => "ended",
+    }
 }
-
-stored_names!(LiveState {
-    Working => "working",
-    Waiting => "waiting",
-    Idle => "idle",
-    Unknown => "unknown",
-    Stale => "stale",
-    Ended => "ended",
-});
 
 impl LiveState {
     /// Working, waiting, idle or unknown: listed as running.
@@ -81,62 +73,48 @@ impl LiveState {
     }
 }
 
-/// What a session's turn is doing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Activity {
-    Working,
-    Idle,
-    Waiting,
+stored_names! {
+    /// What a session's turn is doing.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Activity {
+        Working => "working",
+        Idle => "idle",
+        Waiting => "waiting",
+    }
 }
 
-stored_names!(Activity { Working => "working", Idle => "idle", Waiting => "waiting" });
-
-/// What a waiting session waits for from the operator.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum WaitingOn {
-    Permission,
-    Question,
-    Plan,
-    Input,
+stored_names! {
+    /// What a waiting session waits for from the operator.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum WaitingOn {
+        Permission => "permission",
+        Question => "question",
+        Plan => "plan",
+        Input => "input",
+    }
 }
 
-stored_names!(WaitingOn {
-    Permission => "permission",
-    Question => "question",
-    Plan => "plan",
-    Input => "input",
-});
-
-/// A session waiting on something other than the operator. Never counts
-/// as waiting.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Stall {
-    RateLimit,
-    ApiError,
-    LongCall,
-    Queue,
+stored_names! {
+    /// A session waiting on something other than the operator. Never counts
+    /// as waiting.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Stall {
+        RateLimit => "rate_limit",
+        ApiError => "api_error",
+        LongCall => "long_call",
+        Queue => "queue",
+    }
 }
 
-stored_names!(Stall {
-    RateLimit => "rate_limit",
-    ApiError => "api_error",
-    LongCall => "long_call",
-    Queue => "queue",
-});
-
-/// The part of a session's live facts a live interval measures.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Aspect {
-    Activity,
-    WaitingOn,
-    Stall,
+stored_names! {
+    /// The part of a session's live facts a live interval measures.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Aspect {
+        Activity => "activity",
+        WaitingOn => "waiting_on",
+        Stall => "stall",
+    }
 }
-
-stored_names!(Aspect { Activity => "activity", WaitingOn => "waiting_on", Stall => "stall" });
 
 /// A process as the kernel names it: pid alone is reused, so a process is
 /// its boot, its pid and its start time (field 22 of `/proc/<pid>/stat`,

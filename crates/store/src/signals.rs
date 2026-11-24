@@ -79,7 +79,7 @@ pub(crate) fn write(
     let mut ids = BTreeSet::new();
     for pending in &commit.pending_delivery {
         check_pending_identity(&pending.metadata)?;
-        if pending.record.sender != DeliverySender::Signal.as_str() {
+        if pending.record.sender != DeliverySender::Signal {
             return Err(StoreError::Invalid(
                 "signal delivery must keep its typed sender".into(),
             ));

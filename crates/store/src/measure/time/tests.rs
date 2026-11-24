@@ -19,7 +19,7 @@ fn m(id: &str, at: Option<i64>, author: &str, kind: &str, end: bool) -> Message 
 fn party(parties: &[PartyTime], name: &str) -> i64 {
     parties
         .iter()
-        .filter(|l| l.party == name)
+        .filter(|l| l.party.as_str() == name)
         .map(|l| l.ms)
         .sum()
 }
@@ -178,7 +178,7 @@ fn tool_intervals_extend_clusters_and_share_overlap() {
         (Some(20 * MINUTE), Some(15 * MINUTE), Some(5 * MINUTE))
     );
     assert_eq!(span.clustered_ms, Some(15 * MINUTE));
-    let tool: Vec<_> = parties.iter().filter(|l| l.party == "tool").collect();
+    let tool: Vec<_> = parties.iter().filter(|l| l.party == Party::Tool).collect();
     assert_eq!((tool[0].ms, tool[1].ms), (450_000, 450_000));
     assert_eq!(party(&parties, "human"), 0);
 }
@@ -192,7 +192,12 @@ fn party_times_sum_to_wall_for_overlapping_intervals() {
                     (start, end, "first".into()),
                     (offset, offset + 5, "second".into()),
                 ];
-                let parties = split(0, 12, &tools, &[(0, 6, "model"), (4, 12, "human")]);
+                let parties = split(
+                    0,
+                    12,
+                    &tools,
+                    &[(0, 6, Party::Model), (4, 12, Party::Human)],
+                );
                 assert_eq!(parties.iter().map(|l| l.ms).sum::<i64>(), 12);
                 assert!(parties.iter().all(|l| l.ms >= 0));
                 assert_eq!(
@@ -398,7 +403,10 @@ fn waiting_human_is_unknown_without_a_provider_turn_end() {
         &[],
         CLUSTER_GAP_MS,
     );
-    assert!(parties.iter().all(|l| l.party != "human"), "{parties:?}");
+    assert!(
+        parties.iter().all(|l| l.party != Party::Human),
+        "{parties:?}"
+    );
     assert_eq!(party(&parties, "unattributed"), 2 * MINUTE);
     assert_eq!(party(&parties, "model"), MINUTE);
 }
@@ -418,7 +426,7 @@ fn stored_and_computed(conn: &rusqlite::Connection, session: &str) -> (Json, Jso
         .unwrap()
         .query_map([pk], |r| {
             Ok(PartyTime {
-                party: r.get(0)?,
+                party: r.name(0)?,
                 key: r.get(1)?,
                 ms: r.get(2)?,
             })
@@ -683,7 +691,7 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
         timed: 6,
         untimed: 7,
         unordered_gaps: 8,
-        previous: Some((Some(9), "model".into())),
+        previous: Some((Some(9), Party::Model)),
         tools: 10,
         intervals: 11,
         tool_untimed: 12,
@@ -699,7 +707,7 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
         last_model_stop: Some(Some("end_turn".into())),
         ends: Some(("model_text".into(), "m".into())),
         parties: vec![PartyTime {
-            party: "tool".into(),
+            party: Party::Tool,
             key: "bash".into(),
             ms: 22,
         }],

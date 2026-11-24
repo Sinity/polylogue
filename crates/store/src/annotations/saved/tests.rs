@@ -45,7 +45,7 @@ fn fact(id: &str, name: &str, hash: u8, base: Option<&str>) -> AnnotationFact {
 #[test]
 fn saved_loader_preserves_declared_hash_denominator_and_cross_name_family_conflicts() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let first = fact("first", "original", 1, None);
     let left = fact("left", "renamed-left", 2, Some("annotation:family@first"));
     let right = fact("right", "renamed-right", 3, Some("annotation:family@first"));
@@ -88,7 +88,7 @@ fn saved_loader_preserves_declared_hash_denominator_and_cross_name_family_confli
 #[test]
 fn saved_revision_numbers_follow_original_links_not_restore_order_or_time() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let mut first = fact("first", "focus", 1, None);
     first.created_at = None;
     let second = fact("second", "focus", 2, Some("annotation:family@first"));
@@ -123,7 +123,7 @@ fn saved_revision_numbers_follow_original_links_not_restore_order_or_time() {
 #[test]
 fn saved_revision_forks_are_ambiguous_and_merged_depth_is_exact() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let first = fact("first", "focus", 1, None);
     let left = fact("left", "focus", 2, Some("annotation:family@first"));
     let right = fact("right", "renamed", 3, Some("annotation:family@first"));
@@ -169,7 +169,7 @@ fn saved_revision_forks_are_ambiguous_and_merged_depth_is_exact() {
 #[test]
 fn saved_revision_history_diagnoses_missing_parents_and_cycles() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let child = fact(
         "child",
         "missing-parent",
@@ -185,7 +185,7 @@ fn saved_revision_history_diagnoses_missing_parents_and_cycles() {
         other => panic!("missing original must be explicit: {other}"),
     }
     let cycle = Connection::open_in_memory().unwrap();
-    cycle.execute_batch(crate::schema::ARCHIVE).unwrap();
+    cycle.execute_batch(&crate::schema::ARCHIVE).unwrap();
     super::super::apply(
         &cycle,
         &[
@@ -278,7 +278,7 @@ fn saved_query_record_keeps_history_kept_watch_and_dependent_identities() {
 #[test]
 fn saved_revision_number_follows_a_merge_of_two_original_families() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let first = fact("first", "focus", 1, None);
     let mut other = fact("other-first", "focus", 2, None);
     other.root = "other-family".into();
@@ -332,7 +332,7 @@ fn withdrawal(id: &str, target: &str) -> AnnotationFact {
 #[test]
 fn numeric_saved_revisions_bind_the_current_family_after_withdrawal_and_resave() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let original = fact("original", "focus", 1, None);
     super::super::apply(&conn, std::slice::from_ref(&original), 1).unwrap();
     super::super::apply(
@@ -397,7 +397,7 @@ fn numeric_saved_revisions_bind_the_current_family_after_withdrawal_and_resave()
 #[test]
 fn numeric_saved_revisions_keep_independent_current_and_retired_histories_ambiguous() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let first = fact("first", "focus", 1, None);
     let mut other = fact("other", "focus", 2, None);
     other.root = "other-family".into();
@@ -432,7 +432,7 @@ fn numeric_saved_revisions_keep_independent_current_and_retired_histories_ambigu
 #[test]
 fn numeric_saved_revisions_ignore_withdrawn_siblings_but_keep_active_redo_forks() {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let first = fact("first", "focus", 1, None);
     let undone = fact("undone", "focus", 2, Some("annotation:family@first"));
     super::super::apply(&conn, &[first, undone.clone()], 1).unwrap();

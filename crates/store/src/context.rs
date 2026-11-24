@@ -34,8 +34,8 @@ fn message_text_parts(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DeliveryRow {
     pub id: String,
-    pub event: String,
-    pub sender: String,
+    pub event: polylogue_model::DeliveryEvent,
+    pub sender: polylogue_model::DeliverySender,
     pub recipient_id: Option<String>,
     pub at: Timestamp,
     pub bytes: u64,
@@ -356,8 +356,8 @@ impl Reader<'_> {
         let rows = stmt.query_map([arg], |r| {
             Ok(DeliveryRow {
                 id: r.get(0)?,
-                event: r.get(1)?,
-                sender: r.get(2)?,
+                event: r.name(1)?,
+                sender: r.name(2)?,
                 recipient_id: r.get(3)?,
                 at: r.time_ms(4)?,
                 bytes: r.get(5)?,

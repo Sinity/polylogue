@@ -325,8 +325,8 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     let delivery = write(UserWrite::Deliver(Delivery {
         recipient_kind: "session".into(),
         recipient_id: Some("claude-code:s1".into()),
-        sender: "hook".into(),
-        event: "session_start".into(),
+        sender: polylogue_model::DeliverySender::Hook,
+        event: polylogue_model::DeliveryEvent::SessionStart,
         cwd: Some("/synthetic".into()),
         text: "a synthetic brief".into(),
         refs: vec!["session:claude-code:s1".into()],

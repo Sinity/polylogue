@@ -42,7 +42,7 @@ fn terminal_printers_escape_archived_text() {
     let context_answer = protocol::context::Answer {
         delivery: None,
         prepared: crate::brief::Prepared {
-            event: "synthetic".into(),
+            event: polylogue_model::DeliveryEvent::SessionBrief,
             text: HOSTILE.into(),
             refs: vec![],
             left_out: vec![],

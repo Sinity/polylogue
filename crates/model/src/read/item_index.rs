@@ -10,33 +10,24 @@ use serde::{Deserialize, Serialize};
 mod counts;
 pub use counts::*;
 
-/// What an entry stands for. One message gives a header entry and one entry
-/// per stored block; an event gives one entry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum EntryKind {
-    Header,
-    Text,
-    Thinking,
-    /// Reasoning kept only as a provider signature: never shown.
-    ThinkingEncrypted,
-    Call,
-    Result,
-    Attachment,
-    Other,
-    Event,
+stored_names! {
+    name, parse;
+    /// What an entry stands for. One message gives a header entry and one entry
+    /// per stored block; an event gives one entry.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum EntryKind {
+        Header => "header",
+        Text => "text",
+        Thinking => "thinking",
+        /// Reasoning kept only as a provider signature: never shown.
+        ThinkingEncrypted => "thinking_encrypted",
+        Call => "call",
+        Result => "result",
+        Attachment => "attachment",
+        Other => "other",
+        Event => "event",
+    }
 }
-stored_names!(EntryKind, name, parse {
-    Header => "header",
-    Text => "text",
-    Thinking => "thinking",
-    ThinkingEncrypted => "thinking_encrypted",
-    Call => "call",
-    Result => "result",
-    Attachment => "attachment",
-    Other => "other",
-    Event => "event",
-});
 
 /// The context facts an in-place event carries for composition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, schemars::JsonSchema)]

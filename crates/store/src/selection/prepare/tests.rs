@@ -64,7 +64,7 @@ fn accepting_preparation_uses_original_rows() {
     let original = reader.conn().unwrap();
 
     let mut scratch = Connection::open_in_memory().unwrap();
-    let schema = crate::source::from_archive(crate::schema::ARCHIVE).unwrap();
+    let schema = crate::source::from_archive(&crate::schema::ARCHIVE).unwrap();
     scratch.execute_batch(&schema.ddl).unwrap();
     crate::annotations::apply(
         &scratch,

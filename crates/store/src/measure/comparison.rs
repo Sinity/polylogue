@@ -1,5 +1,6 @@
 //! Side-by-side recorded fields, with unknown and varying values kept visible.
 use super::Selection;
+use super::time::Party;
 use crate::session_sql;
 use crate::{Reader, Result, StoreError};
 use serde::Serialize;
@@ -88,11 +89,11 @@ fn reads_counts(fields: &[&str]) -> bool {
 }
 
 /// The waiting party a `waiting_*` field measures.
-fn party(field: &str) -> &'static str {
+fn party(field: &str) -> Party {
     if field == "waiting_model" {
-        "model"
+        Party::Model
     } else {
-        "human"
+        Party::Human
     }
 }
 
@@ -215,7 +216,7 @@ fn field_sql(name: &str) -> Result<String> {
         "ends_with" | "last_stop_reason" => session_sql::span("s", name),
         "waiting_model" | "waiting_human" => format!(
             "(SELECT ms FROM session_time st WHERE st.session_pk=s.pk AND st.party='{}' AND st.key='' AND {})",
-            party(name),
+            party(name).as_str(),
             session_sql::current("s", "session_span")
         ),
         "cost_nusd" => cost_sql(),

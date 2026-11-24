@@ -44,9 +44,9 @@ fn selector(bytes: &[u8]) -> SourceSelector {
 fn database(primary: bool) -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(if primary {
-        &schema().unwrap().ddl
+        schema().unwrap().ddl.as_str()
     } else {
-        crate::schema::ARCHIVE
+        crate::schema::ARCHIVE.as_str()
     })
     .unwrap();
     conn

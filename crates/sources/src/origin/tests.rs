@@ -80,3 +80,14 @@ fn capture_only_database_reading_tracks_metadata_parser_and_shared_readers() {
     }
     assert!(by_name("tool-context").unwrap().parse_version().is_empty());
 }
+
+/// The extension's checked-in provider table is the registry's current output;
+/// `cargo xtask extension-providers` rewrites it.
+#[test]
+fn extension_origin_table_is_current() {
+    assert_eq!(
+        include_str!("../../../../extension/src/background/providers.js"),
+        extension_providers_module(),
+        "run `cargo xtask extension-providers`"
+    );
+}

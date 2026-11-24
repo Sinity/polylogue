@@ -6,21 +6,15 @@ use serde::{Deserialize, Serialize};
 /// the observation and stop presenting its lag after five seconds.
 pub const SINEX_OBSERVATION_MAX_AGE_SECONDS: f64 = 5.;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FreshnessState {
-    Current,
-    Behind,
-    Unknown,
-    Unavailable,
+stored_names! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FreshnessState {
+        Current => "current",
+        Behind => "behind",
+        Unknown => "unknown",
+        Unavailable => "unavailable",
+    }
 }
-
-stored_names!(FreshnessState {
-    Current => "current",
-    Behind => "behind",
-    Unknown => "unknown",
-    Unavailable => "unavailable",
-});
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "mode", rename_all = "snake_case")]

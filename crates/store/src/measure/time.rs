@@ -1,6 +1,7 @@
 //! Recorded clocks and interval calculations. No notes, settings or clock reads.
 use super::Selection;
 use crate::change_summary::OrderKey;
+use crate::encoding::Columns as _;
 use crate::session_sql;
 use crate::{Reader, Result};
 use polylogue_model::derived::CLUSTER_GAP_MS;
@@ -35,9 +36,21 @@ pub struct Span {
     pub last_stop_reason: Option<String>,
 }
 
+polylogue_model::stored_names! {
+    /// Whom a stretch of session time is attributed to: a tool running, or
+    /// the party a gap between messages waits on.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+    pub enum Party {
+        Human => "human",
+        Model => "model",
+        Tool => "tool",
+        Unattributed => "unattributed",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PartyTime {
-    pub party: String,
+    pub party: Party,
     pub key: String,
     pub ms: i64,
 }
@@ -84,13 +97,13 @@ impl Message {
         }
     }
 
-    fn waiting_party(&self) -> &'static str {
+    fn waiting_party(&self) -> Party {
         if self.human_prompt() || self.last_block.as_deref() == Some("tool_result") {
-            "model"
+            Party::Model
         } else if self.author == "model" && self.stop.as_deref() == Some("end_turn") {
-            "human"
+            Party::Human
         } else {
-            "unattributed"
+            Party::Unattributed
         }
     }
 }
@@ -238,7 +251,7 @@ pub(crate) struct Prefix {
     untimed: i64,
     unordered_gaps: i64,
     /// The last message's time and the party the gap after it waits in.
-    previous: Option<(Option<i64>, String)>,
+    previous: Option<(Option<i64>, Party)>,
     tools: i64,
     intervals: i64,
     tool_untimed: i64,
@@ -291,10 +304,10 @@ impl Prefix {
                     if b - a <= gap_ms {
                         clustered.push((*a, b));
                     }
-                    waiting.push((*a, b, party.clone()));
+                    waiting.push((*a, b, *party));
                 }
             }
-            self.previous = Some((m.at, m.waiting_party().to_owned()));
+            self.previous = Some((m.at, m.waiting_party()));
         }
         if let Some(m) = messages.last() {
             self.ends = m.at.map(|_| (m.ends_with().to_owned(), m.id.clone()));
@@ -333,16 +346,12 @@ impl Prefix {
         self.tool_union_ms += union_ms(spans);
         self.clustered_ms += union_ms(clustered);
         if let Some((a, b)) = last_before.or(self.first).zip(self.last) {
-            let waiting: Vec<_> = waiting
-                .iter()
-                .map(|(a, b, party)| (*a, *b, party.as_str()))
-                .collect();
             self.add_parties(split(a, b, &intervals, &waiting));
         }
     }
 
     fn add_parties(&mut self, parties: Vec<PartyTime>) {
-        let mut totals: BTreeMap<(String, String), i64> = std::mem::take(&mut self.parties)
+        let mut totals: BTreeMap<(Party, String), i64> = std::mem::take(&mut self.parties)
             .into_iter()
             .map(|l| ((l.party, l.key), l.ms))
             .collect();
@@ -401,7 +410,7 @@ impl Prefix {
         // a provider that reports no turn end: its human party is unknown, not 0,
         // and that time stays unattributed.
         if !self.stop_reported {
-            parties.retain(|l| l.party != "human");
+            parties.retain(|l| l.party != Party::Human);
         }
         (span, parties)
     }
@@ -642,11 +651,11 @@ fn union_ms(mut intervals: Vec<(i64, i64)>) -> i64 {
 }
 
 #[derive(Default)]
-struct Changes<'a> {
+struct Changes {
     tool_start: Vec<usize>,
     tool_end: Vec<usize>,
-    wait_start: Vec<&'a str>,
-    wait_end: Vec<&'a str>,
+    wait_start: Vec<Party>,
+    wait_end: Vec<Party>,
 }
 
 /// Sweep interval boundaries once; tools take priority over waiting intervals.
@@ -654,9 +663,9 @@ fn split(
     first: i64,
     last: i64,
     tools: &[(i64, i64, String)],
-    waiting: &[(i64, i64, &str)],
+    waiting: &[(i64, i64, Party)],
 ) -> Vec<PartyTime> {
-    let mut points = BTreeMap::<i64, Changes<'_>>::new();
+    let mut points = BTreeMap::<i64, Changes>::new();
     points.entry(first).or_default();
     points.entry(last).or_default();
     for (i, (a, b, _)) in tools.iter().enumerate() {
@@ -673,29 +682,28 @@ fn split(
             points.entry(b).or_default().wait_end.push(*party);
         }
     }
-    let mut totals = BTreeMap::<(String, String), i64>::new();
-    for party in ["model", "human", "unattributed"] {
-        totals.insert((party.into(), String::new()), 0);
+    let mut totals = BTreeMap::<(Party, String), i64>::new();
+    for party in [Party::Model, Party::Human, Party::Unattributed] {
+        totals.insert((party, String::new()), 0);
     }
     let mut active_tools = BTreeSet::<usize>::new();
-    let mut active_wait = BTreeMap::<&str, usize>::new();
+    let mut active_wait = BTreeMap::<Party, usize>::new();
     let mut previous = first;
     for (at, change) in points {
         let ms = at - previous;
         if !active_tools.is_empty() {
             let n = active_tools.len() as i64;
             for (rank, &i) in active_tools.iter().enumerate() {
-                *totals
-                    .entry(("tool".into(), tools[i].2.clone()))
-                    .or_default() += ms / n + i64::from((rank as i64) < ms % n);
+                *totals.entry((Party::Tool, tools[i].2.clone())).or_default() +=
+                    ms / n + i64::from((rank as i64) < ms % n);
             }
         } else {
             let party = if active_wait.values().sum::<usize>() == 1 {
                 *active_wait.keys().next().unwrap()
             } else {
-                "unattributed"
+                Party::Unattributed
             };
-            *totals.entry((party.into(), String::new())).or_default() += ms;
+            *totals.entry((party, String::new())).or_default() += ms;
         }
         for i in change.tool_end {
             active_tools.remove(&i);
@@ -704,10 +712,10 @@ fn split(
             active_tools.insert(i);
         }
         for party in change.wait_end {
-            if let Some(n) = active_wait.get_mut(party) {
+            if let Some(n) = active_wait.get_mut(&party) {
                 *n -= 1;
                 if *n == 0 {
-                    active_wait.remove(party);
+                    active_wait.remove(&party);
                 }
             }
         }
@@ -737,7 +745,7 @@ fn write(
     let mut statement = conn
         .prepare_cached("INSERT INTO session_time(session_pk,party,key,ms) VALUES(?1,?2,?3,?4)")?;
     for l in parties {
-        statement.execute(params![pk, l.party, l.key, l.ms])?;
+        statement.execute(params![pk, l.party.as_str(), l.key, l.ms])?;
     }
     Ok(())
 }
@@ -830,7 +838,7 @@ pub(crate) fn read(
         )?
         .query_map([pk], |r| {
             Ok(PartyTime {
-                party: r.get(0)?,
+                party: r.name(0)?,
                 key: r.get(1)?,
                 ms: r.get(2)?,
             })

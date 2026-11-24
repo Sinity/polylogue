@@ -3,13 +3,9 @@
 // work in for provider imports.
 
 import { decode } from "./base64.js";
+import { PROVIDERS } from "./providers.js";
 
-export const PROVIDERS = {
-  chatgpt: { hosts: ["chatgpt.com"], home: "https://chatgpt.com/" },
-  "claude-ai": { hosts: ["claude.ai"], home: "https://claude.ai/recents" },
-  grok: { hosts: ["grok.com"], home: "https://grok.com/" },
-  gemini: { hosts: ["gemini.google.com"], home: "https://gemini.google.com/app" },
-};
+export { PROVIDERS };
 
 const hostPatterns = (hosts) => hosts.map((host) => `https://${host}/*`);
 

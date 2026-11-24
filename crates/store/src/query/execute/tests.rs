@@ -320,8 +320,8 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
                 UserWrite::Deliver(Delivery {
                     recipient_kind: "session".into(),
                     recipient_id: Some("codex:not-yet-captured".into()),
-                    sender: "hook".into(),
-                    event: "advice".into(),
+                    sender: polylogue_model::DeliverySender::Hook,
+                    event: polylogue_model::DeliveryEvent::Advice,
                     cwd: None,
                     text: "synthetic pointer".into(),
                     refs,

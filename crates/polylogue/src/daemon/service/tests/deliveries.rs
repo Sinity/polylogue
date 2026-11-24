@@ -430,8 +430,8 @@ fn other_delivery(d: &test_daemon::TestDaemon, event: polylogue_model::DeliveryE
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some("claude-code:newcomer".into()),
-            sender: polylogue_model::DeliverySender::Mcp.as_str().into(),
-            event: event.as_str().into(),
+            sender: polylogue_model::DeliverySender::Mcp,
+            event,
             cwd: None,
             text: "handed over".into(),
             refs: vec![],

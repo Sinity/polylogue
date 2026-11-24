@@ -278,8 +278,8 @@ pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                     value["delivery"] = request.id.clone().into();
                     value["recipient_kind"] = delivery.recipient_kind.clone().into();
                     value["recipient_id"] = serde_json::to_value(&delivery.recipient_id)?;
-                    value["sender"] = delivery.sender.clone().into();
-                    value["event"] = delivery.event.clone().into();
+                    value["sender"] = delivery.sender.as_str().into();
+                    value["event"] = delivery.event.as_str().into();
                     value["cwd"] = serde_json::to_value(&delivery.cwd)?;
                     value["content_hash"] = blake3::hash(delivery.text.as_bytes())
                         .to_hex()

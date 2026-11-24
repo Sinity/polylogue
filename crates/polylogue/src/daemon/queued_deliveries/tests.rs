@@ -18,8 +18,8 @@ fn a_failed_outcome_write_is_retried_and_reported() {
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some("claude-code:s1".into()),
-            sender: "hook".into(),
-            event: "session_start".into(),
+            sender: polylogue_model::DeliverySender::Hook,
+            event: polylogue_model::DeliveryEvent::SessionStart,
             cwd: None,
             text: "synthetic brief".into(),
             refs: vec![],
@@ -167,8 +167,8 @@ fn advice_whose_hand_over_fails_is_not_left_pending() {
         UserWrite::Deliver(Delivery {
             recipient_kind: "session".into(),
             recipient_id: Some("claude-code:s1".into()),
-            sender: "hook".into(),
-            event: polylogue_model::DeliveryEvent::Advice.as_str().into(),
+            sender: polylogue_model::DeliverySender::Hook,
+            event: polylogue_model::DeliveryEvent::Advice,
             cwd: None,
             text: "synthetic advice".into(),
             refs: vec!["annotation:root@revision".into()],

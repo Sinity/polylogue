@@ -78,8 +78,8 @@ pub fn pending_delivery(
         record: PreparedDelivery {
             recipient_kind: "operator".into(),
             recipient_id: None,
-            sender: "signal".into(),
-            event: "signal".into(),
+            sender: polylogue_model::DeliverySender::Signal,
+            event: polylogue_model::DeliveryEvent::Signal,
             cwd: None,
             text: occurrence.into(),
             refs: vec![],

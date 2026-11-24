@@ -87,21 +87,23 @@ impl Rule {
         query_language::depth::deeper(|| self.sql.map(|e| e.render(a, now)))
     }
 }
-/// How the source time behind a temporal field is stored. The integer cache is
-/// used only for broad candidates; the blob decides the exact predicate.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TimeStorage {
-    Tuple,
-    Event,
-    Latest,
+polylogue_model::stored_names! {
+    /// How the source time behind a temporal field is stored. The integer cache is
+    /// used only for broad candidates; the blob decides the exact predicate.
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum TimeStorage {
+        Tuple => "tuple",
+        Event => "event",
+        Latest => "latest",
+    }
 }
-polylogue_model::stored_names!(TimeStorage { Tuple => "tuple", Event => "event", Latest => "latest" });
-#[derive(Clone, Copy)]
-pub enum TimeAttribute {
-    Quality,
-    Precision,
+polylogue_model::stored_names! {
+    #[derive(Clone, Copy)]
+    pub enum TimeAttribute {
+        Quality => "quality",
+        Precision => "precision",
+    }
 }
-polylogue_model::stored_names!(TimeAttribute { Quality => "quality", Precision => "precision" });
 pub(crate) struct StoredTime {
     pub cache: String,
     pub bytes: String,

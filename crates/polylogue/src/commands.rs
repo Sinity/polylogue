@@ -323,10 +323,10 @@ pub struct Caller {
 impl Caller {
     /// The sender a prepared context is recorded under: MCP hands it to a
     /// model; the command line and the reader show it to a person.
-    pub fn sender(&self) -> Option<String> {
+    pub fn sender(&self) -> Option<polylogue_model::DeliverySender> {
         match self.surface {
-            Surface::Mcp => Some(polylogue_model::DeliverySender::Mcp.as_str().to_owned()),
-            Surface::Hook => Some(polylogue_model::DeliverySender::Hook.as_str().to_owned()),
+            Surface::Mcp => Some(polylogue_model::DeliverySender::Mcp),
+            Surface::Hook => Some(polylogue_model::DeliverySender::Hook),
             Surface::Cli | Surface::Http => None,
         }
     }

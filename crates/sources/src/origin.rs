@@ -224,6 +224,9 @@ pub struct WebChat {
     pub extension_names: &'static [&'static str],
     /// The hosts that serve conversation pages, the current one first.
     pub hosts: &'static [&'static str],
+    /// The page the extension opens to work in when no tab of the provider
+    /// is open.
+    pub home: &'static str,
     pub path: &'static str,
     /// Optional two-segment prefixes before the conversation path.
     pub prefixes: &'static [LinkPrefix],
@@ -879,6 +882,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         web: Some(WebChat {
             extension_names: &["chatgpt"],
             hosts: &["chatgpt.com", "chat.openai.com"],
+            home: "https://chatgpt.com/",
             path: "c",
             prefixes: &[LinkPrefix {
                 path: "g",
@@ -910,6 +914,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         web: Some(WebChat {
             extension_names: &["claude-ai", "claude"],
             hosts: &["claude.ai"],
+            home: "https://claude.ai/recents",
             path: "chat",
             prefixes: &[],
             actions: false,
@@ -959,6 +964,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         web: Some(WebChat {
             extension_names: &[],
             hosts: &["aistudio.google.com"],
+            home: "https://aistudio.google.com/",
             path: "prompts",
             prefixes: &[LinkPrefix {
                 path: "u",
@@ -990,6 +996,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         web: Some(WebChat {
             extension_names: &["gemini"],
             hosts: &["gemini.google.com"],
+            home: "https://gemini.google.com/app",
             path: "app",
             prefixes: &[LinkPrefix {
                 path: "u",
@@ -1021,6 +1028,7 @@ pub static ORIGINS: &[OriginSpec] = &[
         web: Some(WebChat {
             extension_names: &["grok"],
             hosts: &["grok.com"],
+            home: "https://grok.com/",
             path: "c",
             prefixes: &[],
             actions: false,
@@ -1112,6 +1120,39 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
             .as_ref()
             .is_some_and(|w| w.extension_names.contains(&name))
     })
+}
+
+/// The browser extension's provider table (`extension/src/background/providers.js`),
+/// written from this registry by `cargo xtask extension-providers`. Each
+/// provider the extension names gets its current host, the page it opens and
+/// the path segment before a conversation's ID; the extension's permissions
+/// and content scripts cover the current hosts only.
+pub fn extension_providers_module() -> String {
+    let mut out = String::from(
+        "// Written by `cargo xtask extension-providers` from Polylogue's origin\n\
+         // registry (crates/sources/src/origin.rs); edit the registry, not this file.\n\
+         //\n\
+         // Each provider the extension captures, by the name the extension gives it:\n\
+         // the hosts that serve its conversation pages, the page opened to work in\n\
+         // when none is open, and the path segment before a conversation's ID.\n\
+         export const PROVIDERS = {\n",
+    );
+    for origin in ORIGINS {
+        let Some(web) = &origin.web else { continue };
+        let Some(name) = web.extension_names.first() else {
+            continue;
+        };
+        let json = |value: &str| serde_json::to_string(value).expect("a string serializes");
+        out.push_str(&format!(
+            "  {}: {{ hosts: [{}], home: {}, path: {} }},\n",
+            json(name),
+            json(web.hosts[0]),
+            json(web.home),
+            json(web.path),
+        ));
+    }
+    out.push_str("};\n");
+    out
 }
 
 /// Conversation URL declarations shared by query and read preparation.

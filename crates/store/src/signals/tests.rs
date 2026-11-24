@@ -253,7 +253,7 @@ fn imported_effect_with_receipts_beyond_the_request_is_refused() {
 #[test]
 fn signal_source_schema_is_shared_by_archive_and_cache() {
     let mut conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let r = request("rolled-back", initial());
     {
         let tx = conn.transaction().unwrap();
@@ -294,7 +294,7 @@ fn signal_numeric_host_decision_survives_tagged_request_round_trip() {
 #[test]
 fn pending_signal_notice_must_follow_its_route() {
     let mut conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch(crate::schema::ARCHIVE).unwrap();
+    conn.execute_batch(&crate::schema::ARCHIVE).unwrap();
     let mut shown_on_desktop = initial();
     shown_on_desktop.pending_delivery[0]
         .metadata

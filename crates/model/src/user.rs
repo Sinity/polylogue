@@ -213,8 +213,8 @@ pub struct Delivery {
     pub recipient_kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recipient_id: Option<String>,
-    pub sender: String,
-    pub event: String,
+    pub sender: crate::DeliverySender,
+    pub event: crate::DeliveryEvent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<String>,
     pub text: String,
