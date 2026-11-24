@@ -1,5 +1,5 @@
 //! Executing the one compiled query and shaping declared public values.
-use super::compile::PageColumns;
+use super::compile::{PageColumns, page_of};
 use super::{ColKind, Program};
 use crate::ResultExt as _;
 use crate::search::{SearchDriver, SnippetIndex, SnippetQuery, Within};
@@ -242,7 +242,7 @@ impl Reader<'_> {
                 {
                     self.search_driver(
                         &scope.blocks,
-                        &params,
+                        &values(&program.params),
                         search.index,
                         &search.expression,
                         scope.recent.is_some() && !reverse && limit > 0,
@@ -252,9 +252,17 @@ impl Reader<'_> {
                 } else {
                     SearchDriver::Index
                 };
-                if driver == SearchDriver::Scope {
-                    params[search.unwrap().scope.as_ref().unwrap().mode - 1] = SqlValue::Int(1);
-                }
+                let page = match (driver, search.and_then(|search| search.scope.as_ref())) {
+                    (SearchDriver::Scope, Some(scope)) => page_of(
+                        &scope.by_scope,
+                        &program.order,
+                        program.params.len(),
+                        after.is_some(),
+                        reverse,
+                        PageColumns::All,
+                    ),
+                    _ => page,
+                };
                 let selected = search.filter(|search| {
                     driver == SearchDriver::Recency
                         || (driver == SearchDriver::Index
@@ -267,9 +275,9 @@ impl Reader<'_> {
                 });
                 if let Some(search) = selected {
                     let keys = if driver == SearchDriver::Recency {
-                        self.recent_keys(program, &page, params, search, after, limit)
+                        self.recent_keys(program, search, after, limit)
                     } else {
-                        self.ranked_keys(&page, params, search, limit)
+                        self.ranked_keys(program, search, after, limit)
                     };
                     keys.map_err(StreamError::Selection).and_then(|keys| {
                         let mut keys = keys.into_iter();
@@ -331,38 +339,42 @@ impl Reader<'_> {
     fn recent_keys(
         &self,
         program: &Program,
-        page: &str,
-        mut params: Vec<SqlValue>,
         search: &super::compile::TextSearch,
         after: Option<&[Value]>,
         limit: i64,
     ) -> Result<Vec<Value>, SelectionError> {
-        use super::compile::{DerivedRows, Statements};
-        let scope = search.scope.as_ref().expect("recency scope");
-        let recent = scope.recent.as_ref().expect("recency candidate keys");
-        let candidates = Statements::Derived(DerivedRows {
-            rows: recent.keys.clone(),
-            count: None,
-            members: None,
-        })
-        .page(
-            &program.order,
-            program.params.len(),
-            after.is_some(),
-            false,
-            PageColumns::All,
-        );
-        let mut candidate_params = params.clone();
-        *candidate_params.last_mut().expect("candidate page limit") = SqlValue::Int(-1);
+        let recent = search
+            .scope
+            .as_ref()
+            .and_then(|scope| scope.recent.as_ref())
+            .expect("recency candidate keys");
+        let base = program.params.len();
+        let paged = |source: &str, params: usize| {
+            page_of(
+                source,
+                &program.order,
+                params,
+                after.is_some(),
+                false,
+                PageColumns::All,
+            )
+        };
+        let inputs = |batch: Option<String>, limit: i64| {
+            let mut params = values(&program.params);
+            params.extend(batch.map(SqlValue::Text));
+            if let Some(after) = after {
+                params.extend(after.iter().map(sql_value));
+            }
+            params.push(SqlValue::Int(limit));
+            params
+        };
+        let candidates = paged(&recent.candidates, base);
+        let batch_page = paged(&recent.batch, base + 1);
         let conn = self.conn()?;
         let mut statement = conn
             .prepare_cached(&candidates)
             .map_err(crate::StoreError::from)?;
-        for (i, value) in candidate_params
-            .iter()
-            .take(statement.parameter_count())
-            .enumerate()
-        {
+        for (i, value) in inputs(None, -1).iter().enumerate() {
             statement
                 .raw_bind_parameter(i + 1, value)
                 .map_err(crate::StoreError::from)?;
@@ -383,12 +395,9 @@ impl Reader<'_> {
             if batch.is_empty() {
                 break;
             }
-            params[scope.mode - 1] = SqlValue::Int(2);
-            params[recent.batch - 1] =
-                SqlValue::Text(serde_json::to_string(&batch).expect("row keys serialize"));
+            let batch = serde_json::to_string(&batch).expect("row keys serialize");
             let remaining = limit - rows.len() as i64;
-            *params.last_mut().expect("result page limit") = SqlValue::Int(remaining);
-            let matched = self.query(page, &params)?;
+            let matched = self.query(&batch_page, &inputs(Some(batch), remaining))?;
             let found = !matched.is_empty();
             rows.extend(matched);
             if rows.len() as i64 >= limit || exhausted {
@@ -408,14 +417,22 @@ impl Reader<'_> {
     /// so weaker duplicate hits never bring back an earlier row.
     fn ranked_keys(
         &self,
-        page: &str,
-        mut params: Vec<SqlValue>,
+        program: &Program,
         search: &super::compile::TextSearch,
+        after: Option<&[Value]>,
         limit: i64,
     ) -> Result<Vec<Value>, SelectionError> {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let page = page_of(
+            &search.by_index,
+            &program.order,
+            program.params.len() + 1,
+            after.is_some(),
+            false,
+            PageColumns::All,
+        );
         let table = match search.index {
             SnippetIndex::Prose => "text_fts",
             SnippetIndex::Output => "output_fts",
@@ -425,8 +442,13 @@ impl Reader<'_> {
         );
         let mut prefix = limit.max(1);
         loop {
-            params[search.limit - 1] = SqlValue::Int(prefix);
-            let rows = self.query(page, &params)?;
+            let mut params = values(&program.params);
+            params.push(SqlValue::Int(prefix));
+            if let Some(after) = after {
+                params.extend(after.iter().map(sql_value));
+            }
+            params.push(SqlValue::Int(limit));
+            let rows = self.query(&page, &params)?;
             if prefix < 0 {
                 return Ok(rows);
             }

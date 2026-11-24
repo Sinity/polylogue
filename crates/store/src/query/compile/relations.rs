@@ -191,23 +191,29 @@ pub(super) fn as_of_unavailable() -> QueryError {
 
 impl<'a> Compiler<'a> {
     pub(super) fn program_with(
-        mut self,
+        self,
         query: &Query,
         preset: Option<MatchRel>,
+        reading: Reading,
     ) -> Result<Program, QueryError> {
         let Some(selection) = Selection::of(query, &self.binder(), &self.opts.fields)? else {
             return Err(not_built("this shared query source"));
         };
         let Some(first) = selection.relations_from else {
             let stages = &query.transforms[selection.stages_from..];
-            return self.unit_rows_program_with(&selection, stages, preset);
+            return self.unit_rows_program_with(&selection, stages, preset, reading);
         };
-        if self.answer
+        if reading.answer
             && selection.stages_from == first
             && !selection.written.iter().any(contains_order)
             && super::search::recent_sort(selection.unit, &query.transforms[first..])
         {
-            return self.unit_rows_program_with(&selection, &query.transforms[first..], preset);
+            return self.unit_rows_program_with(
+                &selection,
+                &query.transforms[first..],
+                preset,
+                reading,
+            );
         }
         let source_order = match &query.source {
             Source::Unit {
@@ -219,13 +225,15 @@ impl<'a> Compiler<'a> {
         compiler.saved_stack = self.saved_stack.clone();
         compiler.query_scope = self.query_scope.clone();
         compiler.typing = self.typing.clone();
-        compiler.source_near_allowed = self.source_near_allowed;
-        // The stages read the selection's rows whole.
-        self.answer = false;
         let unit_stages = &query.transforms[selection.stages_from.min(first)..first];
-        let mut program = self.unit_rows_program_with(&selection, unit_stages, preset)?;
+        // The stages read the selection's rows whole.
+        let reading = Reading {
+            answer: false,
+            ..reading
+        };
+        let mut program = self.unit_rows_program_with(&selection, unit_stages, preset, reading)?;
         compiler.params = std::mem::take(&mut program.params);
-        compiler.near = program.near.clone();
+        compiler.similar_text = program.near.clone();
         let relation = Relation::new(program);
         let after = selection
             .stages
@@ -354,7 +362,7 @@ impl<'a> Compiler<'a> {
             .program
             .resolved_times
             .extend(self.resolved_times.into_inner());
-        relation.program.near = self.near.or(relation.program.near);
+        relation.program.near = self.similar_text.or(relation.program.near);
         relation.program.row_sources = Some(relation.sources.clone());
         Ok(relation.program)
     }
@@ -521,7 +529,7 @@ impl<'a> Compiler<'a> {
                 self.relation_aggregate(relation, None, aggregates, at)?
             }
             TransformKind::Join { query, on } => {
-                let inner = Relation::new(self.other_query(query, at)?);
+                let inner = Relation::new(self.other_query(query, at, None)?);
                 self.rel_join_pair(relation, inner, on, at)?;
             }
             TransformKind::Diff { query } => self.relation_diff(relation, query, at)?,
@@ -592,7 +600,7 @@ impl<'a> Compiler<'a> {
                     unit: source.unit,
                     a: self.fresh(),
                 };
-                let predicate = self.cond(condition, &context, false)?;
+                let predicate = self.cond(condition, &context, Cx::plain(false))?;
                 let key = context.a.expand(units::spec(context.unit).key);
                 return Ok(format!(
                     "(SELECT ({predicate}) FROM {} WHERE {key} = r.{})",
@@ -609,7 +617,8 @@ impl<'a> Compiler<'a> {
                     scope,
                     pick,
                 } => {
-                    let inner = Relation::new(self.other_query(query, condition.span.start)?);
+                    let inner =
+                        Relation::new(self.other_query(query, condition.span.start, None)?);
                     let predicate = self.rel_order_pair(
                         relation,
                         inner,
@@ -1193,7 +1202,7 @@ impl Compiler<'_> {
             query,
         } = &stage.kind
         {
-            let other = self.other_query(query, stage.span.start)?;
+            let other = self.other_query(query, stage.span.start, None)?;
             let yes = matches!(
                 stage.kind,
                 TransformKind::Combine {
@@ -1250,8 +1259,7 @@ impl Compiler<'_> {
         }
         let mut compiler = self.nested(self.text);
         compiler.params = std::mem::take(&mut self.params);
-        compiler.input_rows = Some(parent_input.rows().to_owned());
-        compiler.near = self.near.clone().or(relation.program.near.clone());
+        compiler.similar_text = self.similar_text.clone().or(relation.program.near.clone());
         let Some(selection) = Selection::of(&unit_query, &compiler.binder(), &self.opts.fields)?
         else {
             unreachable!("a unit source");
@@ -1260,11 +1268,15 @@ impl Compiler<'_> {
             &selection,
             &unit_query.transforms[selection.stages_from..],
             None,
+            Reading {
+                within: Some(parent_input.rows().to_owned()),
+                ..Reading::whole()
+            },
         )?;
         if matches!(stage.kind, TransformKind::Matches) {
             sequences::project_match_parent(&mut result, &parent_input);
         }
-        self.near = result.near.clone();
+        self.similar_text = result.near.clone();
         self.params = std::mem::take(&mut result.params);
         if let Some(mut measure) = result.measure.take() {
             // The preceding relation decides membership and order. The unit
@@ -1317,7 +1329,7 @@ impl Compiler<'_> {
         query: &Query,
         at: usize,
     ) -> Result<(), QueryError> {
-        let mut before = Relation::new(self.other_query(query, at)?);
+        let mut before = Relation::new(self.other_query(query, at, None)?);
         let after_input = self.input(relation);
         let before_input = self.input(&mut before);
         let left_keys = relation.identity_order();
@@ -1508,11 +1520,16 @@ impl Compiler<'_> {
         };
         let mut compiler = self.nested(self.text);
         compiler.params = std::mem::take(&mut self.params);
-        compiler.input_rows = Some(keys);
-        compiler.source_near_allowed = false;
-        compiler.near = self.near.clone().or(relation.program.near.clone());
-        let mut program = compiler.program(&query)?;
-        self.near = program.near.clone();
+        compiler.similar_text = self.similar_text.clone().or(relation.program.near.clone());
+        let mut program = compiler.program(
+            &query,
+            Reading {
+                answer: false,
+                within: Some(keys),
+                similar: false,
+            },
+        )?;
+        self.similar_text = program.near.clone();
         self.params = std::mem::take(&mut program.params);
         join(&mut program.notes, &mut relation.program.notes);
         join(&mut program.incomplete, &mut relation.program.incomplete);

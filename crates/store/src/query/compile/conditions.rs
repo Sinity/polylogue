@@ -16,42 +16,42 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// A condition as written, over `scope`'s rows. `top` is true for the
-    /// query's own `where`, where a top-level text term of the search
-    /// leg's index ranks the rows.
+    /// A condition as written, over `scope`'s rows.
     pub(super) fn cond(
         &mut self,
         c: &Condition,
         scope: &RowContext,
-        top: bool,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         let filter = self.binder().bind(c, scope.unit)?;
-        self.lower(&filter, scope, top)
+        self.lower(&filter, scope, cx)
     }
 
-    /// A bound condition over `scope`'s rows.
+    /// A bound condition over `scope`'s rows. At the selection's top level
+    /// (`cx.top`), the first text term over the search leg's index puts
+    /// its ranking there.
     pub(super) fn lower(
         &mut self,
         filter: &Filter,
         scope: &RowContext,
-        top: bool,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         query_language::depth::deeper(|| {
             Ok(match filter {
-                Filter::All(all) => self.lower_all(all, scope, top)?,
+                Filter::All(all) => self.lower_all(all, scope, cx)?,
                 Filter::Any(any) => {
                     let parts = any
                         .iter()
-                        .map(|x| self.lower(x, scope, false))
+                        .map(|x| self.lower(x, scope, cx.inner()))
                         .collect::<Result<Vec<_>, _>>()?;
                     format!("({})", parts.join(" OR "))
                 }
-                Filter::Not(inner) => format!("NOT ({})", self.lower(inner, scope, false)?),
+                Filter::Not(inner) => format!("NOT ({})", self.lower(inner, scope, cx.inner())?),
                 Filter::Word(word) => self.text(
                     &[(word.text.clone(), word.phrase, word.span)],
                     scope,
                     Index::Prose,
-                    top,
+                    cx,
                 )?,
                 Filter::SessionWord { word, span } => self.reference_word(word, scope, *span)?,
                 Filter::Session { id, span } => self.session_ref(id, scope, *span)?,
@@ -63,9 +63,9 @@ impl<'a> Compiler<'a> {
                     target,
                     filter,
                     span,
-                } => self.related(prefix, *target, filter, scope, *span)?,
-                Filter::Field(test) => self.field(test, scope, top)?,
-                Filter::Written(c) => self.written(c, scope)?,
+                } => self.related(prefix, *target, filter, scope, *span, cx)?,
+                Filter::Field(test) => self.field(test, scope, cx)?,
+                Filter::Written(c) => self.written(c, scope, cx)?,
             })
         })
     }
@@ -76,7 +76,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         all: &[Filter],
         scope: &RowContext,
-        top: bool,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         let time_bounds = if scope.unit != Unit::ToolCalls {
             fields::time_window(scope.unit, true, &scope.a).filter(|lower| {
@@ -124,7 +124,7 @@ impl<'a> Compiler<'a> {
                 unit: Unit::Sessions,
                 a: self.fresh(),
             };
-            let within = self.lower(&rest, &inner, false)?;
+            let within = self.lower(&rest, &inner, cx.inner())?;
             return Ok(self.newest_session(&scope.a.s, &inner.a, Some(within)));
         }
         let bound = |x: &Filter, name: &str| match x {
@@ -159,24 +159,30 @@ impl<'a> Compiler<'a> {
                 Filter::Word(word) if polylogue_query::units::spec(scope.unit).words.plain() => {
                     words.push((word.text.clone(), word.phrase, word.span));
                 }
-                _ => parts.push(self.lower(x, scope, top)?),
+                _ => parts.push(self.lower(x, scope, cx)?),
             }
         }
         if let Some(stored) = time_bounds.filter(|_| combine_bounds) {
             parts.push(self.time_test(&stored, time::TimePredicate::Overlap { since, until }));
         }
         if !words.is_empty() {
-            parts.push(self.text(&words, scope, Index::Prose, top)?);
+            parts.push(self.text(&words, scope, Index::Prose, cx)?);
         }
         Ok(format!("({})", parts.join(" AND ")))
     }
 
     /// A condition binding left as written: over other rows, another
     /// query, or computed values.
-    fn written(&mut self, c: &Condition, scope: &RowContext) -> Result<String, QueryError> {
+    fn written(
+        &mut self,
+        c: &Condition,
+        scope: &RowContext,
+        cx: Cx<'_>,
+    ) -> Result<String, QueryError> {
+        let cx = cx.inner();
         match &c.kind {
             ConditionKind::Exists { unit, condition } => {
-                self.exists(bind_unit(unit)?, condition.as_deref(), scope, c.span)
+                self.exists(bind_unit(unit)?, condition.as_deref(), scope, c.span, cx)
             }
             ConditionKind::Count {
                 unit,
@@ -186,19 +192,19 @@ impl<'a> Compiler<'a> {
             } => self.counted(
                 bind_unit(unit)?,
                 condition.as_deref(),
-                *op,
-                *count,
+                (*op, *count),
                 scope,
                 c.span,
+                cx,
             ),
             ConditionKind::In {
                 left: operand,
                 query,
-            } => self.member_of(field_operand(operand)?, query, scope, c.span),
+            } => self.member_of(field_operand(operand)?, query, scope, c.span, cx),
             ConditionKind::Saved { name, arguments } => {
-                self.saved_cond(name, arguments, scope, c.span)
+                self.saved_cond(name, arguments, scope, c.span, cx)
             }
-            ConditionKind::Sequence { steps, gaps, .. } => self.seq(steps, gaps, scope, c.span),
+            ConditionKind::Sequence { steps, gaps, .. } => self.seq(steps, gaps, scope, c.span, cx),
             ConditionKind::Compare { left, op, right } => self.expression_comparison(
                 left,
                 *op,
@@ -228,13 +234,14 @@ impl<'a> Compiler<'a> {
     }
 
     /// A full-text condition over one index. Terms ANDed together must all
-    /// occur in the same message (or block).
+    /// occur in the same message (or block). At the top level, the first
+    /// term over the search leg's index ranks the rows.
     pub(super) fn text(
         &mut self,
         words: &[(String, bool, Span)],
         scope: &RowContext,
         index: Index,
-        top: bool,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         let mut phrases = vec![];
         // A quoted phrase and a bare word with punctuation both search
@@ -279,58 +286,49 @@ impl<'a> Compiler<'a> {
         } else {
             phrases.join(" AND ")
         };
-        let table = match index {
-            Index::Output => "output_fts",
-            _ => "text_fts",
-        };
-        let parameter_start = self.params.len();
-        let param = self.text_param(&match_text);
-        let cte = format!("h{}", self.ctes.len() + 1);
         let snippet_index = match index {
             Index::Prose => Some(polylogue_query::search::SnippetIndex::Prose),
             Index::Output => Some(polylogue_query::search::SnippetIndex::Output),
             Index::Thinking => None,
         };
-        let alternate_languages = (scope.unit == Unit::Messages && index == Index::Prose)
-            .then(|| self.alternate_languages.clone())
-            .flatten();
-        let source = alternate_languages.is_none()
-            && top
-            && snippet_index.is_some()
-            && snippet_index == self.rank_index
-            && self.rank.is_none();
-        let scoped = source
-            && self.answer
-            && !self.measuring
-            && self.near_request.is_none()
-            && self.text_search.is_none()
-            && self.input_rows.is_none()
-            && matches!(scope.unit, Unit::Sessions | Unit::Messages);
-        let mode = scoped.then(|| {
-            let sql = self.bind(Param::Int(0));
-            (sql, self.params.len())
+        // The first top-level term over the search leg's index ranks.
+        let top = cx.top.filter(|top| {
+            snippet_index.is_some() && snippet_index == top.index && top.ranking.borrow().is_none()
         });
-        let blocks = format!("{cte}_scope_candidates");
-        let Some(hits) = rows(
-            a,
-            &units::Hits {
-                cte: &cte,
-                index,
-                source,
-                scope: mode
-                    .as_ref()
-                    .map(|(sql, _)| (sql.as_str(), blocks.as_str())),
-            },
-        ) else {
+        let alternate_languages = (scope.unit == Unit::Messages && index == Index::Prose)
+            .then_some(cx.alternates)
+            .flatten();
+        let source = alternate_languages.is_none() && top.is_some();
+        let plans = source && top.is_some_and(|top| top.plans);
+        let scoped = plans && matches!(scope.unit, Unit::Sessions | Unit::Messages);
+        let parameter_start = self.params.len();
+        let param = self.text_param(&match_text);
+        let cte = format!("h{}", self.ctes.len() + 1);
+        let candidates = format!("{cte}_scope_candidates");
+        let hits = |scope| {
+            rows(
+                a,
+                &units::Hits {
+                    cte: &cte,
+                    index,
+                    source,
+                    scope,
+                },
+            )
+        };
+        let Some(hits_relation) = hits(None) else {
             self.params.truncate(parameter_start);
             return Err(refuse(scope.unit));
         };
+        let scoped_ctes = scoped
+            .then(|| hits(Some(candidates.as_str())).map(|scoped| scoped.ctes))
+            .flatten();
         let alternate = if let Some(languages) = alternate_languages {
             let alternates = format!("{cte}_alternates");
             self.ctes.push(format!("{alternates} AS MATERIALIZED (SELECT vt.alternate,vt.n,bm25(alternate_fts) AS rank FROM alternate_fts JOIN alternate_text vt ON vt.rowid=alternate_fts.rowid WHERE alternate_fts MATCH {param})"));
             let mut language = Vec::new();
             for lang in languages {
-                language.push(self.text_param(&lang));
+                language.push(self.text_param(lang));
             }
             let language = if language.is_empty() {
                 String::new()
@@ -349,50 +347,38 @@ impl<'a> Compiler<'a> {
         } else {
             None
         };
-        let mut prefix = String::new();
-        if let Some(rank_index) = snippet_index
-            && top
-            && Some(rank_index) == self.rank_index
-            && self.rank.is_none()
-        {
-            self.rank = Some(match &alternate {
-                Some((_, rank)) => {
-                    format!("min(coalesce({},1e30),coalesce({rank},1e30))", hits.rank)
-                }
-                None => hits.rank,
+        let start = self.ctes.len();
+        let leg = ranking::SearchLeg {
+            index: snippet_index.unwrap_or(polylogue_query::search::SnippetIndex::Prose),
+            expression: match_text,
+            parameter: param,
+            name: cte,
+            ctes: start..start,
+            scoped: scoped_ctes,
+            spans: words.iter().map(|word| word.2).collect(),
+        };
+        self.ctes.push(leg.indexed(None));
+        self.ctes.extend(hits_relation.ctes);
+        if let Some(top) = top {
+            let leg = ranking::SearchLeg {
+                ctes: start..self.ctes.len(),
+                ..leg
+            };
+            *top.ranking.borrow_mut() = Some(ranking::TextRank {
+                expression: match &alternate {
+                    Some((_, rank)) => format!(
+                        "min(coalesce({},1e30),coalesce({rank},1e30))",
+                        hits_relation.rank
+                    ),
+                    None => hits_relation.rank,
+                },
+                source: hits_relation.source,
+                leg: plans.then_some(leg),
             });
-            self.rank_source = hits.source;
-            if self.answer
-                && !self.measuring
-                && self.near_request.is_none()
-                && self.text_search.is_none()
-                && alternate.is_none()
-            {
-                let limit = self.params.len() + 1;
-                let bound = self.bind(Param::Int(-1));
-                self.text_search = Some(TextSearch {
-                    index: rank_index,
-                    expression: match_text,
-                    limit,
-                    scope: None,
-                    scope_build: mode.as_ref().map(|(_, mode)| super::search::ScopeBuild {
-                        cte: self.ctes.len(),
-                        name: cte.clone(),
-                        expression: param.clone(),
-                        mode: *mode,
-                        spans: words.iter().map(|word| word.2).collect(),
-                    }),
-                });
-                prefix = format!(" ORDER BY {table}.rank LIMIT {bound}");
-            }
         }
-        self.ctes.push(format!(
-            "{cte} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {param}{prefix})"
-        ));
-        self.ctes.extend(hits.ctes);
         Ok(match alternate {
-            Some((condition, _)) => format!("({} OR {condition})", hits.condition),
-            None => hits.condition,
+            Some((condition, _)) => format!("({} OR {condition})", hits_relation.condition),
+            None => hits_relation.condition,
         })
     }
 
@@ -424,7 +410,7 @@ impl<'a> Compiler<'a> {
                         )),
                         scope,
                         span,
-                        top: true,
+                        cx: Cx::plain(false),
                     },
                     false,
                 );
@@ -612,7 +598,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         t: &FieldTest,
         scope: &RowContext,
-        top: bool,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         let def = t.field.declaration();
         // `F:*` names a field without restricting it; the one exception is
@@ -633,14 +619,14 @@ impl<'a> Compiler<'a> {
                 test: &t.test,
                 scope: &RowContext { unit: def.unit, a },
                 span: t.span,
-                top,
+                cx,
             };
             return compile(self, &call);
         }
         let expr = rule
             .expr(&a, self.opts.clock.now.as_millisecond())
             .expect("non-special fields have SQL");
-        if top && t.test.is_comparison() {
+        if cx.is_top() && t.test.is_comparison() {
             self.show(def.name, &expr, def.column_kind(), def.column_reference());
         }
         if def.kind == Kind::Time
@@ -786,7 +772,9 @@ impl<'a> Compiler<'a> {
         filter: &Filter,
         scope: &RowContext,
         span: Span,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
+        let cx = cx.inner();
         let a = &scope.a;
         let rel = units::spec(scope.unit)
             .relation(prefix)
@@ -800,7 +788,7 @@ impl<'a> Compiler<'a> {
                     unit: target,
                     a: a.clone(),
                 };
-                self.lower(filter, &inner, false)
+                self.lower(filter, &inner, cx)
             }
             Via::Session(alias) => {
                 let inner = RowContext {
@@ -810,7 +798,7 @@ impl<'a> Compiler<'a> {
                         ..a.clone()
                     },
                 };
-                self.lower(filter, &inner, false)
+                self.lower(filter, &inner, cx)
             }
             Via::Exists { cond: template, .. } => {
                 let n = self.fresh();
@@ -818,7 +806,7 @@ impl<'a> Compiler<'a> {
                     unit: target,
                     a: n.clone(),
                 };
-                let cond = self.lower(filter, &inner, false)?;
+                let cond = self.lower(filter, &inner, cx)?;
                 Ok(relation_sql(template, a, &n, target, &cond))
             }
         }

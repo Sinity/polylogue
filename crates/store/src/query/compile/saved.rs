@@ -21,6 +21,7 @@ impl<'a> Compiler<'a> {
         arguments: &[Argument],
         scope: &RowContext,
         span: Span,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         query_language::depth::deeper(|| {
             let (unit, cond) = self.saved_relation(name, arguments, span)?;
@@ -30,11 +31,11 @@ impl<'a> Compiler<'a> {
             self.saved_stack.push(name.to_owned());
             let parts = (|| {
                 let top = cond.as_ref().map(top_level).unwrap_or_default();
-                let mut parts = self.defaults(scope, &top)?;
+                let mut parts = self.defaults(scope, &top, cx.measured);
                 if let Some(cond) = &cond {
-                    parts.push(self.cond(cond, scope, false)?);
+                    parts.push(self.cond(cond, scope, cx.inner())?);
                 }
-                self.sessions_within_bounds(scope, &top, &mut parts, cond.is_some())?;
+                self.sessions_within_bounds(scope, cx.measured, &top, &mut parts, cond.is_some())?;
                 Ok::<_, QueryError>(parts)
             })();
             self.saved_stack.pop();

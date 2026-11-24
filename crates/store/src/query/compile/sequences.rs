@@ -10,22 +10,23 @@ impl<'a> Compiler<'a> {
         cond: Option<&Condition>,
         scope: &RowContext,
         span: Span,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
-        let (from, rows, child) = self.related_rows(unit, cond, scope, span)?;
+        let (from, rows, child) = self.related_rows(unit, cond, scope, span, cx.measured)?;
         let top = cond.map(top_level).unwrap_or_default();
         let Some(cond) = cond else {
             let mut predicates = vec![rows];
-            self.sessions_within_bounds(&child, &top, &mut predicates, true)?;
+            self.sessions_within_bounds(&child, cx.measured, &top, &mut predicates, true)?;
             return Ok(format!(
                 "EXISTS (SELECT 1 FROM {from} WHERE {})",
                 and_all(&predicates)
             ));
         };
-        let inner = self.cond(cond, &child, false)?;
+        let inner = self.cond(cond, &child, cx.inner())?;
         let mut matching = vec![rows.clone(), inner.clone()];
-        self.sessions_within_bounds(&child, &top, &mut matching, true)?;
+        self.sessions_within_bounds(&child, cx.measured, &top, &mut matching, true)?;
         let mut unknown = vec![rows, format!("({inner}) IS NULL")];
-        self.sessions_within_bounds(&child, &top, &mut unknown, true)?;
+        self.sessions_within_bounds(&child, cx.measured, &top, &mut unknown, true)?;
         let matching = and_all(&matching);
         let unknown = and_all(&unknown);
         // True when some child satisfies the condition, false when every
@@ -44,18 +45,19 @@ impl<'a> Compiler<'a> {
         &mut self,
         unit: Unit,
         cond: Option<&Condition>,
-        op: Op,
-        n: u64,
+        (op, n): (Op, u64),
         scope: &RowContext,
         span: Span,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
-        let (from, mut rows, child) = self.related_rows(unit, cond, scope, span)?;
+        let (from, mut rows, child) = self.related_rows(unit, cond, scope, span, cx.measured)?;
         if let Some(cond) = cond {
-            rows = format!("{rows} AND {}", self.cond(cond, &child, false)?);
+            rows = format!("{rows} AND {}", self.cond(cond, &child, cx.inner())?);
         }
         let mut predicates = vec![rows];
         self.sessions_within_bounds(
             &child,
+            cx.measured,
             &cond.map(top_level).unwrap_or_default(),
             &mut predicates,
             true,
@@ -77,6 +79,7 @@ impl<'a> Compiler<'a> {
         cond: Option<&Condition>,
         scope: &RowContext,
         span: Span,
+        measured: bool,
     ) -> Result<(String, String, RowContext), QueryError> {
         let child = RowContext {
             unit,
@@ -86,7 +89,7 @@ impl<'a> Compiler<'a> {
         let session = self.session_alias(scope, span).map(|s| format!("{s}.pk"));
         let link = self.under_parent(scope.unit, &child, &key, session)?;
         let top = cond.map(top_level).unwrap_or_default();
-        let mut w = self.defaults(&child, &top)?;
+        let mut w = self.defaults(&child, &top, measured);
         w.push(link);
         Ok((base_from(unit, &child.a), and_all(&w), child))
     }
@@ -99,6 +102,7 @@ impl<'a> Compiler<'a> {
         gaps: &[Gap],
         scope: &RowContext,
         span: Span,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         let s = self.session_alias(scope, span)?;
         let ord_cte = "tc_order";
@@ -122,7 +126,7 @@ impl<'a> Compiler<'a> {
                     ..a.clone()
                 },
             };
-            conds.push(self.cond(step, &sc, false)?);
+            conds.push(self.cond(step, &sc, cx.inner())?);
             aliases.push(a);
         }
         // Build from the last step outwards: each step EXISTS inside the
@@ -164,17 +168,19 @@ impl<'a> Compiler<'a> {
         &mut self,
         unit: Unit,
         cond: Option<&Condition>,
-        parent: &RowContext,
-        parent_rows: &str,
+        (parent, parent_rows, parent_order): (&RowContext, &str, Vec<String>),
         span: Span,
+        cx: Cx<'_>,
     ) -> Result<MatchRel, QueryError> {
-        let (child_from, children, child) = self.related_rows(unit, cond, parent, span)?;
+        let (child_from, children, child) =
+            self.related_rows(unit, cond, parent, span, cx.measured)?;
         let mut w = vec![children];
         if let Some(cond) = cond {
-            w.push(self.cond(cond, &child, false)?);
+            w.push(self.cond(cond, &child, cx.inner())?);
         }
         self.sessions_within_bounds(
             &child,
+            cx.measured,
             &cond.map(top_level).unwrap_or_default(),
             &mut w,
             true,
@@ -185,8 +191,7 @@ impl<'a> Compiler<'a> {
             row_columns(unit, &child.a, self.opts.clock.now.as_millisecond());
         let parent_ref = row_reference(parent)?;
         let child_ref = row_reference(&child)?;
-        let child_order = self.default_order(&child);
-        let parent_order = self.default_order(parent);
+        let child_order = self.default_order(&child, None);
         let mut select = vec![
             format!("{child_key} AS _pk"),
             format!("{parent_pk} AS _match_parent_pk"),
@@ -248,6 +253,7 @@ impl<'a> Compiler<'a> {
         parent: &RowContext,
         parent_rows: &str,
         span: Span,
+        cx: Cx<'_>,
     ) -> Result<MatchRel, QueryError> {
         let s = self.session_alias(parent, span)?;
         let ord = "tc_order";
@@ -260,7 +266,7 @@ impl<'a> Compiler<'a> {
                 unit: Unit::ToolCalls,
                 a: a.clone(),
             };
-            conds.push(self.cond(step, &sc, false)?);
+            conds.push(self.cond(step, &sc, cx.inner())?);
             al.push(a);
         }
         let o = |i: usize| format!("o{}", al[i].t);

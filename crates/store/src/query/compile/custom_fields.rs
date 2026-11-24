@@ -8,10 +8,10 @@ use polylogue_model::{CallOutcome, LINK_HOW_NAMES, LINK_KIND_NAMES};
 use polylogue_query::filter::{Comparison, Test, TimeTest, closed_set_message};
 
 /// A special field's compile rule.
-pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_>) -> Result<String, QueryError>;
+pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_, '_>) -> Result<String, QueryError>;
 
 /// One condition on a special field, as its rule receives it.
-pub(crate) struct Call<'q, 's> {
+pub(crate) struct Call<'q, 's, 'l> {
     pub unit: Unit,
     pub name: &'static str,
     /// The value as written, or for `since:`, `until:` and
@@ -19,11 +19,11 @@ pub(crate) struct Call<'q, 's> {
     pub test: &'q Test,
     pub scope: &'s RowContext,
     pub span: Span,
-    /// The condition is at the top level of the query.
-    pub top: bool,
+    /// Where the condition stands.
+    pub cx: Cx<'l>,
 }
 
-impl Call<'_, '_> {
+impl Call<'_, '_, '_> {
     /// The condition's comparison as written.
     fn comparison(&self) -> Option<&Comparison> {
         match self.test {
@@ -90,7 +90,7 @@ impl Call<'_, '_> {
 }
 
 /// `physical:true` lifts logical-session folding; false is the default form.
-pub(crate) fn physical(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn physical(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     match x.test {
         Test::Bool(true) => Ok("1".into()),
         Test::Bool(false) => Err(x.bad(
@@ -102,7 +102,7 @@ pub(crate) fn physical(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String,
 }
 
 /// `(… OR …)` of the parts, refusing an empty list.
-fn any_of(x: &Call<'_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
+fn any_of(x: &Call<'_, '_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
     if parts.is_empty() {
         return Err(x.need_value());
     }
@@ -111,7 +111,7 @@ fn any_of(x: &Call<'_, '_>, parts: Vec<String>) -> Result<String, QueryError> {
 
 /// A `similar:` term the selection did not take as its ranking: under OR or
 /// NOT, in a stage, a second one, or in a nested selection.
-pub(crate) fn near(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn near(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     Err(similar_misplaced(x.span))
 }
 
@@ -125,19 +125,17 @@ pub(super) fn similar_misplaced(span: Span) -> QueryError {
 }
 
 impl Compiler<'_> {
-    /// Build similarities once, when the answer or an earlier selection
-    /// needs an order. Counts and groups need membership only. Only the
-    /// rows `where_sql` selects from `rows` are scored: a text's similarity
-    /// is looked up for the selected rows' texts, never for the archive's
+    /// The similarities of the rows `where_sql` selects from `rows` to the
+    /// `similar:` text, ranking by `scope`'s unit. A text's similarity is
+    /// looked up for the selected rows' texts, never for the archive's
     /// (docs/search.md: Forms and meaning).
-    pub(super) fn setup_near(&mut self, required: bool, rows: &RowContext, where_sql: &[String]) {
-        if !self.opts.embeddings {
-            self.near_unavailable |= required && self.near_request.is_some();
-            return;
-        }
-        let Some((near, scope)) = self.near_request.take() else {
-            return;
-        };
+    pub(super) fn similarity(
+        &mut self,
+        near: &Near,
+        scope: &RowContext,
+        rows: &RowContext,
+        where_sql: &[String],
+    ) -> ranking::Similarity {
         let a = &scope.a;
         let selected = format!(
             "{} WHERE {}",
@@ -151,7 +149,7 @@ impl Compiler<'_> {
                  WHERE xb.message_pk {messages})"
             )
         };
-        let rank = match scope.unit {
+        let (expression, join) = match scope.unit {
             Unit::Sessions => {
                 // Each selected session's best message across its logical session.
                 let sessions = format!("n{}", self.ctes.len() + 1);
@@ -164,11 +162,13 @@ impl Compiler<'_> {
                     )),
                     a.s
                 ));
-                self.near_join = Some(format!(
-                    "LEFT JOIN {sessions} near_s ON near_s.p = {}.pk",
-                    a.s
-                ));
-                "-near_s.s".to_owned()
+                (
+                    "-near_s.s".to_owned(),
+                    Some(format!(
+                        "LEFT JOIN {sessions} near_s ON near_s.p = {}.pk",
+                        a.s
+                    )),
+                )
             }
             Unit::Messages => {
                 let messages = format!("n{}", self.ctes.len() + 1);
@@ -178,46 +178,55 @@ impl Compiler<'_> {
                     best("= xs.pk"),
                     a.m
                 ));
-                self.near_join = Some(format!(
-                    "LEFT JOIN {messages} near_m ON near_m.m = {}.pk",
-                    a.m
-                ));
-                "-near_m.s".to_owned()
+                (
+                    "-near_m.s".to_owned(),
+                    Some(format!(
+                        "LEFT JOIN {messages} near_m ON near_m.m = {}.pk",
+                        a.m
+                    )),
+                )
             }
-            Unit::Blocks => format!(
-                "-(SELECT pl_similarity(xt.hash) FROM text xt WHERE xt.id = {}.text_id)",
-                a.b
+            Unit::Blocks => (
+                format!(
+                    "-(SELECT pl_similarity(xt.hash) FROM text xt WHERE xt.id = {}.text_id)",
+                    a.b
+                ),
+                None,
             ),
             _ => unreachable!("near units are checked when requested"),
         };
-        self.near_rank = Some(rank);
-        self.near = Some(near);
+        self.similar_text = Some(near.clone());
+        ranking::Similarity { expression, join }
     }
 }
 
-pub(crate) fn output(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn output(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     words_in(c, x, Index::Output)
 }
 
-pub(crate) fn thinking(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn thinking(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     words_in(c, x, Index::Thinking)
 }
 
-fn words_in(c: &mut Compiler<'_>, x: &Call<'_, '_>, index: Index) -> Result<String, QueryError> {
+fn words_in(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+    index: Index,
+) -> Result<String, QueryError> {
     let text = x.value()?;
     let quoted = matches!(
         x.comparison(),
         Some(Comparison::Match(Value::Scalar { quoted: true, .. }))
     );
-    c.text(&[(text, quoted, x.span)], x.scope, index, x.top)
+    c.text(&[(text, quoted, x.span)], x.scope, index, x.cx)
 }
 
-pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     if x.one().as_deref() == Some("seen") {
         return since_seen(c, x);
     }
     let t = x.time(c)?;
-    if x.top && x.unit == Unit::Sessions {
+    if x.cx.is_top() && x.unit == Unit::Sessions {
         // Conditions joined by AND narrow: the latest start wins.
         let start = t.start_ms();
         c.session_window.0 = Some(c.session_window.0.map_or(start, |s| s.max(start)));
@@ -245,9 +254,9 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
         .replace("{v}", &t.start_ms().to_string()))
 }
 
-pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let t = x.time(c)?;
-    if x.top && x.unit == Unit::Sessions {
+    if x.cx.is_top() && x.unit == Unit::Sessions {
         let bound = crate::calendar::boundary_ms(t.until_bound());
         c.session_window.1 = Some(c.session_window.1.map_or(bound, |u| u.min(bound)));
     }
@@ -270,7 +279,7 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
 /// `seen_by:T`: what Polylogue had seen by T, read with today's
 /// parsers and prices. Rows count when their bytes were first
 /// seen by then; notes as each family stood then.
-pub(crate) fn seen_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn seen_by(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let end = x.time(c)?.end_ms()?;
     let a = &x.scope.a;
     let cutoff = match x.unit {
@@ -309,7 +318,10 @@ pub(crate) fn seen_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, 
     Ok(cutoff)
 }
 
-pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn changes_after(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     let position = x
         .one()
         .and_then(|text| polylogue_model::ChangePosition::parse(&text));
@@ -329,7 +341,7 @@ pub(crate) fn changes_after(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     ))
 }
 
-pub(crate) fn repo(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn repo(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let s = x.s();
     if x.unknown() {
         return Ok(format!("({s}.repo IS NULL AND {s}.repo_root IS NULL)"));
@@ -355,7 +367,7 @@ pub(crate) fn repo(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     any_of(x, parts)
 }
 
-pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let mut states = vec![];
     for v in x.values() {
         let v = v.to_ascii_lowercase();
@@ -375,16 +387,20 @@ pub(crate) fn live(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     ))
 }
 
-pub(crate) fn waiting(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn waiting(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     live_flag(c, x, "('waiting')")
 }
 
-pub(crate) fn running(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn running(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     live_flag(c, x, &fields::running_states_sql())
 }
 
 /// A true/false field: the live state is one of `states`.
-fn live_flag(c: &mut Compiler<'_>, x: &Call<'_, '_>, states: &str) -> Result<String, QueryError> {
+fn live_flag(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+    states: &str,
+) -> Result<String, QueryError> {
     let v = x.value()?;
     let want = match v.to_ascii_lowercase().as_str() {
         "true" | "yes" | "1" => true,
@@ -401,7 +417,7 @@ fn live_flag(c: &mut Compiler<'_>, x: &Call<'_, '_>, states: &str) -> Result<Str
     ))
 }
 
-pub(crate) fn commit(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn commit(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let v = x.value()?;
     if v.len() < 7 || !v.chars().all(|ch| ch.is_ascii_hexdigit()) {
         return Err(x.bad(
@@ -420,7 +436,7 @@ pub(crate) fn commit(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Q
     ))
 }
 
-pub(crate) fn pr(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn pr(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let v = x.value()?;
     let Some((repo, number)) = parse_pr(&v) else {
         return Err(x.bad(
@@ -443,7 +459,7 @@ pub(crate) fn pr(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Query
     })
 }
 
-pub(crate) fn cwd(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn cwd(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let s = x.s();
     let mut parts = vec![];
     for v in x.values() {
@@ -461,7 +477,7 @@ pub(crate) fn cwd(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
     any_of(x, parts)
 }
 
-pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let s = x.s();
     if x.unknown() {
         return Ok(format!(
@@ -492,7 +508,7 @@ pub(crate) fn model(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
 /// open, is decided beside it.
 pub(crate) fn tool_call_outcome(
     c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
+    x: &Call<'_, '_, '_>,
 ) -> Result<String, QueryError> {
     let a = &x.scope.a;
     let t = &a.t;
@@ -545,7 +561,7 @@ pub(crate) fn tool_call_outcome(
     }
 }
 
-pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let s = x.s();
     let mut parts = vec![];
     for v in x.values() {
@@ -562,7 +578,7 @@ pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
     any_of(x, parts)
 }
 
-pub(crate) fn has(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn has(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let (table, alias) = if x.unit == Unit::Sessions {
         (&fields::SESSION_HAS[..], x.s())
     } else {
@@ -584,7 +600,7 @@ pub(crate) fn has(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Quer
     any_of(x, parts)
 }
 
-pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let s = x.s();
     let v = x.value()?;
     if v.eq_ignore_ascii_case("missing") {
@@ -598,7 +614,7 @@ pub(crate) fn parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Q
     ))
 }
 
-pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let root = crate::lineage::lineage_column_sql(&format!("{}.pk", x.s()), "root");
     if x.unknown() {
         return Ok(format!("{root} IS NULL"));
@@ -609,7 +625,7 @@ pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     Ok(c.session_reference(&root, "id", &x.value()?))
 }
 
-pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let s = x.s();
     let mut parts = vec![];
     for v in x.values() {
@@ -633,7 +649,7 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Que
     any_of(x, parts)
 }
 
-pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let reference = c.session_reference("l.parent_id", "id", &x.value()?);
     Ok(format!(
         "EXISTS (SELECT 1 FROM session_link l WHERE l.child_id = {}.id AND l.kind IN ('fork','continuation','resume') AND {reference})",
@@ -641,7 +657,10 @@ pub(crate) fn continues(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
     ))
 }
 
-pub(crate) fn continued_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn continued_by(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     let reference = c.session_reference("lc.id", "id", &x.value()?);
     Ok(format!(
         "EXISTS (SELECT 1 FROM session_link l JOIN session lc ON lc.id = l.child_id WHERE l.parent_id = {}.id \
@@ -650,7 +669,7 @@ pub(crate) fn continued_by(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Str
     ))
 }
 
-pub(crate) fn connected(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn connected(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let reference = c.session_reference("rs.id", "id", &x.value()?);
     Ok(format!(
         "{}.id IN (WITH RECURSIVE comp(id) AS (SELECT rs.id FROM session rs WHERE {reference} \
@@ -665,7 +684,7 @@ pub(crate) fn connected(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
 /// call.
 pub(crate) fn session_tool_call(
     c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
+    x: &Call<'_, '_, '_>,
 ) -> Result<String, QueryError> {
     let inner = RowContext {
         unit: Unit::ToolCalls,
@@ -680,7 +699,7 @@ pub(crate) fn session_tool_call(
     let filter = c
         .binder()
         .field(Unit::ToolCalls, x.name, comparison.clone(), x.span)?;
-    let cond = c.lower(&filter, &inner, false)?;
+    let cond = c.lower(&filter, &inner, x.cx.inner())?;
     Ok(format!(
         "EXISTS (SELECT 1 FROM tool_call tq WHERE tq.session_pk = {}.pk AND {cond})",
         x.s()
@@ -689,7 +708,10 @@ pub(crate) fn session_tool_call(
 
 /// `command:` and `path:` on tool calls: a substring, through the trigram
 /// index from three characters.
-pub(crate) fn tool_call_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn tool_call_text(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     let t = &x.scope.a.t;
     let name = x.name;
     if x.unknown() {
@@ -714,7 +736,7 @@ pub(crate) fn tool_call_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
     any_of(x, parts)
 }
 
-pub(crate) fn input(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn input(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let p = c.text_param(&x.value()?);
     Ok(format!(
         "instr(pl_key(json_extract(pl_block({}.body), '$.input')), pl_key({p})) > 0",
@@ -722,7 +744,7 @@ pub(crate) fn input(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, Qu
     ))
 }
 
-pub(crate) fn mcp_server(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn mcp_server(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let vs: Vec<String> = x
         .values()
         .iter()
@@ -738,7 +760,10 @@ pub(crate) fn mcp_server(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Strin
     ))
 }
 
-pub(crate) fn spawned_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn spawned_child(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     let reference = c.session_reference("lcs.id", "id", &x.value()?);
     let a = &x.scope.a;
     Ok(format!(
@@ -750,7 +775,10 @@ pub(crate) fn spawned_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
     ))
 }
 
-pub(crate) fn adjacent_call(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn adjacent_call(
+    _: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     Err(QueryError::Invalid {
         message: format!(
             "{0} names a relation; filter on {0}.<field>, such as {0}.action:shell",
@@ -763,33 +791,39 @@ pub(crate) fn adjacent_call(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<St
 /// A field naming a session by ID or unique prefix in a column of the row.
 fn session_id_in(
     c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
+    x: &Call<'_, '_, '_>,
     column: &str,
 ) -> Result<String, QueryError> {
     let column = x.scope.a.expand(column);
     Ok(c.session_reference(&column, "id", &x.value()?))
 }
 
-pub(crate) fn live_session(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn live_session(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     session_id_in(c, x, "{s}.id")
 }
 
-pub(crate) fn link_parent(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn link_parent(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     session_id_in(c, x, "{r}.parent_id")
 }
 
-pub(crate) fn link_child(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn link_child(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     session_id_in(c, x, "{r}c.id")
 }
 
-pub(crate) fn recipient(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn recipient(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     session_id_in(c, x, "{r}.recipient_id")
 }
 
 /// A note about the reference; a bare session ID is a `session:` reference.
 pub(crate) fn annotation_about(
     c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
+    x: &Call<'_, '_, '_>,
 ) -> Result<String, QueryError> {
     let input = x.value()?;
     let reference =
@@ -805,17 +839,17 @@ pub(crate) fn annotation_about(
 }
 
 // json_each exposes reference strings as text; they are not JSON documents.
-pub(crate) fn refs(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn refs(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     delivery_member(c, x, "refs_json", "dj.value")
 }
 
-pub(crate) fn left_out(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn left_out(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     delivery_member(c, x, "left_out_json", "json_extract(dj.value, '$.what')")
 }
 
 fn delivery_member(
     c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
+    x: &Call<'_, '_, '_>,
     column: &str,
     member: &str,
 ) -> Result<String, QueryError> {
@@ -827,7 +861,7 @@ fn delivery_member(
 }
 
 /// Stored selections are output data, not scalar query operands.
-pub(crate) fn selection(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn selection(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     Err(QueryError::Invalid {
         message: format!(
             "{} is a selection array; predicates on it are not supported",
@@ -837,7 +871,7 @@ pub(crate) fn selection(_: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String
     })
 }
 
-pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let parts = x.values().into_iter().map(|value| {
         let parameter = c.text_param(&value);
         format!("EXISTS(SELECT 1 FROM json_tree(pl_block({}.data)) event_text_value WHERE event_text_value.type='text' AND instr(pl_key(event_text_value.atom),pl_key({parameter}))>0)",x.row())
@@ -846,7 +880,7 @@ pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<Strin
 }
 
 /// All references made by this annotation, excluding what it is about.
-pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let mut clauses = Vec::new();
     for value in x.values() {
         let reference = polylogue_model::Reference::parse(&value)
@@ -856,7 +890,7 @@ pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String,
     }
     any_of(x, clauses)
 }
-pub(crate) fn request(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn request(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let values = match x.test {
         Test::Prefix(values) => values.clone(),
         _ => return Err(x.need_value()),
@@ -874,7 +908,7 @@ pub(crate) fn request(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, 
 /// Repository scope is captured from the caller when execution starts.
 pub(crate) fn here(
     c: &mut Compiler<'_>,
-    x: &Call<'_, '_>,
+    x: &Call<'_, '_, '_>,
     cwd_only: bool,
 ) -> Result<String, QueryError> {
     let scope = c.opts.here.clone().ok_or_else(|| QueryError::Invalid {
@@ -898,7 +932,7 @@ pub(crate) fn here(
     }
     any_of(x, parts)
 }
-fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let author = c.opts.seen_marks_of.clone().ok_or_else(|| {
         x.bad(
             "seen".into(),
@@ -936,7 +970,10 @@ fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryErr
     ))
 }
 
-pub(crate) fn alternate_lang(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn alternate_lang(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     let mut clauses = Vec::new();
     for lang in x.values() {
         let p = c.text_param(&lang);
@@ -945,7 +982,10 @@ pub(crate) fn alternate_lang(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<S
     any_of(x, clauses)
 }
 
-pub(crate) fn run_outcome(c: &mut Compiler<'_>, x: &Call<'_, '_>) -> Result<String, QueryError> {
+pub(crate) fn run_outcome(
+    c: &mut Compiler<'_>,
+    x: &Call<'_, '_, '_>,
+) -> Result<String, QueryError> {
     const STATES: [&str; 2] = ["ok", "error"];
     let mut parts = Vec::new();
     for value in x.values() {

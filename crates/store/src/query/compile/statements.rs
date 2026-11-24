@@ -32,37 +32,43 @@ pub struct KeyedRows {
     pub search: Option<TextSearch>,
 }
 
+/// The other statements a ranked text search can be read by
+/// (docs/search.md: The search leg). Each selects the same rows as
+/// [`KeyedRows::keys`] in the same order; the store picks one by the size
+/// of the hit set. Every statement is complete as built: its inputs are
+/// bound after the query's parameters, never written into them.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TextSearch {
     pub index: polylogue_query::search::SnippetIndex,
+    /// The match expression, for the planning probe and the rank boundary.
     pub expression: String,
-    /// One-based parameter holding the number of ranked indexed texts.
-    /// Its usual value is -1, so counts and whole selections stay exact.
-    pub limit: usize,
-    /// A non-text scope whose blocks can drive the same ranked selection.
+    /// The index drives: the keys of rows reached by the best-ranked
+    /// indexed texts, how many bound after the query's parameters.
+    pub by_index: String,
+    /// The non-text scope can drive instead.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<ScopedSearch>,
-    #[serde(skip)]
-    pub(super) scope_build: Option<super::search::ScopeBuild>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ScopedSearch {
     /// Streams in-scope block occurrences for the bounded planning probe.
     pub blocks: String,
-    /// One-based parameter: zero reads the index, one reads the full scope,
-    /// two reads the current recency batch.
-    pub mode: usize,
+    /// The scope drives: the keys of rows reached through the scope's
+    /// blocks.
+    pub by_scope: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub recent: Option<RecentSearch>,
 }
 
+/// Recency drives: candidate rows newest first, tested batch by batch.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecentSearch {
-    /// Keys of the scope rows and their final order values, read newest first.
-    pub keys: String,
-    /// One-based JSON parameter containing the current batch of row keys.
-    pub batch: usize,
+    /// Keys of the scope rows and their final order values.
+    pub candidates: String,
+    /// The keys among one batch of candidates, bound as a JSON array of
+    /// row keys after the query's parameters.
+    pub batch: String,
 }
 
 /// A derived relation's rows.
@@ -150,30 +156,7 @@ impl Statements {
             Statements::Keyed(keyed) => &keyed.keys,
             Statements::Derived(derived) => &derived.rows,
         };
-        let select_list = match columns {
-            PageColumns::All => "*".to_owned(),
-            PageColumns::Order => order
-                .iter()
-                .map(|key| format!("\"{}\"", key.column))
-                .collect::<Vec<_>>()
-                .join(", "),
-        };
-        let mut sql = format!("SELECT {select_list} FROM ({source})");
-        if after && !order.is_empty() {
-            sql.push_str(" WHERE ");
-            sql.push_str(&after_condition(order, params, reverse));
-        }
-        if !order.is_empty() {
-            sql.push_str(" ORDER BY ");
-            sql.push_str(&super::order_by_in_direction(order, reverse));
-        }
-        let limit = if after {
-            params + order.len() + 1
-        } else {
-            params + 1
-        };
-        sql.push_str(&format!(" LIMIT ?{limit}"));
-        sql
+        page_of(source, order, params, after, reverse, columns)
     }
 
     /// The row columns of the keys bound as one JSON array after the
@@ -232,6 +215,44 @@ impl Statements {
             }
         }
     }
+}
+
+/// One page of `source` in `order`, `reverse`d or not. With `after`, it
+/// holds the rows that sort after a row whose order values are bound after
+/// the source's `params` parameters, one per key; the page size is bound
+/// last.
+pub fn page_of(
+    source: &str,
+    order: &[OrderKey],
+    params: usize,
+    after: bool,
+    reverse: bool,
+    columns: PageColumns,
+) -> String {
+    let select_list = match columns {
+        PageColumns::All => "*".to_owned(),
+        PageColumns::Order => order
+            .iter()
+            .map(|key| format!("\"{}\"", key.column))
+            .collect::<Vec<_>>()
+            .join(", "),
+    };
+    let mut sql = format!("SELECT {select_list} FROM ({source})");
+    if after && !order.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&after_condition(order, params, reverse));
+    }
+    if !order.is_empty() {
+        sql.push_str(" ORDER BY ");
+        sql.push_str(&super::order_by_in_direction(order, reverse));
+    }
+    let limit = if after {
+        params + order.len() + 1
+    } else {
+        params + 1
+    };
+    sql.push_str(&format!(" LIMIT ?{limit}"));
+    sql
 }
 
 /// Rows after the bound key values `?{params+1}`...: equal on every earlier

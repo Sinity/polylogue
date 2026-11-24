@@ -272,19 +272,29 @@ impl<'a> Compiler<'a> {
         Ok(out)
     }
 
+    /// Rows attached to each of a page's rows, compiled as their own
+    /// statement with their own parameters.
     pub(super) fn attach(
         &mut self,
         child: &Attachment,
         parent: &RowContext,
+        measured: bool,
     ) -> Result<Attach, QueryError> {
-        let saved = std::mem::take(&mut self.params);
-        let saved_ctes = std::mem::take(&mut self.ctes);
-        let saved_shown = std::mem::take(&mut self.shown);
-        let saved_rank = self.rank.take();
-        let saved_rank_source = self.rank_source.take();
-        let saved_near_rank = self.near_rank.take();
-        let saved_near_join = self.near_join.take();
-        let saved_fusion = self.fusion.take();
+        let mut compiler = self.nested(self.text);
+        compiler.aliases = self.aliases;
+        compiler.saved_stack = self.saved_stack.clone();
+        let attach = compiler.attached(child, parent, measured);
+        self.aliases = compiler.aliases;
+        self.absorb(compiler);
+        attach
+    }
+
+    fn attached(
+        &mut self,
+        child: &Attachment,
+        parent: &RowContext,
+        measured: bool,
+    ) -> Result<Attach, QueryError> {
         let unit = bind_unit(&child.unit)?;
         let sc = RowContext::plain(unit);
         let conds: Vec<Condition> = child
@@ -296,9 +306,9 @@ impl<'a> Compiler<'a> {
             })
             .collect();
         let top: Vec<Condition> = conds.iter().flat_map(top_level).collect();
-        let mut w = self.defaults(&sc, &top)?;
+        let mut w = self.defaults(&sc, &top, measured);
         for c in &conds {
-            w.push(self.cond(c, &sc, false)?);
+            w.push(self.cond(c, &sc, Cx::plain(measured))?);
         }
         let mut select = vec![];
         let mut columns = vec![];
@@ -333,7 +343,7 @@ impl<'a> Compiler<'a> {
         };
         let parent_link = self.under_parent(parent.unit, &sc, "_parents.value", session)?;
         w.push(parent_link);
-        self.sessions_within_bounds(&sc, &top, &mut w, true)?;
+        self.sessions_within_bounds(&sc, measured, &top, &mut w, true)?;
         let ctes = if self.ctes.is_empty() {
             String::new()
         } else {
@@ -357,7 +367,7 @@ impl<'a> Compiler<'a> {
                 format!("_ordinal <= {first} AND _ordinal > min(_sibling_count, {first}) - {last}")
             }
         };
-        let order = self.default_order(&sc).join(", ");
+        let order = self.default_order(&sc, None).join(", ");
         let n = self.params.len() + 1;
         if child.fields.is_empty() {
             // No field list attaches the unit's own columns.
@@ -387,18 +397,10 @@ impl<'a> Compiler<'a> {
             base_from(unit, &sc.a),
             and_all(&w),
         );
-        let params = std::mem::replace(&mut self.params, saved);
-        self.ctes = saved_ctes;
-        self.shown = saved_shown;
-        self.rank = saved_rank;
-        self.rank_source = saved_rank_source;
-        self.near_rank = saved_near_rank;
-        self.near_join = saved_near_join;
-        self.fusion = saved_fusion;
         Ok(Attach {
             name: unit.name().to_owned(),
             sql,
-            params,
+            params: std::mem::take(&mut self.params),
             columns,
         })
     }
