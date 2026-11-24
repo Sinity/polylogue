@@ -781,11 +781,13 @@ fn a_compaction_summary_is_recorded() {
         .filter(|event| event.kind == "compaction")
         .collect();
     assert_eq!(events.len(), 1);
-    let boundary_line = serde_json::to_vec(&boundary).unwrap().len() as u64 + 1;
-    assert_eq!(
-        events[0].range,
-        Some((first.len() as u64 - boundary_line, first.len() as u64))
-    );
+    // The event depends on both records: its range runs from the boundary
+    // record's start to the summary record's end (each line without its
+    // newline).
+    let boundary_line = serde_json::to_vec(&boundary).unwrap().len() as u64;
+    let boundary_start = first.len() as u64 - 1 - boundary_line;
+    let summary_end = (first.len() + second.len()) as u64 - 1;
+    assert_eq!(events[0].range, Some((boundary_start, summary_end)));
     assert_eq!(
         events[0].after.as_ref().map(ToString::to_string).as_deref(),
         Some("claude-code:first")

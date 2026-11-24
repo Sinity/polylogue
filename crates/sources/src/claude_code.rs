@@ -154,7 +154,8 @@ pub struct ParserState {
     last: Option<MessageId>,
     /// A compaction boundary waiting for the summary record that follows
     /// it, so the boundary names its summary message. Any other record
-    /// sends it as it is.
+    /// sends it as it is. Its range runs to the end of the record that sends
+    /// it, since the event depends on the bytes up to there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pending_boundary: Option<Event>,
     #[serde(default)]
@@ -456,6 +457,7 @@ impl ClaudeCode {
         };
         let outcome = self.message(parser_state, record, value, Role::User, out, records);
         if let Some(mut boundary) = pending.or(own) {
+            boundary.range = boundary.range.map(|(start, _)| (start, range(record).1));
             let mut data: polylogue_model::CompactionBoundary =
                 serde_json::from_value(boundary.data.clone()).unwrap_or_default();
             data.summary = parser_state.last.clone();
@@ -1248,7 +1250,8 @@ impl Parser for ClaudeCode {
             records.fields(ty, v, &fields::CONTINUATION_FIELDS);
         }
         let summary = ty == "user" && v.bool("isCompactSummary") == Some(true);
-        if !summary && let Some(boundary) = parser_state.pending_boundary.take() {
+        if !summary && let Some(mut boundary) = parser_state.pending_boundary.take() {
+            boundary.range = boundary.range.map(|(start, _)| (start, range(record).1));
             out.events.push(boundary);
         }
         match ty {

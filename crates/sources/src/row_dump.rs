@@ -37,7 +37,10 @@ pub static ROW_ENVELOPE: Fields = Fields::new(
     "row_wrapper",
     &[
         ("t", Rule::Read(T::String)),
-        ("k", Rule::Read(T::Any)),
+        (
+            "k",
+            Rule::ReadWhole("the row's key: its primary-key values, or its rowid"),
+        ),
         ("r", Rule::Read(T::Object)),
         ("at_ms", Rule::Read(T::Number)),
         ("encoding", Rule::Read(T::String)),
@@ -48,7 +51,10 @@ static GONE: Fields = Fields::new(
     "gone",
     &[
         ("t", Rule::Read(T::String)),
-        ("k", Rule::Read(T::Any)),
+        (
+            "k",
+            Rule::ReadWhole("the row's key: its primary-key values, or its rowid"),
+        ),
         ("gone", Rule::Read(T::Boolean)),
         ("at_ms", Rule::Read(T::Number)),
     ],

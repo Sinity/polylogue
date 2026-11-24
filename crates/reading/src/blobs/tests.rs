@@ -1,7 +1,6 @@
 use super::*;
 use polylogue_model::{
-    Author, ChangePosition, ExtractedBlob, MessageRow, Output, Role, Session, SessionKind,
-    Timestamp,
+    Author, ChangePosition, MessageRow, Output, Role, Session, SessionKind, Timestamp,
 };
 use polylogue_store::{
     ReadPool,
@@ -66,8 +65,10 @@ fn events(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
 
 #[test]
 fn an_attachment_whose_size_differs_is_unavailable_and_the_export_continues() {
-    let bytes = b"five!".to_vec();
-    let hash = BlobHash::of(&bytes);
+    // The fixture stores each record as one byte and a newline ends the
+    // input: the input's bytes are a stored blob the attachment can name.
+    let bytes = b"r\n";
+    let hash = BlobHash::of(bytes);
     let image = |size| {
         Block::Image(Attachment {
             media_type: Some("image/png".into()),
@@ -89,12 +90,7 @@ fn an_attachment_whose_size_differs_is_unavailable_and_the_export_continues() {
                 id_kind: polylogue_model::IdKind::Native,
                 offset: 0,
                 end: 1,
-                message: message("m", "attachments", Role::User, 1, vec![image(5)]),
-            }],
-            blobs: vec![ExtractedBlob {
-                hash,
-                size: 5,
-                bytes,
+                message: message("m", "attachments", Role::User, 1, vec![image(2)]),
             }],
             ..Output::default()
         },
@@ -107,10 +103,10 @@ fn an_attachment_whose_size_differs_is_unavailable_and_the_export_continues() {
     {
         let mut stream = Stream::begin(&mut out, &check, &begin()).unwrap();
         let mut blobs = Blobs::new(&reader).unwrap();
-        // A recorded size of 9 for five stored bytes: the bytes are not sent,
+        // A recorded size of 9 for two stored bytes: the bytes are not sent,
         // the read says why, and the next attachment is still delivered.
         blobs
-            .blocks(&[image(9), image(5)], &mut stream, &check)
+            .blocks(&[image(9), image(2)], &mut stream, &check)
             .unwrap();
     }
     let events = events(&out);
@@ -125,7 +121,7 @@ fn an_attachment_whose_size_differs_is_unavailable_and_the_export_continues() {
                 kind: ItemKind::Omission {
                     count: ValueState::known(1),
                     unit: "attachment".into(),
-                    why: "unavailable: the attachment records 9 bytes and its stored bytes are 5"
+                    why: "unavailable: the attachment records 9 bytes and its stored bytes are 2"
                         .into(),
                     continue_call: None,
                 },
@@ -135,8 +131,8 @@ fn an_attachment_whose_size_differs_is_unavailable_and_the_export_continues() {
     let descriptor: ReadRecord = serde_json::from_value(events[2].1.clone()).unwrap();
     assert!(matches!(
         descriptor.record(),
-        Some(Record::Blob(blob)) if blob.file.size == 5 && blob.file.hash == hash
+        Some(Record::Blob(blob)) if blob.file.size == 2 && blob.file.hash == hash
     ));
     assert_eq!(events[3].1["offset"], 0);
-    assert_eq!(events[3].1["base64"], "Zml2ZSE=");
+    assert_eq!(events[3].1["base64"], "cgo=");
 }
