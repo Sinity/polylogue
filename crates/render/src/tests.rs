@@ -3023,10 +3023,29 @@ fn times_render_local_with_quality() {
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
         let text = encode(&doc, format);
         assert!(
-            text.contains("2026-11-09 09:12 +01:00 (intrinsic, instant)"),
+            text.contains("09:12 (intrinsic, instant)") && text.contains("2026-11-09"),
             "{format:?}: {text}"
         );
+        assert!(!text.contains("+01:00"), "{format:?}: {text}");
     }
+    // A reading for a model writes the date and offset on every header.
+    let mut model_text = vec![];
+    encode_document(
+        &doc,
+        Format::Markdown,
+        EncodeOptions {
+            model_facing: true,
+            commands: Some(read_commands()),
+            ..Default::default()
+        },
+        &mut model_text,
+    )
+    .unwrap();
+    let model_text = String::from_utf8(model_text).unwrap();
+    assert!(
+        model_text.contains("## 2026-11-09 09:12 +01:00 (intrinsic, instant)"),
+        "{model_text}"
+    );
     if let ItemKind::MessageHeader { header } = &mut doc.items[0].kind {
         header.time.evidence = polylogue_model::TimeAccuracy {
             quality: TimeQuality::Captured,
@@ -3066,12 +3085,18 @@ fn times_render_local_with_quality() {
     for format in [Format::Terminal, Format::Markdown, Format::Html] {
         let text = encode(&doc, format);
         assert_eq!(
+            text.matches("09:12 (captured, bounded until 09:13)")
+                .count(),
+            1,
+            "message header in {format:?}: {text}"
+        );
+        assert_eq!(
             text.matches(
                 "2026-11-09 09:12 +01:00 (captured, bounded until 2026-11-09 09:13 +01:00)"
             )
             .count(),
-            2,
-            "message and session card in {format:?}: {text}"
+            1,
+            "session card in {format:?}: {text}"
         );
     }
     let text = encode(&doc, Format::Terminal);
@@ -3079,7 +3104,10 @@ fn times_render_local_with_quality() {
     doc.header.zone = None;
     let text = encode(&doc, Format::Terminal);
     assert!(!text.contains("Times "), "{text}");
-    assert!(text.contains("2026-11-09 08:12 +00:00"), "{text}");
+    assert!(
+        text.contains("08:12 (captured, bounded until 08:13)"),
+        "{text}"
+    );
 }
 
 /// A document covering every author, every indicator and every tool
@@ -3176,7 +3204,147 @@ fn every_kind_document() -> ReadDocument {
                 .filter(|item| matches!(item.kind, ItemKind::Call { .. })),
         );
     }
+    // A harness message on one day, a model message on the next, with every
+    // call and attachment rule of docs/transcripts.md between them.
+    let dated = |at: &str, reference: &str, author: &str, context: Option<u64>| ReadItem {
+        source: Source::record(reference),
+        kind: ItemKind::MessageHeader {
+            header: Box::new(MessageHeader {
+                time: TimeValue {
+                    at: Some(polylogue_model::Timestamp::parse_rfc3339(at).unwrap()),
+                    evidence: polylogue_model::TimeAccuracy {
+                        quality: TimeQuality::Captured,
+                        precision: Some(polylogue_model::Precision::Minute),
+                        until: None,
+                    },
+                },
+                author: ValueState::known(author.into()),
+                model: ValueState::NotRecorded,
+                annotations: vec![],
+                alternate: None,
+                inherited: false,
+                branch: Default::default(),
+                context: context.map(ValueState::known),
+            }),
+        },
+    };
+    let call = |tool: &str,
+                target: &str,
+                action: polylogue_model::ToolAction,
+                outcome: &str,
+                exit: Option<i64>,
+                duration_ms: ValueState<u64>,
+                error_line: Option<&str>| ReadItem {
+        source: Source::record("block:test:session:message#1"),
+        kind: ItemKind::Call {
+            call: Box::new(CallItem {
+                orphan: false,
+                call_id: Some("t1".into()),
+                tool: ValueState::known(tool.into()),
+                target: ValueState::known(target.into()),
+                action,
+                outcome: ValueState::known(outcome.into()),
+                exit,
+                duration_ms,
+                error_line: error_line.map(Into::into),
+                input: None,
+                output: None,
+                output_excerpt: None,
+                result_source: None,
+                child: None,
+                edit: None,
+            }),
+        },
+    };
+    let attachment =
+        |name: &str, media_type: &str, size: u64, supplied_by, availability: &str| ReadItem {
+            source: Source::record("block:test:session:message#1"),
+            kind: ItemKind::Attachment {
+                attachment: Box::new(polylogue_model::Attachment {
+                    name: Some(name.into()),
+                    media_type: Some(media_type.into()),
+                    size: Some(size),
+                    ..Default::default()
+                }),
+                supplied_by,
+                availability: ValueState::known(availability.into()),
+                link: None,
+                inline_bytes: None,
+                verified_hash: None,
+                open: None,
+            },
+        };
+    use polylogue_model::ToolAction::{Search, Shell, Subagent};
+    items.extend([
+        dated(
+            "2026-11-09T08:12:00Z",
+            "block:test:session:message#1",
+            "[claude-code]",
+            Some(182_000),
+        ),
+        call(
+            "Bash",
+            "cargo test",
+            Shell,
+            "error",
+            Some(101),
+            ValueState::known(223_000),
+            Some("test parse_dates::tomorrow_at_noon ... FAILED"),
+        ),
+        call(
+            "Bash",
+            "ls",
+            Shell,
+            "ok",
+            Some(0),
+            ValueState::known(850),
+            None,
+        ),
+        call(
+            "Agent",
+            "Explore: Survey date crates",
+            Subagent,
+            "ok",
+            None,
+            ValueState::known(420_000),
+            None,
+        ),
+        call(
+            "Grep",
+            &"ab".repeat(65),
+            Search,
+            "ok",
+            None,
+            ValueState::known(5_000),
+            None,
+        ),
+        attachment(
+            "chart.png",
+            "image/png",
+            2048,
+            ValueState::known("model".into()),
+            "present",
+        ),
+        attachment(
+            "notes.txt",
+            "text/plain",
+            12,
+            ValueState::default(),
+            "unfetched",
+        ),
+        dated(
+            "2026-11-10T09:05:00Z",
+            "block:test:session:message#2",
+            "model",
+            None,
+        ),
+    ]);
     let mut doc = document(items);
+    doc.footer.referenced_by = vec![ReferencedBy {
+        reference: "page:flaky-ci".into(),
+        role: "cites".into(),
+        open: None,
+    }];
     doc.footer.coverage = vec![Coverage {
         target: TargetKind::TextFragment,
         view: View::Transcript,

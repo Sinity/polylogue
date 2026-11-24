@@ -214,6 +214,13 @@ impl<'a> Encoder<'a> {
                 writeln!(self.out)
             }
             Format::Html => {
+                write!(
+                    self.out,
+                    "{}",
+                    html::cited_and_linked(footer, self.options.commands)
+                        .map_err(io::Error::other)?
+                        .into_string()
+                )?;
                 self.out.write_all(b"</article>")?;
                 if self.options.standalone_html {
                     self.out.write_all(b"</body></html>")?;
@@ -1027,15 +1034,19 @@ pub(crate) fn duration_text(ms: u64) -> String {
 /// How many characters of a call's target a line shows.
 const TARGET_CHARACTERS: usize = 120;
 
-/// The target as shown on the call line: cut with `…` when long.
-pub(crate) fn call_target(call: &CallItem) -> String {
-    let target = value_text(&call.target);
+/// A target as shown on the call line: cut with `…` when long.
+pub(crate) fn cut_target(target: &str) -> String {
     if target.chars().count() <= TARGET_CHARACTERS {
-        return target;
+        return target.into();
     }
     let mut cut: String = target.chars().take(TARGET_CHARACTERS).collect();
     cut.push('…');
     cut
+}
+
+/// The call's target as the text encoders show it.
+pub(crate) fn call_target(call: &CallItem) -> String {
+    cut_target(&value_text(&call.target))
 }
 
 /// `exit N`, shown when the code is not 0 and always for a failed shell call.

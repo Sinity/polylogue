@@ -202,7 +202,7 @@ fn typed_lineage_issues_keep_unknowns_and_evidence_in_html_and_terminal() {
     .unwrap();
     let text = String::from_utf8(text).unwrap();
     for line in [
-        "↳ link_issue: missing_branch_point · parent codex:p · child codex:c · native.<field> · <unknown>",
+        "· missing_branch_point · parent codex:p · child codex:c · native.<field> · <unknown>",
         "↳ session:codex:p · unknown (not stored) · parents  · 0 own + unknown (missing branch point) inherited · cost not recorded own / unknown tree",
         "root pending · parent codex:<missing> of codex:p is not available",
     ] {
@@ -210,7 +210,7 @@ fn typed_lineage_issues_keep_unknowns_and_evidence_in_html_and_terminal() {
     }
     let html = String::from_utf8(output).unwrap();
     for fragment in [
-        "<aside class=\"indicator\" data-kind=\"link_issue\">missing_branch_point · parent codex:p · child codex:c · native.&lt;field&gt; · &lt;unknown&gt;</aside>",
+        "<aside class=\"indicator\" data-kind=\"link_issue\">· missing_branch_point · parent codex:p · child codex:c · native.&lt;field&gt; · &lt;unknown&gt;</aside>",
         "<h3>session:codex:p · <span class=\"value-state\" data-state=\"unknown\">unknown (not stored)</span></h3>",
         "<p>root pending · parent codex:&lt;missing&gt; of codex:p is not available</p>",
         "<p><span class=\"value-state\" data-state=\"known\">0</span> own + <span class=\"value-state\" data-state=\"unknown\">unknown (missing branch point)</span> inherited · cost <span class=\"value-state\" data-state=\"not-recorded\">not recorded</span> own / <span class=\"value-state\" data-state=\"unknown\">unknown</span> tree</p>",

@@ -192,7 +192,7 @@ fn item_markup(
                 ThinkingContent::Collapsed => { p class="thinking" { "thinking (" (value(words)) " words)" } },
                 ThinkingContent::Encrypted => { p class="thinking" { "thinking (encrypted)" } }, ThinkingContent::Redacted => { p class="thinking" { "thinking (redacted)" } }, ThinkingContent::Absent { blocks } => { p class="thinking" { "thinking absent · " (blocks) " blocks" } }
             } },
-            ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (crate::encode::call_label(call)) "  " code { (crate::encode::call_target(call)) } "  " (value(&call.outcome)) @for part in [crate::encode::call_exit(call), crate::encode::call_duration(call)].into_iter().flatten() { "  " (part) } } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { @for part in &excerpt.parts { @match part { OutputPart::Text {text,..}=>{ pre { (text) } }, OutputPart::Omission {lines,characters,..}=>{ p class="omission" { "… " (lines) " lines / " (characters) " characters skipped" } } } } @if let Some(open)=&excerpt.open { (ready(open, commands)?) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() }, zone, commands)?) } } },
+            ItemKind::Call { call } => { details class="tool-call" open[call.input.is_some() || call.output.is_some()] { summary { "▸ " (crate::encode::call_label(call)) "  " code { @if let Some(target) = call.target.value() { (crate::encode::cut_target(&target.to_string())) } @else { (value(&call.target)) } } "  " (value(&call.outcome)) @for part in [crate::encode::call_exit(call), crate::encode::call_duration(call)].into_iter().flatten() { "  " (part) } } @if let Some(error)=&call.error_line { p class="error" { (error) } } @if let Some(input)=&call.input { pre class="input" { (serde_json::to_string_pretty(input).expect("JSON serializes")) } } @if let Some(output)=&call.output { pre class="output" { (output) } } @if let Some(excerpt)=&call.output_excerpt { @for part in &excerpt.parts { @match part { OutputPart::Text {text,..}=>{ pre { (text) } }, OutputPart::Omission {lines,characters,..}=>{ p class="omission" { "… " (lines) " lines / " (characters) " characters skipped" } } } } @if let Some(open)=&excerpt.open { (ready(open, commands)?) } } @if let Some(e)=&call.edit { (edit(e)) } @if let Some(child)=&call.child { (card(&Card::Delegation { card:child.clone() }, zone, commands)?) } } },
             ItemKind::Attachment { attachment,supplied_by,availability,link,inline_bytes,verified_hash,open } => { @if let Some(src)=inline_image(attachment,inline_bytes.as_deref(),verified_hash.as_ref(),inline_limit) { img src=(src) alt=(attachment.name.as_deref().unwrap_or("attachment")); } p class="attachment" { "▣ " @if let Some(url)=link.as_deref().filter(|url|safe_url(url)) { a href=(url) { (attachment.name.as_deref().unwrap_or("attachment")) } } @else { (attachment.name.as_deref().unwrap_or("attachment")) } " (" (attachment.media_type.as_deref().unwrap_or("media type unknown")) ", " (attachment.size.map(|n|format!("{n} bytes")).unwrap_or_else(||"size unknown".into())) ")" @for note in attachment_notes(supplied_by, availability) { " · " (note) } @if let Some(open)=open { " " (ready(open, commands)?) } } },
             ItemKind::TextFragment { record,origin } => { aside class="partial-source" { p { "Selected source text · " code { (&record.reference) } " · bytes " (record.fragment.coverage.start) ".." (record.fragment.coverage.end) } p { "Source classification: " (crate::encode::value_text(origin)) " · recorded source length: " (record.fragment.coverage.total_bytes.map_or_else(||"unknown".into(),|total|total.to_string())) } pre class="archived-text" { (&record.fragment.text) } } },
             ItemKind::LinkIssue { issue } => { aside class="indicator link-issue" { "Parents incomplete: " (issue) } },
@@ -212,12 +212,21 @@ pub fn footer(
 ) -> Result<Markup, Failure> {
     Ok(visible_controls(footer_markup(footer, commands)?))
 }
+/// The block every reading ends with, under one heading in every format.
+pub fn cited_and_linked(
+    footer: &ReadFooter,
+    commands: Option<&OperationDeclarations>,
+) -> Result<Markup, Failure> {
+    Ok(visible_controls(
+        html! { @if !footer.referenced_by.is_empty() { h2 { (crate::encode::CITED_AND_LINKED) } @for reference in &footer.referenced_by { p { code { (&reference.reference) } " · " (&reference.role) @if let Some(call)=&reference.open { " " (ready(call, commands)?) } } } } },
+    ))
+}
 fn footer_markup(
     footer: &ReadFooter,
     commands: Option<&OperationDeclarations>,
 ) -> Result<Markup, Failure> {
     Ok(
-        html! { footer class="read-footer" { @for coverage in &footer.coverage { p { (coverage.omitted) " " (coverage.target.as_str()) " omitted from " (coverage.view) } } @if !footer.referenced_by.is_empty() { h2 { (crate::encode::CITED_AND_LINKED) } @for reference in &footer.referenced_by { p { code { (&reference.reference) } " · " (&reference.role) @if let Some(call)=&reference.open { " " (ready(call, commands)?) } } } } @if let Some(call)=&footer.previous { nav aria-label="Previous page" { (ready(call, commands)?) } } @if let Some(call)=&footer.next { nav aria-label="Next page" { (ready(call, commands)?) } } } },
+        html! { footer class="read-footer" { @for coverage in &footer.coverage { p { (coverage.omitted) " " (coverage.target.as_str()) " omitted from " (coverage.view) } } (cited_and_linked(footer, commands)?) @if let Some(call)=&footer.previous { nav aria-label="Previous page" { (ready(call, commands)?) } } @if let Some(call)=&footer.next { nav aria-label="Next page" { (ready(call, commands)?) } } } },
     )
 }
 pub fn document(
