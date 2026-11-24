@@ -180,7 +180,14 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
     let mut latencies = Vec::new();
     let mut imported_bytes = 0;
     let mut answered_during_build = 0;
-    for n in 0..40 {
+    // Imports keep coming until the build is installed: one that waited for
+    // a pause in the requests would never end.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut installed_under_requests = false;
+    for n in 0.. {
+        if Instant::now() > deadline {
+            break;
+        }
         let path = home.dir.path().join(format!("request-{n}.json"));
         std::fs::write(
             &path,
@@ -219,14 +226,18 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
         imported_bytes += report.pass.bytes_read;
         answered_during_build += u64::from(building && archive.index_build().is_some());
         std::thread::sleep(Duration::from_millis(100));
-        if archive.index_build().is_none() && n >= 3 {
+        if archive.index_build().is_none() {
+            installed_under_requests = true;
             break;
         }
     }
     drop(tx);
     let summary = worker.join().unwrap().unwrap();
     assert!(summary.work.errors.is_empty(), "{:?}", summary.work.errors);
-    assert!(archive.index_build().is_none(), "the build completed");
+    assert!(
+        installed_under_requests,
+        "the build completed while the imports kept coming"
+    );
     assert!(answered_during_build > 0, "{latencies:?}");
     let slowest = latencies.iter().max().unwrap();
     eprintln!(
