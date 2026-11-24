@@ -311,10 +311,6 @@ impl Fixture {
         Ok(())
     }
 
-    fn text(&self, body: &str) -> Result<i64> {
-        crate::text_rows::intern(&self.index, body)
-    }
-
     fn block(
         &self,
         message_pk: i64,
@@ -369,7 +365,7 @@ impl Fixture {
         self.forget_settled(session_pk)?;
         let mut idx = 0;
         if let Some(t) = m.thinking {
-            let id = self.text(t)?;
+            let id = crate::text_rows::intern(&self.index, t)?;
             self.block(
                 pk,
                 session_pk,
@@ -381,7 +377,7 @@ impl Fixture {
             idx += 1;
         }
         if let Some(t) = m.text {
-            let id = self.text(t)?;
+            let id = crate::text_rows::intern(&self.index, t)?;
             self.block(
                 pk,
                 session_pk,
@@ -414,7 +410,7 @@ impl Fixture {
         )?;
         let result = match t.output {
             Some(out) => {
-                let id = self.text(out)?;
+                let id = crate::text_rows::intern(&self.index, out)?;
                 Some(self.block(
                     message_pk,
                     session_pk,
