@@ -4,7 +4,7 @@ use super::service::{Daemon, error, store_error};
 use command_surface::Answer;
 use polylogue_model::LockExt as _;
 use polylogue_sources::{
-    Capture, Parse,
+    Parse,
     schema::{Framing, Observer, Schema, Selection},
 };
 use polylogue_store::{

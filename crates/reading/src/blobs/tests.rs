@@ -10,7 +10,7 @@ use polylogue_store::{
 
 fn begin() -> ReadBegin {
     ReadBegin {
-        format: Format::Json,
+        format: polylogue_render::Format::Json,
         snapshot: ReadSnapshot {
             query: format!("query:{}", "a".repeat(64)),
             query_text: "sessions".into(),
