@@ -219,6 +219,34 @@ fn a_stopped_build_starts_again_from_the_stored_bytes() {
     assert_eq!(messages(&serving(&archive)), 1);
 }
 
+/// A round that follows one which made the indexes, and has nothing new to
+/// load, merges no texts and makes no index again.
+#[test]
+fn a_later_round_with_nothing_to_load_keeps_the_indexes_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let chains = due_a_build(dir.path(), &["first-round"]);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let runs = runs(&archive, &writer, &["first-round"], &chains);
+    crate::fault::arm(
+        "index.build.composing",
+        "",
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    let first = writer.build(runs);
+    crate::fault::clear();
+    assert!(first.is_err());
+    let phases = writer.build(Vec::new()).unwrap();
+    assert_eq!(
+        phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+        ["indexes", "compose", "full text", "install"]
+    );
+    assert_eq!(phases[0].items, 0);
+    assert_eq!(messages(&serving(&archive)), 1);
+}
+
 #[test]
 fn a_rebuild_keeps_serving_a_same_schema_index_until_it_is_installed() {
     let dir = tempfile::tempdir().unwrap();

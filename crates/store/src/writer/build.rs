@@ -83,6 +83,32 @@ const STREAM_READS: &[&str] = &[
     "tool_call_session",
 ];
 
+/// The build file's mark that a round made its indexes: a later round loads
+/// into them instead of making them again over every row.
+const INDEXES_MADE: &str = "build_indexes_made";
+
+/// The indexes a build's load concerns, as (name, statement, table): every
+/// one on a stored table but the one that makes an equal text group one row.
+const LOAD_INDEXES: &str =
+    "SELECT name,sql,tbl_name FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
+     AND name <> 'text_group_hash'
+     AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')";
+
+fn load_indexes(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+    Ok(conn
+        .prepare(LOAD_INDEXES)?
+        .query_map([], |r| <(String, String, String)>::try_from(r))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// [`load_indexes`] as a new build file declares them, so that an index an
+/// earlier round dropped is made again from its declaration.
+fn declared_load_indexes() -> Result<Vec<(String, String, String)>> {
+    let declared = Connection::open_in_memory()?;
+    crate::schema::ensure_build_index(&declared)?;
+    load_indexes(&declared)
+}
+
 /// Messages composed from the stream per transaction, at session ends.
 const MESSAGES_PER_TRANSACTION: usize = 20_000;
 
@@ -1139,24 +1165,29 @@ impl Inner {
         let stage = std::mem::replace(&mut job.stage, Stage::Install);
         job.stage = match stage {
             Stage::Start(runs) => {
-                job.phase("merge texts");
+                job.phase(if runs.is_empty() {
+                    "indexes"
+                } else {
+                    "merge texts"
+                });
                 self.index.flush_prepared_statement_cache();
                 let upkept = Fallback::upkept(&self.index)?;
-                // Every index goes during the load but the one that makes
-                // an equal group one row (see `Load::shared_groups`).
-                let indexes: Vec<(String, String, String)> = self
-                    .index
-                    .prepare(
-                        "SELECT name,sql,tbl_name FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
-                         AND name <> 'text_group_hash'
-                         AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')",
-                    )?
-                    .query_map([], |r| <(String, String, String)>::try_from(r))?
-                    .collect::<rusqlite::Result<_>>()?;
-                for (name, ..) in &indexes {
-                    self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                let present = load_indexes(&self.index)?;
+                // The first round drops every index for its load but the
+                // one that makes an equal group one row (see
+                // `Load::shared_groups`). A later round, after one that made
+                // the indexes, loads into them; any round makes only the
+                // declared indexes the file lacks.
+                if !runs.is_empty() && crate::meta_get(&self.index, INDEXES_MADE)?.is_none() {
+                    for (name, ..) in &present {
+                        self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                    }
                 }
-                for (name, sql, table) in indexes {
+                let kept = load_indexes(&self.index)?;
+                for (name, sql, table) in declared_load_indexes()? {
+                    if kept.iter().any(|(held, ..)| *held == name) {
+                        continue;
+                    }
                     if SHOWN_TABLES.contains(&table.as_str())
                         && !STREAM_READS.contains(&name.as_str())
                     {
@@ -1165,7 +1196,20 @@ impl Inner {
                         job.indexes.push((name, sql));
                     }
                 }
-                Stage::Load(Box::new(self.start_load(runs, upkept)?))
+                if runs.is_empty() {
+                    // Nothing to load: no text is merged and no row moves.
+                    let runs_dir = Paths::of(&self.location.root).runs;
+                    Stage::Indexes(
+                        0,
+                        Box::new(Loaded {
+                            merged: Merger::open(Vec::new(), &runs_dir)?,
+                            texts: Merger::open(Vec::new(), &runs_dir)?,
+                            fallback: upkept.sessions,
+                        }),
+                    )
+                } else {
+                    Stage::Load(Box::new(self.start_load(runs, upkept)?))
+                }
             }
             Stage::Load(mut load) => {
                 if self.load_step(job, &mut load)? {
@@ -1214,6 +1258,8 @@ impl Inner {
                     Stage::Indexes(next + 1, loaded)
                 }
                 None => {
+                    crate::meta_set(&self.index, INDEXES_MADE, "1")?;
+                    crate::fault::check("index.build.composing", "")?;
                     job.phase("compose");
                     let indexes = std::mem::take(&mut job.after_stream);
                     Stage::Compose(Box::new(ComposeState::new(*loaded, indexes, &self.index)?))
@@ -1271,6 +1317,8 @@ impl Inner {
                 }
             },
             Stage::Install => {
+                self.index
+                    .execute("DELETE FROM meta WHERE key=?1", [INDEXES_MADE])?;
                 self.install_build()?;
                 self.search.ready();
                 self.commits
