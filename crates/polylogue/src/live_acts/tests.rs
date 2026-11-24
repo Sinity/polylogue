@@ -278,5 +278,5 @@ fn a_failed_codex_answer_keeps_the_request_pending() {
     let _ = hosted.connection.child.wait();
     assert!(hosted.answer(true, None).is_err());
     assert_eq!(hosted.requests.len(), 1);
-    assert!(!hosted.connection.open());
+    assert!(!hosted.connection.is_running());
 }

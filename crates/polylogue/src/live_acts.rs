@@ -260,7 +260,7 @@ impl Hosted {
     /// exited closed it.
     fn open(&mut self) -> bool {
         match self {
-            Self::Codex(h) => h.connection.open(),
+            Self::Codex(h) => h.connection.is_running(),
             Self::Stdio(h) => h.open(),
         }
     }

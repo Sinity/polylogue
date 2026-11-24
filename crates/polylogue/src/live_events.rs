@@ -558,7 +558,7 @@ const CODEX_ANSWER: Duration = Duration::from_secs(2);
 /// app-server proxy`, which carries newline-delimited JSON between its
 /// stdio and the daemon's control socket.
 pub(crate) struct CodexConnection {
-    child: std::process::Child,
+    pub(crate) child: std::process::Child,
     input: std::process::ChildStdin,
     lines: Receiver<Value>,
     next_id: u64,
@@ -669,7 +669,7 @@ impl CodexConnection {
     }
 
     /// Whether the proxy to the app-server still runs.
-    pub(crate) fn open(&mut self) -> bool {
+    pub(crate) fn is_running(&mut self) -> bool {
         self.child.try_wait().is_ok_and(|exit| exit.is_none())
     }
 
