@@ -1,4 +1,5 @@
 mod coverage;
+mod export_inputs;
 mod idle;
 mod no_sources;
 mod parent_check;
@@ -237,7 +238,7 @@ fn confirmed_capture_resumes_without_rereading_provider_bytes() {
         std::fs::remove_file(&path).unwrap();
         let mut pass = Pass::default();
         engine
-            .execute_pool(vec![parse], Vec::new(), &mut pass)
+            .execute_pool(vec![parse], Vec::new(), &[], &mut pass)
             .unwrap();
         assert!(pass.errors.is_empty(), "{pass:?}");
         assert_eq!(pass.bytes_read, bytes.len() as u64);
@@ -380,7 +381,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
     std::fs::rename(&path, &aside).unwrap();
     let mut failed = Pass::default();
     engine
-        .execute_pool(vec![plan], Vec::new(), &mut failed)
+        .execute_pool(vec![plan], Vec::new(), &[], &mut failed)
         .unwrap();
     assert_eq!(failed.errors.len(), 1, "{failed:?}");
     assert!(failed.errors[0].starts_with("read "), "{failed:?}");
@@ -689,7 +690,7 @@ fn first_byte_read_failure_retries_after_restart() {
     let held = home.dir.path().join("held-original");
     std::fs::rename(&path, &held).unwrap();
     let mut failed = Pass::default();
-    let executed = engine.execute_pool(vec![plan], Vec::new(), &mut failed);
+    let executed = engine.execute_pool(vec![plan], Vec::new(), &[], &mut failed);
     std::fs::rename(&held, &path).unwrap();
     executed.unwrap();
     assert!(!failed.errors.is_empty(), "{failed:?}");

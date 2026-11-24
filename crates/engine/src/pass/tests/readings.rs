@@ -162,7 +162,9 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
         });
         ready.recv().unwrap();
         let mut pass = Pass::default();
-        engine.execute_pool(Vec::new(), plans, &mut pass).unwrap();
+        engine
+            .execute_pool(Vec::new(), plans, &[], &mut pass)
+            .unwrap();
         assert!(pass.errors.is_empty(), "{pass:?}");
         assert_eq!(STARTED.load(Ordering::SeqCst), 3);
         assert_eq!(
@@ -319,7 +321,7 @@ fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
             appended
         });
         let mut pass = Pass::default();
-        let result = engine.execute_pool(Vec::new(), plans, &mut pass);
+        let result = engine.execute_pool(Vec::new(), plans, &[], &mut pass);
         (result, pass, append.join().unwrap())
     });
     assert!(result.is_ok(), "replacement result: {result:?}; {pass:?}");
@@ -464,7 +466,7 @@ fn live_append_commits_before_waiting_chain_replacements() {
             committed
         });
         let mut pass = Pass::default();
-        let result = engine.execute_pool(Vec::new(), chains, &mut pass);
+        let result = engine.execute_pool(Vec::new(), chains, &[], &mut pass);
         (result, pass, observed.join().unwrap())
     });
     *CHAIN_PAUSE.lock().unwrap() = None;

@@ -139,7 +139,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
     plan.observation = Some(engine.observation(&path, None));
     let thread = std::thread::spawn(move || {
         let mut pass = Pass::default();
-        let result = engine.execute_pool(vec![plan], Vec::new(), &mut pass);
+        let result = engine.execute_pool(vec![plan], Vec::new(), &[], &mut pass);
         (result, pass)
     });
     waiting.recv_timeout(Duration::from_secs(10)).unwrap();
