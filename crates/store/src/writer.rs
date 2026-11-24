@@ -16,7 +16,6 @@ use crate::OptionExt as _;
 use crate::archive::{Archive, bump_counter, open_runtime_writer};
 use crate::blobs::{Change, FileFacts, NewBlob};
 use crate::{Result, StoreError};
-use polylogue_model::LockExt;
 use polylogue_model::{
     BlobHash, Block, ErrorReason, Event, Json, Link, Message, Output, RecordCounts, Session,
     SessionId, Timestamp, ToolAction, ToolOutcome,
@@ -167,6 +166,12 @@ enum Msg {
     /// One wave of derived values from the derive thread, answered with
     /// which sessions it applied.
     DeriveWrite(Box<crate::derive::Write>, SyncSender<Result<Vec<bool>>>),
+    /// One batch of full-text entries from the search thread, answered with
+    /// the number written.
+    SearchWrite(
+        Box<crate::text_rows::SearchEntries>,
+        SyncSender<Result<u64>>,
+    ),
 }
 
 /// Handle to the writer thread. Dropping it stops the thread after the
@@ -468,9 +473,10 @@ impl Writer {
             report: WriteReport::default(),
             texts,
             users,
-            // Both open the installed index, once a build has ended.
+            // Both read the installed index, once a build has ended.
             search: Search::start(
                 installed.clone(),
+                queue.clone(),
                 !building,
                 archive.memory_budget().search_cache_mib(),
             )?,
@@ -974,6 +980,7 @@ impl Inner {
         let mut derives = Vec::new();
         let mut background_derives = Vec::new();
         let mut derive_writes = Vec::new();
+        let mut search_writes = Vec::new();
         let mut single_files = Vec::new();
         let mut file_groups = Vec::new();
         let mut assets = Vec::new();
@@ -1002,8 +1009,6 @@ impl Inner {
             };
             let _busy = crate::timing::start_stage(crate::timing::Stage::Writer);
             self.serve_users();
-            let turn = Arc::clone(&self.search.turn);
-            let _turn = turn.locked();
             let mut stopping = false;
             let mut group = Vec::new();
             let mut rows = 0;
@@ -1132,6 +1137,10 @@ impl Inner {
                         derive_writes.push((write, reply));
                         false
                     }
+                    Msg::SearchWrite(entries, reply) => {
+                        search_writes.push((entries, reply));
+                        false
+                    }
                 };
             if push(first, &mut group, &mut rows, &mut bytes) {
                 while rows < ROWS_PER_TRANSACTION && bytes < BYTES_PER_TRANSACTION {
@@ -1180,6 +1189,9 @@ impl Inner {
                         .committed(crate::completion::Committed::CONTENT);
                 }
                 let _ = reply.send(result);
+            }
+            for (entries, reply) in search_writes.drain(..) {
+                let _ = reply.send(crate::text_rows::apply_entries(&self.index, &entries));
             }
             for (prepared, batch, reply) in single_files.drain(..) {
                 let _ = reply.send(self.store_bytes(*prepared, *batch));
@@ -1331,6 +1343,7 @@ impl Inner {
             drop(message);
         }
         self.derive.stop();
+        self.search.stop();
         let closed = self.refresh_chain_progress().and_then(|()| {
             if self.sinex.is_none() {
                 crate::chain_progress::mark_current(&self.index)?;
@@ -1490,7 +1503,7 @@ impl Inner {
                     return Err(StoreError::WriterGone);
                 }
                 inner.project_alternate_text()?;
-                crate::text_rows::index_pending(&inner.index, || ())?;
+                crate::text_rows::index_pending(&inner.index)?;
                 crate::derive::mark_moved_versions(&mut inner.index)
             })
             .and_then(|prepared| prepared.ok_or(StoreError::WriterGone));

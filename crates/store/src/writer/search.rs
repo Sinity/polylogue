@@ -1,38 +1,34 @@
-//! The search thread: it writes the full-text entries the writer queued
-//! in `search_pending`, in its own transactions, shortly after their rows
-//! commit.
+//! The search thread: shortly after rows commit, it reads the full-text
+//! entries the writer queued in `search_pending` on its own read
+//! connection, folds their text there, and sends each batch to the writer,
+//! which only applies it ([`crate::text_rows::apply_entries`]). The writer
+//! is the one connection that writes the index.
 
 use super::*;
-use polylogue_model::LockExt;
 
-/// The search thread's handle: it writes the entries in `search_pending`
-/// shortly after the writer commits them, in its own
-/// transactions on its own connection, so search indexing is off the
-/// writer's thread.
+/// The search thread's handle. Dropping it stops the thread.
 pub(super) struct Search {
     wake: Option<SyncSender<()>>,
-    ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// Held by the writer while it handles queued work and by this thread
-    /// for each of its transactions, so the two index writers take turns
-    /// instead of one failing on SQLite's busy timeout.
-    pub(super) turn: Arc<Mutex<()>>,
+    ready: Arc<std::sync::atomic::AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl Search {
-    pub(super) fn start(index_db: std::path::PathBuf, ready: bool, cache_mib: i64) -> Result<Self> {
-        let flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(ready));
+    pub(super) fn start(
+        index_db: std::path::PathBuf,
+        queue: WriterQueue,
+        ready: bool,
+        cache_mib: i64,
+    ) -> Result<Self> {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(ready));
         let (wake, rx) = sync_channel::<()>(1);
         let seen = flag.clone();
-        let turn = Arc::new(Mutex::new(()));
-        let thread_turn = Arc::clone(&turn);
         let handle = polylogue_model::spawn_named("polylogue-search", move || {
-            search_thread(&index_db, &seen, &rx, &thread_turn, cache_mib)
+            search_thread(&index_db, &queue, &seen, &rx, cache_mib)
         })?;
         Ok(Self {
             wake: Some(wake),
             ready: flag,
-            turn,
             handle: Some(handle),
         })
     }
@@ -48,10 +44,10 @@ impl Search {
         self.ready.store(true, std::sync::atomic::Ordering::Release);
         self.wake();
     }
-}
 
-impl Drop for Search {
-    fn drop(&mut self) {
+    /// Ends the thread. The writer has stopped taking messages, so a batch
+    /// the thread sends is refused rather than waiting.
+    pub(super) fn stop(&mut self) {
         self.wake.take();
         if let Some(h) = self.handle.take() {
             let _ = h.join();
@@ -59,14 +55,26 @@ impl Drop for Search {
     }
 }
 
-/// Writes waiting search entries whenever woken, and once a second. The
+impl Drop for Search {
+    fn drop(&mut self) {
+        // A writer unwinding from a panic may still hold a batch the thread
+        // waits on; it ends on its own once the queue is gone.
+        if std::thread::panicking() {
+            self.wake.take();
+            return;
+        }
+        self.stop();
+    }
+}
+
+/// Computes waiting search entries whenever woken, and once a second. The
 /// connection opens on the installed WAL index. A private build completes
 /// its own search installation before publishing that file.
-pub(super) fn search_thread(
+fn search_thread(
     index_db: &std::path::Path,
+    queue: &WriterQueue,
     ready: &std::sync::atomic::AtomicBool,
     wake: &Receiver<()>,
-    turn: &Mutex<()>,
     cache_mib: i64,
 ) {
     let mut conn: Option<Connection> = None;
@@ -79,7 +87,10 @@ pub(super) fn search_thread(
             continue;
         }
         if conn.is_none() {
-            match open_runtime_writer(index_db, cache_mib) {
+            match crate::archive::open_read(index_db).and_then(|c| {
+                c.pragma_update(None, "cache_size", -(cache_mib * 1024))?;
+                Ok(c)
+            }) {
                 Ok(c) => conn = Some(c),
                 Err(e) => {
                     eprintln!("polylogue: search thread: open the index: {e}");
@@ -87,10 +98,24 @@ pub(super) fn search_thread(
                 }
             }
         }
-        if let Some(c) = &conn
-            && let Err(e) = crate::text_rows::index_pending(c, || turn.locked())
-        {
-            eprintln!("polylogue: search thread: {e}");
+        if let Some(c) = &conn {
+            match drain(c, queue) {
+                Ok(()) | Err(StoreError::WriterGone) => {}
+                Err(e) => eprintln!("polylogue: search thread: {e}"),
+            }
         }
+    }
+}
+
+/// Computes and sends batches until the queue reads empty.
+fn drain(conn: &Connection, queue: &WriterQueue) -> Result<()> {
+    loop {
+        let entries = crate::text_rows::pending_entries(conn, crate::text_rows::SEARCH_BYTES)?;
+        if entries.is_empty() {
+            return Ok(());
+        }
+        // A batch the writer settled before applying it writes nothing; the
+        // next read no longer sees its queue rows.
+        queue.ask(|reply| Msg::SearchWrite(Box::new(entries), reply))?;
     }
 }
