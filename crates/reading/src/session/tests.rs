@@ -58,7 +58,7 @@ fn a_copy_from_an_unstored_session_reads_as_own_with_its_marker() {
 }
 
 #[test]
-fn a_missing_parent_of_a_link_that_copies_nothing_stays_an_issue() {
+fn a_link_that_copies_nothing_is_never_the_unstored_copy_marker() {
     let (_root, fixture) = child_with(|fixture| {
         fixture
             .link("test:missing", "test:child", "continuation", None)
@@ -76,6 +76,6 @@ fn a_missing_parent_of_a_link_that_copies_nothing_stays_an_issue() {
     assert!(!found.unstored_copy);
     assert!(matches!(
         &found.issues[..],
-        [ParentIssue::MissingParent { .. }]
+        [ParentIssue::MissingBranchPoint { .. }]
     ));
 }
