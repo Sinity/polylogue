@@ -1200,7 +1200,7 @@ pub(crate) fn event_readings(conn: &Connection, event_pk: i64) -> Result<Vec<Eve
     let mut found = Vec::new();
     for (event_id, copy) in stated {
         let mut statement = conn.prepare_cached(
-            "SELECT r.input_pk,i.id,i.format,r.chain,r.source_start,r.source_end,r.imported_sources,r.hash,
+            "SELECT i.id,i.format,r.chain,r.source_start,r.source_end,r.imported_sources,r.hash,
                  r.fields,r.data,r.committed,r.event_id
              FROM reading_event r JOIN input_ref i ON i.pk=r.input_pk
              WHERE (?1 IS NOT NULL AND r.event_id=?1) OR (?2 IS NOT NULL AND r.session_id=?2)",
@@ -1209,18 +1209,18 @@ pub(crate) fn event_readings(conn: &Connection, event_pk: i64) -> Result<Vec<Eve
             .query_map(params![event_id, copy], |r| {
                 Ok((
                     EventReading {
-                        input: r.get(1)?,
-                        format: r.get(2)?,
-                        chain: r.get(3)?,
-                        start: r.get(4)?,
-                        end: r.get(5)?,
-                        imported: r.get(6)?,
-                        hash: r.get(7)?,
-                        fields: r.get(8)?,
-                        committed: r.get(10)?,
+                        input: r.get(0)?,
+                        format: r.get(1)?,
+                        chain: r.get(2)?,
+                        start: r.get(3)?,
+                        end: r.get(4)?,
+                        imported: r.get(5)?,
+                        hash: r.get(6)?,
+                        fields: r.get(7)?,
+                        committed: r.get(9)?,
                     },
-                    r.get::<_, Vec<u8>>(9)?,
-                    r.get::<_, String>(11)?,
+                    r.get::<_, Vec<u8>>(8)?,
+                    r.get::<_, String>(10)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;

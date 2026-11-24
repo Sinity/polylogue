@@ -257,7 +257,16 @@ impl ParseStep {
     /// An event about its input, not a session, is that input's record: it
     /// has the record's byte range and follows no message.
     pub(crate) fn check_events(&self, input: &str) -> Result<()> {
-        for event in &self.output.events {
+        if self.confirmed_event_ids.is_some() {
+            return Ok(());
+        }
+        for (index, event) in self.output.events.iter().enumerate() {
+            // An identity the source supplies is kept as given.
+            if self.output.event_ids.contains_key(&index)
+                || self.output.imported_events.contains_key(&index)
+            {
+                continue;
+            }
             if event.session.is_none() && input.is_empty() {
                 return Err(StoreError::Invalid(
                     "an input event needs its input identity".into(),

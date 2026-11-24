@@ -346,26 +346,16 @@ fn replies(w: &TestArchive) -> Vec<String> {
     out
 }
 
-/// Every input read whole, in one transaction.
-fn reference(inputs: &[Input]) -> Vec<String> {
-    let w = test_archive();
-    let store = Arc::new(w.archive.blobs().unwrap());
-    let group = inputs
-        .iter()
-        .enumerate()
-        .flat_map(|(n, input)| (0..input.chains()).map(move |chain| (n, input, chain)))
-        .map(|(n, input, chain)| stored_step(&w, n, input, chain, 0, input.chain(chain).len()))
-        .collect();
-    let results = w.writer.store_group(group, store).unwrap();
-    assert!(results.iter().all(Result::is_ok), "{results:?}");
-    w.writer.flush().unwrap();
-    replies(&w)
-}
-
-/// The inputs' records divided at `cuts` and sent in the order `picks`
-/// chooses, each step its own transaction.
-fn upkeep(inputs: &[Input], cuts: &[bool], picks: &[u32]) -> Vec<String> {
-    let w = test_archive();
+/// Stores the inputs' records divided at `cuts`, in the order `picks`
+/// chooses, each step its own transaction, with its rows when `parse`.
+/// Returns the archive's chain of each input's chain.
+fn capture(
+    w: &TestArchive,
+    inputs: &[Input],
+    cuts: &[bool],
+    picks: &[u32],
+    parse: bool,
+) -> std::collections::BTreeMap<(usize, usize), i64> {
     let store = Arc::new(w.archive.blobs().unwrap());
     let mut steps: Vec<std::collections::VecDeque<(usize, usize, usize)>> = inputs
         .iter()
@@ -388,21 +378,61 @@ fn upkeep(inputs: &[Input], cuts: &[bool], picks: &[u32]) -> Vec<String> {
             ranges
         })
         .collect();
+    let mut chains = std::collections::BTreeMap::new();
     let mut pick = picks.iter().cycle();
     while steps.iter().any(|ranges| !ranges.is_empty()) {
         let waiting: Vec<usize> = (0..steps.len()).filter(|&n| !steps[n].is_empty()).collect();
         let n = waiting[*pick.next().unwrap() as usize % waiting.len()];
         let (chain, from, to) = steps[n].pop_front().unwrap();
+        let mut step = stored_step(w, n, &inputs[n], chain, from, to);
+        if !parse {
+            step.batch.parse.clear();
+        }
         let results = w
             .writer
-            .store_group(
-                vec![stored_step(&w, n, &inputs[n], chain, from, to)],
-                Arc::clone(&store),
-            )
+            .store_group(vec![step], Arc::clone(&store))
             .unwrap();
-        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        let [Ok(stored)] = &results[..] else {
+            panic!("{results:?}");
+        };
+        chains.insert((n, chain), stored.chain);
         w.writer.flush().unwrap();
     }
+    chains
+}
+
+/// The same captures, then every chain read whole in one transaction, which
+/// composes every session from all its readings at once.
+fn reference(inputs: &[Input], cuts: &[bool], picks: &[u32]) -> Vec<String> {
+    let w = test_archive();
+    let chains = capture(&w, inputs, cuts, picks, false);
+    let group = chains
+        .iter()
+        .map(|(&(n, chain), &stored)| {
+            let input = &inputs[n];
+            let mut batch = step(n, input, chain, 0, input.chain(chain).len());
+            batch.change = Change::Reparse { chain: stored };
+            batch.observation = None;
+            crate::staging::PreparedBatch {
+                batch,
+                files: Vec::new(),
+            }
+        })
+        .collect();
+    let results = w
+        .writer
+        .store_group(group, Arc::new(w.archive.blobs().unwrap()))
+        .unwrap();
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
+    w.writer.flush().unwrap();
+    replies(&w)
+}
+
+/// The inputs' records divided at `cuts` and sent in the order `picks`
+/// chooses, each step its own transaction.
+fn upkeep(inputs: &[Input], cuts: &[bool], picks: &[u32]) -> Vec<String> {
+    let w = test_archive();
+    capture(&w, inputs, cuts, picks, true);
     replies(&w)
 }
 
@@ -418,7 +448,7 @@ proptest! {
         cuts in prop::collection::vec(any::<bool>(), 8),
         picks in prop::collection::vec(any::<u32>(), 6),
     ) {
-        let expected = reference(&inputs);
+        let expected = reference(&inputs, &cuts, &picks);
         prop_assert_eq!(upkeep(&inputs, &cuts, &picks), expected);
     }
 }
@@ -469,7 +499,7 @@ fn both_prompts_in_one_batch_move_the_copy_and_its_links_back() {
         rewrite: None,
     };
     let inputs = vec![copy, first, second, link];
-    let together = reference(&inputs);
+    let together = reference(&inputs, &[true; 8], &[0, 1, 0, 0, 0, 0]);
     // The copy is its own session: two sessions record its name.
     assert!(
         together
@@ -484,7 +514,7 @@ fn both_prompts_in_one_batch_move_the_copy_and_its_links_back() {
     // One prompt alone takes the copy in; the second arriving gives it back.
     let apart = upkeep(&inputs, &[true; 8], &[0, 1, 0, 0, 0, 0]);
     assert_eq!(apart, together);
-    let single = reference(&inputs[..2]);
+    let single = reference(&inputs[..2], &[true; 8], &[0; 6]);
     assert!(
         single
             .iter()
