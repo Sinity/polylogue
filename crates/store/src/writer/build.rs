@@ -16,6 +16,7 @@ use super::*;
 use crate::archive::index_build::Paths;
 use crate::sorted_runs::{Merger, Sorter};
 use rusqlite::types::{Value, ValueRef};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -42,6 +43,48 @@ const TEXT: u8 = 0;
 const TEXT_HOLDER: u8 = 1;
 /// The reading tables, in name order, from this byte on.
 const TABLES: u8 = 3;
+
+/// What decides which sessions are composed from the stream, read before
+/// it: sessions whose composition reaches other sessions' readings
+/// ([`FALLBACK`]), and each message ID with the session stating it
+/// ([`MESSAGE_ID`]) or an event's message with its session
+/// ([`FOLLOWED`]).
+const MARKS: u8 = 253;
+const FALLBACK: u8 = 0;
+const MESSAGE_ID: u8 = 1;
+const FOLLOWED: u8 = 2;
+/// The readings composition takes, grouped by the session stating them:
+/// its facts' kinds, each message's readings with their values, its event
+/// readings and its calls' background outcomes, in that order.
+const COMPOSE: u8 = 254;
+const FACTS: u8 = 0;
+const MESSAGE: u8 = 1;
+const EVENT: u8 = 2;
+const OUTCOME: u8 = 3;
+
+/// The tables composition writes, and those of their indexes that composing
+/// a session from the stream reads: its rows in order, the replies to each
+/// message and the message an event follows, for its item index, counts and
+/// values. Their other indexes are made after the stream.
+const SHOWN_TABLES: &[&str] = &[
+    "message",
+    "message_route",
+    "block",
+    "tool_call",
+    "event",
+    "session_item",
+];
+const STREAM_READS: &[&str] = &[
+    "message_id",
+    "message_session",
+    "message_parent",
+    "block_message",
+    "event_session",
+    "tool_call_session",
+];
+
+/// Messages composed from the stream per transaction, at session ends.
+const MESSAGES_PER_TRANSACTION: usize = 20_000;
 
 /// One phase of a build, as its record shows it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -195,7 +238,7 @@ fn tables(conn: &Connection) -> Result<Vec<Table>> {
         };
         found.push(Table::new(name, columns, conflict));
     }
-    if found.len() + TABLES as usize > 255 {
+    if found.len() + TABLES as usize > MARKS as usize {
         return Err(StoreError::Invalid(
             "too many reading tables for one stream".into(),
         ));
@@ -283,6 +326,44 @@ fn row_key(stream: u8, input: &str, chain: i64, seq: u32) -> Vec<u8> {
     key
 }
 
+/// The key of a session's composition records of `kind`.
+fn compose_key(session: &str, kind: u8) -> Vec<u8> {
+    let mut key = Vec::with_capacity(session.len() + 48);
+    key.push(COMPOSE);
+    key.extend_from_slice(session.as_bytes());
+    key.push(0);
+    key.push(kind);
+    key
+}
+
+/// The key of one chain's reading of an item of a session.
+fn reading_key(session: &str, kind: u8, item: &str, input: &str, chain: i64) -> Vec<u8> {
+    let mut key = compose_key(session, kind);
+    key.extend_from_slice(item.as_bytes());
+    key.push(0);
+    key.extend_from_slice(input.as_bytes());
+    key.push(0);
+    key.extend_from_slice(&chain.to_be_bytes());
+    key
+}
+
+fn mark_key(kind: u8, parts: &[&str]) -> Vec<u8> {
+    let mut key = vec![MARKS, kind];
+    for part in parts {
+        key.extend_from_slice(part.as_bytes());
+        key.push(0);
+    }
+    key
+}
+
+/// The NUL-ended string at the start of `bytes`, and what follows it.
+fn split_id(bytes: &[u8]) -> Result<(&str, &[u8])> {
+    let bad = || StoreError::Invalid("a build stream key is malformed".into());
+    let end = bytes.iter().position(|&b| b == 0).ok_or_else(bad)?;
+    let id = std::str::from_utf8(&bytes[..end]).map_err(|_| bad())?;
+    Ok((id, &bytes[end + 1..]))
+}
+
 /// The input ID at the start of a reading row's key (after its stream byte).
 fn key_input(key: &[u8]) -> Result<&str> {
     let end = key
@@ -306,6 +387,7 @@ pub struct BuildWorker {
     number: u32,
     groups: u64,
     scratch: PathBuf,
+    packer: crate::encoding::RowPacker,
 }
 
 impl BuildWorker {
@@ -348,6 +430,7 @@ impl BuildWorker {
             number,
             groups: 0,
             scratch,
+            packer: crate::encoding::RowPacker::new()?,
         })
     }
 
@@ -380,6 +463,7 @@ impl BuildWorker {
                 tables: &self.tables,
                 number: self.number,
                 groups: &mut self.groups,
+                packer: &mut self.packer,
             },
             text_transaction: self.texts.transaction(),
         })
@@ -471,6 +555,7 @@ struct Out<'a> {
     tables: &'a [Table],
     number: u32,
     groups: &'a mut u64,
+    packer: &'a mut crate::encoding::RowPacker,
 }
 
 /// Moves the chain's rows from the scratch index into the stream and
@@ -536,9 +621,14 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
     }
     let mut seq = 0u32;
     {
+        // A message's text rows also carry the key of its reading in the
+        // composition stream, which the load gives each its text key under.
         let mut statement = tx.prepare_cached(
-            "SELECT p.chain,p.document,p.item,p.idx,t.hash FROM parse_text p
-             JOIN text t ON t.id=p.text_id ORDER BY p.document,p.item,p.idx",
+            "SELECT p.chain,p.document,p.item,p.idx,t.hash,m.session_id FROM parse_text p
+             JOIN text t ON t.id=p.text_id
+             LEFT JOIN message_parse m ON p.document=0 AND m.input_pk=p.input_pk AND m.chain=p.chain
+                 AND m.message_id=p.item
+             ORDER BY p.document,p.item,p.idx",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -547,6 +637,18 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
             key.push(TEXT_HOLDER);
             key.extend_from_slice(&row_key(0, input, chain, seq)[1..]);
             seq += 1;
+            let reading = row
+                .get::<_, Option<String>>(5)?
+                .map(|session| -> Result<Vec<u8>> {
+                    Ok(reading_key(
+                        &session,
+                        MESSAGE,
+                        &row.get::<_, String>(2)?,
+                        input,
+                        chain,
+                    ))
+                })
+                .transpose()?;
             value.clear();
             encode_row(
                 &[
@@ -556,12 +658,14 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
                     row.get_ref(2)?,
                     row.get_ref(3)?,
                     ValueRef::Null,
+                    reading.as_deref().map_or(ValueRef::Null, ValueRef::Blob),
                 ],
                 &mut value,
             );
             out.sorter.push(&key, &value)?;
         }
     }
+    compose_records(tx, out, input, &route, chain)?;
     for (n, table) in out.tables.iter().enumerate() {
         let stream = TABLES + n as u8;
         let mut statement = tx.prepare_cached(&format!("SELECT * FROM \"{}\"", table.name))?;
@@ -594,6 +698,225 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
     Ok(())
 }
 
+/// Moves the chain's readings out into the composition stream, grouped
+/// by the session stating them, each message reading with its value
+/// (docs/architecture.md, one path).
+fn compose_records(
+    tx: &Transaction<'_>,
+    out: &mut Out<'_>,
+    input: &str,
+    route: &str,
+    chain: i64,
+) -> Result<()> {
+    let mut value = Vec::new();
+    let input_pk: i64 = tx.query_row("SELECT pk FROM input_ref WHERE id=?1", [input], |r| {
+        r.get(0)
+    })?;
+    {
+        let mut statement = tx
+            .prepare_cached("SELECT session_id,json_extract(facts,'$.kind') FROM session_record")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let mut key = compose_key(&row.get::<_, String>(0)?, FACTS);
+            key.extend_from_slice(input.as_bytes());
+            key.push(0);
+            key.extend_from_slice(&chain.to_be_bytes());
+            value.clear();
+            encode_row(&[row.get_ref(1)?], &mut value);
+            out.sorter.push(&key, &value)?;
+        }
+    }
+    {
+        // In each chain's order, so that its texts are read group by group.
+        let mut statement = tx.prepare_cached(
+            "SELECT message_id,session_id,source_start,source_end,seq,record_position,order_time,route,
+                 completion,id_kind='content',hash,body,layout FROM message_parse ORDER BY seq,record_position",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let message: String = row.get(0)?;
+            let session: String = row.get(1)?;
+            out.sorter
+                .push(&mark_key(MESSAGE_ID, &[&message, &session]), &[])?;
+            let (read, selection) =
+                super::readings::read_message(tx, input_pk, chain, &message)?
+                    .ok_or_else(|| StoreError::Invalid("a message reading has no body".into()))?;
+            let reading = super::shown::ReadingValue::of(read, selection, out.packer)?;
+            if reading.partial() {
+                // Its value joins other readings of its version: the
+                // session is composed from the index.
+                out.sorter.push(&mark_key(FALLBACK, &[&session]), &[])?;
+                continue;
+            }
+            let items = serde_json::to_string(&reading.items)?;
+            let mut values: Vec<ValueRef<'_>> = (2..13)
+                .map(|n| row.get_ref(n))
+                .collect::<rusqlite::Result<_>>()?;
+            values.push(ValueRef::Integer(reading.words));
+            values.push(ValueRef::Text(items.as_bytes()));
+            for ((block, data), text) in reading
+                .content
+                .blocks
+                .iter()
+                .zip(&reading.content.data)
+                .zip(&reading.content.texts)
+            {
+                values.push(ValueRef::Blob(block));
+                values.push(data.as_deref().map_or(ValueRef::Null, ValueRef::Blob));
+                values.push(
+                    text.as_ref()
+                        .map_or(ValueRef::Null, |hash| ValueRef::Blob(hash)),
+                );
+            }
+            value.clear();
+            encode_row(&values, &mut value);
+            out.sorter.push(
+                &reading_key(&session, MESSAGE, &message, input, chain),
+                &value,
+            )?;
+        }
+    }
+    {
+        let mut statement = tx.prepare_cached(
+            "SELECT event_id,session_id,route,hash,fields,data,seq,source_start,source_end,after_message_id
+             FROM event_parse WHERE session_id IS NOT NULL",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let (event, session): (String, String) = (row.get(0)?, row.get(1)?);
+            if let Some(after) = row.get::<_, Option<String>>(9)? {
+                out.sorter
+                    .push(&mark_key(FOLLOWED, &[&after, &session]), &[])?;
+            }
+            let values: Vec<ValueRef<'_>> = (2..9)
+                .map(|n| row.get_ref(n))
+                .collect::<rusqlite::Result<_>>()?;
+            value.clear();
+            encode_row(&values, &mut value);
+            out.sorter
+                .push(&reading_key(&session, EVENT, &event, input, chain), &value)?;
+        }
+    }
+    {
+        let mut statement =
+            tx.prepare_cached("SELECT session_id,call_id,position,body FROM call_outcome")?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let (session, call): (String, String) = (row.get(0)?, row.get(1)?);
+            value.clear();
+            encode_row(
+                &[row.get_ref(2)?, row.get_ref(3)?, ValueRef::from(route)],
+                &mut value,
+            );
+            out.sorter
+                .push(&reading_key(&session, OUTCOME, &call, input, chain), &value)?;
+        }
+    }
+    Ok(())
+}
+
+/// What decides which sessions a build composes from the index rather than
+/// from the stream: those whose readings reach other sessions' readings.
+#[derive(Default)]
+struct Fallback {
+    sessions: BTreeSet<String>,
+    /// Message IDs of readings upkeep wrote into the build file while the
+    /// build ran.
+    messages: BTreeSet<String>,
+}
+
+impl Fallback {
+    /// The sessions and messages of the readings upkeep wrote into the build
+    /// file before its load: those sessions are composed from the index.
+    fn upkept(conn: &Connection) -> Result<Self> {
+        let strings = |sql: &str| -> Result<BTreeSet<String>> {
+            Ok(conn
+                .prepare(sql)?
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<_>>()?)
+        };
+        Ok(Self {
+            sessions: strings(
+                "SELECT session_id FROM session_record UNION SELECT session_id FROM message_parse
+                 UNION SELECT session_id FROM event_parse WHERE session_id IS NOT NULL
+                 UNION SELECT session_id FROM session_alias UNION SELECT alias FROM session_alias
+                 UNION SELECT session_id FROM call_outcome",
+            )?,
+            messages: strings("SELECT DISTINCT message_id FROM message_parse")?,
+        })
+    }
+}
+
+/// What the load leaves for composition: the rest of the merge, which holds
+/// the composition stream, each message reading's text keys, and the
+/// sessions composed from the index.
+pub(super) struct Loaded {
+    merged: Merger,
+    texts: Merger,
+    fallback: BTreeSet<String>,
+}
+
+/// Where a build's composition stands between its steps
+/// ([`Inner::compose_step`]); it holds no transaction or statement.
+pub(super) struct ComposeState {
+    step: Step,
+    /// Indexes to make once the stream is composed.
+    indexes: Vec<String>,
+    /// The composition stream, decoded ahead on a thread of its own.
+    pieces: std::sync::mpsc::Receiver<Result<Piece>>,
+    stream_done: bool,
+    /// Sessions composed from the index instead of the stream, which the
+    /// stream reader passes over.
+    fallback: Vec<String>,
+    aliases: Arc<super::identity::Aliases>,
+    /// Events left by the stream for the index to compose.
+    deferred: Vec<(Option<String>, String)>,
+    pub(super) sessions: u64,
+}
+
+enum Step {
+    Links,
+    Stream,
+    /// The shown tables' indexes the stream does not read.
+    Indexes,
+    Index {
+        next: usize,
+    },
+    Done,
+}
+
+impl ComposeState {
+    /// The composition of a loaded build file.
+    pub(super) fn new(loaded: Loaded, indexes: Vec<String>, index: &Connection) -> Result<Self> {
+        let Loaded {
+            merged,
+            texts,
+            mut fallback,
+        } = loaded;
+        let aliases = Arc::new(super::identity::Aliases::load(index)?);
+        // The sessions a copy name involves are decided across sessions.
+        fallback.extend(
+            index
+                .prepare(
+                    "SELECT alias FROM session_alias WHERE alias<>session_id
+                     UNION SELECT session_id FROM session_alias WHERE alias<>session_id",
+                )?
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+        );
+        Ok(Self {
+            step: Step::Links,
+            indexes,
+            pieces: read_stream(merged, texts, fallback.clone(), Arc::clone(&aliases)),
+            stream_done: false,
+            fallback: fallback.into_iter().collect(),
+            aliases,
+            deferred: Vec::new(),
+            sessions: 0,
+        })
+    }
+}
+
 /// A build the writer advances one bounded step at a time, between the
 /// messages it serves: each step commits its own transaction and the job
 /// keeps its position, so nothing a step did is done again.
@@ -603,17 +926,19 @@ pub(super) struct BuildJob {
     reply: SyncSender<Result<Vec<BuildPhase>>>,
     phases: Vec<BuildPhase>,
     clock: Option<(PhaseClock, u64)>,
-    /// The indexes dropped for the load, recreated after it.
+    /// The indexes dropped for the load, recreated after it; the shown
+    /// tables' indexes composing from the stream does not read are made
+    /// after the streamed sessions (see [`STREAM_READS`]).
     indexes: Vec<(String, String)>,
+    after_stream: Vec<String>,
 }
 
 enum Stage {
     Start(Vec<PathBuf>),
     Load(Box<Load>),
     TextHolders(Box<TextHolders>),
-    Indexes(usize),
-    /// The sessions to compose, and the next one.
-    Compose(Vec<String>, usize),
+    Indexes(usize, Box<Loaded>),
+    Compose(Box<ComposeState>),
     FullText(crate::text_rows::SearchBuild),
     Deferred(Vec<String>),
     Install,
@@ -631,6 +956,16 @@ struct Load {
     input: Option<(String, i64)>,
     current_text: Option<(Vec<u8>, i64)>,
     stream: Option<u8>,
+    /// Each message reading's text keys, by its key in the composition
+    /// stream.
+    reading_texts: Option<Sorter>,
+    /// Sessions composed from the index, the message IDs of readings upkeep
+    /// wrote meanwhile, the copy names, and the last message ID seen with
+    /// its session (see [`MARKS`]).
+    fallback: BTreeSet<String>,
+    upkept_messages: BTreeSet<String>,
+    aliases: Option<super::identity::Aliases>,
+    last_message: Option<(String, String)>,
 }
 
 /// The reading text rows, joined to their texts, being loaded.
@@ -638,6 +973,7 @@ struct TextHolders {
     merged: Merger,
     input: Option<(String, i64)>,
     table: Table,
+    composing: Box<Loaded>,
 }
 
 impl BuildJob {
@@ -653,6 +989,7 @@ impl BuildJob {
             phases: Vec::new(),
             clock: None,
             indexes: Vec::new(),
+            after_stream: Vec::new(),
         }
     }
 
@@ -703,18 +1040,28 @@ impl Inner {
             Stage::Start(runs) => {
                 job.phase("merge texts");
                 self.index.flush_prepared_statement_cache();
-                job.indexes = self
+                let upkept = Fallback::upkept(&self.index)?;
+                let indexes: Vec<(String, String, String)> = self
                     .index
                     .prepare(
-                        "SELECT name,sql FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
+                        "SELECT name,sql,tbl_name FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
                          AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')",
                     )?
-                    .query_map([], |r| <(String, String)>::try_from(r))?
+                    .query_map([], |r| <(String, String, String)>::try_from(r))?
                     .collect::<rusqlite::Result<_>>()?;
-                for (name, _) in &job.indexes {
+                for (name, ..) in &indexes {
                     self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
                 }
-                Stage::Load(Box::new(self.start_load(runs)?))
+                for (name, sql, table) in indexes {
+                    if SHOWN_TABLES.contains(&table.as_str())
+                        && !STREAM_READS.contains(&name.as_str())
+                    {
+                        job.after_stream.push(sql);
+                    } else {
+                        job.indexes.push((name, sql));
+                    }
+                }
+                Stage::Load(Box::new(self.start_load(runs, upkept)?))
             }
             Stage::Load(mut load) => {
                 if self.load_step(job, &mut load)? {
@@ -723,9 +1070,20 @@ impl Inner {
                     crate::fault::check("index.build.loading", "")?;
                     let paths = Paths::of(&self.location.root);
                     let holders = load.holders.take().expect("the text holders' sorter");
+                    let reading_texts = load
+                        .reading_texts
+                        .take()
+                        .expect("the reading texts' sorter");
+                    let load = *load;
+                    let composing = Box::new(Loaded {
+                        texts: Merger::open(reading_texts.finish()?, &paths.runs)?,
+                        merged: load.merged,
+                        fallback: load.fallback,
+                    });
                     Stage::TextHolders(Box::new(TextHolders {
                         merged: Merger::open(holders.finish()?, &paths.runs)?,
                         input: None,
+                        composing,
                         table: Table::new(
                             "parse_text".into(),
                             ["input_pk", "chain", "document", "item", "idx", "text_id"]
@@ -741,35 +1099,38 @@ impl Inner {
                     Stage::TextHolders(holders)
                 } else {
                     self.index.pragma_update(None, "foreign_keys", true)?;
-                    crate::archive::index_build::remove_runs(&Paths::of(&self.location.root))?;
                     job.phase("indexes");
-                    Stage::Indexes(0)
+                    Stage::Indexes(0, holders.composing)
                 }
             }
-            Stage::Indexes(next) => match job.indexes.get(next) {
+            Stage::Indexes(next, loaded) => match job.indexes.get(next) {
                 Some((_, sql)) => {
                     self.index.execute(sql, [])?;
                     job.count(1);
-                    Stage::Indexes(next + 1)
+                    Stage::Indexes(next + 1, loaded)
                 }
                 None => {
                     job.phase("compose");
-                    Stage::Compose(self.stated_sessions()?, 0)
+                    let indexes = std::mem::take(&mut job.after_stream);
+                    Stage::Compose(Box::new(ComposeState::new(*loaded, indexes, &self.index)?))
                 }
             },
-            Stage::Compose(sessions, next) if next == 0 || next < sessions.len() => {
-                self.compose_chunk(&sessions, next)?;
-                let after = (next + SESSIONS_PER_TRANSACTION).min(sessions.len());
-                job.count((after - next) as u64);
-                Stage::Compose(sessions, after.max(1))
-            }
-            Stage::Compose(..) => {
-                job.phase("full text");
-                // The search entries are written from every text's marks;
-                // entries queued by upkeep writes during the build would
-                // repeat them.
-                self.index.execute("DELETE FROM search_pending", [])?;
-                Stage::FullText(crate::text_rows::SearchBuild::new())
+            Stage::Compose(mut state) => {
+                let before = state.sessions;
+                let done = self.compose_step(&mut state)?;
+                job.count(state.sessions - before);
+                if !done {
+                    Stage::Compose(state)
+                } else {
+                    drop(state);
+                    crate::archive::index_build::remove_runs(&Paths::of(&self.location.root))?;
+                    job.phase("full text");
+                    // The search entries are written from every text's marks;
+                    // entries queued by upkeep writes during the build would
+                    // repeat them.
+                    self.index.execute("DELETE FROM search_pending", [])?;
+                    Stage::FullText(crate::text_rows::SearchBuild::new())
+                }
             }
             Stage::FullText(mut search) => {
                 if search.step(&self.index)? {
@@ -815,7 +1176,7 @@ impl Inner {
     }
 
     /// Opens the merge of every worker's runs.
-    fn start_load(&mut self, runs: Vec<PathBuf>) -> Result<Load> {
+    fn start_load(&mut self, runs: Vec<PathBuf>, upkept: Fallback) -> Result<Load> {
         let paths = Paths::of(&self.location.root);
         std::fs::create_dir_all(&paths.runs)?;
         // Texts upkeep wrote into the build file while the build ran keep
@@ -847,6 +1208,15 @@ impl Inner {
             input: None,
             current_text: None,
             stream: None,
+            reading_texts: Some(Sorter::new(
+                &paths.runs,
+                "reading-texts".into(),
+                (self.location.memory_budget().total() / 16) as usize,
+            )),
+            fallback: upkept.sessions,
+            upkept_messages: upkept.messages,
+            aliases: None,
+            last_message: None,
         })
     }
 
@@ -862,6 +1232,14 @@ impl Inner {
                 || (written % 1024 == 1023 && started.elapsed() > STEP_TIME)
             {
                 break true;
+            }
+            // The composition stream is read by composition.
+            if load
+                .merged
+                .peek()?
+                .is_none_or(|(key, _)| key.first() == Some(&COMPOSE))
+            {
+                break false;
             }
             let Some((key, value)) = load.merged.next()? else {
                 break false;
@@ -946,6 +1324,20 @@ impl Inner {
                                 StoreError::Invalid("a reading names a text the build lacks".into())
                             })?;
                             let mut row = decode_row(value)?;
+                            // A message's text: its reading's key in the
+                            // composition stream, then its block.
+                            if let Some(Value::Blob(mut reading)) = row.pop() {
+                                let Value::Integer(idx) = row[4] else {
+                                    return Err(StoreError::Invalid(
+                                        "a reading's text names no block".into(),
+                                    ));
+                                };
+                                reading.extend_from_slice(&(idx as u32).to_be_bytes());
+                                load.reading_texts
+                                    .as_mut()
+                                    .expect("the reading texts' sorter")
+                                    .push(&reading, &id.to_be_bytes())?;
+                            }
                             *row.last_mut().expect("a text column") = Value::Integer(*id);
                             values.clear();
                             let refs: Vec<ValueRef<'_>> = row.iter().map(ValueRef::from).collect();
@@ -958,6 +1350,48 @@ impl Inner {
                                 .push(&key, &values)?;
                         }
                         _ => return Err(StoreError::Invalid("a text record of no kind".into())),
+                    }
+                }
+                MARKS => {
+                    // Every reading table is loaded by now.
+                    let aliases = match &mut load.aliases {
+                        Some(aliases) => aliases,
+                        None => load.aliases.insert(super::identity::Aliases::load(&t)?),
+                    };
+                    let (&mark, rest) = rest
+                        .split_first()
+                        .ok_or_else(|| StoreError::Invalid("a build mark of no kind".into()))?;
+                    match mark {
+                        FALLBACK => {
+                            load.fallback.insert(split_id(rest)?.0.to_owned());
+                        }
+                        MESSAGE_ID | FOLLOWED => {
+                            let (message, rest) = split_id(rest)?;
+                            let session = split_id(rest)?.0;
+                            // A message one of whose names is a copy's is
+                            // shown as its session decides.
+                            let named = super::identity::message_session(message)
+                                .is_some_and(|named| aliases.involve(&named));
+                            if named {
+                                load.fallback.insert(session.to_owned());
+                            }
+                            if mark == MESSAGE_ID {
+                                // A message stated under several sessions, or
+                                // also by a reading upkeep wrote.
+                                if load.upkept_messages.contains(message) {
+                                    load.fallback.insert(session.to_owned());
+                                }
+                                if let Some((last, other)) = &load.last_message
+                                    && last == message
+                                    && other != session
+                                {
+                                    load.fallback.insert(other.clone());
+                                    load.fallback.insert(session.to_owned());
+                                }
+                                load.last_message = Some((message.to_owned(), session.to_owned()));
+                            }
+                        }
+                        _ => return Err(StoreError::Invalid("a build mark of no kind".into())),
                     }
                 }
                 _ => {
@@ -1010,87 +1444,552 @@ impl Inner {
         Ok(more)
     }
 
-    /// Composes every session the readings state once, in key order, with
-    /// the composition upkeep uses; the sessions composed.
-    /// The sessions the readings state, in key order.
-    fn stated_sessions(&self) -> Result<Vec<String>> {
-        Ok(self
-            .index
-            .prepare(
-                "SELECT session_id FROM session_record UNION SELECT session_id FROM message_parse
-                 UNION SELECT session_id FROM event_parse WHERE session_id IS NOT NULL
-                 UNION SELECT alias FROM session_alias
-                 UNION SELECT parent_id FROM link_parse UNION SELECT child_id FROM link_parse
-                 UNION SELECT session_id FROM call_outcome ORDER BY 1",
-            )?
-            .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?)
+    /// Composes the next part of a build with the composition upkeep uses
+    /// (docs/architecture.md, one path), in a transaction of its own: links
+    /// and documents first, from the index, so each session's item index
+    /// sees its links; then sessions from the stream, grouped as they come;
+    /// then, from the index, the sessions whose readings reach other
+    /// sessions' readings, with the events about inputs and the events
+    /// placed after another session's message. True once all is composed.
+    fn compose_step(&mut self, state: &mut ComposeState) -> Result<bool> {
+        self.stop.check()?;
+        match state.step {
+            Step::Links => {
+                let mut touched = super::readings::Touched::default();
+                touched.links.extend(
+                    self.index
+                        .prepare("SELECT DISTINCT statement FROM link_parse")?
+                        .query_map([], |r| r.get::<_, Vec<u8>>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
+                );
+                touched.documents.extend(
+                    self.index
+                        .prepare("SELECT DISTINCT document_id FROM document_parse")?
+                        .query_map([], |r| r.get::<_, String>(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?,
+                );
+                self.compose_from_index(touched)?;
+                state.step = Step::Stream;
+            }
+            Step::Stream => {
+                self.compose_stream(state)?;
+                if state.stream_done {
+                    state.step = Step::Indexes;
+                }
+            }
+            Step::Indexes => match state.indexes.pop() {
+                Some(sql) => {
+                    self.index.execute(&sql, [])?;
+                }
+                None => {
+                    let tx = self
+                        .index
+                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                    super::shown::mark_searched_texts(&tx)?;
+                    tx.commit()?;
+                    state.step = Step::Index { next: 0 };
+                }
+            },
+            Step::Index { next } => {
+                let chunk = &state.fallback[next.min(state.fallback.len())
+                    ..(next + SESSIONS_PER_TRANSACTION).min(state.fallback.len())];
+                let mut touched = super::readings::Touched::default();
+                touched.whole.extend(chunk.iter().cloned());
+                touched.sessions.extend(chunk.iter().cloned());
+                for session in chunk {
+                    for row in self
+                        .index
+                        .prepare_cached(
+                            "SELECT session_id,call_id FROM call_outcome WHERE session_id=?1",
+                        )?
+                        .query_map([session], |r| <(String, String)>::try_from(r))?
+                    {
+                        touched.calls.insert(row?);
+                    }
+                    for row in self
+                        .index
+                        .prepare_cached(
+                            "SELECT fields,data,kind FROM event_parse WHERE session_id=?1
+                             ORDER BY at,input_pk,chain,seq",
+                        )?
+                        .query_map([session], |r| <(Vec<u8>, Vec<u8>, String)>::try_from(r))?
+                    {
+                        let (fields, data, kind) = row?;
+                        if polylogue_model::live::is_live_event(&kind) {
+                            let mut event: Event = crate::encoding::unpack_json(&fields)?;
+                            event.data = crate::encoding::unpack_json(&data)?;
+                            touched.live.push(event);
+                        }
+                    }
+                }
+                state.sessions += chunk.len() as u64;
+                if next == 0 {
+                    // What no session holds: input events; and events that
+                    // follow another session's message.
+                    for row in self
+                        .index
+                        .prepare("SELECT event_id FROM event_parse WHERE session_id IS NULL")?
+                        .query_map([], |r| r.get::<_, String>(0))?
+                    {
+                        touched.events.insert((None, row?));
+                    }
+                    touched.events.extend(std::mem::take(&mut state.deferred));
+                }
+                self.compose_from_index(touched)?;
+                let next = next + SESSIONS_PER_TRANSACTION;
+                state.step = if next < state.fallback.len() {
+                    Step::Index { next }
+                } else {
+                    Step::Done
+                };
+            }
+            Step::Done => {}
+        }
+        Ok(matches!(state.step, Step::Done))
     }
 
-    /// Composes the next transaction's worth of sessions, from `next`, with
-    /// the composition upkeep uses; the first step also composes what no
-    /// session holds (input events, documents).
-    fn compose_chunk(&mut self, sessions: &[String], next: usize) -> Result<()> {
-        let first = next == 0;
-        let chunk = &sessions[next..sessions.len().min(next + SESSIONS_PER_TRANSACTION)];
+    /// Composes sessions from the stream, in one transaction, until about
+    /// [`MESSAGES_PER_TRANSACTION`] messages or [`SESSIONS_PER_TRANSACTION`]
+    /// sessions are written.
+    fn compose_stream(&mut self, state: &mut ComposeState) -> Result<()> {
+        // A session from the stream refers only to rows the build wrote.
+        self.index.pragma_update(None, "foreign_keys", false)?;
+        let result = self.compose_stream_transaction(state);
+        self.index.pragma_update(None, "foreign_keys", true)?;
+        result
+    }
+
+    fn compose_stream_transaction(&mut self, state: &mut ComposeState) -> Result<()> {
+        let text_transaction = self.texts.transaction();
+        let tx = self
+            .index
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let counter = bump_counter(&tx)?;
+        let changes = crate::change_summary::ChangeSummary::start(&tx)?;
+        let context = super::shown::Context {
+            tx: &tx,
+            counter,
+            texts: &self.texts,
+            at_build_end: true,
+            changes: &changes,
+        };
+        let mut composer = super::shown::Composer::new(&context, Arc::clone(&state.aliases))?;
+        let mut inputs = InputState::default();
+        let mut kinds = std::collections::HashMap::new();
+        let (mut messages, mut sessions) = (0usize, 0usize);
+        // A transaction ends with a session, once it holds enough or took
+        // its share of the writer's time.
+        let started = std::time::Instant::now();
+        let mut open = false;
+        while open
+            || (messages < MESSAGES_PER_TRANSACTION
+                && sessions < SESSIONS_PER_TRANSACTION
+                && started.elapsed() < STEP_TIME)
         {
-            let text_transaction = self.texts.transaction();
-            let tx = self
-                .index
-                .transaction_with_behavior(TransactionBehavior::Immediate)?;
-            let counter = bump_counter(&tx)?;
-            let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-            let mut touched = super::readings::Touched::default();
-            touched.whole.extend(chunk.iter().cloned());
-            touched.sessions.extend(chunk.iter().cloned());
-            for row in tx
-                .prepare_cached(
-                    "SELECT session_id,call_id FROM call_outcome WHERE session_id>=?1 AND session_id<=?2",
-                )?
-                .query_map(
-                    params![chunk.first(), chunk.last()],
-                    |r| <(String, String)>::try_from(r),
-                )?
-            {
-                touched.calls.insert(row?);
-            }
-            for row in tx
-                .prepare_cached(
-                    "SELECT fields,data,kind FROM event_parse WHERE session_id>=?1 AND session_id<=?2
-                     ORDER BY at,input_pk,chain,seq",
-                )?
-                .query_map(params![chunk.first(), chunk.last()], |r| {
-                    <(Vec<u8>, Vec<u8>, String)>::try_from(r)
-                })?
-            {
-                let (fields, data, kind) = row?;
-                if polylogue_model::live::is_live_event(&kind) {
-                    let mut event: Event = crate::encoding::unpack_json(&fields)?;
-                    event.data = crate::encoding::unpack_json(&data)?;
-                    touched.live.push(event);
+            let piece = match state.pieces.recv() {
+                Ok(piece) => piece?,
+                // The reader ended: every session of the stream is composed.
+                Err(_) => {
+                    state.stream_done = true;
+                    break;
+                }
+            };
+            match piece {
+                Piece::Begin => {
+                    composer.begin();
+                    kinds.clear();
+                    open = true;
+                }
+                Piece::Facts { input, chain, kind } => {
+                    composer.facts();
+                    let (pk, _) = inputs.of(&tx, &input)?;
+                    kinds.insert((pk, chain), kind);
+                }
+                Piece::Message { id, mut readings } => {
+                    for reading in &mut readings {
+                        let (pk, finished) = inputs.of(&tx, &reading.input)?;
+                        reading.input_pk = pk;
+                        if let Some(given) = &mut reading.given {
+                            given.kind = kinds.get(&(pk, reading.chain)).copied().flatten();
+                            given.superseded =
+                                finished.is_some_and(|newest| newest > reading.chain);
+                        }
+                    }
+                    composer.message(&id, readings)?;
+                    messages += 1;
+                }
+                Piece::Event(mut event) => {
+                    event.input_pk = inputs.of(&tx, &event.input)?.0;
+                    composer.event(event);
+                }
+                Piece::Outcome(mut outcome) => {
+                    outcome.input_pk = inputs.of(&tx, &outcome.input)?.0;
+                    composer.outcome(outcome);
+                }
+                Piece::End(session) => {
+                    composer.end(&session)?;
+                    sessions += 1;
+                    open = false;
                 }
             }
-            if first {
-                // What no session holds: input events and documents.
-                for row in tx
-                    .prepare("SELECT event_id FROM event_parse WHERE session_id IS NULL")?
-                    .query_map([], |r| r.get::<_, String>(0))?
-                {
-                    touched.events.insert((None, row?));
-                }
-                for row in tx
-                    .prepare("SELECT DISTINCT document_id FROM document_parse")?
-                    .query_map([], |r| r.get::<_, String>(0))?
-                {
-                    touched.documents.insert(row?);
-                }
-            }
-            rows::finish(&tx, touched, &changes, &self.texts, true, counter)?;
-            tx.commit()?;
-            text_transaction.commit();
         }
+        let (_, mut late) = composer.finish();
+        state.deferred.append(&mut late);
+        state.sessions += sessions as u64;
+        rows::finish_summaries(&tx, &changes, counter)?;
+        drop(context);
+        tx.commit()?;
+        text_transaction.commit();
         Ok(())
     }
+
+    /// Composes what `touched` names from the readings in the index, as
+    /// upkeep does, in one transaction.
+    fn compose_from_index(&mut self, touched: super::readings::Touched) -> Result<()> {
+        let text_transaction = self.texts.transaction();
+        let tx = self
+            .index
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let counter = bump_counter(&tx)?;
+        let changes = crate::change_summary::ChangeSummary::start(&tx)?;
+        rows::finish(&tx, touched, &changes, &self.texts, true, counter)?;
+        tx.commit()?;
+        text_transaction.commit();
+        Ok(())
+    }
+}
+
+/// The input a session's readings last named: its key in the build file
+/// and its newest chain read to its end or waiting for more. A session's
+/// readings come from few inputs, so each is looked up once per run of it.
+#[derive(Default)]
+struct InputState {
+    id: String,
+    pk: i64,
+    finished: Option<i64>,
+}
+
+impl InputState {
+    fn of(&mut self, tx: &Transaction<'_>, id: &str) -> Result<(i64, Option<i64>)> {
+        if self.id != id || self.id.is_empty() {
+            let (pk, finished): (i64, Option<i64>) = tx
+                .prepare_cached(
+                    "SELECT i.pk,(SELECT max(p.chain) FROM parse_state p WHERE p.input_pk=i.pk
+                         AND p.status IN ('done','waiting'))
+                     FROM input_ref i WHERE i.id=?1",
+                )?
+                .query_row([id], |r| <(i64, Option<i64>)>::try_from(r))
+                .optional()?
+                .ok_or_else(|| {
+                    StoreError::Invalid("a reading names an input the build lacks".into())
+                })?;
+            *self = Self {
+                id: id.to_owned(),
+                pk,
+                finished,
+            };
+        }
+        Ok((self.pk, self.finished))
+    }
+}
+
+/// What the stream reader hands composition, in stream order: each session
+/// begun, its facts' kinds, each message's readings with their values, its
+/// event readings and outcomes, then its end. Input keys, kinds and whether
+/// a newer chain supersedes a reading are filled in by composition, which
+/// reads the build file.
+pub(super) enum Piece {
+    Begin,
+    Facts {
+        input: String,
+        chain: i64,
+        kind: Option<polylogue_model::SessionKind>,
+    },
+    Message {
+        id: String,
+        readings: Vec<super::shown::MessageReading>,
+    },
+    Event(super::shown::EventRow),
+    Outcome(super::shown::OutcomeRow),
+    End(String),
+}
+
+/// Pieces decoded ahead of composition.
+const PIECES_AHEAD: usize = 1024;
+
+/// Reads the composition stream on a thread of its own, merging it with
+/// each message reading's text keys and decoding its records, so that the
+/// writer only composes. Sessions composed from the index are passed over.
+fn read_stream(
+    mut merged: Merger,
+    mut texts: Merger,
+    skipped: BTreeSet<String>,
+    aliases: Arc<super::identity::Aliases>,
+) -> std::sync::mpsc::Receiver<Result<Piece>> {
+    let (sender, receiver) = std::sync::mpsc::sync_channel(PIECES_AHEAD);
+    let spawned = std::thread::Builder::new()
+        .name("polylogue-compose-stream".into())
+        .spawn(move || {
+            let mut send = |piece: Piece| sender.send(Ok(piece)).is_ok();
+            let result = (|| -> Result<()> {
+                while let Some((key, _)) = merged.peek()? {
+                    if key.first() != Some(&COMPOSE) {
+                        return Err(StoreError::Invalid(
+                            "a build stream holds records after its composition".into(),
+                        ));
+                    }
+                    let session = split_id(&key[1..])?.0.to_owned();
+                    if skipped.contains(&session) || aliases.involve(&session) {
+                        while merged
+                            .peek()?
+                            .is_some_and(|(key, _)| of_session(key, &session))
+                        {
+                            merged.next()?;
+                        }
+                        continue;
+                    }
+                    if !send(Piece::Begin)
+                        || !read_session(&mut merged, &mut texts, &session, &mut send)?
+                    {
+                        return Ok(());
+                    }
+                    if !send(Piece::End(session)) {
+                        return Ok(());
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                let _ = sender.send(Err(error));
+            }
+        });
+    if let Err(error) = spawned {
+        let (sender, failed) = std::sync::mpsc::sync_channel(1);
+        let _ = sender.send(Err(error.into()));
+        return failed;
+    }
+    receiver
+}
+
+/// Whether `key` is one of `session`'s composition records.
+fn of_session(key: &[u8], session: &str) -> bool {
+    key.len() > session.len() + 1
+        && key[0] == COMPOSE
+        && &key[1..=session.len()] == session.as_bytes()
+        && key[session.len() + 1] == 0
+}
+
+/// Decodes one session's records into pieces; false once composition
+/// stopped taking them.
+fn read_session(
+    merged: &mut Merger,
+    texts: &mut Merger,
+    session: &str,
+    send: &mut impl FnMut(Piece) -> bool,
+) -> Result<bool> {
+    use super::shown::{EventRow, Given, MessageReading, OutcomeRow, ReadingValue};
+    let bad = || StoreError::Invalid("a composition record is malformed".into());
+    let mut pending: Option<(String, Vec<MessageReading>)> = None;
+    let prefix = session.len() + 2;
+    loop {
+        let Some((key, value)) = merged.peek()? else {
+            break;
+        };
+        if !of_session(key, session) {
+            break;
+        }
+        let (key, value) = (key.to_vec(), value.to_vec());
+        merged.next()?;
+        let kind = key[prefix];
+        let rest = &key[prefix + 1..];
+        let row = decode_row(&value)?;
+        // (item, input, chain) of a reading; facts name no item.
+        let (item, input, chain) = if kind == FACTS {
+            let (input, chain) = split_id(rest)?;
+            (String::new(), input.to_owned(), chain)
+        } else {
+            let (item, rest) = split_id(rest)?;
+            let (input, chain) = split_id(rest)?;
+            (item.to_owned(), input.to_owned(), chain)
+        };
+        let chain = i64::from_be_bytes(chain.try_into().map_err(|_| bad())?);
+        if kind != MESSAGE
+            && let Some((id, readings)) = pending.take()
+            && !send(Piece::Message { id, readings })
+        {
+            return Ok(false);
+        }
+        let int = |n: usize| match row.get(n) {
+            Some(Value::Integer(v)) => Ok(*v),
+            _ => Err(bad()),
+        };
+        let int_or_null = |n: usize| match row.get(n) {
+            Some(Value::Integer(v)) => Ok(Some(*v)),
+            Some(Value::Null) => Ok(None),
+            _ => Err(bad()),
+        };
+        let text = |n: usize| match row.get(n) {
+            Some(Value::Text(v)) => Ok(v.as_str()),
+            _ => Err(bad()),
+        };
+        let blob = |n: usize| match row.get(n) {
+            Some(Value::Blob(v)) => Ok(v.as_slice()),
+            _ => Err(bad()),
+        };
+        let route = |n: usize| {
+            polylogue_model::Route::from_name(text(n)?)
+                .ok_or_else(|| StoreError::stored(0, "unknown stored route"))
+        };
+        match kind {
+            FACTS => {
+                let kind = match row.first() {
+                    Some(Value::Text(kind)) => Some(
+                        polylogue_model::SessionKind::from_name(kind)
+                            .ok_or_else(|| StoreError::stored(0, "unknown stored session kind"))?,
+                    ),
+                    _ => None,
+                };
+                if !send(Piece::Facts { input, chain, kind }) {
+                    return Ok(false);
+                }
+            }
+            MESSAGE => {
+                if pending.as_ref().is_some_and(|(id, _)| *id != item)
+                    && let Some((id, readings)) = pending.take()
+                    && !send(Piece::Message { id, readings })
+                {
+                    return Ok(false);
+                }
+                // Columns: start, end, seq, position, order time, route,
+                // completion, content-named, hash, body, layout, words,
+                // items; then each block's body, data and text hash.
+                let hash = blob(8)?.to_vec();
+                let message: Message = crate::encoding::unpack_json(blob(9)?)?;
+                let selection = crate::encoding::message_block_selection(
+                    &hash,
+                    Some(blob(10)?),
+                    message.blocks.len(),
+                )?;
+                let blocks = (row.len() - 13) / 3;
+                if blocks != message.blocks.len() || (row.len() - 13) % 3 != 0 {
+                    return Err(bad());
+                }
+                let mut content = crate::encoding::PreparedContent {
+                    hash: selection.source_version.0,
+                    blocks: Vec::with_capacity(blocks),
+                    texts: Vec::with_capacity(blocks),
+                    data: Vec::with_capacity(blocks),
+                };
+                for n in 0..blocks {
+                    let at = 13 + 3 * n;
+                    content.blocks.push(blob(at)?.to_vec());
+                    content.data.push(match &row[at + 1] {
+                        Value::Blob(data) => Some(data.clone()),
+                        _ => None,
+                    });
+                    content.texts.push(match &row[at + 2] {
+                        Value::Blob(hash) => Some(hash.as_slice().try_into().map_err(|_| bad())?),
+                        _ => None,
+                    });
+                }
+                // The text keys the load gave this reading's text rows.
+                // Both streams are in key order; the text rows of readings
+                // composed from the index are passed over.
+                let reading = key.as_slice();
+                let mut ids = vec![None; blocks];
+                while let Some((text_key, id)) = texts.peek()? {
+                    if text_key.len() == reading.len() + 4 && text_key.starts_with(reading) {
+                        let idx = u32::from_be_bytes(
+                            text_key[reading.len()..].try_into().expect("four bytes"),
+                        );
+                        let id = i64::from_be_bytes(id.try_into().map_err(|_| bad())?);
+                        *ids.get_mut(idx as usize).ok_or_else(bad)? = Some(id);
+                    } else if text_key >= reading {
+                        break;
+                    }
+                    texts.next()?;
+                }
+                if ids
+                    .iter()
+                    .zip(&content.texts)
+                    .any(|(id, text)| id.is_some() != text.is_some())
+                {
+                    return Err(StoreError::Invalid(
+                        "a message reading's text rows differ from its blocks".into(),
+                    ));
+                }
+                let value = ReadingValue {
+                    message,
+                    words: int(11)?,
+                    selection,
+                    items: serde_json::from_str(text(12)?)?,
+                    content,
+                    text_ids: Some(ids),
+                };
+                let reading = MessageReading {
+                    input_pk: 0,
+                    input,
+                    chain,
+                    message: item.clone(),
+                    session: session.to_owned(),
+                    start: int(0)?,
+                    end: int(1)?,
+                    seq: int(2)?,
+                    position: int(3)?,
+                    order_time: int_or_null(4)?,
+                    route: route(5)?,
+                    completion: polylogue_model::Completion::from_name(text(6)?)
+                        .ok_or_else(|| StoreError::stored(0, "unknown stored completion"))?,
+                    content: int(7)? != 0,
+                    hash,
+                    given: Some(Given {
+                        kind: None,
+                        superseded: false,
+                        value,
+                    }),
+                };
+                pending
+                    .get_or_insert_with(|| (item, Vec::new()))
+                    .1
+                    .push(reading);
+            }
+            EVENT => {
+                if !send(Piece::Event(EventRow {
+                    input,
+                    input_pk: 0,
+                    chain,
+                    event_id: item,
+                    route: route(0)?,
+                    hash: blob(1)?.to_vec(),
+                    fields: blob(2)?.to_vec(),
+                    data: blob(3)?.to_vec(),
+                    seq: int(4)?,
+                    start: int_or_null(5)?,
+                    end: int_or_null(6)?,
+                })) {
+                    return Ok(false);
+                }
+            }
+            OUTCOME => {
+                if !send(Piece::Outcome(OutcomeRow {
+                    input_pk: 0,
+                    chain,
+                    position: int(0)?,
+                    input,
+                    route: route(2)?,
+                    call_id: item,
+                    body: text(1)?.to_owned(),
+                })) {
+                    return Ok(false);
+                }
+            }
+            _ => return Err(bad()),
+        }
+    }
+    if let Some((id, readings)) = pending.take() {
+        return Ok(send(Piece::Message { id, readings }));
+    }
+    Ok(true)
 }
 
 /// The build file's key of `id`, looked up once per input as the merge

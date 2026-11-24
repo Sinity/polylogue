@@ -17,8 +17,8 @@ use super::*;
 use crate::change_summary::ChangeSummary;
 use crate::encoding::Columns as _;
 use polylogue_model::{Completion, Document, FieldGroup, MessageId, Route};
-use rusqlite::types::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use rusqlite::types::{ToSqlOutput, Value, ValueRef};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// What composition writes with.
 pub(super) struct Context<'a> {
@@ -30,42 +30,127 @@ pub(super) struct Context<'a> {
 }
 
 /// One chain's reading of a message.
-#[derive(Debug, Clone)]
-struct MessageReading {
-    input_pk: i64,
-    input: String,
-    chain: i64,
+#[derive(Debug)]
+pub(super) struct MessageReading {
+    pub input_pk: i64,
+    pub input: String,
+    pub chain: i64,
     /// The message and session as the chain names them.
-    message: String,
-    session: String,
-    start: i64,
-    end: i64,
-    seq: i64,
-    position: i64,
-    order_time: Option<i64>,
-    route: Route,
-    completion: Completion,
-    content: bool,
-    hash: Vec<u8>,
+    pub message: String,
+    pub session: String,
+    pub start: i64,
+    pub end: i64,
+    pub seq: i64,
+    pub position: i64,
+    pub order_time: Option<i64>,
+    pub route: Route,
+    pub completion: Completion,
+    pub content: bool,
+    pub hash: Vec<u8>,
+    /// The reading's value and its session's kind, when they come with it
+    /// (a build's stream); otherwise they are read from the index.
+    pub given: Option<Given>,
 }
 
-/// The value of a reading: its message with every block's values, and its
-/// packed rows.
-type Read = (Message, PreparedMessage);
+/// What a reading supplied with it brings: the kind its chain states for
+/// its session, and its value.
+#[derive(Debug)]
+pub(super) struct Given {
+    pub kind: Option<polylogue_model::SessionKind>,
+    /// A newer chain of its input was read to its end or waits for more.
+    pub superseded: bool,
+    pub value: ReadingValue,
+}
+
+/// What composition takes from a reading's value: its message and the rows
+/// packed from it. The message's texts are needed only for its word count,
+/// so a value that travels may carry the message without them.
+#[derive(Debug)]
+pub(super) struct ReadingValue {
+    pub message: Message,
+    pub words: i64,
+    pub selection: polylogue_model::bundle::ShownBlocks,
+    pub items: Vec<polylogue_model::read::IndexEntry>,
+    pub content: crate::encoding::PreparedContent,
+    /// Each block's text row, when the reading came with them; otherwise
+    /// each text is found by its hash.
+    pub text_ids: Option<Vec<Option<i64>>>,
+}
+
+impl ReadingValue {
+    /// The value of a message as a reading holds it: `selection` names the
+    /// blocks the reading holds of its version.
+    pub(super) fn of(
+        message: Message,
+        selection: polylogue_model::bundle::ShownBlocks,
+        packer: &mut crate::encoding::RowPacker,
+    ) -> Result<Self> {
+        selection.validate(message.blocks.len())?;
+        if selection.block_count == message.blocks.len() as u64
+            && message.content_hash()? != selection.source_version
+        {
+            return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+        }
+        let items = polylogue_model::read::message_entries(
+            &message,
+            &selection.block_ordinals,
+            polylogue_model::read::MessagePlace::default(),
+        );
+        let content = packer.pack_content(&message.blocks, selection.source_version.0)?;
+        let words = message
+            .blocks
+            .iter()
+            .filter_map(Block::text)
+            .map(|t| t.split_whitespace().count() as i64)
+            .sum();
+        Ok(Self {
+            message,
+            words,
+            selection,
+            items,
+            content,
+            text_ids: None,
+        })
+    }
+
+    /// Whether the reading holds only some of its version's blocks: its
+    /// value then joins the blocks every reading of that version holds.
+    pub(super) fn partial(&self) -> bool {
+        self.selection.block_count != self.message.blocks.len() as u64
+    }
+}
 
 /// Writes the shown rows of everything `touched` names; returns the number
 /// of message rows written, changed or removed.
 pub(super) fn compose(context: &Context<'_>, touched: Touched) -> Result<u64> {
-    let mut work = Work {
-        context,
-        ids: Identities::new(context.tx),
-        sessions: BTreeMap::new(),
-        calls: BTreeSet::new(),
-        events: BTreeSet::new(),
-        written: 0,
-    };
+    let mut work = Work::new(context, Identities::new(context.tx), None)?;
     work.run(touched)?;
     Ok(work.written)
+}
+
+/// Each input's reading of a shown message: that of the newest of its
+/// chains holding it, without a content-named message an input's newer
+/// chain, read to its end, no longer holds (`gone` says whether it does).
+fn latest_readings(
+    mut all: Vec<MessageReading>,
+    mut gone: impl FnMut(&MessageReading) -> Result<bool>,
+) -> Result<Vec<MessageReading>> {
+    let mut newest = BTreeMap::<i64, i64>::new();
+    for r in &all {
+        let chain = newest.entry(r.input_pk).or_insert(r.chain);
+        *chain = (*chain).max(r.chain);
+    }
+    all.retain(|r| newest.get(&r.input_pk) == Some(&r.chain));
+    let mut kept = Vec::with_capacity(all.len());
+    for r in all {
+        if r.content && gone(&r)? {
+            continue;
+        }
+        kept.push(r);
+    }
+    // A stable order, so that ties in composition fall the same way.
+    kept.sort_by(|a, b| (&a.input, a.chain).cmp(&(&b.input, b.chain)));
+    Ok(kept)
 }
 
 struct Work<'a, 'c> {
@@ -80,6 +165,215 @@ struct Work<'a, 'c> {
     /// (stated session, stated event ID).
     events: BTreeSet<(Option<String>, String)>,
     written: u64,
+    packer: crate::encoding::RowPacker,
+    /// Set when the readings come grouped by session from a build's stream.
+    stream: Option<Stream>,
+}
+
+/// Sessions composed from readings supplied grouped by session, as a build
+/// supplies them (docs/architecture.md, one path). Every reading of what a
+/// session shows comes with the session, and nothing is stored for it
+/// before: no stored row is read or compared, and calls are paired from the
+/// session's own blocks before their rows are written.
+#[derive(Default)]
+struct Stream {
+    /// The readings of the message being composed.
+    pending: Vec<MessageReading>,
+    /// The session being composed: whether its readings state its facts or
+    /// a message, and its event readings and background outcomes.
+    own: bool,
+    events: Vec<EventRow>,
+    outcomes: Vec<OutcomeRow>,
+    /// Each composed message's place in its main reading's input, for the
+    /// events that follow it.
+    seqs: HashMap<String, i64>,
+    /// The session's tool calls, written once paired.
+    calls: Vec<Call>,
+    /// The first result of each call ID in session order.
+    results: HashMap<String, CallResult>,
+    /// Events whose place comes from a message another session shows:
+    /// composed from the index once every session is written.
+    deferred: Vec<(Option<String>, String)>,
+}
+
+/// A tool call row waiting for its pairing.
+struct Call {
+    session_pk: i64,
+    block_pk: i64,
+    call_id: Option<String>,
+    at: Option<i64>,
+    tool: String,
+    action: &'static str,
+    command: Option<String>,
+    path: Option<String>,
+    run_by_script: bool,
+    command_norm: Option<String>,
+}
+
+/// A tool result block: (session order, message ID, block index) places it.
+struct CallResult {
+    place: (String, String, i64),
+    body: Vec<u8>,
+    at: Option<i64>,
+}
+
+/// One chain's reading of an event.
+#[derive(Debug, Clone)]
+pub(super) struct EventRow {
+    pub input: String,
+    pub input_pk: i64,
+    pub chain: i64,
+    pub event_id: String,
+    pub route: Route,
+    pub hash: Vec<u8>,
+    pub fields: Vec<u8>,
+    pub data: Vec<u8>,
+    pub seq: i64,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+}
+
+impl EventRow {
+    fn event(&self) -> Result<Event> {
+        let mut event: Event = crate::encoding::unpack_json(&self.fields)?;
+        event.data = crate::encoding::unpack_json(&self.data)?;
+        Ok(event)
+    }
+}
+
+/// One chain's statement of a call's background outcome.
+#[derive(Debug)]
+pub(super) struct OutcomeRow {
+    pub input_pk: i64,
+    pub chain: i64,
+    pub position: i64,
+    pub input: String,
+    pub route: Route,
+    pub call_id: String,
+    pub body: String,
+}
+
+/// Composes sessions whose readings a build supplies grouped by session.
+/// A session is begun, given its readings (facts, then each message's
+/// readings, events and outcomes), and ended; the transaction's sessions are
+/// then finished by [`super::rows::finish_summaries`].
+pub(super) struct Composer<'a, 'c>(Work<'a, 'c>);
+
+impl<'a, 'c> Composer<'a, 'c> {
+    pub(super) fn new(
+        context: &'a Context<'c>,
+        aliases: Arc<super::identity::Aliases>,
+    ) -> Result<Self> {
+        Ok(Self(Work::new(
+            context,
+            Identities::loaded(aliases),
+            Some(Stream::default()),
+        )?))
+    }
+
+    fn stream(&mut self) -> &mut Stream {
+        self.0.stream.as_mut().expect("a composer reads a stream")
+    }
+
+    /// Starts a session.
+    pub(super) fn begin(&mut self) {
+        let stream = self.stream();
+        stream.own = false;
+        stream.events.clear();
+        stream.outcomes.clear();
+        stream.seqs.clear();
+        stream.calls.clear();
+        stream.results.clear();
+    }
+
+    /// The session's readings state its facts.
+    pub(super) fn facts(&mut self) {
+        self.stream().own = true;
+    }
+
+    /// Composes the message the session's readings name `id`.
+    pub(super) fn message(&mut self, id: &str, readings: Vec<MessageReading>) -> Result<()> {
+        let stream = self.stream();
+        stream.own = true;
+        stream.pending = readings;
+        self.0.compose_message(id)?;
+        Ok(())
+    }
+
+    pub(super) fn event(&mut self, event: EventRow) {
+        self.stream().events.push(event);
+    }
+
+    pub(super) fn outcome(&mut self, outcome: OutcomeRow) {
+        self.stream().outcomes.push(outcome);
+    }
+
+    /// Ends the session `session`: pairs its calls, composes its events,
+    /// settles its row and applies its live events.
+    pub(super) fn end(&mut self, session: &str) -> Result<()> {
+        let work = &mut self.0;
+        work.pair_stream_calls(session)?;
+        let events = std::mem::take(&mut work.stream().events);
+        let mut shown_events = BTreeMap::<String, BTreeSet<String>>::new();
+        for event in &events {
+            let (shown, stated) = work.shown_event_id(&event.event_id)?;
+            shown_events.entry(shown).or_default().extend(stated);
+        }
+        work.stream().events = events;
+        for (shown, stated) in shown_events {
+            work.compose_event(&shown, &stated)?;
+        }
+        work.settle_session(session)?;
+        let mut live: Vec<&EventRow> = Vec::new();
+        let events = std::mem::take(&mut work.stream().events);
+        let mut decoded = Vec::new();
+        for event in &events {
+            let value = event.event()?;
+            if polylogue_model::live::is_live_event(&value.kind) {
+                live.push(event);
+                decoded.push(value);
+            }
+        }
+        let mut order: Vec<usize> = (0..live.len()).collect();
+        order.sort_by_key(|&n| {
+            (
+                decoded[n].at.map(Timestamp::unix_ms),
+                live[n].input_pk,
+                live[n].chain,
+                live[n].seq,
+            )
+        });
+        for n in order {
+            work.apply_live(&decoded[n])?;
+        }
+        Ok(())
+    }
+
+    /// The messages written, and the events left to compose from the
+    /// index.
+    pub(super) fn finish(mut self) -> (u64, Vec<(Option<String>, String)>) {
+        let deferred = std::mem::take(&mut self.stream().deferred);
+        (self.0.written, deferred)
+    }
+}
+
+impl<'a, 'c> Work<'a, 'c> {
+    fn new(context: &'a Context<'c>, ids: Identities<'c>, stream: Option<Stream>) -> Result<Self> {
+        Ok(Self {
+            context,
+            ids,
+            sessions: BTreeMap::new(),
+            calls: BTreeSet::new(),
+            events: BTreeSet::new(),
+            written: 0,
+            packer: crate::encoding::RowPacker::new()?,
+            stream,
+        })
+    }
+
+    fn stream(&mut self) -> &mut Stream {
+        self.stream.as_mut().expect("a composer reads a stream")
+    }
 }
 
 impl<'c> Work<'_, 'c> {
@@ -220,20 +514,7 @@ impl<'c> Work<'_, 'c> {
             self.settle_session(&session)?;
         }
         for event in live {
-            let Some(session) = &event.session else {
-                continue;
-            };
-            let shown = self.ids.session(&session.to_string())?;
-            if let Some(pk) = self.session_pk(&shown)? {
-                crate::live::apply(
-                    self.tx(),
-                    pk,
-                    &event.kind,
-                    event.at.map(|t| t.unix_ms()),
-                    &event.data,
-                    self.context.counter,
-                )?;
-            }
+            self.apply_live(&event)?;
         }
         readings::remove_released_texts(
             self.tx(),
@@ -244,10 +525,33 @@ impl<'c> Work<'_, 'c> {
         Ok(())
     }
 
+    /// Applies a live event to the session it names, once that has a row.
+    fn apply_live(&mut self, event: &Event) -> Result<()> {
+        let Some(session) = &event.session else {
+            return Ok(());
+        };
+        let shown = self.ids.session(&session.to_string())?;
+        if let Some(pk) = self.session_pk(&shown)? {
+            crate::live::apply(
+                self.tx(),
+                pk,
+                &event.kind,
+                event.at.map(|t| t.unix_ms()),
+                &event.data,
+                self.context.counter,
+            )?;
+        }
+        Ok(())
+    }
+
     /// The session row of a shown session, when it has one.
     fn session_pk(&mut self, session: &str) -> Result<Option<i64>> {
         if let Some(pk) = self.sessions.get(session) {
             return Ok(Some(*pk));
+        }
+        // A session composed from a stream has a row once this work made it.
+        if self.stream.is_some() {
+            return Ok(None);
         }
         let pk: Option<i64> = self
             .tx()
@@ -278,6 +582,19 @@ impl<'c> Work<'_, 'c> {
     /// a copy's; it is a stub while only events name it. Its own columns
     /// are derived from its readings' facts (derive/session.rs).
     fn settle_session(&mut self, session: &str) -> Result<()> {
+        if let Some(stream) = &self.stream {
+            let own = stream.own;
+            if !own && stream.events.is_empty() {
+                return Ok(());
+            }
+            let pk = self.session_row(session)?;
+            self.context.changes.whole_session(pk);
+            self.context.changes.session(self.tx(), pk)?;
+            self.tx()
+                .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
+                .execute(params![pk, !own])?;
+            return Ok(());
+        }
         let stated = self.ids.stated(session)?;
         // A session is a stub while only events name it: no reading states
         // its facts or a message of it.
@@ -323,10 +640,13 @@ impl<'c> Work<'_, 'c> {
         }
     }
 
-    /// Each input's reading of a shown message: that of the newest of its
-    /// chains holding it. A content-named message an input's newer chain,
-    /// read to its end, no longer holds is gone from that input.
+    /// Each input's reading of a shown message (see [`latest_readings`]).
     fn shown_message_parses(&mut self, shown: &str) -> Result<Vec<MessageReading>> {
+        if let Some(stream) = &mut self.stream {
+            return latest_readings(std::mem::take(&mut stream.pending), |r| {
+                Ok(r.given.as_ref().is_some_and(|given| given.superseded))
+            });
+        }
         let mut all = Vec::new();
         for stated in self.ids.stated_messages(shown)? {
             let rows = self
@@ -352,6 +672,7 @@ impl<'c> Work<'_, 'c> {
                         completion: r.name(11)?,
                         content: r.get(12)?,
                         hash: r.get(13)?,
+                        given: None,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -361,31 +682,20 @@ impl<'c> Work<'_, 'c> {
                 }
             }
         }
-        let mut newest = BTreeMap::<i64, i64>::new();
-        for r in &all {
-            let chain = newest.entry(r.input_pk).or_insert(r.chain);
-            *chain = (*chain).max(r.chain);
-        }
-        all.retain(|r| newest.get(&r.input_pk) == Some(&r.chain));
-        let mut kept = Vec::with_capacity(all.len());
-        for r in all {
-            if r.content
-                && self.tx().exists(
-                    "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk=?1 AND chain>?2 AND status IN ('done','waiting'))",
-                    params![r.input_pk, r.chain],
-                )?
-            {
-                continue;
-            }
-            kept.push(r);
-        }
-        // A stable order, so that ties in composition fall the same way.
-        kept.sort_by(|a, b| (&a.input, a.chain).cmp(&(&b.input, b.chain)));
-        Ok(kept)
+        let tx = self.tx();
+        latest_readings(all, |r| {
+            Ok(tx.exists(
+                "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk=?1 AND chain>?2 AND status IN ('done','waiting'))",
+                params![r.input_pk, r.chain],
+            )?)
+        })
     }
 
     /// The kind its own chain states for a reading's session.
     fn reading_kind(&self, r: &MessageReading) -> Result<Option<polylogue_model::SessionKind>> {
+        if let Some(given) = &r.given {
+            return Ok(given.kind);
+        }
         let kind: Option<Option<String>> = self
             .tx()
             .prepare_cached(
@@ -403,7 +713,10 @@ impl<'c> Work<'_, 'c> {
 
     /// A reading's value; a reading holding some of its version's blocks
     /// shows every block the readings of that version hold.
-    fn value(&mut self, r: &MessageReading) -> Result<Read> {
+    fn value(&mut self, r: &mut MessageReading) -> Result<ReadingValue> {
+        if let Some(given) = r.given.take() {
+            return Ok(given.value);
+        }
         let (message, selection) =
             readings::read_message(self.tx(), r.input_pk, r.chain, &r.message)?
                 .ok_or_else(|| StoreError::Invalid("a message reading has no body".into()))?;
@@ -414,19 +727,21 @@ impl<'c> Work<'_, 'c> {
             let ids = self.ids.stated_messages(&shown)?;
             readings::read_version(self.tx(), &ids, &r.hash)?.unwrap_or((message, selection))
         };
-        let prepared = PreparedMessage::projected(&message, &selection)?;
-        Ok((message, prepared))
+        ReadingValue::of(message, selection, &mut self.packer)
     }
 
     /// Composes one shown message from its readings and writes its rows;
     /// returns the session it is shown in, if any.
     fn compose_message(&mut self, shown: &str) -> Result<Option<String>> {
-        let readings = self.shown_message_parses(shown)?;
-        let stored: Option<(i64, i64)> = self
-            .tx()
-            .prepare_cached("SELECT pk,session_pk FROM message WHERE id=?1")?
-            .query_row([shown], |r| <(i64, i64)>::try_from(r))
-            .optional()?;
+        let mut readings = self.shown_message_parses(shown)?;
+        let stored: Option<(i64, i64)> = if self.stream.is_some() {
+            None
+        } else {
+            self.tx()
+                .prepare_cached("SELECT pk,session_pk FROM message WHERE id=?1")?
+                .query_row([shown], |r| <(i64, i64)>::try_from(r))
+                .optional()?
+        };
         if readings.is_empty() {
             if let Some((pk, session_pk)) = stored {
                 self.remove_message(pk, session_pk, shown)?;
@@ -437,17 +752,16 @@ impl<'c> Work<'_, 'c> {
         if readings.len() == 1 && self.unchanged(&readings[0], stored)? {
             return Ok(Some(self.ids.session(&readings[0].session)?));
         }
-        let mut values: Vec<Option<Read>> = vec![None; readings.len()];
-        let (main, groups, mut message, prepared) = if readings.len() == 1 {
-            let value = self.value(&readings[0])?;
-            (0, Vec::new(), value.0, value.1)
+        let (main, groups, mut value) = if readings.len() == 1 {
+            (0, Vec::new(), self.value(&mut readings[0])?)
         } else {
-            for (n, r) in readings.iter().enumerate() {
-                values[n] = Some(self.value(r)?);
-            }
             let mut kinds = Vec::with_capacity(readings.len());
             for r in &readings {
                 kinds.push(self.reading_kind(r)?);
+            }
+            let mut values = Vec::with_capacity(readings.len());
+            for r in &mut readings {
+                values.push(Some(self.value(r)?));
             }
             let composed = {
                 let inputs: Vec<_> = readings
@@ -460,7 +774,7 @@ impl<'c> Work<'_, 'c> {
                         main: kind.is_none_or(|kind| kind == polylogue_model::SessionKind::Main),
                         completion: r.completion,
                         hash: &r.hash,
-                        message: &value.as_ref().expect("loaded").0,
+                        message: &value.as_ref().expect("loaded").message,
                     })
                     .collect();
                 compose::message(&inputs, |n| {
@@ -469,18 +783,20 @@ impl<'c> Work<'_, 'c> {
                 })?
                 .expect("readings are not empty")
             };
-            let prepared = values[composed.main].take().expect("loaded").1;
-            (composed.main, composed.groups, composed.message, prepared)
+            // The content and its word count are the main reading's.
+            let mut value = values[composed.main].take().expect("loaded");
+            value.message = composed.message;
+            (composed.main, composed.groups, value)
         };
         let r = &readings[main];
         let session = self.ids.session(&r.session)?;
         let session_pk = self.session_row(&session)?;
         // A copy's message is shown in its session, under its name there.
-        message.id = MessageId::parse(shown).map_err(StoreError::invalid)?;
-        message.session = SessionId::parse(&session).map_err(StoreError::invalid)?;
-        if let Some(parent) = &message.parent {
+        value.message.id = MessageId::parse(shown).map_err(StoreError::invalid)?;
+        value.message.session = SessionId::parse(&session).map_err(StoreError::invalid)?;
+        if let Some(parent) = &value.message.parent {
             let renamed = self.ids.message(&parent.to_string())?;
-            message.parent = Some(MessageId::parse(&renamed).map_err(StoreError::invalid)?);
+            value.message.parent = Some(MessageId::parse(&renamed).map_err(StoreError::invalid)?);
         }
         let in_progress = r.completion == Completion::InProgress
             && !groups.iter().any(|(group, _)| *group == FieldGroup::Stop);
@@ -510,9 +826,10 @@ impl<'c> Work<'_, 'c> {
             .map(|(group, n)| (*group, readings[*n].input_pk, readings[*n].chain))
             .collect();
         routes.sort();
-        let layout = layout_column(&prepared.block_selection)?;
+        let layout = layout_column(&value.selection)?;
+        let message = &value.message;
         let row = message_columns(
-            &message,
+            message,
             MainReading {
                 session_pk,
                 order: &order,
@@ -524,6 +841,7 @@ impl<'c> Work<'_, 'c> {
                 time: crate::encoding::time_bytes(message.at, message.time_accuracy())?,
                 version: &r.hash,
                 layout: layout.as_deref(),
+                words: value.words,
             },
         )?;
         let stored_routes = match stored {
@@ -576,38 +894,39 @@ impl<'c> Work<'_, 'c> {
             }
             _ => {
                 self.tx()
-                    .prepare_cached(&format!(
-                        "INSERT INTO message(id,{}) VALUES (?1,{})",
-                        MESSAGE_COLUMNS.join(","),
-                        (2..=MESSAGE_COLUMNS.len() + 1)
-                            .map(|n| format!("?{n}"))
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    ))?
+                    .prepare_cached(&INSERT_MESSAGE)?
                     .execute(rusqlite::params_from_iter(
-                        std::iter::once(Value::Text(shown.to_owned())).chain(row.iter().cloned()),
+                        std::iter::once(ToSqlOutput::Borrowed(ValueRef::Text(shown.as_bytes())))
+                            .chain(row.iter().map(|v| ToSqlOutput::Borrowed(ValueRef::from(v)))),
                     ))?;
                 let pk = self.tx().last_insert_rowid();
-                self.context.changes.new_message(pk);
-                self.events_after(shown, true)?;
+                if self.stream.is_some() {
+                    self.context.changes.new_message_in(pk, session_pk);
+                } else {
+                    self.context.changes.new_message(pk);
+                    self.events_after(shown, true)?;
+                }
                 pk
             }
         };
         self.context.changes.session(self.tx(), session_pk)?;
-        let mut items = prepared.items.clone();
+        let mut items = std::mem::take(&mut value.items);
         polylogue_model::read::update_message_entries(
             &mut items,
-            &message,
+            &value.message,
             polylogue_model::read::MessagePlace::default(),
         );
         self.context.changes.prepare_items(pk, items);
-        self.insert_blocks(pk, session_pk, &message, &prepared)?;
+        self.insert_blocks(pk, session_pk, &order, &value)?;
         for (group, input, chain) in &routes {
             self.tx()
                 .prepare_cached(
                     "INSERT INTO message_route(message_pk,field_group,input_pk,chain) VALUES (?1,?2,?3,?4)",
                 )?
                 .execute(params![pk, group.as_str(), input, chain])?;
+        }
+        if let Some(stream) = &mut self.stream {
+            stream.seqs.insert(shown.to_owned(), r.seq);
         }
         self.written += 1;
         Ok(Some(session))
@@ -680,6 +999,10 @@ impl<'c> Work<'_, 'c> {
     /// item index changes, and those that take their place in the input
     /// from the message's reading are composed again.
     fn events_after(&mut self, message: &str, placement: bool) -> Result<()> {
+        // Nothing stored follows a message composed from a stream.
+        if self.stream.is_some() {
+            return Ok(());
+        }
         let rows = self
             .tx()
             .prepare_cached("SELECT pk,id FROM event WHERE after_message_id=?1")?
@@ -763,30 +1086,38 @@ impl<'c> Work<'_, 'c> {
         &mut self,
         message_pk: i64,
         session_pk: i64,
-        m: &Message,
-        prepared: &PreparedMessage,
+        order: &str,
+        value: &ReadingValue,
     ) -> Result<()> {
-        if prepared.blocks.len() != m.blocks.len() {
+        let (m, content) = (&value.message, &value.content);
+        if content.blocks.len() != m.blocks.len() {
             return Err(StoreError::Invalid(
                 "prepared message differs from its parsed blocks".into(),
             ));
         }
-        prepared.block_selection.validate(m.blocks.len())?;
+        value.selection.validate(m.blocks.len())?;
         let origin = m.session.origin().as_str().to_owned();
         let at = m.at.map(Timestamp::unix_ms);
         for (idx, ((block, body), data)) in m
             .blocks
             .iter()
-            .zip(&prepared.blocks)
-            .zip(&prepared.data)
+            .zip(&content.blocks)
+            .zip(&content.data)
             .enumerate()
         {
-            let text_id = prepared.texts[idx]
-                .as_ref()
-                .map(|hash| self.context.texts.resolve(self.tx(), hash, None, None))
-                .transpose()?;
+            let text_id = match (&content.texts[idx], &value.text_ids) {
+                (None, _) => None,
+                (Some(_), Some(ids)) => Some(ids.get(idx).copied().flatten().ok_or_else(|| {
+                    StoreError::Invalid("a message reading's text reference is missing".into())
+                })?),
+                (Some(hash), None) => {
+                    Some(self.context.texts.resolve(self.tx(), hash, None, None)?)
+                }
+            };
             let bit = search_bit(block);
-            if let Some(id) = text_id {
+            // A build marks the texts of the blocks it composed from a
+            // stream all at once ([`mark_searched_texts`]).
+            if let Some(id) = text_id.filter(|_| self.stream.is_none()) {
                 crate::text_rows::join_search_index(
                     self.tx(),
                     self.context.texts,
@@ -842,10 +1173,30 @@ impl<'c> Work<'_, 'c> {
                     i64::from(encrypted),
                     other_type,
                     data.as_deref(),
-                    prepared.block_selection.block_ordinals[idx].to_string(),
+                    value.selection.block_ordinals[idx].to_string(),
                 ])?;
             let block_pk = self.tx().last_insert_rowid();
-            if let Some(call_id) = &call_id {
+            if let Some(stream) = &mut self.stream {
+                // A session from a stream pairs its calls from its own
+                // blocks once all are written.
+                if let (Block::ToolResult { .. }, Some(call)) = (block, &call_id) {
+                    let place = (order.to_owned(), m.id.to_string(), idx as i64);
+                    if stream
+                        .results
+                        .get(call)
+                        .is_none_or(|first| place < first.place)
+                    {
+                        stream.results.insert(
+                            call.clone(),
+                            CallResult {
+                                place,
+                                body: body.clone(),
+                                at,
+                            },
+                        );
+                    }
+                }
+            } else if let Some(call_id) = &call_id {
                 self.calls.insert((session_pk, call_id.clone()));
             }
             if let Block::ToolCall {
@@ -857,37 +1208,100 @@ impl<'c> Work<'_, 'c> {
                 ..
             } = block
             {
-                let tool = tool.as_deref().unwrap_or("unknown");
-                self.tx()
-                    .prepare_cached(
-                        "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action,
-                             command, path, outcome, outcome_reason, run_by_script, command_norm)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'unknown', 'no_result', ?9, ?10)",
-                    )?
-                    .execute(params![
-                        session_pk,
-                        block_pk,
-                        call_id,
-                        at,
-                        tool,
-                        action.as_str(),
-                        command,
-                        path,
-                        run_by_script,
-                        // The tool-call derivation's value, written with the row so a
-                        // first build's derive does not rewrite every shell call.
-                        (*action == ToolAction::Shell)
-                            .then(|| command.as_deref().and_then(polylogue_model::command::normalize))
-                            .flatten()
-                    ])?;
-                let pk = self.tx().last_insert_rowid();
-                if !self.context.at_build_end {
-                    self.tx()
-                        .prepare_cached(
-                            "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
-                        )?
-                        .execute(params![pk, command, path])?;
+                let call = Call {
+                    session_pk,
+                    block_pk,
+                    call_id: call_id.clone(),
+                    at,
+                    tool: tool.as_deref().unwrap_or("unknown").to_owned(),
+                    action: action.as_str(),
+                    command: command.clone(),
+                    path: path.clone(),
+                    run_by_script: *run_by_script,
+                    // The tool-call derivation's value, written with the row so a
+                    // first build's derive does not rewrite every shell call.
+                    command_norm: (*action == ToolAction::Shell)
+                        .then(|| {
+                            command
+                                .as_deref()
+                                .and_then(polylogue_model::command::normalize)
+                        })
+                        .flatten(),
+                };
+                match &mut self.stream {
+                    Some(stream) => stream.calls.push(call),
+                    None => self.insert_call(&call, &Pairing::unpaired())?,
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Writes a tool call's row with its pairing.
+    fn insert_call(&self, call: &Call, pairing: &Pairing) -> Result<()> {
+        self.tx()
+            .prepare_cached(
+                "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action,
+                     command, path, outcome, outcome_reason, run_by_script, command_norm,
+                     result_message_id, result_idx, exit_code, result_at, reported_duration_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            )?
+            .execute(params![
+                call.session_pk,
+                call.block_pk,
+                call.call_id,
+                call.at,
+                call.tool,
+                call.action,
+                call.command,
+                call.path,
+                pairing.outcome,
+                pairing.reason,
+                call.run_by_script,
+                call.command_norm,
+                pairing.message,
+                pairing.idx,
+                pairing.exit,
+                pairing.result_at,
+                pairing.duration,
+            ])?;
+        let pk = self.tx().last_insert_rowid();
+        if !self.context.at_build_end {
+            self.tx()
+                .prepare_cached(
+                    "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
+                )?
+                .execute(params![pk, call.command, call.path])?;
+        }
+        Ok(())
+    }
+
+    /// Pairs the calls of a session composed from a stream with their
+    /// results and writes their rows.
+    fn pair_stream_calls(&mut self, session: &str) -> Result<()> {
+        let stream = self.stream();
+        let calls = std::mem::take(&mut stream.calls);
+        let results = std::mem::take(&mut stream.results);
+        let mut paired = HashMap::<String, (Pairing, bool)>::new();
+        for call in &calls {
+            let Some(call_id) = &call.call_id else {
+                self.insert_call(call, &Pairing::unpaired())?;
+                continue;
+            };
+            if !paired.contains_key(call_id) {
+                let result = results
+                    .get(call_id)
+                    .map(|r| (r.place.1.clone(), r.place.2, r.body.as_slice(), r.at));
+                let background = self.background_outcome(session, call_id)?;
+                let pairing = Pairing::of(result, background.as_ref());
+                paired.insert(call_id.clone(), (pairing, background.is_some()));
+            }
+            let (pairing, background) = &paired[call_id];
+            self.insert_call(call, pairing)?;
+            if *background {
+                self.tx()
+                    .prepare_cached("UPDATE session_span SET prefix = NULL WHERE session_pk = ?1")?
+                    .execute([call.session_pk])?;
             }
         }
         Ok(())
@@ -926,39 +1340,13 @@ impl<'c> Work<'_, 'c> {
                     <(_, _, _, _)>::try_from(r)
                 })
                 .optional()?;
-            let mut columns = Pairing {
-                outcome: "unknown".into(),
-                reason: Some("no_result".into()),
-                ..Pairing::default()
-            };
-            if let Some((message, idx, body, at)) = result {
-                columns.message = Some(message);
-                columns.idx = Some(idx);
-                if let Ok(Block::ToolResult {
-                    outcome,
-                    reported_duration_ms,
-                    ..
-                }) = unpack_block(&body)
-                {
-                    let (outcome, reason, exit) = outcome_columns(&outcome);
-                    columns.outcome = outcome.to_owned();
-                    columns.reason = reason;
-                    columns.exit = exit;
-                    columns.result_at = at;
-                    columns.duration = reported_duration_ms.and_then(|ms| i64::try_from(ms).ok());
-                }
-            }
             let background = self.background_outcome(&session, &call_id)?;
-            if let Some(update) = &background {
-                let (outcome, reason, exit) = outcome_columns(&update.outcome);
-                columns.outcome = outcome.to_owned();
-                columns.reason = reason;
-                columns.exit = exit;
-                columns.result_at = update.result_at.map(Timestamp::unix_ms);
-                columns.duration = update
-                    .reported_duration_ms
-                    .and_then(|ms| i64::try_from(ms).ok());
-            }
+            let columns = Pairing::of(
+                result
+                    .as_ref()
+                    .map(|(message, idx, body, at)| (message.clone(), *idx, body.as_slice(), *at)),
+                background.as_ref(),
+            );
             let same = self.tx().exists(
                 "SELECT NOT EXISTS(SELECT 1 FROM tool_call WHERE session_pk=?1 AND call_id=?2 AND NOT (
                      result_message_id IS ?3 AND result_idx IS ?4 AND outcome IS ?5 AND outcome_reason IS ?6
@@ -998,25 +1386,44 @@ impl<'c> Work<'_, 'c> {
         call: &str,
     ) -> Result<Option<polylogue_model::BackgroundUpdate>> {
         let mut found: Vec<(i64, i64, i64, String, Route, String)> = Vec::new();
-        for stated in self.ids.stated(session)? {
-            let rows = self
-                .tx()
-                .prepare_cached(
-                    "SELECT o.input_pk,o.chain,o.position,i.id,i.route,o.body FROM call_outcome o
-                     JOIN input_ref i ON i.pk=o.input_pk WHERE o.session_id=?1 AND o.call_id=?2",
-                )?
-                .query_map(params![stated, call], |r| {
-                    Ok((
-                        r.get(0)?,
-                        r.get(1)?,
-                        r.get(2)?,
-                        r.get(3)?,
-                        r.name(4)?,
-                        r.get(5)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            found.extend(rows);
+        if let Some(stream) = &self.stream {
+            found.extend(
+                stream
+                    .outcomes
+                    .iter()
+                    .filter(|o| o.call_id == call)
+                    .map(|o| {
+                        (
+                            o.input_pk,
+                            o.chain,
+                            o.position,
+                            o.input.clone(),
+                            o.route,
+                            o.body.clone(),
+                        )
+                    }),
+            );
+        } else {
+            for stated in self.ids.stated(session)? {
+                let rows = self
+                    .tx()
+                    .prepare_cached(
+                        "SELECT o.input_pk,o.chain,o.position,i.id,i.route,o.body FROM call_outcome o
+                         JOIN input_ref i ON i.pk=o.input_pk WHERE o.session_id=?1 AND o.call_id=?2",
+                    )?
+                    .query_map(params![stated, call], |r| {
+                        Ok((
+                            r.get(0)?,
+                            r.get(1)?,
+                            r.get(2)?,
+                            r.get(3)?,
+                            r.name(4)?,
+                            r.get(5)?,
+                        ))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                found.extend(rows);
+            }
         }
         let mut newest = BTreeMap::<i64, i64>::new();
         for (input, chain, ..) in &found {
@@ -1041,19 +1448,69 @@ impl<'c> Work<'_, 'c> {
     /// show it.
     fn shown_event_id(&mut self, stated: &str) -> Result<(String, BTreeSet<String>)> {
         let mut ids = BTreeSet::from([stated.to_owned()]);
-        let row: Option<(Vec<u8>, Vec<u8>)> = self
-            .tx()
-            .prepare_cached("SELECT fields,data FROM event_parse WHERE event_id=?1 LIMIT 1")?
-            .query_row([stated], |r| <(_, _)>::try_from(r))
-            .optional()?;
-        let Some((fields, data)) = row else {
+        let event = match &self.stream {
+            Some(stream) => stream
+                .events
+                .iter()
+                .find(|r| r.event_id == stated)
+                .map(EventRow::event)
+                .transpose()?,
+            None => {
+                let row: Option<(Vec<u8>, Vec<u8>)> = self
+                    .tx()
+                    .prepare_cached(
+                        "SELECT fields,data FROM event_parse WHERE event_id=?1 LIMIT 1",
+                    )?
+                    .query_row([stated], |r| <(_, _)>::try_from(r))
+                    .optional()?;
+                row.map(|(fields, data)| {
+                    let mut event: Event = crate::encoding::unpack_json(&fields)?;
+                    event.data = crate::encoding::unpack_json(&data)?;
+                    Ok::<_, StoreError>(event)
+                })
+                .transpose()?
+            }
+        };
+        let Some(event) = event else {
             return Ok((stated.to_owned(), ids));
         };
-        let mut event: Event = crate::encoding::unpack_json(&fields)?;
-        event.data = crate::encoding::unpack_json(&data)?;
         let (_, shown) = self.ids.event(&event, stated)?;
         ids.insert(shown.clone());
         Ok((shown, ids))
+    }
+
+    /// The readings stating an event under `id`.
+    fn event_rows(&mut self, id: &str) -> Result<Vec<EventRow>> {
+        if let Some(stream) = &self.stream {
+            return Ok(stream
+                .events
+                .iter()
+                .filter(|r| r.event_id == id)
+                .cloned()
+                .collect());
+        }
+        Ok(self
+            .tx()
+            .prepare_cached(
+                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.fields,r.data,r.seq,r.source_start,r.source_end
+                 FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.event_id=?1",
+            )?
+            .query_map([id], |r| {
+                Ok(EventRow {
+                    input: r.get(0)?,
+                    chain: r.get(1)?,
+                    input_pk: r.get(2)?,
+                    route: r.name(3)?,
+                    hash: r.get(4)?,
+                    fields: r.get(5)?,
+                    data: r.get(6)?,
+                    seq: r.get(7)?,
+                    start: r.get(8)?,
+                    end: r.get(9)?,
+                    event_id: id.to_owned(),
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
     /// Composes one shown event: by route precedence, then value hash,
@@ -1074,30 +1531,8 @@ impl<'c> Work<'_, 'c> {
         }
         let mut found = Vec::new();
         for id in stated {
-            let rows = self
-                .tx()
-                .prepare_cached(
-                    "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.fields,r.data,r.seq,r.source_start,r.source_end
-                     FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.event_id=?1",
-                )?
-                .query_map([id], |r| {
-                    Ok((
-                        r.get::<_, String>(0)?,
-                        r.get::<_, i64>(1)?,
-                        r.get::<_, i64>(2)?,
-                        r.name::<Route>(3)?,
-                        r.get::<_, Vec<u8>>(4)?,
-                        r.get::<_, Vec<u8>>(5)?,
-                        r.get::<_, Vec<u8>>(6)?,
-                        r.get::<_, i64>(7)?,
-                        r.get::<_, Option<i64>>(8)?,
-                        r.get::<_, Option<i64>>(9)?,
-                    ))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            for (input, chain, input_pk, route, hash, fields, data, seq, start, end) in rows {
-                let mut event: Event = crate::encoding::unpack_json(&fields)?;
-                event.data = crate::encoding::unpack_json(&data)?;
+            for row in self.event_rows(id)? {
+                let event = row.event()?;
                 let (moved, id_shown) = self.ids.event(&event, id)?;
                 if id_shown != shown {
                     continue;
@@ -1108,20 +1543,20 @@ impl<'c> Work<'_, 'c> {
                         fields.data = Json::Null;
                         crate::encoding::pack_json(&fields)?
                     }
-                    None => fields,
+                    None => row.fields,
                 };
                 found.push(Reading {
-                    input,
-                    chain,
-                    input_pk,
-                    route,
-                    hash,
+                    input: row.input,
+                    chain: row.chain,
+                    input_pk: row.input_pk,
+                    route: row.route,
+                    hash: row.hash,
                     event: moved.unwrap_or(event),
-                    seq,
-                    start,
-                    end,
+                    seq: row.seq,
+                    start: row.start,
+                    end: row.end,
                     fields,
-                    data,
+                    data: row.data,
                 });
             }
         }
@@ -1132,11 +1567,14 @@ impl<'c> Work<'_, 'c> {
         }
         found.retain(|r| newest.get(&r.input_pk) == Some(&r.chain));
         found.sort_by(|a, b| (&a.input, a.chain).cmp(&(&b.input, b.chain)));
-        let stored: Option<(i64, Option<i64>)> = self
-            .tx()
-            .prepare_cached("SELECT pk,session_pk FROM event WHERE id=?1")?
-            .query_row([shown], |r| <(i64, Option<i64>)>::try_from(r))
-            .optional()?;
+        let stored: Option<(i64, Option<i64>)> = if self.stream.is_some() {
+            None
+        } else {
+            self.tx()
+                .prepare_cached("SELECT pk,session_pk FROM event WHERE id=?1")?
+                .query_row([shown], |r| <(i64, Option<i64>)>::try_from(r))
+                .optional()?
+        };
         let winner = compose::value(
             &found
                 .iter()
@@ -1150,18 +1588,32 @@ impl<'c> Work<'_, 'c> {
             }
             return Ok(());
         };
-        let session_pk = match &winner.event.session {
-            Some(session) => Some(self.session_row(&session.to_string())?),
-            None => None,
-        };
         let after = winner.event.after.as_ref().map(ToString::to_string);
         let seq = if winner.seq >= 0 {
             winner.seq
         } else {
             match &after {
-                Some(after) => self.message_seq(after)?.unwrap_or(0),
+                Some(after) => match &mut self.stream {
+                    Some(stream) => match stream.seqs.get(after) {
+                        Some(seq) => *seq,
+                        // The message it follows is another session's: the
+                        // event is composed once every session is written.
+                        None => {
+                            let session = winner.event.session.as_ref().map(ToString::to_string);
+                            for id in stated {
+                                stream.deferred.push((session.clone(), id.clone()));
+                            }
+                            return Ok(());
+                        }
+                    },
+                    None => self.message_seq(after)?.unwrap_or(0),
+                },
                 None => 0,
             }
+        };
+        let session_pk = match &winner.event.session {
+            Some(session) => Some(self.session_row(&session.to_string())?),
+            None => None,
         };
         let values = params![
             shown,
@@ -1530,7 +1982,6 @@ impl<'c> Work<'_, 'c> {
 }
 
 /// What a call's pairing with its result sets on its row.
-#[derive(Default)]
 struct Pairing {
     message: Option<String>,
     idx: Option<i64>,
@@ -1541,9 +1992,64 @@ struct Pairing {
     duration: Option<i64>,
 }
 
+impl Pairing {
+    /// A call no result answers.
+    fn unpaired() -> Self {
+        Self {
+            message: None,
+            idx: None,
+            outcome: "unknown".into(),
+            reason: Some("no_result".into()),
+            exit: None,
+            result_at: None,
+            duration: None,
+        }
+    }
+
+    /// The pairing of a call with its first result, a (message ID, block
+    /// index, packed block, message time), and with the outcome learned
+    /// after it for a call run in the background, which wins.
+    fn of(
+        result: Option<(String, i64, &[u8], Option<i64>)>,
+        background: Option<&polylogue_model::BackgroundUpdate>,
+    ) -> Self {
+        let mut columns = Self::unpaired();
+        if let Some((message, idx, body, at)) = result {
+            columns.message = Some(message);
+            columns.idx = Some(idx);
+            if let Ok(Block::ToolResult {
+                outcome,
+                reported_duration_ms,
+                ..
+            }) = unpack_block(body)
+            {
+                let (outcome, reason, exit) = outcome_columns(&outcome);
+                columns.outcome = outcome.to_owned();
+                columns.reason = reason;
+                columns.exit = exit;
+                columns.result_at = at;
+                columns.duration = reported_duration_ms.and_then(|ms| i64::try_from(ms).ok());
+            }
+        }
+        if let Some(update) = background {
+            let (outcome, reason, exit) = outcome_columns(&update.outcome);
+            columns.outcome = outcome.to_owned();
+            columns.reason = reason;
+            columns.exit = exit;
+            columns.result_at = update.result_at.map(Timestamp::unix_ms);
+            columns.duration = update
+                .reported_duration_ms
+                .and_then(|ms| i64::try_from(ms).ok());
+        }
+        columns
+    }
+}
+
 /// The main reading of a shown message and what it is shown with.
 struct MainReading<'a> {
     session_pk: i64,
+    /// The words of the main reading's text blocks.
+    words: i64,
     order: &'a str,
     input_pk: i64,
     chain: i64,
@@ -1610,12 +2116,6 @@ fn layout_column(selection: &polylogue_model::bundle::ShownBlocks) -> Result<Opt
 
 fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
     let author = polylogue_model::WrittenBy::of(m);
-    let words: i64 = m
-        .blocks
-        .iter()
-        .filter_map(Block::text)
-        .map(|t| t.split_whitespace().count() as i64)
-        .sum();
     let attrs = {
         let mut a = serde_json::Map::new();
         if !m.attrs.is_empty() {
@@ -1667,7 +2167,7 @@ fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
         int(polylogue_model::Catalog::builtin().cost_nusd(m.model.as_deref(), u)),
         text(m.stop_reason.clone()),
         int(n(m.duration_ms)),
-        Value::Integer(words),
+        Value::Integer(main.words),
         text(attrs),
         Value::Text(main.order.to_owned()),
         Value::Integer(main.input_pk),
@@ -1676,6 +2176,33 @@ fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
         Value::Integer(main.end),
         Value::Integer(i64::from(main.in_progress)),
     ])
+}
+
+static INSERT_MESSAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "INSERT INTO message(id,{}) VALUES (?1,{})",
+        MESSAGE_COLUMNS.join(","),
+        (2..=MESSAGE_COLUMNS.len() + 1)
+            .map(|n| format!("?{n}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+});
+
+/// Marks each text the stored blocks hold as a member of the search index
+/// [`search_bit`] gives its block, for a build that composed sessions from
+/// a stream without marking their texts one by one.
+pub(super) fn mark_searched_texts(tx: &Transaction<'_>) -> Result<()> {
+    tx.execute(
+        "UPDATE text SET indexed = indexed | b.bits
+         FROM (SELECT text_id,
+                   (max(kind IN ('tool_result','tool_call')) * 2)
+                   | max(kind NOT IN ('tool_result','tool_call')) AS bits
+               FROM block WHERE text_id IS NOT NULL GROUP BY text_id) b
+         WHERE text.id = b.text_id AND text.indexed | b.bits <> text.indexed",
+        [],
+    )?;
+    Ok(())
 }
 
 /// The search index a block's text belongs to: 2 for tool results and tool

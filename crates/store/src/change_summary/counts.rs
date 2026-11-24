@@ -50,6 +50,10 @@ impl ChangeSummary {
         let changed = self.changed.borrow();
         let mut deltas = BTreeMap::<i64, Counts>::new();
         for (&pk, change) in &changed.messages {
+            // A whole session's counts are computed from all its rows below.
+            if change.whole_in.is_some_and(|s| changed.whole.contains(&s)) {
+                continue;
+            }
             if let Some(before) = &change.before {
                 deltas
                     .entry(before.session)

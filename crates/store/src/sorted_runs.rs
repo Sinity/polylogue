@@ -248,6 +248,15 @@ impl Merger {
         Ok(())
     }
 
+    /// The record [`Self::next`] returns next, left in place.
+    pub(crate) fn peek(&mut self) -> io::Result<Option<(&[u8], &[u8])>> {
+        self.settle()?;
+        Ok(self.heap.first().map(|&top| {
+            let r = &self.readers[top];
+            (r.key.as_slice(), r.value.as_slice())
+        }))
+    }
+
     /// The next record.
     pub(crate) fn next(&mut self) -> io::Result<Option<(&[u8], &[u8])>> {
         self.settle()?;

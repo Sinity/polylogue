@@ -188,12 +188,7 @@ pub(crate) fn finish(
         },
         touched,
     )?;
-    changes.finish_summaries(tx, Some(counter))?;
-    changes.finish_links(tx)?;
-    let read = crate::timing::time(crate::timing::Stage::Items, || {
-        crate::items::refresh(tx, changes)
-    })?;
-    crate::session_values::refresh(tx, changes)?;
+    let read = finish_summaries(tx, changes, counter)?;
     // A first build derives every session once, when it ends.
     if !at_build_end {
         let sessions = changes.sessions(tx)?;
@@ -201,6 +196,23 @@ pub(crate) fn finish(
         crate::measure::time::forget_settled(tx, changes, &sessions)?;
     }
     Ok((written, read))
+}
+
+/// Brings counts, the session item index and the values kept with each
+/// change up to date with the shown rows a transaction wrote; returns the
+/// item units read.
+pub(super) fn finish_summaries(
+    tx: &Transaction<'_>,
+    changes: &ChangeSummary,
+    counter: i64,
+) -> Result<u64> {
+    changes.finish_summaries(tx, Some(counter))?;
+    changes.finish_links(tx)?;
+    let read = crate::timing::time(crate::timing::Stage::Items, || {
+        crate::items::refresh(tx, changes)
+    })?;
+    crate::session_values::refresh(tx, changes)?;
+    Ok(read)
 }
 
 fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {

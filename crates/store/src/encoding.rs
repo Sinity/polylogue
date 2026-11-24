@@ -467,7 +467,11 @@ impl RowPacker {
         Ok(self.pack_row(&block_bytes(block)?)?)
     }
 
-    fn pack_content(&mut self, blocks: &[Block], hash: [u8; 32]) -> Result<PreparedContent> {
+    pub(crate) fn pack_content(
+        &mut self,
+        blocks: &[Block],
+        hash: [u8; 32],
+    ) -> Result<PreparedContent> {
         let mut packed = Vec::with_capacity(blocks.len());
         let mut data = Vec::with_capacity(blocks.len());
         for block in blocks {

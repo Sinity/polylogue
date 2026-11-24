@@ -20,7 +20,17 @@ fn a_merge_of_spilled_runs_gives_every_record_in_key_order() {
     assert!(runs.len() > FAN_IN);
     let mut merged = Merger::open(runs, dir.path()).unwrap();
     let mut got = Vec::new();
-    while let Some((k, v)) = merged.next().unwrap() {
+    loop {
+        // A peek shows the record the next call returns, and takes nothing.
+        let peeked = merged
+            .peek()
+            .unwrap()
+            .map(|(k, v)| (k.to_vec(), v.to_vec()));
+        let Some((k, v)) = merged.next().unwrap() else {
+            assert_eq!(peeked, None);
+            break;
+        };
+        assert_eq!(peeked, Some((k.to_vec(), v.to_vec())));
         got.push((k.to_vec(), v.to_vec()));
     }
     assert_eq!(got, expected);

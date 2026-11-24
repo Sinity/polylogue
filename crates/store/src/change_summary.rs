@@ -30,6 +30,9 @@ struct Before {
 
 struct MessageChange {
     before: Option<Before>,
+    /// The session a message new in this transaction was written in, when
+    /// that session is composed whole: nothing about it is read back.
+    whole_in: Option<i64>,
 }
 
 struct SessionBefore {
@@ -163,19 +166,33 @@ impl ChangeSummary {
         if let Some(before) = &before {
             self.session(conn, before.session)?;
         }
-        self.changed
-            .borrow_mut()
-            .messages
-            .insert(pk, MessageChange { before });
+        self.changed.borrow_mut().messages.insert(
+            pk,
+            MessageChange {
+                before,
+                whole_in: None,
+            },
+        );
         Ok(())
     }
 
     pub(crate) fn new_message(&self, pk: i64) {
         let mut changed = self.changed.borrow_mut();
-        changed
-            .messages
-            .entry(pk)
-            .or_insert(MessageChange { before: None });
+        changed.messages.entry(pk).or_insert(MessageChange {
+            before: None,
+            whole_in: None,
+        });
+        changed.items.entry(pk).or_insert(MessageItems::Content);
+    }
+
+    /// Records a message new in this transaction, written in `session`,
+    /// which the transaction composes whole ([`Self::whole_session`]).
+    pub(crate) fn new_message_in(&self, pk: i64, session: i64) {
+        let mut changed = self.changed.borrow_mut();
+        changed.messages.entry(pk).or_insert(MessageChange {
+            before: None,
+            whole_in: Some(session),
+        });
         changed.items.entry(pk).or_insert(MessageItems::Content);
     }
 
@@ -321,6 +338,11 @@ impl ChangeSummary {
             conn.prepare_cached("SELECT session_pk, parent_id FROM message WHERE pk = ?1")?;
         for (&pk, change) in &changed.messages {
             if !includes(changed.items.get(&pk)) {
+                continue;
+            }
+            // A whole session is brought up to date from all its rows.
+            if let Some(session) = change.whole_in.filter(|s| changed.whole.contains(s)) {
+                out.entry(session).or_default().messages.insert(pk);
                 continue;
             }
             let before = &change.before;
