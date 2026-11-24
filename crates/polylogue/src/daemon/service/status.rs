@@ -20,26 +20,120 @@ fn mode(d: &Daemon) -> crate::protocol::status::Mode {
     }
 }
 
-/// Status over an index that is not current is a degraded answer.
+/// What a status answer reads from the index: read after each commit by the
+/// worker that keeps the scope index ([`crate::daemon::scope`]), so that a
+/// status request reads only memory and never waits for a reader, the
+/// writer's lock or a query whose cost grows with the archive.
+struct Snapshot {
+    /// When it was read, for the times it reports relative to now.
+    #[cfg(feature = "sinex")]
+    taken: std::time::Instant,
+    store: Result<polylogue_store::Status, String>,
+    notices: Result<crate::protocol::status::Notices, String>,
+    running: Result<polylogue_store::RunningCandidates, String>,
+    /// The index's completeness and the applied stream position, which
+    /// freshness compares with the Sinex observations held when answering.
+    reading: polylogue_store::Result<(
+        polylogue_model::freshness::ReadCompleteness,
+        super::state::Applied,
+    )>,
+    #[cfg(feature = "sinex")]
+    primary: Option<PrimarySnapshot>,
+}
+
+#[cfg(feature = "sinex")]
+struct PrimarySnapshot {
+    producer: Result<polylogue_sinex::Status, String>,
+    applied_position: Result<Option<i64>, String>,
+    refusals: Result<(u64, Option<String>), String>,
+}
+
+impl Snapshot {
+    fn read(d: &Daemon, reader: &polylogue_store::Reader<'_>) -> Self {
+        let now = d.clock.now_ms();
+        let reading = reader
+            .completeness(&polylogue_engine::reading_contracts())
+            .and_then(|local| Ok((local, d.applied(reader)?)));
+        Self {
+            #[cfg(feature = "sinex")]
+            taken: std::time::Instant::now(),
+            store: reader.status().map_err(|error| error.to_string()),
+            notices: serde_json::from_value(crate::signals::recent(reader, now))
+                .map_err(|problem| problem.to_string()),
+            running: reader
+                .running_candidates(now)
+                .map_err(|error| error.to_string()),
+            reading,
+            #[cfg(feature = "sinex")]
+            primary: match &d.mode {
+                super::ModeState::Primary { connection } => Some(PrimarySnapshot {
+                    producer: connection.status().map_err(|error| error.to_string()),
+                    applied_position: reader
+                        .confirmed_checkpoint()
+                        .map_err(|error| error.to_string()),
+                    refusals: reader
+                        .confirmed_refusals()
+                        .map_err(|error| error.to_string()),
+                }),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// The latest [`Snapshot`], replaced whole after each commit.
+#[derive(Default)]
+pub(crate) struct StatusSnapshot(std::sync::Mutex<Option<std::sync::Arc<Snapshot>>>);
+
+impl StatusSnapshot {
+    /// Reads a new snapshot from `reader` and publishes it. The lock is
+    /// held only for the swap.
+    pub(crate) fn refresh(&self, d: &Daemon, reader: &polylogue_store::Reader<'_>) {
+        let snapshot = std::sync::Arc::new(Snapshot::read(d, reader));
+        *self.0.locked() = Some(snapshot);
+    }
+
+    /// No index can be read (one is being built): status answers from the
+    /// build's progress until the next snapshot.
+    pub(crate) fn clear(&self) {
+        *self.0.locked() = None;
+    }
+
+    /// Whether a snapshot has been read since the daemon started or the
+    /// last index build began.
+    #[cfg(test)]
+    pub(crate) fn is_read(&self) -> bool {
+        self.0.locked().is_some()
+    }
+
+    fn latest(&self) -> Option<std::sync::Arc<Snapshot>> {
+        self.0.locked().clone()
+    }
+}
+
+/// Why status has no snapshot to answer from while no build is running.
+const WARMING: &str = "warming: the archive's status has not been read since the daemon started";
+
+/// Status from the latest snapshot and the daemon's own state; degraded
+/// when the index is not current. `vectors` are the counts a deep request
+/// read, or why they could not be read.
 pub(super) fn answer(
     d: &Daemon,
-    reader: &polylogue_store::Reader<'_>,
-    include_vectors: bool,
+    vectors: Option<Result<polylogue_store::vectors::VectorStatus, String>>,
     whole_log: bool,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
-    // Totals are counters the writer keeps with the rows they count: reading
-    // them costs the same at any archive size.
-    let (store, totals_error) = match reader.status() {
-        Ok(store) => (Some(store), None),
-        Err(error) => (None, Some(error.to_string())),
+    let Some(snapshot) = d.status_snapshot.latest() else {
+        return unread(d, d.archive.index_build(), vectors, whole_log);
     };
-    let (vectors, vectors_error) = if include_vectors {
-        match reader.vectors().and_then(|vectors| vectors.status()) {
-            Ok(vectors) => (Some(vectors), None),
-            Err(error) => (None, Some(error.to_string())),
-        }
-    } else {
-        (None, None)
+    let now = d.clock.now_ms();
+    let (store, totals_error) = match &snapshot.store {
+        Ok(store) => (Some(store.clone()), None),
+        Err(error) => (None, Some(error.clone())),
+    };
+    let (vectors, vectors_error) = match vectors {
+        Some(Ok(vectors)) => (Some(vectors), None),
+        Some(Err(error)) => (None, Some(error)),
+        None => (None, None),
     };
     let loop_status = d.status.locked().clone();
     let signals = d.signals.locked().clone();
@@ -47,23 +141,30 @@ pub(super) fn answer(
         Ok(signals) => signals,
         Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
-    let notices = match serde_json::from_value(crate::signals::recent(reader, d.clock.now_ms())) {
-        Ok(notices) => notices,
+    let notices = match &snapshot.notices {
+        Ok(notices) => notices.clone(),
         Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
-    let running = match reader.running(d.clock.now_ms()) {
-        Ok(sessions) => crate::protocol::status::Running::Measured {
-            waiting: sessions
-                .iter()
-                .filter(|s| s.state == polylogue_model::live::LiveState::Waiting)
-                .count(),
-            sessions,
-        },
+    let running = match &snapshot.running {
+        Ok(candidates) => {
+            let sessions = candidates.at(now);
+            crate::protocol::status::Running::Measured {
+                waiting: sessions
+                    .iter()
+                    .filter(|s| s.state == polylogue_model::live::LiveState::Waiting)
+                    .count(),
+                sessions,
+            }
+        }
         Err(error) => crate::protocol::status::Running::Unavailable {
-            error: error.to_string(),
+            error: error.clone(),
         },
     };
-    let freshness = match d.freshness(reader) {
+    let freshness = match &snapshot.reading {
+        Ok((local, applied)) => d.freshness_of(local.clone(), applied),
+        Err(error) => return store_error(error),
+    };
+    let freshness = match freshness {
         Ok(freshness) => freshness,
         Err(error) => return store_error(&error),
     };
@@ -87,7 +188,7 @@ pub(super) fn answer(
         missing.push(format!("notices: {error}"));
     }
     #[cfg(feature = "sinex")]
-    let primary = primary(d, reader, &freshness);
+    let primary = primary(d, &snapshot, &freshness);
     #[cfg(feature = "sinex")]
     if let Some(crate::protocol::status::Primary::Unavailable { error }) = &primary {
         missing.push(format!("primary status: {error}"));
@@ -144,18 +245,22 @@ fn capture_note(
     answer
 }
 
-/// Status while `index.db` is being built and no index can be read: the
-/// daemon's own state and the build's progress, degraded until it ends.
-pub(super) fn building(
+/// Status before any snapshot: while `index.db` is being built and no index
+/// can be read, or before the first snapshot is read. It holds the daemon's
+/// own state and the build's progress and is degraded until a snapshot is
+/// read.
+fn unread(
     d: &Daemon,
-    build: polylogue_store::archive::index_build::IndexBuild,
-    include_vectors: bool,
+    build: Option<polylogue_store::archive::index_build::IndexBuild>,
+    vectors: Option<Result<polylogue_store::vectors::VectorStatus, String>>,
     whole_log: bool,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
     use polylogue_model::freshness::{
         CompletenessDimension, CompletenessReason, IndexFreshness, ReadCompleteness, ReadFreshness,
     };
-    let unread = build.to_string();
+    let unread = build
+        .as_ref()
+        .map_or_else(|| WARMING.to_owned(), ToString::to_string);
     let loop_status = d.status.locked().clone();
     let signals = d.signals.locked().clone();
     let signals = match serde_json::from_value(signals) {
@@ -163,17 +268,31 @@ pub(super) fn building(
         Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
     let mode = mode(d);
+    // While warming nothing is known yet; a build names itself.
+    let (reasons, derivation) = if build.is_some() {
+        (
+            vec![CompletenessReason::IndexBuilding],
+            CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind]),
+        )
+    } else {
+        (Vec::new(), CompletenessDimension::Unknown(Vec::new()))
+    };
+    let dimension = |reasons: Vec<CompletenessReason>| {
+        if build.is_some() {
+            CompletenessDimension::Incomplete(reasons)
+        } else {
+            CompletenessDimension::Unknown(reasons)
+        }
+    };
     let freshness = ReadFreshness {
         local: ReadCompleteness {
-            parsing: CompletenessDimension::Incomplete(vec![CompletenessReason::IndexBuilding]),
-            derivation: CompletenessDimension::Incomplete(vec![
-                CompletenessReason::DerivationBehind,
-            ]),
-            search: CompletenessDimension::Incomplete(vec![CompletenessReason::IndexBuilding]),
+            parsing: dimension(reasons.clone()),
+            derivation,
+            search: dimension(reasons.clone()),
             // Primary mode cannot say what the stream has applied before
-            // the index exists.
+            // the index is read.
             confirmed_stream: if d.archive.is_primary() {
-                CompletenessDimension::Unknown(vec![CompletenessReason::IndexBuilding])
+                CompletenessDimension::Unknown(reasons)
             } else {
                 CompletenessDimension::NotApplicable
             },
@@ -187,16 +306,21 @@ pub(super) fn building(
             _ => IndexFreshness::Standalone,
         },
     };
+    let (vectors, vectors_error) = match vectors {
+        Some(Ok(vectors)) => (Some(vectors), None),
+        Some(Err(error)) => (None, Some(error)),
+        None => (None, None),
+    };
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
         uptime_seconds: d.started.elapsed().as_secs(),
         store: None,
-        index_build: Some(build),
+        index_build: build.clone(),
         build_progress: d.archive.build_progress(),
         totals_error: Some(unread.clone()),
-        vectors: None,
-        vectors_error: include_vectors.then(|| unread.clone()),
+        vectors,
+        vectors_error,
         verification: None,
         pending_writes: pending_writes(d),
         loop_status,
@@ -204,7 +328,9 @@ pub(super) fn building(
         notices: crate::protocol::status::Notices::Unavailable {
             error: unread.clone(),
         },
-        running: crate::protocol::status::Running::Unavailable { error: unread },
+        running: crate::protocol::status::Running::Unavailable {
+            error: unread.clone(),
+        },
         warm: d.warm.summary(),
         mode: mode.clone(),
         freshness: freshness.clone(),
@@ -213,10 +339,13 @@ pub(super) fn building(
         recent_log: recent_log(whole_log),
     };
     let mut answer = crate::protocol::read(status, &freshness);
-    if let crate::protocol::status::Mode::Blocked { path, error, .. } = &mode
-        && let command_surface::Outcome::Degraded { missing, .. } = &mut answer.outcome
-    {
-        missing.push(format!("{}: {error}", path.display()));
+    if let command_surface::Outcome::Degraded { missing, .. } = &mut answer.outcome {
+        if build.is_none() {
+            missing.push(unread);
+        }
+        if let crate::protocol::status::Mode::Blocked { path, error, .. } = &mode {
+            missing.push(format!("{}: {error}", path.display()));
+        }
     }
     capture_note(d, answer)
 }
@@ -224,23 +353,31 @@ pub(super) fn building(
 #[cfg(feature = "sinex")]
 fn primary(
     d: &Daemon,
-    reader: &polylogue_store::Reader<'_>,
+    snapshot: &Snapshot,
     freshness: &polylogue_model::freshness::ReadFreshness,
 ) -> Option<crate::protocol::status::Primary> {
     use crate::protocol::status::Primary;
     let super::ModeState::Primary { connection } = &d.mode else {
         return None;
     };
-    Some(match connection.status() {
+    let read = snapshot.primary.as_ref()?;
+    Some(match &read.producer {
         Ok(producer) => {
-            let (applied_position, mut position_error) = match reader.confirmed_checkpoint() {
-                Ok(position) => (position, None),
-                Err(error) => (None, Some(error.to_string())),
+            // The spool's counts as the snapshot read them; the connection's
+            // health and the acknowledgment's age as they are now.
+            let mut producer = producer.clone();
+            connection.observe(&mut producer);
+            producer.last_ack_seconds_ago = producer
+                .last_ack_seconds_ago
+                .map(|seconds| seconds + snapshot.taken.elapsed().as_secs_f64());
+            let (applied_position, mut position_error) = match &read.applied_position {
+                Ok(position) => (*position, None),
+                Err(error) => (None, Some(error.clone())),
             };
-            let (refused_events, last_refused) = match reader.confirmed_refusals() {
-                Ok((count, last)) => (Some(count), last),
+            let (refused_events, last_refused) = match &read.refusals {
+                Ok((count, last)) => (Some(*count), last.clone()),
                 Err(error) => {
-                    position_error.get_or_insert(error.to_string());
+                    position_error.get_or_insert(error.clone());
                     (None, None)
                 }
             };
@@ -262,7 +399,7 @@ fn primary(
             }
         }
         Err(error) => Primary::Unavailable {
-            error: error.to_string(),
+            error: error.clone(),
         },
     })
 }

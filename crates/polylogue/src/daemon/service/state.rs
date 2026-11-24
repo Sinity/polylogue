@@ -20,8 +20,11 @@ pub struct Daemon {
     pub(super) operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
 
     pub(crate) warm: crate::daemon::warm::Warm,
-    /// Sessions by working directory, kept current by the scope worker.
+    /// Sessions by working directory, kept current by the refresh worker
+    /// ([`crate::daemon::scope`]).
     pub(crate) scope: crate::daemon::scope::SharedScopeIndex,
+    /// What `status` reads from the index, kept current by the same worker.
+    pub(crate) status_snapshot: super::status::StatusSnapshot,
     /// Briefs answered whose delivery records are still queued.
     pub(crate) queued_deliveries: crate::daemon::queued_deliveries::QueuedDeliveries,
     pub(crate) live_spool: crate::live_events::SharedStatus,
@@ -184,23 +187,50 @@ impl Daemon {
         &self,
         reader: &polylogue_store::Reader<'_>,
     ) -> polylogue_store::Result<polylogue_model::freshness::ReadFreshness> {
-        use polylogue_model::freshness::IndexFreshness;
         let local = reader.completeness(&polylogue_engine::reading_contracts())?;
+        let applied = self.applied(reader)?;
+        self.freshness_of(local, &applied)
+    }
+
+    /// What the confirmed stream has applied, which a primary archive's
+    /// freshness compares with Sinex; nothing for a standalone archive.
+    pub(crate) fn applied(
+        &self,
+        reader: &polylogue_store::Reader<'_>,
+    ) -> polylogue_store::Result<Applied> {
+        Ok(if self.archive.is_primary() {
+            Applied {
+                position: reader.confirmed_checkpoint()?,
+                scope: reader.confirmed_scope()?,
+            }
+        } else {
+            Applied::default()
+        })
+    }
+
+    /// Freshness from the index's completeness and the applied position,
+    /// both read from one snapshot, and the Sinex observations held now.
+    pub(crate) fn freshness_of(
+        &self,
+        local: polylogue_model::freshness::ReadCompleteness,
+        applied: &Applied,
+    ) -> polylogue_store::Result<polylogue_model::freshness::ReadFreshness> {
+        use polylogue_model::freshness::IndexFreshness;
         let sinex = match &self.mode {
             ModeState::Standalone => IndexFreshness::Standalone,
             #[cfg(feature = "sinex")]
             ModeState::Primary { connection } => connection
-                .freshness(reader.confirmed_checkpoint()?, reader.confirmed_scope()?)
+                .freshness(applied.position, applied.scope.clone())
                 .map_err(StoreError::from)?,
             ModeState::Blocked { .. } if !self.archive.is_primary() => IndexFreshness::Standalone,
             ModeState::Blocked { error, .. } => IndexFreshness::primary(
-                reader.confirmed_checkpoint()?,
+                applied.position,
                 None,
                 None,
                 Some(false),
                 Some(error.clone()),
             )
-            .with_scope(reader.confirmed_scope()?),
+            .with_scope(applied.scope.clone()),
         };
         Ok(polylogue_model::freshness::ReadFreshness { local, sinex })
     }
@@ -219,6 +249,14 @@ impl Daemon {
     pub(in crate::daemon) fn foreground(&self) -> crate::daemon::schema::Foreground<'_> {
         self.idle_gate.foreground()
     }
+}
+
+/// The confirmed stream's applied position and read scope, as one index
+/// snapshot holds them.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Applied {
+    pub position: Option<i64>,
+    pub scope: Option<String>,
 }
 
 #[derive(serde::Serialize)]

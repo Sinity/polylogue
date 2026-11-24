@@ -1,6 +1,8 @@
 //! The daemon's scope index ([`ScopeIndex`]): read in full when the daemon
 //! starts and brought forward after every committed write, on a worker of
 //! its own, so a brief or a resume list never reads it from the archive.
+//! The same worker reads the status snapshot from the same reader, so a
+//! status request never reads the archive either.
 //! A caller copies what it needs out under the lock and reads the archive
 //! after letting go of it.
 
@@ -81,9 +83,9 @@ impl SharedScopeIndex {
     }
 }
 
-/// The worker that keeps [`SharedScopeIndex`] current and, after each
-/// commit, hands delivery records that found the writer's queue full to the
-/// writer.
+/// The worker that keeps [`SharedScopeIndex`] and the status snapshot
+/// current and, after each commit, hands delivery records that found the
+/// writer's queue full to the writer.
 pub(crate) struct ScopeWorker {
     stop: Arc<AtomicBool>,
     expected_exit: Arc<AtomicBool>,
@@ -117,10 +119,11 @@ impl ScopeWorker {
                     completed.store(true, Ordering::Release);
                     return;
                 }
-                let result = daemon
-                    .reads
-                    .reader()
-                    .and_then(|reader| daemon.scope.refresh(&reader));
+                let result = daemon.reads.reader().and_then(|reader| {
+                    daemon.scope.refresh(&reader)?;
+                    daemon.status_snapshot.refresh(&daemon, &reader);
+                    Ok(())
+                });
                 if let Err(error) = result {
                     // The daemon's stop request ends the worker as its
                     // own stop does.
@@ -131,6 +134,9 @@ impl ScopeWorker {
                         return;
                     }
                     let building = matches!(error, polylogue_store::StoreError::IndexBuilding(_));
+                    if building {
+                        daemon.status_snapshot.clear();
+                    }
                     // A build's message carries its progress; waiting for it
                     // is logged once, not at every commit.
                     let error = error.to_string();

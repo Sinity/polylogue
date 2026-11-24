@@ -378,6 +378,7 @@ pub fn start(
         ),
         warm,
         scope: crate::daemon::scope::SharedScopeIndex::default(),
+        status_snapshot: Default::default(),
         queued_deliveries: crate::daemon::queued_deliveries::QueuedDeliveries::default(),
         live_spool: Default::default(),
         advisories: crate::advisory::Cooldowns::default(),
@@ -447,6 +448,14 @@ pub fn start(
         .writes
         .as_ref()
         .map(WriterSender::completion_commits);
+    // The first status snapshot is read before any request is served, so
+    // status says it is warming only while no index can be read yet.
+    if let Ok(reader) = runtime.daemon.reads.reader() {
+        runtime
+            .daemon
+            .status_snapshot
+            .refresh(&runtime.daemon, &reader);
+    }
     runtime.scope = Some(crate::daemon::scope::ScopeWorker::start(
         Arc::clone(&runtime.daemon),
         runtime
