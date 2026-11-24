@@ -123,15 +123,11 @@ unsafe extern "C" fn drop_prepared(data: *mut c_void) {
 
 /// The statistics blob as integers.
 fn decode(bytes: &[u8]) -> Option<Vec<i64>> {
-    if bytes.len() % 8 != 0 || bytes.len() < 16 {
+    let (numbers, rest) = bytes.as_chunks::<8>();
+    if !rest.is_empty() || numbers.len() < 2 {
         return None;
     }
-    Some(
-        bytes
-            .chunks_exact(8)
-            .map(|chunk| i64::from_le_bytes(chunk.try_into().expect("eight bytes")))
-            .collect(),
-    )
+    Some(numbers.iter().map(|n| i64::from_le_bytes(*n)).collect())
 }
 
 unsafe fn fail(ctx: *mut ffi::sqlite3_context, message: &CStr) {
@@ -231,7 +227,7 @@ unsafe extern "C" fn bm25(
                 * ((frequency * (K1 + 1.0))
                     / (frequency + K1 * (1.0 - B + B * d / prepared.average)));
         }
-        ffi::sqlite3_result_double(ctx, -1.0 * score);
+        ffi::sqlite3_result_double(ctx, -score);
     }
 }
 

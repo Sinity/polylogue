@@ -512,9 +512,9 @@ impl Coordinator {
                 .query_map([after, SETTLE_ROWS], |r| <(i64, i64)>::try_from(r))?
                 .collect::<rusqlite::Result<_>>()?;
             for &(id, indexed) in &rows {
-                for bit in 0..2 {
+                for (bit, keys) in members.iter_mut().enumerate() {
                     if indexed & (1 << bit) != 0 {
-                        members[bit].insert(id);
+                        keys.insert(id);
                     }
                 }
             }
@@ -525,8 +525,8 @@ impl Coordinator {
         }
         tx.finish()?;
         let mut removed: Vec<Vec<Entry>> = (0..FILES).map(|_| Vec::new()).collect();
-        for bit in 0..2 {
-            let gone: Vec<i64> = self.entered[bit].without(&members[bit]).collect();
+        for (bit, members) in members.iter().enumerate() {
+            let gone: Vec<i64> = self.entered[bit].without(members).collect();
             for id in gone {
                 self.entered[bit].remove(id);
                 removed[file_of(id)].push(Entry::Remove {
@@ -534,7 +534,7 @@ impl Coordinator {
                     bit: bit as u8 + 1,
                 });
             }
-            let missing: Vec<i64> = members[bit].without(&self.entered[bit]).collect();
+            let missing: Vec<i64> = members.without(&self.entered[bit]).collect();
             for id in missing {
                 self.entered[bit].insert(id);
                 self.wanted.push((id, bit as u8 + 1));
