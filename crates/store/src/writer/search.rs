@@ -57,6 +57,12 @@ impl Search {
 
 impl Drop for Search {
     fn drop(&mut self) {
+        // A writer unwinding from a panic may still hold a batch the thread
+        // waits on; it ends on its own once the queue is gone.
+        if std::thread::panicking() {
+            self.wake.take();
+            return;
+        }
         self.stop();
     }
 }
