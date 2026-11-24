@@ -413,6 +413,9 @@ pub struct BuildWorker {
     groups: u64,
     scratch: PathBuf,
     packer: crate::encoding::RowPacker,
+    /// How many bytes of prepared values a chain keeps (see
+    /// [`OpenChain::values`]).
+    value_memory: usize,
 }
 
 impl BuildWorker {
@@ -454,6 +457,7 @@ impl BuildWorker {
             groups: 0,
             scratch,
             packer: crate::encoding::RowPacker::new()?,
+            value_memory: memory / 4,
         })
     }
 
@@ -474,6 +478,7 @@ impl BuildWorker {
         Ok(OpenChain {
             steps: super::chain::ChainSteps::new(input, chain, length),
             values: std::collections::HashMap::new(),
+            value_room: self.value_memory,
             changes,
             register: &self.register,
             tx,
@@ -511,6 +516,9 @@ pub struct OpenChain<'w> {
     /// Each message reading's value as its last step prepared it, with the
     /// layout it was written with, by message ID.
     values: std::collections::HashMap<String, (Vec<u8>, Prepared)>,
+    /// Bytes of values the chain may still keep; a reading whose value did
+    /// not fit is read back.
+    value_room: usize,
     changes: crate::change_summary::ChangeSummary,
     register: &'w Connection,
     tx: Transaction<'w>,
@@ -549,9 +557,17 @@ impl super::chain::ChainSink for OpenChain<'_> {
         for (row, prepared) in step.output.messages.iter().zip(&mut step.prepared.messages) {
             let layout = crate::encoding::message_layout(&prepared.block_selection)?;
             let block_count = prepared.block_selection.block_count;
+            let size = prepared.blocks.iter().map(Vec::len).sum::<usize>()
+                + prepared.data.iter().flatten().map(Vec::len).sum::<usize>()
+                + prepared.items.len() * std::mem::size_of::<polylogue_model::read::IndexEntry>();
+            let id = row.message.id.to_string();
+            if size > self.value_room {
+                continue;
+            }
+            self.value_room -= size;
             let (items, content) = prepared.take_value();
             self.values.insert(
-                row.message.id.to_string(),
+                id,
                 (
                     layout,
                     Prepared {
