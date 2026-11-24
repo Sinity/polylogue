@@ -244,7 +244,7 @@ fn a_later_round_with_nothing_to_load_keeps_the_indexes_made() {
     let phases = writer.build(Vec::new()).unwrap();
     assert_eq!(
         phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-        ["indexes", "compose", "full text", "install"]
+        ["indexes", "compose", "read indexes", "full text", "install"]
     );
     assert_eq!(phases[0].items, 0);
     assert_eq!(messages(&serving(&archive)), 1);
