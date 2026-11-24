@@ -161,13 +161,91 @@ fn query_selection_write_needs_all() {
     assert_eq!(refused.code.as_deref(), Some("needs_all"));
     assert_eq!(
         refused.message,
-        "2 rows match; a write or act on all of them needs --all"
+        "2 sessions of \"sessions\" match; a write or act on all of them needs --all"
     );
     assert_eq!(refused.candidates().len(), 2);
+    // The refusal carries the same line with `all` set, ready to run.
+    let Some(command_surface::Suggestion::Request(retry)) = refused.suggestion() else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(retry.arguments, tag(true));
     assert_eq!(count(&d, "sessions where tag:later"), 0);
-    let steps = steps(&d, "with", tag(true));
-    assert_eq!(steps[0]["outcome"]["reply"]["reply"]["targets"], 2);
+    let answer = crate::test_answers::ok(Call::from_request(retry).answer(&d.daemon));
+    assert_eq!(
+        answer["reply"]["steps"][0]["outcome"]["reply"]["reply"]["targets"],
+        2
+    );
     assert_eq!(count(&d, "sessions where tag:later"), 2);
+}
+
+#[test]
+fn edit_without_text_gives_the_lines_that_edit_by_hand() {
+    let d = two_sessions();
+    let steps = steps(
+        &d,
+        "edit-without-text",
+        json!({"selection": "annotation:some-note", "steps": [{"verb": "edit"}]}),
+    );
+    assert_eq!(steps[0]["outcome"]["status"], "failed");
+    let refused = &steps[0]["outcome"]["error"];
+    assert_eq!(refused["code"], "bad_request");
+    assert_eq!(
+        refused["message"],
+        "edit needs its new text; with no text a terminal opens your editor. Without one, write the text out with `polylogue annotation:some-note read --to FILE.md`, change the file, and check it in with `polylogue import FILE.md`"
+    );
+}
+
+/// docs/agent-context.md: three or more sessions named together inject an
+/// index, one line per session, never a takeover of each.
+#[test]
+fn three_named_sessions_brief_as_one_index() {
+    let d = test_daemon::start_with_sources_and_workers(
+        "first prompt",
+        &|home| {
+            for (message, session) in [("u2", "s2"), ("u3", "s3")] {
+                std::fs::write(
+                    home.join(format!(".claude/projects/-p/{session}.jsonl")),
+                    polylogue_testkit::claude_user(message, session, "another prompt"),
+                )
+                .unwrap();
+            }
+        },
+        2,
+        2,
+    );
+    let steps = steps(
+        &d,
+        "index",
+        json!({
+            "references": ["session:claude-code:s1", "session:claude-code:s2", "session:claude-code:s3"],
+            "steps": [{"verb": "brief"}],
+        }),
+    );
+    let text = steps[0]["outcome"]["reply"]["reply"]["prepared"]["text"]
+        .as_str()
+        .unwrap();
+    assert!(
+        text.starts_with("[polylogue session index delivery:"),
+        "{text}"
+    );
+    assert!(
+        text.contains("index of 3 sessions named together"),
+        "{text}"
+    );
+    for session in ["s1", "s2", "s3"] {
+        assert_eq!(
+            text.matches(&format!("\"session:claude-code:{session}\""))
+                .count(),
+            1,
+            "{session}: {text}"
+        );
+    }
+    assert!(!text.contains("takeover"), "{text}");
+    assert!(
+        text.trim_end()
+            .ends_with("`polylogue REF brief` for any of these."),
+        "{text}"
+    );
 }
 
 #[test]

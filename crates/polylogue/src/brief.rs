@@ -99,6 +99,13 @@ pub enum Ask {
         #[serde(default)]
         for_session: Option<SessionId>,
     },
+    /// Three or more sessions named together: one line each, never a
+    /// takeover of each.
+    Sessions {
+        sessions: Vec<SessionId>,
+        #[serde(default)]
+        for_session: Option<SessionId>,
+    },
     /// Past work relevant to a text, with a summary of how it was found.
     /// `cursor` continues from a previous page's `next`.
     Recall {
@@ -127,9 +134,9 @@ impl Ask {
         match self {
             Self::SessionStart { session, .. } => session.as_ref(),
             Self::Advisory { session, .. } => Some(session),
-            Self::Takeover { for_session, .. } | Self::Recall { for_session, .. } => {
-                for_session.as_ref()
-            }
+            Self::Takeover { for_session, .. }
+            | Self::Sessions { for_session, .. }
+            | Self::Recall { for_session, .. } => for_session.as_ref(),
         }
     }
 
@@ -137,7 +144,7 @@ impl Ask {
         match self {
             Self::SessionStart { cwd, .. } | Self::Advisory { cwd, .. } => Some(cwd),
             Self::Recall { cwd, .. } => cwd.as_deref(),
-            Self::Takeover { .. } => None,
+            Self::Takeover { .. } | Self::Sessions { .. } => None,
         }
     }
 }
@@ -305,6 +312,9 @@ pub fn prepare(
             context,
         ),
         Ask::Takeover { session, .. } => takeover(reader, session, budget, delivery_id, context),
+        Ask::Sessions { sessions, .. } => {
+            session_index(reader, sessions, budget, delivery_id, context)
+        }
         Ask::Recall {
             text, cwd, cursor, ..
         } => recall(&brief, text, cwd.as_deref(), cursor.as_deref(), budget),
@@ -1430,6 +1440,82 @@ fn session_start(
         next: None,
     })
 }
+/// One line per session (title, harness, directory, last activity, live
+/// state, reference); the budget decides how many lines, and the entry map
+/// counts the rest.
+fn session_index(
+    reader: &Reader<'_>,
+    sessions: &[SessionId],
+    budget: u64,
+    delivery_id: &str,
+    context: &std::sync::Arc<polylogue_reading::operation::Context>,
+) -> Result<Prepared, StoreError> {
+    let zone = context.clock.day.zone();
+    let now = context.clock.now.as_millisecond();
+    let mut items = Vec::with_capacity(sessions.len());
+    for session in sessions {
+        reader.check()?;
+        let id = session.to_string();
+        let harness = session.origin().to_string();
+        let text = match reader.session(session)? {
+            None => format!("not in the archive · {harness}"),
+            Some(found) => {
+                let live = reader.live_state(&id, now)?;
+                let last = live
+                    .as_ref()
+                    .and_then(|live| live.last_activity_at)
+                    .and_then(Timestamp::from_unix_ms);
+                format!(
+                    "{} · {harness} · {} · last active {} · {}",
+                    found
+                        .title
+                        .as_ref()
+                        .map_or("untitled", |title| title.text.as_str()),
+                    found.cwd.last().map_or("directory unknown", String::as_str),
+                    day(last, zone),
+                    live.map_or("unknown", |live| live.view.state.as_str()),
+                )
+            }
+        };
+        items.push(Item {
+            expansion: None,
+            attribution: Some(format!(
+                "archived session metadata; session:{id}; live state at {}",
+                day(Some(context.clock.now.into()), zone)
+            )),
+            text,
+            refs: vec![format!("session:{id}")],
+        });
+    }
+    let mut fit = Fitter::new(
+        budget,
+        format!(
+            "[polylogue session index delivery:{delivery_id}: refs in entry map]\nPolylogue index of {} sessions named together (delivery {delivery_id})\n",
+            sessions.len()
+        ),
+    )?;
+    fit.section(
+        &format!(
+            "Times are in {}.\nOne line per session: title, harness, directory, last activity, live state:",
+            context.clock.day.zone_name()
+        ),
+        items,
+        "sessions",
+        "polylogue REF brief",
+    );
+    let (text, refs, left_out) =
+        fit.finish("\n`polylogue REF brief` for any of these.", |_| Ok(None))?;
+    Ok(Prepared {
+        event: DeliveryEvent::SessionBrief,
+        text,
+        refs,
+        left_out,
+        search_summary: None,
+        empty: false,
+        next: None,
+    })
+}
+
 fn takeover(
     reader: &Reader<'_>,
     session: &SessionId,

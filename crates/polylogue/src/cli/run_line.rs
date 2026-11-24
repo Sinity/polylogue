@@ -489,25 +489,9 @@ pub(crate) fn run(
     }
     let line = match decoded(&answer) {
         Ok(line) => line,
-        Err(error) => {
-            let error = with_all_retry(error, &request);
-            return super::fail_with(startup.output, json, &error, &[]);
-        }
+        Err(error) => return super::fail_with(startup.output, json, &error, &[]),
     };
     output(&parsed, &line, &answer, startup, &mut output_state)
-}
-/// A refusal for several matching rows carries the same request with `all`
-/// set as its suggestion, as MCP offers it in `next`.
-pub(super) fn with_all_retry(
-    error: command_surface::Failure,
-    request: &RunnableRequest,
-) -> command_surface::Failure {
-    if error.code.as_deref() != Some("needs_all") {
-        return error;
-    }
-    let mut retry = request.clone();
-    retry.arguments["all"] = json!(true);
-    error.with_suggestion(command_surface::Suggestion::Request(retry))
 }
 fn failed_code(answer: &Answer<Value>) -> Option<u8> {
     match decoded(answer).ok()? {

@@ -619,7 +619,9 @@ fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
                 startup.output,
                 json,
                 polylogue_model::Code::DaemonRequired,
-                &error.to_string(),
+                &format!(
+                    "no running daemon serves the web reader ({error}); start it with `polylogue daemon`"
+                ),
             );
         }
     };

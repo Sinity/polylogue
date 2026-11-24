@@ -164,11 +164,11 @@ fn already_given(
             },
         )
         .and_then(|answer| answer.value.into_rows())
-        .map_err(|error| StoreError::internal(error.error.message))?;
+        .map_err(|failure| query::annotations::store_error(&failure, &text))?;
+        // History that cannot be read whole may hold this pair: a pair is
+        // offered once, so an unknown answer offers nothing.
         if !page.incomplete.is_empty() || !page.notes.is_empty() {
-            return Err(StoreError::internal(
-                "advisory delivery history is incomplete",
-            ));
+            return Ok(true);
         }
         for row in page.rows {
             let id = row

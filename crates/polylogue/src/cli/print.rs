@@ -56,12 +56,29 @@ pub fn rows(found: &protocol::query::Rows, style: TextStyle) -> String {
 
 /// A measurement in its measure's text view, with the continuation line.
 /// Measure data is JSON: each measure declares its own shape.
+/// Its local times are in the answer's day zone; a zone this machine
+/// cannot load leaves the data as it came, never shown in another zone.
 fn measurement(what: &str, data: &Value, next: Option<&str>, zone: &str) -> String {
-    let zone = jiff::tz::TimeZone::get(zone).unwrap_or(jiff::tz::TimeZone::UTC);
-    let mut out = crate::daemon::measure::find(what).map_or_else(
-        || polylogue_render::measures::json(data),
-        |(measure, _)| (measure.text)(data, &zone),
-    );
+    let mut out = match crate::daemon::measure::find(what) {
+        None => polylogue_render::measures::json(data),
+        Some((measure, _)) => match jiff::tz::TimeZone::get(zone) {
+            Ok(zone) => (measure.text)(data, &zone),
+            Err(error) => {
+                let mut out = polylogue_render::measures::json(data);
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+                let _ = writeln!(
+                    out,
+                    "{}",
+                    polylogue_render::terminal::escape(&format!(
+                        "the day zone {zone} cannot be loaded here ({error}); the measure is shown as its data"
+                    ))
+                );
+                out
+            }
+        },
+    };
     if let Some(next) = next {
         if !out.ends_with('\n') {
             out.push('\n');
@@ -92,7 +109,7 @@ pub fn read(page: &polylogue_model::read::ReadPage, _style: TextStyle) -> String
 /// A line: its listing, or each step's reply in order with the failed and
 /// skipped steps named, then the lines that take its writes back.
 pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
-    use protocol::line::{LineAnswer, StepAnswer, StepOutcome};
+    use protocol::line::{LineAnswer, StepOutcome};
     let steps = match answer {
         LineAnswer::Listing(found) => return query(found, style),
         LineAnswer::Explained(explanation) => return json(explanation, style),
@@ -103,15 +120,7 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
     for step in steps {
         match &step.outcome {
             StepOutcome::Done { reply, undo: lines } => {
-                out.push_str(&match reply {
-                    StepAnswer::Read(page) => read(page, style),
-                    StepAnswer::Streamed(_) | StepAnswer::Followed(_) => String::new(),
-                    StepAnswer::Brief(prepared) => context(prepared, style),
-                    StepAnswer::Resume(found) => resume(found, style),
-                    StepAnswer::Saved(report) => saved(report, style),
-                    StepAnswer::WroteEach(report) => wrote_each(report, &step.verb),
-                    other => json(other, style),
-                });
+                out.push_str(&step_reply(reply, &step.verb, style));
                 undo.extend(lines);
             }
             StepOutcome::Failed { error } => {
@@ -141,6 +150,20 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
         let _ = writeln!(out, "undo: {}", polylogue_render::terminal::escape(line));
     }
     out
+}
+
+/// One finished step's reply as text; the MCP text of a step is this too.
+pub fn step_reply(reply: &protocol::line::StepAnswer, verb: &str, style: TextStyle) -> String {
+    use protocol::line::StepAnswer;
+    match reply {
+        StepAnswer::Read(page) => read(page, style),
+        StepAnswer::Streamed(_) | StepAnswer::Followed(_) => String::new(),
+        StepAnswer::Brief(prepared) => context(prepared, style),
+        StepAnswer::Resume(found) => resume(found, style),
+        StepAnswer::Saved(report) => saved(report, style),
+        StepAnswer::WroteEach(report) => wrote_each(report, verb),
+        other => json(other, style),
+    }
 }
 
 fn wrote_each(report: &polylogue_model::user::AssertQueryOutcome, verb: &str) -> String {
@@ -257,10 +280,19 @@ pub(crate) fn command_line(command: &crate::resume::Command) -> String {
     }
 }
 
+/// Why a harness resume cannot run here: it runs only in the directory the
+/// session recorded, never in another one.
+pub(crate) const DIRECTORY_UNKNOWN: &str =
+    "directory_unknown: the session recorded no directory to resume in";
+
 fn plan(found: &crate::resume::Plan) -> String {
     let mut out = String::new();
     if let Some(harness) = &found.harness_command {
-        let _ = writeln!(out, "harness command:    {}", command_line(harness));
+        let line = match harness.cwd {
+            Some(_) => command_line(harness),
+            None => DIRECTORY_UNKNOWN.to_owned(),
+        };
+        let _ = writeln!(out, "harness command:    {line}");
     }
     let _ = writeln!(
         out,

@@ -1,6 +1,7 @@
 //! A file output replaces its target only after the caller validates it.
 use std::fs;
 use std::io::{self, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 pub(crate) struct StagedFile {
@@ -26,9 +27,17 @@ impl StagedFile {
             Err(error) if error.kind() == io::ErrorKind::NotFound => None,
             Err(error) => return Err(error),
         };
-        let temporary = tempfile::NamedTempFile::new_in(target.parent().ok_or_else(|| {
+        let parent = target.parent().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "output file has no parent")
-        })?)?;
+        })?;
+        // A new file gets the mode any new file gets (0666 under the caller's
+        // umask); an existing file's mode is restored at commit, so its
+        // temporary stays private until then.
+        let mut builder = tempfile::Builder::new();
+        if permissions.is_none() {
+            builder.permissions(fs::Permissions::from_mode(0o666));
+        }
+        let temporary = builder.tempfile_in(parent)?;
         Ok(Self {
             temporary,
             target,

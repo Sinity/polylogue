@@ -53,3 +53,22 @@ fn file_output_follows_existing_and_dangling_symlinks() {
         assert_eq!(fs::read(&path).unwrap(), payload);
     }
 }
+
+#[test]
+fn a_new_file_output_gets_the_ordinary_mode_under_the_umask() {
+    let umask = std::fs::read_to_string("/proc/self/status")
+        .unwrap()
+        .lines()
+        .find_map(|line| line.strip_prefix("Umask:"))
+        .map(|value| u32::from_str_radix(value.trim(), 8).unwrap())
+        .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("export.md");
+    let mut pending = StagedFile::new(&path).unwrap();
+    pending.write_all(b"exported").unwrap();
+    pending.commit().unwrap();
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o666 & !umask
+    );
+}

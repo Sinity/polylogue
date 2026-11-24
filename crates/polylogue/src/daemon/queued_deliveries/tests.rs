@@ -121,7 +121,7 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
                 "annotation:root@revision".into(),
                 "file:src/parser.rs@commit".into(),
             ],
-            committed: Some(committed),
+            committed: Some(Committed::new(committed)),
         },
     );
     reply
@@ -150,6 +150,43 @@ fn captured_advice_remains_pending_until_current_history_confirms_application() 
     );
     queued.advice_applied(&["advice-request".into()]);
     assert!(queued.pending_advice("codex:recipient").unwrap().is_empty());
+}
+
+#[test]
+fn asking_whether_a_committed_preparation_is_owned_does_not_consume_its_receipt() {
+    let queued = QueuedDeliveries::default();
+    let (reply, committed) = std::sync::mpsc::sync_channel(1);
+    queued.0.lock().unwrap().latest.insert(
+        "codex:recipient".into(),
+        Latest {
+            brief: LastBrief {
+                at: polylogue_model::Timestamp::from_unix_ms(1_767_225_600_000).unwrap(),
+                seq: 1,
+            },
+            request: "brief-request".into(),
+            committed: Some(Committed::new(committed)),
+            delivered: false,
+        },
+    );
+    reply
+        .send(Ok(polylogue_store::user_writes::WriteResult {
+            outcome: polylogue_model::user::UserOutcome {
+                id: "brief-request".into(),
+                repeat: false,
+                pending: false,
+            },
+            save: None,
+            written: Vec::new(),
+            already: Vec::new(),
+        }))
+        .unwrap();
+    drop(reply);
+    // The writer committed the preparation and then went away: the answer
+    // is the commit on every ask, never the closed channel after the first.
+    for _ in 0..3 {
+        assert!(queued.owns_preparation("brief-request"));
+    }
+    assert!(!queued.owns_preparation("another-request"));
 }
 
 #[test]

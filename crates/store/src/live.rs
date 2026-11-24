@@ -223,6 +223,8 @@ pub struct LiveSession {
     pub view: live::LiveView,
     pub facts: LiveFacts,
     pub cwd: Option<String>,
+    /// When its transcript last grew, Unix ms.
+    pub last_activity_at: Option<i64>,
 }
 
 /// One session's live state in full, for `read --view live`.
@@ -422,6 +424,7 @@ impl crate::Reader<'_> {
             view: live::view(facts.as_ref(), grew_at, now),
             facts: facts.unwrap_or_default(),
             cwd,
+            last_activity_at: grew_at,
         }))
     }
 

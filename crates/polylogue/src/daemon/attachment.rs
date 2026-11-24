@@ -2,6 +2,7 @@
 use super::service::{Daemon, error, store_error};
 use base64::Engine as _;
 use command_surface::Answer;
+use polylogue_model::read::{CursorError, CursorSeal};
 use serde::{Deserialize, Serialize};
 
 pub(crate) const PAGE_BYTES: usize = 64 * 1024;
@@ -20,12 +21,15 @@ pub(crate) struct BytePage {
     pub next: Option<String>,
 }
 
+/// Names attachment cursors in the seal, so no other cursor opens as one.
+const SEAL_DOMAIN: &[u8] = b"polylogue.attachment-cursor\0";
+
+/// Sealed with the index generation's key ([`CursorSeal`]), so only a
+/// cursor this archive issued can supply a byte position.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Cursor {
-    version: u8,
     binding: String,
-    generation: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     input: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -81,31 +85,30 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
         Ok(value) => value,
         Err(e) => return store_error(&e),
     };
-    let generation = match reader.change_position() {
-        Ok(position) => position.generation,
+    let seal = match (|| {
+        Ok::<_, polylogue_store::StoreError>(CursorSeal {
+            key: reader.cursor_key()?,
+            generation: reader.change_position()?.generation,
+        })
+    })() {
+        Ok(seal) => seal,
         Err(e) => return store_error(&e),
     };
+    const STALE: &str = "the selected attachment changed; read the attachment again from its start";
     let initial = cursor.is_none();
     let decoded = match cursor {
-        Some(cursor) => {
-            let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(cursor)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<Cursor>(&bytes).ok());
-            let Some(decoded) = decoded.filter(|cursor| cursor.version == 1) else {
+        Some(cursor) => match seal.open::<Cursor>(SEAL_DOMAIN, &cursor) {
+            Ok(decoded) if decoded.binding == resolution.binding => Some(decoded),
+            Ok(_) | Err(CursorError::Stale) => {
+                return error(polylogue_model::Code::StaleCursor, STALE);
+            }
+            Err(CursorError::Invalid | CursorError::OtherReading(_)) => {
                 return error(
                     polylogue_model::Code::BadRequest,
                     "invalid attachment cursor",
                 );
-            };
-            if decoded.binding != resolution.binding || decoded.generation != generation {
-                return error(
-                    polylogue_model::Code::StaleCursor,
-                    "the selected attachment changed; read the attachment again from its start",
-                );
             }
-            Some(decoded)
-        }
+        },
         None => None,
     };
     let inline = CursorSource::Inline {
@@ -144,7 +147,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
             .as_ref()
             .is_none_or(|cursor| cursor.source.as_ref() == Some(&inline))
     {
-        return inline_page(&reader, resolution, generation, decoded, length, inline);
+        return inline_page(&reader, resolution, &seal, decoded, length, inline);
     }
     let chosen = input
         .as_deref()
@@ -208,22 +211,18 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
         Ok(bytes) => bytes,
         Err(e) => return store_error(&e),
     };
-    let next = if end < found.size {
-        match serde_json::to_vec(&Cursor {
-            version: 1,
-            binding: resolution.binding.clone(),
-            generation,
-            input: Some(found.input.clone()),
-            source: None,
-            offset: end,
-            blob,
-        }) {
-            Ok(bytes) => Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)),
-            Err(e) => return error(polylogue_model::Code::Internal, e),
-        }
-    } else {
-        None
-    };
+    let next = (end < found.size).then(|| {
+        seal.seal(
+            SEAL_DOMAIN,
+            &Cursor {
+                binding: resolution.binding.clone(),
+                input: Some(found.input.clone()),
+                source: None,
+                offset: end,
+                blob,
+            },
+        )
+    });
     let descriptor = initial.then(|| resolution.clone());
     let page = BytePage {
         descriptor,
@@ -243,7 +242,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
 fn inline_page(
     reader: &polylogue_store::Reader<'_>,
     mut resolution: polylogue_store::assets::AttachmentResolution,
-    generation: String,
+    seal: &CursorSeal,
     cursor: Option<Cursor>,
     length: usize,
     source: CursorSource,
@@ -317,23 +316,18 @@ fn inline_page(
                 "inline attachment range is incomplete",
             ));
         }
-        let next = if end < size {
-            Some(
-                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(serde_json::to_vec(
-                    &Cursor {
-                        version: 1,
-                        binding: resolution.binding.clone(),
-                        generation,
-                        input: None,
-                        source: Some(source),
-                        offset: end,
-                        blob: hash,
-                    },
-                )?),
+        let next = (end < size).then(|| {
+            seal.seal(
+                SEAL_DOMAIN,
+                &Cursor {
+                    binding: resolution.binding.clone(),
+                    input: None,
+                    source: Some(source),
+                    offset: end,
+                    blob: hash,
+                },
             )
-        } else {
-            None
-        };
+        });
         let initial = cursor.is_none();
         resolution.state = polylogue_store::assets::AttachmentState::Available;
         reader.check()?;

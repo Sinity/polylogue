@@ -275,3 +275,83 @@ fn import_provider_is_act_access() {
         assert_eq!(path.failure().unwrap().code.as_deref(), Some("not_running"));
     }
 }
+
+#[test]
+fn mcp_and_cli_print_the_same_step_text() {
+    use crate::protocol::line::{StepAnswer, StepOutcome, StepReport, StepsAnswer};
+    use polylogue_model::user::{AssertQueryOutcome, KeptPart, SaveReport, SavedPart};
+    let at = polylogue_model::Timestamp::from_unix_ms(1_767_225_600_000).unwrap();
+    let done = |verb: &str, reply: StepAnswer| StepReport {
+        verb: verb.into(),
+        request_id: None,
+        outcome: StepOutcome::Done {
+            reply,
+            undo: vec![],
+        },
+    };
+    let plan = crate::resume::Plan {
+        session: polylogue_model::SessionId::parse("codex:step-text").unwrap(),
+        harness_command: Some(crate::resume::Command {
+            program: "codex".into(),
+            args: vec!["resume".into(), "step-text".into()],
+            cwd: Some("/home/op/project".into()),
+        }),
+        context_assisted: crate::resume::Command {
+            program: "polylogue".into(),
+            args: vec!["session:codex:step-text".into(), "brief".into()],
+            cwd: None,
+        },
+    };
+    let line = LineAnswer::Steps(StepsAnswer {
+        resolved: None,
+        steps: vec![
+            done(
+                "resume",
+                StepAnswer::Resume(Box::new(crate::protocol::resume::Answer::Plan(plan))),
+            ),
+            done(
+                "save",
+                StepAnswer::Saved(SaveReport {
+                    request: "save-request".into(),
+                    saved: Some(SavedPart {
+                        id: "annotation:open-work@1".into(),
+                        name: "open-work".into(),
+                        revision: 1,
+                        new_revision: true,
+                    }),
+                    kept: KeptPart {
+                        result: "result:kept-1".into(),
+                        rows: 3,
+                        at,
+                    },
+                    watch: None,
+                    repeat: false,
+                    pending: false,
+                }),
+            ),
+            done(
+                "tag",
+                StepAnswer::WroteEach(AssertQueryOutcome {
+                    id: Some("tag-request".into()),
+                    repeat: false,
+                    pending: false,
+                    targets: 2,
+                    written: 2,
+                    already: vec![],
+                }),
+            ),
+        ],
+    });
+    let expected = format!(
+        "harness command:    cd /home/op/project && codex resume step-text\n\
+         with context:       polylogue session:codex:step-text brief\n\
+         \nsaved   query:open-work (revision 1): runs again each time you use it\n\
+         kept    result:kept-1 (3 rows, {at}), now result:open-work\n\
+         \ntagged 2 rows\n"
+    );
+    assert_eq!(rows_text(&line).unwrap(), expected);
+    assert_eq!(
+        crate::cli::print::line(&line, command_surface::TextStyle::Plain),
+        expected.replace("\n\n", "\n")
+    );
+}

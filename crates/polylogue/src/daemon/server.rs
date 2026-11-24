@@ -108,6 +108,50 @@ struct Clients {
     panicked: std::sync::atomic::AtomicBool,
 }
 
+/// How long complete requests may still answer at shutdown before their
+/// connections are hung up.
+const DRAIN_RESPONSES: Duration = Duration::from_millis(4_500);
+/// The whole socket drain, within the daemon's 5 s stop
+/// (docs/operations.md).
+const DRAIN_BUDGET: Duration = Duration::from_secs(5);
+
+impl Clients {
+    /// Stops new input, lets complete requests answer for `responses`, then
+    /// hangs up the rest, which cancels their reads, and waits for them
+    /// until `budget` has passed since the start. Returns how many
+    /// connections were still open then; their threads end on their own.
+    fn drain(&self, responses: Duration, budget: Duration) -> usize {
+        let start = Instant::now();
+        // Stop receiving new input while complete queued requests can still
+        // receive their refusal and an accepted write can send its stored result.
+        for (_, stream) in self.open.locked().iter() {
+            let _ = stream.shutdown(Shutdown::Read);
+        }
+        let open = self.wait_closed(self.open.locked(), start + responses);
+        // Unresponsive peers cannot hold shutdown past the response window:
+        // the hang-up ends blocked sends and cancels their reads.
+        for (_, stream) in open.iter() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+        self.wait_closed(open, start + budget).len()
+    }
+
+    fn wait_closed<'a>(
+        &'a self,
+        mut open: std::sync::MutexGuard<'a, Vec<(u64, UnixStream)>>,
+        until: Instant,
+    ) -> std::sync::MutexGuard<'a, Vec<(u64, UnixStream)>> {
+        while !open.is_empty() {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            open = polylogue_model::unpoisoned(self.closed.wait_timeout(open, left)).0;
+        }
+        open
+    }
+}
+
 /// The caller's facts as the daemon observes them from the socket peer. The
 /// request contributes only an MCP call's tool call ID, which joins a
 /// matching hook event.
@@ -643,30 +687,14 @@ fn listen(
     }
     drop(accept);
     let _ = stopped_sender.send(());
-    // Stop receiving new input while complete queued requests can still receive
-    // their refusal and an accepted write can send its stored result.
     let clients = &shared.clients;
-    for (_, stream) in clients.open.locked().iter() {
-        let _ = stream.shutdown(Shutdown::Read);
+    let left = clients.drain(DRAIN_RESPONSES, DRAIN_BUDGET);
+    if left > 0 {
+        polylogue_store::log!(
+            warning,
+            "socket drain left {left} connection(s) whose requests ignored cancellation"
+        );
     }
-    let drain_until = Instant::now() + Duration::from_secs(5);
-    let mut open = clients.open.locked();
-    while !open.is_empty() {
-        let left = drain_until.saturating_duration_since(Instant::now());
-        if left.is_zero() {
-            break;
-        }
-        open = polylogue_model::unpoisoned(clients.closed.wait_timeout(open, left)).0;
-    }
-    // Unresponsive peers cannot hold shutdown past the response drain window:
-    // the shutdown ends blocked sends and the hang-up cancels their reads.
-    for (_, stream) in open.iter() {
-        let _ = stream.shutdown(Shutdown::Both);
-    }
-    while !open.is_empty() {
-        open = polylogue_model::unpoisoned(clients.closed.wait(open));
-    }
-    drop(open);
     if clients.panicked.load(std::sync::atomic::Ordering::Acquire) {
         failure.get_or_insert_with(|| std::io::Error::other("socket client panicked"));
     }

@@ -201,22 +201,26 @@ pub(crate) fn context(
             .iter()
             .map(|(_, refs)| refs.clone())
             .collect();
+        // A settings error stays the reason similarity cannot rank.
         let provider = if is_advisory {
-            None
+            Ok(None)
         } else {
             let settings = reader
                 .settings_snapshot(&operation.machine)
                 .map_err(|error| Box::new(store_error(&error)))?;
             crate::embeddings::Provider::from_settings(&settings, &d.config.embedding_credentials)
-                .ok()
-                .flatten()
         };
         let near = |q: &str| match &provider {
-            Some(p) => d.warm.similarity(&reader, p, q),
-            None => Err("embeddings are off".into()),
+            Ok(Some(p)) => d.warm.similarity(&reader, p, q),
+            Ok(None) => Err("embeddings are off".into()),
+            Err(error) => Err(error.clone()),
         };
-        let near: Option<&crate::daemon::query::NearFn<'_>> = provider.is_some().then_some(&near);
-        let ranking_identity = crate::embeddings::ranking_key(&reader, provider.as_ref());
+        let near: Option<&crate::daemon::query::NearFn<'_>> =
+            (!matches!(provider, Ok(None))).then_some(&near);
+        let ranking_identity = crate::embeddings::ranking_key(
+            &reader,
+            provider.as_ref().ok().and_then(Option::as_ref),
+        );
         // Annotations written after this are the next brief's delta.
         let written_up_to = reader
             .change_position()
@@ -255,12 +259,26 @@ pub(crate) fn context(
         None => prepare(),
     };
     // An advisory never blocks and fails open: preparation that runs out of
-    // its 20 ms cap (intersected with the caller's bound), or finds its
-    // delivery history incomplete, answers with nothing on every surface.
+    // its 20 ms cap (intersected with the caller's bound), or whose
+    // selection changed under it, answers with nothing on every surface. A
+    // store failure is reported, never read as an empty advisory.
     let silent = advisory_silence;
     let (prepared, selected_scope, written_up_to) = match prepared {
         Ok(prepared) => prepared,
-        Err(_) if is_advisory => return silent(),
+        Err(answer)
+            if is_advisory
+                && (request_limit
+                    .as_ref()
+                    .is_some_and(|limit| limit.check().is_err())
+                    || answer.failure().is_some_and(|failure| {
+                        matches!(
+                            failure.code.as_deref(),
+                            Some("deadline_exceeded" | "cancelled" | "scope_changed")
+                        )
+                    })) =>
+        {
+            return silent();
+        }
         Err(answer) => return *answer,
     };
     if is_advisory
