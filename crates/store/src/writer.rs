@@ -1411,21 +1411,41 @@ impl Inner {
         }
         let wait = std::time::Duration::from_millis(100);
         let limit = crate::archive::WAL_AUTOCHECKPOINT;
-        let index =
-            crate::archive::restart_full_log(&self.index, &self.location.index_db(), limit, wait);
-        let archive = if self.sinex.is_none() && !self.stop.is_cancelled() {
-            crate::archive::restart_full_log(
+        let mut results = vec![crate::archive::restart_full_log(
+            &self.index,
+            "main",
+            &self.location.index_db(),
+            limit,
+            wait,
+        )];
+        // The full-text files the writer has attached, once a build is installed.
+        if crate::search::files::attached(&self.index).unwrap_or(false)
+            && let Ok(Some(files)) = crate::search::files::paths(&self.index)
+        {
+            for (n, path) in files.iter().enumerate() {
+                if !self.stop.is_cancelled() {
+                    results.push(crate::archive::restart_full_log(
+                        &self.index,
+                        &crate::search::files::schema(n),
+                        path,
+                        limit,
+                        wait,
+                    ));
+                }
+            }
+        }
+        if self.sinex.is_none() && !self.stop.is_cancelled() {
+            results.push(crate::archive::restart_full_log(
                 &self.archive,
+                "main",
                 &self.location.archive_db(),
                 limit,
                 wait,
-            )
-        } else {
-            Ok(false)
-        };
+            ));
+        }
         // A failed checkpoint loses nothing: the log stays and is copied by
         // a later one.
-        for result in [index, archive] {
+        for result in results {
             if let Err(error) = result {
                 crate::log!(error, "writer: checkpoint: {error}");
             }

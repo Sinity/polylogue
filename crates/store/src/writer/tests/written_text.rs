@@ -85,7 +85,13 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
             let r = pool.reader().unwrap();
             assert_eq!(
                 r.query(
-                    "SELECT count(*) AS n FROM output_fts WHERE output_fts MATCH 'needle'",
+                    &format!(
+                        "SELECT count(*) AS n FROM ({})",
+                        crate::search::matching_texts(
+                            crate::search::SnippetIndex::Output,
+                            "'needle'"
+                        )
+                    ),
                     &[]
                 )
                 .unwrap()[0]["n"],
@@ -93,7 +99,13 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
             );
             assert_eq!(
                 r.query(
-                    "SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'needle'",
+                    &format!(
+                        "SELECT count(*) AS n FROM ({})",
+                        crate::search::matching_texts(
+                            crate::search::SnippetIndex::Prose,
+                            "'needle'"
+                        )
+                    ),
                     &[]
                 )
                 .unwrap()[0]["n"],
@@ -173,7 +185,10 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
         let r = pool.reader().unwrap();
         assert_eq!(
             r.query(
-                "SELECT count(*) AS n FROM output_fts WHERE output_fts MATCH 'needle'",
+                &format!(
+                    "SELECT count(*) AS n FROM ({})",
+                    crate::search::matching_texts(crate::search::SnippetIndex::Output, "'needle'")
+                ),
                 &[]
             )
             .unwrap()[0]["n"],
@@ -181,7 +196,10 @@ fn written_tool_text_searches_output_and_snippets_and_retracts_without_losing_in
         );
         assert_eq!(
             r.query(
-                "SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'ordinary'",
+                &format!(
+                    "SELECT count(*) AS n FROM ({})",
+                    crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'ordinary'")
+                ),
                 &[]
             )
             .unwrap()[0]["n"],

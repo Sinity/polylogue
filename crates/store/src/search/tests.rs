@@ -1,5 +1,7 @@
 use super::*;
 
+mod files;
+
 #[test]
 fn punctuation_splits_words_instead_of_failing() {
     assert_eq!(

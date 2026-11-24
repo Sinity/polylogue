@@ -180,7 +180,6 @@ impl Compiler<'_> {
             ..
         } = search_scope;
         let name = &leg.name;
-        let table = leg.table();
         let scope_rows = format!("{name}_scope_rows");
         let blocks = format!("{name}_scope_blocks");
         let candidates = leg.candidates();
@@ -246,10 +245,8 @@ impl Compiler<'_> {
         ctes.push(format!(
             "{name} AS MATERIALIZED (WITH scoped_texts AS MATERIALIZED (\
                SELECT DISTINCT text_id FROM {candidates}) \
-             SELECT t.text_id,bm25({table}) AS rank FROM scoped_texts t \
-             CROSS JOIN {table} ON {table}.rowid=t.text_id \
-             WHERE {table} MATCH {})",
-            leg.parameter
+             SELECT text_id,rank FROM ({}))",
+            crate::search::ranked_texts(leg.index, &leg.parameter, Some("scoped_texts"), None)
         ));
         ctes.extend(leg.scoped.iter().flatten().cloned());
         ctes.extend(self.ctes[leg.ctes.end..].iter().cloned());

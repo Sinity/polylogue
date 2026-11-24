@@ -242,6 +242,7 @@ const CREATED_WITH_THE_INDEX: &[&str] = &[
     "key=Text(\"write_counter\")",
     "key=Text(\"generation\")",
     "key=Text(\"cursor_key\")",
+    "key=Text(\"search_files\")",
 ];
 
 /// A rebuild reads an older chain that holds exactly a newer chain's bytes

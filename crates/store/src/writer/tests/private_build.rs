@@ -147,7 +147,10 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
     assert_eq!(texts, ["narwhal", "walrus ", "walrus narwhal"]);
     let found: i64 = index
         .query_row(
-            "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'narwhal'",
+            &format!(
+                "SELECT count(*) FROM ({})",
+                crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'narwhal'")
+            ),
             [],
             |r| r.get(0),
         )
@@ -241,7 +244,7 @@ fn a_later_round_with_nothing_to_load_keeps_the_indexes_made() {
     let phases = writer.build(Vec::new()).unwrap();
     assert_eq!(
         phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-        ["indexes", "compose", "full text", "install"]
+        ["indexes", "compose", "read indexes", "full text", "install"]
     );
     assert_eq!(phases[0].items, 0);
     assert_eq!(messages(&serving(&archive)), 1);

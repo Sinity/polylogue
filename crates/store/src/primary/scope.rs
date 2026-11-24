@@ -83,9 +83,16 @@ fn clear(index: &mut Connection, archive: &Archive, scope: &str) -> Result<()> {
         tx.execute_batch(&format!("DROP {kind} {}", quoted(&name)))?;
     }
     let tables: Vec<String> = tx.prepare("SELECT name FROM pragma_table_list WHERE schema='main' AND type='table' AND name NOT LIKE 'sqlite_%' AND name NOT IN ('meta','row_count','source_row_count') ORDER BY name")?.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-    // Every row goes, so nothing is left for search membership to follow.
+    // Every row goes, so nothing is left for search membership to follow;
+    // every text's entries are queued to leave with it.
     crate::schema::drop_search_triggers(&tx)?;
-    for name in &tables {
+    tx.execute(
+        "INSERT OR IGNORE INTO search_pending(text_id, fts_table)
+         SELECT id, 1 FROM text WHERE indexed & 1 <> 0
+         UNION ALL SELECT id, 2 FROM text WHERE indexed & 2 <> 0",
+        [],
+    )?;
+    for name in tables.iter().filter(|name| *name != "search_pending") {
         tx.execute(&format!("DELETE FROM {}", quoted(name)), [])?;
     }
     tx.execute_batch(crate::schema::SEARCH_TRIGGERS)?;
@@ -100,10 +107,10 @@ fn clear(index: &mut Connection, archive: &Archive, scope: &str) -> Result<()> {
             [],
         )?;
     }
-    tx.execute("UPDATE row_count SET n=0", [])?;
+    tx.execute("UPDATE row_count SET n=0 WHERE name<>'search_pending'", [])?;
     tx.execute("UPDATE source_row_count SET n=0", [])?;
     tx.execute(
-        "DELETE FROM meta WHERE key NOT IN ('primary_cache','boot_id','generation','cursor_key','index_rebuild')",
+        "DELETE FROM meta WHERE key NOT IN ('primary_cache','boot_id','generation','cursor_key','index_rebuild','search_files')",
         [],
     )?;
     crate::archive::generation::rotate(&tx)?;
@@ -115,6 +122,7 @@ fn clear(index: &mut Connection, archive: &Archive, scope: &str) -> Result<()> {
     crate::chain_progress::mark_current(&tx)?;
     crate::fault::check("primary.scope_reset_commit", "")?;
     tx.commit()?;
+    crate::text_rows::clear_entries(index)?;
     archive.read_scope.finish_reset();
     Ok(())
 }

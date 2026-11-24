@@ -69,7 +69,7 @@ fn scope_change_waits_for_a_new_completion_marker() {
     .unwrap();
     index
         .execute(
-            "INSERT INTO text_fts(rowid,body) VALUES (1,'private words')",
+            "INSERT INTO search_1.text_fts(rowid,body) VALUES (1,'private words')",
             [],
         )
         .unwrap();
@@ -100,7 +100,10 @@ fn scope_change_waits_for_a_new_completion_marker() {
     assert_eq!(
         index
             .query_row(
-                "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'private'",
+                &format!(
+                    "SELECT count(*) FROM ({})",
+                    crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'private'")
+                ),
                 [],
                 |row| row.get::<_, i64>(0)
             )

@@ -463,6 +463,7 @@ fn build_from_record(
             "load",
             "indexes",
             "compose",
+            "read indexes",
             "full text",
             "install"
         ]
@@ -692,13 +693,15 @@ fn a_text_leaves_with_its_last_row_and_its_search_entries() {
         .store_group(vec![stored_step(&w, 0, &one, 0, 0, 1)], Arc::clone(&store))
         .unwrap();
     w.writer.flush().unwrap();
-    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let conn = crate::archive::open_read(&w.archive.index_db()).unwrap();
     let text = "claude-code:m0 version 1";
     let hash = blake3::hash(text.as_bytes());
     let held = |conn: &rusqlite::Connection| -> (i64, i64) {
         conn.query_row(
-            "SELECT (SELECT count(*) FROM text WHERE hash=?1),
-                    (SELECT count(*) FROM text_fts WHERE text_fts MATCH '\"version\"')",
+            &format!(
+                "SELECT (SELECT count(*) FROM text WHERE hash=?1), (SELECT count(*) FROM ({}))",
+                crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'\"version\"'")
+            ),
             [hash.as_bytes().as_slice()],
             |r| <(i64, i64)>::try_from(r),
         )

@@ -10,6 +10,7 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 - **archive**: `archive.db` and the segment log; what cannot be recomputed.
 - **index**: `index.db`; everything parsed and derived, built from the archive.
+- **full-text files**: the files holding the index's full-text entries, split by text key, in the directory under the archive root that `index.db` names (`search-<id>/`); they leave with the index file that names them.
 - **archive key**: the first 12 hex digits of BLAKE3 over the archive directory's
   resolved path; it names the archive's runtime directory, reader cookie and
   completion cache directory.

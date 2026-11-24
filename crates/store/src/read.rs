@@ -414,6 +414,21 @@ impl ReadPool {
             conn.pragma_update(Some(schema), "cache_size", -self.cache_kib)?;
             conn.pragma_update(Some(schema), "mmap_size", 0)?;
         }
+        // The full-text files share what one index file's entries had.
+        let files = if crate::search::files::attached(&conn)? {
+            crate::search::files::FILES
+        } else {
+            0
+        };
+        for n in 0..files {
+            let schema = crate::search::files::schema(n);
+            conn.pragma_update(
+                Some(schema.as_str()),
+                "cache_size",
+                -(self.cache_kib / crate::search::files::FILES as i64).max(1),
+            )?;
+            conn.pragma_update(Some(schema.as_str()), "mmap_size", 0)?;
+        }
         Ok(conn)
     }
 

@@ -202,7 +202,10 @@ fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
         let conn = reader.conn().unwrap();
         assert_eq!(
             conn.query_row(
-                "SELECT doc FROM fts_vocab_text WHERE term='needle'",
+                &format!(
+                    "SELECT count(*) FROM ({})",
+                    crate::search::matching_texts(SnippetIndex::Prose, "'needle'")
+                ),
                 [],
                 |r| r.get::<_, u64>(0)
             )

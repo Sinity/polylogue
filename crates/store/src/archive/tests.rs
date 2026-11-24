@@ -422,7 +422,7 @@ fn the_log_stays_near_its_limit_while_readers_follow_every_commit() {
             .execute("INSERT INTO row(n, body) VALUES (?1, zeroblob(8192))", [n])
             .unwrap();
         reader.execute_batch("COMMIT").unwrap();
-        if restart_full_log(&writer, &path, limit, wait).unwrap() {
+        if restart_full_log(&writer, "main", &path, limit, wait).unwrap() {
             restarts += 1;
         }
         largest = largest.max(std::fs::metadata(&log).unwrap().len());
@@ -465,10 +465,10 @@ fn a_log_in_use_is_kept_until_its_reader_finishes() {
     let log = dir.path().join("log.db-wal");
     let before = std::fs::metadata(&log).unwrap().len();
     let wait = std::time::Duration::from_millis(50);
-    assert!(!restart_full_log(&writer, &path, 4, wait).unwrap());
+    assert!(!restart_full_log(&writer, "main", &path, 4, wait).unwrap());
     assert_eq!(std::fs::metadata(&log).unwrap().len(), before);
     reader.execute_batch("COMMIT").unwrap();
-    assert!(restart_full_log(&writer, &path, 4, wait).unwrap());
+    assert!(restart_full_log(&writer, "main", &path, 4, wait).unwrap());
     assert_eq!(std::fs::metadata(&log).unwrap().len(), 0);
     let rows: i64 = reader
         .query_row("SELECT count(*) FROM row", [], |r| r.get(0))

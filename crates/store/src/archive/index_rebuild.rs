@@ -158,12 +158,19 @@ pub(crate) fn remove_when_built(index: &Connection, path: &Path) -> Result<()> {
     if set_aside_files.is_empty() || !built(index)? {
         return Ok(());
     }
+    let search: Vec<_> = set_aside_files
+        .iter()
+        .filter_map(|path| crate::search::files::named_on_disk(path))
+        .collect();
     for path in set_aside_files {
         match std::fs::remove_file(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e.into()),
         }
+    }
+    for files in search {
+        crate::search::files::remove(&files)?;
     }
     Ok(())
 }

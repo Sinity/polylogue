@@ -433,12 +433,9 @@ impl Reader<'_> {
             false,
             PageColumns::All,
         );
-        let table = match search.index {
-            SnippetIndex::Prose => "text_fts",
-            SnippetIndex::Output => "output_fts",
-        };
         let boundary = format!(
-            "SELECT rank AS score FROM {table} WHERE {table} MATCH ?1 ORDER BY rank LIMIT 1 OFFSET ?2"
+            "SELECT rank AS score FROM ({}) ORDER BY rank LIMIT 1 OFFSET ?2",
+            crate::search::ranked_texts(search.index, "?1", None, None)
         );
         let mut prefix = limit.max(1);
         loop {

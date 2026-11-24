@@ -342,7 +342,10 @@ fn replacing_each_chain_equals_a_fresh_build_and_plan_order_does_not_matter() {
     assert_eq!(r.query("SELECT count(*) AS n FROM message WHERE id IN ('claude-code:dropped','claude-code:before-name')",&[]).unwrap()[0]["n"],0);
     assert_eq!(
         r.query(
-            "SELECT count(*) AS n FROM text_fts WHERE text_fts MATCH 'removed'",
+            &format!(
+                "SELECT count(*) AS n FROM ({})",
+                crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'removed'")
+            ),
             &[]
         )
         .unwrap()[0]["n"],

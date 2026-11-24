@@ -27,7 +27,8 @@ pub enum Stage {
     Writer,
     /// Committing a replacement transaction, including its SQLite sync wait.
     Commit,
-    /// A first build's full-text entries, written in bulk at its end.
+    /// A first build's full-text entries, read, folded and written on
+    /// threads of their own while it composes (thread-seconds).
     SearchIndex,
     /// A first build's trigram index rebuild.
     TrigramIndex,
@@ -80,7 +81,7 @@ impl Stage {
     pub fn parallel(self) -> bool {
         matches!(
             self,
-            Stage::Read | Stage::Store | Stage::Parse | Stage::Database
+            Stage::Read | Stage::Store | Stage::Parse | Stage::Database | Stage::SearchIndex
         )
     }
 
