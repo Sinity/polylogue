@@ -5,7 +5,7 @@
 
 use super::*;
 use polylogue_model::{CallOutcome, LINK_HOW_NAMES, LINK_KIND_NAMES};
-use polylogue_query::filter::{Comparison, Test, TimeTest, closed_set_message};
+use polylogue_query::filter::{Special, Test, TimeTest, closed_set_message};
 
 /// A special field's compile rule.
 pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_, '_>) -> Result<String, QueryError>;
@@ -14,8 +14,8 @@ pub(crate) type Custom = fn(&mut Compiler<'_>, &Call<'_, '_, '_>) -> Result<Stri
 pub(crate) struct Call<'q, 's, 'l> {
     pub unit: Unit,
     pub name: &'static str,
-    /// The value as written, or for `since:`, `until:` and
-    /// `seen_by:` the time binding resolved.
+    /// The value as binding gave it: a special value, or for `since:`,
+    /// `until:` and `seen_by:` the time it resolved.
     pub test: &'q Test,
     pub scope: &'s RowContext,
     pub span: Span,
@@ -24,17 +24,17 @@ pub(crate) struct Call<'q, 's, 'l> {
 }
 
 impl Call<'_, '_, '_> {
-    /// The condition's comparison as written.
-    fn comparison(&self) -> Option<&Comparison> {
+    /// The special field's bound value.
+    fn special(&self) -> Option<&Special> {
         match self.test {
-            Test::Written(comparison) => Some(comparison),
+            Test::Special(special) => Some(special),
             _ => None,
         }
     }
 
     fn one(&self) -> Option<String> {
-        match self.comparison() {
-            Some(Comparison::Match(Value::Scalar { text, .. })) => Some(text.clone()),
+        match self.special() {
+            Some(Special::One { text, .. }) => Some(text.clone()),
             _ => None,
         }
     }
@@ -60,15 +60,11 @@ impl Call<'_, '_, '_> {
     }
 
     fn values(&self) -> Vec<String> {
-        match self.comparison() {
-            Some(Comparison::Match(v)) => alternatives(v),
-            _ => vec![],
-        }
+        self.special().map(Special::listed).unwrap_or_default()
     }
 
-    /// Special fields keep their written comparisons at the binding boundary.
     fn unknown(&self) -> bool {
-        matches!(self.comparison(), Some(Comparison::Match(Value::Unknown)))
+        matches!(self.special(), Some(Special::Unknown))
     }
 
     fn bad(&self, value: String, message: String) -> QueryError {
@@ -214,15 +210,12 @@ fn words_in(
     index: Index,
 ) -> Result<String, QueryError> {
     let text = x.value()?;
-    let quoted = matches!(
-        x.comparison(),
-        Some(Comparison::Match(Value::Scalar { quoted: true, .. }))
-    );
+    let quoted = matches!(x.special(), Some(Special::One { quoted: true, .. }));
     c.text(&[(text, quoted, x.span)], x.scope, index, x.cx)
 }
 
 pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
-    if x.one().as_deref() == Some("seen") {
+    if matches!(x.special(), Some(Special::SinceSeen)) {
         return since_seen(c, x);
     }
     let t = x.time(c)?;
@@ -619,7 +612,7 @@ pub(crate) fn root(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String,
     if x.unknown() {
         return Ok(format!("{root} IS NULL"));
     }
-    if matches!(x.comparison(), Some(Comparison::Match(Value::Known))) {
+    if matches!(x.special(), Some(Special::Known)) {
         return Ok(format!("{root} IS NOT NULL"));
     }
     Ok(c.session_reference(&root, "id", &x.value()?))
@@ -693,13 +686,10 @@ pub(crate) fn session_tool_call(
             ..x.scope.a.clone()
         },
     };
-    let Some(comparison) = x.comparison() else {
+    let Some(Special::ToolCalls(filter)) = x.special() else {
         return Err(x.need_value());
     };
-    let filter = c
-        .binder()
-        .field(Unit::ToolCalls, x.name, comparison.clone(), x.span)?;
-    let cond = c.lower(&filter, &inner, x.cx.inner())?;
+    let cond = c.lower(filter, &inner, x.cx.inner())?;
     Ok(format!(
         "EXISTS (SELECT 1 FROM tool_call tq WHERE tq.session_pk = {}.pk AND {cond})",
         x.s()

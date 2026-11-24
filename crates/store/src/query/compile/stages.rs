@@ -276,7 +276,7 @@ impl<'a> Compiler<'a> {
     /// statement with their own parameters.
     pub(super) fn attach(
         &mut self,
-        child: &Attachment,
+        child: &polylogue_query::selection::Attached,
         parent: &RowContext,
         measured: bool,
     ) -> Result<Attach, QueryError> {
@@ -290,24 +290,18 @@ impl<'a> Compiler<'a> {
 
     fn attached(
         &mut self,
-        child: &Attachment,
+        child: &polylogue_query::selection::Attached,
         parent: &RowContext,
         measured: bool,
     ) -> Result<Attach, QueryError> {
-        let unit = bind_unit(&child.unit)?;
+        let span = child.span;
+        let child = child.rows.as_ref().map_err(Clone::clone)?;
+        let unit = child.unit;
         let sc = RowContext::plain(unit);
-        let conds: Vec<Condition> = child
-            .windows
-            .iter()
-            .filter_map(|w| match w {
-                Window::Where(cond) => Some(cond.clone()),
-                _ => None,
-            })
-            .collect();
-        let top: Vec<Condition> = conds.iter().flat_map(top_level).collect();
-        let mut w = self.defaults(&sc, &top, measured);
-        for c in &conds {
-            w.push(self.cond(c, &sc, Cx::plain(measured))?);
+        let defaults = child.defaults.get(measured);
+        let mut w = self.defaults(&sc, defaults);
+        for filter in &child.filters {
+            w.push(self.lower(filter, &sc, Cx::plain(measured))?);
         }
         let mut select = vec![];
         let mut columns = vec![];
@@ -322,7 +316,7 @@ impl<'a> Compiler<'a> {
                     ColKind::Text,
                 )
             } else {
-                self.expr(f, &sc, child.span.start)?
+                self.expr(f, &sc, span.start)?
             };
             select.push(format!("{expr} AS {}", column_name(f)));
             columns.push(Column {
@@ -342,20 +336,13 @@ impl<'a> Compiler<'a> {
         };
         let parent_link = self.under_parent(parent.unit, &sc, "_parents.value", session)?;
         w.push(parent_link);
-        self.sessions_within_bounds(&sc, measured, &top, &mut w, true)?;
+        self.sessions_within_bounds(&sc, defaults, &mut w, true);
         let ctes = if self.ctes.is_empty() {
             String::new()
         } else {
             format!("WITH {} ", self.ctes.join(", "))
         };
-        let (mut first, mut last) = (None, None);
-        for w in &child.windows {
-            match w {
-                Window::First(n) => first = Some(*n),
-                Window::Last(n) => last = Some(*n),
-                Window::Where(..) => {}
-            }
-        }
+        let (first, last) = (child.first, child.last);
         // `[first:n]` keeps each parent's first n children and `[last:n]` the
         // last n of those.
         let kept = match (first, last) {

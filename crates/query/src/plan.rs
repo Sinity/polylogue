@@ -108,24 +108,25 @@ impl Plan {
     pub fn query_object(&self) -> Result<polylogue_model::query_objects::QueryObject, QueryError> {
         objects::from_plan(self)
     }
-    /// What the query selects, with `fields` as its columns and times
-    /// resolved against `clock`; `None` when its source is a kept result.
-    pub fn selection(
-        &self,
-        fields: &[String],
-        clock: &crate::time::Clock,
-        provider_catalog: Option<&references::Catalog>,
-    ) -> Result<Option<crate::selection::Selection>, QueryError> {
+    /// The expanded question bound whole for one execution: times resolved
+    /// against its clock, its columns, origins and provider catalog.
+    pub fn bound(&self, options: &crate::Options) -> Result<crate::bound::Bound, QueryError> {
         let binder = crate::filter::Binder {
-            text: &self.text,
-            origins: &self.bindings.origins,
-            clock,
-            provider_catalog,
+            text: &self.expanded_text,
+            origins: &options.origins,
+            clock: &options.clock,
+            provider_catalog: options.provider_catalog.as_deref(),
             saved: &self.bindings.saved,
             catalog: &self.catalog,
             expanding: &[],
+            fields: &options.fields,
+            kept: &self.bindings.kept,
         };
-        crate::selection::Selection::of(self.expanded.query(), &binder, fields)
+        crate::bound::Bound::of(
+            self.expanded.query().clone(),
+            Some(self.expanded.typing()),
+            &binder,
+        )
     }
     pub fn expanded_query(&self) -> &BoundQuery {
         &self.expanded

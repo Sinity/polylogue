@@ -2,11 +2,13 @@
 //! conditions, stages and the columns shown, ranked and ordered.
 
 use super::*;
+use polylogue_query::filter::{Filter, Special, Test};
 
 /// One selection's SQL while it is lowered: its rows, conditions and stages.
-struct SelectionSql {
+struct SelectionSql<'s> {
     scope: RowContext,
-    top: Vec<Condition>,
+    /// The top-level `exists` and `seq` conditions, which `| matches` reads.
+    patterns: Vec<&'s Filter>,
     applied: Vec<(units::DefaultId, String)>,
     defaults_only: Vec<String>,
     where_sql: Vec<String>,
@@ -103,32 +105,33 @@ impl<'a> Compiler<'a> {
         Ok(self.into_program(parts, rows, attach, why))
     }
 
-    fn selection_sql(
+    fn selection_sql<'s>(
         &mut self,
-        selection: &Selection,
+        selection: &'s Selection,
         preset: Option<MatchRel>,
         reading: Reading,
-    ) -> Result<SelectionSql, QueryError> {
+    ) -> Result<SelectionSql<'s>, QueryError> {
         let measured = selection.measured;
-        let clauses = selection.clauses(&self.binder())?;
         let alternates = (selection.unit == Unit::Messages)
             .then(|| {
                 let mut admitted = false;
                 let mut languages = Vec::new();
-                for clause in &clauses {
-                    if let polylogue_query::filter::Filter::Field(field) = &clause.filter {
+                for clause in &selection.clauses {
+                    if let Filter::Field(field) = &clause.filter {
                         match (field.field.declaration().name, &field.test) {
-                            ("alternate", polylogue_query::filter::Test::Bool(true)) => {
-                                admitted = true;
-                            }
+                            ("alternate", Test::Bool(true)) => admitted = true,
                             (
                                 "lang",
-                                polylogue_query::filter::Test::Written(
-                                    polylogue_query::filter::Comparison::Match(value),
+                                Test::Special(
+                                    value @ (Special::One { .. }
+                                    | Special::Set(_)
+                                    | Special::Parameter(_)
+                                    | Special::Unknown
+                                    | Special::Known),
                                 ),
                             ) => {
                                 admitted = true;
-                                languages.extend(alternatives(value));
+                                languages.extend(value.listed());
                             }
                             _ => {}
                         }
@@ -153,9 +156,14 @@ impl<'a> Compiler<'a> {
             )),
             None => None,
         };
-        let top = selection.top_level();
+        let patterns = selection
+            .conjuncts()
+            .into_iter()
+            .filter(|filter| matches!(filter, Filter::Exists { .. } | Filter::Sequence { .. }))
+            .collect();
         let applied: Vec<(units::DefaultId, String)> = selection
             .defaults
+            .get(measured)
             .iter()
             .map(|&id| (id, units::default_sql(id, &scope.a)))
             .collect();
@@ -178,21 +186,19 @@ impl<'a> Compiler<'a> {
         };
         let mut why = vec![];
         // An order condition makes the source a relation boundary, read by
-        // the relation that holds it.
-        if let Some(filter) = &selection.filter
-            && !selection.written.iter().any(contains_order)
-        {
+        // the relation that holds it; the selection then has no filter.
+        if let Some(filter) = &selection.filter {
             where_sql.push(self.lower(filter, &scope, cx)?);
         }
         self.snippet_terms.extend(selection.search.terms.clone());
-        for clause in clauses {
+        for clause in &selection.clauses {
             let alone = self.lower(&clause.filter, &scope, cx.inner())?;
-            why.push((clause.text, alone));
+            why.push((clause.text.clone(), alone));
         }
         let ranking = top_level.take().map(Ranking::Text);
         Ok(SelectionSql {
             scope,
-            top,
+            patterns,
             applied,
             defaults_only,
             where_sql,
@@ -213,7 +219,7 @@ impl<'a> Compiler<'a> {
         &mut self,
         selection: &Selection,
         stages: &[Transform],
-        parts: &mut SelectionSql,
+        parts: &mut SelectionSql<'_>,
     ) -> Result<(), QueryError> {
         for stage in stages {
             match &stage.kind {
@@ -227,12 +233,6 @@ impl<'a> Compiler<'a> {
                     let mut order = vec![format!("{time} IS NULL"), format!("{time} DESC")];
                     order.extend(spec.identity.iter().map(|term| parts.scope.a.expand(term)));
                     parts.explicit_order = Some(order);
-                }
-                TransformKind::Scope {
-                    unit,
-                    condition: cond,
-                } => {
-                    self.scope_stage(unit, cond.as_ref(), stage.span, parts)?;
                 }
                 TransformKind::Extension { name, arguments }
                     if name == polylogue_query::catalog::MEASURE =>
@@ -249,85 +249,12 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn scope_stage(
-        &mut self,
-        unit: &str,
-        cond: Option<&Condition>,
-        span: Span,
-        parts: &mut SelectionSql,
-    ) -> Result<(), QueryError> {
-        let SelectionSql {
-            scope,
-            top,
-            where_sql,
-            why,
-            reading,
-            measured,
-            similar,
-            ranking,
-            ..
-        } = parts;
-        if scope.unit != Unit::Sessions {
-            return Err(QueryError::Invalid {
-                message: "a `| UNIT where …` transform follows a session query".into(),
-                position: span.start,
-            });
-        }
-        let sessions = format!(
-            "SELECT s.pk FROM {} WHERE {}",
-            self.from(scope, ranking.as_ref()),
-            and_all(where_sql)
-        );
-        // The session ranking selects sessions; children have their own order.
-        *similar = None;
-        *ranking = None;
-        self.shown.clear();
-        let unit = bind_unit(unit)?;
-        let next = RowContext::plain(unit);
-        let ntop = cond.map(top_level).unwrap_or_default();
-        let mut w = self.defaults(&next, &ntop, *measured);
-        let link = if fields::has_session(unit) {
-            format!("{}.pk IN ({sessions})", next.a.s)
-        } else {
-            self.session_link(&next, &sessions)?
-        };
-        w.push(link);
-        // Snippets look for the terms of the rows shown.
-        self.snippet_terms.clear();
-        if let Some(c) = cond {
-            let filter = self.binder().bind(c, unit)?;
-            let search = polylogue_query::search::Search::of(Some(&filter), unit);
-            let top_level = ranking::TopLevel {
-                index: search.rank,
-                plans: reading.answer && !*measured,
-                ranking: Default::default(),
-            };
-            let cx = Cx {
-                measured: *measured,
-                top: Some(&top_level),
-                similar: None,
-                alternates: None,
-            };
-            w.push(self.lower(&filter, &next, cx)?);
-            *ranking = top_level.take().map(Ranking::Text);
-            self.snippet_terms.extend(search.terms);
-        }
-        self.sessions_within_bounds(&next, *measured, &ntop, &mut w, true)?;
-        *scope = next;
-        *top = ntop;
-        *where_sql = w;
-        why.clear();
-        // The lists a fused rank names belong to the sessions.
-        self.shown.retain(|(name, ..)| name != "found_in");
-        Ok(())
-    }
-
     fn measure_stage(
         &mut self,
         selection: &Selection,
         arguments: &[ExtensionArgument],
         span: Span,
-        parts: &mut SelectionSql,
+        parts: &mut SelectionSql<'_>,
     ) -> Result<(), QueryError> {
         let SelectionSql { scope, measure, .. } = parts;
         let [ExtensionArgument::Value(what), rest @ ..] = arguments else {
@@ -353,10 +280,14 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
-    fn matches_stage(&mut self, span: Span, parts: &mut SelectionSql) -> Result<(), QueryError> {
+    fn matches_stage(
+        &mut self,
+        span: Span,
+        parts: &mut SelectionSql<'_>,
+    ) -> Result<(), QueryError> {
         let SelectionSql {
             scope,
-            top,
+            patterns,
             where_sql,
             matched,
             measured,
@@ -364,52 +295,31 @@ impl<'a> Compiler<'a> {
             ..
         } = parts;
         let cx = Cx::plain(*measured);
-        let found: Vec<&Condition> = top
-            .iter()
-            .filter(|c| {
-                matches!(
-                    c.kind,
-                    ConditionKind::Exists { .. } | ConditionKind::Sequence { .. }
-                )
-            })
-            .collect();
-        let [c] = found.as_slice() else {
+        let [pattern] = patterns.as_slice() else {
             return Err(QueryError::Invalid {
                 message: format!(
                     "`| matches` needs exactly one top-level exists(...) or seq(...); this query has {}",
-                    found.len()
+                    patterns.len()
                 ),
                 position: span.start,
             });
         };
         let parent_rows = and_all(where_sql);
-        *matched = Some(match &c.kind {
-            ConditionKind::Exists { unit, condition } => self.exists_matches(
-                bind_unit(unit)?,
-                condition.as_deref(),
+        *matched = Some(match pattern {
+            Filter::Exists { rows, span } => self.exists_matches(
+                rows,
                 (
                     scope,
                     &parent_rows,
                     self.default_order(scope, ranking.as_ref()),
                 ),
-                c.span,
+                *span,
                 cx,
             )?,
-            ConditionKind::Sequence {
-                steps,
-                gaps,
-                all: false,
-                ..
-            } => self.seq_matches(steps, gaps, scope, &parent_rows, c.span, cx)?,
-            ConditionKind::Sequence { all: true, .. } => {
-                return Err(not_built("overlapping sequence matches (seq all)"));
+            Filter::Sequence { steps, gaps, span } => {
+                self.seq_matches(steps, gaps, scope, &parent_rows, *span, cx)?
             }
-            _ => {
-                return Err(QueryError::Invalid {
-                    message: "matches requires an exists or sequence qualifier".into(),
-                    position: c.span.start,
-                });
-            }
+            _ => unreachable!("patterns are exists and sequence conditions"),
         });
         self.notes.push("one row per step of each match".into());
         Ok(())
@@ -422,7 +332,7 @@ impl<'a> Compiler<'a> {
     fn finish_conditions(
         &mut self,
         selection: &Selection,
-        parts: &mut SelectionSql,
+        parts: &mut SelectionSql<'_>,
     ) -> Result<Option<(String, String)>, QueryError> {
         let rows_answer = parts.matched.is_none() && parts.measure.is_none();
         let similarity = match parts.similar.take().filter(|_| rows_answer) {
@@ -473,7 +383,7 @@ impl<'a> Compiler<'a> {
     fn row_statements(
         &mut self,
         selection: &Selection,
-        parts: &SelectionSql,
+        parts: &SelectionSql<'_>,
         ctes: &str,
         count_relation: Option<(String, String)>,
     ) -> Result<RowStatements, QueryError> {
@@ -709,7 +619,7 @@ impl<'a> Compiler<'a> {
 
     fn explanations(
         &self,
-        parts: &SelectionSql,
+        parts: &SelectionSql<'_>,
         ctes: &str,
         from: &str,
     ) -> (Vec<WhyClause>, String, Vec<WhyClause>) {
@@ -768,7 +678,7 @@ impl<'a> Compiler<'a> {
 
     fn into_program(
         mut self,
-        mut parts: SelectionSql,
+        mut parts: SelectionSql<'_>,
         rows: RowStatements,
         attach: Vec<Attach>,
         why: (Vec<WhyClause>, String, Vec<WhyClause>),
@@ -864,7 +774,7 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn measure_statements(&self, parts: &mut SelectionSql, rows: &RowStatements) {
+    fn measure_statements(&self, parts: &mut SelectionSql<'_>, rows: &RowStatements) {
         if let Some(measure) = &mut parts.measure {
             (measure.since, measure.until) = self.session_window;
             measure.selection_sql = rows.sql.clone();
@@ -964,34 +874,29 @@ impl<'a> Compiler<'a> {
         );
     }
 
-    /// Nested sources bind their own defaults, just like the outer selection.
+    /// Nested sources fold into logical sessions by the defaults they
+    /// bound, just like the outer selection.
     pub(super) fn sessions_within_bounds(
         &self,
         scope: &RowContext,
-        measured: bool,
-        top: &[Condition],
+        defaults: &[units::DefaultId],
         conditions: &mut Vec<String>,
         filtered: bool,
-    ) -> Result<(), QueryError> {
-        let defaults =
-            polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, measured);
+    ) {
         if defaults.contains(&units::DefaultId::LogicalSessions) {
-            self.fold_into_logical_sessions(scope, None, &defaults, conditions, filtered);
+            self.fold_into_logical_sessions(scope, None, defaults, conditions, filtered);
         }
-        Ok(())
     }
 
-    /// The default filters a unit binds, dropped by a top-level condition
-    /// naming their field.
+    /// The predicates of the defaults a selection bound.
     pub(super) fn defaults(
         &self,
         scope: &RowContext,
-        top: &[Condition],
-        measured: bool,
+        defaults: &[units::DefaultId],
     ) -> Vec<String> {
-        polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, measured)
-            .into_iter()
-            .map(|id| units::default_sql(id, &scope.a))
+        defaults
+            .iter()
+            .map(|&id| units::default_sql(id, &scope.a))
             .collect()
     }
 

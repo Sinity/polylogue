@@ -3,7 +3,7 @@
 //! (docs/search.md: Hits and ranking, The search leg).
 use crate::{
     ast::*,
-    filter::{Comparison, FieldTest, Filter, Test, value_text},
+    filter::{FieldTest, Filter, Test},
 };
 use serde::Serialize;
 
@@ -117,9 +117,9 @@ fn output_term(filter: &Filter) -> Option<&str> {
     match filter {
         Filter::Field(FieldTest {
             field,
-            test: Test::Written(Comparison::Match(value)),
+            test: Test::Special(value),
             ..
-        }) if field.declaration().name == "output" => value_text(value).ok(),
+        }) if field.declaration().name == "output" => value.text(),
         _ => None,
     }
 }

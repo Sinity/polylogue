@@ -18,14 +18,9 @@ pub fn query(expression: &str, options: &Options) -> Result<Explanation, QueryEr
     query_language::depth::deeper(|| {
         let plan = polylogue_query::compile(expression, options)?;
         let parsed = plan.bound_query().query().clone();
-        let program = crate::query::lower(&plan, options)?;
-        let order = plan
-            .selection(
-                &options.fields,
-                &options.clock,
-                options.provider_catalog.as_deref(),
-            )?
-            .map(|selection| selection.order);
+        let bound = plan.bound(options)?;
+        let program = crate::query::lower_bound(&plan, Some(&bound), options)?;
+        let order = bound.selection.map(|selection| selection.order);
         let mut units = selected_units(plan.expanded_query().query());
         if !units.contains(&program.unit) {
             units.insert(0, program.unit);

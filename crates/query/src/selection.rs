@@ -8,8 +8,8 @@
 use crate::{
     QueryError,
     ast::*,
-    defaults::{self, DefaultId},
-    filter::{Binder, Filter},
+    defaults::Defaults,
+    filter::{Binder, Filter, bind_unit},
     search::Search,
     stages::Stage,
 };
@@ -18,14 +18,18 @@ use crate::{
 pub struct Selection {
     pub unit: Unit,
     /// The defaults the source's own top-level conditions leave in place.
-    pub defaults: Vec<DefaultId>,
+    pub defaults: Defaults,
     /// The conditions as written, joined by AND: the source's condition
     /// without its `similar:` term, then each `| where` stage that directly
     /// follows the source and means the same as its conjunction.
     pub written: Vec<Condition>,
     /// Those conditions bound to the unit's fields: what selects the rows,
-    /// or `None` for every row.
+    /// or `None` for every row. An order condition among them makes the
+    /// source a relation boundary, which reads them instead.
     pub filter: Option<Filter>,
+    /// Each top-level condition outside an order condition, bound, for
+    /// `--why` to count alone.
+    pub clauses: Vec<Clause>,
     /// What the words search for and which index ranks by them.
     pub search: Search,
     /// The `similar:` text the rows rank by.
@@ -42,8 +46,28 @@ pub struct Selection {
     /// A `| measure` stage measures the selection, whose population then
     /// includes hidden sessions.
     pub measured: bool,
-    pub attach: Vec<Attachment>,
+    pub attach: Vec<Attached>,
     pub field_selection: FieldSelection,
+}
+
+/// Rows attached to each result row (`with messages(id)[last:1]`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Attached {
+    pub span: Span,
+    /// What binding made of the attachment, refused where it is read.
+    pub rows: Result<AttachedRows, QueryError>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AttachedRows {
+    pub unit: Unit,
+    pub fields: Vec<String>,
+    /// Each window's condition, bound to the unit.
+    pub filters: Vec<Filter>,
+    /// The defaults all the windows' top-level conditions leave in place.
+    pub defaults: Defaults,
+    pub first: Option<u64>,
+    pub last: Option<u64>,
 }
 
 /// A `similar:` ranking: the text whose embedding the rows are compared
@@ -94,14 +118,22 @@ pub enum FieldSelection {
 
 impl Selection {
     /// The selection of a query whose source is a unit, or `None` for a
-    /// saved query or kept result as the source; `fields` are the columns
-    /// asked for.
-    pub fn of(
+    /// saved query or kept result as the source; its columns are the ones
+    /// the binder was asked for.
+    pub fn of(query: &Query, binder: &Binder<'_>) -> Result<Option<Selection>, QueryError> {
+        Self::bind(query, binder, true)
+    }
+
+    /// [`Selection::of`], counting each top-level condition alone only when
+    /// `counts_alone`: a selection that stands as one condition has no
+    /// clauses.
+    pub(crate) fn bind(
         query: &Query,
         binder: &Binder<'_>,
-        fields: &[String],
+        counts_alone: bool,
     ) -> Result<Option<Selection>, QueryError> {
         let origins = binder.origins;
+        let fields = binder.fields;
         let Source::Unit {
             unit, condition, ..
         } = &query.source
@@ -117,7 +149,7 @@ impl Selection {
             Some(condition) => lift_similar(condition, unit, origins)?,
             None => (None, None),
         };
-        let top = condition.as_ref().map(top_level).unwrap_or_default();
+        let top = condition.as_ref().map(top_level_refs).unwrap_or_default();
         let stage_start = stages_from(query);
         let relations_from = if condition.as_ref().is_some_and(contains_order) {
             Some(0)
@@ -131,7 +163,7 @@ impl Selection {
             [stage_start..relations_from.unwrap_or(query.transforms.len())]
             .iter()
             .any(crate::stages::measures);
-        let defaults = defaults::bind(unit, &top, origins, measured);
+        let defaults = Defaults::bind(unit, &top, origins);
         let mut written: Vec<Condition> = condition.into_iter().collect();
         written.extend(query.transforms[..stage_start].iter().filter_map(
             |stage| match &stage.kind {
@@ -139,23 +171,52 @@ impl Selection {
                 _ => None,
             },
         ));
-        // `A | where B` is the conjunction `(A) (B)`: each part keeps its
-        // own grouping of search words.
-        let filter = match written.as_slice() {
-            [] => None,
-            [one] => Some(binder.bind(one, unit)?),
-            all => Some(Filter::All(
-                all.iter()
-                    .map(|c| binder.bind(c, unit))
-                    .collect::<Result<_, _>>()?,
-            )),
-        };
-        // An order condition's matching row is read by the relation holding it.
-        let search = if written.iter().any(contains_order) {
-            Search::default()
+        let top: Vec<&Condition> = written.iter().flat_map(top_level_refs).collect();
+        let (filter, clauses) = if written.iter().any(contains_order) {
+            // An order condition's matching row is read by the relation
+            // holding it; the conditions beside it still count alone.
+            let clauses = top
+                .iter()
+                .filter(|condition| counts_alone && !contains_order(condition))
+                .map(|condition| {
+                    Ok(Clause {
+                        text: clause_text(condition, unit, binder)?,
+                        filter: binder.bind(condition, unit)?,
+                    })
+                })
+                .collect::<Result<_, QueryError>>()?;
+            (None, clauses)
         } else {
-            Search::of(filter.as_ref(), unit)
+            // `A | where B` is the conjunction `(A) (B)`: each part keeps
+            // its own grouping of search words.
+            let filter = match written.as_slice() {
+                [] => None,
+                [one] => Some(binder.bind(one, unit)?),
+                all => Some(Filter::All(
+                    all.iter()
+                        .map(|c| binder.bind(c, unit))
+                        .collect::<Result<_, _>>()?,
+                )),
+            };
+            let mut leaves = vec![];
+            if let Some(filter) = &filter {
+                conjuncts(filter, &mut leaves);
+            }
+            debug_assert_eq!(leaves.len(), top.len());
+            let clauses = top
+                .iter()
+                .zip(leaves)
+                .filter(|_| counts_alone)
+                .map(|(condition, filter)| {
+                    Ok(Clause {
+                        text: clause_text(condition, unit, binder)?,
+                        filter: filter.clone(),
+                    })
+                })
+                .collect::<Result<_, QueryError>>()?;
+            (filter, clauses)
         };
+        let search = Search::of(filter.as_ref(), unit);
         let order = if !order_read(&query.transforms[stage_start..]) {
             Order::Sorted
         } else {
@@ -171,6 +232,7 @@ impl Selection {
             defaults,
             written,
             filter,
+            clauses,
             search,
             semantic,
             order,
@@ -178,7 +240,14 @@ impl Selection {
             stages: crate::stages::stages(&query.transforms, stage_start)?,
             relations_from,
             measured,
-            attach: query.attach.clone(),
+            attach: query
+                .attach
+                .iter()
+                .map(|attachment| Attached {
+                    span: attachment.span,
+                    rows: attached_rows(attachment, binder),
+                })
+                .collect(),
             field_selection: if fields.is_empty() {
                 FieldSelection::Default
             } else {
@@ -193,32 +262,71 @@ impl Selection {
         self.written.iter().flat_map(top_level).collect()
     }
 
-    /// Each top-level condition outside an order condition, bound alone and
-    /// written as the query reads it back, so `--why` can count it alone.
-    pub fn clauses(&self, binder: &Binder<'_>) -> Result<Vec<Clause>, QueryError> {
-        self.top_level()
-            .into_iter()
-            .filter(|condition| !contains_order(condition))
-            .map(|condition| {
-                let query = Query {
-                    source: Source::Unit {
-                        unit: self.unit.name().into(),
-                        implicit: false,
-                        condition: Some(condition.clone()),
-                    },
-                    transforms: vec![],
-                    attach: vec![],
-                };
-                let text = query_language::format::format_query(&query, binder.catalog)
-                    .map_err(|error| QueryError::language(error, binder.text))?;
-                let prefix = format!("{} where ", self.unit.name());
-                Ok(Clause {
-                    text: text.strip_prefix(&prefix).unwrap_or(&text).to_owned(),
-                    filter: binder.bind(&condition, self.unit)?,
-                })
-            })
-            .collect()
+    /// The bound conditions joined to the whole filter by AND.
+    pub fn conjuncts(&self) -> Vec<&Filter> {
+        let mut leaves = vec![];
+        if let Some(filter) = &self.filter {
+            conjuncts(filter, &mut leaves);
+        }
+        leaves
     }
+}
+
+/// The parts of a bound filter joined by AND, nested conjunctions
+/// flattened: binding gives `Filter::All` for exactly the written ANDs, so
+/// these are the written top-level conditions, bound.
+fn conjuncts<'f>(filter: &'f Filter, out: &mut Vec<&'f Filter>) {
+    query_language::depth::deeper(|| match filter {
+        Filter::All(all) => all.iter().for_each(|part| conjuncts(part, out)),
+        leaf => out.push(leaf),
+    })
+}
+
+/// A top-level condition written as the query reads it back.
+fn clause_text(
+    condition: &Condition,
+    unit: Unit,
+    binder: &Binder<'_>,
+) -> Result<String, QueryError> {
+    let query = Query {
+        source: Source::Unit {
+            unit: unit.name().into(),
+            implicit: false,
+            condition: Some(condition.clone()),
+        },
+        transforms: vec![],
+        attach: vec![],
+    };
+    let text = query_language::format::format_query(&query, binder.catalog)
+        .map_err(|error| QueryError::language(error, binder.text))?;
+    let prefix = format!("{} where ", unit.name());
+    Ok(text.strip_prefix(&prefix).unwrap_or(&text).to_owned())
+}
+
+/// An attachment's unit, fields and windows, its window conditions bound.
+fn attached_rows(attachment: &Attachment, binder: &Binder<'_>) -> Result<AttachedRows, QueryError> {
+    let unit = bind_unit(&attachment.unit)?;
+    let mut filters = vec![];
+    let mut top = vec![];
+    let (mut first, mut last) = (None, None);
+    for window in &attachment.windows {
+        match window {
+            Window::Where(condition) => {
+                top.extend(top_level_refs(condition));
+                filters.push(binder.bind(condition, unit)?);
+            }
+            Window::First(n) => first = Some(*n),
+            Window::Last(n) => last = Some(*n),
+        }
+    }
+    Ok(AttachedRows {
+        unit,
+        fields: attachment.fields.clone(),
+        filters,
+        defaults: Defaults::bind(unit, &top, binder.origins),
+        first,
+        last,
+    })
 }
 
 /// One top-level condition: its text and its bound form.
@@ -416,10 +524,15 @@ fn similar_text(value: &Value, origins: &[String], span: Span) -> Result<String,
 /// The conditions joined to the rest of the `where` by AND, with
 /// parenthesized ANDs flattened.
 pub fn top_level(c: &Condition) -> Vec<Condition> {
-    match &c.kind {
-        ConditionKind::And { conditions: all } => all.iter().flat_map(top_level).collect(),
-        _ => vec![c.clone()],
-    }
+    top_level_refs(c).into_iter().cloned().collect()
+}
+
+/// [`top_level`] without copying the conditions.
+pub fn top_level_refs(c: &Condition) -> Vec<&Condition> {
+    query_language::depth::deeper(|| match &c.kind {
+        ConditionKind::And { conditions: all } => all.iter().flat_map(top_level_refs).collect(),
+        _ => vec![c],
+    })
 }
 
 /// An order condition anywhere outside a nested query: its matching row makes

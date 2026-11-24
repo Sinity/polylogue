@@ -9,8 +9,9 @@ use crate::query::time::{self, Milliseconds, Time};
 use crate::query::units::{self, Index, Search, Via};
 use combine::join;
 use polylogue_query::QueryError;
+use polylogue_query::bound::Bound;
 pub use polylogue_query::search::SnippetTerms;
-use polylogue_query::selection::{FieldSelection, Order, Selection, contains_order, top_level};
+use polylogue_query::selection::{FieldSelection, Order, Selection, contains_order};
 pub use polylogue_query::{
     ColKind, Column, ColumnReference, Definition, Kept, Options, SavedQuery, Shape,
 };
@@ -29,7 +30,7 @@ mod sequences;
 mod stages;
 mod statements;
 use conditions::unknown_field;
-use polylogue_query::filter::{alternatives, bind_unit, value_text};
+use polylogue_query::filter::{bind_unit, value_text};
 use ranking::{Cx, Ranking, Reading};
 pub use statements::{
     DerivedRows, KeyedRows, PageColumns, RecentSearch, ScopedSearch, Statements, TextSearch,
@@ -284,6 +285,16 @@ pub fn compile(text: &str, opts: &Options) -> Result<Program, QueryError> {
     })
 }
 pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Program, QueryError> {
+    lower_bound(plan, None, opts)
+}
+
+/// Lowers `plan`, bound for this execution once: `bound` when the caller
+/// already bound it with `opts`.
+pub fn lower_bound(
+    plan: &polylogue_query::plan::Plan,
+    bound: Option<&Bound>,
+    opts: &Options,
+) -> Result<Program, QueryError> {
     let mut captured = opts.clone();
     captured.saved = plan.bindings().saved.clone();
     captured.kept = plan.bindings().kept.clone();
@@ -303,12 +314,16 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
         *kept = current.clone();
     }
     let opts = &captured;
-    let bound = plan.expanded_query();
-    let mut compiler = Compiler::new(plan.expanded_text(), opts);
-    compiler.query_scope = bound.typing().query(&Default::default()).cloned();
-    compiler.typing = Some(std::sync::Arc::new(bound.typing().clone()));
-    compiler.catalog = plan.catalog().clone();
-    let mut program = compiler.program(bound.query(), Reading::answer())?;
+    let owned;
+    let bound = match bound {
+        Some(bound) => bound,
+        None => {
+            owned = plan.bound(opts)?;
+            &owned
+        }
+    };
+    let compiler = Compiler::new(plan.expanded_text(), opts);
+    let mut program = compiler.program(bound, Reading::answer())?;
     let mut used: Vec<Definition> = plan
         .definitions()
         .iter()
@@ -364,9 +379,6 @@ pub(crate) struct Compiler<'a> {
     opts: &'a Options,
     params: Vec<Param>,
     ctes: Vec<String>,
-    query_scope: Option<query_language::scope::QueryScope>,
-    typing: Option<std::sync::Arc<query_language::scope::Typing>>,
-    catalog: std::sync::Arc<query_language::catalog::Catalog>,
     notes: Vec<String>,
     incomplete: Vec<String>,
     snippet_terms: Vec<SnippetTerms>,
@@ -394,9 +406,6 @@ impl<'a> Compiler<'a> {
             opts,
             params: vec![],
             ctes: vec![],
-            query_scope: None,
-            typing: None,
-            catalog: opts.catalog(),
             notes: vec![],
             incomplete: vec![],
             snippet_terms: vec![],
@@ -413,11 +422,6 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    /// The catalog of the plan being compiled, or the options' own.
-    fn catalog(&self) -> std::sync::Arc<query_language::catalog::Catalog> {
-        self.catalog.clone()
-    }
-
     /// A compiler for a query inside this one, naming its slots and steps
     /// apart from this one's.
     fn nested<'b>(&self, text: &'b str) -> Compiler<'b>
@@ -425,7 +429,6 @@ impl<'a> Compiler<'a> {
         'a: 'b,
     {
         let mut nested = Compiler::new(text, self.opts);
-        nested.catalog = self.catalog.clone();
         nested.slots = self.slots.clone();
         nested
     }
@@ -471,19 +474,19 @@ impl<'a> Compiler<'a> {
         Aliases::suffixed(self.aliases)
     }
 
-    fn program(self, q: &Query, reading: Reading) -> Result<Program, QueryError> {
-        if matches!(q.source, Source::Result { .. }) {
-            self.kept_program(q)
+    fn program(self, bound: &Bound, reading: Reading) -> Result<Program, QueryError> {
+        if matches!(bound.query.source, Source::Result { .. }) {
+            self.kept_program(bound)
         } else {
-            self.program_with(q, None, reading)
+            self.program_with(bound, None, reading)
         }
     }
 
-    /// The stages of `q` over stored rows, its source ignored.
-    fn program_over(mut self, q: &Query, mut program: Program) -> Result<Program, QueryError> {
+    /// The stages of `bound` over stored rows, its source ignored.
+    fn program_over(mut self, bound: &Bound, mut program: Program) -> Result<Program, QueryError> {
         self.params = std::mem::take(&mut program.params);
-        let stages = polylogue_query::stages::stages(&q.transforms, 0)?;
-        self.finish_relations(q, &stages, relations::Relation::new(program), None)
+        let stages = polylogue_query::stages::stages(&bound.query.transforms, 0)?;
+        self.finish_relations(bound, &stages, relations::Relation::new(program), None)
     }
 }
 
@@ -609,12 +612,6 @@ fn default_page_size(unit: Unit, shape: Shape) -> u64 {
     }
 }
 
-fn field_operand(operand: &Expression) -> Result<&str, QueryError> {
-    match operand {
-        Expression::Field { name } => Ok(name),
-        _ => Err(not_built("this computed field")),
-    }
-}
 fn literal_expression(expression: &Expression) -> Result<&Value, QueryError> {
     match expression {
         Expression::Value { value } => Ok(value),

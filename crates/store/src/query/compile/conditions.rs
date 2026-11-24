@@ -3,33 +3,9 @@
 //! binding gave its value.
 
 use super::*;
-use polylogue_query::filter::{Binder, FieldTest, Filter, Test, TimeTest};
+use polylogue_query::filter::{FieldTest, Filter, Special, Test, TimeTest};
 
 impl<'a> Compiler<'a> {
-    /// What binding reads from the query.
-    pub(super) fn binder(&self) -> Binder<'_> {
-        Binder {
-            text: self.text,
-            origins: &self.opts.origins,
-            clock: &self.opts.clock,
-            provider_catalog: self.opts.provider_catalog.as_deref(),
-            saved: &self.opts.saved,
-            catalog: &self.catalog,
-            expanding: &[],
-        }
-    }
-
-    /// A condition as written, over `scope`'s rows.
-    pub(super) fn cond(
-        &mut self,
-        c: &Condition,
-        scope: &RowContext,
-        cx: Cx<'_>,
-    ) -> Result<String, QueryError> {
-        let filter = self.binder().bind(c, scope.unit)?;
-        self.lower(&filter, scope, cx)
-    }
-
     /// A bound condition over `scope`'s rows. At the selection's top level
     /// (`cx.top`), the first text term over the search leg's index puts
     /// its ranking there.
@@ -69,7 +45,53 @@ impl<'a> Compiler<'a> {
                 } => self.related(prefix, *target, filter, scope, *span, cx)?,
                 Filter::Field(test) => self.field(test, scope, cx)?,
                 Filter::Saved(relation) => self.saved_relation(relation, scope, cx)?,
-                Filter::Written(c) => self.written(c, scope, cx)?,
+                Filter::Exists { rows, span } => self.exists(rows, scope, *span, cx.inner())?,
+                Filter::Count {
+                    rows,
+                    op,
+                    count,
+                    span,
+                } => self.counted(rows, (*op, *count), scope, *span, cx.inner())?,
+                Filter::In { field, query, span } => {
+                    self.member_of(field, query, scope, *span, cx.inner())?
+                }
+                Filter::Sequence { steps, gaps, span } => {
+                    self.seq(steps, gaps, scope, *span, cx.inner())?
+                }
+                Filter::Compare {
+                    left,
+                    op,
+                    right,
+                    span,
+                } => self.expression_comparison(
+                    left,
+                    *op,
+                    right,
+                    span.start,
+                    &mut |compiler, name, at| compiler.expr(name, scope, at),
+                )?,
+                Filter::Between {
+                    left,
+                    from,
+                    to,
+                    span,
+                } => {
+                    let lower = self.expression_comparison(
+                        left,
+                        Op::Ge,
+                        &Expression::value(from.clone()),
+                        span.start,
+                        &mut |compiler, name, at| compiler.expr(name, scope, at),
+                    )?;
+                    let upper = self.expression_comparison(
+                        left,
+                        Op::Le,
+                        &Expression::value(to.clone()),
+                        span.start,
+                        &mut |compiler, name, at| compiler.expr(name, scope, at),
+                    )?;
+                    format!("({lower}) AND ({upper})")
+                }
             })
         })
     }
@@ -173,65 +195,6 @@ impl<'a> Compiler<'a> {
             parts.push(self.text(&words, scope, Index::Prose, cx)?);
         }
         Ok(format!("({})", parts.join(" AND ")))
-    }
-
-    /// A condition binding left as written: over other rows, another
-    /// query, or computed values.
-    fn written(
-        &mut self,
-        c: &Condition,
-        scope: &RowContext,
-        cx: Cx<'_>,
-    ) -> Result<String, QueryError> {
-        let cx = cx.inner();
-        match &c.kind {
-            ConditionKind::Exists { unit, condition } => {
-                self.exists(bind_unit(unit)?, condition.as_deref(), scope, c.span, cx)
-            }
-            ConditionKind::Count {
-                unit,
-                condition,
-                op,
-                count,
-            } => self.counted(
-                bind_unit(unit)?,
-                condition.as_deref(),
-                (*op, *count),
-                scope,
-                c.span,
-                cx,
-            ),
-            ConditionKind::In {
-                left: operand,
-                query,
-            } => self.member_of(field_operand(operand)?, query, scope, c.span, cx),
-            ConditionKind::Sequence { steps, gaps, .. } => self.seq(steps, gaps, scope, c.span, cx),
-            ConditionKind::Compare { left, op, right } => self.expression_comparison(
-                left,
-                *op,
-                right,
-                c.span.start,
-                &mut |compiler, name, at| compiler.expr(name, scope, at),
-            ),
-            ConditionKind::Between { left, from, to } => {
-                let lower = self.expression_comparison(
-                    left,
-                    Op::Ge,
-                    &Expression::value(from.clone()),
-                    c.span.start,
-                    &mut |compiler, name, at| compiler.expr(name, scope, at),
-                )?;
-                let upper = self.expression_comparison(
-                    left,
-                    Op::Le,
-                    &Expression::value(to.clone()),
-                    c.span.start,
-                    &mut |compiler, name, at| compiler.expr(name, scope, at),
-                )?;
-                Ok(format!("({lower}) AND ({upper})"))
-            }
-            _ => Err(not_built("this shared condition")),
-        }
     }
 
     /// A full-text condition over one index. Terms ANDed together must all
@@ -403,12 +366,10 @@ impl<'a> Compiler<'a> {
                     &super::custom_fields::Call {
                         unit: scope.unit,
                         name: "here",
-                        test: &Test::Written(polylogue_query::filter::Comparison::Match(
-                            Value::Scalar {
-                                text: "here".into(),
-                                quoted: false,
-                            },
-                        )),
+                        test: &Test::Special(Special::One {
+                            text: "here".into(),
+                            quoted: false,
+                        }),
                         scope,
                         span,
                         cx: Cx::plain(false),
@@ -934,9 +895,9 @@ impl<'a> Compiler<'a> {
                     b.end_ms()?
                 )
             }
-            // Binding gives a written value only to a field with its own
+            // Binding gives a special value only to a field with its own
             // rule, which reads it there.
-            Test::Written(_) => unreachable!("{} has its own rule", def.name),
+            Test::Special(_) => unreachable!("{} has its own rule", def.name),
         })
     }
 
@@ -949,9 +910,17 @@ impl<'a> Compiler<'a> {
         resolved.value
     }
 
-    /// A time expression in a computed value, resolved and recorded.
+    /// A time literal in a computed value, resolved against the
+    /// execution's clock and recorded. A computed value's operand types are
+    /// fixed by the shared binder, so its literals take their stored form
+    /// here, where its expression is lowered.
     pub(super) fn time(&self, text: &str, span: Span) -> Result<Time, QueryError> {
-        Ok(self.resolved(&self.binder().time(text, span)?))
+        let resolved =
+            polylogue_query::time::resolve(text, &self.opts.clock).map_err(|mut error| {
+                error.position = span.start;
+                QueryError::language(error, self.text)
+            })?;
+        Ok(self.resolved(&resolved))
     }
 
     /// `path` and the directories below it, by whole components, as a key

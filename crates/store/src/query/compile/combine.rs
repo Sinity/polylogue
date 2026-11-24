@@ -22,38 +22,25 @@ impl PendingFusion {
 }
 
 impl<'a> Compiler<'a> {
-    /// Another query in parentheses, compiled over this query's parameters.
-    /// A nested query's bound unit, notes, terms and checks come from its
-    /// tree. `similar` is the `similar:` text the enclosing selection ranks
-    /// by: a query ranks by one.
+    /// Another query in parentheses, bound on its own and compiled over
+    /// this query's parameters. A nested query's bound unit, notes, terms
+    /// and checks come from its tree. `similar` is the `similar:` text the
+    /// enclosing selection ranks by: a query ranks by one.
     pub(super) fn other_query(
         &mut self,
-        query: &Query,
+        bound: &Bound,
         at: usize,
         similar: Option<&str>,
     ) -> Result<Program, QueryError> {
-        let mut query = query.clone();
-        // This query is compiled on its own, after its inherited unit was bound.
-        if let Source::Unit { implicit, .. } = &mut query.source {
-            *implicit = false;
-        }
-        let catalog = self.catalog();
-        let bound = query_language::bind::bind(&query, &catalog)
-            .map_err(|error| QueryError::language(error, self.text))?;
-        let query_scope = bound.typing().query(&Default::default()).cloned();
-        let typing = std::sync::Arc::new(bound.typing().clone());
-        let query = bound.into_query();
-        if let Some(child) = query.attach.first() {
+        if let Some(child) = bound.query.attach.first() {
             return Err(QueryError::Invalid {
                 message: "a query in parentheses gives rows to compare, not attached rows".into(),
                 position: child.span.start,
             });
         }
         let mut inner = self.nested(self.text);
-        inner.query_scope = query_scope;
-        inner.typing = Some(typing);
         inner.params = std::mem::take(&mut self.params);
-        let mut program = inner.program(&query, Reading::whole())?;
+        let mut program = inner.program(bound, Reading::whole())?;
         self.params = std::mem::take(&mut program.params);
         self.resolved_times
             .borrow_mut()
@@ -92,6 +79,7 @@ impl<'a> Compiler<'a> {
     pub(super) fn combined_rows(
         &mut self,
         query: &Query,
+        bound: &Result<Box<Bound>, QueryError>,
         unit: Unit,
         at: usize,
     ) -> Result<Program, QueryError> {
@@ -107,7 +95,7 @@ impl<'a> Compiler<'a> {
                 position: stage.span.start,
             });
         }
-        let program = self.other_query(query, at, None)?;
+        let program = self.other_query(bound.as_ref().map_err(Clone::clone)?, at, None)?;
         if program.shape != Shape::Rows {
             return Err(QueryError::Invalid {
                 message: "a combined query gives rows, not groups or a summary".into(),
@@ -142,24 +130,11 @@ impl<'a> Compiler<'a> {
     pub(super) fn member_of(
         &mut self,
         field: &str,
-        query: &Query,
+        query: &Bound,
         scope: &RowContext,
         span: Span,
         cx: Cx<'_>,
     ) -> Result<String, QueryError> {
-        let grouped_by_one = query.transforms.iter().rev().find_map(|s| match &s.kind {
-            TransformKind::Group { keys } => Some(keys.len() == 1),
-            _ => None,
-        });
-        if grouped_by_one != Some(true) {
-            return Err(QueryError::Invalid {
-                message: format!(
-                    "`{field} in (…)` compares {field} with the values a query groups by: \
-                     end it with `| group by FIELD` (one field)"
-                ),
-                position: span.start,
-            });
-        }
         let program = self.other_query(query, span.start, cx.similar)?;
         let (expr, kind) = self.expr(field, scope, span.start)?;
         scalar(kind, field, span.start)?;
