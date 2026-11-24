@@ -24,8 +24,6 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 pub(super) struct Context<'a> {
     pub tx: &'a Transaction<'a>,
     pub counter: i64,
-    pub texts: &'a crate::text_rows::TextIds,
-    pub at_build_end: bool,
     pub changes: &'a ChangeSummary,
 }
 
@@ -516,12 +514,7 @@ impl<'c> Work<'_, 'c> {
         for event in live {
             self.apply_live(&event)?;
         }
-        readings::remove_released_texts(
-            self.tx(),
-            self.context.texts,
-            &released_texts,
-            self.context.at_build_end,
-        )?;
+        readings::remove_released_texts(self.tx(), &released_texts)?;
         Ok(())
     }
 
@@ -1031,54 +1024,23 @@ impl<'c> Work<'_, 'c> {
     /// Removes a message's blocks and calls; the calls its blocks named and
     /// answered are paired again.
     fn clear_blocks(&mut self, message_pk: i64) -> Result<()> {
-        let blocks = self
-            .tx()
-            .prepare_cached("SELECT session_pk,call_id,text_id FROM block WHERE message_pk=?1")?
-            .query_map([message_pk], |r| {
-                <(i64, Option<String>, Option<i64>)>::try_from(r)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        let old_calls: Vec<(i64, Option<String>, Option<String>)> = self
+        let calls = self
             .tx()
             .prepare_cached(
-                "SELECT t.pk, t.command, t.path FROM tool_call t JOIN block b ON b.pk = t.call_block_pk
-                 WHERE b.message_pk = ?1",
+                "SELECT session_pk,call_id FROM block WHERE message_pk=?1 AND call_id IS NOT NULL",
             )?
-            .query_map([message_pk], |r| <(_, _, _)>::try_from(r))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (pk, command, path) in old_calls {
-            if !self.context.at_build_end {
-                self.tx()
-                    .prepare_cached(
-                        "INSERT INTO tool_call_trigram(tool_call_trigram, rowid, command, path)
-                         VALUES ('delete', ?1, ?2, ?3)",
-                    )?
-                    .execute(params![pk, command, path])?;
-            }
-            self.tx()
-                .prepare_cached("DELETE FROM tool_call WHERE pk = ?1")?
-                .execute([pk])?;
-        }
+            .query_map([message_pk], |r| <(i64, String)>::try_from(r))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        self.tx()
+            .prepare_cached(
+                "DELETE FROM tool_call WHERE call_block_pk IN
+                 (SELECT pk FROM block WHERE message_pk = ?1)",
+            )?
+            .execute([message_pk])?;
         self.tx()
             .prepare_cached("DELETE FROM block WHERE message_pk = ?1")?
             .execute([message_pk])?;
-        let mut texts = BTreeSet::new();
-        for (session_pk, call_id, text_id) in blocks {
-            if let Some(call_id) = call_id {
-                self.calls.insert((session_pk, call_id));
-            }
-            if let Some(text) = text_id {
-                texts.insert(text);
-            }
-        }
-        for text in texts {
-            crate::text_rows::unindex_unused(
-                self.tx(),
-                self.context.texts,
-                text,
-                self.context.at_build_end,
-            )?;
-        }
+        self.calls.extend(calls);
         Ok(())
     }
 
@@ -1110,22 +1072,8 @@ impl<'c> Work<'_, 'c> {
                 (Some(_), Some(ids)) => Some(ids.get(idx).copied().flatten().ok_or_else(|| {
                     StoreError::Invalid("a message reading's text reference is missing".into())
                 })?),
-                (Some(hash), None) => {
-                    Some(self.context.texts.resolve(self.tx(), hash, None, None)?)
-                }
+                (Some(hash), None) => Some(crate::text_rows::resolve(self.tx(), hash, None)?),
             };
-            let bit = search_bit(block);
-            // A build marks the texts of the blocks it composed from a
-            // stream all at once ([`mark_searched_texts`]).
-            if let Some(id) = text_id.filter(|_| self.stream.is_none()) {
-                crate::text_rows::join_search_index(
-                    self.tx(),
-                    self.context.texts,
-                    id,
-                    bit,
-                    self.context.at_build_end,
-                )?;
-            }
             let (kind, call_id, attachment) = match block {
                 Block::Text { .. } => ("text", None, None),
                 Block::Thinking { .. } => ("thinking", None, None),
@@ -1265,14 +1213,6 @@ impl<'c> Work<'_, 'c> {
                 pairing.result_at,
                 pairing.duration,
             ])?;
-        let pk = self.tx().last_insert_rowid();
-        if !self.context.at_build_end {
-            self.tx()
-                .prepare_cached(
-                    "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
-                )?
-                .execute(params![pk, call.command, call.path])?;
-        }
         Ok(())
     }
 
@@ -1868,19 +1808,10 @@ impl<'c> Work<'_, 'c> {
         );
         let Some(winner) = winner.map(|n| &found[n]) else {
             if let Some((pk, _)) = stored {
-                let old = self.document_texts(pk)?;
                 self.tx()
                     .execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
                 self.tx()
                     .execute("DELETE FROM document WHERE pk=?1", [pk])?;
-                for text in old {
-                    crate::text_rows::unindex_unused(
-                        self.tx(),
-                        self.context.texts,
-                        text,
-                        self.context.at_build_end,
-                    )?;
-                }
             }
             return Ok(());
         };
@@ -1922,7 +1853,6 @@ impl<'c> Work<'_, 'c> {
                 self.tx().last_insert_rowid()
             }
         };
-        let old = self.document_texts(pk)?;
         self.tx()
             .execute("DELETE FROM document_block WHERE document_pk=?1", [pk])?;
         let text_ids = readings::text_ids(self.tx(), input_pk, chain, true, id)?;
@@ -1941,15 +1871,6 @@ impl<'c> Work<'_, 'c> {
                     })
                 })
                 .transpose()?;
-            if let Some(text) = text {
-                crate::text_rows::join_search_index(
-                    self.tx(),
-                    self.context.texts,
-                    text,
-                    1,
-                    self.context.at_build_end,
-                )?;
-            }
             let blob = match block {
                 Block::Image(attachment) | Block::File(attachment) => {
                     attachment.blob.map(|h| h.0.to_vec())
@@ -1961,23 +1882,7 @@ impl<'c> Work<'_, 'c> {
                 params![pk, idx as i64, block.kind().as_str(), body, text, blob, data],
             )?;
         }
-        for text in old {
-            crate::text_rows::unindex_unused(
-                self.tx(),
-                self.context.texts,
-                text,
-                self.context.at_build_end,
-            )?;
-        }
         Ok(())
-    }
-
-    fn document_texts(&self, pk: i64) -> Result<Vec<i64>> {
-        Ok(self
-            .tx()
-            .prepare_cached("SELECT DISTINCT text_id FROM document_block WHERE document_pk=?1 AND text_id IS NOT NULL")?
-            .query_map([pk], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?)
     }
 }
 
@@ -2189,30 +2094,22 @@ static INSERT_MESSAGE: std::sync::LazyLock<String> = std::sync::LazyLock::new(||
     )
 });
 
-/// Marks each text the stored blocks hold as a member of the search index
-/// [`search_bit`] gives its block, for a build that composed sessions from
-/// a stream without marking their texts one by one.
+/// Marks each text the shown blocks and document blocks hold as a member of
+/// the search indexes their kinds name (search_triggers.sql), for a build,
+/// whose composition runs before those triggers exist.
 pub(super) fn mark_searched_texts(tx: &Transaction<'_>) -> Result<()> {
     tx.execute(
-        "UPDATE text SET indexed = indexed | b.bits
-         FROM (SELECT text_id,
-                   (max(kind IN ('tool_result','tool_call')) * 2)
-                   | max(kind NOT IN ('tool_result','tool_call')) AS bits
-               FROM block WHERE text_id IS NOT NULL GROUP BY text_id) b
-         WHERE text.id = b.text_id AND text.indexed | b.bits <> text.indexed",
+        "UPDATE text SET indexed = b.bits
+         FROM (SELECT text_id, max(bit) | min(bit) AS bits FROM (
+                   SELECT text_id, iif(kind IN ('tool_result','tool_call'), 2, 1) AS bit
+                   FROM block WHERE text_id IS NOT NULL
+                   UNION ALL
+                   SELECT text_id, 1 FROM document_block WHERE text_id IS NOT NULL)
+               GROUP BY text_id) b
+         WHERE text.id = b.text_id AND text.indexed <> b.bits",
         [],
     )?;
     Ok(())
-}
-
-/// The search index a block's text belongs to: 2 for tool results and tool
-/// calls (the `output:` field, which includes written file bodies), 1 for prose.
-fn search_bit(block: &Block) -> i64 {
-    if matches!(block, Block::ToolResult { .. } | Block::ToolCall { .. }) {
-        2
-    } else {
-        1
-    }
 }
 
 pub(super) fn outcome_columns(o: &ToolOutcome) -> (&'static str, Option<String>, Option<i64>) {

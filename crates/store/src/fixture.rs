@@ -141,7 +141,8 @@ impl Fixture {
     /// Queues search work without committing it, for reader and index tests.
     pub fn queue_search_text(&self, body: &str) -> Result<i64> {
         let tx = self.index.unchecked_transaction()?;
-        let id = crate::text_rows::intern(&tx, body, 1, None, false)?;
+        let id = crate::text_rows::intern(&tx, body)?;
+        crate::text_rows::mark_searched(&tx, id, 1)?;
         tx.commit()?;
         Ok(id)
     }
@@ -310,17 +311,6 @@ impl Fixture {
         Ok(())
     }
 
-    fn text(&self, body: &str, search_index: i64) -> Result<i64> {
-        let tx = rusqlite::Transaction::new_unchecked(
-            &self.index,
-            rusqlite::TransactionBehavior::Immediate,
-        )?;
-        let id = crate::text_rows::intern(&tx, body, search_index, None, false)?;
-        tx.commit()?;
-        crate::text_rows::index_pending(&self.index)?;
-        Ok(id)
-    }
-
     fn block(
         &self,
         message_pk: i64,
@@ -337,6 +327,8 @@ impl Fixture {
             params![message_pk, session_pk, idx, kind, text_id, packed],
         )?;
         let block = self.index.last_insert_rowid();
+        // The block's text joins its search index as it is written.
+        crate::text_rows::index_pending(&self.index)?;
         Ok(block)
     }
 
@@ -373,7 +365,7 @@ impl Fixture {
         self.forget_settled(session_pk)?;
         let mut idx = 0;
         if let Some(t) = m.thinking {
-            let id = self.text(t, 1)?;
+            let id = crate::text_rows::intern(&self.index, t)?;
             self.block(
                 pk,
                 session_pk,
@@ -385,7 +377,7 @@ impl Fixture {
             idx += 1;
         }
         if let Some(t) = m.text {
-            let id = self.text(t, 1)?;
+            let id = crate::text_rows::intern(&self.index, t)?;
             self.block(
                 pk,
                 session_pk,
@@ -418,7 +410,7 @@ impl Fixture {
         )?;
         let result = match t.output {
             Some(out) => {
-                let id = self.text(out, 2)?;
+                let id = crate::text_rows::intern(&self.index, out)?;
                 Some(self.block(
                     message_pk,
                     session_pk,
@@ -454,10 +446,6 @@ impl Fixture {
             ],
         )?;
         let pk = self.index.last_insert_rowid();
-        self.index.execute(
-            "INSERT INTO tool_call_trigram(rowid, command, path) VALUES (?1, ?2, ?3)",
-            params![pk, t.command, t.path],
-        )?;
         self.index.execute(
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],
@@ -535,9 +523,6 @@ impl Fixture {
                         let text = crate::text_rows::intern(
                             &tx,
                             &format!("Answer {n}: the synthetic work is finished."),
-                            1,
-                            None,
-                            false,
                         )?;
                         block.execute(params![message_pk, pk, text, text_body])?;
                     }

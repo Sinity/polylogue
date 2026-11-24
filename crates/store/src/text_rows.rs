@@ -1,120 +1,61 @@
-//! Stored text identity and its deferred full-text entries. Callers group row changes
-//! in their own transaction; indexing consumes committed queue entries.
+//! Stored texts and their deferred full-text entries. A text row is found
+//! by its hash, or inserted under the next key AUTOINCREMENT gives, so a key a
+//! removed text had is never given to another text while an entry may still
+//! name it. Which search indexes a text belongs to follows the blocks that
+//! hold it, through the index schema's triggers (`schema/search_triggers.sql`);
+//! the search thread writes the queued entries after the writer commits.
 
 use crate::ConnExt as _;
-use crate::Result;
+use crate::{Result, StoreError};
 mod groups;
 mod search_build;
+pub(crate) use groups::{PreparedTexts, column, joined, read, slice};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 pub(crate) use search_build::SearchBuild;
 #[cfg(test)]
 pub(crate) use search_build::build_search_indexes;
-mod identities;
-pub(crate) use groups::{PreparedTexts, StoredGroups, column, joined, read, slice};
-pub(crate) use identities::{TextIds, TextTransaction};
-#[cfg(any(test, feature = "fixture"))]
-use rusqlite::OptionalExtension;
-use rusqlite::{Connection, TransactionBehavior, params};
 
-/// The text row for `body`, stored once per distinct content, and its
-/// entry in the search index `search_index` names (1 prose, 2 tool output). During a
-/// build, its search membership is marked for the final scan.
-#[cfg(any(test, feature = "fixture"))]
-pub(crate) fn intern(
+/// The row of a complete text hash: the stored one, or a new row holding
+/// the prepared body.
+pub(crate) fn resolve(
     conn: &Connection,
-    body: &str,
-    search_index: i64,
-    prepared: Option<&PreparedTexts>,
-    at_build_end: bool,
+    hash: &[u8; 32],
+    prepared: Option<groups::Prepared<'_>>,
 ) -> Result<i64> {
-    let hash = blake3::hash(body.as_bytes());
-    let stored: Option<(i64, i64)> = conn
-        .prepare_cached("SELECT id, indexed FROM text WHERE hash=?1")?
-        .query_row([hash.as_bytes().as_slice()], |r| <(_, _)>::try_from(r))
+    let stored = conn
+        .prepare_cached("SELECT id FROM text WHERE hash=?1")?
+        .query_row([hash.as_slice()], |row| row.get::<_, i64>(0))
         .optional()?;
-    let (id, indexed) = match stored {
-        Some(stored) => stored,
-        None => {
-            let own;
-            let prepared = match prepared.filter(|p| p.contains(hash.as_bytes())) {
-                Some(prepared) => prepared,
-                None => {
-                    own = PreparedTexts::pack([body])?;
-                    &own
-                }
-            };
-            let prepared = prepared
-                .get(hash.as_bytes())
-                .expect("the text was just prepared");
-            // A first build marks the text for its search index now and
-            // writes the entry when the build ends.
-            let marked = if at_build_end { search_index } else { 0 };
-            let id = groups::insert(
-                conn,
-                &StoredGroups::default(),
-                None,
-                hash.as_bytes(),
-                prepared,
-                marked,
-            )?
-            .ok_or_else(|| {
-                crate::StoreError::internal("a new text conflicts with a stored identity")
-            })?;
-            (id, marked)
-        }
-    };
-    // `indexed` marks a text for its search index; the entry itself is
-    // written after this transaction commits: by the search thread, or by
-    // the final build scan.
-    if search_index != 0 && indexed & search_index == 0 {
-        mark_indexed(conn, id, search_index, at_build_end)?;
+    if let Some(id) = stored {
+        return Ok(id);
     }
-    Ok(id)
+    let prepared =
+        prepared.ok_or_else(|| StoreError::Invalid("a new text has no prepared bytes".into()))?;
+    groups::insert(conn, hash, prepared)
 }
 
-/// The search indexes new text rows join when they are written: those the
-/// blocks a step makes current name, by text hash (bit 1 prose, 2 tool
-/// output). A first build (`at_build_end`) writes the entries when it ends; otherwise
-/// they are queued for the search thread.
-pub(crate) struct NewMembership<'a> {
-    pub bits: &'a std::collections::HashMap<[u8; 32], i64>,
-    pub at_build_end: bool,
+/// The text row for `body`, stored once per distinct content.
+#[cfg(any(test, feature = "fixture"))]
+pub(crate) fn intern(conn: &Connection, body: &str) -> Result<i64> {
+    let hash = blake3::hash(body.as_bytes());
+    let prepared = PreparedTexts::pack([body])?;
+    resolve(conn, hash.as_bytes(), prepared.get(hash.as_bytes()))
 }
 
-/// Joins an already stored text to the search index named by `bit`, for
-/// current-block search membership.
-pub(crate) fn join_search_index(
-    conn: &Connection,
-    texts: &TextIds,
-    id: i64,
-    bit: i64,
-    at_build_end: bool,
-) -> Result<()> {
-    // A text marked in this transaction needs no statement per block.
-    if texts.is_marked(id, bit) {
-        return Ok(());
+/// Makes text `id` a member of the search index `bit` names and queues its
+/// entry, as a block of that kind holding it would.
+#[cfg(any(test, feature = "fixture"))]
+pub(crate) fn mark_searched(conn: &Connection, id: i64, bit: i64) -> Result<()> {
+    let changed = conn.execute(
+        "UPDATE text SET indexed = indexed | ?2 WHERE id = ?1 AND indexed & ?2 = 0",
+        params![id, bit],
+    )?;
+    if changed != 0 {
+        conn.execute(
+            "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
+            params![id, bit],
+        )?;
     }
-    mark_indexed(conn, id, bit, at_build_end)?;
-    texts.mark(id, bit);
-    Ok(())
-}
-
-fn mark_indexed(conn: &Connection, id: i64, bit: i64, at_build_end: bool) -> Result<()> {
-    let changed = conn
-        .prepare_cached(
-            "UPDATE text SET indexed = indexed | ?2 WHERE id = ?1 AND indexed & ?2 = 0",
-        )?
-        .execute(params![id, bit])?;
-    if changed != 0 && !at_build_end {
-        queue_entry(conn, id, bit)?;
-    }
-    Ok(())
-}
-
-fn queue_entry(conn: &Connection, id: i64, bit: i64) -> Result<()> {
-    conn.prepare_cached(
-        "INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (?1, ?2)",
-    )?
-    .execute(params![id, bit])?;
     Ok(())
 }
 
@@ -259,62 +200,12 @@ fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()
     Ok(())
 }
 
-/// Historical versions keep their text row, but only current blocks contribute
-/// documents to full-text ranking, and only current message blocks to
-/// embedding.
-pub(crate) fn unindex_unused(
-    conn: &Connection,
-    texts: &TextIds,
-    id: i64,
-    at_build_end: bool,
-) -> Result<()> {
-    for (bit, block_filter, table) in [
-        (1, "b.kind NOT IN ('tool_result','tool_call')", "text_fts"),
-        (2, "b.kind IN ('tool_result','tool_call')", "output_fts"),
-    ] {
-        // Document blocks are prose, so they count only for the prose index.
-        let used: bool = conn.exists(
-            &format!(
-                "SELECT EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk
-                               WHERE b.text_id=?1 AND {block_filter})
-                     OR (?2=1 AND EXISTS(SELECT 1 FROM document_block b
-                                         JOIN document d ON d.pk=b.document_pk
-                                         WHERE b.text_id=?1))"
-            ),
-            params![id, bit],
-        )?;
-        if !used {
-            if !at_build_end {
-                conn.execute(&format!("DELETE FROM {table} WHERE rowid=?1"), [id])?;
-            }
-            conn.execute(
-                "DELETE FROM search_pending WHERE text_id=?1 AND fts_table=?2",
-                params![id, bit],
-            )?;
-            conn.execute(
-                "UPDATE text SET indexed=indexed & ~?2 WHERE id=?1",
-                params![id, bit],
-            )?;
-            texts.unmark(id, bit);
-        }
-    }
-    Ok(())
-}
-
-pub(crate) fn remove(i: &Connection, id: i64, indexed: i64) -> Result<()> {
-    if indexed & 1 != 0 {
-        i.execute("DELETE FROM text_fts WHERE rowid = ?1", [id])?;
-    }
-    if indexed & 2 != 0 {
-        i.execute("DELETE FROM output_fts WHERE rowid = ?1", [id])?;
-    }
+/// Removes a text row with its search entries; its group leaves with its
+/// last text.
+pub(crate) fn remove(i: &Connection, id: i64) -> Result<()> {
+    i.execute("DELETE FROM text_fts WHERE rowid = ?1", [id])?;
+    i.execute("DELETE FROM output_fts WHERE rowid = ?1", [id])?;
     i.execute("DELETE FROM search_pending WHERE text_id = ?1", [id])?;
-    groups::delete(i, id)
-}
-
-/// Removes a text row during a first build, whose search entries are written
-/// only when it ends.
-pub(crate) fn remove_unindexed(i: &Connection, id: i64) -> Result<()> {
     groups::delete(i, id)
 }
 
@@ -322,6 +213,24 @@ pub(crate) fn remove_unindexed(i: &Connection, id: i64) -> Result<()> {
 #[cfg(test)]
 pub(crate) fn alone(text: &str) -> Vec<u8> {
     zstd::bulk::compress(text.as_bytes(), 1).unwrap()
+}
+
+/// The group holding only `text`, stored once.
+#[cfg(test)]
+fn alone_group(conn: &Connection, text: &str) -> i64 {
+    let body = alone(text);
+    let hash = blake3::hash(&body);
+    conn.execute(
+        "INSERT INTO text_group(hash,body) VALUES (?1,?2) ON CONFLICT(hash) DO NOTHING",
+        params![hash.as_bytes().as_slice(), body],
+    )
+    .unwrap();
+    conn.query_row(
+        "SELECT id FROM text_group WHERE hash=?1",
+        [hash.as_bytes().as_slice()],
+        |r| r.get(0),
+    )
+    .unwrap()
 }
 
 /// Inserts a text row, under the hashes given, holding `text` in a group of
@@ -335,9 +244,7 @@ pub(crate) fn insert_alone(
     text: &str,
     indexed: i64,
 ) -> i64 {
-    conn.execute("INSERT INTO text_group(body) VALUES (?1)", [alone(text)])
-        .unwrap();
-    let group = conn.last_insert_rowid();
+    let group = alone_group(conn, text);
     conn.execute(
         "INSERT INTO text(id,hash,normalized_hash,indexed,group_id,start,length)
          VALUES (?1,?2,?3,?4,?5,0,?6)",
@@ -350,12 +257,11 @@ pub(crate) fn insert_alone(
 /// Points text `id` at a new group holding only `text`, leaving its hashes.
 #[cfg(test)]
 pub(crate) fn replace_text(conn: &Connection, id: i64, text: &str) {
-    conn.execute("INSERT INTO text_group(body) VALUES (?1)", [alone(text)])
-        .unwrap();
+    let group = alone_group(conn, text);
     let changed = conn
         .execute(
             "UPDATE text SET group_id=?2, start=0, length=?3 WHERE id=?1",
-            params![id, conn.last_insert_rowid(), text.len() as i64],
+            params![id, group, text.len() as i64],
         )
         .unwrap();
     assert_eq!(changed, 1);

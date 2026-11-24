@@ -98,6 +98,63 @@ pub(in crate::writer) fn runs(
     run.finish().unwrap().into_iter().collect()
 }
 
+/// Two chains whose texts compress to the same group bytes, split into texts
+/// at different places: the build stores the group once, and the texts only
+/// the second chain holds are read from the first chain's row.
+#[test]
+fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let inputs = ["joined", "split"];
+    let chains = due_a_build(dir.path(), &inputs);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let mut run = crate::writer::build::BuildWorker::create(&archive, 0, 32 << 20).unwrap();
+    for (input, &chain) in inputs.iter().zip(&chains) {
+        let mut batch = one_message(input, &format!("{input}-m"), "walrus narwhal");
+        if *input == "split" {
+            batch.parse[0].output.messages[0].message.blocks = vec![
+                Block::Text {
+                    text: "walrus ".into(),
+                },
+                Block::Text {
+                    text: "narwhal".into(),
+                },
+            ];
+        }
+        let sender = writer.sender();
+        let mut open = run
+            .begin(&sender, &batch.input, chain, batch.length)
+            .unwrap();
+        for step in &mut batch.parse {
+            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        }
+        open.finish().unwrap();
+    }
+    writer.build(run.finish().unwrap()).unwrap();
+    let index = crate::archive::open_read(&archive.index_db()).unwrap();
+    let groups: i64 = index
+        .query_row("SELECT count(*) FROM text_group", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(groups, 1);
+    let mut texts: Vec<String> = index
+        .prepare("SELECT id FROM text ORDER BY id")
+        .unwrap()
+        .query_map([], |r| r.get::<_, i64>(0))
+        .unwrap()
+        .map(|id| crate::text_rows::read(&index, id.unwrap()).unwrap())
+        .collect();
+    texts.sort();
+    assert_eq!(texts, ["narwhal", "walrus ", "walrus narwhal"]);
+    let found: i64 = index
+        .query_row(
+            "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'narwhal'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(found, 2);
+}
+
 #[test]
 fn a_build_is_private_until_installed_and_reads_answer_its_progress() {
     let dir = tempfile::tempdir().unwrap();

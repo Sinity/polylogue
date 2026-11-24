@@ -301,6 +301,11 @@ store's module documentation, not of this page.
   in which the rows depend on the order of the steps. Recomputing may be
   confined to the part of a session a step can have changed, on the
   condition that the result is that of recomputing all of it.
+- **Composition writes the shown rows and nothing else**, the same in
+  upkeep and in a build. What follows from the shown rows (search
+  membership, the trigram index on tool calls) is kept by the index schema
+  as they change ([search](search.md#index-maintenance)); derived values are
+  computed by their own steps.
 - **Session-grain values have one mechanism.** A value of one session that
   is not a column of one of its rows (its counts, spans, active path,
   links, the place of each transcript entry among the others) is a

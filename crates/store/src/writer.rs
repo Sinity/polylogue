@@ -51,7 +51,7 @@ mod scoped;
 mod source_snapshot;
 pub(crate) use readings::Touched;
 pub(crate) use retractions::{apply_source_retractions, check_source_retractions};
-pub(crate) use rows::finish as finish_rows;
+pub(crate) use rows::finish_upkeep;
 mod hook_fields;
 pub(crate) mod identity;
 pub(crate) use readings::{read_message, shown_message};
@@ -439,7 +439,6 @@ impl Writer {
             conn
         };
         crate::chain_progress::open(&index, !archive.is_primary())?;
-        let texts = crate::text_rows::TextIds::new(&index, archive.memory_budget().keys() / 3)?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
         } else {
@@ -471,7 +470,6 @@ impl Writer {
             archive: archive_conn,
             index,
             report: WriteReport::default(),
-            texts,
             users,
             // Both read the installed index, once a build has ended.
             search: Search::start(
@@ -849,7 +847,6 @@ struct Inner {
     archive: Connection,
     index: Connection,
     report: WriteReport,
-    texts: crate::text_rows::TextIds,
     /// User requests, served between the writer's transactions.
     users: Arc<user_queue::UserQueue>,
     /// The search thread ([`search_thread`]): woken after each commit, and
@@ -1887,7 +1884,6 @@ impl Inner {
         // indexes to write rows by: the bytes are stored, and upkeep reads
         // them once the build is installed.
         let reads = self.build_job.is_none();
-        let text_transaction = self.texts.transaction();
         let itx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -1910,7 +1906,6 @@ impl Inner {
                         b,
                         p,
                         rows::StepWrite {
-                            texts: &self.texts,
                             counter,
                             chain,
                             source_commit: Some(&source_commit),
@@ -1925,7 +1920,7 @@ impl Inner {
             }
             batches += 1;
         }
-        let (messages, read) = rows::finish(&itx, touched, &changes, &self.texts, false, counter)?;
+        let (messages, read) = rows::finish_upkeep(&itx, touched, &changes, counter)?;
         self.report.item_units_read += read;
         let source_changed = if !primary {
             let changed = crate::chain_progress::recorded(&self.archive)?;
@@ -1936,7 +1931,6 @@ impl Inner {
         };
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
-        text_transaction.commit();
         if let Some(changed) = source_changed {
             crate::chain_progress::forget(&self.archive, &changed)?;
         }

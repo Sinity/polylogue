@@ -11,23 +11,6 @@ pub(crate) fn remove(i: &Transaction<'_>, pk: i64, id: &str, counter: i64) -> Re
          ON CONFLICT(session_id) DO UPDATE SET changed=excluded.changed",
         params![id, counter],
     )?;
-    // Search entries go before their tool-call rows. Only one command/path pair
-    // is decoded at a time; the tool-call table is unchanged during this cursor.
-    let mut calls = i.prepare("SELECT pk,command,path FROM tool_call WHERE session_pk=?1")?;
-    let mut rows = calls.query([pk])?;
-    while let Some(row) = rows.next()? {
-        i.execute(
-            "INSERT INTO tool_call_trigram(tool_call_trigram,rowid,command,path)
-             VALUES ('delete',?1,?2,?3)",
-            params![
-                row.get::<_, i64>(0)?,
-                row.get::<_, Option<String>>(1)?,
-                row.get::<_, Option<String>>(2)?
-            ],
-        )?;
-    }
-    drop(rows);
-    drop(calls);
     // Every table that names the session, its messages or its tool calls,
     // whichever component added it.
     let tables = crate::schema::index_columns(i)?;

@@ -918,12 +918,7 @@ pub(crate) fn stage_next(index: &mut Connection, events: &[Confirmed]) -> Result
 
 /// Recheck Sinex's state and the local chain set, then commit lifecycle,
 /// source retractions and completion together. No key-lock wait runs on this thread.
-pub(crate) fn apply_prepared(
-    texts: &crate::text_rows::TextIds,
-    index: &mut Connection,
-    prepared: Preparation,
-) -> Result<Step> {
-    let text_transaction = texts.transaction();
+pub(crate) fn apply_prepared(index: &mut Connection, prepared: Preparation) -> Result<Step> {
     let tx = index.transaction_with_behavior(TransactionBehavior::Immediate)?;
     super::scope::require_readable(&tx)?;
     // Staged rows never change: redelivery compares their entire contents.
@@ -974,7 +969,6 @@ pub(crate) fn apply_prepared(
     let changes = crate::change_summary::ChangeSummary::start(&tx)?;
     let mut retracted = crate::writer::Touched::default();
     crate::writer::apply_source_retractions(
-        texts,
         &tx,
         &plan.retractions,
         counter,
@@ -1004,27 +998,22 @@ pub(crate) fn apply_prepared(
     for session in touched {
         changes.whole_session(session);
     }
-    crate::writer::finish_rows(&tx, retracted, &changes, texts, false, counter)?;
+    crate::writer::finish_upkeep(&tx, retracted, &changes, counter)?;
     crate::fault::check("primary.before_commit", "")?;
     tx.commit()?;
-    text_transaction.commit();
     drop(plan);
     self::next(index)
 }
 
 #[cfg(test)]
-pub(crate) fn apply(
-    texts: &crate::text_rows::TextIds,
-    index: &mut Connection,
-    events: &[Confirmed],
-) -> Result<i64> {
+pub(crate) fn apply(index: &mut Connection, events: &[Confirmed]) -> Result<i64> {
     let mut step = stage_next(index, events)?;
     loop {
         match step {
             Step::Complete(position) => return Ok(position),
             Step::Prepare(prepared) => {
                 crate::writer::check_source_retractions(&prepared.retractions)?;
-                step = apply_prepared(texts, index, *prepared)?;
+                step = apply_prepared(index, *prepared)?;
             }
         }
     }

@@ -6,15 +6,34 @@ fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |row| row.get(0)).unwrap()
 }
 
+/// Stores `body` as a member of the search index `bit` names, as a block
+/// holding it makes it: queued for its entry in an installed index, only
+/// marked in a build, which writes the entries from the marks.
+fn text(conn: &Connection, body: &str, bit: i64, queued: bool) -> i64 {
+    let id = intern(conn, body).unwrap();
+    if bit != 0 {
+        if queued {
+            mark_searched(conn, id, bit).unwrap();
+        } else {
+            conn.execute(
+                "UPDATE text SET indexed = indexed | ?2 WHERE id = ?1",
+                params![id, bit],
+            )
+            .unwrap();
+        }
+    }
+    id
+}
+
 #[test]
 fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let tx = conn.transaction().unwrap();
-    let id = intern(&tx, "walrus", 1, None, false).unwrap();
-    assert_eq!(intern(&tx, "walrus", 1, None, false).unwrap(), id);
-    assert_eq!(intern(&tx, "walrus", 2, None, false).unwrap(), id);
+    let id = text(&tx, "walrus", 1, true);
+    assert_eq!(text(&tx, "walrus", 1, true), id);
+    assert_eq!(text(&tx, "walrus", 2, true), id);
     tx.commit().unwrap();
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -33,7 +52,7 @@ fn repeated_text_is_stored_once_and_indexed_in_both_searches() {
         ),
         1
     );
-    assert_eq!(intern(&conn, "walrus", 1, None, false).unwrap(), id);
+    assert_eq!(text(&conn, "walrus", 1, true), id);
     assert_eq!(index_pending(&conn).unwrap(), 0);
 }
 
@@ -44,13 +63,13 @@ fn removal_and_rollback_do_not_leave_search_work() {
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     {
         let tx = conn.transaction().unwrap();
-        intern(&tx, "rolled back", 1, None, false).unwrap();
+        text(&tx, "rolled back", 1, true);
     }
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
     assert_eq!(index_pending(&conn).unwrap(), 0);
     let tx = conn.transaction().unwrap();
-    let id = intern(&tx, "removed", 1, None, false).unwrap();
-    remove(&tx, id, 1).unwrap();
+    let id = text(&tx, "removed", 1, true);
+    remove(&tx, id).unwrap();
     tx.commit().unwrap();
     assert_eq!(index_pending(&conn).unwrap(), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM text"), 0);
@@ -62,7 +81,7 @@ fn a_failed_decode_keeps_the_pending_entry() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let id = intern(&conn, "walrus", 1, None, false).unwrap();
+    let id = text(&conn, "walrus", 1, true);
     replace_group_body(&conn, id, b"damaged");
     assert!(index_pending(&conn).is_err());
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
@@ -74,9 +93,9 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let first = intern(&conn, "walrus", 1, None, false).unwrap();
-    let second = intern(&conn, "narwhal", 2, None, false).unwrap();
-    intern(&conn, "dolphin", 1, None, false).unwrap();
+    let first = text(&conn, "walrus", 1, true);
+    let second = text(&conn, "narwhal", 2, true);
+    text(&conn, "dolphin", 1, true);
     replace_group_body(&conn, second, b"\0");
     assert_eq!(pending_batch(&conn, 1).unwrap(), 1);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 2);
@@ -99,14 +118,14 @@ fn pending_byte_limit_commits_complete_entries_and_retry_keeps_the_rest() {
 
 #[test]
 fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction() {
-    for at_build_end in [false, true] {
+    for built in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-        intern(&conn, "walrus", 1, None, at_build_end).unwrap();
-        let second = intern(&conn, "narwhal", 1, None, at_build_end).unwrap();
+        text(&conn, "walrus", 1, !built);
+        let second = text(&conn, "narwhal", 1, !built);
         replace_group_body(&conn, second, b"\0");
-        if at_build_end {
+        if built {
             assert!(build_search_indexes(&conn).is_err());
         } else {
             assert!(index_pending(&conn).is_err());
@@ -118,20 +137,20 @@ fn a_later_decode_failure_rolls_back_earlier_search_entries_in_its_transaction()
 
 #[test]
 fn build_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
-    for at_build_end in [false, true] {
+    for built in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
         let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
         let tx = conn.transaction().unwrap();
         for n in 0..SEARCH_ROWS + 3 {
-            intern(&tx, &format!("walrus{n}"), 1, None, at_build_end).unwrap();
+            text(&tx, &format!("walrus{n}"), 1, !built);
         }
         let shared = "Łódź Straße Øresund";
-        let id = intern(&tx, shared, 1, None, at_build_end).unwrap();
-        assert_eq!(intern(&tx, shared, 2, None, at_build_end).unwrap(), id);
-        intern(&tx, "notindexed", 0, None, at_build_end).unwrap();
+        let id = text(&tx, shared, 1, !built);
+        assert_eq!(text(&tx, shared, 2, !built), id);
+        text(&tx, "notindexed", 0, !built);
         tx.commit().unwrap();
-        if at_build_end {
+        if built {
             build_search_indexes(&conn).unwrap();
         } else {
             assert_eq!(index_pending(&conn).unwrap(), (SEARCH_ROWS + 5) as u64);
@@ -174,84 +193,131 @@ fn build_and_pending_searches_keep_ascii_unicode_and_search_kinds() {
 }
 
 #[test]
-fn cached_text_identity_records_no_payload_write() {
-    let mut conn = Connection::open_in_memory().unwrap();
+fn a_text_is_one_row_and_a_removed_texts_key_is_never_given_again() {
+    let conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let identities =
-        TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3).unwrap();
-    let text = "shared synthetic text";
-    let hash = *blake3::hash(text.as_bytes()).as_bytes();
-    let prepared = PreparedTexts::pack([text]).unwrap();
-    let prepared = prepared.get(&hash);
-    let tx = conn.transaction().unwrap();
-    let written = identities.resolve(&tx, &hash, prepared, None).unwrap();
-    let reused = identities.resolve(&tx, &hash, prepared, None).unwrap();
-    assert_eq!(reused, written);
-    tx.commit().unwrap();
-    let cached = identities.resolve(&conn, &hash, prepared, None).unwrap();
-    assert_eq!(cached, written);
-    let preloaded = TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3)
-        .unwrap()
-        .resolve(&conn, &hash, None, None)
-        .unwrap();
-    assert_eq!(preloaded, written);
+    let first = intern(&conn, "shared synthetic text").unwrap();
+    assert_eq!(intern(&conn, "shared synthetic text").unwrap(), first);
+    let prepared = PreparedTexts::pack(["shared synthetic text"]).unwrap();
+    let hash = *blake3::hash(b"shared synthetic text").as_bytes();
+    assert_eq!(resolve(&conn, &hash, None).unwrap(), first);
+    assert_eq!(resolve(&conn, &hash, prepared.get(&hash)).unwrap(), first);
+    let unknown = *blake3::hash(b"never stored").as_bytes();
+    assert!(resolve(&conn, &unknown, None).is_err());
+    // The newest key leaves; the next text gets a new one.
+    remove(&conn, first).unwrap();
+    let second = intern(&conn, "another synthetic text").unwrap();
+    assert!(second > first, "{second} reused {first}");
+}
+
+/// A block, document block or tool call holding `text`, written as
+/// composition writes it.
+fn block(conn: &Connection, pk: i64, kind: &str, text: i64) {
+    conn.execute(
+        "INSERT INTO block(pk,message_pk,session_pk,idx,kind,text_id,body) VALUES (?1,1,1,?1,?2,?3,x'00')",
+        params![pk, kind, text],
+    )
+    .unwrap();
 }
 
 #[test]
-fn new_text_membership_follows_unindexing_and_rollback_within_the_writer() {
-    let mut conn = Connection::open_in_memory().unwrap();
+fn search_membership_follows_the_blocks_that_hold_a_text() {
+    let conn = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&conn).unwrap();
-    let identities =
-        TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3).unwrap();
-    let text = "synthetic tool output";
-    let hash = *blake3::hash(text.as_bytes()).as_bytes();
-    let prepared = PreparedTexts::pack([text]).unwrap();
-    let bits = std::collections::HashMap::from([(hash, 2)]);
-    let membership = NewMembership {
-        bits: &bits,
-        at_build_end: false,
-    };
-    let state = |conn: &Connection, id: i64| {
+    // The rows stand alone: no session or message holds them.
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    let id = intern(&conn, "synthetic walrus output").unwrap();
+    let entries = |conn: &Connection| {
         (
-            count(conn, &format!("SELECT indexed FROM text WHERE id={id}")),
             count(
                 conn,
-                &format!("SELECT count(*) FROM search_pending WHERE text_id={id}"),
+                "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'walrus'",
+            ),
+            count(
+                conn,
+                "SELECT count(*) FROM output_fts WHERE output_fts MATCH 'walrus'",
             ),
         )
     };
+    let group = |conn: &Connection| -> String {
+        conn.query_row(
+            &format!(
+                "SELECT indexed || ':' || coalesce((SELECT group_concat(fts_table) FROM
+                     (SELECT fts_table FROM search_pending WHERE text_id={id} ORDER BY fts_table)), '')
+                 FROM text WHERE id={id}"
+            ),
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    };
+    // A tool result joins the output index and is queued once.
+    block(&conn, 1, "tool_result", id);
+    block(&conn, 2, "tool_call", id);
+    assert_eq!(group(&conn), "2:2");
+    // A prose block joins the prose index too.
+    block(&conn, 3, "text", id);
+    assert_eq!(group(&conn), "3:1,2");
+    assert_eq!(index_pending(&conn).unwrap(), 2);
+    assert_eq!(group(&conn), "3:");
+    assert_eq!(entries(&conn), (1, 1));
+    // The output index keeps it while one tool block holds it.
+    conn.execute("DELETE FROM block WHERE pk=1", []).unwrap();
+    assert_eq!((group(&conn), entries(&conn)), ("3:".into(), (1, 1)));
+    conn.execute("DELETE FROM block WHERE pk=2", []).unwrap();
+    assert_eq!((group(&conn), entries(&conn)), ("1:".into(), (1, 0)));
+    // A document block holds it for the prose index after its last prose block.
+    conn.execute(
+        "INSERT INTO document_block(document_pk,idx,kind,body,text_id) VALUES (1,0,'text',x'00',?1)",
+        [id],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM block WHERE pk=3", []).unwrap();
+    assert_eq!((group(&conn), entries(&conn)), ("1:".into(), (1, 0)));
+    conn.execute("DELETE FROM document_block", []).unwrap();
+    assert_eq!((group(&conn), entries(&conn)), ("0:".into(), (0, 0)));
+    // A text that leaves before its entry is written takes its queue row.
+    block(&conn, 4, "tool_result", id);
+    assert_eq!(group(&conn), "2:2");
+    conn.execute("DELETE FROM block WHERE pk=4", []).unwrap();
+    assert_eq!(group(&conn), "0:");
+    assert_eq!(index_pending(&conn).unwrap(), 0);
+}
 
-    // A text a step's blocks name joins their index as it is written.
-    let transaction = identities.transaction();
-    let tx = conn.transaction().unwrap();
-    let id = identities
-        .resolve(&tx, &hash, prepared.get(&hash), Some(&membership))
+#[test]
+fn the_trigram_index_follows_tool_calls() {
+    let conn = Connection::open_in_memory().unwrap();
+    crate::schema::create_index(&conn).unwrap();
+    conn.pragma_update(None, "foreign_keys", false).unwrap();
+    let matches = |pattern: &str| {
+        count(
+            &conn,
+            &format!(
+                "SELECT count(*) FROM tool_call_trigram WHERE tool_call_trigram MATCH '{pattern}'"
+            ),
+        )
+    };
+    conn.execute(
+        "INSERT INTO tool_call(pk,session_pk,call_block_pk,tool,command,path,outcome)
+         VALUES (1,1,1,'shell','cargo walrus','/home/op/narwhal.rs','ok')",
+        [],
+    )
+    .unwrap();
+    assert_eq!((matches("command:walrus"), matches("path:narwhal")), (1, 1));
+    conn.execute("UPDATE tool_call SET command='git beluga' WHERE pk=1", [])
         .unwrap();
-    assert_eq!(state(&tx, id), (2, 1));
-    join_search_index(&tx, &identities, id, 2, false).unwrap();
-    assert_eq!(state(&tx, id), (2, 1));
-    // No block uses it, so unindexing removes it; activating restores it.
-    unindex_unused(&tx, &identities, id, false).unwrap();
-    assert_eq!(state(&tx, id), (0, 0));
-    join_search_index(&tx, &identities, id, 2, false).unwrap();
-    assert_eq!(state(&tx, id), (2, 1));
-    unindex_unused(&tx, &identities, id, false).unwrap();
-    tx.commit().unwrap();
-    transaction.commit();
-    assert_eq!(state(&conn, id), (0, 0));
-
-    // Membership set in a transaction that rolls back is not assumed after it.
-    let transaction = identities.transaction();
-    let tx = conn.transaction().unwrap();
-    join_search_index(&tx, &identities, id, 1, false).unwrap();
-    assert_eq!(state(&tx, id), (1, 1));
-    drop(tx);
-    drop(transaction);
-    assert_eq!(state(&conn, id), (0, 0));
-    let tx = conn.transaction().unwrap();
-    join_search_index(&tx, &identities, id, 1, false).unwrap();
-    tx.commit().unwrap();
-    assert_eq!(state(&conn, id), (1, 1));
+    assert_eq!(
+        (matches("command:walrus"), matches("command:beluga")),
+        (0, 1)
+    );
+    conn.execute("DELETE FROM tool_call WHERE pk=1", [])
+        .unwrap();
+    assert_eq!((matches("command:beluga"), matches("path:narwhal")), (0, 0));
+    conn.execute(
+        "INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('integrity-check', 1)",
+        [],
+    )
+    .unwrap();
 }
 
 mod search_build;
@@ -268,13 +334,13 @@ fn search_work_follows_the_queue_instead_of_text_history() {
     let mut conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
     let tx = conn.transaction().unwrap();
     for number in 0..HISTORY {
-        intern(&tx, &format!("historical text {number}"), 0, None, false).unwrap();
+        text(&tx, &format!("historical text {number}"), 0, true);
     }
     tx.commit().unwrap();
     // A completed bulk build has history and an empty queue when analyzed.
     conn.execute_batch("ANALYZE").unwrap();
-    let id = intern(&conn, "walrus", 1, None, false).unwrap();
-    assert_eq!(intern(&conn, "walrus", 2, None, false).unwrap(), id);
+    let id = text(&conn, "walrus", 1, true);
+    assert_eq!(text(&conn, "walrus", 2, true), id);
     // A text removed before indexing must not strand the queue or enter FTS.
     conn.execute(
         "INSERT INTO search_pending(text_id,fts_table) VALUES (?1,1)",
@@ -318,8 +384,8 @@ fn computed_entries_apply_only_to_the_queue_and_text_they_were_read_from() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = open_write(&fixture.archive.index_db(), cache::SETUP).unwrap();
-    let walrus = intern(&conn, "walrus", 1, None, false).unwrap();
-    let narwhal = intern(&conn, "narwhal", 2, None, false).unwrap();
+    let walrus = text(&conn, "walrus", 1, true);
+    let narwhal = text(&conn, "narwhal", 2, true);
     // The writer indexed the queue itself after the search thread read it.
     let stale = pending_entries(&conn, SEARCH_BYTES).unwrap();
     assert_eq!(index_pending(&conn).unwrap(), 2);
@@ -328,9 +394,9 @@ fn computed_entries_apply_only_to_the_queue_and_text_they_were_read_from() {
     assert_eq!(count(&conn, "SELECT count(*) FROM output_fts"), 1);
 
     // A text removed and its key given to other content after the read.
-    let orca = intern(&conn, "orca", 1, None, false).unwrap();
+    let orca = text(&conn, "orca", 1, true);
     let stale = pending_entries(&conn, SEARCH_BYTES).unwrap();
-    remove(&conn, orca, 0).unwrap();
+    remove(&conn, orca).unwrap();
     insert_alone(
         &conn,
         Some(orca),
@@ -339,7 +405,11 @@ fn computed_entries_apply_only_to_the_queue_and_text_they_were_read_from() {
         "beluga",
         1,
     );
-    queue_entry(&conn, orca, 1).unwrap();
+    conn.execute(
+        "INSERT INTO search_pending(text_id,fts_table) VALUES (?1,1)",
+        [orca],
+    )
+    .unwrap();
     assert_eq!(apply_entries(&conn, &stale).unwrap(), 0);
     assert_eq!(count(&conn, "SELECT count(*) FROM search_pending"), 1);
     assert_eq!(index_pending(&conn).unwrap(), 1);

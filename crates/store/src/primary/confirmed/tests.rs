@@ -45,19 +45,7 @@ fn completion_marker_commits_staged_pages_atomically() {
     let path = dir.path().join("index.db");
     let mut index = cache(&path);
     let archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    assert_eq!(
-        apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            &[input(2, "first")]
-        )
-        .unwrap(),
-        0
-    );
+    assert_eq!(apply(&mut index, &[input(2, "first")]).unwrap(), 0);
     assert_eq!(checkpoint(&index).unwrap(), None);
     assert_eq!(
         index
@@ -69,18 +57,7 @@ fn completion_marker_commits_staged_pages_atomically() {
     drop(index);
     let mut index = Connection::open(&path).unwrap();
     index.execute_batch("CREATE TRIGGER stop_confirmed_apply BEFORE INSERT ON source_input WHEN new.id='second' BEGIN SELECT raise(ABORT,'stop'); END").unwrap();
-    assert!(
-        apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            &[input(4, "second"), complete_at(5)]
-        )
-        .is_err()
-    );
+    assert!(apply(&mut index, &[input(4, "second"), complete_at(5)]).is_err());
     assert_eq!(checkpoint(&index).unwrap(), None);
     assert_eq!(
         index
@@ -99,19 +76,7 @@ fn completion_marker_commits_staged_pages_atomically() {
     index
         .execute_batch("DROP TRIGGER stop_confirmed_apply")
         .unwrap();
-    assert_eq!(
-        apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            &[]
-        )
-        .unwrap(),
-        5
-    );
+    assert_eq!(apply(&mut index, &[]).unwrap(), 5);
     assert_eq!(
         index
             .query_row("SELECT count(*) FROM source_input", [], |row| row
@@ -120,16 +85,7 @@ fn completion_marker_commits_staged_pages_atomically() {
         2
     );
     assert_eq!(
-        apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            &[input(2, "first"), complete_at(5)]
-        )
-        .unwrap(),
+        apply(&mut index, &[input(2, "first"), complete_at(5)]).unwrap(),
         5
     );
     assert_eq!(
@@ -148,26 +104,9 @@ fn an_empty_confirmed_database_is_known_and_zero_data_is_refused() {
     let mut index = cache(&dir.path().join("index.db"));
     assert_eq!(checkpoint(&index).unwrap(), None);
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
-    apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[complete_at(0)],
-    )
-    .unwrap();
+    apply(&mut index, &[complete_at(0)]).unwrap();
     assert_eq!(checkpoint(&index).unwrap(), Some(0));
-    assert!(
-        apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            &[input(0, "invalid")]
-        )
-        .is_err()
-    );
+    assert!(apply(&mut index, &[input(0, "invalid")]).is_err());
     assert_eq!(checkpoint(&index).unwrap(), Some(0));
 }
 
@@ -195,8 +134,6 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
         crate::primary::authored::prepare(&index, &request, None, None, |_| Ok(()), |_| Ok(()))
             .unwrap();
     apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
         &mut index,
         &[
             input(1, "source"),
@@ -217,11 +154,6 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
         (5, ConfirmedChange::Tombstoned, 0),
     ] {
         apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3,
-            )
-            .unwrap(),
             &mut index,
             &[
                 Confirmed {
@@ -255,11 +187,6 @@ fn source_lifecycle_keeps_recorded_authored_effects() {
     }
     assert!(
         apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
             &mut index,
             &[
                 Confirmed {
@@ -329,26 +256,12 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
         change: ConfirmedChange::Live(Box::new(product)),
     };
     let first = setting(&index, "first-request", "browser.actions");
-    apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[live(2, "first", first), complete_at(2)],
-    )
-    .unwrap();
+    apply(&mut index, &[live(2, "first", first), complete_at(2)]).unwrap();
     assert_eq!(settings(&index), ["browser.actions"]);
     let second = setting(&index, "second-request", "drive.ai-studio");
-    apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[live(3, "second", second), complete_at(3)],
-    )
-    .unwrap();
+    apply(&mut index, &[live(3, "second", second), complete_at(3)]).unwrap();
     assert_eq!(settings(&index), ["browser.actions", "drive.ai-studio"]);
     apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
         &mut index,
         &[
             Confirmed {
@@ -364,8 +277,6 @@ fn new_requests_apply_after_the_applied_ones_and_a_lifecycle_change_rebuilds_aut
     .unwrap();
     assert_eq!(settings(&index), ["drive.ai-studio"]);
     apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
         &mut index,
         &[
             Confirmed {
@@ -434,8 +345,6 @@ fn confirmed_slices_keep_full_material_descriptors_without_opening_source_bytes(
         })),
     };
     apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
         &mut index,
         &[
             input_at(7, "first", 1),
@@ -492,21 +401,9 @@ fn has_confirmed_event_follows_positions_and_early_erasures() {
         change: ConfirmedChange::Tombstoned,
     };
     // Staged but not yet complete: not in index.db.
-    apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[input(2, "staged"), erased],
-    )
-    .unwrap();
+    apply(&mut index, &[input(2, "staged"), erased]).unwrap();
     assert!(!has_confirmed_event(&index, "event-staged").unwrap());
-    apply(
-        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap(),
-        &mut index,
-        &[complete_at(4)],
-    )
-    .unwrap();
+    apply(&mut index, &[complete_at(4)]).unwrap();
     assert!(has_confirmed_event(&index, "event-staged").unwrap());
     // An event erased before this index read it still leaves a row.
     assert!(has_confirmed_event(&index, "event-erased").unwrap());
@@ -525,15 +422,7 @@ fn prepared_position_cannot_skip_new_sinex_events() {
     };
     stage_next(&mut index, &[input(4, "second")]).unwrap();
     assert!(matches!(
-        apply_prepared(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            *prepared
-        ),
+        apply_prepared(&mut index, *prepared),
         Err(StoreError::ScopeChanged)
     ));
     assert_eq!(checkpoint(&index).unwrap(), None);
@@ -544,19 +433,7 @@ fn prepared_position_cannot_skip_new_sinex_events() {
             .unwrap(),
         0
     );
-    assert_eq!(
-        apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            &[]
-        )
-        .unwrap(),
-        5
-    );
+    assert_eq!(apply(&mut index, &[]).unwrap(), 5);
     assert_eq!(
         index
             .query_row("SELECT count(*) FROM source_input", [], |row| row
@@ -583,15 +460,7 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
         )
         .unwrap();
     assert!(matches!(
-        apply_prepared(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            *prepared
-        ),
+        apply_prepared(&mut index, *prepared),
         Err(StoreError::ScopeChanged)
     ));
     assert_eq!(checkpoint(&index).unwrap(), None);
@@ -605,19 +474,7 @@ fn prepared_application_respects_a_failed_scope_reset_fence() {
     index
         .execute("DELETE FROM meta WHERE key='confirmed_scope_pending'", [])
         .unwrap();
-    assert_eq!(
-        apply(
-            &crate::text_rows::TextIds::new(
-                &index,
-                crate::archive::MemoryBudget::default().keys() / 3
-            )
-            .unwrap(),
-            &mut index,
-            &[]
-        )
-        .unwrap(),
-        2
-    );
+    assert_eq!(apply(&mut index, &[]).unwrap(), 2);
 }
 
 #[test]
@@ -696,11 +553,8 @@ fn mixed_live_and_restored_authored_records_keep_first_execution_and_commit_orde
         })
         .collect();
     events.push(complete_at(7));
-    let texts =
-        crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
-            .unwrap();
     for _ in 0..2 {
-        assert_eq!(apply(&texts, &mut index, &events).unwrap(), 7);
+        assert_eq!(apply(&mut index, &events).unwrap(), 7);
         for (id, execution, committed) in [
             ("live", RunsHere::Live, 2),
             ("historical", RunsHere::Historical, 3),

@@ -333,12 +333,15 @@ CREATE INDEX message_route_input ON message_route(input_pk, chain);
 -- search indexes are contentless, so this is the only copy in the index.
 CREATE TABLE text_group (
   id                INTEGER PRIMARY KEY,
+  hash              BLOB NOT NULL,          -- unique: text_group_hash. BLAKE3 of the compressed body
   body              BLOB NOT NULL
 ) STRICT;
+CREATE UNIQUE INDEX text_group_hash ON text_group(hash);
 
--- Text is stored once per distinct content; `id` is the rowid of its search entries.
+-- Text is stored once per distinct content; `id` is the rowid of its search
+-- entries, never given to another text after this one is removed.
 CREATE TABLE text (
-  id                INTEGER PRIMARY KEY,
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
   normalized_hash   BLOB NOT NULL,          -- BLAKE3 of NFC UTF-8; raw spellings may share this identity
   hash              BLOB NOT NULL,          -- unique: text_hash. BLAKE3 of the UTF-8 text; embeddings are keyed by it
   indexed           INTEGER NOT NULL DEFAULT 0, -- bit 1: in text_fts (prose); bit 2: in output_fts (tool output)
@@ -382,7 +385,7 @@ CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- sear
 -- Full-text search: two contentless indexes keyed by text.id, holding folded
 -- text. text_fts: prose (text and thinking blocks). output_fts: tool output
 -- (tool_result blocks, and bodies written through file-writing and file-editing
--- tool calls). Rules below.
+-- tool calls). Membership follows the blocks (search_triggers.sql).
 CREATE VIRTUAL TABLE text_fts USING fts5(body, content='', contentless_delete=1,
                                          tokenize='unicode61 remove_diacritics 2');
 CREATE VIRTUAL TABLE output_fts USING fts5(body, content='', contentless_delete=1,
@@ -400,11 +403,11 @@ INSERT INTO output_fts(output_fts, rank) VALUES ('automerge', 16);
 INSERT INTO text_fts(text_fts, rank) VALUES ('hashsize', 67108864);
 INSERT INTO output_fts(output_fts, rank) VALUES ('hashsize', 67108864);
 
--- Search entries still to write. The writer records a
--- text here in the transaction that stores it, and the search thread writes
--- the entry shortly after, outside the writer's transaction; a flush writes
--- every waiting entry before it returns. A first build writes none: it
--- builds the search indexes in bulk when it ends.
+-- Search entries still to write. A text is recorded here in the transaction
+-- whose blocks make it a member of a search index (search_triggers.sql), and
+-- the search thread writes the entry shortly after, outside the writer's
+-- transaction; a flush writes every waiting entry before it returns. A first
+-- build writes none: it builds the search indexes in bulk when it ends.
 CREATE TABLE search_pending (
   text_id           INTEGER NOT NULL,       -- text.id
   fts_table         INTEGER NOT NULL,       -- which index: 1 text_fts, 2 output_fts (the bits of text.indexed)
@@ -446,10 +449,9 @@ CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command
 CREATE INDEX tool_call_result  ON tool_call(result_message_id) WHERE result_message_id IS NOT NULL;   -- result -> call
 
 -- Substring search on short fields (command:, path:) without a scan. Unfolded
--- text, so it can read its content from tool_call. The writer issues the FTS5
--- `delete` command with the row's old `command` and `path` before deleting or
--- changing a `tool_call` row, in the same transaction. A first build writes
--- no entries and rebuilds the index from tool_call when it ends.
+-- text, so it can read its content from tool_call. Triggers on tool_call keep
+-- it (search_triggers.sql); a first build writes no entries and rebuilds the
+-- index from tool_call when its composition ends.
 CREATE VIRTUAL TABLE tool_call_trigram USING fts5(command, path,
     content='tool_call', content_rowid='pk', tokenize='trigram');
 INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('automerge', 16);

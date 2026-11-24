@@ -42,7 +42,6 @@ pub(super) struct Chain<'a> {
     pub chain: i64,
     /// The record commit the rows were read at, kept with each row.
     pub committed: Option<i64>,
-    pub texts: &'a crate::text_rows::TextIds,
     /// The transaction's change summary: relations named by copied-prefix
     /// facts are recorded before they change.
     pub changes: &'a crate::change_summary::ChangeSummary,
@@ -464,7 +463,7 @@ fn write_texts(
     .execute(key)?;
     for (idx, hash) in texts.iter().enumerate() {
         let Some(hash) = hash else { continue };
-        let id = chain.texts.resolve(tx, hash, packed.get(hash), None)?;
+        let id = crate::text_rows::resolve(tx, hash, packed.get(hash))?;
         tx.prepare_cached(
             "INSERT INTO parse_text(input_pk,chain,document,item,idx,text_id) VALUES (?1,?2,?3,?4,?5,?6)",
         )?
@@ -1050,27 +1049,17 @@ fn restore_texts(
 
 /// Removes the released texts no reading holds any more, with their search
 /// entries.
-pub(super) fn remove_released_texts(
-    tx: &Connection,
-    texts: &crate::text_rows::TextIds,
-    released: &BTreeSet<i64>,
-    at_build_end: bool,
-) -> Result<()> {
+pub(super) fn remove_released_texts(tx: &Connection, released: &BTreeSet<i64>) -> Result<()> {
     for &id in released {
-        let indexed: Option<i64> = tx
+        let unheld: bool = tx
             .prepare_cached(
-                "SELECT t.indexed FROM text t WHERE t.id=?1
-                 AND NOT EXISTS(SELECT 1 FROM parse_text r WHERE r.text_id=t.id)",
+                "SELECT EXISTS(SELECT 1 FROM text t WHERE t.id=?1
+                     AND NOT EXISTS(SELECT 1 FROM parse_text r WHERE r.text_id=t.id))",
             )?
-            .query_row([id], |r| r.get(0))
-            .optional()?;
-        let Some(indexed) = indexed else { continue };
-        if at_build_end {
-            crate::text_rows::remove_unindexed(tx, id)?;
-        } else {
-            crate::text_rows::remove(tx, id, indexed)?;
+            .query_row([id], |r| r.get(0))?;
+        if unheld {
+            crate::text_rows::remove(tx, id)?;
         }
-        texts.removed(id);
     }
     Ok(())
 }

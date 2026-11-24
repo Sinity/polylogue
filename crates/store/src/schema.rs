@@ -97,6 +97,27 @@ pub(crate) fn with_names(sql: &str) -> String {
     out.push_str(rest);
     out
 }
+/// The triggers that keep search membership and the trigram index with the
+/// shown rows. A build file is created without them; the build creates them
+/// once its composition and search entries are written.
+pub(crate) const SEARCH_TRIGGERS: &str = include_str!("schema/search_triggers.sql");
+
+/// Drops the [`SEARCH_TRIGGERS`], for a transaction that clears every shown
+/// row and search entry at once and creates them again after.
+pub(crate) fn drop_search_triggers(conn: &Connection) -> Result<()> {
+    for name in search_trigger_names() {
+        conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
+    }
+    Ok(())
+}
+
+fn search_trigger_names() -> impl Iterator<Item = &'static str> {
+    SEARCH_TRIGGERS
+        .lines()
+        .filter_map(|line| line.strip_prefix("CREATE TRIGGER "))
+        .filter_map(|tail| tail.split_whitespace().next())
+}
+
 /// Read indexes added at open, or once the private build ends.
 pub(crate) const OPEN_INDEXES: &str = include_str!("schema/open_indexes.sql");
 
@@ -136,6 +157,7 @@ pub(crate) const INDEX_SCHEMA: &[&str] = &[
     INDEX,
     crate::coverage::SCHEMA,
     crate::alternates::SCHEMA,
+    SEARCH_TRIGGERS,
     OPEN_INDEXES,
 ];
 /// The `embedded` (vectors) and `embed_failure` tables of `embeddings.db`, as the first build at
@@ -156,9 +178,9 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 6;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 9;
+pub const INDEX_VERSION: u32 = 10;
 /// The primary cache's schema and row encoding version.
-pub const PRIMARY_INDEX_VERSION: u32 = 12;
+pub const PRIMARY_INDEX_VERSION: u32 = 13;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {
@@ -202,7 +224,7 @@ fn set_version(conn: &Connection, v: u32) -> Result<()> {
 }
 
 /// Executes complete SQLite statements, leaving only the declared build
-/// indexes out. SQLite splits triggers and quoted SQL without another parser.
+/// indexes out when `deferring`. SQLite splits triggers and quoted SQL without another parser.
 fn execute_index_sql(conn: &Connection, sql: &str, deferring: bool) -> Result<()> {
     if !deferring {
         conn.execute_batch(sql)?;
@@ -268,6 +290,9 @@ fn base_index_in(conn: &Connection, deferring: bool) -> Result<()> {
     execute_index_sql(conn, INDEX, deferring)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::alternates::SCHEMA)?;
+    if !deferring {
+        conn.execute_batch(SEARCH_TRIGGERS)?;
+    }
     Ok(())
 }
 
@@ -340,13 +365,14 @@ fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<
 
 /// The schema identity of an index file: a hash of its version, its format
 /// identity and the tables, views and triggers it holds, as statements
-/// without comments or spacing. Indexes are left out: opening a file can add them,
-/// and a first build defers query-only indexes, so a file keeps its identity through both.
+/// without comments or spacing. Indexes and the search triggers are left out:
+/// opening a file can add indexes, and a first build defers query-only
+/// indexes and the search triggers, so a file keeps its identity through both.
 pub(crate) fn index_identity(conn: &Connection) -> Result<String> {
     let mut hash = blake3::Hasher::new();
     hash.update(format!("version {} format {}\n", version(conn)?, format_id(conn)?).as_bytes());
     for (kind, name, sql) in schema_rows(conn)? {
-        if kind != "index" {
+        if kind != "index" && !(kind == "trigger" && search_trigger_names().any(|n| n == name)) {
             for part in [kind, name, sql] {
                 hash.update(part.as_bytes());
                 hash.update(b"\0");

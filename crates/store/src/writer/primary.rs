@@ -78,7 +78,6 @@ impl Inner {
                 snapshot_start.map(|(_, instance)| instance.as_str()),
                 reason.is_some(),
             )?;
-            self.texts.discard_cached();
             let changed = match crate::primary::scope::reset(
                 &mut self.index,
                 &self.location,
@@ -124,8 +123,7 @@ impl Inner {
         kinds: crate::completion::Committed,
     ) -> Result<crate::primary::confirmed::Step> {
         let before = crate::primary::confirmed::checkpoint(&self.index)?;
-        let result =
-            crate::primary::confirmed::apply_prepared(&self.texts, &mut self.index, prepared);
+        let result = crate::primary::confirmed::apply_prepared(&mut self.index, prepared);
         // An earlier atomic application of this staged page may already have
         // committed. A later failure must remain visible even if this step
         // itself made no progress.
