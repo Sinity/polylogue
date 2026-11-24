@@ -307,8 +307,18 @@ impl Engine {
                         .spawn_scoped(scope, || prepare.work())
                 })
                 .collect::<std::io::Result<_>>()?;
-            let planned = self.plan_build(&prepare, plans_tx, &mut requests, &mut saved);
-            let mut result = planned;
+            let mut result = self.plan_build(&prepare, plans_tx, &mut requests, &mut saved);
+            // Every chain is handed out; a request that comes while the last
+            // ones are read still makes the workers put them down.
+            if matches!(result, Ok(false)) {
+                while !handles.iter().all(|handle| handle.is_finished()) {
+                    if requests.as_mut().is_some_and(|requests| requests.poll()) {
+                        result = Ok(true);
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
             for handle in handles {
                 let worked = handle.join().unwrap_or_else(|_| {
                     Err(std::io::Error::other("a build worker panicked").into())

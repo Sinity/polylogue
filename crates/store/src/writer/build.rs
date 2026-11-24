@@ -370,12 +370,13 @@ impl Inner {
 
     /// Every run's texts, made one row per text; the texts written.
     fn merge_texts(&mut self, runs: &[PathBuf]) -> Result<u64> {
-        let held: bool = self.index.exists("SELECT EXISTS(SELECT 1 FROM text)", [])?;
-        if held {
-            return Err(StoreError::Invalid(
-                "the build file holds texts before its runs are loaded".into(),
-            ));
-        }
+        // Texts upkeep wrote into the build file while the build ran keep
+        // their rows; a run's equal text takes that row.
+        let held: Vec<(Vec<u8>, i64)> = self
+            .index
+            .prepare("SELECT hash,id FROM text ORDER BY hash")?
+            .query_map([], |r| <(Vec<u8>, i64)>::try_from(r))?
+            .collect::<rusqlite::Result<_>>()?;
         // Each run's groups keep their order under a base above the runs
         // before it. A run is attached outside the transactions that read it.
         let mut bases = Vec::with_capacity(runs.len());
@@ -399,7 +400,7 @@ impl Inner {
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let written = merge_texts(&tx, runs, &bases)?;
+        let written = merge_texts(&tx, runs, &bases, &held)?;
         tx.execute(
             "DELETE FROM text_group WHERE id NOT IN (SELECT group_id FROM text)",
             [],
@@ -596,8 +597,15 @@ fn map_path(run: &std::path::Path) -> PathBuf {
 /// Merges the runs' texts by hash: each distinct text gets the next
 /// identity, in hash order, and the group its first run stored it in. Each
 /// run's identities are mapped to the build file's in a file of eight bytes
-/// per identity. Returns the texts written.
-fn merge_texts(tx: &Transaction<'_>, runs: &[PathBuf], bases: &[i64]) -> Result<u64> {
+/// per identity. A text the build file already holds (`held`, by hash)
+/// keeps its row. Returns the texts written.
+fn merge_texts(
+    tx: &Transaction<'_>,
+    runs: &[PathBuf],
+    bases: &[i64],
+    held: &[(Vec<u8>, i64)],
+) -> Result<u64> {
+    let mut held = held.iter().peekable();
     let mut sources = runs
         .iter()
         .map(|path| RunTexts::open(path))
@@ -620,8 +628,14 @@ fn merge_texts(tx: &Transaction<'_>, runs: &[PathBuf], bases: &[i64]) -> Result<
     let mut written = 0;
     while let Some(std::cmp::Reverse((hash, n))) = heap.pop() {
         let text = sources[n].buffer.pop_front().expect("a peeked text");
+        while held.next_if(|(stored, _)| *stored < hash).is_some() {}
         let id = match &current {
-            Some((held, id)) if *held == hash => *id,
+            Some((same, id)) if *same == hash => *id,
+            _ if held.peek().is_some_and(|(stored, _)| *stored == hash) => {
+                let id = held.peek().expect("a held text").1;
+                current = Some((hash, id));
+                id
+            }
             _ => {
                 let id = next;
                 next += 1;
