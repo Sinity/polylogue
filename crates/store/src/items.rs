@@ -148,15 +148,18 @@ enum Unit {
     },
 }
 impl Unit {
-    /// The identity of the entries this unit stores.
+    /// The identity of the entries this unit stores. It names the message or
+    /// event by its natural key, not its row key, so an index holds the same
+    /// identities whatever order its rows were written in.
     fn identity(&self) -> Result<Vec<u8>> {
         let mut digest = blake3::Hasher::new();
         match self {
             Self::Message {
-                pk, version, place, ..
+                id, version, place, ..
             } => {
                 digest.update(b"message\0");
-                digest.update(&pk.to_le_bytes());
+                digest.update(id.as_bytes());
+                digest.update(b"\0");
                 digest.update(version);
                 digest.update(&[
                     match place.active_path {
@@ -168,15 +171,14 @@ impl Unit {
                 ]);
             }
             Self::Event {
-                pk,
                 id,
                 kind,
                 at,
                 data_bytes,
                 data,
+                ..
             } => {
                 return event_identity(
-                    *pk,
                     id,
                     &event_item(id, kind, *at, *data_bytes, data.as_deref())?,
                 );
@@ -1161,10 +1163,9 @@ fn event_item(
     Ok(entry)
 }
 
-fn event_identity(pk: i64, id: &str, entry: &IndexEntry) -> Result<Vec<u8>> {
+fn event_identity(id: &str, entry: &IndexEntry) -> Result<Vec<u8>> {
     let mut digest = blake3::Hasher::new();
     digest.update(b"event\0");
-    digest.update(&pk.to_le_bytes());
     digest.update(id.as_bytes());
     digest.update(b"\0");
     digest.update(&encode(entry, None)?);
