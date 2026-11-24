@@ -16,7 +16,7 @@ Tab completes every position of a line, with descriptions and real values from t
 |---|---|
 | the first word | under headings: **commands**, each with its one line; **verbs on their usual rows** (`read  pick from recent sessions`, `brief  for this directory`, `resume  pick a session that ended open`); **saved queries** (`waiting  sessions waiting on you · 2`, yours marked `yours`); **units**; **recent sessions** (`7f3a2c10  Back off on 429 · 2h · sinex`) |
 | `'` | units (`tool_calls  every tool call, with outcome`), fields for sessions, references (`here`, `latest`, `self`, `query:`, `result:`, `page:`) |
-| `'repo:` | values with counts (`sinex  4,927 sessions`): origins that have sessions, repository, cwd by path component, model, harness, tool, tag and `tag:key:`, branch; closed sets; after `query:`, saved names with parameters and their one line; after `result:`, kept result IDs with names |
+| `'repo:` | values with counts (`sinex  4,927 sessions`): origins that have sessions, repository, project, cwd by path component, model, harness, tool, MCP server, tag and `tag:key:`, branch; closed sets; after `query:`, saved names with parameters and their one line; after `result:`, kept result IDs with names |
 | `'repo:sinex ` | fields valid for the unit, `session.` fields, `exists`, `count(`, `seq(`, `query:`, `result:`, `similar:`, `NOT`, `\|`, and the count preview `→ 212 sessions` |
 | after a comparison field | operators; time words (`today`, `7d`, `this week`, month names) |
 | `'repo:sinex \| ` | transforms (`group by  one row per value of a field`); after `group by` and `sort by`, the unit's fields and aggregate columns |
@@ -52,7 +52,7 @@ Tab completes every position of a line, with descriptions and real values from t
 - **Count preview:** when the text before the cursor is a complete query, zsh and fish show one line that is not inserted, `→ 1,234 sessions`. The count is asked with a 30 ms deadline and left out when not available in time, never estimated.
 - **Title matching** at a reference position (zsh, fish): a word that is not a prefix of any ID is matched against session titles with the fuzzy matcher, and those sessions' IDs are offered with the title as description.
 - **Quoting:** completing the first word of a query inserts the opening quote, so zsh never sees `(`, `|` or `*` unquoted; candidates inside quotes are inserted without closing the quote; the completer rebuilds the query text and cursor offset from the shell's words and the open quote.
-- **Daemon down:** candidates come from the last published catalog, marked with the time it was written in zsh and fish (`values as of 2026-01-05T16:09:00Z`); bash has no message channel and shows the values unmarked. Without a catalog file, only grammar candidates.
+- **Daemon down:** candidates come from the last published catalog, marked with its age in zsh and fish (`values as of 16:09 (daemon not running)`); bash has no message channel and shows the values unmarked. Without a catalog file, only grammar candidates.
 
 ## The catalog file
 
