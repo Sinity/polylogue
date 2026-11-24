@@ -168,6 +168,11 @@ impl Tracker {
         self.word
     }
 
+    /// Turns in flight, the running one included.
+    pub(crate) fn turns(&self) -> usize {
+        self.turns.len()
+    }
+
     fn update_word(&mut self) -> Option<&'static str> {
         let word = if !self.open.is_empty() {
             "blocked"
@@ -287,6 +292,7 @@ struct Relay {
 fn hello(relay: &Relay) -> Vec<u8> {
     let mut line = serde_json::to_vec(&json!({"polylogue_host": {
         "status": relay.tracker.word(),
+        "turns": relay.tracker.turns(),
     }}))
     .unwrap_or_default();
     line.push(b'\n');
@@ -694,6 +700,9 @@ fn stop_host(pid: u32) {
 /// delivery, and whether it was written to the agent.
 pub(crate) type Sent = Arc<dyn Fn(&str, Result<(), String>) + Send + Sync>;
 
+/// The callback that learns how many messages wait behind the running turn.
+pub(crate) type QueueChanged = Arc<dyn Fn(usize) + Send + Sync>;
+
 /// The daemon's state of one stdio-hosted session, updated by its reader
 /// thread as lines arrive.
 struct StdioState {
@@ -710,6 +719,12 @@ struct StdioState {
     queued: VecDeque<(String, Option<String>)>,
     /// Reports the outcome of a queued message once it is sent or dropped.
     on_sent: Option<Sent>,
+    /// Claude Code: user messages written and not yet answered by a result;
+    /// all but the first wait for the running turn.
+    turns: usize,
+    /// Reports the number of messages waiting, when it changes.
+    on_queue: Option<QueueChanged>,
+    queue_reported: usize,
     /// Answers to the daemon's own requests, by ID.
     answers: Vec<Value>,
     /// The connection to the host closed.
@@ -745,6 +760,26 @@ impl StdioState {
         self.write(&message)
     }
 
+    /// Messages waiting behind the running turn: ACP prompts held here, or
+    /// Claude Code user messages the agent has not started.
+    fn waiting(&self) -> usize {
+        match self.protocol {
+            HostProtocol::ClaudeStreamJson => self.turns.saturating_sub(1),
+            _ => self.queued.len(),
+        }
+    }
+
+    /// Tells the daemon when the number of waiting messages changed.
+    fn queue_changed(&mut self) {
+        let waiting = self.waiting();
+        if waiting != self.queue_reported {
+            self.queue_reported = waiting;
+            if let Some(on_queue) = &self.on_queue {
+                on_queue(waiting);
+            }
+        }
+    }
+
     fn report(&self, delivery: Option<&str>, sent: Result<(), String>) {
         if let (Some(delivery), Some(on_sent)) = (delivery, &self.on_sent) {
             on_sent(delivery, sent);
@@ -757,6 +792,11 @@ impl StdioState {
             self.turn = host["status"] != "idle";
             return;
         }
+        self.absorb_line(message);
+        self.queue_changed();
+    }
+
+    fn absorb_line(&mut self, message: Value) {
         match self.protocol {
             HostProtocol::ClaudeStreamJson => match message["type"].as_str() {
                 Some("control_request") => {
@@ -769,7 +809,10 @@ impl StdioState {
                     self.requests.retain(|r| &r["request_id"] != id);
                 }
                 // A finished turn's permission requests are moot.
-                Some("result") => self.requests.clear(),
+                Some("result") => {
+                    self.turns = self.turns.saturating_sub(1);
+                    self.requests.clear();
+                }
                 _ => {}
             },
             _ => {
@@ -846,6 +889,11 @@ impl HostedStdio {
                 prompts: Vec::new(),
                 queued: VecDeque::new(),
                 on_sent: None,
+                turns: hello["polylogue_host"]["turns"]
+                    .as_u64()
+                    .map_or(0, |n| usize::try_from(n).unwrap_or(usize::MAX)),
+                on_queue: None,
+                queue_reported: 0,
                 answers: Vec::new(),
                 closed: false,
                 protocol_session,
@@ -874,6 +922,8 @@ impl HostedStdio {
                     Err("the host connection closed before the queued prompt was sent".into()),
                 );
             }
+            state.turns = 0;
+            state.queue_changed();
             shared.1.notify_all();
         })?;
         Ok(Self { state })
@@ -1000,6 +1050,15 @@ impl HostedStdio {
         self.state.0.locked().on_sent = Some(on_sent);
     }
 
+    /// Reports how many messages wait behind the running turn, now and at
+    /// each change.
+    pub(crate) fn on_queue(&self, on_queue: QueueChanged) {
+        let mut state = self.state.0.locked();
+        state.on_queue = Some(on_queue);
+        state.queue_reported = 0;
+        state.queue_changed();
+    }
+
     /// Sends a message: a user message to Claude (which runs it after the
     /// current turn) or a prompt to an ACP agent; `true` when written now.
     /// A message to an ACP agent whose prompt runs waits for that prompt
@@ -1010,7 +1069,7 @@ impl HostedStdio {
         if state.closed {
             return Err(std::io::Error::other("the hosted session's host is gone"));
         }
-        match state.protocol {
+        let written = match state.protocol {
             HostProtocol::ClaudeStreamJson => state
                 .write(&json!({
                     "type": "user",
@@ -1018,7 +1077,10 @@ impl HostedStdio {
                     "parent_tool_use_id": null,
                     "session_id": "",
                 }))
-                .map(|()| true),
+                .map(|()| {
+                    state.turns += 1;
+                    true
+                }),
             _ if state.turn => {
                 state
                     .queued
@@ -1026,7 +1088,9 @@ impl HostedStdio {
                 Ok(false)
             }
             _ => state.prompt(text).map(|()| true),
-        }
+        };
+        state.queue_changed();
+        written
     }
 
     /// The oldest request awaiting an answer, by the protocol's ID.
@@ -1069,6 +1133,7 @@ impl HostedStdio {
                         Err("the running prompt was interrupted before it was sent".into()),
                     );
                 }
+                state.queue_changed();
                 let session = state.protocol_session.clone();
                 state.write(&json!({"jsonrpc": "2.0", "method": "session/cancel",
                     "params": {"sessionId": session}}))?;

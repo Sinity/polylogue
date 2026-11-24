@@ -223,6 +223,9 @@ pub struct LiveFacts {
     /// A stall the events state (rate limit, API error).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stall: Option<Since<Stall>>,
+    /// Messages hosted for this session that wait behind its running turn.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub queued: u32,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub open_subagents: u32,
     /// Files changed through structured edit tools and not yet committed.
@@ -500,6 +503,7 @@ impl LiveFacts {
                 self.open_call = None;
                 self.pending_request = None;
                 self.open_subagents = 0;
+                self.queued = 0;
                 self.edited_files.clear();
             }
             "task_claimed" => {
@@ -560,10 +564,23 @@ impl LiveFacts {
             self.open_call = None;
             self.pending_request = None;
             self.open_subagents = 0;
+            self.queued = 0;
             self.edited_files.clear();
             return;
         }
+        if event == "hosted_queued" {
+            self.queued = data
+                .get("queued")
+                .and_then(number)
+                .and_then(|n| u32::try_from(n).ok())
+                .unwrap_or(0);
+            return;
+        }
         if let Some(word) = data.str("status") {
+            // Nothing runs, so nothing waits behind it.
+            if word == "idle" {
+                self.queued = 0;
+            }
             self.harness_status = Some(HarnessStatus {
                 word: word.to_owned(),
                 at,
@@ -593,6 +610,13 @@ impl LiveFacts {
         ))
     }
 
+    /// The stall events state: a stop failure's, else a queued message's.
+    fn stated_stall(&self) -> Option<Stall> {
+        self.stall
+            .map(|s| s.value)
+            .or((self.queued > 0).then_some(Stall::Queue))
+    }
+
     /// Closes and opens intervals so the open set matches what is shown now.
     fn update_intervals(&mut self, at: i64, closed_by: &str) -> Vec<LiveInterval> {
         let shown = self.shown();
@@ -604,9 +628,9 @@ impl LiveFacts {
             ),
             (
                 Aspect::Stall,
-                self.stall
+                self.stated_stall()
                     .filter(|_| shown.is_some())
-                    .map(|s| s.value.as_str()),
+                    .map(Stall::as_str),
             ),
         ];
         let mut closed = Vec::new();
@@ -786,6 +810,7 @@ pub fn view(facts: Option<&LiveFacts>, grew_at: Option<i64>, now: i64) -> LiveVi
         long_call_at
             .filter(|at| now >= *at)
             .map(|_| Stall::LongCall)
+            .or_else(|| facts.stated_stall())
     });
     let until = [window_end, long_call_at.filter(|at| now < *at)]
         .into_iter()

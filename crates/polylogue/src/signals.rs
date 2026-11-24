@@ -225,6 +225,7 @@ fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Resu
                 .collect(),
         },
     );
+    let firings = reader.last_firings().map_err(|e| e.to_string())?;
     let mut definitions = Vec::new();
     let mut unusable = Vec::new();
     let mut held_rules = Vec::new();
@@ -236,6 +237,8 @@ fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Resu
                 definitions.push(json!({
                     "id":id,"name":definition.rule.name,"query":definition.rule.query,
                     "author":annotation.fact.author.to_string(),
+                    "last_fired":firings.get(&definition.rule.name).copied()
+                        .and_then(polylogue_model::Timestamp::from_unix_ms),
                 }));
             }
             Err(reason) => unusable.push(json!({"id":annotation.fact.id,"reason":reason})),

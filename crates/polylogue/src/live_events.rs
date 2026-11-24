@@ -668,6 +668,11 @@ impl CodexConnection {
         }
     }
 
+    /// Whether the proxy to the app-server still runs.
+    pub(crate) fn open(&mut self) -> bool {
+        self.child.try_wait().is_ok_and(|exit| exit.is_none())
+    }
+
     /// The notifications and server requests received so far.
     pub(crate) fn take_pending(&mut self) -> Vec<Value> {
         while let Ok(message) = self.lines.try_recv() {

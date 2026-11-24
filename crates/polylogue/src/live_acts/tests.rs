@@ -248,3 +248,35 @@ fn a_delivery_is_released_even_when_the_flag_cannot_be_raised() {
     assert!(acts.hand_to_hook("ping", &session).is_err());
     assert!(!acts.handed_out("ping"));
 }
+
+/// A Codex answer that the app-server could not be sent leaves the request
+/// pending, so the same answer can be given again.
+#[test]
+fn a_failed_codex_answer_keeps_the_request_pending() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = blocking_codex(dir.path());
+    let mut hosted =
+        HostedCodex::start(&program, &dir.path().join("socket"), "/home/op", "hello").unwrap();
+    hosted.requests.push_back((
+        json!(7),
+        "item/permissions/requestApproval".into(),
+        Value::Null,
+    ));
+    hosted.requests.push_back((
+        json!(8),
+        "item/commandExecution/requestApproval".into(),
+        Value::Null,
+    ));
+    // The first request is a kind Polylogue does not answer: nothing is
+    // sent and both requests remain, oldest first.
+    assert!(hosted.answer(true, None).is_err());
+    assert_eq!(hosted.requests.len(), 2);
+    assert_eq!(hosted.requests.front().unwrap().0, json!(7));
+    // A closed connection fails the send and keeps the request as well.
+    hosted.requests.pop_front();
+    let _ = hosted.connection.child.kill();
+    let _ = hosted.connection.child.wait();
+    assert!(hosted.answer(true, None).is_err());
+    assert_eq!(hosted.requests.len(), 1);
+    assert!(!hosted.connection.open());
+}

@@ -2,6 +2,7 @@
 //! waits on, its open call, task and peers, and its process tree, the
 //! harness first with each child's command, age and tool call.
 use crate::Error;
+use polylogue_model::live::LiveState;
 use polylogue_model::read::{Card, Process, ValueState};
 use polylogue_store::{LiveDetail, ProcessRow, Reader};
 
@@ -9,11 +10,16 @@ use polylogue_store::{LiveDetail, ProcessRow, Reader};
 mod tests;
 
 /// The live card of `session` at `now`.
-pub(super) fn card(reader: &Reader<'_>, session: &str, now: i64) -> Result<Card, Error> {
+pub(super) fn card(
+    reader: &Reader<'_>,
+    session: &str,
+    now: i64,
+    zone: &jiff::tz::TimeZone,
+) -> Result<Card, Error> {
     let detail = reader
         .live_detail(session, now)?
         .ok_or_else(|| Error::not_found(format!("no session {session}")))?;
-    Ok(render(&detail, now))
+    Ok(render(&detail, now, zone))
 }
 
 fn known_or(value: Option<String>, reason: &str) -> ValueState<String> {
@@ -26,17 +32,29 @@ fn known_or(value: Option<String>, reason: &str) -> ValueState<String> {
 }
 
 /// The card for a session's live detail.
-pub(crate) fn render(detail: &LiveDetail, now: i64) -> Card {
+pub(crate) fn render(detail: &LiveDetail, now: i64, zone: &jiff::tz::TimeZone) -> Card {
     let view = &detail.view;
     let mut state = view.state.as_str().to_owned();
-    if let Some(since) = view.since {
-        state.push_str(&format!(
-            " for {}",
-            polylogue_render::short_duration(now - since)
-        ));
-    }
-    if view.process_alive == Some(false) {
-        state.push_str(" · process gone");
+    if view.state == LiveState::Stale {
+        // A stale session shows what made it stale, not how long.
+        match detail
+            .facts
+            .root_gone_at
+            .and_then(|at| clock_time(at, zone))
+        {
+            Some(time) => state.push_str(&format!(" · process gone at {time}, no end event")),
+            None => state.push_str(" · no end event"),
+        }
+    } else {
+        if let Some(since) = view.since {
+            state.push_str(&format!(
+                " for {}",
+                polylogue_render::short_duration(now - since)
+            ));
+        }
+        if view.process_alive == Some(false) {
+            state.push_str(" · process gone");
+        }
     }
     if let Some(word) = &detail.facts.harness_status {
         state.push_str(&format!(" · harness says {}", word.word));
@@ -65,6 +83,12 @@ pub(crate) fn render(detail: &LiveDetail, now: i64) -> Card {
         peers: detail.peers.clone(),
         processes: detail.processes.iter().map(|p| process(p, now)).collect(),
     }
+}
+
+/// `13:40` in `zone`.
+fn clock_time(at: i64, zone: &jiff::tz::TimeZone) -> Option<String> {
+    let at = jiff::Timestamp::from_millisecond(at).ok()?;
+    Some(at.to_zoned(zone.clone()).strftime("%H:%M").to_string())
 }
 
 fn process(p: &ProcessRow, now: i64) -> Process {

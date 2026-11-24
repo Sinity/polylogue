@@ -933,8 +933,24 @@ pub(crate) fn run_reports(
     reports: std::sync::mpsc::Receiver<crate::live_acts::Report>,
 ) {
     use crate::live_acts::Report;
+    let mut queue_lines = crate::live_events::PendingLines::new(
+        "registry",
+        "acts",
+        std::sync::Arc::clone(&daemon.live_spool),
+    );
     while let Ok(report) = reports.recv() {
         match report {
+            Report::Queued { session, queued } => {
+                let line = crate::live_events::line(
+                    "registry",
+                    "HostedQueued",
+                    &session,
+                    daemon.clock.now(),
+                    json!({"queued": queued}),
+                );
+                let boot = crate::live_events::boot_id().unwrap_or_else(|| "unknown".into());
+                let _ = queue_lines.append(&daemon.acts.spool, &boot, &[line]);
+            }
             Report::Sent { delivery, sent } => record_sent(&daemon, &delivery, sent),
             Report::Resume(run) => resume_session(&daemon, run),
             Report::Stop => return,

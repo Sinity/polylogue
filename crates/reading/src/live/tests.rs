@@ -73,7 +73,7 @@ fn the_live_card_shows_the_state_the_wait_and_the_process_tree() {
         task,
         peers,
         processes,
-    } = render(&detail, now)
+    } = render(&detail, now, &jiff::tz::TimeZone::UTC)
     else {
         panic!("a live card");
     };
@@ -136,7 +136,7 @@ fn the_live_card_states_what_is_absent() {
         task,
         processes,
         ..
-    } = render(&detail, now)
+    } = render(&detail, now, &jiff::tz::TimeZone::UTC)
     else {
         panic!("a live card");
     };
@@ -153,8 +153,37 @@ fn the_live_card_states_what_is_absent() {
     assert_eq!(processes[0].command, unknown("no command recorded"));
 
     detail.view.waiting_on = Some(live::WaitingOn::Question);
-    let Card::Live { waits_on, .. } = render(&detail, now) else {
+    let Card::Live { waits_on, .. } = render(&detail, now, &jiff::tz::TimeZone::UTC) else {
         panic!("a live card");
     };
     assert_eq!(waits_on, ValueState::known("question".to_owned()));
+}
+
+/// A stale session says why it is stale, with the time the process went.
+#[test]
+fn a_stale_card_names_when_the_process_went_and_that_no_end_came() {
+    let mut facts = LiveFacts::default();
+    let data = json!({"harness_pid": 10, "harness_start": 7, "boot_id": "b"});
+    let at = |hour: i64, minute: i64| (hour * 60 + minute) * MIN;
+    live::apply_live_event(&mut facts, "hook_user_prompt_submit", at(13, 0), &data);
+    live::apply_live_event(
+        &mut facts,
+        "process_root_gone",
+        at(13, 40),
+        &json!({"pid": 10, "start": 7, "boot_id": "b"}),
+    );
+    let now = at(14, 0);
+    let detail = LiveDetail {
+        view: live::view(Some(&facts), None, now),
+        facts,
+        peers: vec![],
+        processes: vec![],
+    };
+    let Card::Live { state, .. } = render(&detail, now, &jiff::tz::TimeZone::UTC) else {
+        panic!("a live card");
+    };
+    assert_eq!(
+        state,
+        ValueState::known("stale · process gone at 13:40, no end event".to_owned())
+    );
 }

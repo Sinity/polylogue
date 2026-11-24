@@ -153,7 +153,7 @@ fn live_facts_are_read_from_the_session_live_columns() {
     let index = ScopeIndex::new(pool.reader().unwrap().scope_changes(None).unwrap());
     let held = &index.sessions[&pk];
     assert_eq!(held.last_event_at(), Some(NOW - 1_000));
-    assert_eq!(held.waiting_on(), Some("question"));
+    assert_eq!(held.waiting_on_at(NOW), Some("question"));
     assert!(!held.open_tool_call());
     assert_eq!((held.todo(), held.task()), (None, None));
 }

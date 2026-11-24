@@ -35,6 +35,8 @@ pub struct Answer {
     pub archive: Option<PathBuf>,
     pub pid: u32,
     pub uptime_seconds: u64,
+    /// The first reads that status and briefs answer from are not ready yet.
+    pub warming: bool,
     /// The archive totals; none when they could not be read (`totals_error`).
     pub store: Option<polylogue_store::Status>,
     /// The build of `index.db` in progress, with its progress.
@@ -117,6 +119,8 @@ pub struct SignalRule {
     pub name: String,
     pub query: String,
     pub author: String,
+    /// When a notice from the rule was last produced; none if it never fired.
+    pub last_fired: Option<polylogue_model::Timestamp>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

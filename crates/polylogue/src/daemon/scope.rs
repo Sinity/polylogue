@@ -46,6 +46,11 @@ impl SharedScopeIndex {
         Ok(())
     }
 
+    /// Whether the first full read has finished.
+    pub fn is_loaded(&self) -> bool {
+        self.index.locked().is_some()
+    }
+
     /// Optional hints never wait for a scope change or its lock.
     pub fn try_read<T>(&self, read: impl FnOnce(&ScopeIndex) -> T) -> Option<T> {
         // A lock an earlier owner panicked under is read like any other.
