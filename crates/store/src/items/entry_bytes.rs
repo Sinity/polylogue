@@ -357,6 +357,56 @@ pub(super) fn decode(
     })
 }
 
+/// A message's entries as one record, for a build's composition stream:
+/// their count, then each entry as stored (the later ones against the
+/// first) followed by its call ID, as a length one above the ID's (zero
+/// for none) and the ID.
+pub(crate) fn encode_message(entries: &[IndexEntry]) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(16 * entries.len());
+    number(&mut out, entries.len() as u64);
+    for (n, entry) in entries.iter().enumerate() {
+        text(&mut out, &encode(entry, (n > 0).then(|| &entries[0]))?);
+        match &entry.call_id {
+            Some(call) => {
+                number(&mut out, call.len() as u64 + 1);
+                out.extend_from_slice(call.as_bytes());
+            }
+            None => number(&mut out, 0),
+        }
+    }
+    Ok(out)
+}
+
+/// The entries of `message` [`encode_message`] wrote as `bytes`.
+pub(crate) fn decode_message(bytes: &[u8], message: &MessageId) -> Result<Vec<IndexEntry>> {
+    let mut input = Input { bytes, at: 0 };
+    let count = usize::try_from(input.number()?).map_err(|_| malformed())?;
+    let mut entries: Vec<IndexEntry> = Vec::with_capacity(count.min(bytes.len()));
+    for _ in 0..count {
+        let stored = input.text()?;
+        let call = match input.number()? {
+            0 => None,
+            length => {
+                let length = usize::try_from(length - 1).map_err(|_| malformed())?;
+                let end = input.at.checked_add(length).ok_or_else(malformed)?;
+                let call = input.bytes.get(input.at..end).ok_or_else(malformed)?;
+                input.at = end;
+                Some(String::from_utf8(call.to_vec()).map_err(|_| malformed())?)
+            }
+        };
+        let entry_of = match entries.first() {
+            Some(header) => EntryOf::Header(header),
+            None => EntryOf::Message(message.clone()),
+        };
+        let entry = decode(stored, entry_of, call)?;
+        entries.push(entry);
+    }
+    if !input.done() {
+        return Err(malformed());
+    }
+    Ok(entries)
+}
+
 /// Appends `value` as unsigned LEB128.
 pub(super) fn number(out: &mut Vec<u8>, mut value: u64) {
     loop {

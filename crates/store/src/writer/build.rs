@@ -745,12 +745,12 @@ fn compose_records(
                 out.sorter.push(&mark_key(FALLBACK, &[&session]), &[])?;
                 continue;
             }
-            let items = serde_json::to_string(&reading.items)?;
+            let items = crate::items::entry_bytes::encode_message(&reading.items)?;
             let mut values: Vec<ValueRef<'_>> = (2..13)
                 .map(|n| row.get_ref(n))
                 .collect::<rusqlite::Result<_>>()?;
             values.push(ValueRef::Integer(reading.words));
-            values.push(ValueRef::Text(items.as_bytes()));
+            values.push(ValueRef::Blob(&items));
             for ((block, data), text) in reading
                 .content
                 .blocks
@@ -859,6 +859,9 @@ pub(super) struct ComposeState {
     step: Step,
     /// Indexes to make once the stream is composed.
     indexes: Vec<String>,
+    /// The triggers that keep `row_count`, dropped while composition writes
+    /// and made again once every table is counted.
+    counting: Vec<String>,
     /// The composition stream, decoded ahead on a thread of its own.
     pieces: std::sync::mpsc::Receiver<Result<Piece>>,
     stream_done: bool,
@@ -879,6 +882,8 @@ enum Step {
     Index {
         next: usize,
     },
+    /// Counts each counted table and makes its triggers again.
+    Count,
     Done,
 }
 
@@ -891,6 +896,18 @@ impl ComposeState {
             mut fallback,
         } = loaded;
         let aliases = Arc::new(super::identity::Aliases::load(index)?);
+        // Composing runs no trigger per row: each counted table is counted
+        // once when composition ends.
+        let counting: Vec<(String, String)> = index
+            .prepare(
+                "SELECT name,sql FROM sqlite_schema
+                 WHERE type='trigger' AND sql LIKE '%UPDATE row_count %'",
+            )?
+            .query_map([], |r| <(String, String)>::try_from(r))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (name, _) in &counting {
+            index.execute(&format!("DROP TRIGGER \"{name}\""), [])?;
+        }
         // The sessions a copy name involves are decided across sessions.
         fallback.extend(
             index
@@ -904,6 +921,7 @@ impl ComposeState {
         Ok(Self {
             step: Step::Links,
             indexes,
+            counting: counting.into_iter().map(|(_, sql)| sql).collect(),
             pieces: read_stream(merged, texts, fallback.clone(), Arc::clone(&aliases)),
             stream_done: false,
             fallback: fallback.into_iter().collect(),
@@ -1561,8 +1579,30 @@ impl Inner {
                 state.step = if next < state.fallback.len() {
                     Step::Index { next }
                 } else {
-                    Step::Done
+                    Step::Count
                 };
+            }
+            Step::Count => {
+                let tx = self
+                    .index
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let tables: Vec<String> = tx
+                    .prepare("SELECT name FROM row_count")?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for table in tables {
+                    tx.execute(
+                        &format!(
+                            "UPDATE row_count SET n=(SELECT count(*) FROM \"{table}\") WHERE name=?1"
+                        ),
+                        [&table],
+                    )?;
+                }
+                for sql in std::mem::take(&mut state.counting) {
+                    tx.execute(&sql, [])?;
+                }
+                tx.commit()?;
+                state.step = Step::Done;
             }
             Step::Done => {}
         }
@@ -1929,11 +1969,12 @@ fn read_session(
                         "a message reading's text rows differ from its blocks".into(),
                     ));
                 }
+                let items = crate::items::entry_bytes::decode_message(blob(12)?, &message.id)?;
                 let value = ReadingValue {
                     message,
                     words: int(11)?,
                     selection,
-                    items: serde_json::from_str(text(12)?)?,
+                    items,
                     content,
                     text_ids: Some(ids),
                 };

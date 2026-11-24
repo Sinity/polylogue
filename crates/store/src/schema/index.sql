@@ -849,7 +849,8 @@ CREATE INDEX tool_call_script ON tool_call(session_pk) WHERE run_by_script = 1;
 -- messages, blocks, tool pairing and compaction events agree.
 
 -- How many rows the tables status counts hold, kept by the triggers below so
--- that status does not scan the tables.
+-- that status does not scan the tables. A build's composition runs without
+-- them and counts each table once when it ends.
 CREATE TABLE row_count (
   name              TEXT PRIMARY KEY,       -- the table
   n                 INTEGER NOT NULL
