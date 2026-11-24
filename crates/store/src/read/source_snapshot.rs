@@ -32,7 +32,7 @@ impl Reader<'_> {
     /// capture is held by the writer, which answers there.
     pub fn source_snapshot(&self, source: SourceSelector) -> Result<SourceSnapshot> {
         if self.pool.archive.is_primary() {
-            return Err(crate::StoreError::invalid(
+            return Err(crate::StoreError::internal(
                 "a primary source snapshot names the spooled capture, which only the writer holds",
             ));
         }

@@ -330,8 +330,8 @@ pub(crate) fn project_member(
                 .zip(sidecar)
                 .is_some_and(|(old, new)| old != new)
         {
-            return Err(StoreError::Conflict(
-                "conflicting identity or classification for one import member".into(),
+            return Err(StoreError::internal(
+                "conflicting identity or classification for one import member",
             ));
         }
         // A member seen again only changes when it learns an identity or a
@@ -500,8 +500,8 @@ pub(crate) fn install(
                     .map(|source| source.version.as_str())
                     != Some(recorded.as_str())
                 {
-                    return Err(StoreError::Conflict(
-                        "asset sidecar changed while it was parsed".into(),
+                    return Err(StoreError::internal(
+                        "asset sidecar changed while it was parsed",
                     ));
                 }
                 let changed = put_sidecar(&tx, &input, &sidecar, &recorded, error.as_deref())?;

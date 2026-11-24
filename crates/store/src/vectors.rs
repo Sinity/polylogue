@@ -330,7 +330,7 @@ impl Vectors {
                 match known {
                     Some(known) if known == bytes => {}
                     Some(_) => {
-                        return Err(StoreError::Conflict(format!(
+                        return Err(StoreError::internal(format!(
                             "the embeddings store holds a different vector for chunk {} of this text under {key}",
                             v.chunk
                         )));

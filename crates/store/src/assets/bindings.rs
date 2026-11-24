@@ -639,8 +639,8 @@ pub(crate) fn known(conn: &Connection, record: &AttachmentBindingRecord) -> Resu
     };
     let existing: AttachmentBindingRecord = crate::encoding::unpack_json(&body)?;
     if existing != *record {
-        return Err(StoreError::Conflict(
-            "different attachment binding records under one source context".into(),
+        return Err(StoreError::internal(
+            "different attachment binding records under one source context",
         ));
     }
     Ok(true)

@@ -516,7 +516,7 @@ fn events_from(
             })
             .optional()?
             .ok_or_else(|| {
-                StoreError::Invalid(format!(
+                StoreError::internal(format!(
                     "indexed event {pk} left session {session_pk} unchanged"
                 ))
             })?;
@@ -549,8 +549,8 @@ pub(crate) fn computed_entries(conn: &Connection, session_pk: i64) -> Result<Vec
                 out.push(event_item(&id, &kind, at, data_bytes, data.as_deref())?);
             }
             Unit::Kept { .. } => {
-                return Err(StoreError::Invalid(
-                    "a session read whole takes every event from its row".into(),
+                return Err(StoreError::internal(
+                    "a session read whole takes every event from its row",
                 ));
             }
         }
@@ -1198,9 +1198,8 @@ fn stored_message_entries(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>>
 /// present. Its worker prepares the shown value under its snapshot;
 /// the existing derive token protects these entries when the writer applies it.
 pub(crate) fn prepare_stored_message(conn: &Connection, pk: i64) -> Result<Vec<IndexEntry>> {
-    let (mut message, block_selection) =
-        crate::writer::shown_message(conn, pk)?
-            .ok_or_else(|| StoreError::internal("revealed message has no kept selected version"))?;
+    let (mut message, block_selection) = crate::writer::shown_message(conn, pk)?
+        .ok_or_else(|| StoreError::internal("revealed message has no kept selected version"))?;
     conn.prepare_cached(
         "SELECT m.id,s.id,m.role,m.prompt_kind,m.model,m.at,m.input_tokens,m.cache_read_tokens,m.cache_write_tokens
          FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.pk=?1"

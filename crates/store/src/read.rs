@@ -1423,7 +1423,10 @@ impl Reader<'_> {
         let current = if asset.size == 0 {
             let latest: Option<(i64,i64)> = self.conn()?.query_row("SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1", [&asset.input], |row| <(_, _)>::try_from(row)).optional()?;
             if latest != Some((asset.chain,0)) {
-                return Err(StoreError::Conflict("the attachment's stored bytes changed; select it again".into()));
+                return Err(polylogue_model::Reason::AttachmentChanged {
+                    input: asset.input.clone(),
+                }
+                .into());
             }
             crate::assets::empty::source(
                 self.conn()?,

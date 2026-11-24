@@ -361,6 +361,9 @@ reasons! {
         "a capture holds the provider's conversation JSON (raw_provider_payload) or session.turns";
     CaptureUnreadable "capture_unreadable" => BadRequest { problem: String }
         "the capture cannot be read: {problem}";
+    /// An attachment whose stored bytes changed after it was selected.
+    AttachmentChanged "attachment_changed" => Conflict { input: String }
+        "the attachment's stored bytes in {input} changed; select it again";
 }
 
 impl std::error::Error for Reason {}

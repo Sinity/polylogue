@@ -543,6 +543,13 @@ fn every_reason_has_one_code_and_one_text() {
             Code::BadRequest,
             "the capture cannot be read: problem-x",
         ),
+        (
+            Reason::AttachmentChanged {
+                input: "input-x".into(),
+            },
+            Code::Conflict,
+            "the attachment's stored bytes in input-x changed; select it again",
+        ),
     ];
     let named: Vec<&str> = table.iter().map(|(reason, _, _)| reason.name()).collect();
     assert_eq!(

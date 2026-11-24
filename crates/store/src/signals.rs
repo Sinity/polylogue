@@ -74,7 +74,9 @@ pub(crate) fn write(
         .map(|s| s.identity())
         .transpose()?;
     if prior != commit.prior {
-        return Err(StoreError::Conflict("signal checkpoint changed".into()));
+        return Err(StoreError::internal(
+            "a signal checkpoint changed under its writer",
+        ));
     }
     let mut ids = BTreeSet::new();
     for pending in &commit.pending_delivery {
@@ -177,7 +179,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
         return if old == *value {
             Ok(())
         } else {
-            Err(StoreError::Conflict("signal event identity reused".into()))
+            Err(StoreError::internal("a signal event identity was reused"))
         };
     }
     conn.execute(&source.sql("INSERT INTO @source.signal_event(request,ordinal,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,ordinal(value)?,id,position(value)?,value.at.unix_ms(),crate::primary::authored::pack(value)?,counter])?;
