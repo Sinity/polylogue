@@ -70,7 +70,10 @@ fn read_tool_refuses_write_step() {
     let next = &answer.envelope.next[0];
     assert_eq!(next.request.arguments, call["arguments"]);
     assert_eq!(next.request.deadline, command_surface::Deadline::None);
-    assert!(next.label.starts_with("polylogue_write "), "{}", next.label);
+    // The label is the corrected call, whole: the tool name, then the call.
+    let corrected: Value =
+        serde_json::from_str(next.label.strip_prefix("polylogue_write ").unwrap()).unwrap();
+    assert_eq!(corrected["arguments"], call["arguments"], "{}", next.label);
 }
 
 #[test]
@@ -227,7 +230,10 @@ fn set_listing_is_read_access() {
     let next = &refused.envelope.next[0];
     assert_eq!(next.request.operation, "set");
     assert_eq!(next.request.arguments, call["arguments"]);
-    assert!(next.label.starts_with("polylogue_write "), "{}", next.label);
+    let corrected: Value =
+        serde_json::from_str(next.label.strip_prefix("polylogue_write ").unwrap()).unwrap();
+    assert_eq!(corrected["operation"], "set", "{}", next.label);
+    assert_eq!(corrected["arguments"], call["arguments"], "{}", next.label);
     let (_, unchanged, failed) = invoke(&daemon.daemon.archive, Tool::Read, show);
     assert!(!failed, "{unchanged:?}");
     assert_eq!(unchanged.value().unwrap(), &current);

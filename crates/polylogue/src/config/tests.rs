@@ -97,20 +97,46 @@ fn explicit_primary_configuration_resolves_credentials_beside_its_own_file() {
     assert_eq!(password, "synthetic-producer-password");
 }
 
+/// The day's zone and start when the deployment names no zone, loaded in a
+/// process whose host zone is `POLYLOGUE_TEST_HOST_ZONE`.
 #[test]
-fn standalone_day_without_a_zone_uses_the_hosts_named_zone() {
+fn standalone_day_host_zone_child() {
+    let Some(zone) = std::env::var_os("POLYLOGUE_TEST_HOST_ZONE") else {
+        return;
+    };
     let root = tempfile::tempdir().unwrap();
     deployment(root.path(), "");
     let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
     let day = startup.config.standalone_day().unwrap();
-    let host = jiff::tz::TimeZone::system();
-    assert_eq!(Some(day.zone_name()), host.iana_name());
+    assert_eq!(day.zone_name(), zone.to_str().unwrap());
     assert_eq!(day.start(), jiff::civil::Time::constant(4, 0, 0, 0));
     deployment(root.path(), "[day]\nstart='06:00:00'\n");
     let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
     let day = startup.config.standalone_day().unwrap();
-    assert_eq!(Some(day.zone_name()), host.iana_name());
+    assert_eq!(day.zone_name(), zone.to_str().unwrap());
     assert_eq!(day.start(), jiff::civil::Time::constant(6, 0, 0, 0));
+}
+
+#[test]
+fn standalone_day_without_a_zone_uses_the_hosts_named_zone() {
+    // The host zone is a process setting, so each zone runs in a child
+    // process started with it.
+    for zone in ["Asia/Tokyo", "Pacific/Auckland"] {
+        let test = "config::tests::standalone_day_host_zone_child";
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", test, "--nocapture"])
+            .env("TZ", zone)
+            .env("POLYLOGUE_TEST_HOST_ZONE", zone)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "{zone}: {stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("1 passed"), "{zone}: {stdout}");
+    }
 }
 
 #[test]

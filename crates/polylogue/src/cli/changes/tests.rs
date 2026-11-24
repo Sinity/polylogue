@@ -174,7 +174,6 @@ fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
 #[test]
 fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild() {
     use polylogue_testkit::{ClaudeHome, claude_user};
-    use std::collections::BTreeSet;
     use std::io::Read;
     fn prepared(home: &ClaudeHome, since: Option<&str>) -> Vec<u8> {
         let pool = home.reads();
@@ -197,45 +196,29 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
         file.read_to_end(&mut bytes).unwrap();
         bytes
     }
-    fn apply_if_complete(
-        wire: &[u8],
-        old: &BTreeSet<String>,
-        since: Option<&str>,
-    ) -> Option<(BTreeSet<String>, String)> {
+    // What `receive` forwards, as JSON lines; None when the batch is not
+    // complete.
+    fn delivered(wire: &[u8], since: Option<&str>) -> Option<Vec<Value>> {
         let mut bytes = Vec::new();
         if receive(wire, &mut bytes, since).ok()? != 0 {
             return None;
         }
-        let lines: Vec<Value> = bytes
-            .split(|b| *b == b'\n')
-            .filter(|s| !s.is_empty())
-            .map(|s| serde_json::from_slice(s).unwrap())
-            .collect();
-        let mut staged = if lines[0]["replacement"] == true {
-            BTreeSet::new()
-        } else {
-            old.clone()
-        };
-        for line in &lines {
-            let change = &line["change"];
-            if change["kind"] == "session" || change["kind"] == "annotation" {
-                staged.insert(format!(
-                    "{}:{}",
-                    change["kind"].as_str().unwrap(),
-                    change["ref"].as_str().unwrap()
-                ));
-            }
-            if change["kind"] == "removed" {
-                staged.remove(&format!("session:{}", change["ref"].as_str().unwrap()));
-            }
-        }
-        Some((
-            staged,
-            lines.last().unwrap()["position"]
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        ))
+        Some(
+            bytes
+                .split(|b| *b == b'\n')
+                .filter(|s| !s.is_empty())
+                .map(|s| serde_json::from_slice(s).unwrap())
+                .collect(),
+        )
+    }
+    // The sessions a batch lists (docs/operations.md, The change feed: a full
+    // listing names every current reference).
+    fn sessions(lines: &[Value]) -> Vec<&str> {
+        lines
+            .iter()
+            .filter(|line| line["change"]["kind"] == "session")
+            .map(|line| line["change"]["ref"].as_str().unwrap())
+            .collect()
     }
     let home = ClaudeHome::new();
     for id in ["a", "b"] {
@@ -246,15 +229,13 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
     }
     let (mut engine, lock) = home.engine(64 << 20);
     assert!(engine.run_pass().unwrap().errors.is_empty());
-    let (old, checkpoint) =
-        apply_if_complete(&prepared(&home, None), &BTreeSet::new(), None).unwrap();
-    assert_eq!(
-        old,
-        BTreeSet::from([
-            "session:claude-code:a".into(),
-            "session:claude-code:b".into()
-        ])
-    );
+    let first = delivered(&prepared(&home, None), None).unwrap();
+    assert_eq!(first[0]["replacement"], true);
+    assert_eq!(sessions(&first), ["claude-code:a", "claude-code:b"]);
+    let checkpoint = first.last().unwrap()["position"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     drop(engine);
     drop(lock);
     polylogue_testkit::delete_index(&home.root);
@@ -267,16 +248,22 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
         .filter(|(_, b)| **b == b'\n')
         .map(|(i, _)| i + 1)
         .collect();
-    let mut prior = old.clone();
-    prior.insert("session:claude-code:stale-local-reference".into());
-    prior.insert("annotation:stale-annotation-reference".into());
     for prefix in positions.iter().take(positions.len() - 1) {
-        assert!(apply_if_complete(&output[..*prefix], &prior, Some(&checkpoint)).is_none());
+        assert!(delivered(&output[..*prefix], Some(&checkpoint)).is_none());
     }
-    let (current, next) = apply_if_complete(&output, &prior, Some(&checkpoint)).unwrap();
-    assert_eq!(current, old);
+    // The index was replaced since the checkpoint: the batch is a full
+    // listing of the current sessions, and holds no removals.
+    let current = delivered(&output, Some(&checkpoint)).unwrap();
+    assert_eq!(current[0]["replacement"], true);
+    assert_eq!(sessions(&current), ["claude-code:a", "claude-code:b"]);
+    assert!(
+        current
+            .iter()
+            .all(|line| line["change"]["kind"] != "removed")
+    );
+    let next = current.last().unwrap()["position"].as_str().unwrap();
     assert_ne!(
-        ChangePosition::parse(&next).unwrap().generation,
+        ChangePosition::parse(next).unwrap().generation,
         ChangePosition::parse(&checkpoint).unwrap().generation
     );
 }

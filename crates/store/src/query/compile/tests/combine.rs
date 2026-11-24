@@ -154,7 +154,7 @@ fn volatile_operand_selection_is_shared_by_membership_values_and_ranking() {
         )
         .unwrap();
     let source = "sessions | fields id as label,input_tokens as n | sort by random() | limit 2";
-    let selected = read(&reader, source);
+    assert_eq!(read(&reader, source).len(), 2);
     let source_calls = calls.swap(0, Ordering::SeqCst);
     assert!(source_calls > 0);
     let rows = read(
@@ -166,29 +166,43 @@ fn volatile_operand_selection_is_shared_by_membership_values_and_ranking() {
         source_calls,
         "the volatile source must be evaluated once"
     );
-    let mut expected = selected
-        .iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let right = match row["label"].as_str().unwrap() {
-                "claude-code:c" => 1,
-                "claude-code:b" => 2,
-                _ => 3,
-            };
-            (
-                row["label"].as_str().unwrap(),
-                row["n"].clone(),
-                -(1.0 / (61.0 + index as f64) + 1.0 / (60.0 + right as f64)),
-            )
-        })
-        .collect::<Vec<_>>();
-    expected.sort_by(|left, right| left.2.total_cmp(&right.2).then(left.0.cmp(right.0)));
+    // The fixture's tokens are a:1, b:3, c:5, so the right operand ranks c, b,
+    // a. Each row scores 1/(60+rank) per list that ranks it (docs/search.md,
+    // Fusion); the two selected rows hold left ranks 1 and 2 in some order,
+    // and every row shows the tokens of its own session.
+    let tokens = |label: &str| match label {
+        "claude-code:a" => 1,
+        "claude-code:b" => 3,
+        "claude-code:c" => 5,
+        other => panic!("unexpected session {other}"),
+    };
+    let right_rank = |label: &str| match label {
+        "claude-code:c" => 1.0,
+        "claude-code:b" => 2.0,
+        _ => 3.0,
+    };
     assert_eq!(rows.len(), 2);
-    for (row, (label, value, score)) in rows.iter().zip(expected) {
-        assert_eq!(row["label"], label);
-        assert_eq!(row["n"], value);
-        assert!((row["rank"].as_f64().unwrap() - score).abs() < 1e-12);
+    let labels: Vec<&str> = rows
+        .iter()
+        .map(|row| row["label"].as_str().unwrap())
+        .collect();
+    assert_ne!(labels[0], labels[1]);
+    for (row, label) in rows.iter().zip(&labels) {
+        assert_eq!(row["n"], tokens(label));
     }
+    let score = |label: &str, left_rank: f64| {
+        -(1.0 / (60.0 + left_rank) + 1.0 / (60.0 + right_rank(label)))
+    };
+    let ranks: Vec<f64> = rows
+        .iter()
+        .map(|row| row["rank"].as_f64().unwrap())
+        .collect();
+    let matches = [(1.0, 2.0), (2.0, 1.0)].iter().any(|(first, second)| {
+        (ranks[0] - score(labels[0], *first)).abs() < 1e-12
+            && (ranks[1] - score(labels[1], *second)).abs() < 1e-12
+    });
+    assert!(matches, "{rows:?}");
+    assert!(ranks[0] <= ranks[1], "{rows:?}");
 }
 
 #[test]
