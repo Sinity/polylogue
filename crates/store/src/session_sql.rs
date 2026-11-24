@@ -142,7 +142,7 @@ pub fn ends_open(s: &str) -> String {
 
 pub fn unrecovered_failures(s: &str) -> String {
     format!(
-        "(SELECT count(*) FROM (SELECT t.command_norm FROM tool_call t WHERE t.session_pk={s}.pk AND t.command_norm IS NOT NULL AND t.outcome='error' AND NOT EXISTS(SELECT 1 FROM tool_call later WHERE later.session_pk=t.session_pk AND later.command_norm=t.command_norm AND (coalesce(later.at,0),later.pk)>(coalesce(t.at,0),t.pk)) GROUP BY t.command_norm))"
+        "(SELECT count(*) FROM (SELECT t.command_norm FROM tool_call t WHERE t.session_pk={s}.pk AND t.command_norm IS NOT NULL AND t.outcome='error' AND NOT EXISTS(SELECT 1 FROM tool_call later WHERE later.session_pk=t.session_pk AND later.command_norm=t.command_norm AND later.outcome='ok' AND (coalesce(later.at,0),later.pk)>(coalesce(t.at,0),t.pk)) GROUP BY t.command_norm))"
     )
 }
 pub fn failure_streak(s: &str) -> String {

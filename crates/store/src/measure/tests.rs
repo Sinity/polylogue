@@ -354,6 +354,79 @@ fn quota_reads_reported_windows_and_projects_exhaustion() {
     assert_eq!(five.used_percent, None, "nothing reported: unknown, not 0");
 }
 
+/// Responses every two hours from half past the hour of `T0`, 21 of them,
+/// each block starting at the hour of the first response after the previous
+/// block ended: blocks begin at hours 0, 6, 12, ... of the chain. At 40.75 h
+/// the window is 36 h to 41 h, though only responses of the last two
+/// windows (from 30.75 h) would put it at 38 h to 43 h.
+#[test]
+fn the_five_hour_block_phase_follows_the_chain_start() {
+    let hour = 3_600_000;
+    let h0 = T0 - T0.rem_euclid(hour);
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let claude = session(&mut f, "claude-code:s");
+    for k in 0..21 {
+        let at = h0 + hour / 2 + 2 * hour * k;
+        model_message(
+            &mut f,
+            claude,
+            &format!("claude-code:r{k}"),
+            "claude-opus-4-1",
+            at,
+            &tokens(1, 0, Some(0), 1),
+        );
+    }
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let o = quota::quota(&r, h0 + 40 * hour + 3 * hour / 4, KNOWN).unwrap();
+    let five = o.tools[0]
+        .windows
+        .iter()
+        .find(|w| w.window_minutes == quota::FIVE_HOURS)
+        .unwrap();
+    assert_eq!(five.source, quota::WindowSource::Inferred);
+    assert_eq!(
+        (five.starts_at, five.resets_at),
+        (h0 + 36 * hour, h0 + 41 * hour)
+    );
+}
+
+/// A reading whose reset is earlier than the reading is ignored and counted;
+/// the window shows the last good reading.
+#[test]
+fn a_stale_reading_is_counted_and_never_shown() {
+    let hour = 3_600_000;
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let codex = session(&mut f, "codex:s");
+    for (i, (at, pct, reset)) in [
+        (T0 + 2 * hour, 20.0, T0 + 4 * hour),
+        (T0 + 3 * hour, 90.0, T0 + hour),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let pk = model_message(
+            &mut f,
+            codex,
+            &format!("codex:c{i}"),
+            "gpt-5",
+            at,
+            &tokens(10, 0, None, 10),
+        );
+        let q = reading("codex", 300, false, Some(pct), reset, None);
+        f.usage(pk, &tokens(10, 0, None, 10), Some(q)).unwrap();
+        f.derive().unwrap();
+    }
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let o = quota::quota(&r, T0 + 3 * hour + 1, KNOWN).unwrap();
+    let tool = o.tools.iter().find(|t| t.tool == "codex").unwrap();
+    assert_eq!(tool.stale_readings, 1);
+    assert_eq!(tool.windows[0].used_percent, Some(20.0));
+}
+
 #[test]
 fn quota_projects_exhaustion_before_the_reset() {
     let dir = tempfile::tempdir().unwrap();

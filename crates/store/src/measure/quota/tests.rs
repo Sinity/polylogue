@@ -107,3 +107,22 @@ fn burn_needs_two_reports_five_minutes_apart() {
     let exactly = o(T0 + 5 * MINUTE, 12.0);
     assert!(percent_burn(&[&a, &exactly]).is_some());
 }
+
+#[test]
+fn a_lower_reading_restarts_the_burn() {
+    let o = |hours, p| Observation {
+        at: Some(T0 + hours * HOUR),
+        measured_at: Some(T0 + hours * HOUR),
+        tool: "codex".into(),
+        limit: "codex".into(),
+        window_minutes: FIVE_HOURS,
+        from_first_response: false,
+        used_percent: Some(p),
+        resets_at: None,
+        status: None,
+    };
+    let readings = [o(0, 10.0), o(1, 50.0), o(2, 20.0), o(3, 40.0)];
+    let inside: Vec<&Observation> = readings.iter().collect();
+    // From the 20% reading: 20 points in one hour.
+    assert_eq!(percent_burn(&inside[..]), Some(10.0 * 2.0));
+}

@@ -92,6 +92,9 @@ pub struct ToolQuota {
     pub windows: Vec<Window>,
     /// Readings that cannot be placed in a provider window.
     pub unplaced: Vec<Observation>,
+    /// Readings whose reset is earlier than the reading itself: ignored for
+    /// windows and burn.
+    pub stale_readings: usize,
     /// Recorded usage whose spend time cannot be assigned to a window.
     pub recorded_usage: usage::RecordedUsage,
 }
@@ -252,11 +255,17 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
             Ok(())
         },
     )?;
-    obs.sort_by_key(|o| o.at);
+    // Provider measurement time orders readings; emission time stands in
+    // where the provider gave none.
+    obs.sort_by_key(|o| o.measured_at.or(o.at));
+    let (obs, stale): (Vec<Observation>, Vec<Observation>) = obs.into_iter().partition(
+        |o| !matches!((o.resets_at, o.measured_at.or(o.at)), (Some(reset), Some(at)) if reset < at),
+    );
     let mut out = vec![];
     for tool in &tools {
         let tool = tool.as_str();
         let mine: Vec<&Observation> = obs.iter().filter(|o| o.tool == tool).collect();
+        let stale_readings = stale.iter().filter(|o| o.tool == tool).count();
         let mut limits: Vec<(String, i64, bool)> = mine
             .iter()
             .map(|o| (o.limit.clone(), o.window_minutes, o.from_first_response))
@@ -290,7 +299,9 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 // A window that starts with the first response after the
                 // previous one ended.
                 _ if from_first_response => {
-                    let times = response_times(reader, tool, now - 2 * minutes * MINUTE, now)?;
+                    // Each block starts after the one before it ended, so
+                    // the phase depends on every response since the chain began.
+                    let times = response_times(reader, tool, i64::MIN, now)?;
                     let reported_windows: Vec<(i64, i64)> = these
                         .iter()
                         .filter_map(|o| o.resets_at)
@@ -327,6 +338,7 @@ pub fn quota(reader: &Reader<'_>, now: i64, known: &[(&str, &[QuotaLimit])]) -> 
                 .filter(|o| o.resets_at.is_none() && o.measured_at.is_none())
                 .map(|o| (*o).clone())
                 .collect(),
+            stale_readings,
             recorded_usage: usage::recorded(reader, &Selection::default().for_origin(tool))?,
         });
     }
@@ -441,12 +453,19 @@ fn build(
 }
 
 /// Percent per hour between the first and last reported use in the window,
-/// when they are at least five minutes apart.
+/// when they are at least five minutes apart. A reading lower than the one
+/// before it starts the burn over from itself.
 fn percent_burn(inside: &[&Observation]) -> Option<f64> {
-    let with: Vec<&&Observation> = inside
+    let mut with: Vec<&&Observation> = inside
         .iter()
         .filter(|o| o.used_percent.is_some() && o.measured_at.is_some())
         .collect();
+    if let Some(restart) = (1..with.len())
+        .rev()
+        .find(|&i| with[i].used_percent < with[i - 1].used_percent)
+    {
+        with.drain(..restart);
+    }
     let (a, b) = (with.first()?, with.last()?);
     let span = b.measured_at? - a.measured_at?;
     (span >= 5 * MINUTE).then(|| {
