@@ -199,6 +199,9 @@ fn values_outside_the_field_are_refused() {
         origins: &origins,
         clock: &clock,
         provider_catalog: None,
+        saved: &Default::default(),
+        catalog: &crate::catalog::catalog(&[]),
+        expanding: &[],
     };
     // The declared spelling is what the column holds, however it was written.
     assert!(matches!(
@@ -295,6 +298,9 @@ fn declared_annotation_request_field_precedes_request_object_refusal() {
         origins: &[],
         clock: &operation_clock,
         provider_catalog: None,
+        saved: &Default::default(),
+        catalog: &crate::catalog::catalog(&[]),
+        expanding: &[],
     };
     assert_eq!(
         binder

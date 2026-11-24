@@ -110,32 +110,33 @@ impl<'a> Compiler<'a> {
         reading: Reading,
     ) -> Result<SelectionSql, QueryError> {
         let measured = selection.measured;
-        let alternates = if selection.unit == Unit::Messages {
-            let mut admitted = false;
-            let mut languages = Vec::new();
-            for condition in selection.top_level() {
-                if let polylogue_query::filter::Filter::Field(field) =
-                    self.binder().bind(&condition, selection.unit)?
-                {
-                    match (field.field.declaration().name, field.test) {
-                        ("alternate", polylogue_query::filter::Test::Bool(true)) => admitted = true,
-                        (
-                            "lang",
-                            polylogue_query::filter::Test::Written(
-                                polylogue_query::filter::Comparison::Match(value),
-                            ),
-                        ) => {
-                            admitted = true;
-                            languages.extend(alternatives(&value));
+        let clauses = selection.clauses(&self.binder())?;
+        let alternates = (selection.unit == Unit::Messages)
+            .then(|| {
+                let mut admitted = false;
+                let mut languages = Vec::new();
+                for clause in &clauses {
+                    if let polylogue_query::filter::Filter::Field(field) = &clause.filter {
+                        match (field.field.declaration().name, &field.test) {
+                            ("alternate", polylogue_query::filter::Test::Bool(true)) => {
+                                admitted = true;
+                            }
+                            (
+                                "lang",
+                                polylogue_query::filter::Test::Written(
+                                    polylogue_query::filter::Comparison::Match(value),
+                                ),
+                            ) => {
+                                admitted = true;
+                                languages.extend(alternatives(value));
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
                 }
-            }
-            admitted.then_some(languages)
-        } else {
-            None
-        };
+                admitted.then_some(languages)
+            })
+            .flatten();
         let scope = RowContext::plain(selection.unit);
         let similar = match &selection.semantic {
             Some(semantic) if !reading.similar => {
@@ -184,33 +185,9 @@ impl<'a> Compiler<'a> {
             where_sql.push(self.lower(filter, &scope, cx)?);
         }
         self.snippet_terms.extend(selection.search.terms.clone());
-        for c in &top {
-            if contains_order(c) {
-                continue;
-            }
-            let alone = self.cond(c, &scope, cx.inner())?;
-            // Bound conditions keep their original spans, while the compiler's
-            // text is a formatted expansion. Render the bound clause itself.
-            let clause = Query {
-                source: Source::Unit {
-                    unit: scope.unit.name().into(),
-                    implicit: false,
-                    condition: Some(c.clone()),
-                },
-                transforms: vec![],
-                attach: vec![],
-            };
-            let catalog = self.catalog();
-            let clause = query_language::format::format_query(&clause, &catalog)
-                .map_err(|error| QueryError::language(error, self.text))?;
-            let prefix = format!("{} where ", scope.unit.name());
-            why.push((
-                clause
-                    .strip_prefix(&prefix)
-                    .expect("unit clause")
-                    .to_owned(),
-                alone,
-            ));
+        for clause in clauses {
+            let alone = self.lower(&clause.filter, &scope, cx.inner())?;
+            why.push((clause.text, alone));
         }
         let ranking = top_level.take().map(Ranking::Text);
         Ok(SelectionSql {

@@ -192,6 +192,40 @@ impl Selection {
     pub fn top_level(&self) -> Vec<Condition> {
         self.written.iter().flat_map(top_level).collect()
     }
+
+    /// Each top-level condition outside an order condition, bound alone and
+    /// written as the query reads it back, so `--why` can count it alone.
+    pub fn clauses(&self, binder: &Binder<'_>) -> Result<Vec<Clause>, QueryError> {
+        self.top_level()
+            .into_iter()
+            .filter(|condition| !contains_order(condition))
+            .map(|condition| {
+                let query = Query {
+                    source: Source::Unit {
+                        unit: self.unit.name().into(),
+                        implicit: false,
+                        condition: Some(condition.clone()),
+                    },
+                    transforms: vec![],
+                    attach: vec![],
+                };
+                let text = query_language::format::format_query(&query, binder.catalog)
+                    .map_err(|error| QueryError::language(error, binder.text))?;
+                let prefix = format!("{} where ", self.unit.name());
+                Ok(Clause {
+                    text: text.strip_prefix(&prefix).unwrap_or(&text).to_owned(),
+                    filter: binder.bind(&condition, self.unit)?,
+                })
+            })
+            .collect()
+    }
+}
+
+/// One top-level condition: its text and its bound form.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Clause {
+    pub text: String,
+    pub filter: Filter,
 }
 
 /// How many `| where` stages directly after a unit source join its

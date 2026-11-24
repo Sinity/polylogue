@@ -9,7 +9,6 @@ use crate::query::time::{self, Milliseconds, Time};
 use crate::query::units::{self, Index, Search, Via};
 use combine::join;
 use polylogue_query::QueryError;
-use polylogue_query::compile::Parameters;
 pub use polylogue_query::search::SnippetTerms;
 use polylogue_query::selection::{FieldSelection, Order, Selection, contains_order, top_level};
 pub use polylogue_query::{
@@ -305,13 +304,10 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     }
     let opts = &captured;
     let bound = plan.expanded_query();
-    let catalog = plan.catalog();
-    let rendered = query_language::format::format_query(bound.query(), catalog)
-        .map_err(|e| QueryError::language(e, ""))?;
-    let mut compiler = Compiler::new(&rendered, opts);
+    let mut compiler = Compiler::new(plan.expanded_text(), opts);
     compiler.query_scope = bound.typing().query(&Default::default()).cloned();
     compiler.typing = Some(std::sync::Arc::new(bound.typing().clone()));
-    compiler.catalog = Some(catalog.clone());
+    compiler.catalog = plan.catalog().clone();
     let mut program = compiler.program(bound.query(), Reading::answer())?;
     let mut used: Vec<Definition> = plan
         .definitions()
@@ -370,7 +366,7 @@ pub(crate) struct Compiler<'a> {
     ctes: Vec<String>,
     query_scope: Option<query_language::scope::QueryScope>,
     typing: Option<std::sync::Arc<query_language::scope::Typing>>,
-    catalog: Option<std::sync::Arc<query_language::catalog::Catalog>>,
+    catalog: std::sync::Arc<query_language::catalog::Catalog>,
     notes: Vec<String>,
     incomplete: Vec<String>,
     snippet_terms: Vec<SnippetTerms>,
@@ -380,9 +376,6 @@ pub(crate) struct Compiler<'a> {
     /// Fields shown beside each row because a condition or sort named them.
     shown: Vec<RowColumn>,
     aliases: usize,
-    /// Saved queries being expanded, innermost last: a cycle is refused.
-    saved_stack: Vec<String>,
-    saved_relations: Vec<saved::BoundRelation>,
     /// The `similar:` text a statement of this query scores against,
     /// which execution embeds before reading.
     similar_text: Option<Near>,
@@ -403,7 +396,7 @@ impl<'a> Compiler<'a> {
             ctes: vec![],
             query_scope: None,
             typing: None,
-            catalog: None,
+            catalog: opts.catalog(),
             notes: vec![],
             incomplete: vec![],
             snippet_terms: vec![],
@@ -413,8 +406,6 @@ impl<'a> Compiler<'a> {
             annotation_cutoffs: vec![],
             shown: vec![],
             aliases: 0,
-            saved_stack: vec![],
-            saved_relations: vec![],
             similar_text: None,
             definitions: vec![],
             session_window: (None, None),
@@ -424,7 +415,7 @@ impl<'a> Compiler<'a> {
 
     /// The catalog of the plan being compiled, or the options' own.
     fn catalog(&self) -> std::sync::Arc<query_language::catalog::Catalog> {
-        self.catalog.clone().unwrap_or_else(|| self.opts.catalog())
+        self.catalog.clone()
     }
 
     /// A compiler for a query inside this one, naming its slots and steps

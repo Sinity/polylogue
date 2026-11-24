@@ -40,8 +40,6 @@ impl<'a> Compiler<'a> {
         let catalog = self.catalog();
         let bound = query_language::bind::bind(&query, &catalog)
             .map_err(|error| QueryError::language(error, self.text))?;
-        let text = query_language::format::format_query(bound.query(), &catalog)
-            .map_err(|error| QueryError::language(error, self.text))?;
         let query_scope = bound.typing().query(&Default::default()).cloned();
         let typing = std::sync::Arc::new(bound.typing().clone());
         let query = bound.into_query();
@@ -51,12 +49,10 @@ impl<'a> Compiler<'a> {
                 position: child.span.start,
             });
         }
-        let mut inner = self.nested(&text);
+        let mut inner = self.nested(self.text);
         inner.query_scope = query_scope;
         inner.typing = Some(typing);
-        inner.catalog = Some(catalog);
         inner.params = std::mem::take(&mut self.params);
-        inner.saved_stack = self.saved_stack.clone();
         let mut program = inner.program(&query, Reading::whole())?;
         self.params = std::mem::take(&mut program.params);
         self.resolved_times

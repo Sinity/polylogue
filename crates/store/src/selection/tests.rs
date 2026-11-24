@@ -318,6 +318,60 @@ fn saved_aliases_bind_to_definition_hashes_and_keep_revision_metadata() {
     );
 }
 
+/// docs/saved-queries.md, Identity and Saved definitions: a question names
+/// a saved query by the hash it resolved to, so a new revision of the name
+/// never changes what a prepared question runs.
+#[test]
+fn a_saved_query_used_as_a_condition_runs_the_body_its_plan_identity_hashed() {
+    let (_dir, mut f) = fixture();
+    let first = save_definition(&mut f, "mine", "sessions where id:test:one");
+    let ids = |reader: &crate::Reader<'_>, plan: &polylogue_query::plan::Plan| {
+        let program = reader.lower_plan(plan, &options()).unwrap();
+        let mut ids = reader
+            .query_rows(&program)
+            .unwrap()
+            .into_iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids
+    };
+    let questions = [
+        "sessions where query:mine",
+        "sessions where query:mine OR id:test:three",
+        "sessions where NOT query:mine",
+    ];
+    let plans = {
+        let pool = f.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        questions.map(|text| reader.prepare_query_plan(text, &options()).unwrap())
+    };
+    let revised = {
+        let pool = f.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        reader
+            .prepare_query_plan("sessions where id:test:two", &options())
+            .unwrap()
+    };
+    f.saved_query_revision("mine", &revised, Some((&first, &first)))
+        .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let expected = [
+        vec!["test:one"],
+        vec!["test:one", "test:three"],
+        vec!["test:three", "test:two"],
+    ];
+    for ((text, plan), expected) in questions.iter().zip(&plans).zip(&expected) {
+        assert_eq!(&ids(&reader, plan), expected, "{text}");
+        // The name now resolves to the revision, and a new question runs it.
+        let current = reader.prepare_query_plan(text, &options()).unwrap();
+        assert_ne!(current.question_id(), plan.question_id(), "{text}");
+    }
+    let current = reader.prepare_query_plan(questions[0], &options()).unwrap();
+    assert_eq!(ids(&reader, &current), ["test:two"]);
+}
+
 #[test]
 fn model_authored_user_task_does_not_answer_a_turn() {
     let dir = tempfile::tempdir().unwrap();

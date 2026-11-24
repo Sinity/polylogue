@@ -81,35 +81,15 @@ fn expand_query(
             ..
         } = query.source.clone()
         {
-            if stack.contains(&name) {
-                return Err(QueryError::invalid(format!(
-                    "query:{name} refers to itself (through {})",
-                    stack.join(" -> ")
-                )));
-            }
-            let definition = saved::saved_definition(text, 0, &name, options)?;
-            let mut base = match &definition.body {
-                crate::SavedQueryBody::Available {
-                    object: Some(object),
-                    ..
-                } => {
-                    if definition.hash == object.id {
-                        object.query.clone()
-                    } else {
-                        object
-                            .definitions
-                            .iter()
-                            .find(|node| node.question == definition.hash)
-                            .ok_or_else(|| {
-                                QueryError::invalid("saved query differs from its declared hash")
-                            })?
-                            .query
-                            .clone()
-                    }
-                }
-                _ => parse_query(definition.executable_text()?, options)?,
-            };
-            saved::Parameters::new(&name, &arguments).bind(&mut base, 0)?;
+            let (mut base, definition) = saved_body(
+                &name,
+                &arguments,
+                text,
+                0,
+                options,
+                &catalog(options),
+                stack,
+            )?;
             stack.push(name.clone());
             expand_query(
                 &mut base,
@@ -268,6 +248,66 @@ fn expand_extensions(
         }
         Ok(())
     })
+}
+
+/// Refuses a saved query that names itself through the ones expanding
+/// around it, naming the chain (docs/query.md: Grammar).
+pub(crate) fn refuse_cycle(
+    name: &str,
+    expanding: &[String],
+    position: usize,
+) -> Result<(), QueryError> {
+    if expanding.iter().any(|outer| outer == name) {
+        return Err(QueryError::Invalid {
+            message: format!(
+                "query:{name} refers to itself (through {} -> {name})",
+                expanding.join(" -> ")
+            ),
+            position,
+        });
+    }
+    Ok(())
+}
+
+/// The body of the saved query `name` with its parameters bound to
+/// `arguments`: the query its declared identity hashed, never its current
+/// text, and the definition it came from. `expanding` holds the saved
+/// queries already being expanded around this one, outermost first; naming
+/// one of them again is the one cycle refusal.
+pub(crate) fn saved_body<'o>(
+    name: &str,
+    arguments: &[Argument],
+    text: &str,
+    position: usize,
+    definitions: &'o impl Definitions,
+    catalog: &Catalog,
+    expanding: &[String],
+) -> Result<(Query, &'o SavedQuery), QueryError> {
+    refuse_cycle(name, expanding, position)?;
+    let definition = saved::saved_definition(text, position, name, definitions)?;
+    let mut body = match &definition.body {
+        crate::SavedQueryBody::Available {
+            object: Some(object),
+            ..
+        } => {
+            if definition.hash == object.id {
+                object.query.clone()
+            } else {
+                object
+                    .definitions
+                    .iter()
+                    .find(|node| node.question == definition.hash)
+                    .ok_or_else(|| {
+                        QueryError::invalid("saved query differs from its declared hash")
+                    })?
+                    .query
+                    .clone()
+            }
+        }
+        _ => crate::parse::with_catalog(definition.executable_text()?, catalog)?,
+    };
+    saved::Parameters::new(name, arguments).bind(&mut body, position)?;
+    Ok((body, definition))
 }
 
 pub fn column_kind(kind: ColKind) -> FieldKind {

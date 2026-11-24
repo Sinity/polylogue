@@ -301,6 +301,11 @@ impl Definitions for Options {
         &self.saved
     }
 }
+impl Definitions for std::collections::BTreeMap<String, Vec<SavedQuery>> {
+    fn saved_queries(&self) -> &std::collections::BTreeMap<String, Vec<SavedQuery>> {
+        self
+    }
+}
 impl Definitions for Bindings {
     fn saved_queries(&self) -> &std::collections::BTreeMap<String, Vec<SavedQuery>> {
         &self.saved

@@ -45,7 +45,7 @@ SESSION-CONDITIONS | UNIT [where CONDITIONS] [| TRANSFORM]... tag:project:morrow
 
 ### Errors
 
-Every query error carries `kind`, `message`, `position` (byte offset, shown with a caret), `suggestion` (a corrected query that runs as given, whenever one can be formed), `hint`, `candidates` (the matches of an ambiguous reference, or the known fields close to an unknown one) and `retryable`. Polylogue's error kinds and their exit codes are [interfaces.md](interfaces.md#exit-codes). A unit or field that is part of the design but has no producer yet is refused `not_built`, never an empty result.
+Every query error carries `kind`, `message`, `position` (byte offset, shown with a caret), `suggestion` (a corrected query that runs as given, whenever one can be formed), `hint`, `candidates` (the matches of an ambiguous reference, or the known fields close to an unknown one) and `retryable`. Polylogue's error kinds and their exit codes are [interfaces.md](interfaces.md#exit-codes). An error found inside a saved query's body is reported at the position of its name, and its message names the position in the saved query's text. A unit or field that is part of the design but has no producer yet is refused `not_built`, never an empty result.
 
 ### References inside queries
 
