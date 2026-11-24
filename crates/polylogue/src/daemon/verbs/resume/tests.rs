@@ -209,8 +209,11 @@ fn resume_refuses_a_running_session() {
         )
         .answer(&d.daemon),
     );
+    // An ended session is not refused as running; this one recorded no
+    // directory, so its harness resume is refused for that
+    // (docs/session-control.md, the resume directory).
     assert_eq!(
-        ended["reply"]["steps"][0]["outcome"]["would"],
-        "would resume claude-code:s2 with claude --resume s2"
+        ended["reply"]["steps"][0]["outcome"]["refusal"]["message"],
+        "directory_unknown: the session recorded no directory to resume in; continue with context instead: polylogue session:claude-code:s2 brief"
     );
 }
