@@ -101,7 +101,7 @@ fn page(
 /// A failed annotations query as a store error that keeps what the caller
 /// decides on: a deadline or stop request stays retryable, and any other
 /// refusal keeps its product code.
-fn store_error(f: &crate::daemon::Failure, text: &str) -> StoreError {
+pub(crate) fn store_error(f: &crate::daemon::Failure, text: &str) -> StoreError {
     let message = format!("annotations query {text:?}: {}", f.message);
     match f.code() {
         "deadline_exceeded" => StoreError::ReadDeadlineExceeded,

@@ -1059,3 +1059,36 @@ fn concurrent_request_identity_distinguishes_the_accepting_channel() {
     let repeated_cli = Accepted::new(&open_calls, &details, Via::Cli, Default::default());
     assert_eq!(cli.scope(), repeated_cli.scope());
 }
+
+#[test]
+fn shutdown_drains_the_socket_within_its_budget() {
+    // One connection whose request never ends, as one that ignores its
+    // cancellation would: the drain hangs it up and stops waiting at its
+    // budget, reporting it as left open.
+    let clients = Clients::default();
+    let (served, mut peer) = UnixStream::pair().unwrap();
+    clients.open.locked().push((0, served));
+    assert_eq!(
+        clients.drain(Duration::from_millis(100), Duration::from_millis(200)),
+        1
+    );
+    // The hang-up reached the peer: it reads the end of the stream.
+    let mut rest = Vec::new();
+    peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+    assert_eq!(std::io::Read::read_to_end(&mut peer, &mut rest).unwrap(), 0);
+    // A connection that closes during the response window ends the drain
+    // early, with nothing left.
+    let clients = Arc::new(Clients::default());
+    let (served, _peer) = UnixStream::pair().unwrap();
+    clients.open.locked().push((0, served));
+    let closing = Arc::clone(&clients);
+    let closer = std::thread::spawn(move || {
+        closing.open.locked().clear();
+        closing.closed.notify_all();
+    });
+    assert_eq!(
+        clients.drain(Duration::from_secs(30), Duration::from_secs(30)),
+        0
+    );
+    closer.join().unwrap();
+}

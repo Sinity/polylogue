@@ -262,7 +262,7 @@ impl Verb for Edit {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        let text = text(&step)?;
+        let text = text(&step, selection)?;
         let annotations = annotations("edit", selection)?;
         let bases = {
             let reader = call.call.reader()?;
@@ -288,7 +288,7 @@ impl Verb for Edit {
         wrote(UserWrite::ReviseAnnotations { bases, patch }, call, None)
     }
     fn would(step: &EditStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
-        text(step)?;
+        text(step, selection)?;
         annotations("edit", selection)?;
         Ok(format!(
             "would write a new revision of {}",
@@ -307,9 +307,17 @@ fn stored_annotation(
         .ok_or_else(|| Failure::not_found(format!("no annotation {reference}")))
 }
 
-fn text(step: &EditStep) -> Result<String, Failure> {
+/// The new text. Without it the daemon has no editor to open, so the
+/// refusal gives the lines that do the same by hand (docs/annotations.md).
+fn text(step: &EditStep, selection: &Selection) -> Result<String, Failure> {
     step.text.clone().ok_or_else(|| {
-        Failure::bad_request("edit needs its new text; with no text a terminal opens your editor")
+        let target = selection
+            .query_text()
+            .map(|text| polylogue_render::shell_quote(&text))
+            .unwrap_or_else(|| "SELECTION".into());
+        Failure::bad_request(format!(
+            "edit needs its new text; with no text a terminal opens your editor. Without one, write the text out with `polylogue {target} read --to FILE.md`, change the file, and check it in with `polylogue import FILE.md`"
+        ))
     })
 }
 

@@ -100,8 +100,11 @@ fn resume_over_several_is_ambiguous_with_candidates() {
     );
 }
 
+/// The synthetic session records no directory, so its harness resume is
+/// refused rather than shown as a line to run anywhere
+/// (docs/session-control.md, the resume directory).
 #[test]
-fn resume_dry_run_prints_harness_command() {
+fn resume_dry_run_without_a_directory_is_refused() {
     let d = test_daemon::start("resume this work");
     let answer = crate::test_answers::ok(
         Call::new(
@@ -114,8 +117,8 @@ fn resume_dry_run_prints_harness_command() {
         .answer(&d.daemon),
     );
     assert_eq!(
-        answer["reply"]["steps"][0]["outcome"]["would"],
-        "would resume claude-code:s1 with claude --resume s1"
+        answer["reply"]["steps"][0]["outcome"]["refusal"]["message"],
+        "directory_unknown: the session recorded no directory to resume in; continue with context instead: polylogue session:claude-code:s1 brief"
     );
 }
 
@@ -206,8 +209,11 @@ fn resume_refuses_a_running_session() {
         )
         .answer(&d.daemon),
     );
+    // An ended session is not refused as running; this one recorded no
+    // directory, so its harness resume is refused for that
+    // (docs/session-control.md, the resume directory).
     assert_eq!(
-        ended["reply"]["steps"][0]["outcome"]["would"],
-        "would resume claude-code:s2 with claude --resume s2"
+        ended["reply"]["steps"][0]["outcome"]["refusal"]["message"],
+        "directory_unknown: the session recorded no directory to resume in; continue with context instead: polylogue session:claude-code:s2 brief"
     );
 }

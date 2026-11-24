@@ -548,6 +548,11 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     let out = cli(&env, &["--json", "status"]);
     assert_eq!(out.status.code(), Some(6));
     assert_eq!(json(&out)["error"]["code"], "daemon_required");
+    // The web reader is the running daemon's: without one there is no
+    // reader to open.
+    let out = cli(&env, &["--json", "web"]);
+    assert_eq!(out.status.code(), Some(6));
+    assert_eq!(json(&out)["error"]["code"], "daemon_required");
 }
 
 /// A run over a synthetic home reads none of the caller's tool directories,

@@ -25,7 +25,6 @@ pub(crate) mod open_calls;
 
 use crate::brief::{Ask, StartSource};
 use crate::config::Startup;
-use command_surface::Answer;
 use polylogue_model::DeliveryOutcome;
 use polylogue_model::JsonExt as _;
 use polylogue_model::SessionId;
@@ -264,6 +263,80 @@ fn request_id(at: jiff::Timestamp) -> std::io::Result<String> {
     Ok(uuid::Uuid::new_v7(uuid::Timestamp::from_unix(uuid::NoContext, seconds, nanos)).to_string())
 }
 
+/// Why a hook has no usable answer from the daemon. Each cause prints
+/// differently, so a hook that cannot reach the daemon says why.
+#[derive(Debug)]
+pub(crate) enum Unanswered {
+    /// Nothing listens on the socket: the daemon is not running.
+    NotRunning(std::io::Error),
+    /// The daemon did not answer within the hook's budget.
+    TimedOut(Duration),
+    /// The answer arrived but is not what the operation answers.
+    Undecodable(String),
+    /// The daemon answered with a failure.
+    Failed(command_surface::Failure),
+    /// Any other failure of the exchange.
+    Exchange(std::io::Error),
+}
+
+impl std::fmt::Display for Unanswered {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRunning(error) => write!(f, "the daemon is not running ({error})"),
+            Self::TimedOut(budget) => write!(
+                f,
+                "the daemon did not answer within {} ms",
+                budget.as_millis()
+            ),
+            Self::Undecodable(error) => {
+                write!(f, "the daemon's answer could not be decoded: {error}")
+            }
+            Self::Failed(failure) => match &failure.code {
+                Some(code) => write!(f, "the daemon refused ({code}): {}", failure.message),
+                None => write!(f, "the daemon refused: {}", failure.message),
+            },
+            Self::Exchange(error) => write!(f, "the exchange with the daemon failed: {error}"),
+        }
+    }
+}
+
+impl Unanswered {
+    fn of(error: std::io::Error, budget: Duration) -> Self {
+        use std::io::ErrorKind;
+        match error.kind() {
+            ErrorKind::ConnectionRefused | ErrorKind::NotFound => Self::NotRunning(error),
+            ErrorKind::TimedOut => Self::TimedOut(budget),
+            ErrorKind::InvalidData | ErrorKind::UnexpectedEof => {
+                Self::Undecodable(error.to_string())
+            }
+            _ => Self::Exchange(error),
+        }
+    }
+
+    fn timed_out(&self) -> bool {
+        match self {
+            Self::TimedOut(_) => true,
+            Self::Failed(failure) => {
+                failure.code.as_deref() == Some("deadline_exceeded")
+                    || failure.kind == command_surface::FailureKind::Timeout
+            }
+            _ => false,
+        }
+    }
+}
+
+/// One exchange with the daemon on `socket`, its budget covering all of it.
+/// An answer that carries a failure is that failure.
+pub(crate) fn exchange(
+    socket: &Path,
+    request: &command_surface::RunnableRequest,
+    budget: Duration,
+) -> Result<Value, Unanswered> {
+    let answer = crate::client::call_with_budget(socket, request, budget)
+        .map_err(|error| Unanswered::of(error, budget))?;
+    crate::protocol::into_value(answer).map_err(Unanswered::Failed)
+}
+
 /// Sends one request with a time budget for the whole exchange.
 fn ask_daemon(
     startup: &Startup,
@@ -271,17 +344,23 @@ fn ask_daemon(
     arguments: Value,
     request_id: String,
     budget: Duration,
-) -> Option<Answer<Value>> {
+) -> Result<Value, Unanswered> {
     let mut request = crate::client::request(operation, arguments, request_id);
     request.deadline = command_surface::Deadline::Milliseconds(
         u64::try_from(budget.as_millis()).unwrap_or(u64::MAX),
     );
-    crate::client::call_with_budget(
+    exchange(
         &Archive::at(&startup.config.archive).socket(),
         &request,
         budget,
     )
-    .ok()
+}
+
+fn report(what: &str, cause: &impl std::fmt::Display) {
+    eprintln!(
+        "{}",
+        polylogue_render::terminal::escape(&format!("polylogue hook: {what}: {cause}"))
+    );
 }
 
 /// A Hermes caller's session as Polylogue names it: Hermes's own session ID
@@ -398,7 +477,9 @@ fn is_uuid(w: &str) -> bool {
 }
 
 /// Asks for context and returns its text, recording it as delivered once
-/// it is handed to the harness by the caller.
+/// it is handed to the harness by the caller. Context that cannot be had is
+/// none, and the hook says why on its standard error; a timed-out advisory
+/// says nothing.
 fn context(
     startup: &Startup,
     ask: Ask,
@@ -406,8 +487,14 @@ fn context(
     until: Instant,
 ) -> Option<(String, String)> {
     let advisory = matches!(&ask, Ask::Advisory { .. });
-    let request_id = request_id(startup.clock.now()).ok()?;
-    let (operation, arguments, cursor) = match ask {
+    let request_id = match request_id(startup.clock.now()) {
+        Ok(id) => id,
+        Err(error) => {
+            report("no context", &error);
+            return None;
+        }
+    };
+    let (operation, arguments) = match ask {
         Ask::SessionStart {
             cwd,
             session,
@@ -415,7 +502,6 @@ fn context(
         } => (
             "rows",
             json!({"steps": [{"verb": "brief", "cwd": cwd, "for": session, "source": source}]}),
-            None,
         ),
         Ask::Advisory {
             prompt,
@@ -424,7 +510,6 @@ fn context(
         } => (
             "internal advisory",
             json!({"prompt":prompt,"cwd":cwd,"session":session}),
-            None,
         ),
         Ask::Takeover {
             session,
@@ -432,7 +517,16 @@ fn context(
         } => (
             "rows",
             json!({"selection": format!("session:{session}"), "steps": [{"verb": "brief", "for": for_session}]}),
-            None,
+        ),
+        Ask::Sessions {
+            sessions,
+            for_session,
+        } => (
+            "rows",
+            json!({
+                "references": sessions.iter().map(|session| format!("session:{session}")).collect::<Vec<_>>(),
+                "steps": [{"verb": "brief", "for": for_session}],
+            }),
         ),
         Ask::Recall {
             text,
@@ -442,7 +536,6 @@ fn context(
         } => (
             "rows",
             json!({"selection": text, "steps": [{"verb": "brief", "cwd": cwd, "for": for_session, "cursor": cursor}]}),
-            None,
         ),
     };
     let remaining = until.saturating_duration_since(Instant::now());
@@ -463,82 +556,57 @@ fn context(
             command_surface::TokenBudget::Default,
             command_surface::TokenBudget::Tokens,
         ),
-        cursor,
+        cursor: None,
         fresh: false,
         format: Default::default(),
     };
-    let reply = crate::client::call_with_budget(
+    let answer = exchange(
         &Archive::at(&startup.config.archive).socket(),
         &request,
         allowance,
-    );
-    let line_answer = if advisory {
-        None
-    } else {
-        reply
-            .as_ref()
-            .ok()
-            .and_then(|reply| reply.value())
-            .and_then(|data| {
-                serde_json::from_value::<crate::protocol::line::LineAnswer>(data.clone()).ok()
-            })
-    };
-    let timed_out = match &reply {
-        Err(error) => error.kind() == std::io::ErrorKind::TimedOut,
-        Ok(reply) => {
-            let step_error = match &line_answer {
-                Some(crate::protocol::line::LineAnswer::Steps(answer)) => {
-                    answer.steps.first().and_then(|step| match &step.outcome {
-                        crate::protocol::line::StepOutcome::Failed { error } => Some(error),
-                        _ => None,
-                    })
-                }
-                _ => None,
-            };
-            reply.failure().or(step_error).is_some_and(|error| {
-                error.code.as_deref() == Some("deadline_exceeded")
-                    || error.kind == command_surface::FailureKind::Timeout
-            })
+    )
+    .and_then(|data| {
+        if advisory {
+            serde_json::from_value::<crate::protocol::context::Answer>(data)
+                .map_err(|error| Unanswered::Undecodable(error.to_string()))
+        } else {
+            brief_of(data)
         }
-    };
-    if timed_out && advisory {
-        return None;
-    }
-    if timed_out {
-        // No prepared bytes were emitted. Only the daemon's existing queue
-        // may confirm preparation; without it, acceptance stays unresolved.
-        let accepted = ask_daemon(
-            startup,
-            "internal delivery-event",
-            json!({
-                "delivery": format!("{request_id}-1"),
-                "what": DeliveryOutcome::NotSent,
-                "detail": "timeout",
-            }),
-            self::request_id(startup.clock.now()).ok()?,
-            DELIVERED_BUDGET,
-        );
-        if accepted.is_none_or(|answer| answer.failure().is_some()) {
-            eprintln!("polylogue: could not hand the timed-out delivery outcome to the daemon");
+    });
+    let answer = match answer {
+        Ok(answer) => answer,
+        Err(cause) if cause.timed_out() && advisory => return None,
+        Err(cause) if cause.timed_out() => {
+            // No prepared bytes were emitted. Only the daemon's existing
+            // queue may confirm preparation; without it, acceptance stays
+            // unresolved.
+            let accepted = self::request_id(startup.clock.now())
+                .map_err(Unanswered::Exchange)
+                .and_then(|id| {
+                    ask_daemon(
+                        startup,
+                        "internal delivery-event",
+                        json!({
+                            "delivery": format!("{request_id}-1"),
+                            "what": DeliveryOutcome::NotSent,
+                            "detail": "timeout",
+                        }),
+                        id,
+                        DELIVERED_BUDGET,
+                    )
+                });
+            if let Err(cause) = accepted {
+                report(
+                    "could not hand the timed-out delivery outcome to the daemon",
+                    &cause,
+                );
+            }
+            return Some((String::new(), TIMEOUT_NOTICE.into()));
         }
-        return Some((String::new(), TIMEOUT_NOTICE.into()));
-    }
-    let answer = if advisory {
-        let data = crate::protocol::into_value(reply.ok()?).ok()?;
-        serde_json::from_value::<crate::protocol::context::Answer>(data).ok()?
-    } else {
-        use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
-        let LineAnswer::Steps(mut answer) = line_answer? else {
+        Err(cause) => {
+            report("no context", &cause);
             return None;
-        };
-        let StepOutcome::Done {
-            reply: StepAnswer::Brief(prepared),
-            ..
-        } = answer.steps.pop()?.outcome
-        else {
-            return None;
-        };
-        *prepared
+        }
     };
     if answer.prepared.empty {
         return None;
@@ -546,23 +614,49 @@ fn context(
     Some((answer.delivery?, answer.prepared.text))
 }
 
-fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
-    let Ok(request_id) = request_id(startup.clock.now()) else {
-        return;
+/// The brief a one-step `rows` line answered, or why there is none.
+fn brief_of(data: Value) -> Result<crate::protocol::context::Answer, Unanswered> {
+    use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
+    let line = serde_json::from_value::<LineAnswer>(data)
+        .map_err(|error| Unanswered::Undecodable(error.to_string()))?;
+    let LineAnswer::Steps(mut answer) = line else {
+        return Err(Unanswered::Undecodable(
+            "the line answered rows, not its brief step".into(),
+        ));
     };
-    let accepted = ask_daemon(
-        startup,
-        "internal delivery-event",
-        json!({
-            "delivery": delivery,
-            "what": DeliveryOutcome::Delivered,
-            "detail": "written to the harness hook output",
-        }),
-        request_id,
-        budget,
-    );
-    if accepted.is_none_or(|answer| answer.failure().is_some()) {
-        eprintln!("polylogue: could not hand delivery outcome {delivery} to the daemon");
+    match answer.steps.pop().map(|step| step.outcome) {
+        Some(StepOutcome::Done {
+            reply: StepAnswer::Brief(prepared),
+            ..
+        }) => Ok(*prepared),
+        Some(StepOutcome::Failed { error }) => Err(Unanswered::Failed(error)),
+        _ => Err(Unanswered::Undecodable(
+            "the line has no brief step answer".into(),
+        )),
+    }
+}
+
+fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
+    let accepted = request_id(startup.clock.now())
+        .map_err(Unanswered::Exchange)
+        .and_then(|request_id| {
+            ask_daemon(
+                startup,
+                "internal delivery-event",
+                json!({
+                    "delivery": delivery,
+                    "what": DeliveryOutcome::Delivered,
+                    "detail": "written to the harness hook output",
+                }),
+                request_id,
+                budget,
+            )
+        });
+    if let Err(cause) = accepted {
+        report(
+            &format!("could not hand delivery outcome {delivery} to the daemon"),
+            &cause,
+        );
     }
 }
 
@@ -611,7 +705,9 @@ fn start(
     )
 }
 
-/// Takeover context for each session pasted into a prompt.
+/// Context for the sessions pasted into a prompt, which share one budget:
+/// one or two each get a takeover, split evenly; three or more get one
+/// index of them (docs/agent-context.md).
 fn takeovers(
     harness: Harness,
     payload: &Value,
@@ -626,6 +722,17 @@ fn takeovers(
         .into_iter()
         .filter(|id| Some(id) != me.as_ref())
         .collect();
+    if sessions.len() >= 3 {
+        return context(
+            startup,
+            Ask::Sessions {
+                sessions,
+                for_session: me,
+            },
+            None,
+            until,
+        );
+    }
     // Separators and every session share the named takeover budget.
     let separators = sessions
         .len()
@@ -844,14 +951,19 @@ pub fn accepts_mail(harness: Harness, event: &str) -> bool {
 /// delivery IDs and their texts joined.
 fn claim(startup: &Startup, session: &SessionId, until: Instant) -> Option<(Vec<String>, String)> {
     let remaining = until.checked_duration_since(Instant::now())?;
-    let reply = ask_daemon(
+    let data = match ask_daemon(
         startup,
         "internal mail-claim",
         json!({ "session": session }),
         polylogue_store::user_writes::new_request_id(),
         remaining,
-    )?;
-    let data = crate::protocol::into_value(reply).ok()?;
+    ) {
+        Ok(data) => data,
+        Err(cause) => {
+            report("no mail claimed", &cause);
+            return None;
+        }
+    };
     let items = data["deliveries"].as_array()?;
     let ids: Vec<String> = items
         .iter()
@@ -868,7 +980,7 @@ fn permission(startup: &Startup, session: &SessionId, payload: &Value, until: In
     let Some(remaining) = until.checked_duration_since(Instant::now()) else {
         return;
     };
-    let Some(reply) = ask_daemon(
+    let data = match ask_daemon(
         startup,
         "internal permission",
         json!({
@@ -878,11 +990,12 @@ fn permission(startup: &Startup, session: &SessionId, payload: &Value, until: In
         }),
         polylogue_store::user_writes::new_request_id(),
         remaining,
-    ) else {
-        return;
-    };
-    let Ok(data) = crate::protocol::into_value(reply) else {
-        return;
+    ) {
+        Ok(data) => data,
+        Err(cause) => {
+            report("no permission decision", &cause);
+            return;
+        }
     };
     if let Some(output) = permission_output(&data) {
         let mut stdout = std::io::stdout().lock();

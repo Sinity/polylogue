@@ -18,8 +18,8 @@ use std::path::Path;
 
 /// A command line to run in a directory. A harness resume runs in the
 /// session's resume directory ([`Reader::resume_directory`]). `cwd` is `None`
-/// when none was recorded: a preview prints the bare line, and running it is
-/// refused, never done in the caller's directory.
+/// when none was recorded: a preview says so instead of the line, and
+/// running it is refused, never done in the caller's directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Command {
@@ -78,7 +78,6 @@ pub struct ResumableSession {
     pub open: OpenItems,
     /// Operator notes on it that ask for follow-up (handoffs, problems).
     pub follow_ups: Vec<String>,
-    pub harness_command: Option<Command>,
 }
 
 /// The shipped (or authored replacement) unfinished question supplies the
@@ -142,12 +141,10 @@ pub fn resumable(
                 )
             })
             .collect();
-        let harness_command = harness_resume(&s.id, reader.resume_directory(&s.id)?.as_deref());
         out.push(ResumableSession {
             session: s,
             open,
             follow_ups,
-            harness_command,
         });
         if out.len() as u64 >= limit {
             break;

@@ -195,13 +195,10 @@ fn rows_text(line: &LineAnswer) -> Result<String, String> {
                             .render_text("rows", &answer, command_surface::TextStyle::Plain)
                             .map_err(|failure| error_text(&failure))?
                     }
-                    StepAnswer::Streamed(_) | StepAnswer::Followed(_) => String::new(),
-                    StepAnswer::Brief(brief) => {
-                        polylogue_render::terminal::escape(&brief.prepared.text)
-                    }
-                    other => polylogue_render::terminal::json(
-                        &serde_json::to_value(other).expect("step answer serializes"),
-                        false,
+                    other => crate::cli::print::step_reply(
+                        other,
+                        &step.verb,
+                        command_surface::TextStyle::Plain,
                     ),
                 };
                 for line in undo {
@@ -412,13 +409,18 @@ fn run(
         caller,
         deadline_ms,
     ));
-    if let Ok(answer) = &mut answer
-        && answer
-            .failure()
-            .is_some_and(|failure| failure.code.as_deref() == Some("needs_all"))
-    {
-        let mut next = request.clone();
-        next.arguments["all"] = json!(true);
+    // The daemon's refusal carries the same line with `all` set; MCP offers
+    // it as the next call.
+    let all = answer
+        .as_ref()
+        .ok()
+        .and_then(|answer| answer.failure())
+        .filter(|failure| failure.code.as_deref() == Some("needs_all"))
+        .and_then(|failure| match failure.suggestion() {
+            Some(command_surface::Suggestion::Request(next)) => Some(next.clone()),
+            _ => None,
+        });
+    if let (Ok(answer), Some(next)) = (&mut answer, all) {
         answer.envelope.next.push(command_surface::Next {
             label: "act on all matching rows".into(),
             request: next,

@@ -337,6 +337,35 @@ fn hook_entries_call_internal_hook() {
     }
 }
 
+/// docs/installing.md: recording entries run asynchronously where the
+/// harness supports it (Claude Code's `async`); context entries do not.
+#[test]
+fn claude_code_recording_hooks_run_in_the_background() {
+    let settings = merge_hooks(json!({}), Harness::ClaudeCode, None, true).unwrap();
+    for (event, background) in [
+        ("SessionStart", false),
+        ("UserPromptSubmit", false),
+        ("PostToolUse", false),
+        ("PreToolUse", true),
+        ("Notification", true),
+        ("Stop", true),
+        ("SubagentStop", true),
+        ("PreCompact", true),
+        ("SessionEnd", true),
+    ] {
+        let hook = &settings["hooks"][event][0]["hooks"][0];
+        assert_eq!(
+            hook.get("async"),
+            background.then_some(&json!(true)),
+            "{event}"
+        );
+    }
+    let codex = merge_hooks(json!({}), Harness::Codex, None, true).unwrap();
+    let stop = &codex["hooks"]["Stop"][0]["hooks"][0];
+    assert!(stop["command"].is_string());
+    assert!(stop.get("async").is_none());
+}
+
 #[test]
 fn codex_hooks_name_the_harness_and_replace_their_own() {
     let once = merge_hooks(json!({}), Harness::Codex, None, true).unwrap();
@@ -926,4 +955,98 @@ fn expired_multi_session_context_emits_one_unreferenced_notice() {
         Instant::now(),
     );
     assert_eq!(result, Some((String::new(), TIMEOUT_NOTICE.into())));
+}
+
+/// docs/agent-context.md: three or more pasted sessions inject one index,
+/// asked for in one request that names them all.
+#[test]
+fn three_pasted_sessions_give_one_index() {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(startup().engine, dir.path());
+    let listener = UnixListener::bind(Archive::at(dir.path()).socket()).unwrap();
+    let peer = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(&stream).read_line(&mut line).unwrap();
+        let request: Value = serde_json::from_str(&line).unwrap();
+        assert_eq!(request["operation"], "rows");
+        assert_eq!(
+            request["arguments"],
+            json!({
+                "references": ["session:claude-code:s1", "session:claude-code:s2", "session:claude-code:s3"],
+                "steps": [{"verb": "brief", "for": "codex:receiving"}],
+            })
+        );
+        let response = command_surface::Answer::ok(json!({
+            "kind":"steps", "reply":{"resolved":null, "steps":[{
+                "verb":"brief", "request_id":format!("{}-1", request["request_id"].as_str().unwrap()),
+                "outcome":{"status":"done", "reply":{"kind":"brief", "reply":{
+                    "delivery":"index-1", "prepared":{"event":"session_brief", "empty":false, "text":"session index", "refs":[], "left_out":[]}
+                }}}
+            }]}
+        }));
+        writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+        // No second request arrives: one index, not a takeover per session.
+        let mut rest = String::new();
+        assert_eq!(BufReader::new(&stream).read_line(&mut rest).unwrap_or(0), 0);
+    });
+    let reply = takeovers(
+        Harness::Codex,
+        &json!({"session_id": "receiving"}),
+        "compare claude-code:s1, claude-code:s2 and claude-code:s3",
+        &startup,
+        Instant::now() + CONTEXT_BUDGET,
+    );
+    peer.join().unwrap();
+    assert_eq!(reply, Some(("index-1".into(), "session index".into())));
+}
+
+#[test]
+fn a_hook_that_cannot_reach_the_daemon_names_the_cause() {
+    use std::os::unix::net::UnixListener;
+    let dir = tempfile::tempdir().unwrap();
+    let request = crate::client::request("status", json!({}), "status".into());
+    let budget = Duration::from_millis(50);
+    // Refused: no daemon listens on the socket.
+    let missing = dir.path().join("missing.sock");
+    let cause = exchange(&missing, &request, budget).unwrap_err();
+    assert!(matches!(cause, Unanswered::NotRunning(_)), "{cause:?}");
+    assert!(
+        cause.to_string().starts_with("the daemon is not running ("),
+        "{cause}"
+    );
+    // Timeout: a daemon that accepts and never answers.
+    let silent = dir.path().join("silent.sock");
+    let listener = UnixListener::bind(&silent).unwrap();
+    let held = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        let _ = stream.read_to_end(&mut request);
+    });
+    let cause = exchange(&silent, &request, budget).unwrap_err();
+    assert_eq!(cause.to_string(), "the daemon did not answer within 50 ms");
+    held.join().unwrap();
+    // Decode: an answer line that is not an answer.
+    let garbled = dir.path().join("garbled.sock");
+    let listener = UnixListener::bind(&garbled).unwrap();
+    let answering = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(&stream), &mut line).unwrap();
+        writeln!(stream, "not an answer").unwrap();
+    });
+    let cause = exchange(&garbled, &request, budget).unwrap_err();
+    assert!(matches!(cause, Unanswered::Undecodable(_)), "{cause:?}");
+    assert!(
+        cause
+            .to_string()
+            .starts_with("the daemon's answer could not be decoded: "),
+        "{cause}"
+    );
+    answering.join().unwrap();
 }

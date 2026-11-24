@@ -31,6 +31,19 @@ fn request(
 fn page(response: command_surface::Answer<BytePage>) -> BytePage {
     crate::test_answers::ok(response)
 }
+fn seal(daemon: &test_daemon::TestDaemon) -> CursorSeal {
+    let reader = daemon.daemon.reads.reader().unwrap();
+    CursorSeal {
+        key: reader.cursor_key().unwrap(),
+        generation: reader.change_position().unwrap().generation,
+    }
+}
+fn refused_with(response: command_surface::Answer<BytePage>, code: &str) {
+    assert!(
+        matches!(response, command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some(code)),
+        "{response:?}"
+    );
+}
 
 #[test]
 fn selected_inline_cas_pages_keep_bytes_without_inventing_an_input() {
@@ -101,19 +114,14 @@ fn explicit_inputs_and_inline_cursor_sources_never_fall_back_to_other_bytes() {
         matches!(refused,command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
     );
-    let mut changed: Cursor = serde_json::from_slice(
-        &base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(cursor)
-            .unwrap(),
-    )
-    .unwrap();
+    let seal = seal(&daemon);
+    let mut changed: Cursor = seal.open(SEAL_DOMAIN, &cursor).unwrap();
     changed.source = Some(CursorSource::Inline {
         message: message.clone(),
         block: 1,
         attachment: 0,
     });
-    let changed = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .encode(serde_json::to_vec(&changed).unwrap());
+    let changed = seal.seal(SEAL_DOMAIN, &changed);
     let refused = read(request(&message, None, Some(changed), 1), &daemon.daemon);
     assert!(
         matches!(refused,command_surface::Answer { outcome: command_surface::Outcome::Error(ref error), .. } if error.code.as_deref() == Some("stale_cursor")),
@@ -147,12 +155,7 @@ fn receiving_member_cursors_keep_their_input_selection_and_original_wire_shape()
         );
         cursor = page.next;
         if let Some(cursor) = &cursor {
-            let wire: serde_json::Value = serde_json::from_slice(
-                &base64::engine::general_purpose::URL_SAFE_NO_PAD
-                    .decode(cursor)
-                    .unwrap(),
-            )
-            .unwrap();
+            let wire: serde_json::Value = seal(&daemon).open(SEAL_DOMAIN, cursor).unwrap();
             assert_eq!(wire["input"], input);
             assert!(
                 wire.get("source").is_none(),
@@ -178,6 +181,49 @@ fn receiving_member_cursors_keep_their_input_selection_and_original_wire_shape()
         }
     }
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn a_forged_attachment_cursor_is_refused() {
+    let daemon = test_daemon::start("synthetic forged attachment cursor");
+    let bytes = vec![b'F'; PAGE_BYTES + 5];
+    let message = inline(&daemon, &bytes);
+    let first = page(read(request(&message, None, None, 2), &daemon.daemon));
+    let issued = first.next.unwrap();
+    let seal = seal(&daemon);
+    let position: Cursor = seal.open(SEAL_DOMAIN, &issued).unwrap();
+    assert_eq!(position.offset, 2);
+    let moved = Cursor {
+        offset: 1,
+        ..position
+    };
+    // The same position under another key, under the page cursors' domain,
+    // as plain JSON, and with one payload byte changed.
+    let other_key = CursorSeal {
+        key: [9; 32],
+        generation: seal.generation.clone(),
+    };
+    let (payload, mac) = issued.split_once('.').unwrap();
+    let mut changed = payload.as_bytes().to_vec();
+    changed[2] = if changed[2] == b'0' { b'1' } else { b'0' };
+    for forged in [
+        other_key.seal(SEAL_DOMAIN, &moved),
+        seal.seal(b"polylogue.page-cursor\0", &moved),
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(&moved).unwrap()),
+        format!("{}.{mac}", String::from_utf8(changed.clone()).unwrap()),
+    ] {
+        refused_with(
+            read(request(&message, None, Some(forged), 2), &daemon.daemon),
+            "bad_request",
+        );
+    }
+    // The issued cursor still continues where it said.
+    let next = page(read(
+        request(&message, None, Some(issued), 2),
+        &daemon.daemon,
+    ));
+    assert_eq!(next.offset, 2);
 }
 
 #[test]

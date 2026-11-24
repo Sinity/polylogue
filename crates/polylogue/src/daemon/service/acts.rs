@@ -545,17 +545,29 @@ fn send_message(
 /// out again.
 fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
     let _claims = d.acts.claim_lock();
-    let pending = d
-        .reads
-        .reader()?
-        .pending_hook_deliveries(&session.to_string())?;
+    // The flag is lowered before the pending list is read: a delivery handed
+    // to the hook after that read raises it again, whereas lowering after
+    // the read would clear a flag raised in between and strand that delivery.
+    crate::mailbox::lower(d.acts.mail(), session).map_err(Failure::io)?;
+    let pending = (|| -> Result<_, Failure> {
+        Ok(d.reads
+            .reader()?
+            .pending_hook_deliveries(&session.to_string())?)
+    })();
+    let pending = match pending {
+        Ok(pending) => pending,
+        Err(failure) => {
+            // Nothing was claimed, so the flag goes back up for the next hook.
+            crate::mailbox::raise(d.acts.mail(), session).map_err(Failure::io)?;
+            return Err(failure);
+        }
+    };
     let claimed: Vec<Value> = d
         .acts
         .take(pending)
         .into_iter()
         .map(|(id, text)| json!({"id": id, "text": text}))
         .collect();
-    crate::mailbox::lower(d.acts.mail(), session).map_err(Failure::io)?;
     Ok(ok(json!({ "deliveries": claimed })))
 }
 

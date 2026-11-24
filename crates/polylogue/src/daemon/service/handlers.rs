@@ -896,7 +896,7 @@ impl Handler for Embed {
 }
 
 /// The context rows: a request with a sender is recorded as a delivery.
-fn prepare_context(
+pub(crate) fn prepare_context(
     call: &Call<'_>,
     ask: Ask,
 ) -> Result<Answer<protocol::context::Answer>, Failure> {

@@ -201,3 +201,71 @@ fn advisory_cooldown_and_once_pair_history_have_distinct_lifetimes() {
         "after-cooldown"
     );
 }
+
+#[test]
+fn an_advisory_store_failure_is_reported() {
+    let (w, _) = fixture();
+    let reference = statement(
+        &w,
+        "failing-store-file",
+        AnnotationKind::Decision,
+        "file:src/parser.rs@fixture-commit",
+        Some("cwd:/synthetic/repo"),
+        true,
+    );
+    let operation = w
+        .daemon
+        .operation_context(&Authorship {
+            author: polylogue_model::Author::Agent(None),
+            via: Channel::Mcp,
+        })
+        .unwrap();
+    let ask = Ask::Advisory {
+        prompt: "Inspect src/parser.rs".into(),
+        cwd: CWD.into(),
+        session: SessionId::parse("codex:advisory-store-failure").unwrap(),
+    };
+    polylogue_store::fault::arm(
+        "read.annotation_validity",
+        &reference.to_string(),
+        polylogue_store::fault::Action::Fail,
+        0,
+        1,
+    );
+    let limit = ReadLimit::new(std::time::Duration::from_secs(5), Default::default());
+    // A commit can still be changing the scope, which answers empty before
+    // the candidate is read; ask again until the armed read is reached.
+    let answer = loop {
+        let answer = limit.scope(|| {
+            super::super::context(
+                &w.daemon,
+                "advisory-store-failure".into(),
+                &ask,
+                Some(polylogue_model::DeliverySender::Mcp),
+                Default::default(),
+                &operation,
+            )
+        });
+        if answer.failure().is_some() {
+            break answer;
+        }
+        assert_eq!(
+            serde_json::to_value(crate::test_answers::ok(answer)).unwrap()["prepared"]["empty"],
+            true
+        );
+        w.daemon
+            .scope
+            .read(limit.deadline(), |_| ())
+            .expect("fixture scope is loaded");
+        limit.check().expect("the armed read was never reached");
+        std::thread::yield_now();
+    };
+    let failure = answer.failure().expect("a store failure is not silence");
+    assert_eq!(failure.code.as_deref(), Some("io"));
+    assert!(
+        failure
+            .message
+            .contains("injected fault at read.annotation_validity"),
+        "{failure:?}"
+    );
+}

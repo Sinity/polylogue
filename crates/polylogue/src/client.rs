@@ -220,7 +220,7 @@ async fn exchange_message<T: serde::de::DeserializeOwned>(
             "the operation answer ended before its line boundary",
         ));
     }
-    serde_json::from_str(&reply).map_err(io::Error::other)
+    serde_json::from_str(&reply).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
 
 /// A hook uses the existing daemon only; its budget covers the entire exchange.

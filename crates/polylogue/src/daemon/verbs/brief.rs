@@ -1,6 +1,6 @@
 //! `brief`: packaged context, chosen by the selection's form. No selection
-//! is the directory brief, one session is its takeover, search words are a
-//! recall.
+//! is the directory brief, one session is its takeover, three or more named
+//! sessions are an index of them, search words are a recall.
 use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built_use};
 use crate::daemon::Failure;
 use crate::daemon::handler::{Call, Handler};
@@ -61,6 +61,13 @@ impl Verb for Brief {
                 },
                 &call,
             )?,
+            Form::Sessions(sessions) => handlers::prepare_context(
+                &call,
+                crate::brief::Ask::Sessions {
+                    sessions,
+                    for_session,
+                },
+            )?,
             Form::SessionWord(_) => unreachable!("a session word is resolved to a session above"),
             Form::Words(query) => handlers::Recall::run(
                 context::Recall {
@@ -79,6 +86,9 @@ impl Verb for Brief {
             Form::Directory => "would brief this directory".into(),
             Form::Session(session) => format!("would brief a takeover of {session}"),
             Form::SessionWord(text) => format!("would brief a takeover of {text}"),
+            Form::Sessions(sessions) => {
+                format!("would brief an index of {} sessions", sessions.len())
+            }
             Form::Words(query) => format!("would recall what is known about {query:?}"),
             Form::Other => return Err(not_built_use("brief", "over these rows")),
         })
@@ -91,6 +101,8 @@ enum Form {
     Session(SessionId),
     /// `latest`, `self` or a bare ID: one session the query names.
     SessionWord(String),
+    /// Three or more sessions named together.
+    Sessions(Vec<SessionId>),
     /// Only words and quoted phrases.
     Words(String),
     Other,
@@ -112,6 +124,14 @@ fn form(selection: &Selection) -> Form {
                 Form::Other
             }
         }
+        Given::References(references) if references.len() >= 3 => references
+            .iter()
+            .map(|reference| match reference {
+                Reference::Session(session) => Some(session.clone()),
+                _ => None,
+            })
+            .collect::<Option<Vec<_>>>()
+            .map_or(Form::Other, Form::Sessions),
         Given::Reference(_) | Given::References(_) => Form::Other,
     }
 }

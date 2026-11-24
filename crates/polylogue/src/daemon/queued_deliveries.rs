@@ -15,7 +15,36 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-type Committed = Receiver<Result<polylogue_store::user_writes::WriteResult, StoreError>>;
+type WriteAnswer = Result<polylogue_store::user_writes::WriteResult, StoreError>;
+
+/// The writer's answer for one handed-over request, kept once received so
+/// that reading it never consumes it.
+struct Committed {
+    receiver: Receiver<WriteAnswer>,
+    answer: Option<WriteAnswer>,
+}
+
+impl Committed {
+    fn new(receiver: Receiver<WriteAnswer>) -> Self {
+        Self {
+            receiver,
+            answer: None,
+        }
+    }
+
+    /// `None` while the writer has not answered; a writer that went away
+    /// without answering answers `WriterGone`.
+    fn answer(&mut self) -> Option<&WriteAnswer> {
+        if self.answer.is_none() {
+            self.answer = match self.receiver.try_recv() {
+                Ok(answer) => Some(answer),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err(StoreError::WriterGone)),
+            };
+        }
+        self.answer.as_ref()
+    }
+}
 
 /// A request the writer's queue had no room for.
 struct Waiting {
@@ -159,15 +188,13 @@ impl QueuedDeliveries {
     /// Only a true answer means anything: false says nothing about a preparation already
     /// committed or an invocation still running. Never acquires an archive reader.
     pub fn owns_preparation(&self, id: &str) -> bool {
-        let state = self.0.locked();
+        let mut state = self.0.locked();
         state.advice.contains_key(id)
-            || state.latest.values().any(|latest| {
+            || state.latest.values_mut().any(|latest| {
                 latest.request == id
-                    && match &latest.committed {
+                    && match &mut latest.committed {
                         None => true,
-                        Some(committed) => {
-                            matches!(committed.try_recv(), Err(TryRecvError::Empty) | Ok(Ok(_)))
-                        }
+                        Some(committed) => matches!(committed.answer(), None | Some(Ok(_))),
                     }
             })
             || state.waiting.iter().any(|waiting| {
@@ -288,10 +315,12 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
                 return Err(error);
             }
             Ok(Queued::Committing(committed)) => match outcome {
-                Some(request) => state
-                    .outcomes
-                    .push_back(PendingOutcome { request, committed }),
+                Some(request) => state.outcomes.push_back(PendingOutcome {
+                    request,
+                    committed: Committed::new(committed),
+                }),
                 None => {
+                    let committed = Committed::new(committed);
                     if let Some(advice) = state.advice.get_mut(&id) {
                         advice.committed = Some(committed);
                     } else if let Some(latest) = next
@@ -327,15 +356,14 @@ fn is_outcome(request: &UserRequest) -> bool {
 /// (or failed, and the stored deliveries are what remains).
 fn prune(state: &mut State) {
     let mut failed = VecDeque::new();
-    for pending in std::mem::take(&mut state.outcomes) {
-        let failure = match pending.committed.try_recv() {
-            Err(TryRecvError::Empty) => {
+    for mut pending in std::mem::take(&mut state.outcomes) {
+        let failure = match pending.committed.answer() {
+            None => {
                 state.outcomes.push_back(pending);
                 continue;
             }
-            Ok(Ok(_)) => continue,
-            Ok(Err(error)) => error.to_string(),
-            Err(TryRecvError::Disconnected) => StoreError::WriterGone.to_string(),
+            Some(Ok(_)) => continue,
+            Some(Err(error)) => error.to_string(),
         };
         state.last_failure = Some(failure);
         failed.push_back(pending.request);
@@ -345,18 +373,22 @@ fn prune(state: &mut State) {
     if state.outcomes.is_empty() && !state.waiting.iter().any(|next| is_outcome(&next.request)) {
         state.last_failure = None;
     }
-    state.advice.retain(|_, advice| match &advice.committed {
-        None => true,
-        // A failed acknowledgment cannot establish stored history. Keep
-        // that uncertain pair; it is never permission to prepare it again.
-        Some(committed) => {
-            !matches!(committed.try_recv(), Ok(Ok(outcome)) if !outcome.outcome.pending)
-        }
-    });
-    state.latest.retain(|_, latest| match &latest.committed {
-        None => true,
-        Some(committed) => matches!(committed.try_recv(), Err(TryRecvError::Empty)),
-    });
+    state
+        .advice
+        .retain(|_, advice| match &mut advice.committed {
+            None => true,
+            // A failed acknowledgment cannot establish stored history. Keep
+            // that uncertain pair; it is never permission to prepare it again.
+            Some(committed) => {
+                !matches!(committed.answer(), Some(Ok(outcome)) if !outcome.outcome.pending)
+            }
+        });
+    state
+        .latest
+        .retain(|_, latest| match &mut latest.committed {
+            None => true,
+            Some(committed) => committed.answer().is_none(),
+        });
 }
 
 #[cfg(test)]

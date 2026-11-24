@@ -243,6 +243,25 @@ fn given(rows: &Rows) -> Result<Given, Failure> {
     }
 }
 
+/// What the rows are, in the plural: the kind their references share
+/// (`sessions`, `messages`, `annotations`), else `rows`.
+fn plural_kind(references: &[Reference]) -> String {
+    let kind = |reference: &Reference| {
+        let text = reference.to_string();
+        text.split_once(':')
+            .map(|(kind, _)| kind.to_owned())
+            .unwrap_or_default()
+    };
+    let first = references.first().map(kind).unwrap_or_default();
+    if first.is_empty() || references.iter().any(|reference| kind(reference) != first) {
+        return "rows".into();
+    }
+    match first.strip_suffix('y') {
+        Some(stem) => format!("{stem}ies"),
+        None => format!("{first}s"),
+    }
+}
+
 /// The request to continue this line, retaining its envelope options.
 fn repeated(rows: &Rows, call: &Call<'_>) -> Result<command_surface::RunnableRequest, Failure> {
     let context = call.context()?;
@@ -402,19 +421,24 @@ fn prepare(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Selection, Fail
         Some(_) => return Err(Failure::internal("accepted line has another request kind")),
         None => resolve(given, &rows.steps, rows.return_selection, call)?,
     };
-    if let (Given::Query(_), Some(resolved)) = (&selection.given, &selection.resolved)
+    if let (Given::Query(query), Some(resolved)) = (&selection.given, &selection.resolved)
         && resolved.len() > 1
         && !rows.all
         && rows.access() > ToolAccess::Read
     {
+        // The refusal carries this same line with `all` set, ready to run.
+        let mut retry = repeated(rows, call)?;
+        retry.arguments["all"] = serde_json::Value::Bool(true);
         return Err(crate::protocol::failure(
             Code::NeedsAll,
             format!(
-                "{} rows match; a write or act on all of them needs --all",
-                resolved.len()
+                "{} {} of {query:?} match; a write or act on all of them needs --all",
+                resolved.len(),
+                plural_kind(resolved)
             ),
         )
         .with_candidates(resolved.iter().take(5).map(ToString::to_string).collect())
+        .with_suggestion(command_surface::Suggestion::Request(retry))
         .into());
     }
     if durable {

@@ -140,7 +140,6 @@ fn terminal_printers_escape_archived_text() {
             ..Default::default()
         },
         follow_ups: vec![HOSTILE.into()],
-        harness_command: None,
     }]);
     assert_eq!(
         resume(&sessions, TextStyle::Plain),
@@ -177,6 +176,28 @@ fn continue_plan_prints_the_harness_command_line() {
 }
 
 #[test]
+fn a_harness_resume_without_a_directory_is_not_printed_as_runnable() {
+    let answer = protocol::resume::Answer::Plan(Plan {
+        session: session(),
+        harness_command: Some(Command {
+            program: "codex".into(),
+            args: vec!["resume".into(), "print-test".into()],
+            cwd: None,
+        }),
+        context_assisted: Command {
+            program: "polylogue".into(),
+            args: vec!["codex:print-test".into(), "brief".into()],
+            cwd: None,
+        },
+    });
+    assert_eq!(
+        resume(&answer, TextStyle::Plain),
+        "harness command:    directory_unknown: the session recorded no directory to resume in\n\
+         with context:       polylogue codex:print-test brief\n"
+    );
+}
+
+#[test]
 fn tag_reports_show_skips_and_escape_row_references() {
     use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome, StepReport, StepsAnswer};
     let report = polylogue_model::user::AssertQueryOutcome::all_tagged(vec![
@@ -197,5 +218,18 @@ fn tag_reports_show_skips_and_escape_row_references() {
     assert_eq!(
         text,
         format!("tagged 0 rows\nalready tagged: url:{HOSTILE_ESCAPED}\n")
+    );
+}
+
+#[test]
+fn a_day_zone_this_machine_cannot_load_is_named_not_replaced() {
+    let data = json!({"by": "day", "rows": [{"day": "2026-01-01", "sessions": 2}]});
+    let text = measurement("time", &data, None, "Nowhere/Unlisted");
+    let (shown, note) = text.trim_end().rsplit_once('\n').unwrap();
+    assert_eq!(serde_json::from_str::<Value>(shown).unwrap(), data);
+    assert!(
+        note.starts_with("the day zone Nowhere/Unlisted cannot be loaded here (")
+            && note.ends_with("); the measure is shown as its data"),
+        "{note}"
     );
 }

@@ -83,6 +83,13 @@ impl Verb for Resume {
                                     plan.session
                                 ))
                             })?;
+                            if command.cwd.is_none() {
+                                return Err(Failure::bad_request(format!(
+                                    "{}; continue with context instead: {}",
+                                    crate::cli::print::DIRECTORY_UNKNOWN,
+                                    crate::cli::print::command_line(&plan.context_assisted)
+                                )));
+                            }
                             Ok(format!(
                                 "would resume {} with {}",
                                 plan.session,

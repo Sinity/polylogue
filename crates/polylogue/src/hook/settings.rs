@@ -238,7 +238,20 @@ fn entry(harness: Harness, event: &str) -> Value {
     } else {
         seconds
     };
-    json!({"hooks": [{"type": "command", "command": command(harness, event), "timeout": timeout}]})
+    let mut hook =
+        json!({"type": "command", "command": command(harness, event), "timeout": timeout});
+    // A recording entry prints nothing the harness reads, so it runs in the
+    // background where the settings format has the field (Claude Code's
+    // `async`); context entries and the ones that hand over mail stay
+    // synchronous, because the harness injects or acts on their output.
+    let context = matches!(
+        event,
+        "SessionStart" | "UserPromptSubmit" | "BeforeAgent" | "PermissionRequest"
+    ) || super::accepts_mail(harness, event);
+    if harness == Harness::ClaudeCode && !context {
+        hook["async"] = json!(true);
+    }
+    json!({"hooks": [hook]})
 }
 
 /// Installs or removes Polylogue's commands in the settings `text`, editing

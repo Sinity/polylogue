@@ -310,49 +310,65 @@ struct Sealed<C> {
     cursor: C,
 }
 
-impl PageCursor {
-    /// `PAYLOAD.MAC`: the hex of the generation and the cursor as JSON,
-    /// and its keyed digest.
-    pub fn seal(&self, seal: &CursorSeal) -> String {
+impl CursorSeal {
+    /// `PAYLOAD.MAC`: the hex of the generation and the cursor as JSON, and
+    /// its keyed digest. `domain` names the kind of cursor, so a cursor of
+    /// one kind never opens as another.
+    pub fn seal(&self, domain: &[u8], cursor: &impl Serialize) -> String {
         let payload = serde_json::to_vec(&Sealed {
-            generation: seal.generation.clone(),
-            cursor: self,
+            generation: self.generation.clone(),
+            cursor,
         })
-        .expect("a page cursor always encodes");
-        let mut digest = blake3::Hasher::new_keyed(&seal.key);
-        digest.update(SEAL_CONTEXT);
-        digest.update(&payload);
+        .expect("a cursor always encodes");
         let mut text = hex(&payload);
         text.push('.');
-        text.push_str(&digest.finalize().to_hex());
+        text.push_str(&self.digest(domain, &payload).to_hex());
         text
     }
 
     /// Authenticate before decoding; a changed byte anywhere is refused. A
     /// cursor that does not authenticate and names another generation is
     /// stale.
-    pub fn open(text: &str, seal: &CursorSeal) -> Result<Self, CursorError> {
+    pub fn open<C: serde::de::DeserializeOwned>(
+        &self,
+        domain: &[u8],
+        text: &str,
+    ) -> Result<C, CursorError> {
         let (payload, mac) = text.split_once('.').ok_or(CursorError::Invalid)?;
         let payload = unhex(payload).ok_or(CursorError::Invalid)?;
         let mac = blake3::Hash::from_hex(mac).map_err(|_| CursorError::Invalid)?;
-        let mut digest = blake3::Hasher::new_keyed(&seal.key);
-        digest.update(SEAL_CONTEXT);
-        digest.update(&payload);
-        if digest.finalize() != mac {
+        if self.digest(domain, &payload) != mac {
             let generation = serde_json::from_slice::<Sealed<serde::de::IgnoredAny>>(&payload)
                 .map(|sealed| sealed.generation);
             return Err(match generation {
-                Ok(generation) if generation != seal.generation => CursorError::Stale,
+                Ok(generation) if generation != self.generation => CursorError::Stale,
                 _ => CursorError::Invalid,
             });
         }
         let sealed =
-            serde_json::from_slice::<Sealed<Self>>(&payload).map_err(|_| CursorError::Invalid)?;
+            serde_json::from_slice::<Sealed<C>>(&payload).map_err(|_| CursorError::Invalid)?;
         // The key can outlive a generation; the generation it names decides.
-        if sealed.generation != seal.generation {
+        if sealed.generation != self.generation {
             return Err(CursorError::Stale);
         }
         Ok(sealed.cursor)
+    }
+
+    fn digest(&self, domain: &[u8], payload: &[u8]) -> blake3::Hash {
+        let mut digest = blake3::Hasher::new_keyed(&self.key);
+        digest.update(domain);
+        digest.update(payload);
+        digest.finalize()
+    }
+}
+
+impl PageCursor {
+    pub fn seal(&self, seal: &CursorSeal) -> String {
+        seal.seal(SEAL_CONTEXT, self)
+    }
+
+    pub fn open(text: &str, seal: &CursorSeal) -> Result<Self, CursorError> {
+        seal.open(SEAL_CONTEXT, text)
     }
 
     /// Refuse a cursor issued for another target or other options.

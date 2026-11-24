@@ -177,6 +177,7 @@ impl Reader<'_> {
         reference: &RevisionReference,
         at: Timestamp,
     ) -> Result<bool> {
+        crate::fault::check("read.annotation_validity", &reference.to_string())?;
         let Some(exact) = self.resolved_annotation_revision(reference)? else {
             return Ok(false);
         };
