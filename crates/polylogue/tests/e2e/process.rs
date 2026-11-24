@@ -53,18 +53,11 @@ impl Fixture {
             .unwrap();
             std::fs::write(&deployment, deployment_text).unwrap();
         }
-        command
-            .env_clear()
+        polylogue_testkit::synthetic_environment(command, &self.home)
             .current_dir(&self.root)
-            .env(
-                "PATH",
-                std::env::var_os("PATH").expect("test tools need PATH"),
-            )
-            .env("LANG", "C.UTF-8")
             // A terminal read pages through $PAGER; no one reads these pages.
             .env("PAGER", "cat")
             .env("TMPDIR", self.root.join("tmp"))
-            .env("HOME", &self.home)
             .env("XDG_CONFIG_HOME", &self.config)
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("XDG_STATE_HOME", self.root.join("state"))
@@ -127,7 +120,10 @@ mod tests {
             .filter_map(|line| line.split_once('='))
             .collect();
         assert_eq!(values["HOME"], fixture.home.to_str().unwrap());
-        assert!(!values.contains_key("CLAUDE_CONFIG_DIR"));
+        assert_eq!(
+            values["CLAUDE_CONFIG_DIR"],
+            fixture.home.join(".claude").to_str().unwrap()
+        );
         assert!(!values.contains_key("DBUS_SESSION_BUS_ADDRESS"));
         assert!(!values.contains_key("CLAUDE_CODE_SESSION_ID"));
         for (name, path) in [

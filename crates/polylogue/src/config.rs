@@ -75,9 +75,9 @@ impl EnvSnapshot {
         .into_iter()
         .collect();
         names.extend(
-            polylogue_sources::ORIGINS
-                .iter()
-                .filter_map(|origin| origin.root.env),
+            polylogue_sources::origin::variable_roots()
+                .into_iter()
+                .map(|(variable, _)| variable),
         );
         Self::from_values(
             names
@@ -639,10 +639,9 @@ impl Startup {
             }
             None
         };
-        let tool_dirs = polylogue_sources::ORIGINS
-            .iter()
-            .filter_map(|origin| origin.root.env)
-            .filter_map(|name| {
+        let tool_dirs = polylogue_sources::origin::variable_roots()
+            .into_iter()
+            .filter_map(|(name, _)| {
                 process
                     .environment
                     .get_os(name)

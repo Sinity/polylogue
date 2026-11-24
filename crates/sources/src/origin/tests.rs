@@ -91,3 +91,19 @@ fn extension_origin_table_is_current() {
         "run `cargo xtask extension-providers`"
     );
 }
+
+#[test]
+fn a_synthetic_home_moves_every_declared_root_under_it() {
+    let home = Path::new("/home/op");
+    let environment = synthetic_home_environment(home);
+    assert_eq!(
+        environment,
+        [
+            ("HOME", PathBuf::from("/home/op")),
+            ("CLAUDE_CONFIG_DIR", PathBuf::from("/home/op/.claude")),
+            ("CODEX_HOME", PathBuf::from("/home/op/.codex")),
+            ("HERMES_HOME", PathBuf::from("/home/op/.hermes")),
+            ("XDG_STATE_HOME", PathBuf::from("/home/op/.local/state")),
+        ]
+    );
+}

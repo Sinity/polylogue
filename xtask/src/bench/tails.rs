@@ -23,20 +23,24 @@ impl Drop for Daemon {
     }
 }
 
+/// The sample's archive served from a scratch deployment. The environment is
+/// cleared, so no tool's root variable reaches the daemon and every root
+/// resolves under the scratch home: it reads no files outside the sample.
 struct Reader {
     binary: PathBuf,
-    env: Vec<(String, PathBuf)>,
+    archive: PathBuf,
+    env: Vec<(&'static str, PathBuf)>,
 }
 
 impl Reader {
     fn command(&self) -> Command {
         let mut command = Command::new(&self.binary);
         command
-            .env_remove("CLAUDE_CONFIG_DIR")
-            .env_remove("CODEX_HOME");
-        for (key, value) in &self.env {
-            command.env(key, value);
-        }
+            .env_clear()
+            .env("PATH", env::var_os("PATH").unwrap_or_default())
+            .envs(self.env.iter().map(|(key, value)| (key, value)))
+            .arg("--archive")
+            .arg(&self.archive);
         command
     }
 
@@ -206,20 +210,23 @@ pub(super) fn run(
         fs::remove_dir_all(&scratch).map_err(|e| e.to_string())?;
     }
     let runtime = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let mut env = vec![
-        ("POLYLOGUE_ARCHIVE".to_owned(), archive.clone()),
-        ("XDG_RUNTIME_DIR".to_owned(), runtime.path().to_owned()),
-    ];
+    let mut env = vec![("XDG_RUNTIME_DIR", runtime.path().to_owned())];
     for (key, dir) in [
-        ("POLYLOGUE_HOME", "home"),
+        ("HOME", "home"),
         ("XDG_CONFIG_HOME", "config"),
+        ("XDG_DATA_HOME", "data"),
         ("XDG_STATE_HOME", "state"),
+        ("XDG_CACHE_HOME", "cache"),
     ] {
         let path = scratch.join(dir);
         fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-        env.push((key.to_owned(), path));
+        env.push((key, path));
     }
-    let reader = Reader { binary, env };
+    let reader = Reader {
+        binary,
+        archive,
+        env,
+    };
     let load = LoadMonitor::start()?;
     let daemon = reader.start()?;
     let status_seconds = reader.idle()?;
@@ -273,7 +280,7 @@ pub(super) fn run(
         "polylogue",
         "tails",
         &drawn.name,
-        &archive,
+        &reader.archive,
         &load,
         &metrics,
     )
