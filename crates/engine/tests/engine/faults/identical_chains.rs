@@ -91,6 +91,10 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
             if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
                 // The chain the occurrence record cites, not the read range it took.
                 format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.reading_version=t.reading_version AND r.number=t.\"{name}\") AS \"{name}\"")
+            } else if let Some(natural) = natural_key(&table, name) {
+                // Row keys are local to an index; what they name is compared
+                // (docs/architecture.md, the record and the index).
+                format!("{natural} AS \"{name}\"")
             } else if table == "wire_occurrence" && name == "number" {
                 "NULL".to_owned()
             } else if table == "wire_occurrence" && name == "occurrence" {
@@ -175,7 +179,34 @@ const WRITE_COUNTER_VALUES: &[(&str, &str)] = &[
 /// compare only with its own earlier value (docs/reading.md, the session
 /// item index). A copy is written after the newer chain's parse, where a
 /// parse of the older chain would have come before it.
-const WRITE_ORDER: &[(&str, &str)] = &[("block", "pk"), ("session_item_state", "rewrite_version")];
+const WRITE_ORDER: &[(&str, &str)] = &[
+    ("block", "pk"),
+    ("session", "pk"),
+    ("message", "pk"),
+    ("tool_call", "pk"),
+    ("event", "pk"),
+    ("link", "pk"),
+    ("document", "pk"),
+    ("text", "id"),
+    ("input_ref", "pk"),
+    ("session_item_state", "rewrite_version"),
+];
+
+/// The natural key a column holding a local row key names.
+fn natural_key(table: &str, column: &str) -> Option<String> {
+    Some(match column {
+        "session_pk" if table != "session" => {
+            "(SELECT x.id FROM session x WHERE x.pk=t.session_pk)".to_owned()
+        }
+        "message_pk" => "(SELECT x.id FROM message x WHERE x.pk=t.message_pk)".to_owned(),
+        "text_id" => "(SELECT hex(x.hash) FROM text x WHERE x.id=t.text_id)".to_owned(),
+        "input_pk" => "(SELECT x.id FROM input_ref x WHERE x.pk=t.input_pk)".to_owned(),
+        "call_block_pk" => "(SELECT m.id||'/'||b.idx FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.pk=t.call_block_pk)".to_owned(),
+        "event_pk" => "(SELECT x.id FROM event x WHERE x.pk=t.event_pk)".to_owned(),
+        "document_pk" => "(SELECT x.id FROM document x WHERE x.pk=t.document_pk)".to_owned(),
+        _ => return None,
+    })
+}
 /// Fields of a reading's wire-shape record that note the ranges it was read
 /// in: the occurrences of its first and latest read ranges (each a range and
 /// the revision it was taken at) and the latest range's bounds and hash,
