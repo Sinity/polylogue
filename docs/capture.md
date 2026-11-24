@@ -27,7 +27,7 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 |---|---|---|
 | `collected` | matched by a location | stored as bytes (or row dumps), and parsed when the origin has a parser |
 | `ignored` | matched by an ignored entry | not stored; counted with its reason |
-| `unrecognized` | matched by neither | not stored, not parsed; counted per root (one row of files, bytes and newest time) and shown in status |
+| `unrecognized` | matched by neither | not stored, not parsed; counted per root, directory pattern and extension, and shown in status |
 
 - **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day with parse state `no_parser_yet` ([archive.md](archive.md#parsing)).
 - **Fail closed.** A collected file that fails its origin's shape check is `refused`, with the reason, as a parse-state fact; it is never read as another origin's file. A Claude Code transcript found in Drive is not ingested as a Claude Code session, because it would duplicate the real one.
