@@ -569,9 +569,9 @@ const WAL_FILE_LIMIT: i64 = 64 << 20;
 /// many transactions reaches the database file once.
 pub(crate) const WAL_AUTOCHECKPOINT: i64 = 262_144;
 
-/// Starts the write-ahead log of `conn`'s main database (at `path`) over once
-/// it holds more than `limit` pages, waiting at most `wait` for readers still
-/// reading the log. Returns whether the log was started over.
+/// Starts the write-ahead log of `conn`'s database `schema` (at `path`) over
+/// once it holds more than `limit` pages, waiting at most `wait` for readers
+/// still reading the log. Returns whether the log was started over.
 ///
 /// The automatic checkpoint copies the log into the database but leaves the
 /// log in place while any reader uses it, and a steady stream of reads
@@ -583,6 +583,7 @@ pub(crate) const WAL_AUTOCHECKPOINT: i64 = 262_144;
 /// stays and is tried again after the next one.
 pub(crate) fn restart_full_log(
     conn: &Connection,
+    schema: &str,
     path: &Path,
     limit: i64,
     wait: std::time::Duration,
@@ -594,12 +595,12 @@ pub(crate) fn restart_full_log(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(error) => return Err(error.into()),
     };
-    let page: i64 = conn.scalar("PRAGMA main.page_size", [])?;
+    let page: i64 = conn.scalar(&format!("PRAGMA {schema}.page_size"), [])?;
     if size <= limit.saturating_mul(page) as u64 {
         return Ok(false);
     }
     conn.busy_timeout(wait)?;
-    let busy = conn.scalar::<i64>("PRAGMA main.wal_checkpoint(TRUNCATE)", []);
+    let busy = conn.scalar::<i64>(&format!("PRAGMA {schema}.wal_checkpoint(TRUNCATE)"), []);
     conn.busy_timeout(BUSY_TIMEOUT)?;
     Ok(busy? == 0)
 }
