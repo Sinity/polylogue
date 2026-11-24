@@ -23,8 +23,15 @@ impl PendingFusion {
 
 impl<'a> Compiler<'a> {
     /// Another query in parentheses, compiled over this query's parameters.
-    /// A nested query's bound unit, notes, terms and checks come from its tree.
-    pub(super) fn other_query(&mut self, query: &Query, at: usize) -> Result<Program, QueryError> {
+    /// A nested query's bound unit, notes, terms and checks come from its
+    /// tree. `similar` is the `similar:` text the enclosing selection ranks
+    /// by: a query ranks by one.
+    pub(super) fn other_query(
+        &mut self,
+        query: &Query,
+        at: usize,
+        similar: Option<&str>,
+    ) -> Result<Program, QueryError> {
         let mut query = query.clone();
         // This query is compiled on its own, after its inherited unit was bound.
         if let Source::Unit { implicit, .. } = &mut query.source {
@@ -50,7 +57,7 @@ impl<'a> Compiler<'a> {
         inner.catalog = Some(catalog);
         inner.params = std::mem::take(&mut self.params);
         inner.saved_stack = self.saved_stack.clone();
-        let mut program = inner.program(&query)?;
+        let mut program = inner.program(&query, Reading::whole())?;
         self.params = std::mem::take(&mut program.params);
         self.resolved_times
             .borrow_mut()
@@ -70,19 +77,16 @@ impl<'a> Compiler<'a> {
         );
         join(&mut self.definitions, &mut program.definitions);
         match (
-            self.near_request
-                .as_ref()
-                .map(|(near, _)| near)
-                .or(self.near.as_ref()),
+            similar.or(self.similar_text.as_ref().map(|near| near.text.as_str())),
             &program.near,
         ) {
-            (Some(mine), Some(theirs)) if mine != theirs => {
+            (Some(mine), Some(theirs)) if mine != theirs.text => {
                 return Err(QueryError::Invalid {
                     message: "one query ranks by one similar: text; this one has two".into(),
                     position: at,
                 });
             }
-            (None, Some(theirs)) => self.near = Some(theirs.clone()),
+            (None, Some(theirs)) => self.similar_text = Some(theirs.clone()),
             _ => {}
         }
         Ok(program)
@@ -107,7 +111,7 @@ impl<'a> Compiler<'a> {
                 position: stage.span.start,
             });
         }
-        let program = self.other_query(query, at)?;
+        let program = self.other_query(query, at, None)?;
         if program.shape != Shape::Rows {
             return Err(QueryError::Invalid {
                 message: "a combined query gives rows, not groups or a summary".into(),
@@ -145,6 +149,7 @@ impl<'a> Compiler<'a> {
         query: &Query,
         scope: &RowContext,
         span: Span,
+        cx: Cx<'_>,
     ) -> Result<String, QueryError> {
         let grouped_by_one = query.transforms.iter().rev().find_map(|s| match &s.kind {
             TransformKind::Group { keys } => Some(keys.len() == 1),
@@ -159,7 +164,7 @@ impl<'a> Compiler<'a> {
                 position: span.start,
             });
         }
-        let program = self.other_query(query, span.start)?;
+        let program = self.other_query(query, span.start, cx.similar)?;
         let (expr, kind) = self.expr(field, scope, span.start)?;
         scalar(kind, field, span.start)?;
         let grouped = &program.columns[0];

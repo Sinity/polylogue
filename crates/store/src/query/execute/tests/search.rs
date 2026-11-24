@@ -455,7 +455,7 @@ fn search_message(
 
 #[test]
 fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_times() {
-    use crate::query::compile::{Param, Statements};
+    use crate::query::compile::Statements;
     for output in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(dir.path()).unwrap();
@@ -569,7 +569,9 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                 rows.search = None;
             }
             let mut scoped = indexed.clone();
-            scoped.params[scope.mode - 1] = Param::Int(1);
+            if let Statements::Keyed(rows) = &mut scoped.statements {
+                rows.keys = scope.by_scope.clone();
+            }
             for analyzed in [false, true] {
                 if analyzed {
                     crate::archive::open_write(&fixture.archive.index_db(), 1024)
@@ -742,15 +744,21 @@ fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
             ] {
                 let mut program = crate::query::compile(&query, &options_for_search()).unwrap();
                 program.page_size = 1;
-                let mode = match &program.statements {
-                    crate::query::compile::Statements::Keyed(rows) => {
-                        rows.search.as_ref().unwrap().scope.as_ref().unwrap().mode
-                    }
+                let by_scope = match &program.statements {
+                    crate::query::compile::Statements::Keyed(rows) => rows
+                        .search
+                        .as_ref()
+                        .unwrap()
+                        .scope
+                        .as_ref()
+                        .unwrap()
+                        .by_scope
+                        .clone(),
                     _ => panic!("scoped search has keyed rows"),
                 };
                 let mut scoped = program.clone();
-                scoped.params[mode - 1] = crate::query::compile::Param::Int(1);
                 if let crate::query::compile::Statements::Keyed(rows) = &mut scoped.statements {
+                    rows.keys = by_scope;
                     rows.search = None;
                 }
                 let mut indexed = program.clone();
@@ -784,6 +792,91 @@ fn scope_and_index_plans_agree_on_rows_sources_counts_and_continuations() {
                 }
             }
         }
+    }
+}
+
+/// docs/search.md, The search leg: the hit-set size picks the plan, and
+/// each plan is its own statement returning the rows, ranks and order of a
+/// reference that ranks every hit at once.
+#[test]
+fn a_search_runs_each_plan_as_its_own_statement() {
+    use crate::query::compile::Statements;
+    for (shared, query, plan) in [
+        (0, "sessions where id:test:new needle", SearchDriver::Index),
+        (
+            512,
+            "sessions where id:test:new needle",
+            SearchDriver::Scope,
+        ),
+        (
+            512,
+            "sessions where (id:test:old OR id:test:new) needle | sort by last_active desc",
+            SearchDriver::Recency,
+        ),
+        (
+            512,
+            "messages where (id:test:hit-000031 OR id:test:hit-000032) needle | sort by at desc",
+            SearchDriver::Recency,
+        ),
+        (
+            512,
+            "messages where id:test:hit-000032 needle",
+            SearchDriver::Scope,
+        ),
+    ] {
+        let (_dir, mut fixture) = many_hits(32, false);
+        if shared > 0 {
+            shared_body_outside_scope(&mut fixture, "test:hit-000032", shared);
+        }
+        let mut program = crate::query::compile(query, &options_for_search()).unwrap();
+        program.page_size = 1;
+        let Statements::Keyed(rows) = &program.statements else {
+            panic!("a ranked search has keyed rows: {query}");
+        };
+        let search = rows.search.clone().expect("search plans");
+        let scope = search.scope.as_ref().expect("a scope can drive");
+        let mut reference = program.clone();
+        if let Statements::Keyed(rows) = &mut reference.statements {
+            rows.search = None;
+        }
+        let pool = fixture.reads().unwrap();
+        let reader = pool.reader().unwrap();
+        assert_eq!(
+            reader
+                .search_driver(
+                    &scope.blocks,
+                    &crate::selection::values(&program.params),
+                    search.index,
+                    &search.expression,
+                    scope.recent.is_some(),
+                )
+                .unwrap(),
+            plan,
+            "{query}"
+        );
+        let expected = reader.query_rows(&reference).unwrap();
+        assert!(!expected.is_empty(), "{query}");
+        assert_eq!(
+            result(&pages(&reader, &program)),
+            result(&expected),
+            "{query}"
+        );
+        assert_eq!(
+            reader.query_count(&program).unwrap(),
+            Some((expected.len() as u64, 0)),
+            "{query}"
+        );
+        // The index plan reads the best `prefix` texts, its own input after
+        // the query's parameters; the whole index gives the reference.
+        let mut params = crate::selection::values(&program.params);
+        params.push(crate::SqlValue::Int(-1));
+        let mut by_index = reader.query(&search.by_index, &params).unwrap();
+        by_index.sort_by(|a, b| a["_pk"].as_i64().cmp(&b["_pk"].as_i64()));
+        let mut whole = reader
+            .query(&rows.keys, &crate::selection::values(&program.params))
+            .unwrap();
+        whole.sort_by(|a, b| a["_pk"].as_i64().cmp(&b["_pk"].as_i64()));
+        assert_eq!(by_index, whole, "{query}");
     }
 }
 

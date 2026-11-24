@@ -14,6 +14,16 @@ struct SelectionSql {
     matched: Option<MatchRel>,
     measure: Option<Measure>,
     explicit_order: Option<Vec<String>>,
+    reading: Reading,
+    /// A `| measure` stage reads this selection: its population keeps the
+    /// sessions a default would hide.
+    measured: bool,
+    /// The `similar:` text to rank by and the rows whose texts it scores,
+    /// built once the rows are complete.
+    similar: Option<(Near, RowContext)>,
+    ranking: Option<Ranking>,
+    /// The scope that can drive the ranked text search.
+    search_scope: Option<super::search::SearchScope>,
 }
 
 struct RowStatements {
@@ -24,6 +34,7 @@ struct RowStatements {
     count: Option<String>,
     members: Option<String>,
     keyed: Option<(String, String)>,
+    search: Option<TextSearch>,
 }
 
 impl RowStatements {
@@ -52,29 +63,26 @@ impl<'a> Compiler<'a> {
         selection: &Selection,
         stages: &[Transform],
         preset: Option<MatchRel>,
+        reading: Reading,
     ) -> Result<Program, QueryError> {
-        let mut parts = self.selection_sql(selection, preset)?;
+        let mut parts = self.selection_sql(selection, preset, reading)?;
         let defaults: Vec<_> = parts.applied.iter().map(|(id, _)| *id).collect();
         if defaults.contains(&units::DefaultId::LogicalSessions) {
             let filtered = parts.where_sql.len() > parts.defaults_only.len();
             self.fold_into_logical_sessions(
                 &parts.scope,
+                parts.ranking.as_ref(),
                 &defaults,
                 &mut parts.where_sql,
                 filtered,
-            )?;
+            );
         }
         self.apply_stages(selection, stages, &mut parts)?;
         let count_relation = self.finish_conditions(selection, &mut parts)?;
         let recursive = parts.matched.as_ref().is_some_and(|m| m.recursive);
-        let ctes = if self.ctes.is_empty() {
-            String::new()
-        } else {
-            format!(
-                "WITH {}{} ",
-                if recursive { "RECURSIVE " } else { "" },
-                self.ctes.join(", ")
-            )
+        let ctes = match super::search::with(&self.ctes) {
+            with if recursive => with.replacen("WITH ", "WITH RECURSIVE ", 1),
+            with => with,
         };
         let rows = self.row_statements(selection, &parts, &ctes, count_relation)?;
         let mut attach = vec![];
@@ -86,11 +94,11 @@ impl<'a> Compiler<'a> {
                 });
             }
             for child in &selection.attach {
-                attach.push(self.attach(child, &parts.scope)?);
+                attach.push(self.attach(child, &parts.scope, parts.measured)?);
             }
         }
 
-        let from = self.from(&parts.scope)?;
+        let from = self.from(&parts.scope, parts.ranking.as_ref());
         let why = self.explanations(&parts, &ctes, &from);
         Ok(self.into_program(parts, rows, attach, why))
     }
@@ -99,10 +107,10 @@ impl<'a> Compiler<'a> {
         &mut self,
         selection: &Selection,
         preset: Option<MatchRel>,
+        reading: Reading,
     ) -> Result<SelectionSql, QueryError> {
-        self.measuring = selection.measured;
-        self.rank_index = selection.search.rank;
-        self.alternate_languages = if selection.unit == Unit::Messages {
+        let measured = selection.measured;
+        let alternates = if selection.unit == Unit::Messages {
             let mut admitted = false;
             let mut languages = Vec::new();
             for condition in selection.top_level() {
@@ -129,11 +137,11 @@ impl<'a> Compiler<'a> {
             None
         };
         let scope = RowContext::plain(selection.unit);
-        if let Some(semantic) = &selection.semantic {
-            if !self.source_near_allowed {
+        let similar = match &selection.semantic {
+            Some(semantic) if !reading.similar => {
                 return Err(custom_fields::similar_misplaced(semantic.span));
             }
-            self.near_request = Some((
+            Some(semantic) => Some((
                 Near {
                     text: semantic.text.clone(),
                 },
@@ -141,8 +149,9 @@ impl<'a> Compiler<'a> {
                     unit: semantic.unit,
                     a: scope.a.clone(),
                 },
-            ));
-        }
+            )),
+            None => None,
+        };
         let top = selection.top_level();
         let applied: Vec<(units::DefaultId, String)> = selection
             .defaults
@@ -151,26 +160,35 @@ impl<'a> Compiler<'a> {
             .collect();
         let mut where_sql: Vec<String> = applied.iter().map(|(_, sql)| sql.clone()).collect();
         let defaults_only = where_sql.clone();
-        if let Some(input) = &self.input_rows {
+        if let Some(input) = &reading.within {
             let key = scope.a.expand(units::spec(scope.unit).key);
             where_sql.push(format!("{key} IN (SELECT _pk FROM ({input}))"));
         }
+        let top_level = ranking::TopLevel {
+            index: selection.search.rank,
+            plans: reading.answer && !measured && similar.is_none(),
+            ranking: Default::default(),
+        };
+        let cx = Cx {
+            measured,
+            top: Some(&top_level),
+            similar: similar.as_ref().map(|(near, _)| near.text.as_str()),
+            alternates: alternates.as_deref(),
+        };
         let mut why = vec![];
         // An order condition makes the source a relation boundary, read by
         // the relation that holds it.
         if let Some(filter) = &selection.filter
             && !selection.written.iter().any(contains_order)
         {
-            where_sql.push(self.lower(filter, &scope, true)?);
+            where_sql.push(self.lower(filter, &scope, cx)?);
         }
         self.snippet_terms.extend(selection.search.terms.clone());
         for c in &top {
             if contains_order(c) {
                 continue;
             }
-            let rank = self.rank.clone();
-            let alone = self.cond(c, &scope, false)?;
-            self.rank = rank;
+            let alone = self.cond(c, &scope, cx.inner())?;
             // Bound conditions keep their original spans, while the compiler's
             // text is a formatted expansion. Render the bound clause itself.
             let clause = Query {
@@ -194,9 +212,7 @@ impl<'a> Compiler<'a> {
                 alone,
             ));
         }
-        if selection.order == Order::Sorted {
-            self.near_request = None;
-        }
+        let ranking = top_level.take().map(Ranking::Text);
         Ok(SelectionSql {
             scope,
             top,
@@ -207,6 +223,12 @@ impl<'a> Compiler<'a> {
             matched: preset,
             measure: None,
             explicit_order: None,
+            reading,
+            measured,
+            // A later stage orders the rows; no similarity is computed for them.
+            similar: similar.filter(|_| selection.order != Order::Sorted),
+            ranking,
+            search_scope: None,
         })
     }
 
@@ -262,6 +284,10 @@ impl<'a> Compiler<'a> {
             top,
             where_sql,
             why,
+            reading,
+            measured,
+            similar,
+            ranking,
             ..
         } = parts;
         if scope.unit != Unit::Sessions {
@@ -272,23 +298,17 @@ impl<'a> Compiler<'a> {
         }
         let sessions = format!(
             "SELECT s.pk FROM {} WHERE {}",
-            self.from(scope)?,
+            self.from(scope, ranking.as_ref()),
             and_all(where_sql)
         );
         // The session ranking selects sessions; children have their own order.
-        self.near_request = None;
-        self.rank = None;
-        self.rank_source = None;
-        self.text_search = None;
-        self.rank_index = None;
-        self.near_rank = None;
-        self.near_join = None;
-        self.fusion = None;
+        *similar = None;
+        *ranking = None;
         self.shown.clear();
         let unit = bind_unit(unit)?;
         let next = RowContext::plain(unit);
         let ntop = cond.map(top_level).unwrap_or_default();
-        let mut w = self.defaults(&next, &ntop)?;
+        let mut w = self.defaults(&next, &ntop, *measured);
         let link = if fields::has_session(unit) {
             format!("{}.pk IN ({sessions})", next.a.s)
         } else {
@@ -300,18 +320,27 @@ impl<'a> Compiler<'a> {
         if let Some(c) = cond {
             let filter = self.binder().bind(c, unit)?;
             let search = polylogue_query::search::Search::of(Some(&filter), unit);
-            self.rank_index = search.rank;
-            w.push(self.lower(&filter, &next, true)?);
+            let top_level = ranking::TopLevel {
+                index: search.rank,
+                plans: reading.answer && !*measured,
+                ranking: Default::default(),
+            };
+            let cx = Cx {
+                measured: *measured,
+                top: Some(&top_level),
+                similar: None,
+                alternates: None,
+            };
+            w.push(self.lower(&filter, &next, cx)?);
+            *ranking = top_level.take().map(Ranking::Text);
             self.snippet_terms.extend(search.terms);
         }
-        self.sessions_within_bounds(&next, &ntop, &mut w, true)?;
+        self.sessions_within_bounds(&next, *measured, &ntop, &mut w, true)?;
         *scope = next;
         *top = ntop;
         *where_sql = w;
         why.clear();
-        // A fused rank and the lists it names belong to the
-        // sessions.
-        self.fusion = None;
+        // The lists a fused rank names belong to the sessions.
         self.shown.retain(|(name, ..)| name != "found_in");
         Ok(())
     }
@@ -353,8 +382,11 @@ impl<'a> Compiler<'a> {
             top,
             where_sql,
             matched,
+            measured,
+            ranking,
             ..
         } = parts;
+        let cx = Cx::plain(*measured);
         let found: Vec<&Condition> = top
             .iter()
             .filter(|c| {
@@ -378,16 +410,20 @@ impl<'a> Compiler<'a> {
             ConditionKind::Exists { unit, condition } => self.exists_matches(
                 bind_unit(unit)?,
                 condition.as_deref(),
-                scope,
-                &parent_rows,
+                (
+                    scope,
+                    &parent_rows,
+                    self.default_order(scope, ranking.as_ref()),
+                ),
                 c.span,
+                cx,
             )?,
             ConditionKind::Sequence {
                 steps,
                 gaps,
                 all: false,
                 ..
-            } => self.seq_matches(steps, gaps, scope, &parent_rows, c.span)?,
+            } => self.seq_matches(steps, gaps, scope, &parent_rows, c.span, cx)?,
             ConditionKind::Sequence { all: true, .. } => {
                 return Err(not_built("overlapping sequence matches (seq all)"));
             }
@@ -402,44 +438,58 @@ impl<'a> Compiler<'a> {
         Ok(())
     }
 
+    /// The ranking once the rows are complete: words and `similar:` fuse,
+    /// and the scope that can drive a ranked text search is built. Returns
+    /// the relation that counts the rows, before fusion replaces their
+    /// conditions.
     fn finish_conditions(
         &mut self,
         selection: &Selection,
         parts: &mut SelectionSql,
     ) -> Result<Option<(String, String)>, QueryError> {
-        let SelectionSql {
-            scope,
-            matched,
-            measure,
-            where_sql,
-            defaults_only,
-            explicit_order,
-            ..
-        } = parts;
-        let rows_answer = matched.is_none() && measure.is_none();
-        if rows_answer {
-            self.setup_near(true, scope, where_sql);
-        }
-        let count_relation = if rows_answer {
-            Some((self.from(scope)?, and_all(where_sql)))
-        } else {
-            None
+        let rows_answer = parts.matched.is_none() && parts.measure.is_none();
+        let similarity = match parts.similar.take().filter(|_| rows_answer) {
+            Some(_) if !self.opts.embeddings => {
+                let note = "semantic search is not enabled; rows are ordered by time and unranked";
+                if !self.incomplete.iter().any(|n| n == note) {
+                    self.incomplete.push(note.into());
+                }
+                None
+            }
+            Some((near, rows)) => {
+                Some(self.similarity(&near, &rows, &parts.scope, &parts.where_sql))
+            }
+            None => None,
         };
-        self.fuse_text_and_near(scope, where_sql)?;
-        self.search_scope(selection, scope, defaults_only, explicit_order.as_deref())?;
-        if let Some(search) = &self.text_search
-            && let Some(scoped) = &search.scope
-            && let Some(recent) = &scoped.recent
-        {
-            // A shared descendant can make other rows match. A recency
-            // batch must still return only its own candidate rows.
-            where_sql.push(format!(
-                "(?{}<>2 OR {} IN (SELECT value FROM json_each(?{})))",
-                scoped.mode,
-                scope.a.expand(units::spec(scope.unit).key),
-                recent.batch
-            ));
-        }
+        let scope = &parts.scope;
+        let unfused = match (&similarity, &parts.ranking) {
+            (Some(similarity), _) => Some(Ranking::Similar(similarity.clone())),
+            (None, ranking) => ranking.clone(),
+        };
+        let count_relation = rows_answer.then(|| {
+            (
+                self.from(scope, unfused.as_ref()),
+                and_all(&parts.where_sql),
+            )
+        });
+        parts.ranking = match (parts.ranking.take(), similarity) {
+            (Some(text), Some(similarity)) => Some(self.fuse_text_and_near(
+                scope,
+                &mut parts.where_sql,
+                text.expression(),
+                similarity,
+            )),
+            (None, Some(similarity)) => Some(Ranking::Similar(similarity)),
+            (ranking, None) => ranking,
+        };
+        parts.search_scope = self.search_scope(
+            selection,
+            scope,
+            parts.ranking.as_ref(),
+            &parts.defaults_only,
+            parts.explicit_order.as_deref(),
+            parts.measured,
+        )?;
         Ok(count_relation)
     }
 
@@ -451,7 +501,8 @@ impl<'a> Compiler<'a> {
         count_relation: Option<(String, String)>,
     ) -> Result<RowStatements, QueryError> {
         let scope = &parts.scope;
-        let from = self.from(scope)?;
+        let ranking = parts.ranking.as_ref();
+        let from = self.from(scope, ranking);
         let wh = and_all(&parts.where_sql);
         if let Some(rel) = &parts.matched {
             return Ok(RowStatements {
@@ -462,22 +513,24 @@ impl<'a> Compiler<'a> {
                 count: None,
                 members: None,
                 keyed: None,
+                search: None,
             });
         }
         let order = parts
             .explicit_order
             .clone()
-            .unwrap_or_else(|| self.default_order(scope));
+            .unwrap_or_else(|| self.default_order(scope, ranking));
         let (pk, cols, mut columns) = self.shown_columns(selection, scope)?;
-        let (row_select, mut select) = self.selected_columns(scope, &pk, &cols);
-        if self.ranking().is_some() {
+        let (row_select, mut select) = self.selected_columns(scope, &pk, &cols, ranking);
+        if ranking.is_some() {
             columns.push(Column {
                 name: "rank".into(),
                 kind: ColKind::Number,
                 reference: None,
             });
         }
-        let without = self.near_rank.as_ref().map_or_else(
+        let similarity = ranking.and_then(Ranking::similarity);
+        let without = similarity.map_or_else(
             || "0".to_owned(),
             |near| format!("count(*) FILTER (WHERE ({near}) IS NULL)"),
         );
@@ -490,13 +543,32 @@ impl<'a> Compiler<'a> {
         ));
         let members = Some(format!(
             "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
-            self.near_rank.as_deref().unwrap_or("1")
+            similarity.unwrap_or("1")
         ));
-        let (hidden, keys) = self.selection_order(&order);
-        let keyed = parts
-            .measure
-            .is_none()
-            .then(|| self.keyed_statements(scope, ctes, (&from, &wh), &pk, &row_select, &hidden));
+        let (hidden, keys) = self.selection_order(&order, ranking);
+        let keyed = parts.measure.is_none().then(|| {
+            (
+                self.keys_statement(ctes, (&from, &wh), &pk, &hidden, ranking),
+                format!(
+                    "{ctes}SELECT {} FROM {}",
+                    row_select.join(", "),
+                    base_from(scope.unit, &scope.a)
+                ),
+            )
+        });
+        // Only the answer's own rows are read by search plans.
+        let search = ranking
+            .and_then(Ranking::leg)
+            .filter(|_| parts.reading.answer && parts.measure.is_none())
+            .map(|leg| {
+                self.search_plans(scope, leg, parts.search_scope.as_ref(), |with, batch| {
+                    let wh = match batch {
+                        Some(batch) => format!("{wh} AND {batch}"),
+                        None => wh.clone(),
+                    };
+                    self.keys_statement(with, (&from, &wh), &pk, &hidden, ranking)
+                })
+            });
         select.extend(hidden);
         let sql = format!(
             "{ctes}SELECT {} FROM {from} WHERE {wh} ORDER BY {}",
@@ -511,6 +583,7 @@ impl<'a> Compiler<'a> {
             count,
             members,
             keyed,
+            search,
         })
     }
 
@@ -519,6 +592,7 @@ impl<'a> Compiler<'a> {
         scope: &RowContext,
         pk: &str,
         cols: &[RowColumn],
+        ranking: Option<&Ranking>,
     ) -> (Vec<String>, Vec<String>) {
         let row_select: Vec<String> =
             [
@@ -545,8 +619,8 @@ impl<'a> Compiler<'a> {
                 scope.a.expand(units::spec(scope.unit).time)
             ),
         ];
-        if let Some(rank) = self.ranking() {
-            select.push(format!("{rank} AS _rank"));
+        if let Some(ranking) = ranking {
+            select.push(format!("{} AS _rank", ranking.expression()));
         }
         select.extend(
             cols.iter()
@@ -554,7 +628,7 @@ impl<'a> Compiler<'a> {
         );
         select.push(format!(
             "{} AS _near",
-            self.near_rank.as_deref().unwrap_or("1")
+            ranking.and_then(Ranking::similarity).unwrap_or("1")
         ));
         for (index, expression) in units::spec(scope.unit).identity.iter().enumerate() {
             select.push(format!(
@@ -565,14 +639,18 @@ impl<'a> Compiler<'a> {
         (row_select, select)
     }
 
-    fn selection_order(&self, order: &[String]) -> (Vec<String>, Vec<OrderKey>) {
+    fn selection_order(
+        &self,
+        order: &[String],
+        ranking: Option<&Ranking>,
+    ) -> (Vec<String>, Vec<OrderKey>) {
         let (hidden, mut keys) = hidden_order(order, "_o");
-        let rank = self.ranking();
+        let rank = ranking.map(Ranking::expression);
         let hidden = hidden
             .into_iter()
             .enumerate()
             .filter_map(|(index, column)| {
-                if rank.as_deref() == Some(order_term(&order[index]).0) {
+                if rank == Some(order_term(&order[index]).0) {
                     keys[index].column = "_rank".into();
                     None
                 } else {
@@ -583,41 +661,31 @@ impl<'a> Compiler<'a> {
         (hidden, keys)
     }
 
-    fn keyed_statements(
+    /// Every selected row's key, rank, similarity and order values.
+    fn keys_statement(
         &self,
-        scope: &RowContext,
         ctes: &str,
         condition: (&str, &str),
         pk: &str,
-        row_select: &[String],
         hidden: &[String],
-    ) -> (String, String) {
+        ranking: Option<&Ranking>,
+    ) -> String {
         let (from, wh) = condition;
         let mut key_select = vec![format!("{pk} AS _pk")];
-        if let Some(rank) = self.ranking() {
-            key_select.push(format!("{rank} AS _rank"));
+        if let Some(ranking) = ranking {
+            key_select.push(format!("{} AS _rank", ranking.expression()));
         }
-        if self.fusion.is_none()
-            && self.near_rank.is_none()
-            && let Some(source) = &self.rank_source
-        {
+        if let Some(source) = ranking.and_then(Ranking::hit) {
             key_select.push(format!("{} AS _hit_block", source.block));
         }
         key_select.push(format!(
             "{} AS _near",
-            self.near_rank.as_deref().unwrap_or("1")
+            ranking.and_then(Ranking::similarity).unwrap_or("1")
         ));
         key_select.extend(hidden.iter().cloned());
-        (
-            format!(
-                "{ctes}SELECT {} FROM {from} WHERE {wh}",
-                key_select.join(", ")
-            ),
-            format!(
-                "{ctes}SELECT {} FROM {}",
-                row_select.join(", "),
-                base_from(scope.unit, &scope.a)
-            ),
+        format!(
+            "{ctes}SELECT {} FROM {from} WHERE {wh}",
+            key_select.join(", ")
         )
     }
 
@@ -735,7 +803,13 @@ impl<'a> Compiler<'a> {
                 .applied
                 .iter()
                 .any(|(id, _)| *id == units::DefaultId::LogicalSessions);
-        let SelectionSql { scope, measure, .. } = parts;
+        let SelectionSql {
+            scope,
+            measure,
+            ranking,
+            reading,
+            ..
+        } = parts;
         let RowStatements {
             sql,
             shape,
@@ -744,17 +818,33 @@ impl<'a> Compiler<'a> {
             count: row_count,
             members: row_membership,
             keyed,
+            search,
         } = rows;
         let (why, why_of, why_defaults) = why;
         let unit = scope.unit;
-        let ranked = self.ranking().is_some();
-        let counts_near = shape == Shape::Rows && self.near_rank.is_some();
+        let ranked = ranking.is_some();
+        let counts_near =
+            shape == Shape::Rows && ranking.as_ref().and_then(Ranking::similarity).is_some();
         let page_size = self
             .opts
             .page_size
             .unwrap_or(default_page_size(unit, shape));
         self.program_notes(&columns);
-        let statements = self.program_statements(sql, keyed, row_count, row_membership);
+        // Only the answer's own rows are read key first; a stage or a
+        // combination over them reads them whole.
+        let statements = match (keyed, row_count) {
+            (Some((keys, rows)), Some(count)) if reading.answer => Statements::Keyed(KeyedRows {
+                keys,
+                rows,
+                count,
+                search,
+            }),
+            (_, count) => Statements::Derived(DerivedRows {
+                rows: sql,
+                count,
+                members: row_membership,
+            }),
+        };
         Program {
             row_kind,
             session_rows: if logical_sessions {
@@ -788,7 +878,7 @@ impl<'a> Compiler<'a> {
             why_defaults,
             page_size,
             counts_near,
-            near: self.near,
+            near: self.similar_text,
             definitions: self.definitions,
             clock: self.opts.clock.clone(),
             resolved_times: self.resolved_times.into_inner(),
@@ -827,12 +917,6 @@ impl<'a> Compiler<'a> {
     }
 
     fn program_notes(&mut self, columns: &[Column]) {
-        if self.near_unavailable {
-            let note = "semantic search is not enabled; rows are ordered by time and unranked";
-            if !self.incomplete.iter().any(|n| n == note) {
-                self.incomplete.push(note.into());
-            }
-        }
         if columns.iter().any(|c| c.name.ends_with("clustered_time")) {
             self.notes.push(format!(
                 "clustered_time uses a {}-minute gap, extended across paired tools",
@@ -841,54 +925,22 @@ impl<'a> Compiler<'a> {
         }
     }
 
-    fn program_statements(
-        &mut self,
-        sql: String,
-        keyed: Option<(String, String)>,
-        row_count: Option<String>,
-        row_membership: Option<String>,
-    ) -> Statements {
-        // Only the answer's own rows are read key first; a stage or a
-        // combination over them reads them whole.
-        match (keyed, row_count) {
-            (Some((keys, rows)), Some(count)) if self.answer => Statements::Keyed(KeyedRows {
-                keys,
-                rows,
-                count,
-                search: if self.fusion.is_none() && self.near_rank.is_none() {
-                    self.text_search.take()
-                } else {
-                    None
-                },
-            }),
-            (_, count) => Statements::Derived(DerivedRows {
-                rows: sql,
-                count,
-                members: row_membership,
-            }),
-        }
-    }
-
     /// Words and `similar:` together: the conditions and both orders are
     /// evaluated once, over the rows the conditions keep, and each row's
-    /// fused rank joins it. Done once, when the rows are complete or when a
-    /// combining stage needs their order.
-    pub(super) fn fuse_text_and_near(
+    /// fused rank joins it.
+    fn fuse_text_and_near(
         &mut self,
         scope: &RowContext,
         where_sql: &mut Vec<String>,
-    ) -> Result<(), QueryError> {
-        if self.fusion.is_some() {
-            return Ok(());
-        }
-        let (Some(text), Some(near)) = (self.rank.clone(), self.near_rank.clone()) else {
-            return Ok(());
-        };
+        text: &str,
+        similarity: ranking::Similarity,
+    ) -> Ranking {
+        let near = &similarity.expression;
         let (pk, _) = row_columns(scope.unit, &scope.a, self.opts.clock.now.as_millisecond());
         let rows = format!("f{}", self.ctes.len() + 1);
+        let from = self.from(scope, Some(&Ranking::Similar(similarity.clone())));
         self.ctes.push(format!(
-            "{rows} AS MATERIALIZED (SELECT {pk} AS k, {text} AS t, {near} AS n FROM {} WHERE {})",
-            self.from(scope)?,
+            "{rows} AS MATERIALIZED (SELECT {pk} AS k, {text} AS t, {near} AS n FROM {from} WHERE {})",
             and_all(where_sql)
         ));
         let fused = format!("f{}", self.ctes.len() + 1);
@@ -899,27 +951,18 @@ impl<'a> Compiler<'a> {
         ));
         // The fused rows are the rows the conditions keep: the join
         // replaces evaluating them again.
-        self.fusion = Some(Fusion {
-            join: format!("JOIN {fused} fused ON fused.k = {pk}"),
-            rank: "fused.r".into(),
-        });
         where_sql.clear();
-        Ok(())
-    }
-
-    /// The FROM clause of a unit, joining the rows its fields read.
-    pub(super) fn from(&self, scope: &RowContext) -> Result<String, QueryError> {
-        let mut from = self.row_source(scope);
-        if let Some(fusion) = &self.fusion {
-            from.push(' ');
-            from.push_str(&fusion.join);
+        Ranking::Fused {
+            join: format!("JOIN {fused} fused ON fused.k = {pk}"),
+            expression: "fused.r".into(),
+            similarity,
         }
-        Ok(from)
     }
 
-    fn row_source(&self, scope: &RowContext) -> String {
+    /// The FROM clause of a unit, joining the ranking its rows read.
+    pub(super) fn from(&self, scope: &RowContext, ranking: Option<&Ranking>) -> String {
         let mut from = base_from(scope.unit, &scope.a);
-        if let Some(join) = &self.near_join {
+        for join in ranking.map(Ranking::joins).unwrap_or_default() {
             from.push(' ');
             from.push_str(join);
         }
@@ -930,26 +973,33 @@ impl<'a> Compiler<'a> {
     fn fold_into_logical_sessions(
         &self,
         scope: &RowContext,
+        ranking: Option<&Ranking>,
         defaults: &[units::DefaultId],
         conditions: &mut Vec<String>,
         filtered: bool,
-    ) -> Result<(), QueryError> {
-        *conditions = folded_sessions(scope, &self.from(scope)?, conditions, defaults, filtered);
-        Ok(())
+    ) {
+        *conditions = folded_sessions(
+            scope,
+            &self.from(scope, ranking),
+            conditions,
+            defaults,
+            filtered,
+        );
     }
 
     /// Nested sources bind their own defaults, just like the outer selection.
     pub(super) fn sessions_within_bounds(
         &self,
         scope: &RowContext,
+        measured: bool,
         top: &[Condition],
         conditions: &mut Vec<String>,
         filtered: bool,
     ) -> Result<(), QueryError> {
         let defaults =
-            polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, self.measuring);
+            polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, measured);
         if defaults.contains(&units::DefaultId::LogicalSessions) {
-            self.fold_into_logical_sessions(scope, &defaults, conditions, filtered)?;
+            self.fold_into_logical_sessions(scope, None, &defaults, conditions, filtered);
         }
         Ok(())
     }
@@ -957,42 +1007,31 @@ impl<'a> Compiler<'a> {
     /// The default filters a unit binds, dropped by a top-level condition
     /// naming their field.
     pub(super) fn defaults(
-        &mut self,
+        &self,
         scope: &RowContext,
         top: &[Condition],
-    ) -> Result<Vec<String>, QueryError> {
-        Ok(
-            polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, self.measuring)
-                .into_iter()
-                .map(|id| units::default_sql(id, &scope.a))
-                .collect(),
-        )
+        measured: bool,
+    ) -> Vec<String> {
+        polylogue_query::defaults::bind(scope.unit, top, &self.opts.origins, measured)
+            .into_iter()
+            .map(|id| units::default_sql(id, &scope.a))
+            .collect()
     }
 
-    /// How the rows rank, lower first: by full-text relevance, by
-    /// similarity to a `similar:` text, or, with both, by reciprocal rank
-    /// fusion of the two orders over the rows the conditions keep (each
-    /// row scores `1/(60 + its place)` in each order it is in; a row with
-    /// no vector is in the text order only).
-    pub(super) fn ranking(&self) -> Option<String> {
-        if let Some(fusion) = &self.fusion {
-            return Some(fusion.rank.clone());
-        }
-        self.rank.clone().or_else(|| self.near_rank.clone())
-    }
-
-    pub(super) fn default_order(&self, scope: &RowContext) -> Vec<String> {
+    /// The order of `scope`'s rows: by `ranking`, lower first, ties going
+    /// to the more recent row (a text ranking's chosen hit), then identity;
+    /// without one, the unit's own order.
+    pub(super) fn default_order(
+        &self,
+        scope: &RowContext,
+        ranking: Option<&Ranking>,
+    ) -> Vec<String> {
         let a = &scope.a;
         let spec = units::spec(scope.unit);
-        let time = if self.rank.is_some() && self.fusion.is_none() && self.near_rank.is_none() {
-            self.rank_source
-                .as_ref()
-                .map(|source| source.at.clone())
-                .unwrap_or_else(|| a.expand(spec.time))
-        } else {
-            a.expand(spec.time)
-        };
-        if let Some(rank) = self.ranking() {
+        let time = ranking
+            .and_then(Ranking::hit)
+            .map_or_else(|| a.expand(spec.time), |source| source.at.clone());
+        if let Some(rank) = ranking.map(|ranking| ranking.expression().to_owned()) {
             // Equal ranks at equal times still need one order, or a page
             // continuing after one of them would skip the others.
             let mut o = vec![

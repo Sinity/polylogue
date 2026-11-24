@@ -22,6 +22,7 @@ mod conditions;
 pub(crate) mod custom_fields;
 mod expression;
 mod program;
+mod ranking;
 mod relations;
 mod saved;
 mod search;
@@ -30,8 +31,10 @@ mod stages;
 mod statements;
 use conditions::unknown_field;
 use polylogue_query::filter::{alternatives, bind_unit, value_text};
+use ranking::{Cx, Ranking, Reading};
 pub use statements::{
     DerivedRows, KeyedRows, PageColumns, RecentSearch, ScopedSearch, Statements, TextSearch,
+    page_of,
 };
 
 /// Reciprocal rank fusion gives a row `1 / (RANK_FUSION_OFFSET + place)` in
@@ -309,8 +312,7 @@ pub fn lower(plan: &polylogue_query::plan::Plan, opts: &Options) -> Result<Progr
     compiler.query_scope = bound.typing().query(&Default::default()).cloned();
     compiler.typing = Some(std::sync::Arc::new(bound.typing().clone()));
     compiler.catalog = Some(catalog.clone());
-    compiler.answer = true;
-    let mut program = compiler.program(bound.query())?;
+    let mut program = compiler.program(bound.query(), Reading::answer())?;
     let mut used: Vec<Definition> = plan
         .definitions()
         .iter()
@@ -366,7 +368,6 @@ pub(crate) struct Compiler<'a> {
     opts: &'a Options,
     params: Vec<Param>,
     ctes: Vec<String>,
-    input_rows: Option<String>,
     query_scope: Option<query_language::scope::QueryScope>,
     typing: Option<std::sync::Arc<query_language::scope::Typing>>,
     catalog: Option<std::sync::Arc<query_language::catalog::Catalog>>,
@@ -382,50 +383,15 @@ pub(crate) struct Compiler<'a> {
     /// Saved queries being expanded, innermost last: a cycle is refused.
     saved_stack: Vec<String>,
     saved_relations: Vec<saved::BoundRelation>,
-    /// The full-text ranking expression, when a top-level text term ranks
-    /// the rows.
-    rank: Option<String>,
-    rank_source: Option<units::HitSource>,
-    text_search: Option<TextSearch>,
-    /// The semantic ranking expression of a `similar:` term, and the join
-    /// that brings its similarities to the unit's rows.
-    near_rank: Option<String>,
-    near_join: Option<String>,
-    /// Rows ranked by reciprocal rank fusion (words and `similar:` together,
-    /// or a combining stage): the join bringing each row's fused rank.
-    fusion: Option<Fusion>,
-    near: Option<Near>,
+    /// The `similar:` text a statement of this query scores against,
+    /// which execution embeds before reading.
+    similar_text: Option<Near>,
     definitions: Vec<Definition>,
-    /// A semantic ranking requested by the source conditions, built only
-    /// when rows must be ordered.
-    near_request: Option<(Near, RowContext)>,
-    /// The index whose relevance ranks the rows, from the selection's
-    /// search leg.
-    rank_index: Option<polylogue_query::search::SnippetIndex>,
-    /// A top-level alternate or language condition admits this text source.
-    alternate_languages: Option<Vec<String>>,
-    source_near_allowed: bool,
-    /// An unavailable semantic order affects the answer or an earlier selection.
-    near_unavailable: bool,
-    /// The query ends in `| measure`: a display preference such as hiding
-    /// never changes a measured population.
-    measuring: bool,
     /// Top-level `since:`/`until:` bounds on the sessions, for measures.
     session_window: (Option<i64>, Option<i64>),
-    /// Lowering the answer itself, whose own rows are read key first;
-    /// otherwise the input of a stage or combination, read whole.
-    answer: bool,
     /// The last relation slot or step number given out, shared by every
     /// compiler of one query, so no two slots or steps share a name.
     slots: std::rc::Rc<std::cell::Cell<usize>>,
-}
-
-/// A fused ranking: the join that brings it to the rows, and the rank
-/// column, lower first.
-#[derive(Debug, Clone)]
-struct Fusion {
-    join: String,
-    rank: String,
 }
 
 impl<'a> Compiler<'a> {
@@ -435,7 +401,6 @@ impl<'a> Compiler<'a> {
             opts,
             params: vec![],
             ctes: vec![],
-            input_rows: None,
             query_scope: None,
             typing: None,
             catalog: None,
@@ -450,22 +415,9 @@ impl<'a> Compiler<'a> {
             aliases: 0,
             saved_stack: vec![],
             saved_relations: vec![],
-            rank: None,
-            rank_source: None,
-            text_search: None,
-            near_rank: None,
-            near_join: None,
-            fusion: None,
-            near: None,
+            similar_text: None,
             definitions: vec![],
-            near_request: None,
-            rank_index: None,
-            alternate_languages: None,
-            source_near_allowed: true,
-            near_unavailable: false,
-            measuring: false,
             session_window: (None, None),
-            answer: false,
             slots: Default::default(),
         }
     }
@@ -485,6 +437,23 @@ impl<'a> Compiler<'a> {
         nested.catalog = self.catalog.clone();
         nested.slots = self.slots.clone();
         nested
+    }
+
+    /// Takes over what a compiler of one part of this query recorded:
+    /// notes, checks, definitions and resolved times.
+    fn absorb(&mut self, mut part: Compiler<'_>) {
+        join(&mut self.notes, &mut part.notes);
+        join(&mut self.incomplete, &mut part.incomplete);
+        join(&mut self.id_checks, &mut part.id_checks);
+        join(&mut self.change_generations, &mut part.change_generations);
+        join(&mut self.annotation_cutoffs, &mut part.annotation_cutoffs);
+        join(&mut self.definitions, &mut part.definitions);
+        let mut resolved = self.resolved_times.borrow_mut();
+        for time in part.resolved_times.into_inner() {
+            if !resolved.contains(&time) {
+                resolved.push(time);
+            }
+        }
     }
 
     /// A fresh relation column name.
@@ -511,11 +480,11 @@ impl<'a> Compiler<'a> {
         Aliases::suffixed(self.aliases)
     }
 
-    fn program(self, q: &Query) -> Result<Program, QueryError> {
+    fn program(self, q: &Query, reading: Reading) -> Result<Program, QueryError> {
         if matches!(q.source, Source::Result { .. }) {
             self.kept_program(q)
         } else {
-            self.program_with(q, None)
+            self.program_with(q, None, reading)
         }
     }
 

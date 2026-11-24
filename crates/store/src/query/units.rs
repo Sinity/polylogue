@@ -84,7 +84,8 @@ pub struct Hits<'a> {
     pub cte: &'a str,
     pub index: Index,
     pub source: bool,
-    pub scope: Option<(&'a str, &'a str)>,
+    /// The scope's candidate blocks, when the scope drives the search.
+    pub scope: Option<&'a str>,
 }
 
 impl Hits<'_> {
@@ -98,10 +99,11 @@ impl Hits<'_> {
         format!("{b}.kind IN ({kinds})")
     }
 
-    /// Scope execution starts from in-scope block keys, rather than expanding
-    /// every global reference to a shared matching text and filtering later.
+    /// The hit blocks: every block holding a matching text, or, when the
+    /// scope drives, only the in-scope candidate blocks, so a text shared
+    /// far outside the scope is never expanded.
     fn blocks(&self) -> (Vec<String>, String) {
-        let Some((mode, scope)) = self.scope else {
+        let Some(candidates) = self.scope else {
             return (
                 vec![],
                 format!(
@@ -113,11 +115,9 @@ impl Hits<'_> {
         let blocks = format!("{}_blocks", self.cte);
         let cte = format!(
             "{blocks} AS NOT MATERIALIZED (\
-             SELECT b.pk AS block,h.rank FROM {} h \
-             CROSS JOIN block b ON b.text_id=h.text_id WHERE {mode}=0 UNION ALL \
-             SELECT b.pk,h.rank FROM {scope} e CROSS JOIN block b ON b.pk=e.block \
-             CROSS JOIN {} h ON h.text_id=b.text_id WHERE {mode}<>0)",
-            self.cte, self.cte
+             SELECT b.pk AS block,h.rank FROM {candidates} e CROSS JOIN block b ON b.pk=e.block \
+             CROSS JOIN {} h ON h.text_id=b.text_id)",
+            self.cte
         );
         (
             vec![cte],
