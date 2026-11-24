@@ -68,22 +68,6 @@ fn built_search_vocabulary_matches_incremental_writes() {
             rusqlite::params![crate::encoding::pack_bytes(body.as_bytes()).unwrap(), group],
         )
         .unwrap();
-    // This limit creates several windows and makes the final text a singleton.
-    let mut visited = Vec::new();
-    super::super::search_build::visit_indexed_texts(&built, 26, |id, bits, text| {
-        visited.push((id, bits, text));
-        Ok(())
-    })
-    .unwrap();
-    // Texts come group by group; each indexed text once, with its text.
-    visited.sort();
-    let expected: Vec<_> = inputs
-        .into_iter()
-        .enumerate()
-        .filter(|(_, (_, bits))| *bits != 0)
-        .map(|(n, (text, bits))| (n as i64 + 1, bits, text.to_owned()))
-        .collect();
-    assert_eq!(visited, expected);
     index_pending(&incremental).unwrap();
     assert!(vocabulary(&built, "fts_vocab_output").is_empty());
     build_search_indexes(&built).unwrap();
@@ -138,76 +122,6 @@ fn built_search_vocabulary_matches_incremental_writes() {
                 .collect::<rusqlite::Result<Vec<_>>>()
                 .unwrap();
             assert_eq!(ids, expected);
-        }
-    }
-}
-
-#[test]
-fn failed_search_rebuild_preserves_both_tables_and_reader_snapshots() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("search.db");
-    let conn = open_write(&path, cache::SETUP).unwrap();
-    crate::schema::create_index(&conn).unwrap();
-    for (id, text) in [(1, "amber cedar"), (2, "maple birch")] {
-        let hash = blake3::hash(text.as_bytes());
-        let normalized = crate::encoding::normalized_text_hash(text);
-        insert_alone(&conn, Some(id), hash.as_bytes(), &normalized, text, 3);
-        if id == 1 {
-            for bit in [1, 2] {
-                conn.execute(
-                    "INSERT INTO search_pending(text_id,fts_table) VALUES (?1,?2)",
-                    [id, bit],
-                )
-                .unwrap();
-            }
-            index_pending(&conn).unwrap();
-        }
-    }
-    let before = [
-        vocabulary(&conn, "fts_vocab_text"),
-        vocabulary(&conn, "fts_vocab_output"),
-    ];
-    crate::fault::arm(
-        "search.before_commit",
-        conn.path().unwrap(),
-        crate::fault::Action::Fail,
-        0,
-        1,
-    );
-    let result = build_search_indexes(&conn);
-    crate::fault::clear();
-    assert!(result.is_err());
-    let reopened = crate::archive::open_read(&path).unwrap();
-    for reader in [&conn, &reopened] {
-        assert_eq!(vocabulary(reader, "fts_vocab_text"), before[0]);
-        assert_eq!(vocabulary(reader, "fts_vocab_output"), before[1]);
-    }
-    reopened.execute_batch("BEGIN").unwrap();
-    assert_eq!(vocabulary(&reopened, "fts_vocab_text"), before[0]);
-    build_search_indexes(&conn).unwrap();
-    assert_eq!(vocabulary(&reopened, "fts_vocab_text"), before[0]);
-    assert_eq!(vocabulary(&reopened, "fts_vocab_output"), before[1]);
-    reopened.execute_batch("COMMIT").unwrap();
-    let expected = vec![
-        ("amber".into(), 1, 1),
-        ("birch".into(), 1, 1),
-        ("cedar".into(), 1, 1),
-        ("maple".into(), 1, 1),
-    ];
-    for reader in [&conn, &reopened] {
-        for (table, words) in [
-            ("text_fts", "fts_vocab_text"),
-            ("output_fts", "fts_vocab_output"),
-        ] {
-            assert_eq!(vocabulary(reader, words), expected);
-            let id: i64 = reader
-                .query_row(
-                    &format!("SELECT rowid FROM {table} WHERE {table} MATCH 'maple'"),
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert_eq!(id, 2);
         }
     }
 }

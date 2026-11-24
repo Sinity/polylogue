@@ -138,3 +138,125 @@ fn content_named_messages_keep_their_occurrence_after_ranges_and_restart() {
         ]
     );
 }
+
+/// Imports arriving every 100 ms while a large chain is built are each
+/// answered while the build runs, the build completes, and it reads every
+/// byte of the chain once (docs/architecture.md, one path).
+#[test]
+fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
+    use polylogue_model::authorship::{Author, Authorship, Channel};
+    use std::sync::mpsc::{channel, sync_channel};
+    let home = ClaudeHome::new();
+    let large: String = (0..12_000)
+        .map(|n| {
+            claude_user(
+                &format!("large-{n}"),
+                "large",
+                &format!("record {n} {}", "x".repeat(400)),
+            )
+        })
+        .collect();
+    home.append("large.jsonl", &large);
+    {
+        let (mut engine, _lock) = home.engine(1 << 20);
+        assert!(engine.run_pass().unwrap().errors.is_empty());
+    }
+    polylogue_testkit::delete_index(&home.root);
+    // Ranges of 256 KiB: the chain is read in many steps.
+    let (mut engine, lock) = crate::import::tests::engine(&home, 256 << 10);
+    engine.config.workers = 1;
+    // Only the stored record is read: no file is looked at again.
+    engine.config.reads_sources = false;
+    let archive = engine.archive.clone();
+    let (tx, rx) = channel();
+    let worker_tx = tx.clone();
+    let worker = std::thread::spawn(move || {
+        let status = Arc::new(Mutex::new(LoopStatus::default()));
+        let result = engine.run(worker_tx, rx, &status, Lifetime::UntilIdle, || {});
+        drop(engine);
+        drop(lock);
+        result
+    });
+    let mut latencies = Vec::new();
+    let mut imported_bytes = 0;
+    let mut answered_during_build = 0;
+    // Imports keep coming until the build is installed: one that waited for
+    // a pause in the requests would never end.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut installed_under_requests = false;
+    for n in 0.. {
+        if Instant::now() > deadline {
+            break;
+        }
+        let path = home.dir.path().join(format!("request-{n}.json"));
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "uuid": format!("request-{n}"), "chat_messages": [{
+                    "uuid": format!("answer-{n}"), "sender": "human", "text": "a request"
+                }]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let building = archive.index_build().is_some();
+        let (reply, answer) = sync_channel(1);
+        let sent = Instant::now();
+        if tx
+            .send(LoopMsg::Import {
+                paths: vec![path],
+                format: None,
+                dry_run: false,
+                authorship: Authorship {
+                    author: Author::Operator,
+                    via: Channel::Cli,
+                },
+                parent: None,
+                reply,
+            })
+            .is_err()
+        {
+            break;
+        }
+        let report = answer
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the import is answered")
+            .unwrap();
+        latencies.push(sent.elapsed());
+        imported_bytes += report.pass.bytes_read;
+        answered_during_build += u64::from(building && archive.index_build().is_some());
+        std::thread::sleep(Duration::from_millis(100));
+        if archive.index_build().is_none() {
+            installed_under_requests = true;
+            break;
+        }
+    }
+    drop(tx);
+    let summary = worker.join().unwrap().unwrap();
+    assert!(summary.work.errors.is_empty(), "{:?}", summary.work.errors);
+    assert!(
+        installed_under_requests,
+        "the build completed while the imports kept coming"
+    );
+    assert!(answered_during_build > 0, "{latencies:?}");
+    let slowest = latencies.iter().max().unwrap();
+    eprintln!(
+        "imports answered: {}, {answered_during_build} during the build; slowest {slowest:?}",
+        latencies.len()
+    );
+    // The writer serves an import between its build steps; a step is a
+    // quarter of a second of release-build work, longer in a debug build on
+    // a shared runner, and one session is composed in one step.
+    assert!(*slowest < Duration::from_secs(20), "{latencies:?}");
+    // What the parser read, less the imports' own files: the chain once.
+    // A range ends inside a record and the next range starts at that
+    // record, so a record crossing a range boundary is read twice, under
+    // one record per range; no part of the chain is read again otherwise.
+    let read = summary.work.bytes_read - imported_bytes;
+    let ranges = (large.len() as u64).div_ceil(256 << 10);
+    let record = large.len() as u64 / 12_000;
+    eprintln!("chain {} bytes; the build read {read}", large.len());
+    assert!(read >= large.len() as u64, "{read}");
+    assert!(read <= large.len() as u64 + ranges * 2 * record, "{read}");
+    assert_eq!(home.texts("large").len(), 12_000);
+}

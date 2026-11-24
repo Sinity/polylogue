@@ -86,12 +86,14 @@ pub(in crate::writer) fn runs(
     let mut run = crate::writer::build::BuildWorker::create(archive, 0, 32 << 20).unwrap();
     for (input, &chain) in inputs.iter().zip(chains) {
         let mut batch = one_message(input, &format!("{input}-m"), &format!("{input} text"));
-        let mut reading = ChainParse::new().unwrap();
-        for step in &mut batch.parse {
-            reading.push(step).unwrap();
-        }
-        run.write(&writer.sender(), &batch.input, chain, batch.length, reading)
+        let sender = writer.sender();
+        let mut open = run
+            .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
+        for step in &mut batch.parse {
+            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        }
+        open.finish().unwrap();
     }
     run.finish().unwrap().into_iter().collect()
 }
@@ -245,19 +247,14 @@ fn private_build_crash_child() {
     let mut runs = runs(&archive, &writer, &inputs[..1], &chains[..1]);
     let mut second = crate::writer::build::BuildWorker::create(&archive, 1, 32 << 20).unwrap();
     let mut batch = one_message("second", "second-m", "second text");
-    let mut reading = ChainParse::new().unwrap();
-    for step in &mut batch.parse {
-        reading.push(step).unwrap();
-    }
-    second
-        .write(
-            &writer.sender(),
-            &batch.input,
-            chains[1],
-            batch.length,
-            reading,
-        )
+    let sender = writer.sender();
+    let mut open = second
+        .begin(&sender, &batch.input, chains[1], batch.length)
         .unwrap();
+    for step in &mut batch.parse {
+        crate::writer::ChainSink::step(&mut open, step).unwrap();
+    }
+    open.finish().unwrap();
     runs.extend(second.finish().unwrap());
     crate::fault::arm(&point, "", crate::fault::Action::StopProcess, 0, 1);
     writer.build(runs).unwrap();

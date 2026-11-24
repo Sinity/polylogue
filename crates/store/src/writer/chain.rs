@@ -293,6 +293,128 @@ pub(super) struct ReadingWrite<'a> {
     pub changes: &'a crate::change_summary::ChangeSummary,
 }
 
+/// Where a chain's steps go as they are parsed, in order from its first
+/// record: a reading staged on disk for one replacement transaction
+/// ([`ChainParse`]), or a build worker's scratch index
+/// ([`super::build::OpenChain`]).
+pub trait ChainSink {
+    /// The next step of the chain.
+    fn step(&mut self, step: &mut ParseStep) -> Result<()>;
+    /// Bytes the parse decoded, given before the steps that name them.
+    fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()>;
+}
+
+impl ChainSink for ChainParse {
+    fn step(&mut self, step: &mut ParseStep) -> Result<()> {
+        self.push(step)
+    }
+
+    fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()> {
+        ChainParse::decoded(self, batch);
+        Ok(())
+    }
+}
+
+/// A chain's steps written in order into the reading tables of an index.
+pub(super) struct ChainSteps {
+    batch: Batch,
+    chain: i64,
+    /// Attachment references name only bytes the archive holds, as of the
+    /// transaction the steps are written in.
+    known: HashMap<BlobHash, Option<u64>>,
+    first: bool,
+}
+
+impl ChainSteps {
+    pub(super) fn new(input: &InputKey, chain: i64, length: u64) -> Self {
+        Self {
+            batch: Batch {
+                required_outcome: None,
+                input: input.clone(),
+                change: Change::Reparse { chain },
+                observation: None,
+                continues: false,
+                new_blob: None,
+                blobs: Vec::new(),
+                length,
+                parse: Vec::new(),
+                capture_read: None,
+                base: None,
+                release: Default::default(),
+            },
+            chain,
+            known: HashMap::new(),
+            first: true,
+        }
+    }
+
+    /// Notes the bytes `step` names before any step is written, so every
+    /// step is written against the same view of the archive.
+    pub(super) fn remember(&mut self, w: &ReadingWrite<'_>, step: &ParseStep) -> Result<()> {
+        attachments::remember(step, w.register, &HashMap::new(), &mut self.known)
+    }
+
+    /// Writes the next step, which resets the chain's reading when it is the
+    /// first.
+    pub(super) fn write(
+        &mut self,
+        tx: &Transaction<'_>,
+        w: &ReadingWrite<'_>,
+        step: &mut ParseStep,
+        touched: &mut super::readings::Touched,
+    ) -> Result<()> {
+        if self.first && !step.reset {
+            return Err(StoreError::Invalid(
+                "a chain replacement must start at its first record".into(),
+            ));
+        }
+        if !self.first && step.reset {
+            return Err(StoreError::Invalid(
+                "a chain replacement resets twice".into(),
+            ));
+        }
+        self.remember(w, step)?;
+        attachments::normalize_known(step, &self.known)?;
+        let replacement = self.first && step.delivery.is_none();
+        self.first = false;
+        let source_commit = crate::source::Source::reading_commit(
+            tx,
+            &self.batch.input.id,
+            self.chain,
+            step.parsed_upto,
+        )?;
+        rows::write_step(
+            tx,
+            &self.batch,
+            step,
+            rows::StepWrite {
+                texts: w.texts,
+                counter: w.counter,
+                chain: self.chain,
+                source_commit: Some(&source_commit),
+                replacement,
+                retraction: false,
+                primary: w.primary,
+                changes: w.changes,
+            },
+            touched,
+        )
+    }
+
+    pub(super) fn is_first(&self) -> bool {
+        self.first
+    }
+
+    pub(super) fn finish(&self) -> Result<()> {
+        if self.first {
+            return Err(StoreError::Invalid(
+                "a chain replacement has no reading".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// Writes a chain's reading, step by step from its first record, into the
 /// reading tables of `tx`'s index, recording what it states in `touched`.
 pub(super) fn write_reading(
@@ -304,66 +426,14 @@ pub(super) fn write_reading(
     reading: &ChainParse,
     touched: &mut super::readings::Touched,
 ) -> Result<()> {
+    let mut steps = ChainSteps::new(input, chain, length);
     let mut reader = BufReader::new(std::fs::File::open(&reading.path)?);
-    // Attachment references name only bytes the archive holds, as of
-    // this transaction.
-    let mut known = HashMap::new();
     while let Some(step) = read_step(&mut reader)? {
-        attachments::remember(&step, w.register, &HashMap::new(), &mut known)?;
+        steps.remember(&w, &step)?;
     }
     reader.rewind()?;
-    let batch = Batch {
-        required_outcome: None,
-        input: input.clone(),
-        change: Change::Reparse { chain },
-        observation: None,
-        continues: false,
-        new_blob: None,
-        blobs: Vec::new(),
-        length,
-        parse: Vec::new(),
-        capture_read: None,
-        base: None,
-        release: Default::default(),
-    };
-    let mut first = true;
     while let Some(mut step) = read_step(&mut reader)? {
-        if first && !step.reset {
-            return Err(StoreError::Invalid(
-                "a chain replacement must start at its first record".into(),
-            ));
-        }
-        if !first && step.reset {
-            return Err(StoreError::Invalid(
-                "a chain replacement resets twice".into(),
-            ));
-        }
-        attachments::normalize_known(&mut step, &known)?;
-        let replacement = first && step.delivery.is_none();
-        first = false;
-        let source_commit =
-            crate::source::Source::reading_commit(tx, &batch.input.id, chain, step.parsed_upto)?;
-        rows::write_step(
-            tx,
-            &batch,
-            &step,
-            rows::StepWrite {
-                texts: w.texts,
-                counter: w.counter,
-                chain,
-                source_commit: Some(&source_commit),
-                replacement,
-                retraction: false,
-                primary: w.primary,
-                changes: w.changes,
-            },
-            touched,
-        )?;
+        steps.write(tx, &w, &mut step, touched)?;
     }
-    if first {
-        return Err(StoreError::Invalid(
-            "a chain replacement has no reading".into(),
-        ));
-    }
-    Ok(())
+    steps.finish()
 }

@@ -20,13 +20,17 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 /// The scratch index's page cache.
-const SCRATCH_CACHE_KIB: i64 = 16 << 10;
+const SCRATCH_CACHE_KIB: i64 = 64 << 10;
 
 /// Sessions composed per transaction.
 const SESSIONS_PER_TRANSACTION: usize = 512;
 
-/// Rows the merge writes per transaction.
+/// Rows the merge writes per transaction, at most.
 const ROWS_PER_TRANSACTION: u64 = 200_000;
+
+/// How long one step of the writer's build work runs before it commits
+/// and lets the writer serve what waits.
+const STEP_TIME: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The streams of a build, by the first byte of a record's key.
 const INPUTS: u8 = 0;
@@ -127,13 +131,37 @@ fn peak_memory() -> u64 {
 }
 
 /// A reading table moved out of the scratch index: its name, columns, the
-/// column holding the input key, and how rows from several chains combine.
+/// column holding the input key, and the insert that says how rows from
+/// several chains combine.
 #[derive(Clone)]
 struct Table {
     name: String,
     columns: Vec<String>,
     input: Option<usize>,
-    conflict: &'static str,
+    /// The statement that inserts one row into the build file.
+    insert: String,
+}
+
+impl Table {
+    fn new(name: String, columns: Vec<String>, conflict: &'static str) -> Self {
+        let input = columns.iter().position(|c| c == "input_pk");
+        let names = columns
+            .iter()
+            .map(|c| format!("\"{c}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        let marks = (1..=columns.len())
+            .map(|n| format!("?{n}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let insert = format!("INSERT {conflict} INTO main.\"{name}\"({names}) VALUES ({marks})");
+        Self {
+            name,
+            columns,
+            input,
+            insert,
+        }
+    }
 }
 
 /// The reading tables of an index file, in name order. A reading's rows
@@ -164,12 +192,7 @@ fn tables(conn: &Connection) -> Result<Vec<Table>> {
             _ if input.is_some() => "",
             _ => continue,
         };
-        found.push(Table {
-            name,
-            columns,
-            input,
-            conflict,
-        });
+        found.push(Table::new(name, columns, conflict));
     }
     if found.len() + TABLES as usize > 255 {
         return Err(StoreError::Invalid(
@@ -327,60 +350,38 @@ impl BuildWorker {
         })
     }
 
-    /// Writes a chain's reading, read from its first record to `length`,
-    /// and moves its rows into the worker's stream. Bytes its parse decoded
-    /// are stored first, through the writer.
-    pub fn write(
-        &mut self,
-        writer: &WriterSender,
+    /// Opens chain `chain` of `input`, read from its first record to
+    /// `length`: its steps go into the scratch index as they are parsed, in
+    /// one transaction, and [`OpenChain::finish`] moves its rows into the
+    /// worker's stream. Dropping it unfinished leaves nothing of the chain.
+    pub fn begin<'w>(
+        &'w mut self,
+        writer: &'w WriterSender,
         input: &InputKey,
         chain: i64,
         length: u64,
-        mut reading: ChainParse,
-    ) -> Result<()> {
+    ) -> Result<OpenChain<'w>> {
         crate::fault::check("index.build.prepare", &input.id)?;
-        reading.finish()?;
-        let decoded = reading.take_decoded();
-        if !decoded.is_empty() {
-            for result in writer.store_group(decoded, Arc::clone(&self.blobs))? {
-                result?;
-            }
-        }
-        let text_transaction = self.texts.transaction();
-        let tx = self
-            .conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
-        super::chain::write_reading(
-            &tx,
-            super::chain::ReadingWrite {
-                register: &self.register,
-                texts: &self.texts,
-                counter: 1,
-                primary: false,
-                changes: &changes,
-            },
-            input,
+        Ok(OpenChain {
+            steps: super::chain::ChainSteps::new(input, chain, length),
+            changes,
+            register: &self.register,
+            texts: &self.texts,
+            tx,
+            input: input.id.clone(),
             chain,
-            length,
-            &reading,
-            &mut super::readings::Touched::default(),
-        )?;
-        drop(changes);
-        move_out(
-            &tx,
-            &mut Out {
+            writer,
+            blobs: &self.blobs,
+            out: Out {
                 sorter: &mut self.sorter,
                 tables: &self.tables,
                 number: self.number,
                 groups: &mut self.groups,
             },
-            &input.id,
-            chain,
-        )?;
-        tx.commit()?;
-        text_transaction.commit();
-        Ok(())
+            text_transaction: self.texts.transaction(),
+        })
     }
 
     /// Ends the worker; its runs, for the writer to load.
@@ -394,6 +395,72 @@ impl BuildWorker {
         conn.close().map_err(|(_, error)| error)?;
         crate::archive::index_build::remove_run(&scratch)?;
         Ok(sorter.finish()?)
+    }
+}
+
+/// A chain being read into a build worker's scratch index.
+pub struct OpenChain<'w> {
+    steps: super::chain::ChainSteps,
+    changes: crate::change_summary::ChangeSummary,
+    register: &'w Connection,
+    texts: &'w crate::text_rows::TextIds,
+    tx: Transaction<'w>,
+    input: String,
+    chain: i64,
+    writer: &'w WriterSender,
+    blobs: &'w Arc<crate::blobs::Blobs>,
+    out: Out<'w>,
+    text_transaction: crate::text_rows::TextTransaction<'w>,
+}
+
+impl super::chain::ChainSink for OpenChain<'_> {
+    fn step(&mut self, step: &mut ParseStep) -> Result<()> {
+        if step.prepared != Default::default() {
+            return Err(StoreError::Invalid(
+                "a chain reading needs complete parsed values".into(),
+            ));
+        }
+        if !step.output.blobs.is_empty() {
+            return Err(StoreError::Invalid(
+                "decoded bytes must be stored before their chain reading".into(),
+            ));
+        }
+        step.counts.check()?;
+        step.reset = self.steps.is_first();
+        step.prepare();
+        let w = super::chain::ReadingWrite {
+            register: self.register,
+            texts: self.texts,
+            counter: 1,
+            primary: false,
+            changes: &self.changes,
+        };
+        self.steps
+            .write(&self.tx, &w, step, &mut super::readings::Touched::default())
+    }
+
+    fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()> {
+        if !batch.batch.blobs.is_empty() {
+            for result in self
+                .writer
+                .store_group(vec![batch], Arc::clone(self.blobs))?
+            {
+                result?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl OpenChain<'_> {
+    /// Ends the chain: moves its rows into the worker's stream and clears
+    /// the scratch index.
+    pub fn finish(mut self) -> Result<()> {
+        self.steps.finish()?;
+        move_out(&self.tx, &mut self.out, &self.input, self.chain)?;
+        self.tx.commit()?;
+        self.text_transaction.commit();
+        Ok(())
     }
 }
 
@@ -526,78 +593,230 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
     Ok(())
 }
 
-impl Inner {
-    /// Loads the workers' runs into the build file, composes every
-    /// session, writes the search entries and the deferred indexes, and
-    /// installs the file. Each phase's name is sent to `announce` as it
-    /// starts.
-    pub(super) fn build(
-        &mut self,
+/// A build the writer advances one bounded step at a time, between the
+/// messages it serves: each step commits its own transaction and the job
+/// keeps its position, so nothing a step did is done again.
+pub(super) struct BuildJob {
+    stage: Stage,
+    announce: Option<std::sync::mpsc::Sender<&'static str>>,
+    reply: SyncSender<Result<Vec<BuildPhase>>>,
+    phases: Vec<BuildPhase>,
+    clock: Option<(PhaseClock, u64)>,
+    /// The indexes dropped for the load, recreated after it.
+    indexes: Vec<(String, String)>,
+}
+
+enum Stage {
+    Start(Vec<PathBuf>),
+    Load(Box<Load>),
+    TextHolders(Box<TextHolders>),
+    Indexes(usize),
+    /// The sessions to compose, and the next one.
+    Compose(Vec<String>, usize),
+    FullText(crate::text_rows::SearchBuild),
+    Deferred(Vec<String>),
+    Install,
+}
+
+/// The merge of the workers' runs, where it stands.
+struct Load {
+    merged: Merger,
+    tables: Vec<Table>,
+    held: std::iter::Peekable<std::vec::IntoIter<(Vec<u8>, i64)>>,
+    next_text: i64,
+    next_group: i64,
+    bases: std::collections::HashMap<u32, i64>,
+    holders: Option<Sorter>,
+    input: Option<(String, i64)>,
+    current_text: Option<(Vec<u8>, i64)>,
+    stream: Option<u8>,
+}
+
+/// The reading text rows, joined to their texts, being loaded.
+struct TextHolders {
+    merged: Merger,
+    input: Option<(String, i64)>,
+    table: Table,
+}
+
+impl BuildJob {
+    pub(super) fn new(
         runs: Vec<PathBuf>,
         announce: Option<std::sync::mpsc::Sender<&'static str>>,
-    ) -> Result<Vec<BuildPhase>> {
-        let start = |name: &'static str| {
-            if let Some(announce) = &announce {
-                let _ = announce.send(name);
-            }
-            PhaseClock::start(name)
-        };
+        reply: SyncSender<Result<Vec<BuildPhase>>>,
+    ) -> Self {
+        Self {
+            stage: Stage::Start(runs),
+            announce,
+            reply,
+            phases: Vec::new(),
+            clock: None,
+            indexes: Vec::new(),
+        }
+    }
+
+    /// Starts `name` unless it is the phase already running, ending the one
+    /// before.
+    fn phase(&mut self, name: &'static str) {
+        if self
+            .clock
+            .as_ref()
+            .is_some_and(|(clock, _)| clock.name == name)
+        {
+            return;
+        }
+        if let Some((clock, items)) = self.clock.take() {
+            self.phases.push(clock.end(items));
+        }
+        if let Some(announce) = &self.announce {
+            let _ = announce.send(name);
+        }
+        self.clock = Some((PhaseClock::start(name), 0));
+    }
+
+    fn count(&mut self, items: u64) {
+        if let Some((_, counted)) = &mut self.clock {
+            *counted += items;
+        }
+    }
+
+    /// Answers the caller: the phases, or why the build stopped.
+    pub(super) fn finish(mut self, result: Result<()>) {
+        if let Some((clock, items)) = self.clock.take() {
+            self.phases.push(clock.end(items));
+        }
+        let _ = self.reply.send(result.map(|()| self.phases));
+    }
+}
+
+impl Inner {
+    /// Runs the next step of `job`; true once the build file is installed.
+    pub(super) fn build_step(&mut self, job: &mut BuildJob) -> Result<bool> {
         if self.sinex.is_some() || !self.location.index_build.building() {
             return Err(StoreError::Invalid(
                 "no standalone build is in progress".into(),
             ));
         }
-        let mut phases = Vec::new();
-        self.index.flush_prepared_statement_cache();
-        let indexes: Vec<(String, String)> = self
-            .index
-            .prepare(
-                "SELECT name,sql FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
-                 AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')",
-            )?
-            .query_map([], |r| <(String, String)>::try_from(r))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (name, _) in &indexes {
-            self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
-        }
-        self.load(runs, &start, &mut phases)?;
-        let clock = start("indexes");
-        for (_, sql) in &indexes {
-            self.stop.check()?;
-            self.index.execute(sql, [])?;
-        }
-        phases.push(clock.end(indexes.len() as u64));
-        let clock = start("compose");
-        let sessions = self.compose_all()?;
-        phases.push(clock.end(sessions));
-        let clock = start("full text");
-        // The search entries are written from every text's marks; entries
-        // queued by upkeep writes during the build would repeat them.
-        self.index.execute("DELETE FROM search_pending", [])?;
-        self.build_deferred()?;
-        phases.push(clock.end(0));
-        let clock = start("install");
-        self.install_build()?;
-        self.texts =
-            crate::text_rows::TextIds::new(&self.index, self.location.memory_budget().keys() / 3)?;
-        self.search.ready();
-        self.commits
-            .committed(crate::completion::Committed::CONTENT);
-        phases.push(clock.end(0));
-        Ok(phases)
+        let stage = std::mem::replace(&mut job.stage, Stage::Install);
+        job.stage = match stage {
+            Stage::Start(runs) => {
+                job.phase("merge texts");
+                self.index.flush_prepared_statement_cache();
+                job.indexes = self
+                    .index
+                    .prepare(
+                        "SELECT name,sql FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
+                         AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')",
+                    )?
+                    .query_map([], |r| <(String, String)>::try_from(r))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for (name, _) in &job.indexes {
+                    self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                }
+                Stage::Load(Box::new(self.start_load(runs)?))
+            }
+            Stage::Load(mut load) => {
+                if self.load_step(job, &mut load)? {
+                    Stage::Load(load)
+                } else {
+                    crate::fault::check("index.build.loading", "")?;
+                    let paths = Paths::of(&self.location.root);
+                    let holders = load.holders.take().expect("the text holders' sorter");
+                    Stage::TextHolders(Box::new(TextHolders {
+                        merged: Merger::open(holders.finish()?, &paths.runs)?,
+                        input: None,
+                        table: Table::new(
+                            "parse_text".into(),
+                            ["input_pk", "chain", "document", "item", "idx", "text_id"]
+                                .map(String::from)
+                                .to_vec(),
+                            "",
+                        ),
+                    }))
+                }
+            }
+            Stage::TextHolders(mut holders) => {
+                if self.holders_step(job, &mut holders)? {
+                    Stage::TextHolders(holders)
+                } else {
+                    self.index.pragma_update(None, "foreign_keys", true)?;
+                    crate::archive::index_build::remove_runs(&Paths::of(&self.location.root))?;
+                    job.phase("indexes");
+                    Stage::Indexes(0)
+                }
+            }
+            Stage::Indexes(next) => match job.indexes.get(next) {
+                Some((_, sql)) => {
+                    self.index.execute(sql, [])?;
+                    job.count(1);
+                    Stage::Indexes(next + 1)
+                }
+                None => {
+                    job.phase("compose");
+                    Stage::Compose(self.stated_sessions()?, 0)
+                }
+            },
+            Stage::Compose(sessions, next) if next == 0 || next < sessions.len() => {
+                self.compose_chunk(&sessions, next)?;
+                let after = (next + SESSIONS_PER_TRANSACTION).min(sessions.len());
+                job.count((after - next) as u64);
+                Stage::Compose(sessions, after.max(1))
+            }
+            Stage::Compose(..) => {
+                job.phase("full text");
+                // The search entries are written from every text's marks;
+                // entries queued by upkeep writes during the build would
+                // repeat them.
+                self.index.execute("DELETE FROM search_pending", [])?;
+                Stage::FullText(crate::text_rows::SearchBuild::new())
+            }
+            Stage::FullText(mut search) => {
+                if search.step(&self.index)? {
+                    let started = std::time::Instant::now();
+                    self.index.execute(
+                        "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
+                        [],
+                    )?;
+                    crate::timing::add(crate::timing::Stage::TrigramIndex, started.elapsed());
+                    let mut deferred = crate::schema::built_at_end_sql()?;
+                    deferred.reverse();
+                    Stage::Deferred(deferred)
+                } else {
+                    Stage::FullText(search)
+                }
+            }
+            Stage::Deferred(mut deferred) => match deferred.pop() {
+                Some(sql) => {
+                    let started = std::time::Instant::now();
+                    self.index.execute(&sql, [])?;
+                    crate::timing::add(crate::timing::Stage::SecondaryIndexes, started.elapsed());
+                    crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
+                    Stage::Deferred(deferred)
+                }
+                None => {
+                    job.phase("install");
+                    Stage::Install
+                }
+            },
+            Stage::Install => {
+                self.install_build()?;
+                self.texts = crate::text_rows::TextIds::new(
+                    &self.index,
+                    self.location.memory_budget().keys() / 3,
+                )?;
+                self.search.ready();
+                self.commits
+                    .committed(crate::completion::Committed::CONTENT);
+                return Ok(true);
+            }
+        };
+        Ok(false)
     }
 
-    /// One merge of every worker's runs: inputs, text groups, texts with
-    /// the reading text rows joined to them, then the reading tables.
-    fn load(
-        &mut self,
-        runs: Vec<PathBuf>,
-        start: &dyn Fn(&'static str) -> PhaseClock,
-        phases: &mut Vec<BuildPhase>,
-    ) -> Result<()> {
+    /// Opens the merge of every worker's runs.
+    fn start_load(&mut self, runs: Vec<PathBuf>) -> Result<Load> {
         let paths = Paths::of(&self.location.root);
         std::fs::create_dir_all(&paths.runs)?;
-        let tables = tables(&self.index)?;
         // Texts upkeep wrote into the build file while the build ran keep
         // their rows; a run's equal text takes that row.
         let held: Vec<(Vec<u8>, i64)> = self
@@ -605,54 +824,57 @@ impl Inner {
             .prepare("SELECT hash,id FROM text ORDER BY hash")?
             .query_map([], |r| <(Vec<u8>, i64)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?;
-        let mut held = held.into_iter().peekable();
-        let mut next_text: i64 = self
-            .index
-            .scalar("SELECT coalesce(max(id),0)+1 FROM text", [])?;
-        let mut next_group: i64 = self
-            .index
-            .scalar("SELECT coalesce(max(id),0)+1 FROM text_group", [])?;
-        let mut bases = std::collections::HashMap::<u32, i64>::new();
-        let mut holders = Sorter::new(
-            &paths.runs,
-            "text-holders".into(),
-            (self.location.memory_budget().total() / 8) as usize,
-        );
         // References are checked by the indexes and composition after the
         // load; tables arrive in name order, not in reference order.
         self.index.pragma_update(None, "foreign_keys", false)?;
-        let mut merged = Merger::open(runs, &paths.runs)?;
-        let mut tx = Some(Transaction::new_unchecked(
-            &self.index,
-            TransactionBehavior::Immediate,
-        )?);
+        Ok(Load {
+            merged: Merger::open(runs, &paths.runs)?,
+            tables: tables(&self.index)?,
+            held: held.into_iter().peekable(),
+            next_text: self
+                .index
+                .scalar("SELECT coalesce(max(id),0)+1 FROM text", [])?,
+            next_group: self
+                .index
+                .scalar("SELECT coalesce(max(id),0)+1 FROM text_group", [])?,
+            bases: std::collections::HashMap::new(),
+            holders: Some(Sorter::new(
+                &paths.runs,
+                "text-holders".into(),
+                (self.location.memory_budget().total() / 8) as usize,
+            )),
+            input: None,
+            current_text: None,
+            stream: None,
+        })
+    }
+
+    /// Loads up to a transaction's worth of records; false once the runs
+    /// are read.
+    fn load_step(&mut self, job: &mut BuildJob, load: &mut Load) -> Result<bool> {
+        let started = std::time::Instant::now();
+        let t = Transaction::new_unchecked(&self.index, TransactionBehavior::Immediate)?;
         let mut written = 0u64;
-        let mut stream = None::<u8>;
-        let mut clock = None::<(PhaseClock, u64)>;
-        let mut input: Option<(String, i64)> = None;
-        let mut current_text: Option<(Vec<u8>, i64)> = None;
         let mut values = Vec::new();
-        while let Some((key, value)) = merged.next()? {
+        let more = loop {
+            if written == ROWS_PER_TRANSACTION
+                || (written % 1024 == 1023 && started.elapsed() > STEP_TIME)
+            {
+                break true;
+            }
+            let Some((key, value)) = load.merged.next()? else {
+                break false;
+            };
             let (&kind, rest) = key
                 .split_first()
                 .ok_or_else(|| StoreError::Invalid("a build stream holds an empty key".into()))?;
-            if stream != Some(kind) {
-                let phase = match kind {
+            if load.stream != Some(kind) {
+                job.phase(match kind {
                     INPUTS | GROUPS | TEXTS => "merge texts",
                     _ => "load",
-                };
-                if clock.as_ref().is_none_or(|(c, _)| c.name != phase) {
-                    if let Some((c, items)) = clock.take() {
-                        phases.push(c.end(items));
-                    }
-                    clock = Some((start(phase), 0));
-                }
-                stream = Some(kind);
+                });
+                load.stream = Some(kind);
             }
-            if let Some((_, items)) = &mut clock {
-                *items += 1;
-            }
-            let t = tx.as_ref().expect("a transaction is open");
             match kind {
                 INPUTS => {
                     let row = decode_row(value)?;
@@ -666,30 +888,31 @@ impl Inner {
                 GROUPS => {
                     let worker = u32::from_be_bytes(rest[..4].try_into().expect("four bytes"));
                     let seq = i64::from_be_bytes(rest[4..12].try_into().expect("eight bytes"));
-                    bases.entry(worker).or_insert(next_group - seq);
+                    load.bases.entry(worker).or_insert(load.next_group - seq);
                     t.prepare_cached("INSERT INTO text_group(id,body) VALUES (?1,?2)")?
-                        .execute(params![next_group, value])?;
-                    next_group += 1;
+                        .execute(params![load.next_group, value])?;
+                    load.next_group += 1;
                 }
                 TEXTS => {
                     let (hash, rest) = rest.split_at(32);
-                    while held
+                    while load
+                        .held
                         .next_if(|(stored, _)| stored.as_slice() < hash)
                         .is_some()
                     {}
-                    if current_text
+                    if load
+                        .current_text
                         .as_ref()
                         .is_none_or(|(same, _)| same.as_slice() != hash)
                     {
-                        current_text = None;
-                        if let Some((_, id)) = held.next_if(|(stored, _)| stored.as_slice() == hash)
-                        {
-                            current_text = Some((hash.to_vec(), id));
-                        }
+                        load.current_text = load
+                            .held
+                            .next_if(|(stored, _)| stored.as_slice() == hash)
+                            .map(|(_, id)| (hash.to_vec(), id));
                     }
                     match rest.first() {
                         Some(&TEXT) => {
-                            if current_text.is_none() {
+                            if load.current_text.is_none() {
                                 let row = decode_row(value)?;
                                 let (Value::Integer(worker), Value::Integer(seq)) =
                                     (&row[0], &row[1])
@@ -698,20 +921,27 @@ impl Inner {
                                         "a text names no group".into(),
                                     ));
                                 };
-                                let base = bases.get(&(*worker as u32)).ok_or_else(|| {
+                                let base = load.bases.get(&(*worker as u32)).ok_or_else(|| {
                                     StoreError::Invalid("a text's group is not in the build".into())
                                 })?;
                                 t.prepare_cached(
                                     "INSERT INTO text(id,hash,normalized_hash,indexed,group_id,start,length)
                                      VALUES (?1,?2,?3,0,?4,?5,?6)",
                                 )?
-                                .execute(params![next_text, hash, row[4], base + seq, row[2], row[3]])?;
-                                current_text = Some((hash.to_vec(), next_text));
-                                next_text += 1;
+                                .execute(params![
+                                    load.next_text,
+                                    hash,
+                                    row[4],
+                                    base + seq,
+                                    row[2],
+                                    row[3]
+                                ])?;
+                                load.current_text = Some((hash.to_vec(), load.next_text));
+                                load.next_text += 1;
                             }
                         }
                         Some(&TEXT_HOLDER) => {
-                            let (_, id) = current_text.as_ref().ok_or_else(|| {
+                            let (_, id) = load.current_text.as_ref().ok_or_else(|| {
                                 StoreError::Invalid("a reading names a text the build lacks".into())
                             })?;
                             let mut row = decode_row(value)?;
@@ -721,72 +951,69 @@ impl Inner {
                             encode_row(&refs, &mut values);
                             let mut key = vec![0];
                             key.extend_from_slice(&rest[1..]);
-                            holders.push(&key, &values)?;
+                            load.holders
+                                .as_mut()
+                                .expect("the text holders' sorter")
+                                .push(&key, &values)?;
                         }
                         _ => return Err(StoreError::Invalid("a text record of no kind".into())),
                     }
                 }
                 _ => {
-                    let table = tables.get(usize::from(kind - TABLES)).ok_or_else(|| {
+                    let table = load.tables.get(usize::from(kind - TABLES)).ok_or_else(|| {
                         StoreError::Invalid("a build stream names no table".into())
                     })?;
                     let mut row = decode_row(value)?;
                     if let Some(at) = table.input {
-                        row[at] = Value::Integer(input_pk(t, &mut input, key_input(rest)?)?);
+                        row[at] = Value::Integer(input_pk(&t, &mut load.input, key_input(rest)?)?);
                     }
-                    insert(t, table, &row)?;
+                    insert(&t, table, &row)?;
                 }
             }
             written += 1;
-            if written.is_multiple_of(ROWS_PER_TRANSACTION) {
-                self.stop.check()?;
-                tx.take().expect("a transaction is open").commit()?;
-                tx = Some(Transaction::new_unchecked(
-                    &self.index,
-                    TransactionBehavior::Immediate,
-                )?);
-            }
-        }
-        drop(merged);
-        let t = tx.take().expect("a transaction is open");
-        // Groups whose every text another worker also held.
-        t.execute(
-            "DELETE FROM text_group WHERE id NOT IN (SELECT group_id FROM text)",
-            [],
-        )?;
-        t.commit()?;
-        crate::fault::check("index.build.loading", "")?;
-        let parse_text = Table {
-            name: "parse_text".into(),
-            columns: ["input_pk", "chain", "document", "item", "idx", "text_id"]
-                .map(String::from)
-                .to_vec(),
-            input: Some(0),
-            conflict: "",
         };
-        let mut merged = Merger::open(holders.finish()?, &paths.runs)?;
-        let t = Transaction::new_unchecked(&self.index, TransactionBehavior::Immediate)?;
-        while let Some((key, value)) = merged.next()? {
-            let mut row = decode_row(value)?;
-            row[0] = Value::Integer(input_pk(&t, &mut input, key_input(&key[1..])?)?);
-            insert(&t, &parse_text, &row)?;
-            if let Some((_, items)) = &mut clock {
-                *items += 1;
-            }
+        if !more {
+            // Groups whose every text another worker also held.
+            t.execute(
+                "DELETE FROM text_group WHERE id NOT IN (SELECT group_id FROM text)",
+                [],
+            )?;
         }
         t.commit()?;
-        self.index.pragma_update(None, "foreign_keys", true)?;
-        if let Some((c, items)) = clock {
-            phases.push(c.end(items));
-        }
-        crate::archive::index_build::remove_runs(&paths)?;
-        Ok(())
+        job.count(written);
+        Ok(more)
+    }
+
+    /// Loads up to a transaction's worth of reading text rows; false once
+    /// they are all loaded.
+    fn holders_step(&mut self, job: &mut BuildJob, holders: &mut TextHolders) -> Result<bool> {
+        let started = std::time::Instant::now();
+        let t = Transaction::new_unchecked(&self.index, TransactionBehavior::Immediate)?;
+        let mut written = 0u64;
+        let more = loop {
+            if written == ROWS_PER_TRANSACTION
+                || (written % 1024 == 1023 && started.elapsed() > STEP_TIME)
+            {
+                break true;
+            }
+            let Some((key, value)) = holders.merged.next()? else {
+                break false;
+            };
+            let mut row = decode_row(value)?;
+            row[0] = Value::Integer(input_pk(&t, &mut holders.input, key_input(&key[1..])?)?);
+            insert(&t, &holders.table, &row)?;
+            written += 1;
+        };
+        t.commit()?;
+        job.count(written);
+        Ok(more)
     }
 
     /// Composes every session the readings state once, in key order, with
     /// the composition upkeep uses; the sessions composed.
-    fn compose_all(&mut self) -> Result<u64> {
-        let sessions: Vec<String> = self
+    /// The sessions the readings state, in key order.
+    fn stated_sessions(&self) -> Result<Vec<String>> {
+        Ok(self
             .index
             .prepare(
                 "SELECT session_id FROM session_record UNION SELECT session_id FROM message_parse
@@ -796,13 +1023,16 @@ impl Inner {
                  UNION SELECT session_id FROM call_outcome ORDER BY 1",
             )?
             .query_map([], |r| r.get(0))?
-            .collect::<rusqlite::Result<_>>()?;
-        let mut first = true;
-        let count = sessions.len() as u64;
-        let mut chunks = sessions.chunks(SESSIONS_PER_TRANSACTION).peekable();
-        while first || chunks.peek().is_some() {
-            self.stop.check()?;
-            let chunk = chunks.next().unwrap_or_default();
+            .collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// Composes the next transaction's worth of sessions, from `next`, with
+    /// the composition upkeep uses; the first step also composes what no
+    /// session holds (input events, documents).
+    fn compose_chunk(&mut self, sessions: &[String], next: usize) -> Result<()> {
+        let first = next == 0;
+        let chunk = &sessions[next..sessions.len().min(next + SESSIONS_PER_TRANSACTION)];
+        {
             let text_transaction = self.texts.transaction();
             let tx = self
                 .index
@@ -853,13 +1083,12 @@ impl Inner {
                 {
                     touched.documents.insert(row?);
                 }
-                first = false;
             }
             rows::finish(&tx, touched, &changes, &self.texts, true, counter)?;
             tx.commit()?;
             text_transaction.commit();
         }
-        Ok(count)
+        Ok(())
     }
 }
 
@@ -879,20 +1108,7 @@ fn input_pk(tx: &Transaction<'_>, current: &mut Option<(String, i64)>, id: &str)
 }
 
 fn insert(tx: &Transaction<'_>, table: &Table, row: &[Value]) -> Result<()> {
-    let names = table
-        .columns
-        .iter()
-        .map(|c| format!("\"{c}\""))
-        .collect::<Vec<_>>()
-        .join(",");
-    let marks = (1..=table.columns.len())
-        .map(|n| format!("?{n}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    tx.prepare_cached(&format!(
-        "INSERT {} INTO main.\"{}\"({names}) VALUES ({marks})",
-        table.conflict, table.name
-    ))?
-    .execute(rusqlite::params_from_iter(row))?;
+    tx.prepare_cached(&table.insert)?
+        .execute(rusqlite::params_from_iter(row))?;
     Ok(())
 }

@@ -443,13 +443,13 @@ fn build_from_record(
     for (i, (&(n, chain), &stored)) in chains.iter().enumerate() {
         let records = stored_records[&(n, chain)];
         let mut batch = step(n, &inputs[n], chain, 0, records);
-        let mut reading = ChainParse::new().unwrap();
-        for step in &mut batch.parse {
-            reading.push(step).unwrap();
-        }
-        runs[i % 2]
-            .write(&sender, &batch.input, stored, batch.length, reading)
+        let mut open = runs[i % 2]
+            .begin(&sender, &batch.input, stored, batch.length)
             .unwrap();
+        for step in &mut batch.parse {
+            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        }
+        open.finish().unwrap();
     }
     let paths = runs
         .into_iter()
