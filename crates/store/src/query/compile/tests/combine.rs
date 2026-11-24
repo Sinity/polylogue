@@ -550,3 +550,20 @@ fn fused_count_and_membership_keep_rank_dependent_operand_selections() {
         [json!("claude-code:c"), json!("claude-code:a")]
     );
 }
+
+/// A query a filter and its `--why` clause share is lowered once: each
+/// level of `id in (…)` adds the same parameters, where lowering it for
+/// both would double them at every level.
+#[test]
+fn nested_queries_lower_once_for_the_filter_and_its_clause() {
+    let parameters = |depth: usize| {
+        let mut text = "sessions where repo:x | group by id".to_owned();
+        for _ in 0..depth {
+            text = format!("sessions where repo:x id in ({text}) | group by id");
+        }
+        compile(&text, &opts(&[])).unwrap().params.len()
+    };
+    let per_level = parameters(2) - parameters(1);
+    assert_eq!(parameters(64) - parameters(63), per_level);
+    assert_eq!(parameters(64), parameters(1) + 63 * per_level);
+}

@@ -32,6 +32,13 @@ impl<'a> Compiler<'a> {
         at: usize,
         similar: Option<&str>,
     ) -> Result<Program, QueryError> {
+        let mut program = self.lower_other(bound)?;
+        self.take_in(&mut program, at, similar)?;
+        Ok(program)
+    }
+
+    /// Another query's program, its parameters continuing this query's.
+    fn lower_other(&mut self, bound: &Bound) -> Result<Program, QueryError> {
         if let Some(child) = bound.query.attach.first() {
             return Err(QueryError::Invalid {
                 message: "a query in parentheses gives rows to compare, not attached rows".into(),
@@ -42,6 +49,18 @@ impl<'a> Compiler<'a> {
         inner.params = std::mem::take(&mut self.params);
         let mut program = inner.program(bound, Reading::whole())?;
         self.params = std::mem::take(&mut program.params);
+        Ok(program)
+    }
+
+    /// Takes over what another query's program recorded: its resolved
+    /// times, notes, terms, checks and definitions, and its `similar:` text,
+    /// which must be the enclosing selection's own.
+    fn take_in(
+        &mut self,
+        program: &mut Program,
+        at: usize,
+        similar: Option<&str>,
+    ) -> Result<(), QueryError> {
         self.resolved_times
             .borrow_mut()
             .extend(program.resolved_times.iter().cloned());
@@ -72,7 +91,7 @@ impl<'a> Compiler<'a> {
             (None, Some(theirs)) => self.similar_text = Some(theirs.clone()),
             _ => {}
         }
-        Ok(program)
+        Ok(())
     }
 
     /// The other query of a combining stage: rows of the same unit.
@@ -135,7 +154,23 @@ impl<'a> Compiler<'a> {
         span: Span,
         cx: Cx<'_>,
     ) -> Result<String, QueryError> {
-        let program = self.other_query(query, span.start, cx.similar)?;
+        // The filter and its `--why` clause hold the same query: it is
+        // lowered once, over the parameters it was given then, and its
+        // statement serves both.
+        let key = std::ptr::from_ref(query);
+        let program = match self.lowered_queries.get(&key) {
+            Some(program) => {
+                let program = program.clone();
+                self.take_in(&mut program.clone(), span.start, cx.similar)?;
+                program
+            }
+            None => {
+                let mut program = self.lower_other(query)?;
+                self.lowered_queries.insert(key, program.clone());
+                self.take_in(&mut program, span.start, cx.similar)?;
+                program
+            }
+        };
         let (expr, kind) = self.expr(field, scope, span.start)?;
         scalar(kind, field, span.start)?;
         let grouped = &program.columns[0];

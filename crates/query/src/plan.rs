@@ -111,6 +111,8 @@ impl Plan {
     /// The expanded question bound whole for one execution: times resolved
     /// against its clock, its columns, origins and provider catalog.
     pub fn bound(&self, options: &crate::Options) -> Result<crate::bound::Bound, QueryError> {
+        let typing =
+            crate::bound::QuestionTyping::new(self.expanded.query(), self.expanded.typing());
         let binder = crate::filter::Binder {
             text: &self.expanded_text,
             origins: &options.origins,
@@ -121,10 +123,14 @@ impl Plan {
             expanding: &[],
             fields: &options.fields,
             kept: &self.bindings.kept,
+            typing: Some(&typing),
         };
         crate::bound::Bound::of(
             self.expanded.query().clone(),
-            Some(self.expanded.typing()),
+            Some(crate::bound::TypingAt {
+                typing: self.expanded.typing(),
+                base: Default::default(),
+            }),
             &binder,
         )
     }
