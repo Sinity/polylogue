@@ -20,7 +20,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 /// The scratch index's page cache.
-const SCRATCH_CACHE_KIB: i64 = 16 << 10;
+const SCRATCH_CACHE_KIB: i64 = 64 << 10;
 
 /// Sessions composed per transaction.
 const SESSIONS_PER_TRANSACTION: usize = 512;
