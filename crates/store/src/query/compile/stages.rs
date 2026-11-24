@@ -282,7 +282,6 @@ impl<'a> Compiler<'a> {
     ) -> Result<Attach, QueryError> {
         let mut compiler = self.nested(self.text);
         compiler.aliases = self.aliases;
-        compiler.saved_stack = self.saved_stack.clone();
         let attach = compiler.attached(child, parent, measured);
         self.aliases = compiler.aliases;
         self.absorb(compiler);

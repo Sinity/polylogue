@@ -101,6 +101,68 @@ fn hint(similar: &[String]) -> String {
 }
 
 impl QueryError {
+    /// This error, found while binding the body of the saved query `name`
+    /// whose text is `text`, as the caller sees it: the position the
+    /// caller wrote `query:NAME` at, and a message naming where in the
+    /// saved text it was found.
+    pub fn inside_saved(self, name: &str, text: &str, position: usize) -> Self {
+        let within = |at: usize, message: &str| {
+            format!("in query:{name} at position {at} of its text {text:?}: {message}")
+        };
+        match self {
+            Self::Invalid {
+                message,
+                position: at,
+            } => Self::Invalid {
+                message: within(at, &message),
+                position,
+            },
+            Self::BadValue {
+                field,
+                value,
+                position: at,
+                message,
+            } => Self::BadValue {
+                field,
+                value,
+                message: within(at, &message),
+                position,
+            },
+            Self::Syntax {
+                message,
+                position: at,
+                line,
+                caret,
+                ..
+            } => Self::Syntax {
+                message: within(at, &message),
+                position,
+                line,
+                caret,
+                suggestion: None,
+            },
+            // A saved body names only fields the catalog had when it was
+            // saved; the caller's position is the one to show.
+            Self::UnknownField {
+                field,
+                unit,
+                similar,
+                ..
+            } => Self::UnknownField {
+                field,
+                unit,
+                position,
+                similar,
+                suggestion: None,
+            },
+            Self::Language { error, diagnostic } => Self::Language {
+                error,
+                diagnostic: format!("in query:{name}: {diagnostic}"),
+            },
+            other => other,
+        }
+    }
+
     pub fn invalid(message: impl Into<String>) -> Self {
         Self::Invalid {
             message: message.into(),

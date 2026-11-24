@@ -7,12 +7,15 @@ use polylogue_query::filter::{Binder, FieldTest, Filter, Test, TimeTest};
 
 impl<'a> Compiler<'a> {
     /// What binding reads from the query.
-    pub(super) fn binder(&self) -> Binder<'a> {
+    pub(super) fn binder(&self) -> Binder<'_> {
         Binder {
             text: self.text,
             origins: &self.opts.origins,
             clock: &self.opts.clock,
             provider_catalog: self.opts.provider_catalog.as_deref(),
+            saved: &self.opts.saved,
+            catalog: &self.catalog,
+            expanding: &[],
         }
     }
 
@@ -65,6 +68,7 @@ impl<'a> Compiler<'a> {
                     span,
                 } => self.related(prefix, *target, filter, scope, *span, cx)?,
                 Filter::Field(test) => self.field(test, scope, cx)?,
+                Filter::Saved(relation) => self.saved_relation(relation, scope, cx)?,
                 Filter::Written(c) => self.written(c, scope, cx)?,
             })
         })
@@ -201,9 +205,6 @@ impl<'a> Compiler<'a> {
                 left: operand,
                 query,
             } => self.member_of(field_operand(operand)?, query, scope, c.span, cx),
-            ConditionKind::Saved { name, arguments } => {
-                self.saved_cond(name, arguments, scope, c.span, cx)
-            }
             ConditionKind::Sequence { steps, gaps, .. } => self.seq(steps, gaps, scope, c.span, cx),
             ConditionKind::Compare { left, op, right } => self.expression_comparison(
                 left,

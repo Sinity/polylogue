@@ -3,10 +3,11 @@
 //! value in the form the store keeps (nano-dollars, milliseconds, times
 //! resolved against the query's clock, closed sets in their declared
 //! spelling), so lowering is a match on the field and never reads the
-//! value's spelling again (docs/query.md: Units and fields, Times). Conditions over
-//! other rows (exists, count, membership, saved queries, sequences) and
-//! computed comparisons stay as written; the store binds their inner
-//! conditions when it lowers them.
+//! value's spelling again (docs/query.md: Units and fields, Times). A saved
+//! query where a condition stands binds to the relation its frozen body
+//! selects. Conditions over other rows (exists, count, membership,
+//! sequences) and computed comparisons stay as written; the store binds
+//! their inner conditions when it lowers them.
 use crate::{
     QueryError,
     ast::*,
@@ -15,14 +16,20 @@ use crate::{
 };
 
 /// What binding needs from the query: its text (for diagnostics), the
-/// origin names a reference may start with, and the clock times resolve
-/// against.
+/// origin names a reference may start with, the clock times resolve
+/// against, and the saved queries it may name.
 #[derive(Clone, Copy)]
 pub struct Binder<'a> {
     pub text: &'a str,
     pub origins: &'a [String],
     pub clock: &'a Clock,
     pub provider_catalog: Option<&'a references::Catalog>,
+    /// The saved definitions this question resolved, by name and by hash.
+    pub saved: &'a std::collections::BTreeMap<String, Vec<crate::SavedQuery>>,
+    pub catalog: &'a query_language::catalog::Catalog,
+    /// The saved queries whose bodies are being bound around this
+    /// binding, outermost first.
+    pub expanding: &'a [String],
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,9 +65,22 @@ pub enum Filter {
         span: Span,
     },
     Field(FieldTest),
+    /// `query:NAME` where a condition stands: the saved relation over the
+    /// same unit, from the body its identity hashed, its parameters bound.
+    /// It binds the unit's defaults by its own top-level conditions.
+    Saved(Box<SavedRelation>),
     /// A condition the store lowers as written: one over other rows or
     /// another query, or a computed comparison.
     Written(Condition),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SavedRelation {
+    pub name: String,
+    /// The saved annotation revision the name resolved to.
+    pub revision: String,
+    pub selection: crate::selection::Selection,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -222,10 +242,12 @@ impl Binder<'_> {
                 } if bind_unit(rows)? != Unit::ToolCalls => {
                     return Err(not_built("this shared condition"));
                 }
+                ConditionKind::Saved { name, arguments } => {
+                    self.saved_relation(name, arguments, unit, c.span)?
+                }
                 ConditionKind::Exists { .. }
                 | ConditionKind::Count { .. }
                 | ConditionKind::In { .. }
-                | ConditionKind::Saved { .. }
                 | ConditionKind::Sequence { all: false, .. }
                 | ConditionKind::Compare { .. }
                 | ConditionKind::Between { .. }
@@ -233,6 +255,142 @@ impl Binder<'_> {
                 _ => return Err(not_built("this shared condition")),
             })
         })
+    }
+
+    /// `query:NAME` over `unit`'s rows: a relation (a unit and conditions,
+    /// no transforms) over the same unit. A saved relation over another
+    /// stays a reference to it, so the inner one keeps the defaults it
+    /// bound.
+    fn saved_relation(
+        &self,
+        name: &str,
+        arguments: &[Argument],
+        unit: Unit,
+        span: Span,
+    ) -> Result<Filter, QueryError> {
+        let (body, definition) = crate::compile::source::saved_body(
+            name,
+            arguments,
+            self.text,
+            span.start,
+            self.saved,
+            self.catalog,
+            self.expanding,
+        )?;
+        let shaped = || QueryError::Invalid {
+            message: format!(
+                "query:{name} is a shaped result (it has stages), so it cannot be a condition; \
+                 read it as `query:{name} | where …`"
+            ),
+            position: span.start,
+        };
+        if !body.transforms.is_empty() || !body.attach.is_empty() {
+            return Err(shaped());
+        }
+        let mut expanding = self.expanding.to_vec();
+        expanding.push(name.to_owned());
+        // The body's spans are positions in its written-out syntax.
+        let syntax = definition.executable_text()?;
+        let inner = Binder {
+            text: syntax,
+            expanding: &expanding,
+            ..*self
+        };
+        let (selected, condition) = match body.source {
+            Source::Unit {
+                unit, condition, ..
+            } => (bind_unit(&unit)?, condition),
+            Source::Saved {
+                name: nested,
+                arguments,
+                condition,
+                ..
+            } => {
+                let selected = inner.relation_unit(&nested, &arguments)?;
+                let reference = Condition {
+                    span: Span::default(),
+                    kind: ConditionKind::Saved {
+                        name: nested,
+                        arguments,
+                    },
+                };
+                let condition = match condition {
+                    Some(condition) => Condition {
+                        span: condition.span,
+                        kind: ConditionKind::And {
+                            conditions: vec![reference, condition],
+                        },
+                    },
+                    None => reference,
+                };
+                (selected, Some(condition))
+            }
+            Source::Result { .. } => {
+                return Err(not_built("a saved source of this kind as a condition"));
+            }
+        };
+        if selected != unit {
+            return Err(QueryError::Invalid {
+                message: format!(
+                    "query:{name} selects {}, not {}",
+                    selected.name(),
+                    unit.name()
+                ),
+                position: span.start,
+            });
+        }
+        let query = Query {
+            source: Source::Unit {
+                unit: selected.name().into(),
+                implicit: false,
+                condition,
+            },
+            transforms: vec![],
+            attach: vec![],
+        };
+        let selection = crate::selection::Selection::of(&query, &inner, &[])
+            .map_err(|error| error.inside_saved(name, syntax, span.start))?
+            .expect("a unit source");
+        if selection.semantic.is_some() {
+            return Err(shaped());
+        }
+        Ok(Filter::Saved(Box::new(SavedRelation {
+            name: name.to_owned(),
+            revision: definition.revision.clone(),
+            selection,
+            span,
+        })))
+    }
+
+    /// The unit a saved relation selects, through the saved relations it
+    /// is defined over.
+    fn relation_unit(&self, name: &str, arguments: &[Argument]) -> Result<Unit, QueryError> {
+        let (body, _) = crate::compile::source::saved_body(
+            name,
+            arguments,
+            self.text,
+            0,
+            self.saved,
+            self.catalog,
+            self.expanding,
+        )?;
+        match &body.source {
+            Source::Unit { unit, .. } => bind_unit(unit),
+            Source::Saved {
+                name: nested,
+                arguments,
+                ..
+            } => {
+                let mut expanding = self.expanding.to_vec();
+                expanding.push(name.to_owned());
+                Binder {
+                    expanding: &expanding,
+                    ..*self
+                }
+                .relation_unit(nested, arguments)
+            }
+            Source::Result { .. } => Err(not_built("a saved source of this kind as a condition")),
+        }
     }
 
     fn reference(&self, reference: &str, unit: Unit, span: Span) -> Result<Filter, QueryError> {

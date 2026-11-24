@@ -1,163 +1,45 @@
 //! Saved queries (`query:NAME`) and kept results (`result:<id>`): a
-//! saved query is expanded into the query that names it, and a kept result
-//! reads back the rows it stored.
+//! saved query where a condition stands is the relation binding bound it
+//! to, and a kept result reads back the rows it stored.
 
 use super::*;
 
-pub(super) struct BoundRelation {
-    name: String,
-    arguments: Vec<Argument>,
-    unit: Unit,
-    cond: Option<Condition>,
-}
-
-impl<'a> Compiler<'a> {
-    /// `query:NAME` as a condition: a saved relation over the same unit,
-    /// its parameters bound to the values given. A shaped result cannot be
-    /// a condition, and units that disagree are an error.
-    pub(super) fn saved_cond(
-        &mut self,
-        name: &str,
-        arguments: &[Argument],
-        scope: &RowContext,
-        span: Span,
-        cx: Cx<'_>,
-    ) -> Result<String, QueryError> {
-        query_language::depth::deeper(|| {
-            let (unit, cond) = self.saved_relation(name, arguments, span)?;
-            same_unit(name, unit, scope.unit, span)?;
-            // The relation binds the unit's defaults by its own top-level
-            // conditions, wherever it stands.
-            self.saved_stack.push(name.to_owned());
-            let parts = (|| {
-                let top = cond.as_ref().map(top_level).unwrap_or_default();
-                let mut parts = self.defaults(scope, &top, cx.measured);
-                if let Some(cond) = &cond {
-                    parts.push(self.cond(cond, scope, cx.inner())?);
-                }
-                self.sessions_within_bounds(scope, cx.measured, &top, &mut parts, cond.is_some())?;
-                Ok::<_, QueryError>(parts)
-            })();
-            self.saved_stack.pop();
-            let parts = parts?;
-            Ok(if parts.is_empty() {
-                "1".into()
-            } else {
-                format!("({})", parts.join(" AND "))
-            })
-        })
-    }
-
-    /// Resolves and binds each saved relation once for both defaults and SQL.
+impl Compiler<'_> {
+    /// `query:NAME` where a condition stands, bound to its saved relation:
+    /// the relation binds the unit's defaults by its own top-level
+    /// conditions, wherever it stands.
     pub(super) fn saved_relation(
         &mut self,
-        name: &str,
-        arguments: &[Argument],
-        span: Span,
-    ) -> Result<(Unit, Option<Condition>), QueryError> {
-        query_language::depth::deeper(|| {
-            if self.saved_stack.iter().any(|n| n == name) {
-                return Err(QueryError::Invalid {
-                    message: format!(
-                        "query:{name} refers to itself (through {})",
-                        self.saved_stack.join(" -> ")
-                    ),
-                    position: span.start,
-                });
-            }
-            if let Some(bound) = self
-                .saved_relations
-                .iter()
-                .find(|bound| bound.name == name && bound.arguments == arguments)
-            {
-                return Ok((bound.unit, bound.cond.clone()));
-            }
-            let definition = saved_definition(self.text, span.start, name, self.opts)?;
-            let mut query = crate::query::parse::with_catalog(
-                definition.executable_text()?,
-                &self.opts.catalog(),
-            )?;
-            Parameters::new(name, arguments).bind(&mut query, span.start)?;
-            if !query.transforms.is_empty() || !query.attach.is_empty() {
-                return Err(QueryError::Invalid {
-                    message: format!(
-                        "query:{name} is a shaped result (it has stages), so it cannot be a condition; \
-                     read it as `query:{name} | where …`"
-                    ),
-                    position: span.start,
-                });
-            }
-            let (unit, cond) = match query.source {
-                Source::Unit {
-                    unit, condition, ..
-                } => (bind_unit(&unit)?, condition),
-                // A saved relation over another stays a reference to it, so
-                // the inner one keeps the defaults it bound.
-                Source::Saved {
-                    name: nested,
-                    arguments,
-                    condition,
-                    ..
-                } => {
-                    self.saved_stack.push(name.to_owned());
-                    let relation = self.saved_relation(&nested, &arguments, span);
-                    self.saved_stack.pop();
-                    let (unit, _) = relation?;
-                    let inner = Condition {
-                        span: Span::default(),
-                        kind: ConditionKind::Saved {
-                            name: nested,
-                            arguments,
-                        },
-                    };
-                    let condition = match condition {
-                        Some(condition) => Condition {
-                            span: condition.span,
-                            kind: ConditionKind::And {
-                                conditions: vec![inner, condition],
-                            },
-                        },
-                        None => inner,
-                    };
-                    (unit, Some(condition))
-                }
-                _ => return Err(not_built("a saved source of this kind as a condition")),
-            };
-            self.used(name, definition);
-            self.saved_relations.push(BoundRelation {
-                name: name.to_owned(),
-                arguments: arguments.to_vec(),
-                unit,
-                cond: cond.clone(),
-            });
-            Ok((unit, cond))
-        })
-    }
-
-    /// Records the revision a saved query's name resolved to.
-    fn used(&mut self, name: &str, definition: &SavedQuery) {
+        relation: &polylogue_query::filter::SavedRelation,
+        scope: &RowContext,
+        cx: Cx<'_>,
+    ) -> Result<String, QueryError> {
+        let selection = &relation.selection;
+        let top = selection.top_level();
+        let mut parts = self.defaults(scope, &top, cx.measured);
+        if let Some(filter) = &selection.filter {
+            parts.push(self.lower(filter, scope, cx.inner())?);
+        }
+        self.sessions_within_bounds(
+            scope,
+            cx.measured,
+            &top,
+            &mut parts,
+            selection.filter.is_some(),
+        )?;
         let used = Definition {
-            name: name.to_owned(),
-            revision: definition.revision.clone(),
+            name: relation.name.clone(),
+            revision: relation.revision.clone(),
         };
         if !self.definitions.contains(&used) {
             self.definitions.push(used);
         }
+        Ok(if parts.is_empty() {
+            "1".into()
+        } else {
+            format!("({})", parts.join(" AND "))
+        })
     }
-}
-
-fn same_unit(name: &str, selected: Unit, expected: Unit, span: Span) -> Result<(), QueryError> {
-    if selected != expected {
-        return Err(QueryError::Invalid {
-            message: format!(
-                "query:{name} selects {}, not {}",
-                selected.name(),
-                expected.name()
-            ),
-            position: span.start,
-        });
-    }
-    Ok(())
 }
 
 /// A query whose source is a kept result (`result:<id>`, `.rows` or
@@ -300,7 +182,3 @@ impl Compiler<'_> {
         self.program_over(query, program)
     }
 }
-
-/// The saved query named by `name`. Errors when the name is unknown or its
-/// definitions conflict.
-pub use polylogue_query::compile::saved_definition;

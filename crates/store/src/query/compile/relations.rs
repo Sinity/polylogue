@@ -222,7 +222,6 @@ impl<'a> Compiler<'a> {
             _ => None,
         };
         let mut compiler = self.nested(self.text);
-        compiler.saved_stack = self.saved_stack.clone();
         compiler.query_scope = self.query_scope.clone();
         compiler.typing = self.typing.clone();
         let unit_stages = &query.transforms[selection.stages_from.min(first)..first];

@@ -323,20 +323,62 @@ fn forwarded_saved_conditions_keep_suffixes_defaults_and_reject_cycles() {
     for text in [
         "sessions where query:wrong-unit",
         "sessions where query:forward-shaped",
-        "sessions where query:cycle-a",
     ] {
         assert!(
             matches!(compile(text, &options), Err(QueryError::Invalid { .. })),
             "{text}"
         );
     }
-    // Exercise the backend guard itself, independently of Plan cycle validation.
-    let mut compiler = Compiler::new("sessions where query:cycle-a", &options);
-    assert!(matches!(
-        compiler.saved_relation("cycle-a", &[], Span::default()),
-        Err(QueryError::Invalid { .. })
-    ));
-    assert!(compiler.saved_stack.is_empty());
+    // docs/query.md, Grammar: expansion refuses a cycle and names the chain.
+    for (text, chain) in [
+        (
+            "sessions where query:cycle-a",
+            "query:cycle-b refers to itself (through cycle-b -> cycle-a -> cycle-b)",
+        ),
+        (
+            "query:cycle-b",
+            "query:cycle-b refers to itself (through cycle-b -> cycle-a -> cycle-b)",
+        ),
+    ] {
+        assert_eq!(
+            compile(text, &options).unwrap_err().to_string(),
+            chain,
+            "{text}"
+        );
+    }
+}
+
+/// An error inside a saved query's body points the caller at the saved
+/// name it wrote and names the position in the saved text.
+#[test]
+fn an_error_inside_an_expanded_saved_query_names_its_position_in_the_saved_text() {
+    let options = opts(&[("by-kind", "sessions where repo:x kind:$kind")]);
+    let text = "repo:y OR query:by-kind(kind=bogus)";
+    // Positions are in the questions as binding writes them out.
+    let written = polylogue_query::compile(text, &options).unwrap();
+    let saved = options.saved["by-kind"][0].executable_text().unwrap();
+    match compile(text, &options) {
+        Err(QueryError::BadValue {
+            field,
+            value,
+            position,
+            message,
+        }) => {
+            assert_eq!((field.as_str(), value.as_str()), ("kind", "bogus"));
+            assert_eq!(
+                position,
+                written.expanded_text().find("query:by-kind").unwrap()
+            );
+            let at = saved.find("kind:$kind").unwrap();
+            assert!(
+                message.starts_with(&format!(
+                    "in query:by-kind at position {at} of its text {saved:?}: "
+                )),
+                "{message}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

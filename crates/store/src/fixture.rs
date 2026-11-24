@@ -827,17 +827,38 @@ impl Fixture {
         name: &str,
         plan: &polylogue_query::plan::Plan,
     ) -> Result<String> {
+        self.saved_query_revision(name, plan, None)
+    }
+
+    /// A new revision of the saved query whose family root and current
+    /// revision are `revises`, or a new family.
+    pub fn saved_query_revision(
+        &mut self,
+        name: &str,
+        plan: &polylogue_query::plan::Plan,
+        revises: Option<(&str, &str)>,
+    ) -> Result<String> {
         use polylogue_model::{
-            Author, Timestamp,
-            annotation::{AnnotationFact, AnnotationKind},
+            Author, Reference, Timestamp,
+            annotation::{AnnotationFact, AnnotationKind, AnnotationLink, LinkRole},
             authorship::Channel,
         };
         let object = plan.query_object().map_err(crate::StoreError::Query)?;
         self.commit_seq += 1;
         let id = format!("n{}", self.commit_seq);
+        let links = match revises {
+            Some((root, revision)) => vec![AnnotationLink {
+                role: LinkRole::Revises,
+                reference: Reference::parse(&format!("annotation:{root}@{revision}"))
+                    .map_err(|error| crate::StoreError::Invalid(error.to_string()))?,
+                seen_hash: None,
+                quote: None,
+            }],
+            None => vec![],
+        };
         let fact = AnnotationFact {
             id: id.clone(),
-            root: id.clone(),
+            root: revises.map_or_else(|| id.clone(), |(root, _)| root.to_owned()),
             kind: AnnotationKind::SavedQuery,
             key: Some(name.into()),
             value: Some(serde_json::json!({
@@ -848,7 +869,7 @@ impl Fixture {
             machine: "test".into(),
             created_at: Some(Timestamp::from_unix_ms(self.commit_seq).unwrap()),
             valid_until: None,
-            links: vec![],
+            links,
         };
         let tx = self.archive_conn.transaction()?;
         crate::query_objects::apply_object(&tx, &object, self.commit_seq)?;

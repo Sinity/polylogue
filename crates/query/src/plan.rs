@@ -29,6 +29,8 @@ pub struct Plan {
     saved_object: Option<polylogue_model::query_objects::QueryObject>,
     original: BoundQuery,
     expanded: BoundQuery,
+    /// The expanded question written out, the text its spans locate.
+    expanded_text: String,
     text: String,
     identity: Query,
     catalog: Arc<Catalog>,
@@ -119,11 +121,19 @@ impl Plan {
             origins: &self.bindings.origins,
             clock,
             provider_catalog,
+            saved: &self.bindings.saved,
+            catalog: &self.catalog,
+            expanding: &[],
         };
         crate::selection::Selection::of(self.expanded.query(), &binder, fields)
     }
     pub fn expanded_query(&self) -> &BoundQuery {
         &self.expanded
+    }
+    /// The text the spans of [`Plan::expanded_query`] are positions in:
+    /// binding writes a question out in its normal spelling.
+    pub fn expanded_text(&self) -> &str {
+        &self.expanded_text
     }
     pub fn text(&self) -> &str {
         &self.text
@@ -241,11 +251,7 @@ fn prepare_inner(
             if identities.contains_key(&name) {
                 continue;
             }
-            if stack.contains(&name) {
-                return Err(QueryError::invalid(format!(
-                    "recursive saved query {name:?}"
-                )));
-            }
+            crate::compile::source::refuse_cycle(&name, stack, 0)?;
             let definition = crate::compile::saved_definition(text, 0, &name, options)?;
             if let crate::SavedQueryBody::Available {
                 object: Some(object),
@@ -351,6 +357,8 @@ fn prepare_inner(
 
         let expanded = query_language::bind::bind(&expanded, &catalog)
             .map_err(|e| QueryError::language(e, text))?;
+        let expanded_text = query_language::format::format_query(expanded.query(), &catalog)
+            .map_err(|e| QueryError::language(e, text))?;
         let mut bindings = options.clone();
         // Names are presentation bindings, never additional stored results.
         // Every source in this plan now names the resolved immutable ID.
@@ -359,6 +367,7 @@ fn prepare_inner(
         Ok(Plan {
             saved_object: None,
             expanded,
+            expanded_text,
             text: text.to_owned(),
             original,
             identity,
