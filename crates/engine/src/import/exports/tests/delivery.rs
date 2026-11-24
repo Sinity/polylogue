@@ -298,7 +298,7 @@ fn malformed_scan_refuses_once_without_a_checkpoint() {
         );
         let mut replay = Pass::default();
         engine
-            .execute_pool(Vec::new(), vec![replacement], &mut replay)
+            .execute_pool(Vec::new(), vec![replacement], &[], &mut replay)
             .unwrap();
         assert!(replay.errors.is_empty(), "{replay:?}");
         assert_eq!(replay.bytes_stored, 0);

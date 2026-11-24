@@ -3,6 +3,7 @@
 
 use crate::plan::{InputState, Plan, span, whole};
 use crate::*;
+use polylogue_sources::export::ExportParser;
 use polylogue_store::RevisionChains;
 
 /// The longest a burst of file events delays the next pass.
@@ -22,6 +23,25 @@ pub(super) struct StoredPlanning {
     after: Option<String>,
     through: Option<String>,
     archive_counter: i64,
+}
+
+/// The export parser that reads `plan`'s input item by item, when its
+/// origin opens the path as an export. Every plan is routed by it before
+/// it joins the pool, whose ranges read every other parser.
+fn export_parser(plan: &Plan) -> Option<Box<dyn ExportParser>> {
+    match (plan.origin.open)(&plan.path) {
+        Some(polylogue_sources::Parse::Export(parser)) => Some(parser),
+        _ => None,
+    }
+}
+
+/// The paths of `current` and of the plans after it, which `execute` plans
+/// itself, so a pool run meanwhile leaves them to it.
+fn later_paths<'a>(current: &'a Plan, rest: &'a std::collections::VecDeque<Plan>) -> Vec<&'a Path> {
+    std::iter::once(current)
+        .chain(rest)
+        .map(|plan| plan.path.as_path())
+        .collect()
 }
 
 /// Why `origin`'s parser does not read the bytes recorded at `path`, when
@@ -1569,7 +1589,7 @@ impl Engine {
             }
             parse.push(plan);
         }
-        self.execute_pool(Vec::new(), replacements, pass)?;
+        self.execute_pool(Vec::new(), replacements, &[], pass)?;
         if self.yielding() {
             return Ok(());
         }
@@ -1923,7 +1943,8 @@ impl Engine {
         }
         let mut pooled = Vec::new();
         let mut replacements = Vec::new();
-        for plan in plans {
+        let mut plans: std::collections::VecDeque<Plan> = plans.into();
+        while let Some(plan) = plans.pop_front() {
             if self.archive.stop().is_cancelled() || self.poll_request() {
                 break;
             }
@@ -1935,7 +1956,8 @@ impl Engine {
                 && plan.stored_upto > 0
                 && !matches!(plan.change, Change::First | Change::Rewritten);
             if store_first {
-                self.execute_pool(std::mem::take(&mut pooled), Vec::new(), pass)?;
+                let later = later_paths(&plan, &plans);
+                self.execute_pool(std::mem::take(&mut pooled), Vec::new(), &later, pass)?;
                 if self.yielding() {
                     return Ok(());
                 }
@@ -1950,47 +1972,63 @@ impl Engine {
                 replacements.push(plan);
                 continue;
             }
-            if let Some(polylogue_sources::parse::Parse::Export(mut parser)) =
-                (plan.origin.open)(&plan.path)
-            {
-                self.execute_pool(std::mem::take(&mut pooled), Vec::new(), pass)?;
+            if let Some(parser) = export_parser(&plan) {
+                let later = later_paths(&plan, &plans);
+                self.execute_pool(std::mem::take(&mut pooled), Vec::new(), &later, pass)?;
                 if self.yielding() {
                     return Ok(());
                 }
-                if !self.load_stored(&mut plan)? {
-                    continue;
-                }
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    self.execute_export(&mut plan, &mut *parser, pass)
-                }));
-                let failure = match result {
-                    Ok(Ok(())) => None,
-                    // A stop is no failure of the export: its committed
-                    // deliveries stay and the next parse continues after them.
-                    Ok(Err(EngineError::Stopped)) => return Err(EngineError::Stopped),
-                    Ok(Err(error)) => Some(error.to_string()),
-                    Err(_) => Some("the array parser panicked".to_owned()),
-                };
-                if let Some(error) = failure {
-                    let error = format!("parse {}: {error}", plan.path.display());
-                    self.record_failure(&mut plan, error, pass);
-                }
-                self.finish_plan(plan);
+                self.read_export(plan, parser, pass)?;
             } else {
                 pooled.push(plan);
             }
         }
-        self.execute_pool(pooled, replacements, pass)?;
+        self.execute_pool(pooled, replacements, &[], pass)?;
         if self.archive.stop().is_cancelled() {
             return Err(EngineError::Stopped);
         }
         Ok(())
     }
 
+    /// Reads an export's items on this thread and records a failure on its
+    /// chain. Pool work queued before it has committed.
+    fn read_export(
+        &mut self,
+        mut plan: Plan,
+        mut parser: Box<dyn ExportParser>,
+        pass: &mut Pass,
+    ) -> Result<(), EngineError> {
+        if !self.load_stored(&mut plan)? {
+            return Ok(());
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.execute_export(&mut plan, &mut *parser, pass)
+        }));
+        let failure = match result {
+            Ok(Ok(())) => None,
+            // A stop is no failure of the export: its committed
+            // deliveries stay and the next parse continues after them.
+            Ok(Err(EngineError::Stopped)) => return Err(EngineError::Stopped),
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(_) => Some("the array parser panicked".to_owned()),
+        };
+        if let Some(error) = failure {
+            let error = format!("parse {}: {error}", plan.path.display());
+            self.record_failure(&mut plan, error, pass);
+        }
+        self.finish_plan(plan);
+        Ok(())
+    }
+
+    /// Runs `plans` range by range and `chains` whole on the parse pool.
+    /// Live inputs found meanwhile join it, except paths in `later`, which
+    /// the caller plans itself afterwards; a live export is read after the
+    /// pool's work has committed.
     pub(crate) fn execute_pool(
         &mut self,
         plans: Vec<Plan>,
         chains: Vec<Plan>,
+        later: &[&Path],
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         if plans.is_empty() && chains.is_empty() && self.rollout_captures.is_empty() {
@@ -2053,11 +2091,15 @@ impl Engine {
             let mut progress = build_log::Progress::start(self, pass, pool.worker_cpu_seconds());
             // Rollout captures on workers, by path, with the input each names.
             let mut capturing: HashMap<PathBuf, String> = HashMap::new();
+            // Live exports, read once the pool's work has committed.
+            let mut exports: std::collections::VecDeque<(Plan, Box<dyn ExportParser>)> =
+                std::collections::VecDeque::new();
             'work: loop {
                 if !yielding && self.poll_request() {
                     yielding = true;
                     waiting.clear();
                     chains.clear();
+                    exports.clear();
                     self.rollout_captures.clear();
                     // No worker read these jobs. The next turn revalidates them;
                     // chunks already in hand keep their normal commit and ACK.
@@ -2068,6 +2110,7 @@ impl Engine {
                     stopping = true;
                     waiting.clear();
                     chains.clear();
+                    exports.clear();
                     self.rollout_captures.clear();
                     outstanding -= self.cancel_pool(&pool, &mut active_chains, &mut capturing);
                 }
@@ -2090,6 +2133,8 @@ impl Engine {
                             .chain(reparsing.iter().map(PathBuf::as_path))
                             .chain(capturing.keys().map(PathBuf::as_path))
                             .chain(queued.iter().map(PathBuf::as_path))
+                            .chain(exports.iter().map(|(plan, _)| plan.path.as_path()))
+                            .chain(later.iter().copied())
                             .collect();
                         self.live_plans(&busy, pass)
                     };
@@ -2098,6 +2143,8 @@ impl Engine {
                             for plan in live.into_iter().rev() {
                                 if plan.replace {
                                     chains.push_front(plan);
+                                } else if let Some(parser) = export_parser(&plan) {
+                                    exports.push_front((plan, parser));
                                 } else {
                                     waiting.push_front(plan);
                                 }
@@ -2378,6 +2425,12 @@ impl Engine {
                 let error = format!("the writer refused {}: {error}", plan.path.display());
                 self.record_failure(&mut plan, error, pass);
                 self.finish_plan(plan);
+            }
+            for (plan, parser) in exports {
+                if self.archive.stop().is_cancelled() || self.yielding() {
+                    break;
+                }
+                self.read_export(plan, parser, pass)?;
             }
             Ok(())
         })();
