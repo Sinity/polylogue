@@ -37,11 +37,6 @@ pub(super) fn capture_log(captures: &[&[&str]]) -> Vec<u8> {
     log
 }
 
-/// Every row of every table, sorted, with local version keys named by their
-/// content hashes. The full payload and every reference remain compared.
-/// Wire-shape records are compared by what it says and the chain it cites, not
-/// by the byte ranges it was read in or the revisions it took them at
-/// ([`READ_RANGES`]). A status count no chain has reads as absent.
 /// The text a `text` row names: its group's decoded bytes at its start and
 /// length.
 fn grouped_text(
@@ -59,6 +54,11 @@ fn grouped_text(
     ))
 }
 
+/// Every row of every table, sorted, with local version keys named by their
+/// content hashes. The full payload and every reference remain compared.
+/// Wire-shape records are compared by what it says and the chain it cites, not
+/// by the byte ranges it was read in or the revisions it took them at
+/// ([`READ_RANGES`]). A status count no chain has reads as absent.
 pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
     let conn = rusqlite::Connection::open_with_flags(
         w.root.join("index.db"),
@@ -337,4 +337,66 @@ fn a_rebuild_reads_an_identical_older_chain_whole_with_or_without_copies() {
         "SELECT count(DISTINCT chain) AS n FROM message_parse s WHERE s.message_id LIKE '%u1%'",
     );
     assert_eq!(chains, 4);
+}
+
+/// A session item names its message or event by content, not by the row key
+/// the order of writes gave it (docs/transcripts.md, the session item index:
+/// an entry is a function of its message or event alone), so two archives
+/// that read the same inputs in opposite orders hold the same items.
+#[test]
+fn session_items_are_the_same_whatever_order_inputs_arrive_in() {
+    fault::clear();
+    let transcript = user("u1", "same", "first prompt") + &assistant("a1", "same", "an answer");
+    let captured = capture_log(&[&["a question", "another answer"]]);
+    let read = |transcript_first: bool| {
+        let w = ClaudeHome::new();
+        let path = w.file("same.jsonl");
+        let log = w
+            .config(64 << 20)
+            .spool_dir("browser-capture")
+            .join("gemini/same.json");
+        fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let (mut engine, _lock) = w.engine(64 << 20);
+        let mut writes = [(&path, transcript.as_bytes()), (&log, &captured[..])];
+        if !transcript_first {
+            writes.reverse();
+        }
+        for (at, bytes) in writes {
+            fs::write(at, bytes).unwrap();
+            assert!(engine.run_pass().unwrap().errors.is_empty());
+        }
+        drop(engine);
+        let conn = rusqlite::Connection::open(w.root.join("index.db")).unwrap();
+        let messages: Vec<String> = conn
+            .prepare("SELECT id FROM message ORDER BY pk")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        (messages, dump(&w).remove("session_item").unwrap())
+    };
+    let (transcript_keys, transcript_first) = read(true);
+    let (log_keys, log_first) = read(false);
+    // The input read first holds the lower row keys.
+    let origins = |keys: &[String]| -> Vec<String> {
+        keys.iter()
+            .map(|key| key.split(':').next().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        origins(&transcript_keys),
+        ["claude-code", "claude-code", "gemini-app", "gemini-app"]
+    );
+    assert_eq!(
+        origins(&log_keys),
+        ["gemini-app", "gemini-app", "claude-code", "claude-code"]
+    );
+    // One header entry per message.
+    let headers = transcript_first
+        .iter()
+        .filter(|row| row.contains("message_pk=Text("))
+        .count();
+    assert_eq!(headers, 4);
+    assert_eq!(transcript_first, log_first);
 }
