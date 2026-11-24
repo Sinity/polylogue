@@ -558,7 +558,7 @@ fields! {
         Sessions,
         "source",
         &["present", "missing", "gone"],
-        "whether a transcript was stored, and whether a newer export of its account still holds it",
+        "whether a transcript was stored, and whether its source (a newer export of its account, the Drive folder) still holds it",
     ),
     SessionsLive = sv(
         Sessions,

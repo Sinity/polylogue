@@ -85,6 +85,12 @@ pub struct Session {
     /// Studio through Drive). Sorted, without repeats.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<SessionId>,
+    /// The source states that it no longer holds the session: the Drive
+    /// collector's listing keeps a prompt deleted, trashed or moved out of
+    /// its folder marked `removed`. The newest chain of the stating input
+    /// decides (docs/archive.md, no deletion).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub gone: bool,
 }
 
 impl Session {
@@ -127,6 +133,7 @@ impl Session {
             started_until: None,
             mode: None,
             aliases: Vec::new(),
+            gone: false,
         }
     }
 
@@ -223,6 +230,8 @@ impl Session {
                 self.aliases.insert(at, alias.clone());
             }
         }
+        // The later statement is the source's current one.
+        self.gone = other.gone;
     }
 }
 

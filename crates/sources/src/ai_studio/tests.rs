@@ -573,3 +573,24 @@ fn a_drive_prompt_records_the_name_its_takeout_copy_has() {
     );
     assert!(copy.output.sessions[0].aliases.is_empty());
 }
+
+#[test]
+fn a_listing_entry_marked_removed_states_its_session_gone() {
+    let bytes =
+        br#"{"files":[{"id":"kept","name":"Kept"},{"id":"left","name":"Left","removed":true}]}"#;
+    let step =
+        crate::export::fixture::parse(&mut Parse::Export(Box::new(Listing::default())), bytes)
+            .unwrap();
+    let gone: Vec<(&str, bool)> = step
+        .output
+        .sessions
+        .iter()
+        .map(|s| (s.id.native().as_str(), s.gone))
+        .collect();
+    assert_eq!(gone, [("kept", false), ("left", true)]);
+    assert!(
+        step.counts.unread_fields.is_empty(),
+        "{:?}",
+        step.counts.unread_fields
+    );
+}

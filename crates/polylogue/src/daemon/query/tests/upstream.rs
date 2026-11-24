@@ -85,3 +85,74 @@ fn upstream_gone_kept() {
         );
     }
 }
+
+/// A prompt whose chunks are the user turns `texts`.
+fn prompt(texts: &[&str]) -> Vec<u8> {
+    let chunks: Vec<Value> = texts
+        .iter()
+        .map(|text| json!({"role": "user", "text": text}))
+        .collect();
+    serde_json::to_vec(&json!({"runSettings": {}, "chunkedPrompt": {"chunks": chunks}})).unwrap()
+}
+
+#[test]
+fn a_prompt_deleted_in_drive_is_gone_and_keeps_its_revisions() {
+    use polylogue_sources::ai_studio::drive::{Drive, fake::FakeDrive};
+    let drive = FakeDrive::start();
+    drive.create("1AbC", "Electrons", "2026-05-17T12:00:00Z");
+    drive.save("1AbC", "r1", "2026-05-17T12:10:00Z", &prompt(&["first"]));
+    drive.save(
+        "1AbC",
+        "r2",
+        "2026-05-17T12:20:00Z",
+        &prompt(&["first", "second"]),
+    );
+    drive.create("2Def", "Muons", "2026-05-17T13:00:00Z");
+    drive.save("2Def", "m1", "2026-05-17T13:10:00Z", &prompt(&["muon"]));
+    let home = ClaudeHome::new();
+    let (mut engine, _lock) = home.engine(64 << 20);
+    let token_path = home.dir.path().join("drive-token.json");
+    std::fs::write(&token_path, r#"{"client_id":"c","refresh_token":"r"}"#).unwrap();
+    let collector = Drive {
+        endpoints: drive.endpoints(),
+        token_path,
+        spool: engine.config.spool_dir("ai-studio"),
+    };
+    // Each sync publishes the next revision of each prompt; the archive
+    // stores it before the collector moves on.
+    let mut sync = || {
+        let report = collector.sync().unwrap();
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        collector.advance(&|_, _, _| Ok(true)).unwrap();
+        report
+    };
+    while sync().revisions_written > 0 {}
+    assert_eq!(
+        ids(&home, "sessions where source:gone"),
+        Vec::<String>::new()
+    );
+
+    drive.delete("1AbC");
+    let report = sync();
+    assert_eq!((report.prompts, report.removed), (1, 1));
+    assert_eq!(ids(&home, "sessions where source:gone"), ["ai-studio:1AbC"]);
+    assert_eq!(
+        ids(&home, "sessions where source:present"),
+        ["ai-studio:2Def"]
+    );
+    // Its session still reads as its newest revision holds it.
+    let texts: Vec<String> = home
+        .reads()
+        .reader()
+        .unwrap()
+        .messages(
+            &polylogue_model::SessionId::parse("ai-studio:1AbC").unwrap(),
+            false,
+        )
+        .unwrap()
+        .iter()
+        .map(|m| m.text())
+        .collect();
+    assert_eq!(texts, ["first", "second"]);
+}

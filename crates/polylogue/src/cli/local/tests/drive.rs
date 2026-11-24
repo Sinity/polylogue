@@ -135,6 +135,9 @@ impl Provider {
                         (200, json!({"files":[{"id":"folder"}]}).to_string())
                     }
                     "/drive/files" => (200, json!({"files":[]}).to_string()),
+                    "/drive/changes/startPageToken" => {
+                        (200, json!({"startPageToken":"1"}).to_string())
+                    }
                     "/stop" => (200, "{}".into()),
                     _ => (404, "{}".into()),
                 };

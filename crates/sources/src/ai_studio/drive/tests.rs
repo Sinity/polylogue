@@ -1,28 +1,25 @@
+use super::fake::FakeDrive;
 use super::*;
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
-use std::sync::{Arc, Mutex};
 
-/// A fake Drive: answers token refresh, folder lookup, the listing, the
-/// revisions of one prompt (`page` to a page, continued by `pageToken`) and
-/// each revision's bytes. Records each path. The test may change the
-/// revisions between syncs, as Drive prunes them.
-struct FakeDrive {
-    base: String,
-    seen: Arc<Mutex<Vec<String>>>,
-    revisions: Arc<Mutex<Vec<(String, String)>>>,
+/// A prompt whose one chunk says `text`.
+fn body(text: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "runSettings": {},
+        "chunkedPrompt": {"chunks": [{"role": "user", "text": text}]}
+    }))
+    .unwrap()
 }
 
-fn serve(revisions: Vec<(&'static str, &'static str)>) -> (String, Arc<Mutex<Vec<String>>>) {
-    let drive = serve_pages(owned(revisions), usize::MAX);
-    (drive.base, drive.seen)
-}
-
-fn owned(revisions: Vec<(&str, &str)>) -> Vec<(String, String)> {
-    revisions
-        .into_iter()
-        .map(|(id, at)| (id.to_owned(), at.to_owned()))
-        .collect()
+/// A Drive whose folder holds the prompt `1AbC` with `revisions` (ID and
+/// modification time, in Drive's list order), each revision's chunk saying
+/// its ID.
+fn drive(revisions: &[(&str, &str)]) -> FakeDrive {
+    let drive = FakeDrive::start();
+    drive.create("1AbC", "Electrons", "2026-05-17T12:00:00Z");
+    for (id, at) in revisions {
+        drive.save("1AbC", id, at, &body(id));
+    }
+    drive
 }
 
 fn revision(id: &str) -> Accepted {
@@ -32,81 +29,7 @@ fn revision(id: &str) -> Accepted {
     }
 }
 
-fn serve_pages(revisions: Vec<(String, String)>, page: usize) -> FakeDrive {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let seen = Arc::new(Mutex::new(Vec::new()));
-    let revisions = Arc::new(Mutex::new(revisions));
-    let log = Arc::clone(&seen);
-    let listed = Arc::clone(&revisions);
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let target = line.split_whitespace().nth(1).unwrap_or("").to_owned();
-            let mut len = 0usize;
-            loop {
-                let mut h = String::new();
-                reader.read_line(&mut h).unwrap();
-                if h == "\r\n" || h.is_empty() {
-                    break;
-                }
-                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
-                    len = v.trim().parse().unwrap();
-                }
-            }
-            let mut body = vec![0; len];
-            std::io::Read::read_exact(&mut reader, &mut body).unwrap();
-            log.lock().unwrap().push(target.clone());
-            let path = target.split('?').next().unwrap();
-            let reply = if path == "/token" {
-                r#"{"access_token":"t","expires_in":3600}"#.to_owned()
-            } else if path == "/drive/files" && target.contains("apps.folder") {
-                r#"{"files":[{"id":"folder1"}]}"#.to_owned()
-            } else if path == "/drive/files" {
-                r#"{"files":[{"id":"1AbC","name":"Electrons","createdTime":"2026-05-17T12:20:00Z"}]}"#
-                    .to_owned()
-            } else if path == "/drive/files/1AbC/revisions" {
-                let revisions = listed.lock().unwrap().clone();
-                let from: usize = target
-                    .split("pageToken=")
-                    .nth(1)
-                    .map_or(0, |token| token.split('&').next().unwrap().parse().unwrap());
-                let to = from.saturating_add(page).min(revisions.len());
-                let items: Vec<String> = revisions[from..to]
-                    .iter()
-                    .map(|(id, at)| format!(r#"{{"id":"{id}","modifiedTime":"{at}"}}"#))
-                    .collect();
-                let next = if to < revisions.len() {
-                    format!(r#", "nextPageToken":"{to}""#)
-                } else {
-                    String::new()
-                };
-                format!(r#"{{"revisions":[{}]{next}}}"#, items.join(","))
-            } else if let Some(rev) = path.strip_prefix("/drive/files/1AbC/revisions/") {
-                format!(
-                    r#"{{"runSettings":{{}},"chunkedPrompt":{{"chunks":[{{"role":"user","text":"{rev}"}}]}}}}"#
-                )
-            } else {
-                "{}".to_owned()
-            };
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-                reply.len()
-            );
-        }
-    });
-    FakeDrive {
-        base,
-        seen,
-        revisions,
-    }
-}
-
-fn collector(base: &str, dir: &Path) -> Drive {
+fn collector(drive: &FakeDrive, dir: &Path) -> Drive {
     let token_path = dir.join("token.json");
     std::fs::write(
         &token_path,
@@ -114,34 +37,62 @@ fn collector(base: &str, dir: &Path) -> Drive {
     )
     .unwrap();
     Drive {
-        endpoints: Endpoints {
-            api: format!("{base}/drive"),
-            token: format!("{base}/token"),
-        },
+        endpoints: drive.endpoints(),
         token_path,
         spool: dir.join("spool"),
     }
 }
 
+/// A collector whose requests fail: for tests that never reach Drive.
+fn offline(dir: &Path) -> Drive {
+    Drive {
+        endpoints: Endpoints {
+            api: "http://127.0.0.1:1".into(),
+            token: "http://127.0.0.1:1".into(),
+        },
+        token_path: dir.join("token.json"),
+        spool: dir.join("spool"),
+    }
+}
+
+/// The text of the prompt's first chunk as published in the spool.
+fn published(c: &Drive, id: &str) -> String {
+    let prompt: Json =
+        serde_json::from_slice(&std::fs::read(c.spool.join(format!("{id}.json"))).unwrap())
+            .unwrap();
+    prompt
+        .pointer("/chunkedPrompt/chunks/0/text")
+        .and_then(Json::as_str)
+        .unwrap()
+        .to_owned()
+}
+
+/// The listing's entries by ID.
+fn listing(c: &Drive) -> BTreeMap<String, Json> {
+    c.load_listing().unwrap()
+}
+
+/// Whether a request listed the folder or looked it up.
+fn relisted(paths: &[String]) -> bool {
+    paths.iter().any(|path| path.starts_with("/drive/files?"))
+}
+
 #[test]
 fn revision_survives_repeated_sync_and_restart_until_archive_acceptance() {
-    let FakeDrive { base, seen, .. } = serve_pages(
-        owned(vec![
-            ("r2", "2026-05-17T12:30:00Z"),
-            ("r1", "2026-05-17T12:20:00Z"),
-        ]),
-        1,
-    );
+    let drive = drive(&[
+        ("r2", "2026-05-17T12:30:00Z"),
+        ("r1", "2026-05-17T12:20:00Z"),
+    ]);
+    drive.page_size(1);
     let dir = tempfile::tempdir().unwrap();
-    let c = collector(&base, dir.path());
+    let c = collector(&drive, dir.path());
     let prompt = c.spool.join("1AbC.json");
 
     let first = c.sync().unwrap();
     assert_eq!(first.revisions_written, 1);
     assert_eq!(first.pending, 2);
-    assert!(std::fs::read_to_string(&prompt).unwrap().contains("\"r1\""));
-    let listing = std::fs::read_to_string(c.spool.join("files.json")).unwrap();
-    assert!(listing.contains("Electrons"));
+    assert_eq!(published(&c, "1AbC"), "r1");
+    assert_eq!(listing(&c)["1AbC"]["name"], "Electrons");
 
     let original = std::fs::read(&prompt).unwrap();
     let kept = c.pending_revisions().unwrap().remove("1AbC").unwrap();
@@ -149,7 +100,7 @@ fn revision_survives_repeated_sync_and_restart_until_archive_acceptance() {
     assert!(c.load_state().unwrap().accepted.is_empty());
     assert_eq!(c.sync().unwrap().revisions_written, 0);
     assert_eq!(std::fs::read(&prompt).unwrap(), original);
-    let c = collector(&base, dir.path());
+    let c = collector(&drive, dir.path());
     c.advance(&|_, _, _| Ok(false)).unwrap();
     assert!(
         c.advance(&|_, _, _| Err("archive rejected".into()))
@@ -159,20 +110,14 @@ fn revision_survives_repeated_sync_and_restart_until_archive_acceptance() {
     assert_eq!(std::fs::read(&prompt).unwrap(), original);
     assert_eq!(std::fs::read(&kept.body).unwrap(), original);
     assert!(c.load_state().unwrap().accepted.is_empty());
+    let seen = drive.seen();
     assert_eq!(
-        seen.lock()
-            .unwrap()
-            .iter()
+        seen.iter()
             .filter(|path| path.starts_with("/drive/files/1AbC/revisions/r1?"))
             .count(),
         1
     );
-    assert!(
-        seen.lock()
-            .unwrap()
-            .iter()
-            .any(|path| path.contains("pageToken=1"))
-    );
+    assert!(seen.iter().any(|path| path.contains("pageToken=1")));
 
     c.advance(&|path, hash, length| {
         assert_eq!(path, prompt);
@@ -186,11 +131,150 @@ fn revision_survives_repeated_sync_and_restart_until_archive_acceptance() {
     assert_eq!(std::fs::read(&prompt).unwrap(), original);
     let second = c.sync().unwrap();
     assert_eq!((second.revisions_written, second.pending), (1, 1));
-    assert!(std::fs::read_to_string(&prompt).unwrap().contains("\"r2\""));
+    assert_eq!(published(&c, "1AbC"), "r2");
 
     c.advance(&|_, _, _| Ok(true)).unwrap();
     let third = c.sync().unwrap();
     assert_eq!(third.revisions_written, 0);
+}
+
+#[test]
+fn drive_follows_the_changes_feed_from_the_stored_token() {
+    let drive = drive(&[("r1", "2026-05-17T12:20:00Z")]);
+    drive.page_size(2);
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector(&drive, dir.path());
+    let first = c.sync().unwrap();
+    assert_eq!((first.prompts, first.revisions_written), (1, 1));
+    assert!(relisted(&drive.seen()));
+    // The token was taken before the listing: the feed starts after the
+    // two changes that created the prompt and saved its first revision.
+    assert_eq!(c.load_state().unwrap().change_token.as_deref(), Some("2"));
+    c.advance(&|_, _, _| Ok(true)).unwrap();
+
+    drive.save("1AbC", "r2", "2026-05-17T12:30:00Z", &body("r2"));
+    drive.create("2Def", "Muons", "2026-05-17T13:00:00Z");
+    drive.save("2Def", "m1", "2026-05-17T13:00:00Z", &body("m1"));
+    drive.create_elsewhere("3Ghi", "Shopping list", "2026-05-17T13:10:00Z");
+    let before = drive.seen().len();
+    // A restart keeps the token: it is in the collector's state.
+    let c = collector(&drive, dir.path());
+    let second = c.sync().unwrap();
+    let requests = drive.seen()[before..].to_vec();
+    assert!(!relisted(&requests), "{requests:?}");
+    assert!(
+        requests
+            .iter()
+            .any(|path| path.starts_with("/drive/changes?pageToken=2&")),
+        "{requests:?}"
+    );
+    // Four changes in pages of two.
+    assert!(
+        requests
+            .iter()
+            .any(|path| path.starts_with("/drive/changes?pageToken=4&"))
+    );
+    assert_eq!((second.prompts, second.revisions_written), (2, 2));
+    let entries = listing(&c);
+    assert_eq!(entries.keys().collect::<Vec<_>>(), ["1AbC", "2Def"]);
+    assert_eq!(entries["1AbC"]["headRevisionId"], "r2");
+    assert_eq!(entries["2Def"]["name"], "Muons");
+    assert!(entries["2Def"].get("parents").is_none());
+    assert_eq!(published(&c, "1AbC"), "r2");
+    assert_eq!(published(&c, "2Def"), "m1");
+    assert_eq!(c.load_state().unwrap().change_token.as_deref(), Some("6"));
+}
+
+#[test]
+fn a_deleted_prompt_stays_in_the_listing_marked_removed() {
+    let drive = drive(&[("r1", "2026-05-17T12:20:00Z")]);
+    drive.create("2Def", "Muons", "2026-05-17T13:00:00Z");
+    drive.save("2Def", "m1", "2026-05-17T13:00:00Z", &body("m1"));
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector(&drive, dir.path());
+    c.sync().unwrap();
+    c.advance(&|_, _, _| Ok(true)).unwrap();
+    drive.save("1AbC", "r2", "2026-05-17T12:30:00Z", &body("r2"));
+    drive.delete("1AbC");
+    let before = drive.seen().len();
+    let report = c.sync().unwrap();
+    assert_eq!((report.prompts, report.removed), (1, 1));
+    assert_eq!(report.revisions_written, 0);
+    assert!(
+        !drive.seen()[before..]
+            .iter()
+            .any(|path| path.starts_with("/drive/files/1AbC")),
+        "a removed prompt's revisions are not asked for"
+    );
+    let entries = listing(&c);
+    assert_eq!(entries["1AbC"]["removed"], true);
+    assert_eq!(entries["1AbC"]["name"], "Electrons");
+    assert!(entries["2Def"].get("removed").is_none());
+    // The revision the archive holds stays in the spool.
+    assert_eq!(published(&c, "1AbC"), "r1");
+
+    // A first sync after an older build's listing marks what the folder
+    // no longer holds.
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector(&drive, dir.path());
+    std::fs::create_dir_all(&c.spool).unwrap();
+    std::fs::write(
+        c.spool.join(super::super::LISTING),
+        br#"{"files":[{"id":"1AbC","name":"Electrons"}]}"#,
+    )
+    .unwrap();
+    c.sync().unwrap();
+    let entries = listing(&c);
+    assert_eq!(entries["1AbC"]["removed"], true);
+    assert!(entries["2Def"].get("removed").is_none());
+}
+
+#[test]
+fn revisions_order_by_time_whatever_the_fraction_width() {
+    // As text, `12:00:00.5Z` sorts before `12:00:00Z`; as instants it is
+    // half a second after it.
+    let drive = drive(&[
+        ("c", "2026-05-17T12:00:01.25Z"),
+        ("a", "2026-05-17T12:00:00Z"),
+        ("b", "2026-05-17T12:00:00.5Z"),
+    ]);
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector(&drive, dir.path());
+    c.sync().unwrap();
+    assert_eq!(published(&c, "1AbC"), "a");
+    c.advance(&|_, _, _| Ok(true)).unwrap();
+    // Drive prunes the accepted revision: the walk continues at the first
+    // revision after it in time.
+    drive.prune("1AbC", |id| id != "a");
+    assert_eq!(walk(&c), ["b", "c"]);
+}
+
+#[test]
+fn a_revisions_reply_without_revisions_is_unreadable() {
+    let drive = drive(&[("r1", "2026-05-17T12:20:00Z")]);
+    drive.answer_when(
+        |target| target.starts_with("/drive/files/1AbC/revisions?"),
+        r#"{"nextPageToken":null}"#,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector(&drive, dir.path());
+    assert!(matches!(
+        c.sync(),
+        Err(DriveError::Unreadable(url, reason))
+            if url.ends_with("/files/1AbC/revisions") && reason == "no `revisions` array"
+    ));
+    assert!(!c.spool.join("1AbC.json").exists());
+    // The failed sync saved no token: the next one starts over.
+    assert_eq!(c.load_state().unwrap().change_token, None);
+}
+
+#[test]
+fn an_unreadable_revision_time_is_refused() {
+    let drive = drive(&[("r1", "17 May 2026")]);
+    let dir = tempfile::tempdir().unwrap();
+    let c = collector(&drive, dir.path());
+    assert!(matches!(c.sync(), Err(DriveError::Unreadable(..))));
+    assert!(!c.spool.join("1AbC.json").exists());
 }
 
 #[test]
@@ -206,9 +290,9 @@ fn a_missing_token_is_a_typed_error() {
 
 #[test]
 fn an_unpublished_body_is_reused_and_conflicting_bytes_are_refused() {
-    let (base, _) = serve(vec![("r1", "2026-05-17T12:20:00Z")]);
+    let drive = drive(&[("r1", "2026-05-17T12:20:00Z")]);
     let dir = tempfile::tempdir().unwrap();
-    let c = collector(&base, dir.path());
+    let c = collector(&drive, dir.path());
     let body = br#"{"runSettings":{},"chunkedPrompt":{"chunks":[]}}"#;
     let kept = c.keep_revision("1AbC", Some(revision("r1")), body).unwrap();
     assert!(!c.spool.join("1AbC.json").exists());
@@ -226,14 +310,14 @@ fn an_unpublished_body_is_reused_and_conflicting_bytes_are_refused() {
 #[test]
 fn an_accepted_cursor_survives_restart_before_pending_cleanup() {
     let dir = tempfile::tempdir().unwrap();
-    let c = collector("http://127.0.0.1:1", dir.path());
+    let c = offline(dir.path());
     let kept = c
         .keep_revision("1AbC", Some(revision("r1")), b"original")
         .unwrap();
     c.publish(&kept).unwrap();
     c.save_state(&Cursor {
         accepted: BTreeMap::from([("1AbC".into(), "r1".into())]),
-        modified: BTreeMap::new(),
+        ..Cursor::default()
     })
     .unwrap();
     c.advance(&|_, _, _| panic!("acceptance was already saved"))
@@ -248,12 +332,12 @@ fn an_accepted_cursor_survives_restart_before_pending_cleanup() {
 
 #[test]
 fn python_download_cursor_waits_for_archive_acceptance() {
-    let (base, _) = serve(vec![
+    let drive = drive(&[
         ("r1", "2026-05-17T12:20:00Z"),
         ("r2", "2026-05-17T12:30:00Z"),
     ]);
     let dir = tempfile::tempdir().unwrap();
-    let c = collector(&base, dir.path());
+    let c = collector(&drive, dir.path());
     std::fs::create_dir_all(&c.spool).unwrap();
     std::fs::write(c.spool.join(STATE), br#"{"1AbC":"r1"}"#).unwrap();
     std::fs::write(c.spool.join("1AbC.json"), b"older bytes").unwrap();
@@ -270,25 +354,17 @@ fn python_download_cursor_waits_for_archive_acceptance() {
     .unwrap();
     assert!(c.load_state().unwrap().accepted.is_empty());
     assert_eq!(c.sync().unwrap().revisions_written, 1);
-    assert!(
-        std::fs::read_to_string(c.spool.join("1AbC.json"))
-            .unwrap()
-            .contains("r1")
-    );
+    assert_eq!(published(&c, "1AbC"), "r1");
     c.advance(&|_, _, _| Ok(true)).unwrap();
     assert_eq!(c.sync().unwrap().revisions_written, 1);
-    assert!(
-        std::fs::read_to_string(c.spool.join("1AbC.json"))
-            .unwrap()
-            .contains("r2")
-    );
+    assert_eq!(published(&c, "1AbC"), "r2");
 }
 
 #[test]
 fn corrupt_or_newer_revision_state_is_preserved_and_refused() {
-    let (base, _) = serve(vec![]);
+    let drive = drive(&[]);
     let dir = tempfile::tempdir().unwrap();
-    let c = collector(&base, dir.path());
+    let c = collector(&drive, dir.path());
     std::fs::create_dir_all(&c.spool).unwrap();
     for state in [b"broken".as_slice(), br#"{"version":2,"accepted":{}}"#] {
         std::fs::write(c.spool.join(STATE), state).unwrap();
@@ -300,72 +376,35 @@ fn corrupt_or_newer_revision_state_is_preserved_and_refused() {
     }
 }
 
-/// A server that answers the token refresh, the folder lookup and the
-/// listing (the request asking for `nextPageToken`) with fixed bodies.
-fn serve_fixed(folder: &'static str, listing: &'static str) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    std::thread::spawn(move || {
-        for stream in listener.incoming() {
-            let Ok(mut stream) = stream else { break };
-            let mut reader = BufReader::new(stream.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let target = line.split_whitespace().nth(1).unwrap_or("").to_owned();
-            let mut len = 0usize;
-            loop {
-                let mut h = String::new();
-                reader.read_line(&mut h).unwrap();
-                if h == "\r\n" || h.is_empty() {
-                    break;
-                }
-                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
-                    len = v.trim().parse().unwrap();
-                }
-            }
-            let mut body = vec![0; len];
-            std::io::Read::read_exact(&mut reader, &mut body).unwrap();
-            let reply = if target.starts_with("/token") {
-                r#"{"access_token":"t","expires_in":3600}"#
-            } else if target.contains("nextPageToken") {
-                listing
-            } else {
-                folder
-            };
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
-                reply.len()
-            );
-        }
-    });
-    base
-}
-
 #[test]
 fn a_listing_reply_without_files_keeps_the_saved_listing() {
-    let base = serve_fixed(r#"{"files":[{"id":"folder1"}]}"#, "{}");
+    let drive = drive(&[("r1", "2026-05-17T12:20:00Z")]);
+    drive.answer_when(
+        |target| target.starts_with("/drive/files?") && target.contains("nextPageToken"),
+        "{}",
+    );
     let dir = tempfile::tempdir().unwrap();
-    let c = collector(&base, dir.path());
+    let c = collector(&drive, dir.path());
     std::fs::create_dir_all(&c.spool).unwrap();
     let saved = br#"{"files":[{"id":"1AbC"}]}"#;
     std::fs::write(c.spool.join("files.json"), saved).unwrap();
-    assert!(matches!(c.sync(), Err(DriveError::Http(..))));
+    assert!(matches!(c.sync(), Err(DriveError::Unreadable(..))));
     assert_eq!(std::fs::read(c.spool.join("files.json")).unwrap(), saved);
 }
 
 #[test]
 fn a_missing_folder_is_reported() {
-    let base = serve_fixed(r#"{"files":[]}"#, r#"{"files":[]}"#);
+    let drive = FakeDrive::start();
+    drive.without_folder();
     let dir = tempfile::tempdir().unwrap();
-    let c = collector(&base, dir.path());
+    let c = collector(&drive, dir.path());
     assert!(matches!(c.sync(), Err(DriveError::NoFolder)));
 }
 
 #[test]
 fn a_prompt_id_cannot_leave_the_spool_or_name_the_listing() {
     let dir = tempfile::tempdir().unwrap();
-    let c = collector("http://127.0.0.1:1", dir.path());
+    let c = offline(dir.path());
     for id in ["", "../escape", "a/b", "a\\b", ".", "..", "files"] {
         assert!(c.prompt_path(id).is_err(), "{id:?}");
         assert!(
@@ -380,21 +419,13 @@ fn a_prompt_id_cannot_leave_the_spool_or_name_the_listing() {
 /// Accepts every pending revision and syncs again, until no revision is
 /// left; returns the revision texts in the order they were published.
 fn walk(c: &Drive) -> Vec<String> {
-    let mut published = Vec::new();
+    let mut texts = Vec::new();
     loop {
         c.advance(&|_, _, _| Ok(true)).unwrap();
         if c.sync().unwrap().revisions_written == 0 {
-            return published;
+            return texts;
         }
-        let prompt = std::fs::read_to_string(c.spool.join("1AbC.json")).unwrap();
-        let text: serde_json::Value = serde_json::from_str(&prompt).unwrap();
-        published.push(
-            text.pointer("/chunkedPrompt/chunks/0/text")
-                .unwrap()
-                .as_str()
-                .unwrap()
-                .to_owned(),
-        );
+        texts.push(published(c, "1AbC"));
     }
 }
 
@@ -404,51 +435,46 @@ fn minute(n: usize) -> String {
 
 #[test]
 fn two_pages_of_revisions_all_captured() {
-    let revisions: Vec<(String, String)> =
-        (0..250).map(|n| (format!("r{n:03}"), minute(n))).collect();
-    let drive = serve_pages(revisions.clone(), 100);
+    let drive = FakeDrive::start();
+    drive.create("1AbC", "Electrons", "2026-05-17T00:00:00Z");
+    let expected: Vec<String> = (0..250).map(|n| format!("r{n:03}")).collect();
+    for (n, id) in expected.iter().enumerate() {
+        drive.save("1AbC", id, &minute(n), &body(id));
+    }
+    drive.page_size(100);
     let dir = tempfile::tempdir().unwrap();
-    let c = collector(&drive.base, dir.path());
+    let c = collector(&drive, dir.path());
     let first = c.sync().unwrap();
     assert_eq!((first.revisions_written, first.pending), (1, 250));
-    let mut published = vec!["r000".to_owned()];
-    published.extend(walk(&c));
-    let expected: Vec<String> = revisions.into_iter().map(|(id, _)| id).collect();
-    assert_eq!(published, expected);
+    let mut texts = vec![published(&c, "1AbC")];
+    texts.extend(walk(&c));
+    assert_eq!(texts, expected);
     assert!(
         drive
-            .seen
-            .lock()
-            .unwrap()
+            .seen()
             .iter()
-            .any(|path| path.contains("pageToken=200"))
+            .any(|path| path.starts_with("/drive/files/1AbC/revisions?")
+                && path.contains("pageToken=200"))
     );
 }
 
 #[test]
 fn resume_after_pruned_revision_continues_from_next_newer() {
-    let drive = serve_pages(
-        owned(vec![
-            ("r1", "2026-05-17T12:10:00Z"),
-            ("r2", "2026-05-17T12:20:00Z"),
-            ("r3", "2026-05-17T12:30:00Z"),
-            ("r4", "2026-05-17T12:40:00Z"),
-        ]),
-        usize::MAX,
-    );
+    let drive = drive(&[
+        ("r1", "2026-05-17T12:10:00Z"),
+        ("r2", "2026-05-17T12:20:00Z"),
+        ("r3", "2026-05-17T12:30:00Z"),
+        ("r4", "2026-05-17T12:40:00Z"),
+    ]);
     let dir = tempfile::tempdir().unwrap();
-    let c = collector(&drive.base, dir.path());
+    let c = collector(&drive, dir.path());
     c.sync().unwrap();
     c.advance(&|_, _, _| Ok(true)).unwrap();
     assert_eq!(c.sync().unwrap().revisions_written, 1);
     c.advance(&|_, _, _| Ok(true)).unwrap();
     assert_eq!(c.load_state().unwrap().revision("1AbC"), Some("r2"));
     // Drive prunes the accepted revision and one older than it.
-    drive
-        .revisions
-        .lock()
-        .unwrap()
-        .retain(|(id, _)| id != "r1" && id != "r2");
+    drive.prune("1AbC", |id| id != "r1" && id != "r2");
     assert_eq!(walk(&c), ["r3", "r4"]);
 }
 
