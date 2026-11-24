@@ -171,7 +171,9 @@ fn an_annotation_needs_a_target_and_a_revision_needs_its_family() {
                 annotations: vec![annotation]
             },
         )),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::Refused(
+            polylogue_model::Reason::BadAnnotationLinks { .. }
+        ))
     ));
     assert!(matches!(
         writer.user(crate::fixture::authored::operator_request(

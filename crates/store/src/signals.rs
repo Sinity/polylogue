@@ -52,8 +52,8 @@ fn check_pending_identity(value: &Metadata) -> Result<()> {
         || value.notice.current != fired.current
         || value.notice.outlets != Outlets::of(&value.delivery.decision)
     {
-        return Err(StoreError::Invalid(
-            "pending delivery identity disagrees with its trigger".into(),
+        return Err(StoreError::internal(
+            "pending delivery identity disagrees with its trigger",
         ));
     }
     Ok(())
@@ -66,8 +66,8 @@ pub(crate) fn write(
 ) -> Result<UserOutcome> {
     let source = Source::of(conn)?;
     if commit.checkpoint.owner != request.machine {
-        return Err(StoreError::Invalid(
-            "signal checkpoint evaluator differs from the accepting machine".into(),
+        return Err(StoreError::internal(
+            "signal checkpoint evaluator differs from the accepting machine",
         ));
     }
     let prior = checkpoint(conn, source, &commit.checkpoint.owner)?
@@ -80,18 +80,18 @@ pub(crate) fn write(
     for pending in &commit.pending_delivery {
         check_pending_identity(&pending.metadata)?;
         if pending.record.sender != DeliverySender::Signal {
-            return Err(StoreError::Invalid(
-                "signal delivery must keep its typed sender".into(),
+            return Err(StoreError::internal(
+                "signal delivery must keep its typed sender",
             ));
         }
         let id = pending.metadata.delivery.id().to_owned();
         if !ids.insert(id.clone()) || pending.metadata.execution != RunsHere::Live {
-            return Err(StoreError::Invalid(
-                "each new pending delivery must have one live identity".into(),
+            return Err(StoreError::internal(
+                "each new pending delivery must have one live identity",
             ));
         }
         let at = polylogue_model::Timestamp::from_unix_ms(pending.metadata.delivery.at)
-            .or_invalid("signal time is out of range")?;
+            .or_stored("signal time is out of range")?;
         crate::primary::authored::store_delivery(
             conn,
             &DeliveryRecord {
@@ -113,7 +113,7 @@ pub(crate) fn write(
                 [id],
             )?;
             return Err(if stored.is_some() {
-                StoreError::Invalid(format!("delivery {id} is not a signal delivery"))
+                StoreError::internal(format!("delivery {id} is not a signal delivery"))
             } else {
                 StoreError::NotFound(format!("signal delivery {id}"))
             });
@@ -122,8 +122,8 @@ pub(crate) fn write(
             && (delivery.fired.trigger != base.delivery.fired.trigger
                 || delivery.id() != base.delivery.id())
         {
-            return Err(StoreError::Invalid(
-                "host signal decision changed occurrence identity".into(),
+            return Err(StoreError::internal(
+                "host signal decision changed occurrence identity",
             ));
         }
         let last: i64 = conn.scalar(
@@ -134,7 +134,7 @@ pub(crate) fn write(
         )?;
         let position = crate::to_u64(last, "stored signal position is negative")?
             .checked_add(1)
-            .or_invalid("signal receipt position overflow")?;
+            .or_internal("signal receipt position overflow")?;
         insert_event(
             conn,
             &EventRecord {
@@ -167,7 +167,7 @@ fn position(value: &EventRecord) -> Result<i64> {
 }
 fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<()> {
     if value.position == 0 || value.request.is_empty() {
-        return Err(StoreError::Invalid("signal event identity is empty".into()));
+        return Err(StoreError::internal("signal event identity is empty"));
     }
     let source = Source::of(conn)?;
     let id = value.event.delivery_id();
@@ -192,9 +192,8 @@ pub(crate) fn capture(
     let source = Source::of(conn)?;
     if let polylogue_model::user::UserWrite::SignalCommit(commit) = &request.write {
         effect.signal_checkpoints.push(
-            checkpoint(conn, source, &commit.checkpoint.owner)?.ok_or_else(|| {
-                StoreError::Invalid("signal checkpoint missing after commit".into())
-            })?,
+            checkpoint(conn, source, &commit.checkpoint.owner)?
+                .ok_or_else(|| StoreError::internal("signal checkpoint missing after commit"))?,
         );
     }
     let ids:Vec<String>=conn.prepare(&source.sql("SELECT DISTINCT delivery FROM @source.signal_event WHERE commit_seq=?1 ORDER BY delivery"))?.query_map([counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
@@ -245,9 +244,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
         if let Some(metadata) = &change.delivery.signal {
             check_pending_identity(metadata)?;
             if change.delivery.id != metadata.delivery.id() {
-                return Err(StoreError::Invalid(
-                    "signal delivery row identity differs".into(),
-                ));
+                return Err(StoreError::internal("signal delivery row identity differs"));
             }
         }
     }
@@ -257,8 +254,8 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
             || event.request.is_empty()
             || !identities.insert((&event.request, event.ordinal))
         {
-            return Err(StoreError::Invalid(
-                "signal event identity is empty or duplicated".into(),
+            return Err(StoreError::internal(
+                "signal event identity is empty or duplicated",
             ));
         }
         let metadata = effect
@@ -266,29 +263,27 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
             .iter()
             .find(|d| d.delivery.id == id)
             .and_then(|d| d.delivery.signal.as_ref())
-            .or_invalid("signal event has no recorded delivery")?;
+            .or_stored("signal event has no recorded delivery")?;
         if let polylogue_model::signal::Event::HostDecision { delivery } = &event.event
             && delivery.fired.trigger != metadata.delivery.fired.trigger
         {
-            return Err(StoreError::Invalid(
-                "signal decision changes occurrence".into(),
-            ));
+            return Err(StoreError::internal("signal decision changes occurrence"));
         }
         positions.entry(id).or_default().push(event.position);
     }
     for positions in positions.values_mut() {
         positions.sort_unstable();
         if positions.iter().copied().ne(1..=positions.len() as u64) {
-            return Err(StoreError::Invalid(
-                "signal event history has a gap or duplicate".into(),
+            return Err(StoreError::internal(
+                "signal event history has a gap or duplicate",
             ));
         }
     }
     match &prepared.request.write {
         polylogue_model::user::UserWrite::SignalCommit(commit) => {
             if effect.signal_checkpoints.as_slice() != [commit.checkpoint.clone()] {
-                return Err(StoreError::Invalid(
-                    "signal checkpoint differs from recorded request".into(),
+                return Err(StoreError::internal(
+                    "signal checkpoint differs from recorded request",
                 ));
             }
             for (ordinal, event) in commit.events.iter().enumerate() {
@@ -297,8 +292,8 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
                         && e.ordinal == ordinal as u64
                         && &e.event == event
                 }) {
-                    return Err(StoreError::Invalid(
-                        "signal receipt differs from recorded request".into(),
+                    return Err(StoreError::internal(
+                        "signal receipt differs from recorded request",
                     ));
                 }
             }
@@ -309,8 +304,8 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
                 .count()
                 != commit.events.len()
             {
-                return Err(StoreError::Invalid(
-                    "signal receipts beyond the recorded request".into(),
+                return Err(StoreError::internal(
+                    "signal receipts beyond the recorded request",
                 ));
             }
             for pending in &commit.pending_delivery {
@@ -319,8 +314,8 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
                         && d.delivery.signal.as_ref() == Some(&pending.metadata)
                         && d.delivery.prepared == pending.record
                 }) {
-                    return Err(StoreError::Invalid(
-                        "pending delivery differs from recorded request".into(),
+                    return Err(StoreError::internal(
+                        "pending delivery differs from recorded request",
                     ));
                 }
             }
@@ -332,9 +327,7 @@ pub(crate) fn validate(prepared: &polylogue_model::authored::PreparedRequest) ->
                     .iter()
                     .any(|e| e.request == prepared.request.id)
             {
-                return Err(StoreError::Invalid(
-                    "signal changes lack a signal request".into(),
-                ));
+                return Err(StoreError::internal("signal changes lack a signal request"));
             }
         }
     }

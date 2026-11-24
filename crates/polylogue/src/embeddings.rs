@@ -773,7 +773,7 @@ fn query_sessions(
             })?;
         if answer.logical_sessions.len() != references.len() {
             return Err(Failure::new(
-                polylogue_model::Code::Store,
+                polylogue_model::Code::Internal,
                 "embedding selection lost session coordinates",
             ));
         }

@@ -5,6 +5,7 @@ pub mod operation;
 use command_surface::Deadline;
 pub use error::Error;
 use operation::Context;
+use polylogue_model::Reason;
 use polylogue_model::bundle::ReadSnapshot;
 use polylogue_model::{MessageId, freshness::ReadFreshness, read::*};
 use polylogue_render::pager::{PageBuilder, PageError, Push};
@@ -75,9 +76,7 @@ pub fn resolve_start(
             View::Transcript | View::Dialogue | View::Context | View::Raw | View::Changes
         )
     {
-        return Err(Error::bad_request(
-            "read --from seen needs a session content view",
-        ));
+        return Err(Reason::FromSeenNeedsContentView {}.into());
     }
     if let Some(cursor) = &request.cursor {
         let opened = PageCursor::open(cursor, &cursor_seal(reader)?).map_err(cursor_failure)?;
@@ -104,9 +103,7 @@ pub fn resolve_start(
         .is_some_and(|references| references.len() != 1)
     {
         return if from_seen {
-            Err(Error::bad_request(
-                "read --from seen needs one session or logical-root reference",
-            ))
+            Err(Reason::FromSeenNeedsOneSession {}.into())
         } else {
             Ok(())
         };
@@ -138,9 +135,7 @@ pub fn resolve_start(
             parts: vec![],
         });
     } else if from_seen {
-        return Err(Error::bad_request(
-            "read --from seen needs one session or logical-root reference",
-        ));
+        return Err(Reason::FromSeenNeedsOneSession {}.into());
     }
     Ok(())
 }
@@ -187,9 +182,7 @@ pub fn with_alternates(
 ) -> Result<ReadRequest, Error> {
     if request.options.view == View::Trace {
         if !request.options.alternates.is_empty() && request.options.alternates != ["none"] {
-            return Err(Error::bad_request(
-                "trace shows original source evidence; alternates are unsupported",
-            ));
+            return Err(Reason::TraceTakesNoAlternates {}.into());
         }
         request.options.alternates.clear();
         return Ok(request);
@@ -219,8 +212,9 @@ pub fn with_alternates(
 /// The format, page limits and options digest a continuation cursor of a
 /// session or links page must match.
 fn page_terms(request: &ReadRequest) -> Result<(Format, PageBudget, String), Error> {
-    let format =
-        Format::parse(&request.format).ok_or_else(|| Error::bad_request("unknown read format"))?;
+    let format = Format::parse(&request.format).ok_or_else(|| Reason::UnknownReadFormat {
+        format: request.format.clone(),
+    })?;
     let limits = PageBudget::default().with_tokens(request.budget);
     let digest = options_digest(&(&request.options, format));
     Ok((format, limits, digest))
@@ -273,17 +267,17 @@ fn reading(request: &ReadRequest) -> Result<(Reading, Option<&str>), Error> {
         cursor,
         ..
     } = request;
-    options.validate().map_err(Error::bad_request)?;
-    let format = Format::parse(format).ok_or_else(|| Error::bad_request("unknown read format"))?;
+    options.validate().map_err(Error::Layout)?;
+    let format = Format::parse(format).ok_or_else(|| Reason::UnknownReadFormat {
+        format: format.clone(),
+    })?;
     let budget = if *delivery == ReadDelivery::Page {
         Some(PageBudget::default().with_tokens(*budget))
     } else {
         None
     };
     if cursor.is_some() && budget.is_none() {
-        return Err(Error::bad_request(
-            "streaming reads do not have paged continuations",
-        ));
+        return Err(Reason::StreamHasNoContinuation {}.into());
     }
     Ok((
         Reading {
@@ -432,7 +426,7 @@ struct Rendering<'a> {
 /// A paged read has a budget; only page delivery sets one.
 fn require_page_delivery(reading: &Reading) -> Result<(), Error> {
     if reading.budget.is_none() {
-        return Err(Error::bad_request("paged reads require page delivery"));
+        return Err(Reason::PagedReadNeedsPageDelivery {}.into());
     }
     Ok(())
 }
@@ -624,9 +618,7 @@ fn resolve_at<'a>(
                 return Ok(std::borrow::Cow::Owned(request));
             }
         } else if matches!(request.options.at, Some(ReadAt::Message(_))) {
-            return Err(Error::bad_request(
-                "context has two different message anchors; select one message",
-            ));
+            return Err(Reason::TwoMessageAnchors {}.into());
         }
     }
     let text = match request.options.at.as_ref() {
@@ -635,8 +627,12 @@ fn resolve_at<'a>(
         Some(ReadAt::Time(at)) => at.to_string(),
         _ => return Ok(std::borrow::Cow::Borrowed(request)),
     };
-    let resolved = query_language::time::resolve(&text, &operation.clock)
-        .map_err(|error| Error::bad_request(error.to_string()))?;
+    let resolved = query_language::time::resolve(&text, &operation.clock).map_err(|error| {
+        Reason::BadTime {
+            text: text.clone(),
+            problem: error.to_string(),
+        }
+    })?;
     // A snapshot names one boundary. Query predicates still match the whole
     // written period; here its resolved lower bound is the chosen instant.
     let at = match resolved.value {
@@ -653,32 +649,22 @@ fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> 
         return Ok(());
     }
     if request.options.view == View::Context && request.options.around.is_some_and(|n| n > 0) {
-        return Err(Error::bad_request(
-            "historical context does not accept around; select its context message",
-        ));
+        return Err(Reason::HistoricalContextTakesNoAround {}.into());
     }
     if let Some(position) = request.options.annotation_position() {
         let current = reader.change_position()?;
         if position.generation != current.generation {
-            return Err(Error::bad_request(
-                "read --at position belongs to another index generation",
-            ));
+            return Err(Reason::PositionFromAnotherGeneration {}.into());
         }
         if position.index > current.index || position.archive > current.archive {
-            return Err(Error::bad_request(
-                "read --at position is ahead of this reader",
-            ));
+            return Err(Reason::PositionAhead {}.into());
         }
     }
     let Some(scope) = session::scope(reader, &request.target)? else {
-        return Err(Error::bad_request(
-            "historical read --at currently takes a session or message",
-        ));
+        return Err(Reason::HistoricalReadTarget {}.into());
     };
     if request.options.view == View::Context && !scope.has_context_anchor() {
-        return Err(Error::bad_request(
-            "historical context takes one message or a session; select its context message",
-        ));
+        return Err(Reason::HistoricalContextTarget {}.into());
     }
     Ok(())
 }
@@ -696,7 +682,7 @@ pub fn page(
     let request = resolved.as_ref();
     validate_at(reader, request)?;
     if request.with_blobs {
-        return Err(Error::bad_request("with_blobs requires streaming delivery"));
+        return Err(Reason::BlobsNeedStream {}.into());
     }
     if request.options.view == View::Trace {
         return trace::page(reader, services, request, operation, history)
@@ -858,7 +844,7 @@ fn rows_page(
         .map_err(Error::internal)?
         .len();
     budget.bytes = std::num::NonZeroUsize::new(budget.bytes.get().saturating_sub(snapshot_bytes))
-        .ok_or_else(|| Error::bad_request("reading metadata exceeds page framing"))?;
+        .ok_or(Reason::BudgetBelowFraming {})?;
     let backwards = opened
         .as_ref()
         .is_some_and(|(_, _, direction, _)| *direction == ReadDirection::Before);
@@ -984,9 +970,7 @@ pub fn stream(
     let request = resolved.as_ref();
     validate_at(reader, request)?;
     if request.delivery != ReadDelivery::Stream {
-        return Err(Error::bad_request(
-            "streaming reads require stream delivery",
-        ));
+        return Err(Reason::StreamNeedsStreamDelivery {}.into());
     }
     if request.options.view == View::Trace {
         return trace::stream(reader, services, request, operation, output);

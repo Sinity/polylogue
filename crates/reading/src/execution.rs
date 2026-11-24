@@ -36,7 +36,7 @@ pub fn record<T>(
         outcome: match &result {
             Ok(_) => RunOutcome::Ok,
             Err(failure) => RunOutcome::Error {
-                kind: failure.code().into(),
+                kind: failure.code().as_str().into(),
             },
         },
         count: result.as_ref().ok().and_then(|completed| completed.count),

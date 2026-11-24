@@ -322,7 +322,7 @@ impl<'a> InputWriter<'a> {
             return Ok(());
         }
         let snapshot = snapshot.ok_or_else(|| {
-            polylogue_store::StoreError::invalid("database sample has no consistent-read token")
+            polylogue_store::StoreError::internal("database sample has no consistent-read token")
         })?;
         let start = self.staged.iter().find_map(|part| {
             part.batch

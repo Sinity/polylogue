@@ -1,6 +1,7 @@
 //! Accepted object reads share the stored begin and outcome records and the output codecs.
 use super::ReadRequest;
 use super::*;
+use polylogue_model::Reason;
 use polylogue_model::{Reference, RunId, query_objects::*};
 
 fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::Value>, Error> {
@@ -13,8 +14,14 @@ fn accepted(operation: &crate::operation::Context) -> Result<Option<serde_json::
 
 pub(super) fn target(request: &ReadRequest) -> Option<Result<Reference, Error>> {
     let target = &request.target;
-    (target.starts_with("request:") || target.starts_with("run:"))
-        .then(|| Reference::parse(target).map_err(Error::bad_request))
+    (target.starts_with("request:") || target.starts_with("run:")).then(|| {
+        Reference::parse(target).map_err(|error| {
+            Error::from(Reason::BadReference {
+                text: target.clone(),
+                problem: error.to_string(),
+            })
+        })
+    })
 }
 
 fn execute<T>(
@@ -68,7 +75,7 @@ fn execute<T>(
         },
         accepted_request: accepted(operation)?,
     };
-    binding.validate().map_err(Error::bad_request)?;
+    binding.validate().map_err(Error::internal)?;
     let id = crate::operation::new_run_id();
     let hash = binding.hash().map_err(Error::internal)?;
     let begin = QueryRun {

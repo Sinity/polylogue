@@ -147,7 +147,7 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
     .unwrap_err();
     // An undecodable stored body is a store failure, not a missing or
     // not-yet-available document.
-    assert_eq!(refusal.code(), "store");
+    assert_eq!(refusal.code(), polylogue_model::Code::Io);
     assert_eq!(visited, 0);
 }
 
@@ -282,13 +282,13 @@ fn document_block_decode_obeys_cancellation_and_generation_changes_between_items
             let Err(failure) = &result else {
                 panic!("changed request continued: {result:?}")
             };
-            let kind = failure.code().to_owned();
+            let kind = failure.code();
             let expected = if reset {
                 StoreError::ScopeChanged
             } else {
                 StoreError::ReadCancelled
             };
-            assert_eq!(kind, expected.code().as_str());
+            assert_eq!(kind, expected.code());
             assert_eq!(emitted, 1);
         });
     }
@@ -303,7 +303,7 @@ fn unsupported_document_pages_preserve_direct_errors_and_mixed_coverage() {
     let mut footer = ReadFooter::default();
     let refusal = output::document_omission("document:claude-ai:doc", &options, false, &mut footer)
         .unwrap_err();
-    assert_eq!(refusal.code(), "bad_request");
+    assert_eq!(refusal.code(), polylogue_model::Code::BadRequest);
     assert_eq!(
         refusal.to_string(),
         "view dialogue does not read document:claude-ai:doc; use transcript or raw"

@@ -493,6 +493,9 @@ impl State {
                             Err(
                                 polylogue_store::StoreError::NotFound(_)
                                 | polylogue_store::StoreError::Invalid(_)
+                                | polylogue_store::StoreError::Refused(_)
+                                | polylogue_store::StoreError::Internal(_)
+                                | polylogue_store::StoreError::StoredValue { .. }
                                 | polylogue_store::StoreError::ReferenceUnavailable { .. }
                                 | polylogue_store::StoreError::Ambiguous { .. },
                             ) => None,
@@ -767,7 +770,7 @@ impl State {
                 Vec::new()
             } else {
                 polylogue_model::settings::declaration(&key)
-                    .map_err(|error| polylogue_store::StoreError::Invalid(error.to_string()))?
+                    .map_err(|error| polylogue_store::StoreError::internal(error.to_string()))?
                     .choices()
                     .iter()
                     .map(|value| value.to_string())

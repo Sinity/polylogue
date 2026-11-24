@@ -149,7 +149,7 @@ impl QueuedDeliveries {
             let mut state = self.0.locked();
             prune(&mut state);
             if let Some(error) = &state.last_failure {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::internal(format!(
                     "delivery outcomes remain unwritten after the final attempt: {error}"
                 )));
             }

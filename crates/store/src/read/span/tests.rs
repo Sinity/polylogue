@@ -72,7 +72,7 @@ fn selected_prefix_is_portable_without_reading_or_hashing_unknown_suffix() {
     ));
     assert!(matches!(
         reader.select_span_source(&reference("span:message:claude-code:s-prefix#u16=1-2")),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::Refused(polylogue_model::Reason::BadSpan { .. }))
     ));
 }
 #[test]

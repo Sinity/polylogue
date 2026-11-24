@@ -186,7 +186,7 @@ fn unparseable_message_attrs_fail_the_read() {
     assert!(
         matches!(
             &error,
-            StoreError::StoredValue { column: 0, reason }
+            StoreError::StoredValue { column: Some(0), reason }
                 if reason == "message claude-code:decode-message has unparseable attributes"
         ),
         "{error:?}"
@@ -211,7 +211,7 @@ fn non_object_message_attrs_fail_the_read() {
     assert!(
         matches!(
             &error,
-            StoreError::StoredValue { column: 0, reason }
+            StoreError::StoredValue { column: Some(0), reason }
                 if reason == "message claude-code:decode-message has unparseable attributes"
         ),
         "{error:?}"

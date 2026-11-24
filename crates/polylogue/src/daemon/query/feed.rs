@@ -66,7 +66,7 @@ fn check_change(
         || !change["seq"].as_i64().is_some_and(|n| n >= 0 && n <= bound)
     {
         return Err(Failure::new(
-            polylogue_model::Code::Store,
+            polylogue_model::Code::Internal,
             "a change reference is outside its declared component or view",
         ));
     }

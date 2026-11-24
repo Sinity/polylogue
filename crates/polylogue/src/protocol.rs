@@ -357,7 +357,8 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::DaemonRequired
         | Code::ShuttingDown
         | Code::DaemonProtocolMismatch => FailureKind::NotRunning,
-        Code::DeadlineExceeded => FailureKind::Timeout,
+        Code::DeadlineExceeded | Code::Busy => FailureKind::Timeout,
+        Code::Internal => FailureKind::Internal,
         Code::Cancelled => FailureKind::Cancelled,
         Code::Empty
         | Code::ModelCallsOff
@@ -368,8 +369,8 @@ pub fn kind(code: polylogue_model::Code) -> FailureKind {
         | Code::Schema
         | Code::ReadOutput
         | Code::Io
+        | Code::BlobCorrupt
         | Code::Store
-        | Code::Internal
         | Code::Import
         | Code::Embed
         | Code::SinexUnavailable
@@ -429,16 +430,17 @@ pub fn query_failure(error: &polylogue_store::query::QueryError) -> Failure {
 /// Every store error reaches surfaces through this one classification.
 pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
     match error {
-        polylogue_store::StoreError::ScopeChanged => {
-            let mut failure = failure(error.code(), error.to_string());
-            failure.retryable = true;
-            failure
-        }
         polylogue_store::StoreError::Query(error) => query_failure(error),
-        polylogue_store::StoreError::Ambiguous { candidates, .. } => {
-            failure(error.code(), error.to_string()).with_candidates(candidates.clone())
+        error => {
+            let mut failure = failure(error.code(), error.to_string());
+            failure.retryable = error.retryable();
+            match error {
+                polylogue_store::StoreError::Ambiguous { candidates, .. } => {
+                    failure.with_candidates(candidates.clone())
+                }
+                _ => failure,
+            }
         }
-        error => failure(error.code(), error.to_string()),
     }
 }
 

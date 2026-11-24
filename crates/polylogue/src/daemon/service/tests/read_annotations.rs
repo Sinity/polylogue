@@ -1218,9 +1218,9 @@ fn context_stream_stops_on_scope_reset_and_cancellation_before_source_frames() {
         assert_eq!(
             result.unwrap_err().code(),
             if scope_reset {
-                "scope_changed"
+                polylogue_model::Code::ScopeChanged
             } else {
-                "cancelled"
+                polylogue_model::Code::Cancelled
             }
         );
         let frames = command_surface::SseDecoder::new()

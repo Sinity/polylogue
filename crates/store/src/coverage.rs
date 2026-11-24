@@ -10,7 +10,9 @@ pub const SCHEMA: &str = "CREATE TABLE capture_coverage (machine TEXT PRIMARY KE
 pub fn apply(tx: &Connection, coverage: &Coverage) -> Result<()> {
     coverage
         .validate()
-        .map_err(|error| StoreError::Invalid(error.into()))?;
+        .map_err(|error| polylogue_model::Reason::BadCoverage {
+            problem: error.to_string(),
+        })?;
     tx.execute("INSERT INTO capture_coverage(machine,observed_at,payload_json) VALUES (?1,?2,?3) ON CONFLICT(machine) DO UPDATE SET observed_at=excluded.observed_at,payload_json=excluded.payload_json",
         params![coverage.machine,coverage.observed_at.unix_ms(),serde_json::to_string(coverage)?])?;
     Ok(())

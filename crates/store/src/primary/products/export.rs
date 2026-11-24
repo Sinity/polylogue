@@ -17,8 +17,8 @@ impl ExportReadingKey {
             || self.parse_version.is_empty()
             || i64::try_from(self.length).is_err()
         {
-            return Err(crate::StoreError::Invalid(
-                "export reading key names no stored source".into(),
+            return Err(crate::StoreError::internal(
+                "export reading key names no stored source",
             ));
         }
         Ok(())

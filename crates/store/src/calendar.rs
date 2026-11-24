@@ -4,8 +4,15 @@ use crate::Result;
 use jiff::{Timestamp, civil::Date};
 use query_language::time::{DaySetting, label};
 
+fn outside(problem: impl ToString) -> crate::StoreError {
+    polylogue_model::Reason::OutsideCalendar {
+        problem: problem.to_string(),
+    }
+    .into()
+}
+
 pub fn instant(ms: i64) -> Result<Timestamp> {
-    Timestamp::from_millisecond(ms).map_err(crate::StoreError::invalid)
+    Timestamp::from_millisecond(ms).map_err(outside)
 }
 /// Integer timestamps satisfying a precise boundary start at its ceiling.
 pub fn boundary_ms(at: Timestamp) -> i64 {
@@ -14,37 +21,32 @@ pub fn boundary_ms(at: Timestamp) -> i64 {
     i64::try_from(ms).expect("jiff timestamps fit the millisecond index")
 }
 pub fn date(day: &DaySetting, ms: i64) -> Result<Date> {
-    day.logical_day(instant(ms)?)
-        .map_err(crate::StoreError::invalid)
+    day.logical_day(instant(ms)?).map_err(outside)
 }
 pub fn start(day: &DaySetting, date: Date) -> Result<i64> {
-    day.start_of(date)
-        .map(boundary_ms)
-        .map_err(crate::StoreError::invalid)
+    day.start_of(date).map(boundary_ms).map_err(outside)
 }
 pub fn range(day: &DaySetting, date: Date) -> Result<(i64, i64)> {
-    let range = day.day(date).map_err(crate::StoreError::invalid)?;
+    let range = day.day(date).map_err(outside)?;
     Ok((boundary_ms(range.start), boundary_ms(range.end)))
 }
 pub fn week(day: &DaySetting, date: Date) -> Result<(i64, i64)> {
     let monday = date
         .checked_sub(jiff::Span::new().days(i64::from(date.weekday().to_monday_zero_offset())))
-        .map_err(crate::StoreError::invalid)?;
+        .map_err(outside)?;
     let next = monday
         .checked_add(jiff::Span::new().days(7))
-        .map_err(crate::StoreError::invalid)?;
+        .map_err(outside)?;
     Ok((start(day, monday)?, start(day, next)?))
 }
 pub fn month(day: &DaySetting, date: Date) -> Result<(i64, i64)> {
     let first = date.first_of_month();
     let next = first
         .checked_add(jiff::Span::new().months(1))
-        .map_err(crate::StoreError::invalid)?;
+        .map_err(outside)?;
     let (since, until) = (start(day, first)?, start(day, next)?);
     if until <= since {
-        return Err(crate::StoreError::Invalid(
-            "calendar month has no representable interval".into(),
-        ));
+        return Err(outside("the month has no representable interval"));
     }
     Ok((since, until))
 }

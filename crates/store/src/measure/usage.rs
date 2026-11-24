@@ -407,7 +407,7 @@ pub(super) fn recorded_with(
             let add = |sum: &mut Option<u64>, next: Option<u64>| -> Result<()> {
                 if let Some(next) = next {
                     *sum = Some(sum.unwrap_or(0).checked_add(next).ok_or_else(|| {
-                        crate::StoreError::Invalid("recorded usage sum exceeds u64".into())
+                        crate::StoreError::stored_data("recorded usage sum exceeds u64")
                     })?);
                 }
                 Ok(())
@@ -422,8 +422,8 @@ pub(super) fn recorded_with(
             if let Some(cost) = cost {
                 let sum = out.known_api_cost.map_or(0, Amount::nusd);
                 out.known_api_cost = Some(Amount(sum.checked_add(cost).ok_or_else(|| {
-                    crate::StoreError::Invalid(
-                        "recorded API-equivalent cost exceeds i64 nano-USD".into(),
+                    crate::StoreError::stored_data(
+                        "recorded API-equivalent cost exceeds i64 nano-USD",
                     )
                 })?));
             } else {

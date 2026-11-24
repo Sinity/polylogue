@@ -120,7 +120,10 @@ fn a_block_that_differs_from_its_header_is_refused() {
             }
         }
         assert!(
-            matches!(encode(&block, Some(&header)), Err(StoreError::Invalid(_))),
+            matches!(
+                encode(&block, Some(&header)),
+                Err(StoreError::StoredValue { column: None, .. })
+            ),
             "change {change}"
         );
     }
@@ -166,7 +169,7 @@ fn an_event_entry_is_never_a_later_entry_of_a_message() {
     );
     assert!(matches!(
         encode(&event, Some(&header())),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::StoredValue { column: None, .. })
     ));
     // Bytes of a message's block entry carry a block number, which an event
     // row never has.

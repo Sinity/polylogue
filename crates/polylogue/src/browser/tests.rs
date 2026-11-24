@@ -189,6 +189,10 @@ fn without_the_daemon_a_capture_is_stored_and_the_index_is_unknown() {
     let jobs = exchange(&host, "GET", "/v1/import_job", b"");
     assert_eq!(jobs.status, 503);
     assert_eq!(jobs.json()["error"], "daemon_required");
+    assert_eq!(
+        jobs.json()["reason"],
+        json!({"name": "daemon_did_not_answer", "fields": {}})
+    );
 }
 
 #[test]
@@ -230,13 +234,17 @@ fn malformed_exchanges_are_refused_with_an_error_frame() {
     std::os::unix::fs::symlink(&target, &log).unwrap();
     let a = exchange(&host, "POST", "/v1/captures", &capture("conv-3", "x"));
     assert_eq!(a.status, 500);
-    assert_eq!(a.json()["error"], "write_failed");
+    assert_eq!(a.json()["error"], "io");
     assert_eq!(std::fs::read(&target).unwrap(), b"untouched");
     // Not a capture.
     let a = exchange(&host, "POST", "/v1/captures", b"[1]");
     assert_eq!(
-        (a.status, a.json()["error"].clone()),
-        (400, json!("capture_not_json"))
+        (
+            a.status,
+            a.json()["error"].clone(),
+            a.json()["reason"]["name"].clone()
+        ),
+        (400, json!("bad_request"), json!("capture_not_json"))
     );
 }
 
@@ -497,7 +505,7 @@ fn a_capture_without_conversation_content_is_refused_and_not_spooled() {
     });
     let a = exchange(&host, "POST", "/v1/captures", empty.to_string().as_bytes());
     assert_eq!(a.status, 400);
-    assert_eq!(a.json()["error"], "capture_has_no_conversation");
+    assert_eq!(a.json()["reason"]["name"], "capture_has_no_conversation");
     let mut empty_raw = empty.clone();
     empty_raw["raw_provider_payload"] = json!({});
     let b = exchange(
@@ -506,7 +514,7 @@ fn a_capture_without_conversation_content_is_refused_and_not_spooled() {
         "/v1/captures",
         empty_raw.to_string().as_bytes(),
     );
-    assert_eq!(b.json()["error"], "capture_has_no_conversation");
+    assert_eq!(b.json()["reason"]["name"], "capture_has_no_conversation");
     assert_eq!(
         conversations(&host, &["empty"])["conversations"][0]["state"],
         "unknown"

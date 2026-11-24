@@ -174,7 +174,7 @@ impl Snapshot {
         use rusqlite::backup::{Backup, StepResult};
         let check = || {
             if cancelled.load(std::sync::atomic::Ordering::Acquire) {
-                Err(StoreError::Invalid("producer backup cancelled".into()))
+                Err(StoreError::Stopped)
             } else {
                 Ok(())
             }
@@ -191,7 +191,7 @@ impl Snapshot {
                     StepResult::Busy | StepResult::Locked => {
                         std::thread::sleep(std::time::Duration::from_millis(10))
                     }
-                    _ => return Err(StoreError::Invalid("unknown producer backup step".into())),
+                    _ => return Err(StoreError::internal("unknown producer backup step")),
                 }
             }
         }
@@ -345,25 +345,23 @@ impl Queue {
             let tables: u64 =
                 connection.scalar("SELECT count(*) FROM sqlite_master WHERE type='table'", [])?;
             if tables != 0 {
-                return Err(StoreError::Invalid(
-                    "producer queue has an unknown format".into(),
+                return Err(StoreError::stored_data(
+                    "producer queue has an unknown format",
                 ));
             }
             let transaction = connection.unchecked_transaction()?;
             transaction.execute_batch(SCHEMA)?;
             transaction.commit()?;
         } else if version == 1 {
-            return Err(StoreError::Invalid(format!(
-                "producer queue {} has format 1; let the earlier build send and confirm every operation, then set the empty queue aside",
-                path.display()
-            )));
+            return Err(polylogue_model::Reason::ProducerQueueFormat {
+                path: path.display().to_string(),
+            }
+            .into());
         } else if version != 2
             || connection.pragma_query_value(None, "application_id", |row| row.get::<_, u32>(0))?
                 != 1347178801
         {
-            return Err(StoreError::Invalid(
-                "producer queue has an unknown format".into(),
-            ));
+            return Err(StoreError::internal("producer queue has an unknown format"));
         }
         connection.pragma_update(None, "synchronous", "FULL")?;
         Ok(Self {
@@ -385,7 +383,7 @@ impl Queue {
         for member in members {
             let changed = transaction.execute("UPDATE operation SET confirmed_group=?1 WHERE identity=?2 AND (confirmed_group IS NULL OR confirmed_group=?1)", params![operation.identity, member])?;
             if changed != 1 {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::internal(format!(
                     "capture {member} is absent or belongs to another group"
                 )));
             }
@@ -393,7 +391,7 @@ impl Queue {
         refresh_ready(&transaction, &operation.identity)?;
         transaction.commit()?;
         self.get(&operation.identity)?
-            .or_invalid("queued operation disappeared")
+            .or_internal("queued operation disappeared")
     }
 
     /// Adds a staged capture group to the queue in one commit. The adapter has synced and
@@ -401,9 +399,7 @@ impl Queue {
     /// directly, without decoding every member or performing one sync per row.
     pub fn publish_capture_group(&self, staged: &Queue, header: &Operation) -> Result<()> {
         if header.kind != Kind::CaptureGroupHeader {
-            return Err(StoreError::Invalid(
-                "a capture group needs its header".into(),
-            ));
+            return Err(StoreError::internal("a capture group needs its header"));
         }
         self.connection.execute(
             "ATTACH DATABASE ?1 AS staged",
@@ -544,7 +540,7 @@ impl Queue {
         limit: usize,
     ) -> Result<Vec<Confirmed>> {
         if applied < 0 {
-            return Err(StoreError::Invalid("confirmed position is negative".into()));
+            return Err(StoreError::stored_data("confirmed position is negative"));
         }
         let mut query = self.connection.prepare_cached(&format!(
             "SELECT {COLUMNS},admitted,kind,group_hash FROM operation
@@ -662,7 +658,7 @@ impl Queue {
         let number = |value: u64| {
             i64::try_from(value)
                 .map(Value::Integer)
-                .or_invalid("queue order is out of range")
+                .or_stored("queue order is out of range")
         };
         parameters.push(number(after.unwrap_or(0))?);
         parameters.push(number(through.unwrap_or(i64::MAX as u64))?);
@@ -732,15 +728,15 @@ impl Queue {
         acknowledgment_bytes: u64,
     ) -> Result<()> {
         if phase.is_pending() {
-            return Err(StoreError::Invalid(
-                "acknowledgment has no finished outcome".into(),
+            return Err(StoreError::internal(
+                "acknowledgment has no finished outcome",
             ));
         }
         let transaction = self.connection.unchecked_transaction()?;
         let changed = transaction.execute("UPDATE operation SET phase=?1,offered=?2,position=?3,admitted=?4,stored_bytes=stored_bytes+?5,ready=0 WHERE identity=?6 AND phase='pending'", params![phase.name(), match phase { Phase::Conflicted { offered } => Some(offered.as_str()), _ => None }, phase.commit_seq(), serde_json::to_string(admitted)?, acknowledgment_bytes, identity])?;
         if changed != 1 {
-            return Err(StoreError::Invalid(
-                "acknowledgment has no pending operation".into(),
+            return Err(StoreError::internal(
+                "acknowledgment has no pending operation",
             ));
         }
         let mut dependents = {

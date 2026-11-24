@@ -156,7 +156,7 @@ impl<'a> SavedPreparation<'a> {
                     self.saved_plan(expected)?
                 };
                 if plan.question_id() != expected {
-                    return Err(crate::StoreError::invalid(
+                    return Err(crate::StoreError::internal(
                         "saved_query hash does not identify its prepared text",
                     ));
                 }

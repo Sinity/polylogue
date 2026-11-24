@@ -71,8 +71,8 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
     for event in events {
         if let ConfirmedChange::Control(control) = &event.change {
             if !event.event.is_empty() || event.sinex_context.is_some() || event.output_index != 0 {
-                return Err(StoreError::Invalid(
-                    "stream controls cannot carry an event identity".into(),
+                return Err(StoreError::internal(
+                    "stream controls cannot carry an event identity",
                 ));
             }
             replay::stage_control(&tx, &mut state, control)?;
@@ -82,16 +82,16 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             replay::validate_context(context)?;
         }
         if event.position <= 0 {
-            return Err(StoreError::Invalid(
-                "a confirmed data position must be positive".into(),
+            return Err(StoreError::internal(
+                "a confirmed data position must be positive",
             ));
         }
         if event.position <= applied {
             continue;
         }
         if event.event.is_empty() {
-            return Err(StoreError::Invalid(
-                "a confirmed event needs its Sinex event identity".into(),
+            return Err(StoreError::internal(
+                "a confirmed event needs its Sinex event identity",
             ));
         }
         let change = match &event.change {
@@ -106,23 +106,21 @@ fn stage(index: &mut Connection, events: &[Confirmed]) -> Result<()> {
             && product.reading().is_some()
             && !matches!(product.as_ref(), Product::Interpreted { .. })
         {
-            return Err(StoreError::Invalid(
-                "confirmed source events need their source record identity".into(),
+            return Err(StoreError::internal(
+                "confirmed source events need their source record identity",
             ));
         }
         let bytes = packed(&event.change)?;
         let context_bytes = event.sinex_context.as_ref().map(packed).transpose()?;
         let source_order = i64::try_from(event.output_index).map_err(|_| {
-            StoreError::Invalid(
-                "a source output position exceeds SQLite's signed integer range".into(),
-            )
+            StoreError::internal("a source output position exceeds SQLite's signed integer range")
         })?;
         let existing:Option<(Vec<u8>,i64,Option<Vec<u8>>)>=tx.query_row("SELECT product,source_order,sinex_context FROM primary_pending WHERE position=?1 AND event=?2 AND change=?3",params![event.position,event.event,change],|row| <(_, _, _)>::try_from(row)).optional()?;
         match existing {
             Some((old, order, context)) => {
                 if order != source_order || old != bytes || context != context_bytes {
-                    return Err(StoreError::Invalid(
-                        "a redelivered confirmed change has different contents".into(),
+                    return Err(StoreError::internal(
+                        "a redelivered confirmed change has different contents",
                     ));
                 }
             }
@@ -326,17 +324,15 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
                 let bytes = packed(&product)?;
                 if let Some(old) = &old {
                     if old.state == ConfirmedState::Tombstoned {
-                        return Err(StoreError::Invalid(
-                            "a tombstoned Sinex event cannot become live".into(),
+                        return Err(StoreError::internal(
+                            "a tombstoned Sinex event cannot become live",
                         ));
                     }
                     if old.kind != "refused"
                         && (old.product.as_ref() != Some(&bytes)
                             || old.sinex_context != context_bytes)
                     {
-                        return Err(StoreError::Invalid(
-                            "a Sinex event changed its product".into(),
-                        ));
+                        return Err(StoreError::internal("a Sinex event changed its product"));
                     }
                 }
                 let (input, chain, reference, kind) = metadata(&product);
@@ -349,16 +345,16 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
                     .map(|r| i64::try_from(r.start))
                     .transpose()
                     .map_err(|_| {
-                        StoreError::Invalid(
-                            "a reading range exceeds SQLite's signed integer range".into(),
+                        StoreError::internal(
+                            "a reading range exceeds SQLite's signed integer range",
                         )
                     })?;
                 let end = reading
                     .map(|r| i64::try_from(r.parsed_upto))
                     .transpose()
                     .map_err(|_| {
-                        StoreError::Invalid(
-                            "a reading range exceeds SQLite's signed integer range".into(),
+                        StoreError::internal(
+                            "a reading range exceeds SQLite's signed integer range",
                         )
                     })?;
                 let version = reading.map(|r| r.parse_version.clone());
@@ -403,8 +399,8 @@ fn stage_events(index: &Connection, through: i64) -> Result<()> {
                     Some(row)
                 }
                 Some(_) => {
-                    return Err(StoreError::Invalid(
-                        "a tombstoned Sinex event cannot be restored".into(),
+                    return Err(StoreError::internal(
+                        "a tombstoned Sinex event cannot be restored",
                     ));
                 }
                 None => None,
@@ -453,7 +449,7 @@ pub(crate) fn material_at(
     start: u64,
 ) -> Result<Option<super::SourceLocation>> {
     let start = i64::try_from(start).map_err(|_| {
-        StoreError::Invalid("a source record position exceeds SQLite's signed integer range".into())
+        StoreError::internal("a source record position exceeds SQLite's signed integer range")
     })?;
     Ok(index.query_row("SELECT id,offset,blob_offset FROM source_material WHERE input=?1 AND chain=?2 AND offset<=?3 AND (offset+source_length>?3 OR (source_length=0 AND offset=?3)) ORDER BY offset DESC LIMIT 1",params![input,chain,start],|row|Ok(super::SourceLocation{material:row.get(0)?,anchor:(start-row.get::<_,i64>(1)?+row.get::<_,i64>(2)?) as u64})).optional()?)
 }
@@ -633,11 +629,12 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
     let descriptors = material.descriptors()?;
     let (input, chain, offset, source_length, blob_offset) = match product {
         Product::Input { rows, .. } => {
-            let first = rows.extents.first().ok_or_else(|| {
-                StoreError::Invalid("a material input has no source extent".into())
-            })?;
+            let first = rows
+                .extents
+                .first()
+                .ok_or_else(|| StoreError::internal("a material input has no source extent"))?;
             let blob_offset = i64::try_from(material.offset_of(&rows.extents)?).map_err(|_| {
-                StoreError::Invalid("material offset exceeds the source catalog range".into())
+                StoreError::internal("material offset exceeds the source catalog range")
             })?;
             (
                 Some(rows.input.as_str()),
@@ -649,9 +646,8 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
         }
         _ => (None, None, None, None, 0),
     };
-    let length = i64::try_from(material.length).map_err(|_| {
-        StoreError::Invalid("material length exceeds the source catalog range".into())
-    })?;
+    let length = i64::try_from(material.length)
+        .map_err(|_| StoreError::internal("material length exceeds the source catalog range"))?;
     tx.execute("INSERT OR REPLACE INTO source_material(id,event,input,chain,offset,length,hash,source_length,blob_offset) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",params![material.id,event,input,chain,offset,length,&material.hash.0[..],source_length,blob_offset])?;
     // Source extents cite the blobs that hold the bytes: the material's own,
     // or its chunks'.
@@ -660,8 +656,8 @@ fn store_material(tx: &Connection, event: &str, product: &Product) -> Result<()>
             i64::try_from(descriptor.decoded_len),
             i64::try_from(descriptor.len),
         ) else {
-            return Err(StoreError::Invalid(
-                "extent length exceeds the source catalog range".into(),
+            return Err(StoreError::internal(
+                "extent length exceeds the source catalog range",
             ));
         };
         tx.execute("INSERT INTO source_blob(hash,size,stored_size,storage) VALUES (?1,?2,?3,?4) ON CONFLICT(hash) DO UPDATE SET storage=excluded.storage,stored_size=excluded.stored_size",params![&descriptor.hash.0[..],size,stored,descriptor.encode()])?;

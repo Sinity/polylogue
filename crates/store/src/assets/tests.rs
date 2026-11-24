@@ -89,7 +89,7 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
         );
         assert!(matches!(
             reader.attachment_range(&asset, asset.size..asset.size + 1),
-            Err(StoreError::Invalid(message)) if message == "attachment range is outside the stored bytes"
+            Err(StoreError::StoredValue { column: None, reason }) if reason == "attachment range is outside the stored bytes"
         ));
         asset
     };
@@ -244,7 +244,7 @@ fn member_discovery_filters_before_decoding_and_propagates_visitor_refusal() {
     assert_eq!(selected, vec!["member-a"]);
     assert!(matches!(
         visit_import_members(&conn, "source_", 0, Some("other"), |_| Ok(())),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::Internal(_))
     ));
     let mut visited = Vec::new();
     let error = visit_import_members(&conn, "source_", 0, None, |source| {

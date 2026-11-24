@@ -268,7 +268,7 @@ fn annotation_checks_rubric_and_pass_before_storing() {
     write_one(&conn, "allowed", annotation.clone(), 3);
     annotation.value = Some(json!({"value":4}));
     assert!(
-        matches!(write(&conn,&request("refused"),&[annotation.clone()],4,&|_| Ok(None),SettingMode::Standalone),Err(StoreError::Invalid(message)) if message == "not_allowed_by_rubric: field value")
+        matches!(write(&conn,&request("refused"),&[annotation.clone()],4,&|_| Ok(None),SettingMode::Standalone),Err(StoreError::Refused(Reason::NotAllowedByRubric { key, part })) if key == "grade" && part == "this value")
     );
     annotation.value = Some(json!({"value":2,"confidence":0.5}));
     assert!(matches!(
@@ -280,7 +280,7 @@ fn annotation_checks_rubric_and_pass_before_storing() {
             &|_| Ok(None),
             SettingMode::Standalone
         ),
-        Err(StoreError::Invalid(message)) if message == "not_allowed_by_rubric: confidence"
+        Err(StoreError::Refused(Reason::NotAllowedByRubric { key, part })) if key == "grade" && part == "a confidence"
     ));
     assert!(get(&conn, "refused").unwrap().is_none());
 }
@@ -486,9 +486,10 @@ fn accepting_withdrawal_refuses_a_cycle_closed_by_an_imported_forward_link() {
             targets: vec![reference("annotation:imported")],
             reason: None,
         };
-        assert!(
-            matches!(crate::user_writes::apply(&tx, &local, 2), Err(StoreError::Invalid(message)) if message.contains("form a cycle"))
-        );
+        assert!(matches!(
+            crate::user_writes::apply(&tx, &local, 2),
+            Err(StoreError::Refused(Reason::WithdrawalCycle { .. }))
+        ));
         // The accepting writer rolls back the request and every proposed fact.
     }
     assert!(get(&conn, "local").unwrap().is_none());

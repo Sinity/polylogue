@@ -86,7 +86,7 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
             matches!(reader.record_chain(&Reference::parse("block:claude-code:trace-p1#99").unwrap()),Err(StoreError::ReferenceUnavailable{reason,..}) if reason=="the original block is unavailable")
         );
         assert!(
-            matches!(reader.record_chain(&Reference::parse("span:message:claude-code:trace-p1#c=0-99").unwrap()),Err(StoreError::Invalid(reason)) if reason=="span bounds exceed the source text")
+            matches!(reader.record_chain(&Reference::parse("span:message:claude-code:trace-p1#c=0-99").unwrap()),Err(StoreError::Refused(polylogue_model::Reason::BadSpan { problem })) if problem=="span bounds exceed the source text")
         );
         assert!(
             reader

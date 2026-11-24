@@ -11,7 +11,7 @@ fn positive(value: Option<i64>) -> Result<Option<u64>> {
             u64::try_from(value)
                 .ok()
                 .filter(|n| *n > 0)
-                .or_invalid("invalid stored commit position")
+                .or_stored("invalid stored commit position")
         })
         .transpose()
 }
@@ -48,13 +48,15 @@ impl Reader<'_> {
         };
         match positive(committed)? {
             Some(committed) => Ok(Some(committed)),
-            None => self.source_commit(
-                &input,
-                chain,
-                Some(u64::try_from(end).map_err(|_| {
-                    StoreError::Invalid("negative document source coordinate".into())
-                })?),
-            ),
+            None => {
+                self.source_commit(
+                    &input,
+                    chain,
+                    Some(u64::try_from(end).map_err(|_| {
+                        StoreError::stored_data("negative document source coordinate")
+                    })?),
+                )
+            }
         }
     }
 

@@ -71,10 +71,9 @@ impl Reader<'_> {
                 format!("?{}", params.len())
             },
         )
-        .or_invalid("a message range has message membership")?;
-        let from = i64::try_from(from).map_err(|_| {
-            StoreError::Invalid("range ordinal exceeds SQLite's integer range".into())
-        })?;
+        .or_stored("a message range has message membership")?;
+        let from = i64::try_from(from)
+            .map_err(|_| StoreError::stored_data("range ordinal exceeds SQLite's integer range"))?;
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(&format!(
             "SELECT m.id FROM message m WHERE m.pk IN ({members}) AND m.duplicate_of IS NULL

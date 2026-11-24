@@ -260,14 +260,14 @@ fn inline_page(
             .size
             .is_some_and(|expected| expected != size)
         {
-            return Err(polylogue_store::StoreError::Invalid(
-                "inline attachment size differs from its source".into(),
+            return Err(polylogue_store::StoreError::internal(
+                "inline attachment size differs from its source",
             ));
         }
         let offset = cursor.as_ref().map_or(0, |cursor| cursor.offset);
         if offset > size || offset == size && offset != 0 {
-            return Err(polylogue_store::StoreError::Invalid(
-                "inline attachment cursor is outside its bytes".into(),
+            return Err(polylogue_store::StoreError::internal(
+                "inline attachment cursor is outside its bytes",
             ));
         }
         // Initial availability requires the complete stored body, including
@@ -313,8 +313,8 @@ fn inline_page(
             return Err(error.into());
         }
         if bytes.len() as u64 != end - offset {
-            return Err(polylogue_store::StoreError::Invalid(
-                "inline attachment range is incomplete".into(),
+            return Err(polylogue_store::StoreError::internal(
+                "inline attachment range is incomplete",
             ));
         }
         let next = if end < size {

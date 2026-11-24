@@ -41,12 +41,12 @@ pub(crate) fn saved_definition(
     let name = fact
         .key
         .clone()
-        .ok_or_else(|| crate::StoreError::invalid("saved definition has no name"))?;
+        .ok_or_else(|| crate::StoreError::stored_data("saved definition has no name"))?;
     let values::Value::SavedQuery(value) = fact
         .validate()
-        .map_err(|error| crate::StoreError::invalid(error.to_string()))?
+        .map_err(|error| crate::StoreError::stored_data(error.to_string()))?
     else {
-        return Err(crate::StoreError::invalid(
+        return Err(crate::StoreError::stored_data(
             "saved definition has another value shape",
         ));
     };
@@ -78,14 +78,14 @@ pub(crate) fn saved_family(conn: &Connection, root: &str) -> Result<SavedQuerySn
     let mut definitions = SavedQuerySnapshot::default();
     for reference in heads {
         let Reference::Annotation(revision) = reference else {
-            return Err(crate::StoreError::invalid(
+            return Err(crate::StoreError::stored_data(
                 "saved definition head is not an annotation",
             ));
         };
         let id = revision
             .revision
             .as_ref()
-            .ok_or_else(|| crate::StoreError::invalid("saved definition head is not exact"))?;
+            .ok_or_else(|| crate::StoreError::stored_data("saved definition head is not exact"))?;
         let row = get(conn, id)?.ok_or_else(|| {
             StoreError::NotFound(Reference::Annotation(revision.clone()).to_string())
         })?;
@@ -188,7 +188,7 @@ fn revision_parents(row: &Annotation) -> Result<Vec<&RevisionReference>> {
         .filter(|link| link.role == LinkRole::Revises)
         .map(|link| match &link.reference {
             Reference::Annotation(parent) if parent.revision.is_some() => Ok(parent),
-            _ => Err(StoreError::invalid(format!(
+            _ => Err(StoreError::stored_data(format!(
                 "saved revision {} has a non-exact parent",
                 row.fact.id
             ))),
@@ -227,7 +227,7 @@ fn numbered_revisions(
             }
             let row = &rows[parent_id];
             if row.fact.root != parent.root || row.fact.kind != AnnotationKind::SavedQuery {
-                return Err(StoreError::invalid(format!(
+                return Err(StoreError::stored_data(format!(
                     "saved-query parent {} does not name its recorded saved revision",
                     Reference::Annotation(parent)
                 )));
@@ -255,7 +255,7 @@ fn numbered_revisions(
     while let Some(id) = ready.pop_first() {
         let next = levels[&id]
             .checked_add(1)
-            .ok_or_else(|| StoreError::invalid("saved revision number is out of range"))?;
+            .ok_or_else(|| StoreError::stored_data("saved revision number is out of range"))?;
         for child in children.get(&id).into_iter().flatten() {
             let level = levels.entry(child.clone()).or_insert(1);
             *level = (*level).max(next);
@@ -273,7 +273,7 @@ fn numbered_revisions(
             .map(|(id, _)| rows[id].fact.reference().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        return Err(StoreError::invalid(format!(
+        return Err(StoreError::stored_data(format!(
             "saved-query revision links form a cycle: {cycle}"
         )));
     }
@@ -303,16 +303,22 @@ pub(crate) fn saved_revision_number(
     conn: &Connection,
     reference: &RevisionReference,
 ) -> Result<u32> {
-    let id = reference.revision.as_ref().ok_or_else(|| {
-        StoreError::invalid("saved revision numbering requires an exact revision")
-    })?;
+    let id =
+        reference
+            .revision
+            .as_ref()
+            .ok_or_else(|| polylogue_model::Reason::NotAnExactRevision {
+                reference: Reference::Annotation(reference.clone()).to_string(),
+            })?;
     let row = get(conn, id)?.ok_or_else(|| {
         StoreError::NotFound(Reference::Annotation(reference.clone()).to_string())
     })?;
     if row.fact.root != reference.root || row.fact.kind != AnnotationKind::SavedQuery {
-        return Err(StoreError::invalid(
-            "reference is not the recorded saved revision",
-        ));
+        return Err(polylogue_model::Reason::WrongKind {
+            reference: Reference::Annotation(reference.clone()).to_string(),
+            expected: "saved query revision".into(),
+        }
+        .into());
     }
     numbered_revisions(conn, vec![row])?
         .into_iter()
@@ -366,7 +372,7 @@ pub(crate) fn named_revision(
     };
     saved_definition(&row.fact, &[])?
         .map(|(_, definition)| definition)
-        .ok_or_else(|| StoreError::invalid("numbered revision is not a saved query"))
+        .ok_or_else(|| StoreError::stored_data("numbered revision is not a saved query"))
 }
 
 impl crate::Reader<'_> {
@@ -396,7 +402,7 @@ impl crate::Reader<'_> {
             .iter()
             .map(|query| {
                 query.strip_prefix("query:").ok_or_else(|| {
-                    StoreError::invalid(format!("dependent {query} is not a query identity"))
+                    StoreError::stored_data(format!("dependent {query} is not a query identity"))
                 })
             })
             .collect::<Result<Vec<_>>>()?;
@@ -411,7 +417,7 @@ impl crate::Reader<'_> {
             let current = named_current(conn, AnnotationKind::SavedQuery, &name)?;
             if let [row] = current.as_slice() {
                 let (_, definition) = saved_definition(&row.fact, &[])?
-                    .ok_or_else(|| StoreError::invalid("dependent query has another kind"))?;
+                    .ok_or_else(|| StoreError::stored_data("dependent query has another kind"))?;
                 definitions.push(polylogue_model::saved_queries::DependentSavedQuery {
                     name,
                     revision: definition.reference,
@@ -438,7 +444,7 @@ impl crate::Reader<'_> {
         let mut hashes = std::collections::BTreeSet::new();
         for (number, row) in rows {
             let (_, definition) = saved_definition(&row.fact, &[])?
-                .ok_or_else(|| StoreError::invalid("saved history contains another kind"))?;
+                .ok_or_else(|| StoreError::stored_data("saved history contains another kind"))?;
             let hash = format!("query:{}", definition.value.hash);
             hashes.insert(hash.clone());
             revisions.push(SavedRevision {
@@ -466,9 +472,9 @@ impl crate::Reader<'_> {
                 let (id, rows, at) = row?;
                 Ok(KeptSummary {
                     result: format!("result:{id}"),
-                    rows: rows.ok_or_else(|| StoreError::invalid("kept result has no rows"))?,
+                    rows: rows.ok_or_else(|| StoreError::stored_data("kept result has no rows"))?,
                     at: Timestamp::from_unix_ms(at)
-                        .ok_or_else(|| StoreError::invalid("kept time is out of range"))?,
+                        .ok_or_else(|| StoreError::stored_data("kept time is out of range"))?,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

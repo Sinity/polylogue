@@ -321,7 +321,7 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
     let manual_tokens = (crate::manual::text().len() / 4) as u32;
     assert!(matches!(
         start(command_surface::TokenBudget::Tokens(manual_tokens)),
-        Err(StoreError::Invalid(message)) if message.contains("required header")
+        Err(StoreError::Refused(polylogue_model::Reason::BudgetTooSmall { part })) if part == "the required header"
     ));
     let visible = visible_context(&p.text);
     let t = &visible;

@@ -54,7 +54,7 @@ impl CatalogPointer {
         let parent = self
             .path
             .parent()
-            .or_invalid("completion catalog has no parent")?;
+            .or_internal("completion catalog has no parent")?;
         let resumed = match CatalogWriter::resume(&parent.join(&target), current, catalog, machine)
         {
             Ok(resumed) => resumed,
@@ -72,7 +72,10 @@ impl CatalogPointer {
                                 | rusqlite::ErrorCode::CannotOpen
                         )
                     ),
-                    StoreError::Json(_) | StoreError::Invalid(_) => true,
+                    StoreError::Json(_)
+                    | StoreError::Invalid(_)
+                    | StoreError::Internal(_)
+                    | StoreError::StoredValue { .. } => true,
                     _ => false,
                 };
                 if !damaged {
@@ -129,7 +132,7 @@ impl CatalogPointer {
             let parent = self
                 .path
                 .parent()
-                .or_invalid("completion catalog has no parent")?;
+                .or_internal("completion catalog has no parent")?;
             let temporary = parent.join(format!(".catalog-pointer-{}", uuid::Uuid::now_v7()));
             symlink(name, &temporary)?;
             let result = (|| {

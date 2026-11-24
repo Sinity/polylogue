@@ -302,7 +302,7 @@ impl Engine {
                 reader
                     .input_progress(&plan.input.id)?
                     .ok_or_else(|| {
-                        polylogue_store::StoreError::invalid(
+                        polylogue_store::StoreError::internal(
                             "a stored bundle has no committed source revision",
                         )
                     })?

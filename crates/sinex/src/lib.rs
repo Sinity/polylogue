@@ -69,9 +69,9 @@ impl From<Error> for polylogue_store::StoreError {
     fn from(error: Error) -> Self {
         match error {
             Error::Store(error) => error,
-            Error::Invalid(reason) => polylogue_store::StoreError::invalid(reason),
+            Error::Invalid(reason) => polylogue_store::StoreError::internal(reason),
             Error::Refused { name, reason } => {
-                polylogue_store::StoreError::invalid(format!("{name}: {reason}"))
+                polylogue_model::Reason::SinexRefused { name, reason }.into()
             }
             other => polylogue_store::StoreError::Sinex(other.to_string()),
         }

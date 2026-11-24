@@ -116,7 +116,7 @@ impl Sinex {
         {
             members(&mut |mut input, body| {
                 if ordinal >= plan.count {
-                    return Err(polylogue_store::StoreError::invalid(
+                    return Err(polylogue_store::StoreError::internal(
                         "capture read emitted more members than declared",
                     ));
                 }
@@ -134,7 +134,7 @@ impl Sinex {
                     }
                 };
                 if !named {
-                    return Err(polylogue_store::StoreError::invalid(
+                    return Err(polylogue_store::StoreError::internal(
                         "captured body differs from its declared identity",
                     ));
                 }
@@ -142,14 +142,14 @@ impl Sinex {
                     .raw_range
                     .is_some_and(|range| range.length().ok() != Some(input.length))
                 {
-                    return Err(polylogue_store::StoreError::invalid(
+                    return Err(polylogue_store::StoreError::internal(
                         "captured body differs from its original byte range",
                     ));
                 }
                 if let Some(base) = &input.base
                     && !plan.bases.iter().any(|expected| expected == base)
                 {
-                    return Err(polylogue_store::StoreError::invalid(
+                    return Err(polylogue_store::StoreError::internal(
                         "capture read member has no declared source base",
                     ));
                 }
@@ -181,7 +181,7 @@ impl Sinex {
                 };
                 if let Some(kept) = kept {
                     let Capture::Input(original) = kept else {
-                        return Err(polylogue_store::StoreError::invalid(
+                        return Err(polylogue_store::StoreError::internal(
                             "capture read retry replaced a source capture",
                         ));
                     };
@@ -237,7 +237,7 @@ impl Sinex {
                 Ok(())
             })?;
             if ordinal != plan.count {
-                return Err(polylogue_store::StoreError::invalid(
+                return Err(polylogue_store::StoreError::internal(
                     "capture read emitted fewer members than declared",
                 )
                 .into());

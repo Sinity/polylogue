@@ -551,8 +551,9 @@ fn hash_prefixes(
                 .expect("buffer length fits");
             let n = match reader.read(&mut buffer[..want]) {
                 Ok(0) => {
-                    let error =
-                        StoreError::Invalid(format!("stored bytes end at {at}, before {length}"));
+                    let error = StoreError::stored_data(format!(
+                        "stored bytes end at {at}, before {length}"
+                    ));
                     return Ok((hashes, at, Some(error)));
                 }
                 Ok(n) => n,

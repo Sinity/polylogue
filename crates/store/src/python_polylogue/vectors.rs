@@ -72,10 +72,10 @@ pub fn request_address(model: &str, nfc_text: &str) -> [u8; 32] {
 impl VectorStore {
     pub fn open(path: &Path, scratch: &Path) -> Result<Self> {
         if !path.is_file() {
-            return Err(StoreError::Invalid(format!(
-                "{} is not a file: name one of Python Polylogue's vector stores",
-                path.display()
-            )));
+            return Err(polylogue_model::Reason::NotAFile {
+                path: path.display().to_string(),
+            }
+            .into());
         }
         let mut copies = None;
         let conn = open_source(path, &mut copies, scratch)?;
@@ -97,10 +97,10 @@ impl VectorStore {
         } else if backed && has("message_embeddings_meta", &BY_MESSAGE) {
             Layout::ByMessage
         } else {
-            return Err(StoreError::Invalid(format!(
-                "{} is not one of Python Polylogue's vector stores: it has no message_embeddings tables in either layout",
-                path.display()
-            )));
+            return Err(polylogue_model::Reason::NotAVectorStore {
+                path: path.display().to_string(),
+            }
+            .into());
         };
         let application: i64 = conn.pragma_query_value(None, "application_id", |r| r.get(0))?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -110,8 +110,8 @@ impl VectorStore {
                 || layout != Layout::Addressed
                 || !has("message_embeddings_meta", &["request_text"]))
         {
-            return Err(StoreError::Invalid(
-                "unsupported prepared vector source format".into(),
+            return Err(StoreError::internal(
+                "unsupported prepared vector source format",
             ));
         }
         conn.execute_batch("BEGIN")?;
@@ -130,8 +130,8 @@ impl VectorStore {
     /// Every vector's identity in an addressed store.
     pub fn addressed(&self) -> Result<Vec<Addressed>> {
         if self.layout != Layout::Addressed {
-            return Err(StoreError::Invalid(
-                "a store by message names no addresses".into(),
+            return Err(StoreError::stored_data(
+                "a store by message names no addresses",
             ));
         }
         let mut statement = self.conn.prepare(if self.prepared {
@@ -147,20 +147,22 @@ impl VectorStore {
             let (address, model, dims, embedded_at, request) = row?;
             let address: [u8; 32] = address
                 .try_into()
-                .or_invalid("a vector address is not 32 bytes")?;
+                .or_stored("a vector address is not 32 bytes")?;
             let dims = usize::try_from(dims)
                 .ok()
                 .filter(|dims| *dims > 0)
-                .ok_or_else(|| StoreError::Invalid(format!("dimension {dims} is not a size")))?;
+                .ok_or_else(|| {
+                    StoreError::stored_data(format!("dimension {dims} is not a size"))
+                })?;
             let normalized_hash = if self.prepared {
                 let request = request.ok_or_else(|| {
-                    StoreError::Invalid("prepared vector has no request text".into())
+                    StoreError::stored_data("prepared vector has no request text")
                 })?;
                 if !unicode_normalization::is_nfc(&request)
                     || address != request_address(&model, &request)
                 {
-                    return Err(StoreError::Invalid(
-                        "prepared vector request does not prove its address".into(),
+                    return Err(StoreError::stored_data(
+                        "prepared vector request does not prove its address",
                     ));
                 }
                 Some(crate::encoding::normalized_text_hash(&request))
@@ -211,8 +213,9 @@ impl VectorStore {
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
             let chunk: i64 = row.get(1)?;
-            let offset = usize::try_from(row.get::<_, i64>(2)?)
-                .map_err(|_| StoreError::Invalid(format!("vector {id} has a negative offset")))?;
+            let offset = usize::try_from(row.get::<_, i64>(2)?).map_err(|_| {
+                StoreError::stored_data(format!("vector {id} has a negative offset"))
+            })?;
             if current.as_ref().is_none_or(|(held, _, _)| *held != chunk) {
                 let (validity, vectors) =
                     chunk_of.query_row([chunk], |r| Ok((r.get(0)?, r.get(1)?)))?;
@@ -226,7 +229,7 @@ impl VectorStore {
             match (valid, values) {
                 (true, Some(values)) => visit(&id, values)?,
                 _ => {
-                    return Err(StoreError::Invalid(format!(
+                    return Err(StoreError::stored_data(format!(
                         "vector {id} is not held at its recorded place"
                     )));
                 }

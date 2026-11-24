@@ -260,3 +260,64 @@ fn a_tag_over_no_matching_rows_keeps_the_empty_outcome_without_a_step_write() {
             .is_none()
     );
 }
+
+/// The refusals docs/annotations.md names reach the caller through the
+/// write path with their reason's code and sentence.
+#[test]
+fn annotation_refusals_carry_their_documented_reason() {
+    use polylogue_model::Reason;
+    let d = test_daemon::start("the first synthetic session");
+    let revisions = |d: &TestDaemon| {
+        Call::new("status", json!({}))
+            .answer(&d.daemon)
+            .value()
+            .unwrap()["store"]["revisions"]
+            .as_u64()
+            .unwrap()
+    };
+    let before = revisions(&d);
+    std::fs::write(
+        d.home.join(".claude/projects/-p/s2.jsonl"),
+        polylogue_testkit::claude_user("u2", "s2", "the second synthetic session"),
+    )
+    .unwrap();
+    d.wait_for(|status| {
+        status["store"]["revisions"].as_u64().unwrap() > before
+            && status["store"]["search_pending"] == 0
+    });
+    let both: Vec<String> = vec![
+        "session:claude-code:s1".into(),
+        "session:claude-code:s2".into(),
+    ];
+    let bulk = crate::test_answers::refusal(
+        command(
+            "refused-bulk",
+            &both,
+            json!({"verb":"note","as":"title","text":"one title"}),
+        )
+        .answer(&d.daemon),
+    );
+    let reason = Reason::SingleValuedBulk {
+        kind: "title".into(),
+        rows: 2,
+    };
+    assert_eq!(
+        (bulk.code.as_deref(), bulk.message.as_str()),
+        (Some(reason.code().as_str()), reason.to_string().as_str())
+    );
+    let shape = crate::test_answers::refusal(
+        command(
+            "refused-shape",
+            &both[..1],
+            json!({"verb":"note","as":"outcome","text":"great"}),
+        )
+        .answer(&d.daemon),
+    );
+    assert_eq!(shape.code.as_deref(), Some("bad_value"), "{shape:?}");
+    assert!(
+        shape
+            .message
+            .starts_with("the outcome value is malformed: "),
+        "{shape:?}"
+    );
+}

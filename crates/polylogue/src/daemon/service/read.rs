@@ -258,7 +258,7 @@ impl ReadServices for Daemon {
 }
 
 fn failure(error: Error, request: &ReadRequest) -> Failure {
-    let stale = error.code() == "stale_cursor";
+    let stale = error.code() == polylogue_model::Code::StaleCursor;
     let mut failure = Failure::from(error);
     if stale {
         failure.error.hint = None;

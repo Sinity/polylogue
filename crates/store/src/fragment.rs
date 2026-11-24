@@ -20,7 +20,7 @@ struct PreparedFragment {
 pub(crate) fn version_key(version: &TextSourceVersion) -> Result<String> {
     let bytes =
         canonical_json::canonical_json(version).map_err(crate::encoding::identity_encoding)?;
-    String::from_utf8(bytes).map_err(crate::StoreError::invalid)
+    String::from_utf8(bytes).map_err(crate::StoreError::internal)
 }
 
 impl PreparedFragments {
@@ -30,15 +30,15 @@ impl PreparedFragments {
             .fragments
             .iter()
             .map(|row| {
-                row.record.validate().map_err(crate::StoreError::invalid)?;
+                row.record.validate().map_err(crate::StoreError::internal)?;
                 if row.offset > row.end {
-                    return Err(StoreError::Invalid(
-                        "receiving fragment byte range ends before it starts".into(),
+                    return Err(StoreError::internal(
+                        "receiving fragment byte range ends before it starts",
                     ));
                 }
                 if i64::try_from(row.end).is_err() {
-                    return Err(StoreError::Invalid(
-                        "receiving fragment byte range exceeds SQLite's integer range".into(),
+                    return Err(StoreError::internal(
+                        "receiving fragment byte range exceeds SQLite's integer range",
                     ));
                 }
                 let hash = canonical_json::canonical_hash(
@@ -59,14 +59,12 @@ impl PreparedFragments {
 
     pub(crate) fn validate(&self, output: &Output) -> Result<()> {
         if self.0.len() != output.fragments.len() {
-            return Err(StoreError::Invalid(
-                "fragment rows were not prepared".into(),
-            ));
+            return Err(StoreError::internal("fragment rows were not prepared"));
         }
         for (prepared, row) in self.0.iter().zip(&output.fragments) {
             if &prepared.row != row {
-                return Err(StoreError::Invalid(
-                    "prepared fragment differs from its reading".into(),
+                return Err(StoreError::internal(
+                    "prepared fragment differs from its reading",
                 ));
             }
         }
@@ -83,8 +81,8 @@ impl PreparedFragments {
     ) -> Result<()> {
         for value in &self.0 {
             if value.row.end > through {
-                return Err(StoreError::Invalid(
-                    "fragment extends beyond its receiving reading".into(),
+                return Err(StoreError::internal(
+                    "fragment extends beyond its receiving reading",
                 ));
             }
             let fragment = &value.row.record.fragment;

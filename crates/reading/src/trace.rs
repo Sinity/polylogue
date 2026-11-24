@@ -1,5 +1,6 @@
 //! A trace is one presentation of recorded source evidence, through normal read paging.
 use super::*;
+use polylogue_model::Reason;
 use polylogue_model::{BlobHash, Reference};
 
 fn not_built(target: &str) -> Error {
@@ -20,7 +21,10 @@ fn prepare(
     if request.target.starts_with("file:") {
         return Err(not_built("file-line lineage"));
     }
-    let item = Reference::parse(&request.target).map_err(Error::bad_request)?;
+    let item = Reference::parse(&request.target).map_err(|error| Reason::BadReference {
+        text: request.target.clone(),
+        problem: error.to_string(),
+    })?;
     let supported = match &item {
         Reference::Message(_) | Reference::Block { .. } | Reference::ToolCall(..) => true,
         Reference::Span { container, .. } => matches!(

@@ -33,7 +33,13 @@ fn links_over_a_corrupt_stored_link_kind_is_a_store_failure() {
         .unwrap();
     let error = export(&fixture).unwrap_err();
     assert!(
-        matches!(error, crate::StoreError::StoredValue { column: 0, .. }),
+        matches!(
+            error,
+            crate::StoreError::StoredValue {
+                column: Some(0),
+                ..
+            }
+        ),
         "{error:?}"
     );
     assert_eq!(error.code(), polylogue_model::Code::Store);

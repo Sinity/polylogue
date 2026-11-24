@@ -167,7 +167,7 @@ fn many_segment_blobs_stay_compressed_and_clones_share_one_extent_view() {
         .read_range(&w.store, 500 * 16384, 500 * 16384 + 8)
         .unwrap_err();
     assert!(
-        matches!(&error, StoreError::Invalid(text) if text == "stored extents changed since the chain was loaded"),
+        matches!(&error, StoreError::Internal(text) if text == "stored extents changed since the chain was loaded"),
         "{error:?}"
     );
     let weak = Arc::downgrade(extents);
@@ -224,15 +224,21 @@ fn invalid_extent_metadata_refuses_capture_without_panicking() {
             // A zero-length extent is skipped, so the range has a gap.
             ("length", 0) => assert!(matches!(
                 result.unwrap().read_range(&w.store, 0, 3),
-                Err(StoreError::Invalid(text)) if text == "stored extent gap"
+                Err(StoreError::StoredValue { column: None, reason }) if reason == "stored extent gap"
             )),
             // A negative offset does not decode as an unsigned column.
             ("blob_offset", -1) => assert!(
-                matches!(result, Err(StoreError::StoredValue { column: 3, .. })),
+                matches!(
+                    result,
+                    Err(StoreError::StoredValue {
+                        column: Some(3),
+                        ..
+                    })
+                ),
                 "{column}={value}"
             ),
             _ => assert!(
-                matches!(&result, Err(StoreError::Invalid(text)) if text == "invalid stored extent bounds"),
+                matches!(&result, Err(StoreError::StoredValue { column: None, reason }) if reason == "invalid stored extent bounds"),
                 "{column}={value}"
             ),
         }
@@ -328,7 +334,7 @@ fn a_poisoned_extent_list_returns_a_typed_error() {
         .is_err()
     );
     let error = chain.read_range(&w.store, 0, 3).unwrap_err();
-    assert!(matches!(error, StoreError::Invalid(text) if text == "stored extents lock poisoned"));
+    assert!(matches!(error, StoreError::Internal(text) if text == "stored extents lock poisoned"));
 }
 
 #[test]

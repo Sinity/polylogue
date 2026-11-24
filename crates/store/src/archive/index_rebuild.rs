@@ -80,7 +80,7 @@ pub(crate) fn reason(error: &StoreError) -> Option<IndexRebuildReason> {
 /// Renames the primary cache (closed by the caller after reading `previous`)
 /// and any write-ahead files it left beside it, under its schema identity.
 pub(crate) fn set_aside(index: &Path, previous: &str) -> Result<()> {
-    let dir = index.parent().or_invalid("index.db has no directory")?;
+    let dir = index.parent().or_internal("index.db has no directory")?;
     let target = dir.join(file_name(previous));
     for suffix in ["-wal", "-shm", ""] {
         let mut from = index.as_os_str().to_owned();

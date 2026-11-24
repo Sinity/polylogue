@@ -186,7 +186,7 @@ fn previous_coordinates_invert_the_existing_session_family_order() {
             previous_record(&reader, &reference, false, &stale)
                 .unwrap_err()
                 .code(),
-            "stale_cursor"
+            polylogue_model::Code::StaleCursor
         );
     }
 }
@@ -242,7 +242,7 @@ fn singleton_and_empty_session_edges_have_no_shifted_fallback() {
         )
         .unwrap_err()
         .code(),
-        "stale_cursor"
+        polylogue_model::Code::StaleCursor
     );
     let direct = read_target("message:test:present").unwrap();
     assert_eq!(
@@ -257,7 +257,7 @@ fn singleton_and_empty_session_edges_have_no_shifted_fallback() {
         previous_record(&reader, &direct, false, &at(Message, 1))
             .unwrap_err()
             .code(),
-        "stale_cursor"
+        polylogue_model::Code::StaleCursor
     );
 }
 
@@ -301,7 +301,7 @@ fn lineage_issue_coordinates_resume_and_reverse_at_both_family_boundaries() {
         previous_record(&reader, &reference, false, &at(LinkIssue, 0))
             .unwrap_err()
             .code(),
-        "stale_cursor"
+        polylogue_model::Code::StaleCursor
     );
     let mut observed = Vec::new();
     crate::records::reference(&reader, &reference, true, Some(&at(LinkIssue, 0)), &mut |record, _, position| {

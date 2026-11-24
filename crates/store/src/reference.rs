@@ -40,7 +40,10 @@ fn unavailable(reference: &Reference, reason: &str) -> StoreError {
     }
 }
 fn span_error(error: SpanError) -> StoreError {
-    StoreError::Invalid(error.to_string())
+    polylogue_model::Reason::BadSpan {
+        problem: error.to_string(),
+    }
+    .into()
 }
 
 impl Reader<'_> {
@@ -60,7 +63,7 @@ impl Reader<'_> {
             &mut |text| {
                 self.check()?;
                 bytes = bytes.checked_add(text.len() as u64).ok_or_else(|| {
-                    StoreError::Invalid("reference text length exceeds its address space".into())
+                    StoreError::internal("reference text length exceeds its address space")
                 })?;
                 let flow = visit(text)?;
                 stopped = flow.is_break();
@@ -248,7 +251,7 @@ impl<'a> ReferenceText<'a> {
             if let Some(Reference::Annotation(head)) = heads.first() {
                 head.revision
                     .clone()
-                    .or_invalid("annotation head names no revision")?
+                    .or_stored("annotation head names no revision")?
             } else {
                 if crate::annotations::family_present(self.authored, &revision.root)? {
                     return Err(unavailable(
@@ -267,7 +270,7 @@ impl<'a> ReferenceText<'a> {
         annotation
             .fact
             .validate()
-            .map_err(crate::StoreError::invalid)?;
+            .map_err(crate::StoreError::stored_data)?;
         let Some(text) = annotation.fact.text() else {
             return Ok(TextState::NotApplicable);
         };
@@ -293,9 +296,7 @@ impl<'a> ReferenceText<'a> {
             return Ok(false);
         };
         if first.0 != last.0 {
-            return Err(StoreError::Invalid(
-                "a message range must stay within one physical session".into(),
-            ));
+            return Err(polylogue_model::Reason::RangeAcrossSessions {}.into());
         }
         if first.3 || last.3 {
             return Err(StoreError::ReferenceUnavailable {
@@ -304,9 +305,7 @@ impl<'a> ReferenceText<'a> {
             });
         }
         if (&first.1, &first.2) > (&last.1, &last.2) {
-            return Err(StoreError::Invalid(
-                "message range ends before it starts".into(),
-            ));
+            return Err(polylogue_model::Reason::RangeEndsBeforeStart {}.into());
         }
         const RANGE: &str = "m.session_pk=?1 AND m.duplicate_of IS NULL AND (m.session_order,m.id)>=(?2,?3) AND (m.session_order,m.id)<=(?4,?5)";
         let mut messages =
@@ -434,8 +433,8 @@ fn hash_source(read: impl FnOnce(&mut Visit<'_>) -> Result<TextState>) -> Result
 }
 fn pinned(original: &rusqlite::Connection) -> Result<()> {
     if original.is_autocommit() {
-        return Err(StoreError::Invalid(
-            "reference hashing requires a pinned original snapshot".into(),
+        return Err(StoreError::internal(
+            "reference hashing requires a pinned original snapshot",
         ));
     }
     Ok(())

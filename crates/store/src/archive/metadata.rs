@@ -32,7 +32,7 @@ pub(super) fn read(root: &Path) -> Result<Option<Mode>> {
     match fs::read(&path) {
         Ok(bytes) => serde_json::from_slice::<Metadata>(&bytes)
             .map(|metadata| Some(metadata.mode))
-            .map_err(|error| StoreError::Invalid(format!("{}: {error}", path.display()))),
+            .map_err(|error| StoreError::stored_data(format!("{}: {error}", path.display()))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error.into()),
     }
@@ -48,11 +48,14 @@ fn requested_mode(archive: &Archive) -> Mode {
 
 pub(super) fn check(archive: &Archive) -> Result<()> {
     match read(&archive.root)? {
-        Some(mode) if mode != requested_mode(archive) => Err(StoreError::Invalid(format!(
-            "archive {} is {mode}, but configuration requests {}; select its recorded mode or another archive",
-            archive.root.display(),
-            requested_mode(archive)
-        ))),
+        Some(mode) if mode != requested_mode(archive) => {
+            Err(polylogue_model::Reason::ArchiveModeMismatch {
+                archive: archive.root.display().to_string(),
+                recorded: mode.to_string(),
+                requested: requested_mode(archive).to_string(),
+            }
+            .into())
+        }
         Some(_) => Ok(()),
         // The index is derived and replaced when unreadable; only stores that
         // hold original bytes or paid vectors mark an older-format archive.

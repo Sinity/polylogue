@@ -2,7 +2,7 @@
 use super::Selection;
 use super::time::Party;
 use crate::session_sql;
-use crate::{Reader, Result, StoreError};
+use crate::{Reader, Result};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
@@ -55,11 +55,13 @@ pub fn fields(options: &str) -> Result<Vec<&str>> {
         options
     };
     let fields: Vec<_> = names.split(',').map(str::trim).collect();
-    if fields.iter().any(|f| !FIELDS.contains(f)) {
-        return Err(StoreError::Invalid(format!(
-            "compare fields: {}",
-            FIELDS.join(",")
-        )));
+    if let Some(unknown) = fields.iter().find(|f| !FIELDS.contains(f)) {
+        return Err(polylogue_model::Reason::UnknownChoice {
+            field: "compare".into(),
+            value: (*unknown).into(),
+            known: FIELDS.iter().collect(),
+        }
+        .into());
     }
     Ok(fields)
 }

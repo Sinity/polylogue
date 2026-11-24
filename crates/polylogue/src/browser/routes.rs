@@ -40,8 +40,25 @@ pub fn router(host: Arc<BrowserHost>) -> Router {
         .with_state(host)
 }
 
-fn refuse(status: StatusCode, error: &str, message: &str) -> HttpResponse {
-    (status, Json(json!({ "error": error, "message": message }))).into_response()
+fn refuse(status: StatusCode, code: polylogue_model::Code, message: &str) -> HttpResponse {
+    (
+        status,
+        Json(json!({ "error": code.as_str(), "message": message })),
+    )
+        .into_response()
+}
+
+/// A refusal with its typed reason beside its code and sentence.
+fn refuse_for(status: StatusCode, reason: polylogue_model::Reason) -> HttpResponse {
+    (
+        status,
+        Json(json!({
+            "error": reason.code().as_str(),
+            "message": reason.to_string(),
+            "reason": reason,
+        })),
+    )
+        .into_response()
 }
 
 /// A daemon failure with its shared HTTP status; a failure with no HTTP
@@ -52,11 +69,14 @@ fn refuse_with(failure: &command_surface::Failure) -> HttpResponse {
         .http_status()
         .and_then(|status| StatusCode::from_u16(status).ok())
         .unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
-    refuse(
+    (
         status,
-        failure.code.as_deref().unwrap_or_default(),
-        &failure.message,
+        Json(json!({
+            "error": failure.code.as_deref().unwrap_or_default(),
+            "message": failure.message,
+        })),
     )
+        .into_response()
 }
 
 /// Runs blocking work (files, the socket) off the async thread.
@@ -78,10 +98,9 @@ async fn ask(
         Some(answer) => {
             crate::protocol::into_value(answer).map_err(|failure| Box::new(refuse_with(&failure)))
         }
-        None => Err(Box::new(refuse(
+        None => Err(Box::new(refuse_for(
             StatusCode::SERVICE_UNAVAILABLE,
-            polylogue_model::Code::DaemonRequired.as_str(),
-            "the Polylogue daemon did not answer; it is stopped or busy",
+            polylogue_model::Reason::DaemonDidNotAnswer {},
         ))),
     }
 }
@@ -112,7 +131,7 @@ async fn reader(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
         Some(Ok(url)) => Json(json!({ "url": url })).into_response(),
         _ => refuse(
             StatusCode::SERVICE_UNAVAILABLE,
-            polylogue_model::Code::ReaderUnavailable.as_str(),
+            polylogue_model::Code::ReaderUnavailable,
             "no reader is running; start it with `polylogue web`",
         ),
     }
@@ -147,25 +166,22 @@ async fn store_capture(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
     let value: Value = match serde_json::from_slice(&body) {
         Ok(v @ Value::Object(_)) => v,
         _ => {
-            return refuse(
+            return refuse_for(
                 StatusCode::BAD_REQUEST,
-                "capture_not_json",
-                "a capture is one JSON object",
+                polylogue_model::Reason::CaptureNotJson {},
             );
         }
     };
     let Some((provider, conversation)) = capture_identity(&value) else {
-        return refuse(
+        return refuse_for(
             StatusCode::BAD_REQUEST,
-            "capture_names_no_conversation",
-            "a capture names session.provider and session.provider_session_id",
+            polylogue_model::Reason::CaptureNamesNoConversation {},
         );
     };
     if !holds_conversation(&value) {
-        return refuse(
+        return refuse_for(
             StatusCode::BAD_REQUEST,
-            "capture_has_no_conversation",
-            "a capture holds the provider's conversation JSON (raw_provider_payload) or session.turns",
+            polylogue_model::Reason::CaptureHasNoConversation {},
         );
     }
     let path = host.capture_log(&provider, &conversation);
@@ -180,12 +196,12 @@ async fn store_capture(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
         .into_response(),
         Some(Err(e)) => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "write_failed",
+            polylogue_model::Code::Io,
             &e.to_string(),
         ),
         None => refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "write_failed",
+            polylogue_model::Code::Io,
             "the write did not finish",
         ),
     }
@@ -202,16 +218,17 @@ async fn capture_files(State(host): State<Arc<BrowserHost>>, body: Bytes) -> Htt
     {
         Some(Ok(listed)) => listed,
         Some(Err(error)) => {
-            return refuse(
+            return refuse_for(
                 StatusCode::UNPROCESSABLE_ENTITY,
-                "capture_unreadable",
-                &error,
+                polylogue_model::Reason::CaptureUnreadable {
+                    problem: error.to_string(),
+                },
             );
         }
         None => {
             return refuse(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                "capture_unreadable",
+                polylogue_model::Code::Internal,
                 "reading the capture did not finish",
             );
         }
@@ -313,10 +330,9 @@ async fn selection_note(
     {
         Some(Ok(data)) => Json(json!({ "note": data })).into_response(),
         Some(Err(failure)) => refuse_with(&failure),
-        None => refuse(
+        None => refuse_for(
             StatusCode::SERVICE_UNAVAILABLE,
-            "save_outcome_unknown",
-            "the note may or may not be saved; retry it with the same ID",
+            polylogue_model::Reason::SaveOutcomeUnknown {},
         ),
     }
 }
@@ -384,7 +400,7 @@ async fn chat_attachment(
     else {
         return refuse(
             StatusCode::INTERNAL_SERVER_ERROR,
-            "attachment_unreadable",
+            polylogue_model::Code::Internal,
             "the daemon's answer held no bytes",
         );
     };

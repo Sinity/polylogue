@@ -389,7 +389,7 @@ fn saved_queries_from(
                 text: definition.value.text,
                 revision: definition.reference.revision.clone().ok_or_else(|| {
                     SelectionError::invalid(
-                        polylogue_model::Code::Store,
+                        polylogue_model::Code::Io,
                         "saved definition does not name a revision",
                     )
                 })?,
@@ -413,6 +413,9 @@ fn saved_queries_from(
                             error,
                             StoreError::NotFound(_)
                                 | StoreError::Invalid(_)
+                                | StoreError::Refused(_)
+                                | StoreError::Internal(_)
+                                | StoreError::StoredValue { .. }
                                 | StoreError::ReferenceUnavailable { .. }
                                 | StoreError::Ambiguous { .. }
                         ) =>

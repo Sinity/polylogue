@@ -113,24 +113,21 @@ impl<'pool> Reader<'pool> {
             end,
         } = span
         else {
-            return Err(StoreError::Invalid(
-                "span source requires a Span reference".into(),
-            ));
+            return Err(StoreError::internal("a span source needs a Span reference"));
         };
         let Some((version, committed)) = self.span_identity(container)? else {
             return Ok(None);
         };
-        let mut bounds =
-            SpanBounds::new(*unit, *start, *end).map_err(crate::StoreError::invalid)?;
+        let mut bounds = SpanBounds::new(*unit, *start, *end).map_err(bad_span)?;
         let mut bytes = 0u64;
         let mut stopped = false;
         let mut start_position = None;
         let mut end_position = None;
         let found = self.source_text_while(container, false, None, &mut |piece, text| {
-            bounds.push(text).map_err(crate::StoreError::invalid)?;
+            bounds.push(text).map_err(crate::StoreError::internal)?;
             let next = bytes
                 .checked_add(text.len() as u64)
-                .or_invalid("span text length overflows")?;
+                .or_internal("span text length overflows")?;
             if let Some(bound) = bounds.resolved_start()
                 && bound >= bytes
                 && bound <= next
@@ -162,7 +159,7 @@ impl<'pool> Reader<'pool> {
         if !found {
             return Ok(None);
         }
-        let range = bounds.finish().map_err(crate::StoreError::invalid)?;
+        let range = bounds.finish().map_err(bad_span)?;
         let empty = SourceTextPosition {
             piece: SourceTextPiece::Empty,
             byte: 0,
@@ -195,20 +192,20 @@ impl<'pool> Reader<'pool> {
     ) -> Result<SpanSource<'reader, 'pool>> {
         self.check()?;
         let Reference::Span { container, .. } = &origin.reference else {
-            return Err(StoreError::Invalid(
-                "span replay needs original Span coordinates".into(),
+            return Err(StoreError::internal(
+                "span replay needs original Span coordinates",
             ));
         };
         version
             .validate_container(container)
-            .map_err(crate::StoreError::invalid)?;
+            .map_err(crate::StoreError::internal)?;
         let coverage = TextCoverage {
             start: origin.start,
             end: origin.end,
             total_bytes: None,
         };
         seek.validate(container, &coverage)
-            .map_err(crate::StoreError::invalid)?;
+            .map_err(crate::StoreError::internal)?;
         let Some((current, committed)) = self.span_identity(container)? else {
             return Err(stale(&origin.reference));
         };
@@ -277,7 +274,7 @@ impl<'pool> Reader<'pool> {
                     return Ok(None);
                 };
                 let hash =
-                    BlobHash::parse(&document.version()).map_err(crate::StoreError::invalid)?;
+                    BlobHash::parse(&document.version()).map_err(crate::StoreError::stored_data)?;
                 Ok(Some((
                     TextSourceVersion::ContentHash {
                         record: container.clone(),
@@ -305,3 +302,10 @@ fn stale(reference: &Reference) -> StoreError {
 #[cfg(test)]
 #[path = "span/tests.rs"]
 mod tests;
+
+fn bad_span(error: impl ToString) -> StoreError {
+    polylogue_model::Reason::BadSpan {
+        problem: error.to_string(),
+    }
+    .into()
+}

@@ -815,6 +815,11 @@ impl<H: Handler> Operation for Row<H> {
             let parent = accepted.and_then(|caller| caller.parent.clone());
             let request_id = context.request_id.clone();
             let cursor = context.cursor().map(str::to_owned);
+            let start_over = crate::client::request(
+                self.row.name,
+                context.request().arguments.clone(),
+                polylogue_store::user_writes::new_request_id(),
+            );
             // A read whose class has no deadline and whose caller named none
             // still stops at the default read deadline.
             let default_limit = parent.is_none()
@@ -907,6 +912,17 @@ impl<H: Handler> Operation for Row<H> {
             // until SQLite returns. Cancelling it here does not free a
             // place for another blocked count.
             drop(guard);
+            let mut answer = answer;
+            // A cursor that no longer names its place suggests the same
+            // request from the start, unless the handler named a better one.
+            if let command_surface::Outcome::Error(failure) = &mut answer.outcome
+                && failure.code.as_deref() == Some(polylogue_model::Code::StaleCursor.as_str())
+                && failure.suggestion().is_none()
+            {
+                *failure = failure
+                    .clone()
+                    .with_suggestion(command_surface::Suggestion::Request(start_over));
+            }
             answer
         })
     }

@@ -123,7 +123,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Facts> {
                 .prepare_cached("SELECT id FROM session WHERE pk=?1")?
                 .query_row([session_pk], |r| r.get(0))?;
             let id = polylogue_model::SessionId::parse(&id)
-                .map_err(|e| crate::StoreError::Invalid(format!("session id: {e}")))?;
+                .map_err(|e| crate::StoreError::stored_data(format!("session id: {e}")))?;
             Columns::Stub(Box::new(Session::new(
                 id,
                 polylogue_model::SessionKind::Main,

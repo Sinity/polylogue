@@ -196,8 +196,11 @@ fn saved_revision_history_diagnoses_missing_parents_and_cycles() {
     )
     .unwrap();
     match named_revisions(&cycle, "cycle").unwrap_err() {
-        StoreError::Invalid(message) => assert_eq!(
-            message,
+        StoreError::StoredValue {
+            column: None,
+            reason,
+        } => assert_eq!(
+            reason,
             "saved-query revision links form a cycle: annotation:family@cycle-a, annotation:family@cycle-b"
         ),
         other => panic!("cycle must be explicit: {other}"),

@@ -327,7 +327,7 @@ fn registration_acknowledgment_establishes_family() {
     assert!(freshness.degraded());
     let same_scope_gap = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap_err();
     assert!(
-        matches!(same_scope_gap, polylogue_store::StoreError::Invalid(message) if message.contains("past restored history"))
+        matches!(same_scope_gap, polylogue_store::StoreError::Refused(polylogue_model::Reason::SinexRefused { name, reason }) if name == "confirmed consumer" && reason == "past restored history")
     );
     let changed_scope_gap = primary::Sinex::confirmed(&sinex, &state, "cache-test").unwrap();
     assert!(

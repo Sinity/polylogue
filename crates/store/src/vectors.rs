@@ -253,7 +253,7 @@ impl Vectors {
                 let chunks = (0..*chunks)
                     .map(|chunk| {
                         u32::try_from(chunk).map_err(|_| {
-                            StoreError::Invalid("embedding chunk identity is out of range".into())
+                            StoreError::internal("embedding chunk identity is out of range")
                         })
                     })
                     .collect::<Result<HashSet<_>>>()?;
@@ -539,13 +539,13 @@ impl Vectors {
                 loaded.dims = dims;
             }
             if dims != loaded.dims {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::stored_data(format!(
                     "a stored vector under {key} has {dims} values, not {}",
                     loaded.dims
                 )));
             }
             if bytes.len() != dims * 4 {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::stored_data(format!(
                     "a stored vector under {key} has {} bytes, not {}",
                     bytes.len(),
                     dims * 4
@@ -621,8 +621,8 @@ impl Reader<'_> {
             if raw.as_slice() != blake3::hash(text.as_bytes()).as_bytes()
                 || crate::encoding::normalized_text_hash(&text) != *hash
             {
-                return Err(StoreError::Invalid(
-                    "stored text does not match its request identity".into(),
+                return Err(StoreError::internal(
+                    "stored text does not match its request identity",
                 ));
             }
             out.push(ProseText {
@@ -844,7 +844,7 @@ impl Loaded {
     /// dimension, scored as a query asks for them: nothing is scored here.
     pub fn similarity(self: &Arc<Self>, query: &[f32]) -> Result<Similarity> {
         if query.len() != self.dims && self.vectors() > 0 {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::internal(format!(
                 "the query vector has {} values; vectors under {} have {}",
                 query.len(),
                 self.key,

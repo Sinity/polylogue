@@ -80,7 +80,7 @@ impl Cursor {
         }
         if self.left == 0 {
             let extent = extents
-                .or_invalid("stored byte range missing")?
+                .or_stored("stored byte range missing")?
                 .select(self.position)?;
             let mut reader = store.open_plain(&hashed_blobs::Hash(extent.hash.0), extent.size)?;
             reader.seek(SeekFrom::Start(
@@ -98,8 +98,8 @@ impl Cursor {
             .expect("opened extent")
             .read(&mut out[..want])?;
         if count == 0 {
-            return Err(StoreError::Invalid(
-                "stored blob ends before its byte range".into(),
+            return Err(StoreError::stored_data(
+                "stored blob ends before its byte range",
             ));
         }
         self.left -= count as u64;

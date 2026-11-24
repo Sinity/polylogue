@@ -108,7 +108,7 @@ fn store_error(f: &crate::daemon::Failure, text: &str) -> StoreError {
         "cancelled" => StoreError::ReadCancelled,
         code => match polylogue_model::Code::from_name(code) {
             Some(code) => StoreError::Selection { code, message },
-            None => StoreError::Invalid(message),
+            None => StoreError::internal(message),
         },
     }
 }

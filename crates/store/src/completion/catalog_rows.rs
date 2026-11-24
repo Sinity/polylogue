@@ -75,7 +75,7 @@ impl Reader<'_> {
                 || after.index > position.index
                 || after.archive > position.archive)
         {
-            return Err(StoreError::Invalid("completion generation changed".into()));
+            return Err(StoreError::internal("completion generation changed"));
         }
         let conn = self.conn()?;
         let columns = format!(
@@ -104,7 +104,7 @@ impl Reader<'_> {
         let mut rows = if after.is_some() {
             statement.query(rusqlite::params![
                 since,
-                serde_json::to_string(&retitled).map_err(crate::StoreError::invalid)?
+                serde_json::to_string(&retitled).map_err(crate::StoreError::internal)?
             ])?
         } else {
             statement.query([since])?
@@ -206,7 +206,7 @@ impl Reader<'_> {
             || after.archive > current.archive
             || after.index > current.index
         {
-            return Err(StoreError::Invalid("completion generation changed".into()));
+            return Err(StoreError::internal("completion generation changed"));
         }
         if matches!(Source::of(self.conn()?)?, Source::Standalone) {
             return Ok(false);
@@ -304,7 +304,9 @@ impl Reader<'_> {
         }
         if let (AnnotationKind::Tag, values::Value::Tag(value)) = (
             row.fact.kind,
-            row.fact.validate().map_err(crate::StoreError::invalid)?,
+            row.fact
+                .validate()
+                .map_err(crate::StoreError::stored_data)?,
         ) {
             let value = value
                 .fields

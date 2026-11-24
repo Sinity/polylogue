@@ -126,11 +126,10 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
                 outcomes: None,
             })),
         );
-        let prefix = format!("kept result {id:?} field {field}: ");
         assert!(
             matches!(
                 w.writer.user(request),
-                Err(StoreError::Invalid(message)) if message.starts_with(&prefix)
+                Err(StoreError::Refused(polylogue_model::Reason::BadKeptResult { id: refused, field: named, .. })) if refused == id && named == field
             ),
             "{id}"
         );
@@ -190,7 +189,7 @@ fn typed_setting_catalog_refuses_bad_writes_without_recording_a_request() {
         };
         assert!(matches!(
             w.writer.user(request),
-            Err(StoreError::Invalid(_))
+            Err(StoreError::Refused(_))
         ));
         let reads = crate::ReadPool::open(&w.archive).unwrap();
         assert!(reads.reader().unwrap().user_request(id).unwrap().is_none());

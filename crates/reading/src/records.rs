@@ -440,7 +440,7 @@ pub(super) fn message_record(
         };
         binding
             .validate()
-            .map_err(|e| Error::from(polylogue_store::StoreError::Invalid(e.to_string())))?;
+            .map_err(|e| Error::from(polylogue_store::StoreError::stored_data(e.to_string())))?;
         if seen.insert(binding.clone()) {
             bindings.push(binding);
         }
@@ -463,7 +463,7 @@ pub(super) fn message_record(
     )? {
         binding
             .validate()
-            .map_err(|e| Error::from(polylogue_store::StoreError::Invalid(e.to_string())))?;
+            .map_err(|e| Error::from(polylogue_store::StoreError::stored_data(e.to_string())))?;
         if seen.insert(binding.clone()) {
             bindings.push(binding);
         }

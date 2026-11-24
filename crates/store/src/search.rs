@@ -152,15 +152,16 @@ impl Reader<'_> {
                 ))
             })?
             .collect::<std::result::Result<HashMap<_, _>, _>>()?;
-        let hits =
-            blocks
-                .iter()
-                .map(|block| {
-                    selected.get(block).cloned().map(Some).ok_or_else(|| {
-                        StoreError::Invalid("selected hit block is unavailable".into())
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+        let hits = blocks
+            .iter()
+            .map(|block| {
+                selected
+                    .get(block)
+                    .cloned()
+                    .map(Some)
+                    .ok_or_else(|| StoreError::internal("selected hit block is unavailable"))
+            })
+            .collect::<Result<Vec<_>>>()?;
         self.cut_snippets(std::slice::from_ref(query), hits)
     }
 
@@ -195,8 +196,8 @@ impl Reader<'_> {
                         ..
                     } => text.as_str(),
                     _ => {
-                        return Err(StoreError::Invalid(
-                            "selected snippet block has no matching source text".into(),
+                        return Err(StoreError::internal(
+                            "selected snippet block has no matching source text",
                         ));
                     }
                 };

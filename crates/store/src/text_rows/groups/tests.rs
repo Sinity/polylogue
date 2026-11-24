@@ -207,7 +207,13 @@ fn a_text_outside_its_group_is_an_error_naming_the_column_it_was_read_from() {
         .unwrap()
         .unwrap_err();
     assert!(
-        matches!(error, StoreError::StoredValue { column: 2, .. }),
+        matches!(
+            error,
+            StoreError::StoredValue {
+                column: Some(2),
+                ..
+            }
+        ),
         "{error}"
     );
 }

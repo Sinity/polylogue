@@ -1,6 +1,6 @@
 //! Read-only selection of exact input revisions for offline inspection.
 use crate::ConnExt as _;
-use crate::{Reader, Result, StoreError};
+use crate::{Reader, Result};
 use rusqlite::{OptionalExtension, params};
 
 #[derive(Debug, Clone)]
@@ -69,9 +69,10 @@ impl Reader<'_> {
         page_size: usize,
     ) -> Result<SchemaInputsPage> {
         if page_size == 0 {
-            return Err(StoreError::Invalid(
-                "a schema input page must be positive".into(),
-            ));
+            return Err(polylogue_model::Reason::NotPositive {
+                field: "a schema input page".into(),
+            }
+            .into());
         }
         let conn = self.conn()?;
         let base = "WITH selected AS (

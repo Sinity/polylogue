@@ -77,7 +77,7 @@ impl Blobs {
         let mut slot = self
             .connection
             .lock()
-            .or_invalid("blob catalog lock poisoned")?;
+            .or_internal("blob catalog lock poisoned")?;
         if slot.is_none() {
             *slot = Some(Connection::open_with_flags(
                 &self.catalog,

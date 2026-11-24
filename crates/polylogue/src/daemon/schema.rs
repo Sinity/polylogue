@@ -216,7 +216,12 @@ fn observe(pool: &ReadPool, gate: &IdleGate, selection: Infer) -> Result<Inferen
         origin: selection.origin.clone(),
         explicit_inputs: !selection.inputs.is_empty(),
         revision: selection.revision,
-        since_ms: selection.since_ms().map_err(StoreError::Invalid)?,
+        since_ms: selection
+            .since_ms()
+            .map_err(|problem| polylogue_model::Reason::BadTime {
+                text: selection.since.clone().unwrap_or_default(),
+                problem,
+            })?,
         unknown_time_inputs: None,
         missing_revisions: Vec::new(),
         selected_inputs: 0,

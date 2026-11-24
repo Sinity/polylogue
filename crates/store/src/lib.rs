@@ -217,8 +217,16 @@ pub enum StoreError {
     ConfirmedReadDenied(String),
     #[error("Sinex: {0}")]
     Sinex(String),
+    /// A refusal still carried as text: only the writer and the index build
+    /// construct it.
     #[error("{0}")]
     Invalid(String),
+    /// A request the caller can correct, with its typed reason.
+    #[error("{0}")]
+    Refused(polylogue_model::Reason),
+    /// A state no request can cause: a broken invariant in Polylogue.
+    #[error("{0}; this is a Polylogue bug; report it with the request ID")]
+    Internal(String),
     /// A batch's bytes were stored and its parsed rows refused for their
     /// content ([`Self::refuses_content`]): the bytes are in `stored`'s chain,
     /// the reading of them is not.
@@ -229,8 +237,12 @@ pub enum StoreError {
     },
     /// A value in the archive that this build cannot read back: corrupt or
     /// unrecognized stored data, never the caller's request.
-    #[error("stored column {column} is unreadable: {reason}")]
-    StoredValue { column: usize, reason: String },
+    #[error("{}", stored_value_text(*.column, .reason))]
+    StoredValue {
+        /// The column of the row being decoded, when one value is at fault.
+        column: Option<usize>,
+        reason: String,
+    },
     #[error(transparent)]
     Query(#[from] polylogue_query::QueryError),
     #[error("{reference} is unavailable: {reason}")]
@@ -273,6 +285,8 @@ impl StoreError {
     pub fn refuses_content(&self) -> bool {
         match self {
             Self::Invalid(_)
+            | Self::Refused(_)
+            | Self::Internal(_)
             | Self::Counts(_)
             | Self::Conflict(_)
             | Self::Bundle(_)
@@ -288,8 +302,11 @@ impl StoreError {
     /// the group's reason, refusing content exactly when the group's error
     /// did.
     pub(crate) fn for_group_member(&self) -> Self {
-        if matches!(self, Self::Stopped) {
-            return Self::Stopped;
+        match self {
+            Self::Stopped => return Self::Stopped,
+            Self::Refused(reason) => return Self::Refused(reason.clone()),
+            Self::Internal(message) => return Self::Internal(message.clone()),
+            _ => {}
         }
         let reason = self.to_string();
         if self.refuses_content() {
@@ -303,83 +320,182 @@ impl StoreError {
     /// cannot read back.
     pub(crate) fn stored(column: usize, reason: impl Into<String>) -> Self {
         Self::StoredValue {
-            column,
+            column: Some(column),
             reason: reason.into(),
         }
+    }
+
+    /// Stored data this build cannot read back that no one column holds:
+    /// extents, item indexes, stored sums.
+    pub fn stored_data(reason: impl ToString) -> Self {
+        Self::StoredValue {
+            column: None,
+            reason: reason.to_string(),
+        }
+    }
+
+    /// A broken invariant: no request causes it, so it is reported as a bug.
+    pub fn internal(message: impl ToString) -> Self {
+        Self::Internal(message.to_string())
     }
 
     /// The product failure code for this error. Every surface classifies a
     /// store error through this one mapping.
     pub fn code(&self) -> polylogue_model::Code {
+        use polylogue_model::Code;
         match self {
-            Self::ScopeChanged | Self::ConfirmedReadDenied(_) => {
-                polylogue_model::Code::ScopeChanged
+            Self::Sqlite(error) => {
+                if sqlite_busy(error) {
+                    Code::Busy
+                } else {
+                    Code::Store
+                }
             }
-            Self::Conflict(_) | Self::ReadIndexReplaced => polylogue_model::Code::Conflict,
-            Self::Ambiguous { .. } => polylogue_model::Code::Ambiguous,
-            Self::Stale { .. } => polylogue_model::Code::Stale,
-            Self::ReferenceUnavailable { .. } => polylogue_model::Code::NotYetAvailable,
-            Self::Bundle(issue) => match issue {
-                polylogue_model::bundle::BundleError::BlockSelectionConflict
-                | polylogue_model::bundle::BundleError::SourceVersionMismatch => {
-                    polylogue_model::Code::Conflict
-                }
-
-                polylogue_model::bundle::BundleError::Annotation(_)
-                | polylogue_model::bundle::BundleError::TextFragment(_)
-                | polylogue_model::bundle::BundleError::WrongFormat(_)
-                | polylogue_model::bundle::BundleError::UnsupportedVersion { .. }
-                | polylogue_model::bundle::BundleError::InvalidQuery
-                | polylogue_model::bundle::BundleError::InvalidPosition
-                | polylogue_model::bundle::BundleError::BlobFlagMismatch
-                | polylogue_model::bundle::BundleError::ReadOptions(_)
-                | polylogue_model::bundle::BundleError::InvalidPath
-                | polylogue_model::bundle::BundleError::ReferenceMismatch
-                | polylogue_model::bundle::BundleError::InvalidLink(_)
-                | polylogue_model::bundle::BundleError::InvalidBlockSelection
-                | polylogue_model::bundle::BundleError::InvalidInjectionEvidence
-                | polylogue_model::bundle::BundleError::InvalidAttachmentBinding
-                | polylogue_model::bundle::BundleError::CanonicalMessage(_)
-                | polylogue_model::bundle::BundleError::Time(_)
-                | polylogue_model::bundle::BundleError::InvalidEventIdentity
-                | polylogue_model::bundle::BundleError::EventReferenceMismatch
-                | polylogue_model::bundle::BundleError::InvalidEventAssociation => {
-                    polylogue_model::Code::BadRequest
-                }
-            },
-            Self::ReadDeadlineExceeded => polylogue_model::Code::DeadlineExceeded,
-            Self::ReadCancelled => polylogue_model::Code::Cancelled,
-            Self::Stopped | Self::ReadPoolClosed => polylogue_model::Code::ShuttingDown,
-            Self::IndexBuilding(_) => polylogue_model::Code::IndexBuilding,
-            Self::NotFound(_) => polylogue_model::Code::NotFound,
-            Self::Invalid(_) => polylogue_model::Code::BadRequest,
+            Self::Io(_) => Code::Io,
+            Self::Blobs(
+                hashed_blobs::Error::Io(_)
+                | hashed_blobs::Error::Locked(_)
+                | hashed_blobs::Error::Unwrap(_),
+            ) => Code::Io,
+            Self::Blobs(hashed_blobs::Error::Corrupt { .. } | hashed_blobs::Error::Refused(_)) => {
+                Code::BlobCorrupt
+            }
+            Self::Json(_) => Code::Io,
+            Self::Bundle(issue) => bundle_code(issue),
+            Self::Locked { .. } => Code::Conflict,
+            Self::NewerSchema { .. } => Code::Refused,
+            Self::OtherFormat { .. } => Code::Refused,
+            Self::EmbeddingsSchemaDiffers { .. } => Code::Refused,
+            Self::OlderFormat { .. } => Code::Refused,
+            Self::IndexVersion { .. } => Code::IndexBuilding,
+            Self::BlobCorrupt(_) => Code::BlobCorrupt,
+            Self::Counts(_) => Code::Internal,
+            Self::WriterGone => Code::NotRunning,
+            Self::Stopped => Code::ShuttingDown,
+            Self::StorageFailed(_) => Code::Io,
+            Self::ReadDeadlineExceeded => Code::DeadlineExceeded,
+            Self::ReadCancelled => Code::Cancelled,
+            Self::ReadPoolClosed => Code::NotRunning,
+            Self::ReadPoolNested => Code::Internal,
+            Self::ScopeChanged => Code::ScopeChanged,
+            Self::ReadIndexReplaced => Code::Conflict,
+            Self::IndexBuilding(_) => Code::IndexBuilding,
+            Self::Conflict(_) => Code::IdempotencyKeyReused,
+            Self::Stale { .. } => Code::Stale,
+            Self::Ambiguous { .. } => Code::Ambiguous,
+            Self::IncompleteParents(_) => Code::IncompleteParents,
+            Self::NotFound(_) => Code::NotFound,
+            Self::ChatAction(_) => Code::Conflict,
+            Self::ImportJob(_) => Code::Conflict,
+            Self::PrimaryPending { .. } => Code::Degraded,
+            Self::UnresolvedBaseConflict { .. } => Code::Conflict,
+            Self::ConfirmedReadDenied(_) => Code::ScopeChanged,
+            Self::Sinex(_) => Code::SinexUnavailable,
+            Self::Invalid(_) => Code::BadRequest,
+            Self::Refused(reason) => reason.code(),
+            Self::Internal(_) => Code::Internal,
+            Self::RowsRefused { .. } => Code::Import,
+            Self::StoredValue { .. } => Code::Io,
             Self::Query(error) => error.kind(),
+            Self::ReferenceUnavailable { .. } => Code::NotYetAvailable,
             Self::Selection { code, .. } => *code,
-            Self::IncompleteParents(_) => polylogue_model::Code::IncompleteParents,
-            Self::PrimaryPending { .. } => polylogue_model::Code::Degraded,
-
-            Self::Sqlite(_)
-            | Self::Io(_)
-            | Self::Blobs(_)
-            | Self::Json(_)
-            | Self::Locked { .. }
-            | Self::NewerSchema { .. }
-            | Self::OtherFormat { .. }
-            | Self::EmbeddingsSchemaDiffers { .. }
-            | Self::OlderFormat { .. }
-            | Self::IndexVersion { .. }
-            | Self::BlobCorrupt(_)
-            | Self::Counts(_)
-            | Self::WriterGone
-            | Self::StorageFailed(_)
-            | Self::ReadPoolNested
-            | Self::ChatAction(_)
-            | Self::ImportJob(_)
-            | Self::UnresolvedBaseConflict { .. }
-            | Self::Sinex(_)
-            | Self::RowsRefused { .. }
-            | Self::StoredValue { .. } => polylogue_model::Code::Store,
         }
+    }
+
+    /// Whether the same request can succeed later without any change: the
+    /// condition that stopped it passes by itself.
+    pub fn retryable(&self) -> bool {
+        match self {
+            Self::Sqlite(error) => sqlite_busy(error),
+            Self::Io(error) => retryable_io(error),
+            Self::Blobs(hashed_blobs::Error::Io(error)) => retryable_io(error),
+            Self::Blobs(_) => false,
+            Self::Json(_) => false,
+            Self::Bundle(_) => false,
+            Self::Locked { .. } => true,
+            Self::NewerSchema { .. } => false,
+            Self::OtherFormat { .. } => false,
+            Self::EmbeddingsSchemaDiffers { .. } => false,
+            Self::OlderFormat { .. } => false,
+            Self::IndexVersion { .. } => true,
+            Self::BlobCorrupt(_) => false,
+            Self::Counts(_) => false,
+            Self::WriterGone => true,
+            Self::Stopped => true,
+            Self::StorageFailed(_) => false,
+            Self::ReadDeadlineExceeded => true,
+            Self::ReadCancelled => false,
+            Self::ReadPoolClosed => true,
+            Self::ReadPoolNested => false,
+            Self::ScopeChanged => true,
+            Self::ReadIndexReplaced => true,
+            Self::IndexBuilding(_) => true,
+            Self::Conflict(_) => false,
+            Self::Stale { .. } => false,
+            Self::Ambiguous { .. } => false,
+            Self::IncompleteParents(_) => false,
+            Self::NotFound(_) => false,
+            Self::ChatAction(_) => false,
+            Self::ImportJob(_) => false,
+            Self::PrimaryPending { .. } => true,
+            Self::UnresolvedBaseConflict { .. } => false,
+            Self::ConfirmedReadDenied(_) => false,
+            Self::Sinex(_) => true,
+            Self::Invalid(_) => false,
+            Self::Refused(_) => false,
+            Self::Internal(_) => false,
+            Self::RowsRefused { .. } => false,
+            Self::StoredValue { .. } => false,
+            Self::Query(_) => false,
+            Self::ReferenceUnavailable { .. } => true,
+            Self::Selection { .. } => false,
+        }
+    }
+}
+
+impl From<polylogue_model::Reason> for StoreError {
+    fn from(reason: polylogue_model::Reason) -> Self {
+        Self::Refused(reason)
+    }
+}
+
+fn sqlite_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+    )
+}
+
+fn stored_value_text(column: Option<usize>, reason: &str) -> String {
+    match column {
+        Some(column) => format!("stored column {column} is unreadable: {reason}"),
+        None => format!("stored data is unreadable: {reason}"),
+    }
+}
+
+fn bundle_code(issue: &polylogue_model::bundle::BundleError) -> polylogue_model::Code {
+    use polylogue_model::{Code, bundle::BundleError};
+    match issue {
+        BundleError::BlockSelectionConflict | BundleError::SourceVersionMismatch => Code::Conflict,
+        BundleError::Annotation(_)
+        | BundleError::TextFragment(_)
+        | BundleError::WrongFormat(_)
+        | BundleError::UnsupportedVersion { .. }
+        | BundleError::InvalidQuery
+        | BundleError::InvalidPosition
+        | BundleError::BlobFlagMismatch
+        | BundleError::ReadOptions(_)
+        | BundleError::InvalidPath
+        | BundleError::ReferenceMismatch
+        | BundleError::InvalidLink(_)
+        | BundleError::InvalidBlockSelection
+        | BundleError::InvalidInjectionEvidence
+        | BundleError::InvalidAttachmentBinding
+        | BundleError::CanonicalMessage(_)
+        | BundleError::Time(_)
+        | BundleError::InvalidEventIdentity
+        | BundleError::EventReferenceMismatch
+        | BundleError::InvalidEventAssociation => Code::BadRequest,
     }
 }
 
@@ -401,14 +517,12 @@ impl From<rusqlite::Error> for StoreError {
         // A row value that does not decode is a fault in the stored data,
         // whichever reader met it.
         match error {
-            rusqlite::Error::FromSqlConversionFailure(column, _, why) => Self::StoredValue {
-                column,
-                reason: why.to_string(),
-            },
-            rusqlite::Error::IntegralValueOutOfRange(column, value) => Self::StoredValue {
-                column,
-                reason: format!("{value} is out of range"),
-            },
+            rusqlite::Error::FromSqlConversionFailure(column, _, why) => {
+                Self::stored(column, why.to_string())
+            }
+            rusqlite::Error::IntegralValueOutOfRange(column, value) => {
+                Self::stored(column, format!("{value} is out of range"))
+            }
             error => Self::Sqlite(error),
         }
     }

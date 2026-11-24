@@ -18,27 +18,46 @@ impl ConnExt for Connection {
     }
 }
 
+/// A failure without its own error, named by what was wrong: text kept as
+/// a refusal (`or_invalid`, the writer's remaining form), a broken invariant
+/// (`or_internal`) or stored data this build cannot read (`or_stored`).
 pub trait ResultExt<T> {
     fn or_invalid(self, what: impl ToString) -> Result<T>;
+    fn or_internal(self, what: impl ToString) -> Result<T>;
+    fn or_stored(self, what: impl ToString) -> Result<T>;
 }
 impl<T, E> ResultExt<T> for std::result::Result<T, E> {
     fn or_invalid(self, what: impl ToString) -> Result<T> {
         self.map_err(|_| crate::StoreError::invalid(what))
     }
+    fn or_internal(self, what: impl ToString) -> Result<T> {
+        self.map_err(|_| crate::StoreError::internal(what))
+    }
+    fn or_stored(self, what: impl ToString) -> Result<T> {
+        self.map_err(|_| crate::StoreError::stored_data(what))
+    }
 }
 pub trait OptionExt<T> {
     fn or_invalid(self, what: impl ToString) -> Result<T>;
+    fn or_internal(self, what: impl ToString) -> Result<T>;
+    fn or_stored(self, what: impl ToString) -> Result<T>;
 }
 impl<T> OptionExt<T> for Option<T> {
     fn or_invalid(self, what: impl ToString) -> Result<T> {
         self.ok_or_else(|| crate::StoreError::invalid(what))
     }
+    fn or_internal(self, what: impl ToString) -> Result<T> {
+        self.ok_or_else(|| crate::StoreError::internal(what))
+    }
+    fn or_stored(self, what: impl ToString) -> Result<T> {
+        self.ok_or_else(|| crate::StoreError::stored_data(what))
+    }
 }
 pub fn to_i64<T: TryInto<i64>>(value: T, what: impl ToString) -> Result<i64> {
-    value.try_into().or_invalid(what)
+    value.try_into().or_internal(what)
 }
 pub fn to_u64<T: TryInto<u64>>(value: T, what: impl ToString) -> Result<u64> {
-    value.try_into().or_invalid(what)
+    value.try_into().or_internal(what)
 }
 pub fn meta_get(conn: &Connection, key: &str) -> Result<Option<String>> {
     conn.scalar_optional("SELECT value FROM meta WHERE key=?1", [key])

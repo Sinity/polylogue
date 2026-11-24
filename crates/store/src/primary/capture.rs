@@ -41,18 +41,17 @@ impl CaptureRead {
     pub const VERSION: u32 = 1;
 
     pub fn validate_for(&self, input: &crate::InputKey) -> Result<()> {
-        let invalid = || {
-            StoreError::Invalid("capture read does not match its observed state or input".into())
-        };
+        let inconsistent =
+            || StoreError::internal("capture read does not match its observed state or input");
         if self.version != Self::VERSION || self.source.origin != input.format {
-            return Err(invalid());
+            return Err(inconsistent());
         }
         self.range.length()?;
         let Some(generation) = &self.generation else {
             return if self.raw_total.is_none() && self.previous_revision.is_none() {
                 Ok(())
             } else {
-                Err(invalid())
+                Err(inconsistent())
             };
         };
         generation.validate()?;
@@ -74,7 +73,7 @@ impl CaptureRead {
                 super::ObservedState::File { stream: super::RawStream { role: super::RawStreamRole::ProviderBytes, .. }, observed, .. }
                 if self.raw_total.is_some_and(|end| end != observed.size))
         {
-            return Err(invalid());
+            return Err(inconsistent());
         }
         Ok(())
     }
@@ -140,7 +139,7 @@ impl RawRange {
     pub fn length(self) -> Result<u64> {
         self.end
             .checked_sub(self.start)
-            .or_invalid("reversed captured source range")
+            .or_internal("reversed captured source range")
     }
 }
 
@@ -169,20 +168,20 @@ pub struct CapturePlan {
 impl CapturePlan {
     pub fn validate(&self) -> Result<()> {
         if self.intent.is_empty() || self.count == 0 {
-            return Err(StoreError::Invalid(
-                "a capture group needs its content intent and members".into(),
+            return Err(StoreError::internal(
+                "a capture group needs its content intent and members",
             ));
         }
         if self.required_outcome == Some(CaptureOutcome::Prepared) {
-            return Err(StoreError::Invalid(
-                "a capture constraint cannot require acceptance".into(),
+            return Err(StoreError::internal(
+                "a capture constraint cannot require acceptance",
             ));
         }
         let mut seen = std::collections::BTreeSet::new();
         for base in &self.bases {
             if !seen.insert(&base.source) {
-                return Err(StoreError::Invalid(
-                    "a capture group repeats a source base".into(),
+                return Err(StoreError::internal(
+                    "a capture group repeats a source base",
                 ));
             }
         }

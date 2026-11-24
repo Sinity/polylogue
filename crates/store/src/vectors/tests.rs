@@ -166,7 +166,7 @@ fn stores_scans_and_survives_reopening() {
     assert!(near.of(&[3]).is_none());
     // A query of another dimension is refused, not scored.
     match loaded.similarity(&[1.0, 0.0]).err() {
-        Some(StoreError::Invalid(message)) => assert_eq!(
+        Some(StoreError::Internal(message)) => assert_eq!(
             message,
             format!("the query vector has 2 values; vectors under {key} have 3")
         ),

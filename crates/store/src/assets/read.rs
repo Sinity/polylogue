@@ -59,9 +59,12 @@ impl Reader<'_> {
                 .nth(attachment_index)
                 .ok_or_else(|| StoreError::NotFound("tool result attachment index".into()))?,
             _ => {
-                return Err(StoreError::Invalid(
-                    "selected block has no such attachment".into(),
-                ));
+                return Err(polylogue_model::Reason::NoSuchAttachment {
+                    message: message.to_string(),
+                    block,
+                    attachment: attachment_index,
+                }
+                .into());
             }
         };
         let bound =
@@ -72,8 +75,8 @@ impl Reader<'_> {
                 if source.blob.is_some()
                     || source.source_id.as_deref() != Some(context.claim.source_id.as_str())
                 {
-                    return Err(StoreError::Invalid(
-                        "stated binding differs from the selected attachment".into(),
+                    return Err(StoreError::stored_data(
+                        "a stated attachment binding differs from the selected attachment",
                     ));
                 }
                 for member in &context.members {

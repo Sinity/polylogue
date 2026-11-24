@@ -129,8 +129,9 @@ fn seen_mark_on_a_session_refuses_an_item_that_is_not_a_message_or_block() {
     };
     assert!(matches!(
         archive.writer.user(request("seen-session-item", mark)),
-        Err(StoreError::Invalid(ref message))
-            if message == "a seen mark on a session names a message or block"
+        Err(StoreError::Refused(
+            polylogue_model::Reason::SeenMarkNeedsItem {}
+        ))
     ));
     assert!(
         pool.reader()
@@ -179,8 +180,9 @@ fn seen_marks_can_move_to_the_current_generation_without_changing_archive_positi
     );
     assert!(matches!(
         archive.writer.user(request("seen-stale", old)),
-        Err(StoreError::Invalid(ref message))
-            if message == "seen mark belongs to a stale index generation"
+        Err(StoreError::Refused(
+            polylogue_model::Reason::SeenFromAnotherGeneration {}
+        ))
     ));
     assert!(
         pool.reader()
@@ -274,12 +276,9 @@ fn seen_session_items_follow_the_readers_branch_prefix_before_own_messages() {
     ] {
         assert!(matches!(
             archive.writer.user(request(id, mark(item))),
-            Err(StoreError::Invalid(ref message))
-                if *message == format!(
-                    "message:{} is not in session:{}",
-                    item.id,
-                    crate::fixture::writer::sid("child")
-                )
+            Err(StoreError::Refused(polylogue_model::Reason::NotInSession { item: ref named, ref session }))
+                if *named == format!("message:{}", item.id)
+                    && *session == format!("session:{}", crate::fixture::writer::sid("child"))
         ));
         assert!(pool.reader().unwrap().user_request(id).unwrap().is_none());
     }
@@ -353,12 +352,9 @@ fn seen_session_items_use_recorded_copy_membership_and_share_readers_ambiguity()
     );
     assert!(matches!(
         archive.writer.user(request("seen-copy-excluded", mark(&excluded))),
-        Err(StoreError::Invalid(ref message))
-            if *message == format!(
-                "message:{} is not in session:{}",
-                excluded.id,
-                crate::fixture::writer::sid("child")
-            )
+        Err(StoreError::Refused(polylogue_model::Reason::NotInSession { item: ref named, ref session }))
+            if *named == format!("message:{}", excluded.id)
+                && *session == format!("session:{}", crate::fixture::writer::sid("child"))
     ));
     drop(pool);
 

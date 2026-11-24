@@ -17,22 +17,23 @@ impl RowComparison {
     pub fn records(bytes: &[u8]) -> crate::Result<Self> {
         let mut out = Self::default();
         for line in bytes.split(|b| *b == b'\n').filter(|line| !line.is_empty()) {
-            let value: Value = serde_json::from_slice(line).map_err(crate::StoreError::invalid)?;
+            let value: Value =
+                serde_json::from_slice(line).map_err(crate::StoreError::stored_data)?;
             if let Some(schema) = value.get("schema") {
                 out.schema =
                     Some(json!({"schema":schema,"table_metadata":value.get("table_metadata")}));
                 continue;
             }
-            let table = value.str("t").or_invalid("row dump record has no table")?;
+            let table = value.str("t").or_stored("row dump record has no table")?;
             let key = value
                 .get("k")
-                .or_invalid("row dump record has no key")?
+                .or_stored("row dump record has no key")?
                 .to_string();
             let hash = if value.get("gone") == Some(&Value::Bool(true)) {
                 None
             } else {
                 let row = value.get("r").filter(|r| r.is_object()).ok_or_else(|| {
-                    crate::StoreError::Invalid("row dump record has no values".into())
+                    crate::StoreError::stored_data("row dump record has no values")
                 })?;
                 Some(row_hash(row).as_bytes().to_vec())
             };
@@ -55,15 +56,16 @@ impl RowComparison {
     }
     pub(crate) fn write(&self, conn: &Connection, input_pk: i64) -> crate::Result<()> {
         let length = i64::try_from(self.length).map_err(|_| {
-            crate::StoreError::Invalid("database comparison exceeds archive address space".into())
+            crate::StoreError::internal("database comparison exceeds archive address space")
         })?;
         let previous: Option<i64> = conn.scalar_optional(
             "SELECT length FROM tool_database WHERE input_pk=?1",
             [input_pk],
         )?;
-        let previous = previous.map(u64::try_from).transpose().map_err(|_| {
-            crate::StoreError::Invalid("negative database comparison length".into())
-        })?;
+        let previous = previous
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| crate::StoreError::stored_data("negative database comparison length"))?;
         // Domain parsing may finish after newer row-dump bytes. Its older
         // values must not move the comparison state backwards.
         if previous.is_some_and(|previous| previous >= self.length) {
@@ -72,7 +74,7 @@ impl RowComparison {
         // Later queued groups can outlive an earlier failed transaction.
         // Only a contiguous prefix can become the recovery position.
         if self.from > previous.unwrap_or(0) {
-            return Err(crate::StoreError::Invalid(format!(
+            return Err(crate::StoreError::internal(format!(
                 "database comparison starts at {} after acknowledged {}",
                 self.from,
                 previous.unwrap_or(0)

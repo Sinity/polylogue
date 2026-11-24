@@ -97,7 +97,7 @@ impl ByteCursorQuery {
     pub fn validate(&self) -> Result<()> {
         self.generation.validate()?;
         if self.tail_body.as_ref().is_some_and(String::is_empty) {
-            return Err(StoreError::Invalid("byte cursor tail body is empty".into()));
+            return Err(StoreError::internal("byte cursor tail body is empty"));
         }
         Ok(())
     }
@@ -123,8 +123,8 @@ impl ObservedState {
             || stream.source.path_bytes.is_empty()
             || stream.namespace.as_ref().is_some_and(String::is_empty)
         {
-            return Err(StoreError::Invalid(
-                "byte cursor stream identity is incomplete".into(),
+            return Err(StoreError::internal(
+                "byte cursor stream identity is incomplete",
             ));
         }
         match self {
@@ -134,16 +134,16 @@ impl ObservedState {
                 if observed.modified.nanos >= 1_000_000_000
                     || observed.changed.nanos >= 1_000_000_000
                 {
-                    return Err(StoreError::Invalid(
-                        "provider file time has invalid nanoseconds".into(),
+                    return Err(StoreError::internal(
+                        "provider file time has invalid nanoseconds",
                     ));
                 }
                 match &stream.role {
                     RawStreamRole::ProviderBytes if self.window().end <= observed.size => {}
                     RawStreamRole::DecodedMember { codec, .. } if !codec.is_empty() => {}
                     _ => {
-                        return Err(StoreError::Invalid(
-                            "observed file state has an incompatible stream window or role".into(),
+                        return Err(StoreError::internal(
+                            "observed file state has an incompatible stream window or role",
                         ));
                     }
                 }
@@ -155,16 +155,14 @@ impl ObservedState {
                     .ok()
                     .is_none_or(|id| id.is_nil())
                 {
-                    return Err(StoreError::Invalid(
-                        "consistent-read nonce is missing".into(),
-                    ));
+                    return Err(StoreError::internal("consistent-read nonce is missing"));
                 }
                 match &stream.role {
                     RawStreamRole::DatabaseDump => {}
                     RawStreamRole::DatabaseTable { table } if !table.is_empty() => {}
                     _ => {
-                        return Err(StoreError::Invalid(
-                            "observed database state has an incompatible stream role".into(),
+                        return Err(StoreError::internal(
+                            "observed database state has an incompatible stream role",
                         ));
                     }
                 }
@@ -257,8 +255,8 @@ impl ByteCursorCheck {
     }
     pub fn push(&mut self, body: BodyRange) -> Result<()> {
         if body.body.is_empty() || body.range.length()? != body.decoded_length {
-            return Err(StoreError::Invalid(
-                "spooled body reference or decoded range is invalid".into(),
+            return Err(StoreError::internal(
+                "spooled body reference or decoded range is invalid",
             ));
         }
         self.outcome = match (self.outcome, body.outcome) {

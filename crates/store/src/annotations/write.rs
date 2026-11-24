@@ -5,6 +5,7 @@
 //! current-revision index is recomputed for the roots the request affects.
 use super::*;
 use authored::{Arrival, OnStale, Placed, Plan, Refusal, Refused, Write};
+use polylogue_model::Reason;
 use polylogue_model::{
     annotation::{AnnotationPatch, Change, NewAnnotation, NewAnnotationLink, values},
     settings::SettingMode,
@@ -29,9 +30,10 @@ fn exact_fact(conn: &Connection, reference: &Reference) -> Result<AnnotationFact
         revision: Some(id),
     }) = reference
     else {
-        return Err(crate::StoreError::invalid(
-            "expected an exact annotation revision",
-        ));
+        return Err(Reason::NotAnExactRevision {
+            reference: reference.to_string(),
+        }
+        .into());
     };
     get(conn, id)?
         .filter(|row| row.fact.root == *root)
@@ -49,7 +51,9 @@ fn validate_value(
 ) -> Result<(values::Value, Option<Reference>)> {
     statement
         .validate_links()
-        .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+        .map_err(|error| Reason::BadAnnotationLinks {
+            problem: error.to_string(),
+        })?;
     let mut value = if live_value {
         values::decode_live(
             statement.kind,
@@ -63,7 +67,10 @@ fn validate_value(
             statement.value.as_ref(),
         )
     }
-    .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+    .map_err(|error| Reason::BadAnnotationValue {
+        kind: statement.kind.as_str().into(),
+        problem: error.to_string(),
+    })?;
     if let values::Value::Setting(setting) = &mut value {
         setting.fields = setting
             .fields
@@ -73,7 +80,7 @@ fn validate_value(
                 &request.machine,
                 mode,
             )
-            .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+            .map_err(Reason::from)?;
         statement.value = Some(serde_json::to_value(setting)?);
     }
     if let values::Value::SavedQuery(value) = &value {
@@ -90,28 +97,30 @@ fn validate_value(
                 .iter()
                 .map(|link| (link.role, &link.reference)),
         )?
-        .ok_or_else(|| {
-            crate::StoreError::invalid("annotation needs its exact derived_from rubric")
-        })?;
+        .ok_or(Reason::RubricValueNeedsRubric {})?;
         let values::Value::Rubric(rubric) = exact_fact(conn, &reference)?
             .validate()
-            .map_err(|error| crate::StoreError::invalid(error.to_string()))?
+            .map_err(crate::StoreError::stored_data)?
         else {
-            return Err(crate::StoreError::invalid(
-                "annotation rubric is not a rubric",
-            ));
+            return Err(Reason::WrongKind {
+                reference: reference.to_string(),
+                expected: "rubric".into(),
+            }
+            .into());
         };
         let values::Value::RubricValue(annotation) = &value else {
-            return Err(crate::StoreError::invalid(
-                "annotation value is not a field value",
+            return Err(crate::StoreError::internal(
+                "a rubric_value statement decoded to another value kind",
             ));
         };
         let key = statement.key.as_deref().expect("annotation key checked");
+        let refused = |part: &str| Reason::NotAllowedByRubric {
+            key: key.into(),
+            part: part.into(),
+        };
         if key == "abstain" {
             if !rubric.fields.abstain || !annotation.fields.value.is_string() {
-                return Err(crate::StoreError::invalid(
-                    "not_allowed_by_rubric: abstention requires an allowed text reason",
-                ));
+                return Err(refused("an abstention without an allowed text reason").into());
             }
         } else {
             let field = rubric
@@ -119,24 +128,16 @@ fn validate_value(
                 .fields
                 .iter()
                 .find(|field| field.name == key)
-                .ok_or_else(|| {
-                    crate::StoreError::invalid("not_allowed_by_rubric: unknown field")
-                })?;
+                .ok_or_else(|| refused("this field"))?;
             if !field.allows(&annotation.fields.value) {
-                return Err(crate::StoreError::invalid(
-                    "not_allowed_by_rubric: field value",
-                ));
+                return Err(refused("this value").into());
             }
         }
         if annotation.fields.confidence.is_some() && !rubric.fields.confidence {
-            return Err(crate::StoreError::invalid(
-                "not_allowed_by_rubric: confidence",
-            ));
+            return Err(refused("a confidence").into());
         }
         if annotation.fields.rationale.is_some() && rubric.fields.rationale == Some(false) {
-            return Err(crate::StoreError::invalid(
-                "not_allowed_by_rubric: rationale",
-            ));
+            return Err(refused("a rationale").into());
         }
         let mut pass_found = false;
         for origin in statement
@@ -146,29 +147,22 @@ fn validate_value(
         {
             let pass = exact_fact(conn, &origin.reference)?;
             if pass.kind != AnnotationKind::Pass || pass.author != request.authorship.author {
-                return Err(crate::StoreError::invalid(
-                    "annotation origin must be a pass opened by its author",
-                ));
+                return Err(Reason::PassNotByAuthor {}.into());
             }
-            let values::Value::Pass(pass) = pass
-                .validate()
-                .map_err(|error| crate::StoreError::invalid(error.to_string()))?
+            let values::Value::Pass(pass) =
+                pass.validate().map_err(crate::StoreError::stored_data)?
             else {
-                return Err(crate::StoreError::invalid(
-                    "annotation origin is not a pass",
+                return Err(crate::StoreError::stored_data(
+                    "a pass annotation holds another value kind",
                 ));
             };
             if pass.fields.rubric.as_ref() != Some(&reference) {
-                return Err(crate::StoreError::invalid(
-                    "annotation pass names another rubric",
-                ));
+                return Err(Reason::PassForAnotherRubric {}.into());
             }
             pass_found = true;
         }
         if !pass_found {
-            return Err(crate::StoreError::invalid(
-                "annotation needs an exact pass origin",
-            ));
+            return Err(Reason::PassRequired {}.into());
         }
         Some(reference)
     } else {
@@ -222,9 +216,7 @@ fn refusal(kind: &NewAnnotation, refused: Refused<StoreError>) -> StoreError {
         Refusal::UnknownTarget(target) => {
             StoreError::NotFound(target_reference(&target).to_string())
         }
-        Refusal::BasesSpanRoots(_) => crate::StoreError::invalid(
-            "one revision must name bases of one annotation family, or of families holding one slot",
-        ),
+        Refusal::BasesSpanRoots(_) => Reason::BasesSpanFamilies {}.into(),
         Refusal::Ambiguous { holders } => StoreError::Ambiguous {
             reference: kind
                 .key
@@ -232,20 +224,21 @@ fn refusal(kind: &NewAnnotation, refused: Refused<StoreError>) -> StoreError {
                 .unwrap_or_else(|| kind.kind.as_str().into()),
             candidates: list(holders),
         },
-        Refusal::SlotTaken { holders } => StoreError::Conflict(format!(
-            "the revised {} would take a slot also held by {}; a revision naming every head of every holder resolves it",
-            kind.kind.as_str(),
-            list(holders).join(", ")
-        )),
-        Refusal::Count { declared, written } => crate::StoreError::invalid(format!(
+        Refusal::SlotTaken { holders } => Reason::SlotTaken {
+            kind: kind.kind.as_str().into(),
+            holders: polylogue_model::Names(list(holders)),
+        }
+        .into(),
+        Refusal::Count { declared, written } => crate::StoreError::internal(format!(
             "the request declared {declared} writes and carries {written}"
         )),
         Refusal::Abandoned(write) => {
-            crate::StoreError::invalid(format!("write {write} of this request was refused"))
+            crate::StoreError::internal(format!("write {write} of this request was refused"))
         }
-        Refusal::Cycle(revision) => {
-            crate::StoreError::invalid(format!("withdrawals of {revision} form a cycle"))
+        Refusal::Cycle(revision) => Reason::WithdrawalCycle {
+            revision: revision.to_string(),
         }
+        .into(),
         Refusal::Links(error) => error,
     }
 }
@@ -401,9 +394,7 @@ fn accept(
         mode,
     } = context;
     if statements.is_empty() {
-        return Err(crate::StoreError::invalid(
-            "assert needs at least one statement",
-        ));
+        return Err(Reason::NoStatements {}.into());
     }
     // Each write is checked against the archive as it stands after the
     // request's earlier writes, so a later write may name an earlier one (a
@@ -478,14 +469,14 @@ fn accept(
                     && let Some(base) = get(conn, id)?
                     && base.fact.kind != statement.kind
                 {
-                    return Err(crate::StoreError::invalid(
-                        "revision cannot change annotation kind",
-                    ));
+                    return Err(Reason::RevisionChangesKind {}.into());
                 }
             }
             let unique = statement
                 .unique(&value, &request.authorship.author, rubric.as_ref())
-                .map_err(|error| crate::StoreError::invalid(error.to_string()))?;
+                .map_err(|error| Reason::BadAnnotation {
+                    problem: error.to_string(),
+                })?;
             // Only a write that a later one could name is previewed.
             if index + 1 < statements.len() {
                 let id = authored::write_id(&request.id, index + 1, statements.len());
@@ -669,9 +660,7 @@ pub(crate) fn revision_statement(
     patch: &AnnotationPatch,
 ) -> Result<NewAnnotation> {
     if bases.is_empty() {
-        return Err(crate::StoreError::invalid(
-            "revise needs at least one exact base",
-        ));
+        return Err(Reason::NoExactBase {}.into());
     }
     let mut facts = Vec::new();
     for base in bases {
@@ -681,16 +670,12 @@ pub(crate) fn revision_statement(
     // A revised withdrawal would keep withdrawing what the old one named;
     // restoring is withdrawing the withdrawal.
     if first.kind == polylogue_model::annotation::AnnotationKind::Withdrawal {
-        return Err(crate::StoreError::invalid(
-            "a withdrawal cannot be revised; withdraw it to restore what it withdrew",
-        ));
+        return Err(Reason::WithdrawalRevised {}.into());
     }
     // Bases of several families are accepted when they hold one slot of a
     // single-valued kind; the authored plan checks that.
     if facts.iter().any(|fact| fact.kind != first.kind) {
-        return Err(crate::StoreError::invalid(
-            "one revision must name bases of one kind",
-        ));
+        return Err(Reason::BasesOfSeveralKinds {}.into());
     }
     fn change<T: Clone>(old: Option<T>, change: &Change<T>) -> Option<T> {
         match change {
@@ -721,9 +706,7 @@ pub(crate) fn revision_statement(
         .iter()
         .any(|link| link.role == LinkRole::Revises)
     {
-        return Err(crate::StoreError::invalid(
-            "revision bases belong in bases, not the link patch",
-        ));
+        return Err(Reason::BasesInLinkPatch {}.into());
     }
     for base in bases {
         statement.links.push(NewAnnotationLink {

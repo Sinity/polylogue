@@ -63,8 +63,8 @@ impl Text<'_, '_> {
             Block::Thinking { .. } => TextField::Thinking,
             Block::ToolResult { .. } => TextField::ToolOutput,
             _ => {
-                return Err(StoreError::Invalid(
-                    "text body has no source text field".into(),
+                return Err(StoreError::stored_data(
+                    "text body has no source text field",
                 ));
             }
         };
@@ -163,8 +163,8 @@ impl ReferenceText<'_> {
                             .get(index)
                             .copied()
                             .ok_or_else(|| {
-                                StoreError::Invalid(
-                                    "stored block has no original source ordinal".into(),
+                                StoreError::stored_data(
+                                    "stored block has no original source ordinal",
                                 )
                             })?;
                     if !complete && ordinal != index as u64 {

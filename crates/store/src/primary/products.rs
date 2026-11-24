@@ -102,8 +102,8 @@ impl Material {
             several => several.iter().map(|d| d.decoded_len).sum::<u64>() == self.length,
         };
         if !named || descriptors.iter().any(|descriptor| descriptor.len == 0) {
-            return Err(crate::StoreError::Invalid(
-                "a material differs from its committed blobs".into(),
+            return Err(crate::StoreError::internal(
+                "a material differs from its committed blobs",
             ));
         }
         Ok(descriptors)
@@ -115,23 +115,23 @@ impl Material {
     /// they are the material's last blobs, the first possibly entered part
     /// way.
     pub fn offset_of(&self, extents: &[crate::input_rows::Extent]) -> crate::Result<u64> {
-        let invalid =
-            || crate::StoreError::Invalid("input extents differ from their material".into());
+        let inconsistent =
+            || crate::StoreError::internal("input extents differ from their material");
         let descriptors = self.descriptors()?;
         let first = descriptors
             .len()
             .checked_sub(extents.len())
             .filter(|_| !extents.is_empty())
-            .ok_or_else(invalid)?;
+            .ok_or_else(inconsistent)?;
         let last = extents.len() - 1;
         for (index, (extent, blob)) in extents.iter().zip(&descriptors[first..]).enumerate() {
             let (Ok(offset), Ok(length)) = (
                 u64::try_from(extent.blob_offset),
                 u64::try_from(extent.length),
             ) else {
-                return Err(invalid());
+                return Err(inconsistent());
             };
-            let end = offset.checked_add(length).ok_or_else(invalid)?;
+            let end = offset.checked_add(length).ok_or_else(inconsistent)?;
             if extent.blob.0 != blob.hash.0
                 || extent.offset < 0
                 || end > blob.decoded_len
@@ -140,7 +140,7 @@ impl Material {
                 || index > 0
                     && extents[index - 1].offset + extents[index - 1].length != extent.offset
             {
-                return Err(invalid());
+                return Err(inconsistent());
             }
         }
         Ok(descriptors[..first]
@@ -438,15 +438,15 @@ pub fn parse(
     step: &crate::ParseStep,
 ) -> crate::Result<Vec<Product>> {
     if step.delivery.is_some() && source_length.is_none() {
-        return Err(crate::StoreError::Invalid(
-            "export products need their stored source length".into(),
+        return Err(crate::StoreError::internal(
+            "export products need their stored source length",
         ));
     }
     let event_ids = step.event_identities(&input.id, chain)?;
     let output = step.complete_output()?;
     if !output.blobs.is_empty() {
-        return Err(crate::StoreError::Invalid(
-            "decoded bytes must be prepared before their products".into(),
+        return Err(crate::StoreError::internal(
+            "decoded bytes must be prepared before their products",
         ));
     }
     step.validate_export()?;

@@ -106,7 +106,7 @@ pub fn visit(
     mut visit: impl FnMut(Annotation) -> Result<()>,
 ) -> Result<()> {
     let after = after.map(i64::try_from).transpose().map_err(|_| {
-        crate::StoreError::invalid("commit position exceeds SQLite's integer range")
+        crate::StoreError::internal("commit position exceeds SQLite's integer range")
     })?;
     let source = Source::reading(conn)?;
     let predicate = if after.is_some() {
@@ -129,8 +129,8 @@ pub fn visit(
 /// Families whose current revisions can change when these newly committed facts arrive.
 /// Includes withdrawal/reinstatement targets through the owning link rules.
 pub(crate) fn changed_roots(conn: &Connection, after: i64) -> Result<BTreeSet<String>> {
-    let after =
-        u64::try_from(after).map_err(|_| crate::StoreError::invalid("negative commit position"))?;
+    let after = u64::try_from(after)
+        .map_err(|_| crate::StoreError::stored_data("negative commit position"))?;
     let mut links = StoredLinks::new(conn)?;
     let mut roots = BTreeSet::new();
     visit(conn, Some(after), |annotation| {
@@ -144,8 +144,7 @@ pub(crate) fn changed_roots(conn: &Connection, after: i64) -> Result<BTreeSet<St
 }
 
 pub(crate) fn canonical_fact(fact: &AnnotationFact) -> Result<AnnotationFact> {
-    fact.canonicalized()
-        .map_err(|error| crate::StoreError::invalid(error.to_string()))
+    fact.canonicalized().map_err(crate::StoreError::internal)
 }
 
 /// The exact rubric revision an annotation was derived from: the one
@@ -214,7 +213,7 @@ fn slots_of(conn: &Connection, fact: &AnnotationFact) -> Result<Vec<UniqueSlot>>
     };
     Ok(fact
         .unique(rubric.as_ref())
-        .map_err(|error| crate::StoreError::invalid(error.to_string()))?
+        .map_err(crate::StoreError::stored_data)?
         .map(|unique| unique.slots)
         .unwrap_or_default())
 }
@@ -268,7 +267,7 @@ fn target(revision: &RevisionReference) -> Target {
 /// nothing; a different fact under a stored ID is refused.
 pub fn apply(conn: &Connection, annotations: &[AnnotationFact], counter: i64) -> Result<()> {
     if counter < 0 {
-        return Err(crate::StoreError::invalid("negative commit position"));
+        return Err(crate::StoreError::stored_data("negative commit position"));
     }
     let source = Source::of(conn)?;
     let mut written = Vec::new();
@@ -615,7 +614,7 @@ pub(crate) fn currency_error(error: CurrencyError<StoreError>) -> StoreError {
     match error {
         CurrencyError::Source(error) => error,
         CurrencyError::Cycle(revision) => {
-            crate::StoreError::invalid(format!("withdrawals of {revision} form a cycle"))
+            crate::StoreError::stored_data(format!("withdrawals of {revision} form a cycle"))
         }
     }
 }
@@ -650,7 +649,7 @@ pub fn heads(conn: &Connection, root: &Reference) -> Result<Vec<Reference>> {
                 })
                 .collect())
         }
-        _ => Err(crate::StoreError::invalid(
+        _ => Err(crate::StoreError::internal(
             "heads require an annotation or alternate root",
         )),
     }

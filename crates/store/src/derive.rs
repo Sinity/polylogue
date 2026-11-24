@@ -346,7 +346,7 @@ impl<'a> Pass<'a> {
                         .and_then(|j| waves.get(j))
                         .map(|w| w + 1)
                         .ok_or_else(|| {
-                            StoreError::Invalid(format!(
+                            StoreError::internal(format!(
                                 "derivation {} must follow {after}",
                                 d.name
                             ))
@@ -688,7 +688,7 @@ fn versions(derivations: &[Derivation], catalog: &Catalog) -> Result<Vec<String>
     let mut positions = BTreeMap::new();
     for (i, d) in derivations.iter().enumerate() {
         if positions.insert(d.name, i).is_some() {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::internal(format!(
                 "duplicate derivation {}",
                 d.name
             )));
@@ -709,7 +709,7 @@ fn versions(derivations: &[Derivation], catalog: &Catalog) -> Result<Vec<String>
         for after in d.after {
             let j = positions[after];
             if j >= i {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::internal(format!(
                     "derivation {} must follow {after}",
                     d.name
                 )));
@@ -739,7 +739,7 @@ fn check_dependencies(
     let d = &derivations[i];
     match marks[i] {
         1 => {
-            return Err(StoreError::Invalid(format!(
+            return Err(StoreError::internal(format!(
                 "derivation dependency cycle at {}",
                 d.name
             )));
@@ -750,7 +750,7 @@ fn check_dependencies(
     marks[i] = 1;
     for after in d.after {
         let j = *positions.get(after).ok_or_else(|| {
-            StoreError::Invalid(format!("derivation {} depends on missing {after}", d.name))
+            StoreError::internal(format!("derivation {} depends on missing {after}", d.name))
         })?;
         check_dependencies(j, derivations, positions, marks)?;
     }

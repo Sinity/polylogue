@@ -42,8 +42,8 @@ pub(crate) fn heads(conn: &Connection, root: &str) -> Result<Vec<Alternate>> {
                 part: None,
             } = reference
             else {
-                return Err(StoreError::Invalid(
-                    "alternate graph returned another reference kind".into(),
+                return Err(StoreError::stored_data(
+                    "alternate graph returned another reference kind",
                 ));
             };
             let id = revision
@@ -68,8 +68,12 @@ pub(crate) fn write(
     new: &NewAlternate,
     counter: i64,
 ) -> Result<UserOutcome> {
-    let source =
-        polylogue_model::Reference::parse(&new.source).map_err(crate::StoreError::invalid)?;
+    let source = polylogue_model::Reference::parse(&new.source).map_err(|error| {
+        polylogue_model::Reason::BadReference {
+            text: new.source.clone(),
+            problem: error.to_string(),
+        }
+    })?;
     if !matches!(
         source,
         polylogue_model::Reference::Session(_)
@@ -94,12 +98,15 @@ pub(crate) fn write(
                 ..
             }
     ) {
-        return Err(StoreError::Invalid(
-            "alternate source must name captured text or an exact authored revision".into(),
-        ));
+        return Err(polylogue_model::Reason::AlternateSource {}.into());
     }
     for part in &new.parts {
-        polylogue_model::Reference::parse(&part.of).map_err(crate::StoreError::invalid)?;
+        polylogue_model::Reference::parse(&part.of).map_err(|error| {
+            polylogue_model::Reason::BadReference {
+                text: part.of.clone(),
+                problem: error.to_string(),
+            }
+        })?;
     }
     let root = if let Some(base) = &new.base {
         let previous = rows::get(conn, base)?
@@ -120,9 +127,7 @@ pub(crate) fn write(
             || previous.from_lang != new.from_lang
             || previous.to_lang != new.to_lang
         {
-            return Err(StoreError::Invalid(
-                "an alternate revision must keep its source revision, kind and languages".into(),
-            ));
+            return Err(polylogue_model::Reason::AlternateRevisionChanges {}.into());
         }
         previous.root
     } else {
@@ -142,9 +147,7 @@ pub(crate) fn write(
         method: new.method.clone(),
         machine: r.machine.clone(),
         created_at: r.at,
-        commit_seq: counter
-            .try_into()
-            .or_invalid("negative alternate counter")?,
+        commit_seq: counter.try_into().or_stored("negative alternate counter")?,
     };
     rows::insert(conn, &v, counter)?;
     for (n, p) in new.parts.iter().enumerate() {

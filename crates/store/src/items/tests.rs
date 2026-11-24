@@ -146,6 +146,6 @@ fn counts_blob_lists_each_class_once() {
     repeated.extend_from_slice(&encoded[1..]);
     assert!(matches!(
         decode_counts(&repeated),
-        Err(StoreError::Invalid(_))
+        Err(StoreError::StoredValue { column: None, .. })
     ));
 }

@@ -16,8 +16,9 @@ pub enum Error {
     StaleCursor { changed: String },
     #[error("{0}")]
     InvalidQuery(String),
+    /// A request the caller can correct, with its typed reason.
     #[error("{0}")]
-    BadRequest(String),
+    BadRequest(polylogue_model::Reason),
     #[error("{0}")]
     BadValue(String),
     #[error("{0}")]
@@ -34,34 +35,36 @@ pub enum Error {
     Operation(command_surface::Failure),
 }
 impl Error {
-    pub fn code(&self) -> &str {
+    pub fn code(&self) -> polylogue_model::Code {
         use polylogue_model::Code;
         match self {
-            Self::Store(error) => error.code().as_str(),
-            Self::Selection(error) => error.code().as_str(),
+            Self::Store(error) => error.code(),
+            Self::Selection(error) => error.code(),
             Self::Layout(polylogue_render::ReadError::MissingPreparedData { .. }) => {
-                Code::NotYetAvailable.as_str()
+                Code::NotYetAvailable
             }
-            Self::Layout(_) => Code::BadRequest.as_str(),
+            Self::Layout(_) => Code::BadRequest,
             Self::Page(PageError::ItemChanged | PageError::InvalidPosition)
-            | Self::StaleCursor { .. } => Code::StaleCursor.as_str(),
-            Self::Page(_) | Self::BadRequest(_) => Code::BadRequest.as_str(),
-            Self::InvalidQuery(_) => Code::InvalidQuery.as_str(),
-            Self::BadValue(_) => Code::BadValue.as_str(),
-            Self::NotFound(_) => Code::NotFound.as_str(),
-            Self::NotYetAvailable(_) => Code::NotYetAvailable.as_str(),
-            Self::Conflict(_) => Code::Conflict.as_str(),
-            Self::Io(_) => Code::Io.as_str(),
-            Self::Internal(_) => Code::Internal.as_str(),
-            Self::Operation(error) => error.code.as_deref().unwrap_or(Code::Internal.as_str()),
+            | Self::StaleCursor { .. } => Code::StaleCursor,
+            Self::Page(_) => Code::BadRequest,
+            Self::BadRequest(reason) => reason.code(),
+            Self::InvalidQuery(_) => Code::InvalidQuery,
+            Self::BadValue(_) => Code::BadValue,
+            Self::NotFound(_) => Code::NotFound,
+            Self::NotYetAvailable(_) => Code::NotYetAvailable,
+            Self::Conflict(_) => Code::Conflict,
+            Self::Io(_) => Code::Io,
+            Self::Internal(_) => Code::Internal,
+            Self::Operation(error) => error
+                .code
+                .as_deref()
+                .and_then(Code::from_name)
+                .unwrap_or(Code::Internal),
         }
     }
 }
 
 impl Error {
-    pub(crate) fn bad_request(message: impl ToString) -> Self {
-        Self::BadRequest(message.to_string())
-    }
     pub(crate) fn not_found(message: impl ToString) -> Self {
         Self::NotFound(message.to_string())
     }
@@ -94,6 +97,11 @@ impl From<polylogue_store::query::QueryError> for Error {
 impl From<query_language::Error> for Error {
     fn from(error: query_language::Error) -> Self {
         Self::Selection(SelectionError::Language(error))
+    }
+}
+impl From<polylogue_model::Reason> for Error {
+    fn from(reason: polylogue_model::Reason) -> Self {
+        Self::BadRequest(reason)
     }
 }
 impl From<command_surface::Failure> for Error {

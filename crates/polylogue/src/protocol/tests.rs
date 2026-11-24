@@ -227,3 +227,393 @@ fn typed_failure_codes_keep_their_wire_names_and_classes() {
         assert_eq!(decoded.code.as_deref(), Some(wire));
     }
 }
+
+#[test]
+fn every_store_error_variant_has_a_code_and_kind() {
+    use polylogue_model::Code;
+    use polylogue_store::StoreError as E;
+    let busy =
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY), None);
+    let full = rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+        None,
+    );
+    let hash = polylogue_model::BlobHash([7; 32]);
+    let table: Vec<(E, Code, FailureKind, bool)> = vec![
+        (E::Sqlite(busy), Code::Busy, FailureKind::Timeout, true),
+        (E::Sqlite(full), Code::Store, FailureKind::Io, false),
+        (
+            E::Io(std::io::ErrorKind::PermissionDenied.into()),
+            Code::Io,
+            FailureKind::Io,
+            false,
+        ),
+        (
+            E::Blobs(hashed_blobs::Error::Corrupt {
+                segment: "s".into(),
+                offset: 0,
+                len: 1,
+                what: "hash".into(),
+            }),
+            Code::BlobCorrupt,
+            FailureKind::Io,
+            false,
+        ),
+        (
+            E::Blobs(hashed_blobs::Error::Unwrap("key".into())),
+            Code::Io,
+            FailureKind::Io,
+            false,
+        ),
+        (
+            E::Json(serde_json::from_str::<u8>("x").unwrap_err()),
+            Code::Io,
+            FailureKind::Io,
+            false,
+        ),
+        (
+            E::Bundle(polylogue_model::bundle::BundleError::InvalidPath),
+            Code::BadRequest,
+            FailureKind::BadRequest,
+            false,
+        ),
+        (
+            E::Locked {
+                path: "/home/op/archive".into(),
+                holder: Some(7),
+            },
+            Code::Conflict,
+            FailureKind::Conflict,
+            true,
+        ),
+        (
+            E::NewerSchema {
+                database: "index",
+                found: 9,
+                current: 8,
+            },
+            Code::Refused,
+            FailureKind::Refused,
+            false,
+        ),
+        (
+            E::OtherFormat {
+                database: "archive",
+                found: 1,
+            },
+            Code::Refused,
+            FailureKind::Refused,
+            false,
+        ),
+        (
+            E::EmbeddingsSchemaDiffers {
+                difference: "a column".into(),
+            },
+            Code::Refused,
+            FailureKind::Refused,
+            false,
+        ),
+        (
+            E::OlderFormat {
+                database: "archive",
+            },
+            Code::Refused,
+            FailureKind::Refused,
+            false,
+        ),
+        (
+            E::IndexVersion {
+                found: 1,
+                wanted: 2,
+            },
+            Code::IndexBuilding,
+            FailureKind::NotYetAvailable,
+            true,
+        ),
+        (
+            E::BlobCorrupt(hash),
+            Code::BlobCorrupt,
+            FailureKind::Io,
+            false,
+        ),
+        (
+            E::Counts(polylogue_model::CountMismatch {
+                records: 2,
+                counted: 1,
+            }),
+            Code::Internal,
+            FailureKind::Internal,
+            false,
+        ),
+        (
+            E::WriterGone,
+            Code::NotRunning,
+            FailureKind::NotRunning,
+            true,
+        ),
+        (
+            E::Stopped,
+            Code::ShuttingDown,
+            FailureKind::NotRunning,
+            true,
+        ),
+        (
+            E::StorageFailed(polylogue_store::storage_failure::StorageFailure {
+                path: "/home/op/archive".into(),
+                message: "sync failed".into(),
+                errno: Some(5),
+            }),
+            Code::Io,
+            FailureKind::Io,
+            false,
+        ),
+        (
+            E::ReadDeadlineExceeded,
+            Code::DeadlineExceeded,
+            FailureKind::Timeout,
+            true,
+        ),
+        (
+            E::ReadCancelled,
+            Code::Cancelled,
+            FailureKind::Cancelled,
+            false,
+        ),
+        (
+            E::ReadPoolClosed,
+            Code::NotRunning,
+            FailureKind::NotRunning,
+            true,
+        ),
+        (
+            E::ReadPoolNested,
+            Code::Internal,
+            FailureKind::Internal,
+            false,
+        ),
+        (
+            E::ScopeChanged,
+            Code::ScopeChanged,
+            FailureKind::Conflict,
+            true,
+        ),
+        (
+            E::ReadIndexReplaced,
+            Code::Conflict,
+            FailureKind::Conflict,
+            true,
+        ),
+        (
+            E::IndexBuilding(Box::new(
+                polylogue_store::archive::index_build::IndexBuild {
+                    serving_previous: false,
+                    chains: 2,
+                    chains_read: 1,
+                    bytes: 10,
+                    bytes_read: 5,
+                },
+            )),
+            Code::IndexBuilding,
+            FailureKind::NotYetAvailable,
+            true,
+        ),
+        (
+            E::Conflict("request-1".into()),
+            Code::IdempotencyKeyReused,
+            FailureKind::Conflict,
+            false,
+        ),
+        (
+            E::Stale {
+                reference: "annotation:a@1".into(),
+                current: vec!["annotation:a@2".into()],
+            },
+            Code::Stale,
+            FailureKind::Conflict,
+            false,
+        ),
+        (
+            E::Ambiguous {
+                reference: "query:ab".into(),
+                candidates: vec!["query:ab1".into(), "query:ab2".into()],
+            },
+            Code::Ambiguous,
+            FailureKind::Ambiguous,
+            false,
+        ),
+        (
+            E::IncompleteParents(Box::new(polylogue_model::read::ParentIssue::Cycle {
+                session: polylogue_model::SessionId::parse("codex:s").unwrap(),
+            })),
+            Code::IncompleteParents,
+            FailureKind::BadRequest,
+            false,
+        ),
+        (
+            E::NotFound("session:codex:s".into()),
+            Code::NotFound,
+            FailureKind::NotFound,
+            false,
+        ),
+        (
+            E::ChatAction("action_finished"),
+            Code::Conflict,
+            FailureKind::Conflict,
+            false,
+        ),
+        (
+            E::ImportJob("job_ended"),
+            Code::Conflict,
+            FailureKind::Conflict,
+            false,
+        ),
+        (
+            E::PrimaryPending {
+                identity: "capture-1".into(),
+            },
+            Code::Degraded,
+            FailureKind::Io,
+            true,
+        ),
+        (
+            E::UnresolvedBaseConflict {
+                spooled: polylogue_store::primary::SpooledGroup {
+                    identity: "group".into(),
+                    count: 1,
+                },
+            },
+            Code::Conflict,
+            FailureKind::Conflict,
+            false,
+        ),
+        (
+            E::ConfirmedReadDenied("revoked".into()),
+            Code::ScopeChanged,
+            FailureKind::Conflict,
+            false,
+        ),
+        (
+            E::Sinex("unreachable".into()),
+            Code::SinexUnavailable,
+            FailureKind::Io,
+            true,
+        ),
+        (
+            E::Invalid("refused".into()),
+            Code::BadRequest,
+            FailureKind::BadRequest,
+            false,
+        ),
+        (
+            E::Refused(polylogue_model::Reason::NoStatements {}),
+            Code::BadRequest,
+            FailureKind::BadRequest,
+            false,
+        ),
+        (
+            E::Refused(polylogue_model::Reason::SinexRefused {
+                name: "write".into(),
+                reason: "denied".into(),
+            }),
+            Code::Refused,
+            FailureKind::Refused,
+            false,
+        ),
+        (
+            E::internal("an invariant"),
+            Code::Internal,
+            FailureKind::Internal,
+            false,
+        ),
+        (
+            E::RowsRefused {
+                stored: polylogue_store::staging::StoredInput {
+                    input: "input".into(),
+                    chain: 1,
+                    length: 3,
+                    already_stored: false,
+                    bytes_written: 3,
+                },
+                reason: "a row".into(),
+            },
+            Code::Import,
+            FailureKind::Io,
+            false,
+        ),
+        (
+            E::stored_data("an extent gap"),
+            Code::Io,
+            FailureKind::Io,
+            false,
+        ),
+        (
+            E::Query(polylogue_store::query::QueryError::NotBuilt {
+                what: "a feature".into(),
+            }),
+            Code::NotBuilt,
+            FailureKind::NotYetAvailable,
+            false,
+        ),
+        (
+            E::ReferenceUnavailable {
+                reference: "message:codex:m".into(),
+                reason: "pending".into(),
+            },
+            Code::NotYetAvailable,
+            FailureKind::NotYetAvailable,
+            true,
+        ),
+        (
+            E::Selection {
+                code: Code::StaleCursor,
+                message: "moved".into(),
+            },
+            Code::StaleCursor,
+            FailureKind::StaleCursor,
+            false,
+        ),
+    ];
+    for (error, code, kind, retryable) in table {
+        let failure = store_failure(&error);
+        assert_eq!(error.code(), code, "{error:?}");
+        assert_eq!(failure.code.as_deref(), Some(code.as_str()), "{error:?}");
+        assert_eq!(failure.kind, kind, "{error:?}");
+        assert_eq!(failure.retryable, retryable, "{error:?}");
+    }
+}
+
+#[test]
+fn user_impossible_invariants_are_internal() {
+    let error = polylogue_store::StoreError::internal("a selected row has no session");
+    let failure = store_failure(&error);
+    assert_eq!(failure.kind, FailureKind::Internal);
+    assert_eq!(failure.code.as_deref(), Some("internal"));
+    assert_eq!(
+        failure.message,
+        "a selected row has no session; this is a Polylogue bug; report it with the request ID"
+    );
+    let daemon = crate::daemon::Failure::internal("an accepted line has no request");
+    assert_eq!(daemon.kind, FailureKind::Internal);
+    assert_eq!(
+        daemon.message,
+        "an accepted line has no request; this is a Polylogue bug; report it with the request ID"
+    );
+}
+
+/// The operation table registers every code with its kind once; a code
+/// a failure carries is always one of them, so a reason's code is too.
+#[test]
+fn every_failure_code_is_registered() {
+    let _ = crate::commands::declarations();
+    for code in polylogue_model::Code::ALL {
+        let failure = failure(*code, "failed");
+        assert_eq!(failure.kind, kind(*code), "{code:?}");
+        assert_eq!(
+            failure
+                .code
+                .as_deref()
+                .and_then(polylogue_model::Code::from_name),
+            Some(*code)
+        );
+    }
+}

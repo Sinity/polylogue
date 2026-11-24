@@ -107,7 +107,7 @@ codes!(boundary_code, boundary_of, Boundary {
 });
 
 fn malformed() -> StoreError {
-    StoreError::invalid("malformed session item entry")
+    StoreError::stored_data("malformed session item entry")
 }
 
 /// The stored bytes of `entry`. `header` is the message header when
@@ -126,7 +126,7 @@ pub(crate) fn encode(entry: &IndexEntry, header: Option<&IndexEntry>) -> Result<
                 && header.branch_point == entry.branch_point
                 && header.at == entry.at;
             if !shares {
-                return Err(StoreError::Invalid(format!(
+                return Err(StoreError::stored_data(format!(
                     "entry {} differs from its message header in what the header stores",
                     entry.key.reference()
                 )));
@@ -134,8 +134,8 @@ pub(crate) fn encode(entry: &IndexEntry, header: Option<&IndexEntry>) -> Result<
             *block
         }
         (EntryKey::Event { .. }, Some(_)) => {
-            return Err(StoreError::Invalid(
-                "an event entry is never a later entry of a message".into(),
+            return Err(StoreError::stored_data(
+                "an event entry is never a later entry of a message",
             ));
         }
     };

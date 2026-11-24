@@ -8,11 +8,11 @@ use polylogue_model::user::{ChatAction, ImportJob, UserWrite};
 use std::collections::BTreeSet;
 
 fn event_index(n: i64) -> Result<usize> {
-    usize::try_from(n.checked_sub(1).or_invalid("event order is out of range")?)
-        .or_invalid("event order starts at one")
+    usize::try_from(n.checked_sub(1).or_stored("event order is out of range")?)
+        .or_stored("event order starts at one")
 }
 fn time(at: i64) -> Result<Timestamp> {
-    Timestamp::from_unix_ms(at).or_invalid("authored timestamp is out of range")
+    Timestamp::from_unix_ms(at).or_stored("authored timestamp is out of range")
 }
 fn ids(conn: &Connection, table: &str, filter: &str, seq: Option<i64>) -> Result<Vec<String>> {
     let source = Source::reading(conn)?;
@@ -168,7 +168,7 @@ pub(super) fn capture(
                     .events
                     .get(event_index(n)?)
                     .cloned()
-                    .or_invalid("chat event order has a gap")
+                    .or_stored("chat event order has a gap")
             })
             .collect::<Result<_>>()?;
         effect.chats.push(ChatChange {
@@ -191,7 +191,7 @@ pub(super) fn capture(
                 job.events
                     .get(event_index(n)?)
                     .cloned()
-                    .or_invalid("import_job event order has a gap")
+                    .or_stored("import_job event order has a gap")
             })
             .collect::<Result<_>>()?;
         effect
@@ -319,7 +319,7 @@ fn append_chat(
         }
         n = n
             .checked_add(1)
-            .or_invalid("chat event order is out of range")?;
+            .or_stored("chat event order is out of range")?;
         conn.execute(&source.sql("INSERT INTO @source.chat_action_event(action,n,at,kind,phase,detail,by,receipt_json,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)"),params![id,n,event.at,event.kind,event.phase,event.detail,event.by,event.receipt.as_ref().map(serde_json::to_string).transpose()?,event.request,counter])?;
     }
     Ok(())
@@ -371,7 +371,7 @@ fn append_backfill(
         }
         n = n
             .checked_add(1)
-            .or_invalid("import_job event order is out of range")?;
+            .or_stored("import_job event order is out of range")?;
         let count = |value: u64| crate::to_i64(value, "import_job count is out of range");
         conn.execute(&source.sql("INSERT INTO @source.import_job_event(job,n,at,kind,by,position,listed,captured,unchanged,failed,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![id,n,event.at,event.kind,event.by,event.position,count(event.counts.listed)?,count(event.counts.captured)?,count(event.counts.unchanged)?,count(event.counts.failed)?,event.detail,event.request,counter])?;
     }
@@ -444,7 +444,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         let outcome: Option<Vec<u8>> = row.get(4)?;
         let effect: Option<Vec<u8>> = row.get(5)?;
         // Decode complete records before adding them to the private view.
-        let missing = || StoreError::Invalid(format!("request {id} has no recorded record"));
+        let missing = || StoreError::internal(format!("request {id} has no recorded record"));
         let _: UserRequest = crate::encoding::unpack_json(&request)?;
         let _: UserOutcome = crate::encoding::unpack_json(outcome.as_ref().ok_or_else(missing)?)?;
         let _: AuthoredEffect = crate::encoding::unpack_json(effect.as_ref().ok_or_else(missing)?)?;

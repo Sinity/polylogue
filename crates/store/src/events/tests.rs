@@ -49,7 +49,7 @@ fn unreadable_event_coordinates_are_stored_value_failures() {
                 column: found,
                 reason: found_reason,
             } => {
-                assert_eq!(*found, column);
+                assert_eq!(*found, Some(column));
                 if let Some(reason) = reason {
                     assert_eq!(found_reason, reason);
                 }
