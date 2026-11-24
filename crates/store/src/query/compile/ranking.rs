@@ -124,23 +124,13 @@ pub(crate) struct SearchLeg {
 }
 
 impl SearchLeg {
-    pub fn table(&self) -> &'static str {
-        match self.index {
-            SnippetIndex::Prose => "text_fts",
-            SnippetIndex::Output => "output_fts",
-        }
-    }
-
     /// The `(text_id, rank)` CTE over the whole index, or its best `limit`
     /// texts.
     pub fn indexed(&self, limit: Option<&str>) -> String {
-        let table = self.table();
-        let prefix = limit.map_or_else(String::new, |limit| {
-            format!(" ORDER BY {table}.rank LIMIT {limit}")
-        });
         format!(
-            "{} AS MATERIALIZED (SELECT rowid AS text_id, bm25({table}) AS rank FROM {table} WHERE {table} MATCH {}{prefix})",
-            self.name, self.parameter
+            "{} AS MATERIALIZED ({})",
+            self.name,
+            crate::search::ranked_texts(self.index, &self.parameter, None, limit)
         )
     }
 

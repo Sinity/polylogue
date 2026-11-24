@@ -1,11 +1,14 @@
 //! Full-text search over prose (`text_fts`) and tool output (`output_fts`),
 //! and trigram search over commands and paths. Every search runs through
 //! the query language (`polylogue_query`), which applies the units'
-//! visibility rules; this module splits words as the index does and cuts
-//! a query result's snippet. A first build writes the entries in bulk when
-//! it ends; afterwards the search thread computes them shortly after their
-//! text commits (`search_pending`) and the writer applies them, and a flush writes
-//! every waiting entry before it returns.
+//! visibility rules; this module splits words as the index does, writes the
+//! statements that search the full-text files, and cuts a query result's
+//! snippet. The entries are held in several files beside the index
+//! ([`files`]) and ranked with the statistics of all of them ([`rank`]). A
+//! first build fills the files while it composes; afterwards the search
+//! thread computes entries shortly after their text commits
+//! (`search_pending`) and the writer applies them, and a flush writes every
+//! waiting entry before it returns.
 //!
 //! The indexes are contentless: a hit is a `text.id`, and its snippet is
 //! selected and cut from stored text.
@@ -94,7 +97,86 @@ impl SnippetQuery<'_> {
     }
 }
 
+pub(crate) mod files;
 mod hits;
+mod rank;
+
+/// The full-text table `index` names in each file.
+pub(crate) fn table(index: SnippetIndex) -> &'static str {
+    match index {
+        SnippetIndex::Prose => "text_fts",
+        SnippetIndex::Output => "output_fts",
+    }
+}
+
+/// The summed statistics of every file for the expression bound at
+/// `expression`, as the CTE `search_stats` ([`rank`]).
+fn statistics(table: &str, expression: &str) -> String {
+    let files = (0..files::FILES)
+        .map(|n| {
+            format!(
+                "SELECT pl_search_stats(f.{table},t.entries,t.tokens) AS s \
+                 FROM {file}.{table} f CROSS JOIN {file}.totals t ON t.name='{table}' \
+                 WHERE f.{table} MATCH '(' || {expression} || ') OR \"' || char(57344) || '\"' AND f.rowid=0",
+                file = files::schema(n)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    format!("search_stats AS MATERIALIZED (SELECT pl_search_total(s) AS s FROM ({files}))")
+}
+
+/// A statement of `(text_id, rank)` for the texts in `index` matching the
+/// expression bound at `expression`, ranked over every file as over one;
+/// lower ranks first. `texts` names a relation of `text_id`s that bounds
+/// the texts looked up; `limit` keeps the best that many, ties by key.
+pub(crate) fn ranked_texts(
+    index: SnippetIndex,
+    expression: &str,
+    texts: Option<&str>,
+    limit: Option<&str>,
+) -> String {
+    let table = table(index);
+    let arms = (0..files::FILES)
+        .map(|n| {
+            let file = files::schema(n);
+            let rank = format!("pl_bm25(f.{table},(SELECT s FROM search_stats))");
+            match texts {
+                Some(texts) => format!(
+                    "SELECT t.text_id,{rank} AS rank FROM {texts} t \
+                     CROSS JOIN {file}.{table} f ON f.rowid=t.text_id WHERE f.{table} MATCH {expression}"
+                ),
+                None => format!(
+                    "SELECT f.rowid AS text_id,{rank} AS rank FROM {file}.{table} f \
+                     WHERE f.{table} MATCH {expression} AND f.rowid>0"
+                ),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    let limit = limit.map_or_else(String::new, |limit| {
+        format!(" ORDER BY rank,text_id LIMIT {limit}")
+    });
+    format!(
+        "WITH {} SELECT text_id,rank FROM ({arms}){limit}",
+        statistics(table, expression)
+    )
+}
+
+/// A statement of the `text_id`s in `index` matching the expression bound at
+/// `expression`, unranked, in no order.
+pub(crate) fn matching_texts(index: SnippetIndex, expression: &str) -> String {
+    let table = table(index);
+    (0..files::FILES)
+        .map(|n| {
+            format!(
+                "SELECT f.rowid AS text_id FROM {}.{table} f WHERE f.{table} MATCH {expression} AND f.rowid>0",
+                files::schema(n)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ")
+}
 
 /// The same source wins query ranking and snippet selection.
 pub(crate) fn best_source(source: &str, group: &str) -> String {

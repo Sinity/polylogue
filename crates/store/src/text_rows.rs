@@ -3,17 +3,15 @@
 //! removed text had is never given to another text while an entry may still
 //! name it. Which search indexes a text belongs to follows the blocks that
 //! hold it, through the index schema's triggers (`schema/search_triggers.sql`);
-//! the search thread writes the queued entries after the writer commits.
+//! the search thread computes the queued changes to entries after the writer
+//! commits, and the writer applies them to the full-text files.
 
-use crate::ConnExt as _;
 use crate::{Result, StoreError};
 mod groups;
-mod search_build;
+mod search_fill;
 pub(crate) use groups::{PreparedTexts, column, joined, read, slice};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-pub(crate) use search_build::SearchBuild;
-#[cfg(test)]
-pub(crate) use search_build::build_search_indexes;
+pub(crate) use search_fill::SearchFill;
 
 /// The row of a complete text hash: the stored one, or a new row holding
 /// the prepared body.
@@ -69,14 +67,19 @@ pub(crate) const SEARCH_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Debug, Default)]
 pub(crate) struct SearchEntries {
     entries: Vec<SearchEntry>,
-    /// The queue holds entries whose text rows are gone.
-    orphans: bool,
 }
 
 #[derive(Debug)]
 struct SearchEntry {
     text_id: i64,
     fts_table: i64,
+    /// What the entry becomes: `None` when the text is no longer a member
+    /// of the index (or no longer exists), so its entry leaves.
+    text: Option<EntryText>,
+}
+
+#[derive(Debug)]
+struct EntryText {
     /// The text's content hash when it was read: an entry applies only to
     /// the same content.
     hash: Vec<u8>,
@@ -86,12 +89,13 @@ struct SearchEntry {
 impl SearchEntries {
     /// Nothing to apply: the queue was empty when it was read.
     pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty() && !self.orphans
+        self.entries.is_empty()
     }
 }
 
-/// Reads the next queued search entries and their folded text, up to
-/// `byte_limit` of text, in one read transaction. Writes nothing.
+/// Reads the next queued changes to search entries and the folded text of
+/// those that enter, up to `byte_limit` of text, in one read transaction.
+/// Writes nothing.
 pub(crate) fn pending_entries(conn: &Connection, byte_limit: usize) -> Result<SearchEntries> {
     let tx = conn.unchecked_transaction()?;
     // Read the ordered queue first; a join can instead scan all historical
@@ -100,66 +104,96 @@ pub(crate) fn pending_entries(conn: &Connection, byte_limit: usize) -> Result<Se
     // multiply text held.
     let ids: Vec<(i64, i64)> = tx
         .prepare_cached(
-            "SELECT p.text_id, p.fts_table FROM search_pending p
-             WHERE EXISTS(SELECT 1 FROM text t WHERE t.id = p.text_id)
-             ORDER BY p.text_id, p.fts_table LIMIT ?1",
+            "SELECT text_id, fts_table FROM search_pending ORDER BY text_id, fts_table LIMIT ?1",
         )?
         .query_map([SEARCH_ROWS], |r| <(_, _)>::try_from(r))?
         .collect::<rusqlite::Result<_>>()?;
-    let orphans = ids.is_empty() && tx.exists("SELECT EXISTS(SELECT 1 FROM search_pending)", [])?;
     let mut entries = Vec::new();
     let mut bytes = 0;
     for (text_id, fts_table) in ids {
-        let hash = tx
-            .prepare_cached("SELECT hash FROM text WHERE id = ?1")?
-            .query_row([text_id], |r| r.get(0))?;
-        let (folded, length) = folded_text(read(&tx, text_id)?);
-        bytes += length;
+        let member: Option<Vec<u8>> = tx
+            .prepare_cached("SELECT hash FROM text WHERE id = ?1 AND indexed & ?2 <> 0")?
+            .query_row([text_id, fts_table], |r| r.get(0))
+            .optional()?;
+        let text = match member {
+            Some(hash) => {
+                let (folded, length) = folded_text(read(&tx, text_id)?);
+                bytes += length;
+                Some(EntryText { hash, folded })
+            }
+            None => None,
+        };
         entries.push(SearchEntry {
             text_id,
             fts_table,
-            hash,
-            folded,
+            text,
         });
         if bytes >= byte_limit {
             break;
         }
     }
     tx.finish()?;
-    Ok(SearchEntries { entries, orphans })
+    Ok(SearchEntries { entries })
 }
 
-/// Writes computed search entries in one transaction, with the number
-/// written. An entry whose queue row is gone, or whose text now holds other
-/// content, was settled by a write after it was read and is skipped.
+/// Applies computed changes to search entries, with the number of queue rows
+/// settled. A change whose queue row is gone, or whose text has changed
+/// since it was read, was overtaken by a write after the read and is left
+/// for the next read. The full-text files commit first and the queue rows
+/// leave after, so a crash between the two leaves the rows, and applying
+/// them again writes the same entries.
+///
+/// A build's writer has no full-text files attached
+/// ([`crate::search::files`]); its queue waits for the installed index.
 pub(crate) fn apply_entries(conn: &Connection, computed: &SearchEntries) -> Result<u64> {
+    if computed.is_empty() || !crate::search::files::attached(conn)? {
+        return Ok(0);
+    }
     // Immediate: a deferred reader cannot wait to upgrade its writer lock.
     let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    let before = tx.total_changes();
-    if computed.orphans {
-        tx.execute(
-            "DELETE FROM search_pending WHERE text_id NOT IN (SELECT id FROM text)",
-            [],
-        )?;
-    }
-    let mut written = 0;
+    let mut applied = Vec::new();
     for entry in &computed.entries {
-        let removed = tx
-            .prepare_cached(
-                "DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2
-                 AND EXISTS(SELECT 1 FROM text WHERE id = ?1 AND hash = ?3)",
-            )?
-            .execute(params![entry.text_id, entry.fts_table, entry.hash])?;
-        if removed != 0 {
-            insert_entry(&tx, entry.text_id, entry.fts_table, &entry.folded)?;
-            written += 1;
+        let current = match &entry.text {
+            Some(text) => tx
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM search_pending WHERE text_id = ?1 AND fts_table = ?2)
+                     AND EXISTS(SELECT 1 FROM text WHERE id = ?1 AND indexed & ?2 <> 0 AND hash = ?3)",
+                )?
+                .query_row(params![entry.text_id, entry.fts_table, text.hash], |r| {
+                    r.get::<_, bool>(0)
+                })?,
+            None => tx
+                .prepare_cached(
+                    "SELECT EXISTS(SELECT 1 FROM search_pending WHERE text_id = ?1 AND fts_table = ?2)
+                     AND NOT EXISTS(SELECT 1 FROM text WHERE id = ?1 AND indexed & ?2 <> 0)",
+                )?
+                .query_row(params![entry.text_id, entry.fts_table], |r| {
+                    r.get::<_, bool>(0)
+                })?,
+        };
+        if current {
+            set_entry(
+                &tx,
+                entry.text_id,
+                entry.fts_table,
+                entry.text.as_ref().map(|text| text.folded.as_str()),
+            )?;
+            applied.push((entry.text_id, entry.fts_table));
         }
     }
-    if tx.total_changes() != before {
-        crate::archive::bump_counter(&tx)?;
-    }
     tx.commit()?;
-    Ok(written)
+    if applied.is_empty() {
+        return Ok(0);
+    }
+    crate::fault::check("search.before_queue", conn.path().unwrap_or_default())?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    for (text_id, fts_table) in &applied {
+        tx.prepare_cached("DELETE FROM search_pending WHERE text_id = ?1 AND fts_table = ?2")?
+            .execute(params![text_id, fts_table])?;
+    }
+    crate::archive::bump_counter(&tx)?;
+    tx.commit()?;
+    Ok(applied.len() as u64)
 }
 
 /// Drains committed search work in bounded transactions on one connection
@@ -190,22 +224,118 @@ fn folded_text(text: String) -> (String, usize) {
     (folded, length)
 }
 
-fn insert_entry(conn: &Connection, id: i64, bit: i64, folded: &str) -> Result<()> {
-    let sql = if bit == 1 {
-        "INSERT INTO text_fts(rowid, body) VALUES (?1, ?2)"
-    } else {
-        "INSERT INTO output_fts(rowid, body) VALUES (?1, ?2)"
+/// Makes text `id`'s entry in the index `bit` names hold `folded`, or
+/// removes it, in the file that holds the text's entries. Writing the same
+/// entry twice leaves one.
+fn set_entry(conn: &Connection, id: i64, bit: i64, folded: Option<&str>) -> Result<()> {
+    let file = crate::search::files::schema(crate::search::files::file_of(id));
+    let table = if bit == 1 { "text_fts" } else { "output_fts" };
+    write_entry(conn, &file, table, id, folded)
+}
+
+/// [`set_entry`] in the file attached as `file` (`main` for a file opened
+/// alone), keeping the file's totals ([`crate::search::files`]): an entry
+/// removed takes its tokens, read from FTS5's record of each entry's length,
+/// out of them, and one written adds its own.
+pub(crate) fn write_entry(
+    conn: &Connection,
+    file: &str,
+    table: &str,
+    id: i64,
+    folded: Option<&str>,
+) -> Result<()> {
+    let length = |conn: &Connection| -> Result<Option<i64>> {
+        let size: Option<Vec<u8>> = conn
+            .prepare_cached(&format!(
+                "SELECT sz FROM {file}.{table}_docsize WHERE id = ?1"
+            ))?
+            .query_row([id], |r| r.get(0))
+            .optional()?;
+        size.map(|size| {
+            entry_length(&size)
+                .ok_or_else(|| StoreError::stored(0, "a full-text entry has no length"))
+        })
+        .transpose()
     };
-    conn.prepare_cached(sql)?.execute(params![id, folded])?;
+    let total = |conn: &Connection, entries: i64, tokens: i64| -> Result<()> {
+        conn.prepare_cached(&format!(
+            "UPDATE {file}.totals SET entries = entries + ?2, tokens = tokens + ?3 WHERE name = ?1"
+        ))?
+        .execute(params![table, entries, tokens])?;
+        Ok(())
+    };
+    if let Some(tokens) = length(conn)? {
+        conn.prepare_cached(&format!("DELETE FROM {file}.{table} WHERE rowid = ?1"))?
+            .execute([id])?;
+        total(conn, -1, -tokens)?;
+    }
+    if let Some(folded) = folded {
+        conn.prepare_cached(&format!(
+            "INSERT INTO {file}.{table}(rowid, body) VALUES (?1, ?2)"
+        ))?
+        .execute(params![id, folded])?;
+        let tokens = length(conn)?
+            .ok_or_else(|| StoreError::internal("a written full-text entry has no length"))?;
+        total(conn, 1, tokens)?;
+    }
     Ok(())
 }
 
-/// Removes a text row with its search entries; its group leaves with its
-/// last text.
+/// An entry's token count from its FTS5 size record: one SQLite varint for
+/// the one column.
+fn entry_length(size: &[u8]) -> Option<i64> {
+    let mut value: u64 = 0;
+    for (n, &byte) in size.iter().enumerate() {
+        if n == 8 {
+            return Some(((value << 8) | u64::from(byte)) as i64);
+        }
+        value = (value << 7) | u64::from(byte & 0x7f);
+        if byte & 0x80 == 0 {
+            return Some(value as i64);
+        }
+    }
+    None
+}
+
+/// Empties every full-text file at once, after a transaction that removed
+/// every text and queued the removal of its entries. The queue rows leave
+/// after the files commit; a crash between leaves them for upkeep, which
+/// finds nothing left to remove.
+pub(crate) fn clear_entries(conn: &Connection) -> Result<()> {
+    if !crate::search::files::attached(conn)? {
+        return Ok(());
+    }
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    for n in 0..crate::search::files::FILES {
+        let file = crate::search::files::schema(n);
+        for table in ["text_fts", "output_fts"] {
+            tx.execute_batch(&format!(
+                "INSERT INTO {file}.{table}({table}) VALUES ('delete-all');
+                 INSERT INTO {file}.{table}(rowid, body) VALUES (0, char(57344));
+                 UPDATE {file}.totals SET entries = 0, tokens = 0 WHERE name = '{table}';"
+            ))?;
+        }
+    }
+    tx.commit()?;
+    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
+    tx.execute(
+        "DELETE FROM search_pending WHERE NOT EXISTS(SELECT 1 FROM text WHERE id = text_id)",
+        [],
+    )?;
+    crate::archive::bump_counter(&tx)?;
+    tx.commit()?;
+    Ok(())
+}
+
+/// Removes a text row and queues the removal of its search entries; its
+/// group leaves with its last text.
 pub(crate) fn remove(i: &Connection, id: i64) -> Result<()> {
-    i.execute("DELETE FROM text_fts WHERE rowid = ?1", [id])?;
-    i.execute("DELETE FROM output_fts WHERE rowid = ?1", [id])?;
-    i.execute("DELETE FROM search_pending WHERE text_id = ?1", [id])?;
+    i.execute(
+        "INSERT OR IGNORE INTO search_pending(text_id, fts_table)
+         SELECT ?1, bit FROM (SELECT 1 AS bit UNION ALL SELECT 2)
+         WHERE (SELECT indexed FROM text WHERE id = ?1) & bit <> 0",
+        [id],
+    )?;
     groups::delete(i, id)
 }
 

@@ -147,7 +147,10 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
     assert_eq!(texts, ["narwhal", "walrus ", "walrus narwhal"]);
     let found: i64 = index
         .query_row(
-            "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'narwhal'",
+            &format!(
+                "SELECT count(*) FROM ({})",
+                crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'narwhal'")
+            ),
             [],
             |r| r.get(0),
         )

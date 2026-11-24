@@ -385,7 +385,15 @@ fn main() {
     let status = fs::read_to_string("/proc/self/status").ok();
     // Peak memory covers the process, including setup and generation.
     let peak_rss_mb = peak_memory_mb(status.as_deref());
-    let index = dir_size(&archive.index_db()) + dir_size(&root.join("index.db-wal"));
+    // The index with its full-text files, which live in `search-*` beside it.
+    let full_text: u64 = fs::read_dir(&root)
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("search-"))
+        .map(|entry| dir_size(&entry.path()))
+        .sum();
+    let index = dir_size(&archive.index_db()) + dir_size(&root.join("index.db-wal")) + full_text;
     let stored = dir_size(&archive.archive_db()) + dir_size(&archive.blobs_dir());
     println!(
         "{}",

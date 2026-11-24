@@ -470,7 +470,10 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         );
         let hits = r
             .query(
-                "SELECT COUNT(*) AS n FROM tool_call_trigram WHERE tool_call_trigram MATCH 'cargo'",
+                &format!(
+                    "SELECT count(*) AS n FROM ({})",
+                    crate::search::matching_texts(crate::search::SnippetIndex::Output, "'cargo'")
+                ),
                 &[],
             )
             .unwrap();
@@ -501,15 +504,24 @@ fn prose_and_tool_output_are_searchable_once_a_build_ends() {
     let r = pool.reader().unwrap();
     let n = |sql: &str| r.query(sql, &[]).unwrap()[0]["n"].clone();
     assert_eq!(
-        n("SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'walrus'"),
+        n(&format!(
+            "SELECT count(*) AS n FROM ({})",
+            crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'walrus'")
+        )),
         1
     );
     assert_eq!(
-        n("SELECT COUNT(*) AS n FROM output_fts WHERE output_fts MATCH 'narwhal'"),
+        n(&format!(
+            "SELECT count(*) AS n FROM ({})",
+            crate::search::matching_texts(crate::search::SnippetIndex::Output, "'narwhal'")
+        )),
         1
     );
     assert_eq!(
-        n("SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'narwhal'"),
+        n(&format!(
+            "SELECT count(*) AS n FROM ({})",
+            crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'narwhal'")
+        )),
         0
     );
 }
@@ -560,7 +572,10 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
         let r = pool.reader().unwrap();
         let hits = r
             .query(
-                "SELECT COUNT(*) AS n FROM text_fts WHERE text_fts MATCH 'okapi'",
+                &format!(
+                    "SELECT count(*) AS n FROM ({})",
+                    crate::search::matching_texts(crate::search::SnippetIndex::Prose, "'okapi'")
+                ),
                 &[],
             )
             .unwrap()[0]["n"]

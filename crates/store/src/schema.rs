@@ -178,9 +178,9 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 6;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 10;
+pub const INDEX_VERSION: u32 = 11;
 /// The primary cache's schema and row encoding version.
-pub const PRIMARY_INDEX_VERSION: u32 = 13;
+pub const PRIMARY_INDEX_VERSION: u32 = 14;
 
 pub const fn index_version(primary: bool) -> u32 {
     if primary {
@@ -272,8 +272,11 @@ pub(crate) fn built_at_end_sql() -> Result<Vec<String>> {
         .collect()
 }
 
+/// Creates the index in an empty database outside a transaction, with its
+/// full-text files attached.
 pub fn create_index(conn: &Connection) -> Result<()> {
-    create_index_in(conn, false, false)
+    create_index_in(conn, false, false)?;
+    crate::search::files::attach(conn)
 }
 
 fn add_primary(conn: &Connection) -> Result<()> {
@@ -298,6 +301,7 @@ fn base_index_in(conn: &Connection, deferring: bool) -> Result<()> {
 
 fn create_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<()> {
     base_index_in(conn, deferring)?;
+    crate::search::files::create(conn, deferring)?;
     execute_index_sql(conn, OPEN_INDEXES, deferring)?;
     if primary {
         add_primary(conn)?;
@@ -360,6 +364,10 @@ fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<
         }
     }
     tx.commit()?;
+    // A build's writer reaches its files only once the build ends.
+    if !deferring {
+        crate::search::files::attach(conn)?;
+    }
     Ok(())
 }
 

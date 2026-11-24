@@ -498,33 +498,16 @@ pub(crate) fn open_writer(archive: &Archive) -> Result<Connection> {
 pub(crate) fn finish(archive: &Archive) -> Result<()> {
     let paths = Paths::of(&archive.root);
     archive.index_build.release();
-    File::open(&paths.build)?.sync_all()?;
-    {
+    let search = {
         let conn = open_setup(&paths.build)?;
-        let mode: String = conn.scalar("PRAGMA main.journal_mode = wal", [])?;
-        if mode != "wal" {
-            return Err(StoreError::Invalid(format!(
-                "the built index stayed in journal mode {mode}"
-            )));
-        }
+        crate::search::files::paths(&conn)?.unwrap_or_default()
+    };
+    for file in search.iter().chain([&paths.build]) {
+        to_wal(file)?;
     }
-    // Closing the last connection checkpointed and removed the log; a log
-    // left with frames in it would hold part of the index.
-    for suffix in ["-wal", "-shm"] {
-        let file = with_suffix(&paths.build, suffix);
-        match fs::metadata(&file) {
-            Ok(metadata) if suffix == "-wal" && metadata.len() > 0 => {
-                return Err(StoreError::Invalid(format!(
-                    "the built index left {} bytes in its write-ahead log",
-                    metadata.len()
-                )));
-            }
-            Ok(_) => remove(&file)?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
+    if let Some(dir) = search.first().and_then(|file| file.parent()) {
+        sync_directory(dir)?;
     }
-    File::open(&paths.build)?.sync_all()?;
     crate::fault::check(
         "index.build.after_finish_sync",
         &archive.root.to_string_lossy(),
@@ -537,6 +520,39 @@ pub(crate) fn finish(archive: &Archive) -> Result<()> {
     }
     crate::fault::check("index.build.before_rename", &archive.root.to_string_lossy())?;
     install(archive)
+}
+
+/// Syncs a finished build's database file and switches it to WAL while
+/// nothing has it open.
+fn to_wal(path: &Path) -> Result<()> {
+    File::open(path)?.sync_all()?;
+    {
+        let conn = open_setup(path)?;
+        let mode: String = conn.scalar("PRAGMA main.journal_mode = wal", [])?;
+        if mode != "wal" {
+            return Err(StoreError::Invalid(format!(
+                "the built index stayed in journal mode {mode}"
+            )));
+        }
+    }
+    // Closing the last connection checkpointed and removed the log; a log
+    // left with frames in it would hold part of the index.
+    for suffix in ["-wal", "-shm"] {
+        let file = with_suffix(path, suffix);
+        match fs::metadata(&file) {
+            Ok(metadata) if suffix == "-wal" && metadata.len() > 0 => {
+                return Err(StoreError::Invalid(format!(
+                    "the built index left {} bytes in its write-ahead log",
+                    metadata.len()
+                )));
+            }
+            Ok(_) => remove(&file)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    File::open(path)?.sync_all()?;
+    Ok(())
 }
 
 /// Renames `built.db` over `index.db`, then removes the index it replaced. A serving reader of `previous.db` keeps its open file until it
@@ -592,10 +608,14 @@ fn create_build_dir(paths: &Paths) -> Result<bool> {
 }
 
 /// Removes a SQLite database file with its journal, log and shared-memory
-/// siblings.
+/// siblings, then the full-text files it names.
 fn remove_database(path: &Path) -> Result<()> {
+    let search = crate::search::files::named_on_disk(path);
     for suffix in ["-journal", "-wal", "-shm", ""] {
         remove(&with_suffix(path, suffix))?;
+    }
+    if let Some(search) = search {
+        crate::search::files::remove(&search)?;
     }
     Ok(())
 }

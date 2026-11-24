@@ -99,33 +99,70 @@ fn view(w: &ClaudeHome) -> Vec<Vec<Record>> {
 
 /// What the search indexes hold, by content rather than row id: for each
 /// index the hashes of the texts in it, and each term's document and
-/// occurrence counts. A first build writes the entries in bulk when it ends
-/// and a live pass through the search queue; both must give the same index.
+/// occurrence counts over every full-text file. A first build fills the
+/// files while it composes and a live pass through the search queue; both
+/// must give the same index.
 fn search_index(w: &ClaudeHome) -> Vec<serde_json::Value> {
-    let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
-    let r = pool.reader().unwrap();
+    let archive = Archive::at(&w.root);
+    let conn = polylogue_store::archive::open_read(&archive.index_db()).unwrap();
+    let files = conn
+        .prepare("SELECT name FROM pragma_database_list WHERE name LIKE 'search_%' ORDER BY name")
+        .unwrap()
+        .query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap();
+    assert!(!files.is_empty());
     let mut out = Vec::new();
-    for (fts, vocab) in [
-        ("text_fts", "fts_vocab_text"),
-        ("output_fts", "fts_vocab_output"),
-    ] {
-        out.extend(
-            r.query(
-                &format!(
-                    "SELECT '{fts}' AS idx, hex(t.hash) AS h FROM text t
-                     WHERE t.id IN (SELECT rowid FROM {fts}) ORDER BY h"
-                ),
-                &[],
-            )
-            .unwrap(),
-        );
-        out.extend(
-            r.query(
-                &format!("SELECT '{vocab}' AS idx, term, doc, cnt FROM {vocab} ORDER BY term"),
-                &[],
-            )
-            .unwrap(),
-        );
+    for fts in ["text_fts", "output_fts"] {
+        let mut keys = Vec::new();
+        let mut vocabulary = Vec::new();
+        for file in &files {
+            keys.push(format!("SELECT rowid FROM {file}.{fts} WHERE rowid > 0"));
+            let vocab = format!("vocab_{file}_{fts}");
+            conn.execute_batch(&format!(
+                "CREATE VIRTUAL TABLE temp.{vocab} USING fts5vocab({file}, {fts}, 'row')"
+            ))
+            .unwrap();
+            vocabulary.push(format!("SELECT term, doc, cnt FROM temp.{vocab}"));
+        }
+        let mut rows = |sql: String| {
+            let mut statement = conn.prepare(&sql).unwrap();
+            let names: Vec<String> = statement
+                .column_names()
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect();
+            let found = statement
+                .query_map([], |row| {
+                    let mut value = serde_json::Map::new();
+                    for (n, name) in names.iter().enumerate() {
+                        let cell = match row.get_ref(n)? {
+                            rusqlite::types::ValueRef::Integer(i) => serde_json::json!(i),
+                            rusqlite::types::ValueRef::Text(t) => {
+                                serde_json::json!(String::from_utf8_lossy(t))
+                            }
+                            other => serde_json::json!(format!("{other:?}")),
+                        };
+                        value.insert(name.clone(), cell);
+                    }
+                    Ok(serde_json::Value::Object(value))
+                })
+                .unwrap()
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .unwrap();
+            out.extend(found);
+        };
+        rows(format!(
+            "SELECT '{fts}' AS idx, hex(t.hash) AS h FROM text t
+             WHERE t.id IN ({}) ORDER BY h",
+            keys.join(" UNION ALL ")
+        ));
+        rows(format!(
+            "SELECT '{fts} terms' AS idx, term, sum(doc) AS doc, sum(cnt) AS cnt
+             FROM ({}) GROUP BY term ORDER BY term",
+            vocabulary.join(" UNION ALL ")
+        ));
     }
     out
 }

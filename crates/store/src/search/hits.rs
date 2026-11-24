@@ -28,7 +28,6 @@ impl Reader<'_> {
             if pending.is_empty() {
                 break;
             }
-            let (table, _, _) = parts(terms.index);
             let wanted = serde_json::to_string(&pending).expect("snippet scope serializes");
             let scope = scope_ctes(terms.index, false);
             let probe = format!("WITH RECURSIVE {scope} SELECT DISTINCT block FROM eligible");
@@ -47,9 +46,9 @@ impl Reader<'_> {
                 format!(
                     "WITH RECURSIVE {scope}, \
                     texts AS MATERIALIZED (SELECT DISTINCT text_id FROM eligible), \
-                    matches AS MATERIALIZED (SELECT t.text_id,bm25({table}) AS rank \
-                      FROM texts t CROSS JOIN {table} ON {table}.rowid=t.text_id WHERE {table} MATCH ?1), \
+                    matches AS MATERIALIZED ({}), \
                     candidates AS (SELECT e.*,h.rank FROM matches h JOIN eligible e USING(text_id)), {}",
+                    ranked_texts(terms.index, "?1", Some("texts"), None),
                     winner()
                 )
             } else {
@@ -86,10 +85,11 @@ impl Reader<'_> {
         recent: bool,
     ) -> Result<SearchDriver> {
         let conn = self.conn()?;
-        let (table, kinds, writer) = parts(index);
+        let (kinds, writer) = parts(index);
         let mut indexed = conn.prepare_cached(&format!(
-            "SELECT b.pk FROM {table} CROSS JOIN block b INDEXED BY block_text ON b.text_id={table}.rowid \
-             CROSS JOIN message m ON m.pk=b.message_pk WHERE {table} MATCH ?1 AND b.kind IN ({kinds}){writer}"
+            "SELECT b.pk FROM ({}) h CROSS JOIN block b INDEXED BY block_text ON b.text_id=h.text_id \
+             CROSS JOIN message m ON m.pk=b.message_pk WHERE b.kind IN ({kinds}){writer}",
+            matching_texts(index, "?1")
         ))?;
         let mut index_rows = indexed.query([fts])?;
         let mut occurrences = 0u64;
@@ -133,21 +133,20 @@ impl Reader<'_> {
     }
 }
 
-fn parts(index: SnippetIndex) -> (&'static str, &'static str, &'static str) {
+fn parts(index: SnippetIndex) -> (&'static str, &'static str) {
     match index {
         SnippetIndex::Prose => (
-            "text_fts",
             "'text'",
             " AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind IS 'compaction_summary')",
         ),
-        SnippetIndex::Output => ("output_fts", "'tool_result','tool_call'", ""),
+        SnippetIndex::Output => ("'tool_result','tool_call'", ""),
     }
 }
 
 const WANTED: &str = "wanted AS MATERIALIZED (SELECT json_extract(value,'$[0]') AS ordinal,json_extract(value,'$[1]') AS pk,json_extract(value,'$[2]') AS is_session FROM json_each(?2))";
 
 fn scope_ctes(index: SnippetIndex, materialize: bool) -> String {
-    let (_, kinds, writer) = parts(index);
+    let (kinds, writer) = parts(index);
     let storage = if materialize { "" } else { "NOT " };
     format!(
         "{WANTED}, \
@@ -174,10 +173,10 @@ fn winner() -> String {
 }
 
 fn index_sql(index: SnippetIndex) -> String {
-    let (table, kinds, writer) = parts(index);
+    let (kinds, writer) = parts(index);
     format!(
         "WITH RECURSIVE {WANTED}, \
-      texts AS MATERIALIZED (SELECT rowid AS text_id,bm25({table}) AS rank FROM {table} WHERE {table} MATCH ?1), \
+      texts AS MATERIALIZED ({}), \
       matched AS MATERIALIZED (SELECT b.pk AS block,m.pk AS message_pk,m.session_pk,s.id AS session,m.id AS message,m.at,h.rank,m.duplicate_of,coalesce(m.on_active_path,1) AS active \
         FROM texts h CROSS JOIN block b INDEXED BY block_text ON b.text_id=h.text_id \
         CROSS JOIN message m ON m.pk=b.message_pk CROSS JOIN session s ON s.pk=m.session_pk WHERE b.kind IN ({kinds}){writer}), \
@@ -186,6 +185,7 @@ fn index_sql(index: SnippetIndex) -> String {
         UNION SELECT c.block,p.pk FROM ancestors c CROSS JOIN session cs ON cs.pk=c.session_pk CROSS JOIN session_link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) CROSS JOIN session p ON p.id=l.parent_id), \
       candidates AS (SELECT w.ordinal,m.block,m.session_pk,m.session,m.message,m.at,m.rank FROM wanted w JOIN matched m ON m.message_pk=w.pk WHERE w.is_session=0 \
         UNION ALL SELECT w.ordinal,m.block,m.session_pk,m.session,m.message,m.at,m.rank FROM wanted w JOIN ancestors a ON a.session_pk=w.pk JOIN matched m ON m.block=a.block WHERE w.is_session=1), {}",
+        ranked_texts(index, "?1", None, None),
         winner()
     )
 }

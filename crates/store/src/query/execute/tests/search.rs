@@ -6,9 +6,14 @@ use std::sync::{
 };
 
 // The original downward-subtree query is an independent membership/rank oracle.
-const DOWNWARD: &str = "WITH hits AS MATERIALIZED (
-    SELECT rowid AS text_id,bm25(text_fts) AS rank FROM text_fts WHERE text_fts MATCH ?1
-) SELECT id,rank FROM (
+fn downward() -> String {
+    format!(
+        "WITH hits AS MATERIALIZED ({}) {DOWNWARD}",
+        crate::search::ranked_texts(crate::search::SnippetIndex::Prose, "?1", None, None)
+    )
+}
+
+const DOWNWARD: &str = "SELECT id,rank FROM (
     SELECT s.id,s.last_activity_at,(SELECT min(h.rank) FROM hits h
       JOIN block b ON b.text_id=h.text_id JOIN message m ON m.pk=b.message_pk
       WHERE b.kind='text' AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind='compaction_summary')
@@ -173,7 +178,7 @@ fn read(fixture: &Fixture, analyze: bool) -> (u64, u64) {
     });
     let (expected, original_steps) = counted(&reader, || {
         reader
-            .query(DOWNWARD, &[crate::SqlValue::Text("\"needle\"".into())])
+            .query(&downward(), &[crate::SqlValue::Text("\"needle\"".into())])
             .unwrap()
     });
     assert_eq!(result(&actual), result(&expected));

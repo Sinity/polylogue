@@ -433,7 +433,8 @@ impl Archive {
         let e = open_write(&self.embeddings_db(), cache::SETUP)?;
         schema::ensure_embeddings(&e)?;
         drop(e);
-        self.prepare_index()
+        self.prepare_index()?;
+        crate::search::files::sweep(&self.root)
     }
 
     /// The caller holds the archive lock. A standalone index is built in a
@@ -621,6 +622,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
     crate::sql_functions::register_source_alias(&conn)?;
     writer_settings(&conn, cache_mib)?;
     conn.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT)?;
+    crate::search::files::attach(&conn)?;
     Ok(conn)
 }
 
@@ -694,6 +696,7 @@ fn open_read_connection(path: &Path, recover: bool) -> Result<Connection> {
     conn.pragma_update(None, "temp_store", "file")?;
     conn.pragma_update(Some("temp"), "cache_size", -1024)?;
     crate::sql_functions::register(&conn)?;
+    crate::search::files::attach(&conn)?;
     Ok(conn)
 }
 

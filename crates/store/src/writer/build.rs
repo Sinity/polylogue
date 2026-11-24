@@ -1068,6 +1068,8 @@ pub(super) struct BuildJob {
     /// after the streamed sessions (see [`STREAM_READS`]).
     indexes: Vec<(String, String)>,
     after_stream: Vec<String>,
+    /// The full-text files, filled while the build composes.
+    search: Option<crate::text_rows::SearchFill>,
 }
 
 enum Stage {
@@ -1076,8 +1078,8 @@ enum Stage {
     TextHolders(Box<TextHolders>),
     Indexes(usize, Box<Loaded>),
     Compose(Box<ComposeState>),
-    FullText(crate::text_rows::SearchBuild),
     Deferred(Vec<String>),
+    FullText,
     Install,
 }
 
@@ -1133,6 +1135,7 @@ impl BuildJob {
             clock: None,
             indexes: Vec::new(),
             after_stream: Vec::new(),
+            search: None,
         }
     }
 
@@ -1212,6 +1215,7 @@ impl Inner {
                         job.indexes.push((name, sql));
                     }
                 }
+                job.search = Some(crate::text_rows::SearchFill::start(&self.index)?);
                 if runs.is_empty() {
                     // Nothing to load: no text is merged and no row moves.
                     let runs_dir = Paths::of(&self.location.root).runs;
@@ -1290,33 +1294,30 @@ impl Inner {
                 } else {
                     drop(state);
                     crate::archive::index_build::remove_runs(&Paths::of(&self.location.root))?;
-                    job.phase("full text");
+                    job.phase("read indexes");
                     // Composition wrote shown rows only: the search
-                    // membership of every text comes from the blocks now.
+                    // membership of every text comes from the blocks now,
+                    // and from here on membership and the trigram index
+                    // follow the shown rows as they do in an installed index.
                     let tx = self
                         .index
                         .transaction_with_behavior(TransactionBehavior::Immediate)?;
                     super::shown::mark_searched_texts(&tx)?;
+                    tx.execute_batch(crate::schema::SEARCH_TRIGGERS)?;
                     tx.commit()?;
-                    Stage::FullText(crate::text_rows::SearchBuild::new())
-                }
-            }
-            Stage::FullText(mut search) => {
-                if search.step(&self.index)? {
+                    job.search
+                        .as_mut()
+                        .ok_or_else(|| StoreError::internal("a build has no full-text fill"))?
+                        .settle(&self.index)?;
                     let started = std::time::Instant::now();
                     self.index.execute(
                         "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
                         [],
                     )?;
                     crate::timing::add(crate::timing::Stage::TrigramIndex, started.elapsed());
-                    // From here on, search membership and the trigram index
-                    // follow the shown rows as they do in an installed index.
-                    self.index.execute_batch(crate::schema::SEARCH_TRIGGERS)?;
                     let mut deferred = crate::schema::built_at_end_sql()?;
                     deferred.reverse();
                     Stage::Deferred(deferred)
-                } else {
-                    Stage::FullText(search)
                 }
             }
             Stage::Deferred(mut deferred) => match deferred.pop() {
@@ -1328,10 +1329,25 @@ impl Inner {
                     Stage::Deferred(deferred)
                 }
                 None => {
-                    job.phase("install");
-                    Stage::Install
+                    job.phase("full text");
+                    Stage::FullText
                 }
             },
+            // The fill's threads finish what composition left; the writer
+            // serves other work between waits.
+            Stage::FullText => {
+                let search = job
+                    .search
+                    .as_mut()
+                    .ok_or_else(|| StoreError::internal("a build has no full-text fill"))?;
+                if search.wait(STEP_TIME)? {
+                    job.search = None;
+                    job.phase("install");
+                    Stage::Install
+                } else {
+                    Stage::FullText
+                }
+            }
             Stage::Install => {
                 self.index
                     .execute("DELETE FROM meta WHERE key=?1", [INDEXES_MADE])?;

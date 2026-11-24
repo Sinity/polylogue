@@ -1,10 +1,11 @@
 -- Search membership and the trigram index follow the shown rows. A text is a
 -- member of the prose index (text.indexed bit 1) while a prose block or a
 -- document block holds it, and of the tool-output index (bit 2) while a tool
--- call or tool result block holds it. A text that joins an index is queued
--- for the search thread; one whose last holder of that kind leaves loses its
--- entry and any queued one. A build creates these after its composition,
--- which sets every text's membership with one statement over the blocks.
+-- call or tool result block holds it. A text that joins an index, or whose
+-- last holder of that kind leaves, is queued for the search thread, which
+-- brings its entry in the full-text files to its membership. A build creates
+-- these after its composition, which sets every text's membership with one
+-- statement over the blocks.
 
 CREATE TRIGGER block_prose_text_added AFTER INSERT ON block
 WHEN NEW.text_id IS NOT NULL AND NEW.kind NOT IN ('tool_result','tool_call') BEGIN
@@ -32,8 +33,7 @@ WHEN OLD.text_id IS NOT NULL AND OLD.kind NOT IN ('tool_result','tool_call')
   AND NOT EXISTS(SELECT 1 FROM block WHERE text_id = OLD.text_id
                  AND kind NOT IN ('tool_result','tool_call'))
   AND NOT EXISTS(SELECT 1 FROM document_block WHERE text_id = OLD.text_id) BEGIN
-  DELETE FROM text_fts WHERE rowid = OLD.text_id;
-  DELETE FROM search_pending WHERE text_id = OLD.text_id AND fts_table = 1;
+  INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (OLD.text_id, 1);
   UPDATE text SET indexed = indexed & ~1 WHERE id = OLD.text_id AND indexed & 1 <> 0;
 END;
 
@@ -41,8 +41,7 @@ CREATE TRIGGER block_output_text_removed AFTER DELETE ON block
 WHEN OLD.text_id IS NOT NULL AND OLD.kind IN ('tool_result','tool_call')
   AND NOT EXISTS(SELECT 1 FROM block WHERE text_id = OLD.text_id
                  AND kind IN ('tool_result','tool_call')) BEGIN
-  DELETE FROM output_fts WHERE rowid = OLD.text_id;
-  DELETE FROM search_pending WHERE text_id = OLD.text_id AND fts_table = 2;
+  INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (OLD.text_id, 2);
   UPDATE text SET indexed = indexed & ~2 WHERE id = OLD.text_id AND indexed & 2 <> 0;
 END;
 
@@ -51,8 +50,7 @@ WHEN OLD.text_id IS NOT NULL
   AND NOT EXISTS(SELECT 1 FROM block WHERE text_id = OLD.text_id
                  AND kind NOT IN ('tool_result','tool_call'))
   AND NOT EXISTS(SELECT 1 FROM document_block WHERE text_id = OLD.text_id) BEGIN
-  DELETE FROM text_fts WHERE rowid = OLD.text_id;
-  DELETE FROM search_pending WHERE text_id = OLD.text_id AND fts_table = 1;
+  INSERT OR IGNORE INTO search_pending(text_id, fts_table) VALUES (OLD.text_id, 1);
   UPDATE text SET indexed = indexed & ~1 WHERE id = OLD.text_id AND indexed & 1 <> 0;
 END;
 

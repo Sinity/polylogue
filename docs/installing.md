@@ -135,7 +135,7 @@ A first build reads every chain that is due a reading ([archive.md](archive.md#r
 
 ## Backup and restore
 
-- **Backup is the deployment's filesystem backup.** Polylogue has no backup command and keeps its stores consistent at every commit. A correct backup takes the segment log, the databases and the embeddings store together; `index.db` and the `index-build/` directory may be left out, since the index is rebuilt from stored bytes.
+- **Backup is the deployment's filesystem backup.** Polylogue has no backup command and keeps its stores consistent at every commit. A correct backup takes the segment log, the databases and the embeddings store together; `index.db`, its full-text files (`search-<id>/`) and the `index-build/` directory may be left out, since the index is rebuilt from stored bytes.
   - An atomic snapshot of the archive directory is consistent.
   - A file copy needs either a stopped daemon with each database's `-wal` file included when present, or each SQLite database copied through SQLite's backup API followed by the segment log: committed extents never move and no row cites an extent before it commits, so databases first and segments after is consistent.
 - **Polylogue provides** the paths and sizes in `status`, and `status --verify` to check a restored copy ([operations.md#checking-every-stored-byte](operations.md#checking-every-stored-byte)).

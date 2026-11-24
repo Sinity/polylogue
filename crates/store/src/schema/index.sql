@@ -330,7 +330,7 @@ CREATE INDEX message_route_input ON message_route(input_pk, chain);
 -- Text bodies, compressed together: each group is one zstd frame of the UTF-8
 -- of its texts one after another, made by the parse worker that read them
 -- (about 64 KiB before compression; a longer text is a group alone). The
--- search indexes are contentless, so this is the only copy in the index.
+-- full-text files are contentless, so this is the only copy in the index.
 CREATE TABLE text_group (
   id                INTEGER PRIMARY KEY,
   hash              BLOB NOT NULL,          -- unique: text_group_hash. BLAKE3 of the compressed body
@@ -344,7 +344,7 @@ CREATE TABLE text (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   normalized_hash   BLOB NOT NULL,          -- BLAKE3 of NFC UTF-8; raw spellings may share this identity
   hash              BLOB NOT NULL,          -- unique: text_hash. BLAKE3 of the UTF-8 text; embeddings are keyed by it
-  indexed           INTEGER NOT NULL DEFAULT 0, -- bit 1: in text_fts (prose); bit 2: in output_fts (tool output)
+  indexed           INTEGER NOT NULL DEFAULT 0, -- bit 1: a member of text_fts (prose); bit 2: of output_fts (tool output)
   group_id          INTEGER NOT NULL REFERENCES text_group(id), -- the group leaves with its last text
   start             INTEGER NOT NULL,       -- byte offset of the text in its group's decoded bytes
   length            INTEGER NOT NULL        -- its length in bytes
@@ -382,32 +382,18 @@ CREATE INDEX text_group_member ON text(group_id);  -- whether a group still hold
 CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
 
--- Full-text search: two contentless indexes keyed by text.id, holding folded
--- text. text_fts: prose (text and thinking blocks). output_fts: tool output
--- (tool_result blocks, and bodies written through file-writing and file-editing
--- tool calls). Membership follows the blocks (search_triggers.sql).
-CREATE VIRTUAL TABLE text_fts USING fts5(body, content='', contentless_delete=1,
-                                         tokenize='unicode61 remove_diacritics 2');
-CREATE VIRTUAL TABLE output_fts USING fts5(body, content='', contentless_delete=1,
-                                           tokenize='unicode61 remove_diacritics 2');
--- Document frequency of each word, for the search planner.
-CREATE VIRTUAL TABLE fts_vocab_text USING fts5vocab(text_fts, 'row');
-CREATE VIRTUAL TABLE fts_vocab_output USING fts5vocab(output_fts, 'row');
--- Merge segments less eagerly than the default (4), and buffer 64 MiB of
--- pending terms before writing a segment instead of the default 1 MiB: with
--- the default, flushing tiny segments and merging them was over half of the
--- writer's time on a first build (perf, 2026-10-19). The buffer is writer
--- memory, at most 64 MiB per index.
-INSERT INTO text_fts(text_fts, rank) VALUES ('automerge', 16);
-INSERT INTO output_fts(output_fts, rank) VALUES ('automerge', 16);
-INSERT INTO text_fts(text_fts, rank) VALUES ('hashsize', 67108864);
-INSERT INTO output_fts(output_fts, rank) VALUES ('hashsize', 67108864);
+-- Full-text entries are not in this file: they live in the full-text files
+-- named by meta `search_files` (search.sql), split by text key.
 
--- Search entries still to write. A text is recorded here in the transaction
--- whose blocks make it a member of a search index (search_triggers.sql), and
--- the search thread writes the entry shortly after, outside the writer's
--- transaction; a flush writes every waiting entry before it returns. A first
--- build writes none: it builds the search indexes in bulk when it ends.
+-- Changes to full-text entries still to apply. A text is recorded here in the
+-- transaction whose blocks make it a member of a search index or remove it
+-- from one, and when the text itself is removed (search_triggers.sql); the
+-- search thread reads the text and the writer brings the text's entry in its
+-- full-text file to what the text is now: present and holding the text while
+-- it is a member, absent otherwise. Applying a row twice changes nothing, so
+-- the row leaves only after its file has committed. A flush applies every
+-- waiting row before it returns. A first build queues nothing until its
+-- composition ends: it fills the files while it composes.
 CREATE TABLE search_pending (
   text_id           INTEGER NOT NULL,       -- text.id
   fts_table         INTEGER NOT NULL,       -- which index: 1 text_fts, 2 output_fts (the bits of text.indexed)
