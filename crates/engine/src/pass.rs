@@ -350,12 +350,7 @@ impl Engine {
         paths: &std::collections::BTreeSet<PathBuf>,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
         let built = if !self.archive.is_primary() && self.archive.index_build().is_some() {
-            let (built, _) = self.build_index()?;
-            if built.capture_pending {
-                // The build yielded: the request is answered before it goes on.
-                return Ok((built, HashSet::new()));
-            }
-            Some(built)
+            Some(self.build_index()?.0)
         } else {
             None
         };
@@ -2754,6 +2749,8 @@ impl Engine {
                     return Ok(self.stopped(summary));
                 }
                 Ok((pass, seen)) => {
+                    // Imports a build answered while it ran.
+                    summary.imports += std::mem::take(&mut self.imports_during_build);
                     let yielded = self.yielding();
                     pending = pass.capture_pending || yielded;
                     if yielded {
@@ -2942,7 +2939,7 @@ impl Engine {
 
     /// Answers one message other than `Stop`, adding an import's work to
     /// `summary`.
-    fn answer(
+    pub(crate) fn answer(
         &mut self,
         message: LoopMsg,
         busy: &impl Fn(bool),
@@ -3002,7 +2999,8 @@ impl Engine {
         let _ = reply.send(report);
     }
 
-    fn stopped(&mut self, summary: RunSummary) -> RunSummary {
+    fn stopped(&mut self, mut summary: RunSummary) -> RunSummary {
+        summary.imports += std::mem::take(&mut self.imports_during_build);
         self.captures = Databases::default();
         self.wake = None;
         self.requests = None;

@@ -466,8 +466,8 @@ struct Requests {
 
 pub struct Engine {
     requests: Option<Requests>,
-    /// A build that yielded to a request, resumed by the next pass.
-    build_progress: Option<build::BuildProgress>,
+    /// Imports answered by a build while it ran, for the loop's summary.
+    imports_during_build: u64,
     collectors: collectors::Collectors,
     pub config: Config,
     pub archive: Archive,
@@ -583,7 +583,7 @@ impl Engine {
             lookups_at: None,
             collectors: collectors::Collectors::default(),
             requests: None,
-            build_progress: None,
+            imports_during_build: 0,
         })
     }
 
