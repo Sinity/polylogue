@@ -120,22 +120,22 @@ fn a_build_is_private_until_installed_and_reads_answer_its_progress() {
         ),
         other => panic!("expected an index build, got {:?}", other.err()),
     }
-    // Bytes stored during the build wait for upkeep: the build file holds
-    // only what the build loads.
+    // A write during the build goes into the build file as upkeep writes
+    // it; the build then loads the chains it read.
     store_message(&archive, &writer, "during-build", "stored while building");
     let pipeline = ReadPool::open(&archive).unwrap();
-    assert_eq!(messages(&pipeline), 0);
+    assert_eq!(messages(&pipeline), 1);
     assert_eq!(journal_mode(&paths.build), "delete");
     let runs = runs(&archive, &writer, &["first-build"], &chains);
     writer.build(runs).unwrap();
     assert!(!paths.dir.exists());
     assert_eq!(journal_mode(&paths.index), "wal");
     assert_eq!(archive.index_build(), None);
-    assert_eq!(messages(&pool), 1);
-    assert_eq!(messages(&pipeline), 1);
+    assert_eq!(messages(&pool), 2);
+    assert_eq!(messages(&pipeline), 2);
     // The installed index is the writer's from now on.
     store_message(&archive, &writer, "after-install", "ordinary write");
-    assert_eq!(messages(&pool), 2);
+    assert_eq!(messages(&pool), 3);
 }
 
 #[test]

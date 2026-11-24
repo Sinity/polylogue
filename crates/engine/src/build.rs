@@ -4,8 +4,11 @@
 //! parses with. Each worker writes whole chains' readings into run files of
 //! its own ([`polylogue_store::writer::build::BuildRun`]); the writer then
 //! loads the runs, composes every session once, writes the indexes and
-//! search entries and installs the file. Upkeep brings the index forward
-//! from there: bytes stored while the build ran are read by the next pass.
+//! search entries and installs the file. A request that arrives meanwhile
+//! is answered first: workers put their chains down at the next range and
+//! the build goes on in the next pass. What upkeep writes meanwhile goes
+//! into the build file, and the build reads only chains not read there.
+//! Upkeep brings the installed index forward from the build's position.
 use crate::plan::Plan;
 use crate::{Engine, EngineError, Pass, has_reading, pool};
 use polylogue_store::writer::build::{BuildPhase, BuildRun, PhaseClock};
@@ -120,6 +123,9 @@ struct Prepare<'a> {
     bytes_read: AtomicU64,
     runs: Mutex<Vec<(u64, PathBuf)>>,
     failed: Mutex<Vec<(Plan, String)>>,
+    /// Chains a worker put down unread when the build yielded, read again
+    /// from their start when it resumes.
+    yielded: Mutex<Vec<Plan>>,
 }
 
 impl Prepare<'_> {
@@ -138,10 +144,16 @@ impl Prepare<'_> {
     /// queue unread, so the planner never waits on it.
     fn work(&self) -> Result<(), EngineError> {
         let worked = self.work_until_failed();
-        if worked.is_err() {
-            while let Ok(plans) = self.plans.lock()
-                && plans.recv().is_ok()
-            {}
+        let yielding = self.settings.yielding.load(Ordering::Acquire);
+        while let Ok(plans) = self.plans.lock()
+            && let Ok(plan) = plans.recv()
+        {
+            if yielding && worked.is_ok() {
+                self.yielded
+                    .lock()
+                    .map_err(|_| EngineError::Stopped)?
+                    .push(plan);
+            }
         }
         worked
     }
@@ -153,6 +165,13 @@ impl Prepare<'_> {
         loop {
             let plan = self.plans.lock().map_err(|_| EngineError::Stopped)?.recv();
             let Ok(mut plan) = plan else { break };
+            if self.settings.yielding.load(Ordering::Acquire) {
+                self.yielded
+                    .lock()
+                    .map_err(|_| EngineError::Stopped)?
+                    .push(plan);
+                break;
+            }
             self.archive.stop().check()?;
             let Change::Reparse { chain } = plan.change else {
                 continue;
@@ -184,7 +203,15 @@ impl Prepare<'_> {
                         .write(&self.writer, &input, chain, length, reading)
                         .map_err(EngineError::from)
                 }
-                Ok(None) => return Err(EngineError::Stopped),
+                Ok(None) => {
+                    // The build yields to a request: the chain is read again.
+                    drop(admitted);
+                    self.yielded
+                        .lock()
+                        .map_err(|_| EngineError::Stopped)?
+                        .push(plan);
+                    break;
+                }
                 Err(EngineError::Stopped) => return Err(EngineError::Stopped),
                 Err(error) => Err(error),
             };
@@ -251,7 +278,12 @@ impl Engine {
             settings: pool::ChainSettings {
                 stopped_attempt: self.stopped_attempt,
                 read_memory: self.config.reader_memory_per_connection()?,
-                yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                // A request the planner takes makes the workers put their
+                // chains down at the next range.
+                yielding: self.requests.as_ref().map_or_else(
+                    || Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                    |requests| Arc::clone(&requests.yielding),
+                ),
             },
             admission: Admission::new(self.config.bytes_in_flight),
             chunk: self.config.chunk.max(1),
@@ -263,6 +295,7 @@ impl Engine {
             bytes_read: AtomicU64::new(saved.bytes_read),
             runs: Mutex::new(std::mem::take(&mut saved.runs)),
             failed: Mutex::new(std::mem::take(&mut saved.failed)),
+            yielded: Mutex::new(Vec::new()),
         };
         let mut requests = self.requests.take();
         let clock = PhaseClock::start("read chains");
@@ -304,6 +337,12 @@ impl Engine {
                 .failed
                 .into_inner()
                 .map_err(|_| EngineError::Stopped)?;
+            let mut put_down = prepare
+                .yielded
+                .into_inner()
+                .map_err(|_| EngineError::Stopped)?;
+            put_down.append(&mut saved.pending);
+            saved.pending = put_down;
             self.build_progress = Some(saved);
             pass.capture_pending = true;
             return Ok((pass, Vec::new()));
@@ -371,13 +410,22 @@ impl Engine {
             self.archive.stop().check()?;
             // A request waits at most for the chains already handed out.
             let mut pending = std::mem::take(&mut progress.pending).into_iter();
-            while let Some(plan) = pending.next() {
-                if requested() {
-                    progress.pending = std::iter::once(plan).chain(pending).collect();
-                    return Ok(true);
-                }
-                if plans.send(plan).is_err() {
-                    return Ok(false);
+            while let Some(mut plan) = pending.next() {
+                // Polled while the workers are busy, so a request is seen
+                // without waiting for a free worker.
+                loop {
+                    if requested() {
+                        progress.pending = std::iter::once(plan).chain(pending).collect();
+                        return Ok(true);
+                    }
+                    match plans.try_send(plan) {
+                        Ok(()) => break,
+                        Err(std::sync::mpsc::TrySendError::Full(back)) => {
+                            plan = back;
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return Ok(false),
+                    }
                 }
             }
             if requested() {

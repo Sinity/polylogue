@@ -1855,9 +1855,6 @@ impl Inner {
         }
 
         let indexed = batches.collect::<Vec<_>>();
-        // A standalone build reads the record at the position it started
-        // from; bytes stored meanwhile are read by upkeep once it is installed.
-        let reads = !self.building();
         let text_transaction = self.texts.transaction();
         let itx = self
             .index
@@ -1868,7 +1865,7 @@ impl Inner {
         let mut touched = readings::Touched::default();
         let mut batches = 0u64;
         for (b, chain) in indexed.iter().zip(chains) {
-            if let Some(chain) = chain.filter(|_| reads) {
+            if let Some(chain) = chain {
                 for p in &b.parse {
                     let source_commit = crate::source::Source::reading_commit(
                         &itx,

@@ -352,6 +352,9 @@ impl Inner {
         let sessions = self.compose_all()?;
         phases.push(clock.end(sessions));
         let clock = start("full text");
+        // The search entries are written from every text's marks; entries
+        // queued by upkeep writes during the build would repeat them.
+        self.index.execute("DELETE FROM search_pending", [])?;
         self.build_deferred()?;
         phases.push(clock.end(0));
         let clock = start("install");
