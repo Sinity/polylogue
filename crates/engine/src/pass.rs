@@ -341,23 +341,98 @@ impl Engine {
         self.lookups_at = None;
     }
 
-    /// One pass. A standalone archive without a current index builds it
-    /// first, from the record as it stands; the pass then reads what
-    /// arrived since.
+    /// One pass. A standalone archive without a current index, a new one
+    /// included, stores the files no earlier pass stored, builds the index
+    /// from the record as it then stands, and reads what arrived since.
     fn one_pass(
         &mut self,
         discover: bool,
         paths: &std::collections::BTreeSet<PathBuf>,
     ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
-        let built = if !self.archive.is_primary() && self.archive.index_build().is_some() {
-            Some(self.build_index()?.0)
-        } else {
-            None
-        };
-        let (mut pass, seen) = self.read_pass(discover, paths)?;
-        if let Some(built) = built {
-            pass.add(built);
+        self.found_before_build = None;
+        if self.archive.is_primary() || self.archive.index_build().is_none() {
+            return self.read_pass(discover, paths);
         }
+        let (mut built, mut seen) = self.read_pass(discover, paths)?;
+        // Requests are answered as they come and storing goes on, as the
+        // build answers them while it reads: a stream of requests never
+        // keeps the build from starting.
+        while self.answer_waiting(&mut built)? {
+            let first = self.found_before_build.take();
+            let looked_at: std::collections::BTreeSet<_> = first
+                .iter()
+                .flat_map(|(_, found)| found.iter().map(|f| f.path.clone()))
+                .chain(paths.iter().cloned())
+                .collect();
+            let (more, again) = self.read_pass(false, &looked_at)?;
+            built.add(more);
+            seen.extend(again);
+            if let Some((true, found)) = first {
+                // The walk stays the record of what the sources hold.
+                self.found_before_build = Some((true, found));
+            }
+        }
+        if self.archive.stop().is_cancelled() {
+            self.found_before_build = None;
+            return Ok((built, seen));
+        }
+        built.capture_pending = false;
+        built.add(self.build_index()?.0);
+        // The turn after the build looks again at what the storing turn
+        // found ([`Engine::read_turn`]). After a walk it is a discovery turn,
+        // so a known file the walk did not find is observed gone; otherwise
+        // the state of known files is loaded first, so that only the paths
+        // looked at count.
+        let walked = matches!(self.found_before_build, Some((true, _)));
+        if !walked {
+            self.load()?;
+        }
+        let (mut pass, more) = self.read_pass(walked, paths)?;
+        // The storing turn counted the files this turn looks at again.
+        pass.inputs_seen = 0;
+        built.add(pass);
+        seen.extend(more);
+        Ok((built, seen))
+    }
+
+    /// A build's storing turn: the files no earlier pass stored are stored,
+    /// the newest first ([`Engine::execute`]), and not read; the build reads
+    /// them with every other stored chain. Files already known (`seen`
+    /// holds them too) and stored chains wait for the turn after the build.
+    fn store_for_build(
+        &mut self,
+        mut fresh: Vec<Plan>,
+        mut pass: Pass,
+        seen: HashSet<PathBuf>,
+        started: Instant,
+    ) -> Result<(Pass, HashSet<PathBuf>), EngineError> {
+        let mut bytes = 0;
+        for plan in &mut fresh {
+            if matches!(plan.source, pool::Bytes::File) {
+                plan.storing_only = true;
+                if has_reading(plan.origin) {
+                    bytes += plan.size;
+                }
+            }
+        }
+        // The build counts what it reads once it starts; until then its
+        // progress names the bytes to be stored for it.
+        self.archive.record_build_bytes(bytes, 0);
+        pass.inputs_changed = (fresh.len() + self.rollout_captures.len()) as u64;
+        if !fresh.is_empty() || !self.rollout_captures.is_empty() {
+            self.build_phase(
+                "storing new files",
+                format_args!(
+                    "{} plans, {} rollouts to capture",
+                    fresh.len(),
+                    self.rollout_captures.len()
+                ),
+            );
+            self.execute(fresh, &mut pass)?;
+        }
+        pass.capture_pending |= self.yielding() || self.poll_request();
+        self.pass_open = pass.capture_pending;
+        pass.seconds = started.elapsed().as_secs_f64();
         Ok((pass, seen))
     }
 
@@ -459,12 +534,23 @@ impl Engine {
             .is_none_or(|at| at.elapsed() >= Duration::from_secs(60));
         let mut errors = Vec::new();
         let sources = self.config.reads_sources;
-        if sources && (discover || collectors_due) {
+        // The turn after a build looks again at the files its storing turn
+        // found, those the build stored, for what they gained meanwhile; a
+        // file that failed is found again by the next walk or change.
+        let found_before_build = self.found_before_build.take();
+        let walked = sources && discover && found_before_build.is_none();
+        if sources && (walked || collectors_due) {
             self.collectors_at = Some(Instant::now());
             errors.extend(self.run_collectors());
             errors.extend(self.refresh_lookups().err());
         }
-        let (mut found, unreadable) = if !sources {
+        let (mut found, unreadable) = if let Some((_, found)) = found_before_build {
+            let found = found
+                .into_iter()
+                .filter(|f| self.inputs.contains_key(&f.path))
+                .collect();
+            (found, Vec::new())
+        } else if !sources {
             (Vec::new(), Vec::new())
         } else if discover {
             let scan = collect::scan_with_coverage(&self.config);
@@ -491,12 +577,12 @@ impl Engine {
             found.extend(collect::scan_spools(&self.config));
         }
         let mut pass = Pass {
-            full_scans: u64::from(discover && sources),
+            full_scans: u64::from(walked),
             unreadable_roots: unreadable,
             errors,
             ..Pass::default()
         };
-        if discover && sources {
+        if walked {
             self.build_phase(
                 "discovery",
                 format_args!(
@@ -535,6 +621,10 @@ impl Engine {
         }
         found.sort_by(|a, b| a.path.cmp(&b.path));
         found.dedup_by(|a, b| a.path == b.path);
+        let building = !self.archive.is_primary() && self.archive.index_build().is_some();
+        if building {
+            self.found_before_build = Some((discover, found.clone()));
+        }
         let changed = found.iter().any(|f| {
             self.inputs.get(&f.path).is_none_or(|st| {
                 std::fs::metadata(&f.path).ok().map(|m| FileFacts::of(&m)) != st.facts
@@ -576,6 +666,10 @@ impl Engine {
             .into_iter()
             .partition(|f| !self.inputs.contains_key(&f.path));
         let fresh = self.plan_found(fresh, &mut pass, &mut seen)?;
+        if building {
+            seen.extend(found.into_iter().map(|f| f.path));
+            return self.store_for_build(fresh, pass, seen, started);
+        }
         let mut changed_inputs = (fresh.len() + self.rollout_captures.len()) as u64;
         if !fresh.is_empty() || !self.rollout_captures.is_empty() {
             self.build_phase(

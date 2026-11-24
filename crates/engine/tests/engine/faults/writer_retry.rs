@@ -33,6 +33,8 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
         let w = ClaudeHome::new();
         w.append("new.jsonl", &user("one", "new", "new stored body"));
         let (mut engine, _lock) = w.engine(256);
+        // Upkeep stores and reads the new input in one write.
+        polylogue_testkit::install_empty_index(&mut engine);
         fault::arm(point, "", Action::Fail, 0, 64);
         let failed = engine.run_pass().unwrap();
         assert!(!failed.errors.is_empty(), "{point}: {failed:?}");

@@ -14,7 +14,9 @@ mod morrow;
 mod process;
 
 pub use bundle::session_bundle;
-pub use claude_home::{ClaudeHome, claude_assistant, claude_user, delete_index};
+pub use claude_home::{
+    ClaudeHome, claude_assistant, claude_user, delete_index, install_empty_index,
+};
 pub use morrow::{Morrow, Set, morrow_dir, session, short};
 #[cfg(target_os = "linux")]
 pub use process::ProcessExit;

@@ -119,6 +119,22 @@ impl ClaudeHome {
     }
 }
 
+/// Installs a new archive's empty index the way a daemon started without
+/// sources does: its first pass reads no source and installs the empty
+/// build (docs/installing.md, replacing an index). Files in the home are
+/// left for the caller's own passes, which then meet an installed index.
+pub fn install_empty_index(engine: &mut Engine) {
+    let reads_sources = engine.config.reads_sources;
+    engine.config.reads_sources = false;
+    let pass = engine.run_pass().expect("the first pass");
+    engine.config.reads_sources = reads_sources;
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        engine.archive.index_build().is_none(),
+        "the index is installed"
+    );
+}
+
 /// Deletes `index.db` (and its WAL files) of a closed archive.
 pub fn delete_index(root: &Path) {
     for suffix in ["", "-wal", "-shm"] {

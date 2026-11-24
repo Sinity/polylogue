@@ -146,10 +146,10 @@ fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
     assert_eq!(report.refused.len(), 0, "{report:?}");
     assert_eq!(report.imported.len(), 1, "{report:?}");
     assert_eq!(summary.imports, 1);
-    assert!(
-        summary.passes >= 2,
-        "the import is followed by a pass: {summary:?}"
-    );
+    // The first pass answered the import while it built the new archive's
+    // index, and went on to install it: the import is read.
+    assert!(summary.passes >= 1, "{summary:?}");
+    assert_eq!(home.count("SELECT count(*) AS n FROM message"), 1);
     // The import is the archive's only input: the transcript was never read.
     assert_eq!(home.count("SELECT count(*) AS n FROM a.input"), 1);
     assert!(home.texts("unread").is_empty());

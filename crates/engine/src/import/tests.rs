@@ -315,6 +315,7 @@ pub(crate) fn engine(
     w: &polylogue_testkit::ClaudeHome,
     chunk: u64,
 ) -> (Engine, polylogue_store::ArchiveLock) {
+    let new = !w.root.exists();
     let (archive, lock) = Archive::open_or_create(&w.root).unwrap();
     let config = Config {
         clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
@@ -330,10 +331,18 @@ pub(crate) fn engine(
         live_every: std::time::Duration::from_secs(2),
         reads_sources: true,
     };
-    (
-        Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap(),
-        lock,
-    )
+    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    if new {
+        // Imports and these tests' passes meet an installed index: the first
+        // pass of a loop without sources installs a new archive's empty build
+        // (docs/installing.md). Files in the home are left for the tests.
+        engine.config.reads_sources = false;
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        assert!(engine.archive.index_build().is_none());
+        engine.config.reads_sources = true;
+    }
+    (engine, lock)
 }
 
 #[test]

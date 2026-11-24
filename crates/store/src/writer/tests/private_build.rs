@@ -60,8 +60,12 @@ fn journal_mode(path: &std::path::Path) -> String {
 pub(in crate::writer) fn due_a_build(root: &std::path::Path, inputs: &[&str]) -> Vec<i64> {
     let chains = {
         let (archive, _lock) = Archive::open_or_create(root).unwrap();
-        assert!(archive.index_build().is_none());
+        assert!(
+            archive.index_build().is_some(),
+            "a new archive's index is built"
+        );
         let writer = Writer::start(&archive).unwrap();
+        writer.build(Vec::new()).unwrap();
         inputs
             .iter()
             .map(|input| store_message(&archive, &writer, input, &format!("{input} text")))
@@ -257,6 +261,7 @@ fn a_rebuild_keeps_serving_a_same_schema_index_until_it_is_installed() {
     {
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
         let writer = Writer::start(&archive).unwrap();
+        writer.build(Vec::new()).unwrap();
         store_message(&archive, &writer, "served", "served while rebuilt");
     }
     // An extra index changes the schema but not its identity: this build's
@@ -294,7 +299,7 @@ fn a_rebuild_of_an_index_in_another_format_answers_index_building() {
     let paths = Paths::of(dir.path());
     {
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-        drop(archive);
+        Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
     }
     crate::archive::open_write(&paths.index, crate::archive::cache::SETUP)
         .unwrap()

@@ -98,9 +98,14 @@ pub struct CallFacts<'a> {
 impl Fixture {
     pub fn new(root: &Path) -> Result<Self> {
         let (archive, lock) = Archive::open_or_create(root)?;
-        // Fixture rows are written directly into a fully installed index.
-        crate::Writer::start(&archive)?.derive()?;
+        // Fixture rows are written directly into an installed index: the
+        // new archive's empty build is installed first, as a daemon's first
+        // pass over nothing does.
+        crate::Writer::start(&archive)?.build(Vec::new())?;
         let index = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
+        // Fixture rows count their changes from 1, after a write position of
+        // 0; the empty build's own commits are not part of the fixture.
+        index.execute("DELETE FROM meta WHERE key='write_counter'", [])?;
         let archive_conn = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
         index.execute(
             "INSERT INTO input_ref(id,format) VALUES ('fixture','fixture')",

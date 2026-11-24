@@ -335,7 +335,7 @@ impl Engine {
 
     /// Answers the requests waiting; true when one was answered. A stop
     /// request ends the build, and stays queued for the loop.
-    fn answer_waiting(&mut self, pass: &mut Pass) -> Result<bool, EngineError> {
+    pub(crate) fn answer_waiting(&mut self, pass: &mut Pass) -> Result<bool, EngineError> {
         let mut answered = false;
         while self.poll_request() {
             let Some(message) = self
@@ -412,6 +412,21 @@ impl Engine {
                 let Some(plan) = self.build_plan(c)? else {
                     continue;
                 };
+                // What upkeep does before it reads a stored chain: a bundle's
+                // authored records and a transcript's local files an
+                // interrupted capture left unstored are stored first.
+                if let Err(error) = self
+                    .restore_captured_authored(&plan, pass)
+                    .and_then(|()| self.observe_local_references(&plan, pass))
+                {
+                    let error = format!("before reading {}: {error}", plan.path.display());
+                    prepare
+                        .failed
+                        .lock()
+                        .map_err(|_| EngineError::Stopped)?
+                        .push((plan, error));
+                    continue;
+                }
                 prepare.chains.fetch_add(1, Ordering::Relaxed);
                 prepare.bytes.fetch_add(plan.size, Ordering::Relaxed);
                 page.push(plan);

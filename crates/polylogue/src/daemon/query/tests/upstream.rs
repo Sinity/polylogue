@@ -56,6 +56,7 @@ fn upstream_gone_kept() {
             paths.reverse();
         }
         let (mut engine, _lock) = home.engine(64 << 20);
+        polylogue_testkit::install_empty_index(&mut engine);
         for path in &paths {
             let report = engine.import(std::slice::from_ref(path)).unwrap();
             assert!(report.refused.is_empty(), "{report:?}");

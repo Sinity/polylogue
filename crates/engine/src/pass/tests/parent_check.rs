@@ -17,6 +17,7 @@ fn queued_import_checks_its_parent_before_committing() {
         .unwrap();
         std::fs::write(&path, &bytes).unwrap();
         let (mut engine, lock) = open_engine(&home);
+        let archive = engine.archive.clone();
         let cancellation = polylogue_store::cancellation::Cancellation::default();
         let parent = ParentLifetime::capture(expired.then(Instant::now), cancellation.clone());
         if !expired {
@@ -27,6 +28,7 @@ fn queued_import_checks_its_parent_before_committing() {
         let (ready, started) = sync_channel(1);
         let (release, held) = sync_channel(1);
         let status = Arc::new(Mutex::new(LoopStatus::default()));
+        let loop_status = Arc::clone(&status);
         let worker = std::thread::spawn(move || {
             let _lock = lock;
             engine.run(
@@ -81,6 +83,12 @@ fn queued_import_checks_its_parent_before_committing() {
         })
         .unwrap();
         let committed = wait.recv_timeout(Duration::from_secs(30)).unwrap();
+        // The imports were answered during the new archive's first build:
+        // their sessions are read once that build is installed and the loop
+        // has derived what arrived meanwhile, as `status` shows.
+        while archive.index_build().is_some() || loop_status.lock().unwrap().busy {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         tx.send(LoopMsg::Stop).unwrap();
         worker.join().unwrap().unwrap();
         match rejected {

@@ -42,6 +42,7 @@ fn takeout_cells_keep_interleaved_parents_and_events_after_a_rebuild() {
     let expected;
     {
         let (mut e, _lock) = w.engine(64);
+        polylogue_testkit::install_empty_index(&mut e);
         let report = e.import(std::slice::from_ref(&path)).unwrap();
         assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
         for name in ["alpha", "bravo"] {

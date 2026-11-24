@@ -24,7 +24,7 @@ fn the_daemon_rebuilds_an_index_from_another_schema_and_serves() {
         // An installed index: a build installs its file when it ends.
         polylogue_store::Writer::start(&archive)
             .unwrap()
-            .derive()
+            .build(Vec::new())
             .unwrap();
         let conn = rusqlite::Connection::open(archive.index_db()).unwrap();
         conn.execute("INSERT INTO meta VALUES ('kept-marker','present')", [])

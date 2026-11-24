@@ -48,6 +48,69 @@ fn build_progress_counts_chains_read_whole() {
     assert_eq!(home.texts("progress"), ["first chunk", "second chunk"]);
 }
 
+/// A new archive's first pass is a build (docs/installing.md, replacing an
+/// index): the files found are stored first and then read by the build's
+/// workers, which find them as stored chains due a reading, and the index
+/// installs at the end of the pass.
+#[test]
+fn a_new_archive_stores_found_files_then_builds_its_index() {
+    let home = ClaudeHome::new();
+    let first = claude_user("first", "fresh", "first chunk");
+    let second = claude_user("second", "fresh", "second chunk");
+    home.append("fresh.jsonl", &[first.as_str(), second.as_str()].concat());
+    home.append(
+        "other.jsonl",
+        &claude_user("third", "other", "another file"),
+    );
+    let (mut engine, lock) = home.engine(first.len() as u64);
+    engine.config.workers = 1;
+    let archive = engine.archive.clone();
+    assert!(
+        archive.index_build().is_some(),
+        "a new archive's index is built, not created in place"
+    );
+    // The build reads `fresh.jsonl` in ranges; its second range waits.
+    fault::arm("parse", "fresh.jsonl", Action::Hold, 1, 1);
+    let running = std::thread::spawn(move || {
+        let result = engine.run_pass();
+        drop(engine);
+        drop(lock);
+        result
+    });
+    while !fault::held() && !running.is_finished() {
+        std::thread::yield_now();
+    }
+    let progress = archive.index_build();
+    let held = fault::held();
+    fault::release();
+    let pass = running.join().unwrap().unwrap();
+    fault::clear();
+    assert!(held, "the chain's second range waits");
+    let progress = progress.expect("the index stays private while the build reads");
+    assert_eq!(
+        progress.chains, 2,
+        "both files were stored before the build planned its chains: {progress:?}"
+    );
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(archive.index_build().is_none());
+    assert_eq!(home.texts("fresh"), ["first chunk", "second chunk"]);
+    assert_eq!(home.texts("other"), ["another file"]);
+}
+
+/// With nothing stored and no sources, the empty build installs in the
+/// first pass, so a daemon started that way serves reads at once.
+#[test]
+fn an_empty_archive_without_sources_installs_its_empty_build_in_the_first_pass() {
+    let home = ClaudeHome::new();
+    let (mut engine, _lock) = home.engine(1 << 20);
+    engine.config.reads_sources = false;
+    assert!(engine.archive.index_build().is_some());
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(engine.archive.index_build().is_none());
+    assert_eq!(home.count("SELECT count(*) AS n FROM a.input"), 0);
+}
+
 /// A build reads the record as it stood when it started; the pass that
 /// installs it then reads what arrived since, continuing each chain from
 /// the build's position (docs/architecture.md, one path).
@@ -259,4 +322,13 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
     assert!(read >= large.len() as u64, "{read}");
     assert!(read <= large.len() as u64 + ranges * 2 * record, "{read}");
     assert_eq!(home.texts("large").len(), 12_000);
+    // Every import answered, during the build or after it, is read.
+    for n in 0..latencies.len() {
+        let id = polylogue_model::SessionId::parse(&format!("claude-ai:request-{n}")).unwrap();
+        assert_eq!(
+            home.read(|reader| reader.messages(&id, false)).len(),
+            1,
+            "request-{n}"
+        );
+    }
 }

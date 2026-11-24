@@ -136,7 +136,7 @@ fn sparse_original_positions_survive_reopen_and_streaming_reads() {
 
 #[test]
 fn compatible_partials_union_without_downgrading_full_or_pinned_readings() {
-    let w = installed_archive();
+    let w = test_archive();
     let message = original();
     let first = selected(&message, &[2]);
     write(

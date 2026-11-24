@@ -186,6 +186,7 @@ fn cancelled_reader_leaves_while_vector_worker_is_still_loading() {
 
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = polylogue_store::Archive::open_or_create(dir.path()).unwrap();
+    installed(&archive);
     let clock = polylogue_model::WallClock::new(jiff::Timestamp::now);
     let warm = Warm::new(&archive, clock);
     let reads = polylogue_store::ReadPool::open(&archive).unwrap();
@@ -220,6 +221,7 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
     // The overlapping snapshots use a pool independent of daemon workers.
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = polylogue_store::Archive::open_or_create(dir.path()).unwrap();
+    installed(&archive);
     let clock = polylogue_model::WallClock::new(jiff::Timestamp::now);
     let warm = Warm::new(&archive, clock.clone());
     let reads = polylogue_store::ReadPool::open(&archive).unwrap();
@@ -713,6 +715,7 @@ fn restored_vector(hash: u8, at: i64, values: [f32; 2]) -> polylogue_store::vect
 fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = polylogue_store::Archive::open_or_create(dir.path()).unwrap();
+    installed(&archive);
     let warm = Warm::new(
         &archive,
         polylogue_model::WallClock::new(jiff::Timestamp::now),
@@ -814,4 +817,13 @@ fn a_warmed_model_refreshes_mixed_restore_and_preserves_old_reader_values() {
             .of(&[1]),
         Some(1.)
     );
+}
+
+/// Installs a new archive's empty build, as a daemon's first pass over
+/// nothing does, so reads are served.
+fn installed(archive: &polylogue_store::Archive) {
+    polylogue_store::Writer::start(archive)
+        .unwrap()
+        .build(Vec::new())
+        .unwrap();
 }

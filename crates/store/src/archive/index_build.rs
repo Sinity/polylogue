@@ -9,8 +9,10 @@
 //! closed, switched to WAL and renamed over `index.db`; serving readers then
 //! open the new file. Pipeline readers use `built.db` after its first
 //! rename. Path metadata and both renames share the build-state lock, so
-//! each selected path still names its file. An archive whose register holds
-//! no input has nothing to build: its index is created in place.
+//! each selected path still names its file. A new archive's index is built
+//! the same way: its first pass stores the files its sources find and the
+//! build reads them; with nothing to read, the empty build installs at the
+//! end of that pass.
 //!
 //! Crash states, each handled by [`prepare`] at the next open:
 //! - `built.db` present: the build was finished, synced and switched to WAL
@@ -407,16 +409,6 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
             }
         }
     }
-    if replaced.is_none() && !holds_inputs(archive)? {
-        // Nothing is stored, so the empty index is the built one.
-        let index =
-            crate::archive::open_runtime_writer(&paths.index, crate::archive::cache::SETUP)?;
-        archive.ensure_index(&index, false)?;
-        sync_directory(&archive.root)?;
-        archive.index_build.set(None, false);
-        crate::fault::check("index.after_creation", "")?;
-        return crate::archive::generation::open(archive, &index);
-    }
     if create_build_dir(&paths)? {
         sync_directory(&archive.root)?;
     }
@@ -437,13 +429,6 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
         .set(Some(BuildFile::Writing), serving_previous);
     crate::fault::check("index.after_creation", "")?;
     crate::archive::generation::open(archive, &build)
-}
-
-/// Whether the register holds any input, so an index built from it can
-/// hold rows.
-fn holds_inputs(archive: &Archive) -> Result<bool> {
-    let register = crate::archive::open_read(&archive.archive_db())?;
-    register.exists("SELECT EXISTS(SELECT 1 FROM input)", [])
 }
 
 /// Whether `previous` can be read by this build: its schema identity is

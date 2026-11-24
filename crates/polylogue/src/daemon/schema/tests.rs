@@ -14,6 +14,9 @@ impl Stored {
         let dir = tempfile::tempdir().unwrap();
         let (archive, lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
         let writer = Writer::start(&archive).unwrap();
+        // The new archive's empty build is installed, as a daemon's first
+        // pass over nothing does.
+        writer.build(Vec::new()).unwrap();
         Self {
             writer: Some(writer),
             archive,

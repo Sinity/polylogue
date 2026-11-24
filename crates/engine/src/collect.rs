@@ -10,6 +10,7 @@ use polylogue_sources::{Arrival, ORIGINS, OriginSpec};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone)]
 pub struct Found {
     pub path: PathBuf,
     pub origin: &'static OriginSpec,

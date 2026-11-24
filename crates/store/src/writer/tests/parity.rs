@@ -678,7 +678,7 @@ fn an_absent_parent_reads_unresolved_and_its_arrival_writes_nothing_into_the_chi
 /// its search entries with it.
 #[test]
 fn a_text_leaves_with_its_last_row_and_its_search_entries() {
-    let w = installed_archive();
+    let w = test_archive();
     let store = Arc::new(w.archive.blobs().unwrap());
     let one = Input {
         route: Route::Live,

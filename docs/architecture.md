@@ -183,8 +183,8 @@ ends; until then nothing but the build opens them. A build never changes the
 record or the stored bytes, so losing one costs the build and nothing else: a
 start that finds a build a crash or a stop left discards its files and builds
 again from the stored bytes, and a start that finds a finished build not yet
-installed installs it. An archive whose record holds no input has nothing to
-build: its empty index is created in place. While a
+installed installs it. A new archive's first index is built the same way,
+from the files its first pass stores. While a
 build runs, reads are served from the installed index when this build of
 Polylogue can read it, and otherwise reply `index_building` with the build's
 progress

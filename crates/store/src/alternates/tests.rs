@@ -345,10 +345,9 @@ fn alternate_early_stop_precedes_later_body_decode() {
 
 #[test]
 fn live_alternate_reads_use_one_source_snapshot_and_search_the_committed_text() {
-    let archive = crate::fixture::writer::WriterArchive::new();
     // A reader keeps its snapshot across a write in the installed index's
     // WAL (docs/architecture.md, Durability).
-    archive.writer.derive().unwrap();
+    let archive = crate::fixture::writer::WriterArchive::new();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let before = pool.reader().unwrap();
     assert!(before.alternate("first").unwrap().is_none());

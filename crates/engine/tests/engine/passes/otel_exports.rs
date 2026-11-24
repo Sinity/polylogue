@@ -32,6 +32,7 @@ fn otlp_disk_ordering_and_refused_prefix_stays_out_after_index_deletion() {
     let expected;
     {
         let (mut e, _lock) = w.engine(64);
+        polylogue_testkit::install_empty_index(&mut e);
         let imported = e.import(std::slice::from_ref(&original)).unwrap();
         assert!(imported.refused.is_empty(), "{imported:?}");
         assert!(imported.pass.errors.is_empty(), "{imported:?}");
