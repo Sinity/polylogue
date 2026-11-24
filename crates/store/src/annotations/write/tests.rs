@@ -559,7 +559,7 @@ fn text_links_written_with_note_keep_other_links_and_source_hashes() {
     let conn = db();
     let text = "See [one](message:codex:one) and [again](message:codex:one).\n\
         ![detail](message:codex:three \"card\")\n\
-        Source[^source].\n\n[^source]: \"Quoted words\" [source](message:codex:two)";
+        Source[^source].\n\n[^source]: [source](message:codex:two)";
     let mut note = statement(
         AnnotationKind::Note,
         None,

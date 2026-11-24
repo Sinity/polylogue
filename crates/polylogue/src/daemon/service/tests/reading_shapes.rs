@@ -30,8 +30,7 @@ pub(super) fn family(d: &test_daemon::TestDaemon) {
                 "content": [{"type": "tool_use", "id": "call-1", "name": "Task",
                              "input": {"description": "check the parser", "prompt": "check it"}},
                             {"type": "tool_use", "id": "call-1b", "name": "Bash",
-                             "input": {"command": "ls after the spawn"}},
-                            {"type": "text", "text": "spawned a checker"}]}
+                             "input": {"command": "ls after the spawn"}}]}
         })),
         line(json!({
             "type": "user", "uuid": "r3", "parentUuid": "r2", "sessionId": "root",
@@ -598,10 +597,42 @@ fn a_copy_from_an_unstored_session_reads_as_own_with_its_marker() {
 #[test]
 fn a_spawn_cut_keeps_its_header() {
     let d = test_daemon::start("placeholder");
-    family(&d);
+    let dir = d.home.join(".claude/projects/-p");
+    let root = [
+        user("s1", "spawner", "2026-03-01T10:00:00Z", "spawner question"),
+        line(json!({
+            "type": "assistant", "uuid": "s2", "parentUuid": "s1", "sessionId": "spawner",
+            "timestamp": "2026-03-01T10:00:01Z",
+            "message": {"id": "msg_s2", "role": "assistant", "stop_reason": "tool_use",
+                "content": [{"type": "tool_use", "id": "call-s", "name": "Task",
+                             "input": {"description": "check", "prompt": "check it"}},
+                            {"type": "text", "text": "spawned a checker"}]}
+        })),
+        line(json!({
+            "type": "user", "uuid": "s3", "parentUuid": "s2", "sessionId": "spawner",
+            "timestamp": "2026-03-01T10:00:02Z",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call-s", "content": "checked"}]},
+            "toolUseResult": {"agentId": "y1"}
+        })),
+    ]
+    .concat();
+    std::fs::write(dir.join("spawner.jsonl"), root).unwrap();
+    let agents = dir.join("spawner/subagents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("agent-y1.jsonl"),
+        line(json!({
+            "type": "user", "uuid": "b1", "sessionId": "spawner", "agentId": "y1", "isSidechain": true,
+            "timestamp": "2026-03-01T10:00:01Z",
+            "message": {"role": "user", "content": "do the subtask"}
+        })),
+    )
+    .unwrap();
+    d.wait_for(|status| status["store"]["sessions"] == 2 && status["store"]["search_pending"] == 0);
     let page = read(
         &d,
-        "session:claude-code:root",
+        "session:claude-code:spawner",
         ReadOptions {
             view: View::Dialogue,
             spawns: SpawnDisplay::Inline { depth: Some(1) },
@@ -621,7 +652,7 @@ fn a_spawn_cut_keeps_its_header() {
         .iter()
         .position(|item| {
             matches!(item.kind, ItemKind::MessageHeader { .. })
-                && item.source.reference == "message:claude-code:r2"
+                && item.source.reference == "message:claude-code:s2"
         })
         .expect("the spawning message keeps its header");
     let child = place(&|kind| matches!(kind, ItemKind::Text { text } if text == "do the subtask"));
