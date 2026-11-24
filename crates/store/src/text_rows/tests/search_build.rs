@@ -75,6 +75,8 @@ fn built_search_vocabulary_matches_incremental_writes() {
         Ok(())
     })
     .unwrap();
+    // Texts come group by group; each indexed text once, with its text.
+    visited.sort();
     let expected: Vec<_> = inputs
         .into_iter()
         .enumerate()

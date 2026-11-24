@@ -45,7 +45,11 @@ pub(crate) struct BuildProgress {
 /// Inputs whose chains are planned per page.
 const PLANNED_INPUTS: usize = 256;
 
-/// The input bytes whose prepared readings may be in memory at once. A
+/// The memory one input byte takes while its range is parsed: a parsed
+/// range holds about ten times its bytes.
+const PREPARED_PER_INPUT_BYTE: u64 = 10;
+
+/// The memory the prepared readings in flight may take at once. A
 /// worker reads a chain one range at a time, so a chain holds at most a
 /// range's share; a worker waits before it starts a chain until that share
 /// fits, and a chain whose share is the whole allowance runs alone.
@@ -184,9 +188,11 @@ impl Prepare<'_> {
                 continue;
             };
             let (input, length) = (plan.input.clone(), plan.size);
-            let admitted = self.admission.admit(length.min(self.chunk), || {
-                self.archive.stop().is_cancelled()
-            })?;
+            let admitted = self
+                .admission
+                .admit(length.min(self.chunk) * PREPARED_PER_INPUT_BYTE, || {
+                    self.archive.stop().is_cancelled()
+                })?;
             let mut read = 0;
             let reading = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 pool::run_chain(
@@ -290,11 +296,11 @@ impl Engine {
                     |requests| Arc::clone(&requests.yielding),
                 ),
             },
-            admission: Admission::new(self.config.bytes_in_flight),
+            admission: Admission::new(self.archive.memory_budget().total() / 3),
             chunk: self.config.chunk.max(1),
             plans: Mutex::new(plans_rx),
             next_run: AtomicU64::new(saved.next_run),
-            sort_memory: (self.archive.memory_budget().total() / 4) as usize / workers,
+            sort_memory: (self.archive.memory_budget().total() / 8) as usize / workers,
             chains: AtomicU64::new(saved.chains),
             chains_read: AtomicU64::new(saved.chains_read),
             bytes: AtomicU64::new(saved.bytes),
