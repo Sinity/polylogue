@@ -100,6 +100,6 @@ fn run_object_read_checks_the_completion_identity() {
     drop(conn);
     let reader = pool.reader().unwrap();
     assert!(
-        matches!(reader.prepare_object_read(&Reference::Run(beginning.id)), Err(StoreError::Invalid(message)) if message == "stored run completion names another run")
+        matches!(reader.prepare_object_read(&Reference::Run(beginning.id)), Err(StoreError::StoredValue { column: None, reason }) if reason == "stored run completion names another run")
     );
 }

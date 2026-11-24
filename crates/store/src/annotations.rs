@@ -613,9 +613,10 @@ impl Links for AlternateLinks<'_> {
 pub(crate) fn currency_error(error: CurrencyError<StoreError>) -> StoreError {
     match error {
         CurrencyError::Source(error) => error,
-        CurrencyError::Cycle(revision) => {
-            crate::StoreError::stored_data(format!("withdrawals of {revision} form a cycle"))
+        CurrencyError::Cycle(revision) => polylogue_model::Reason::WithdrawalCycle {
+            revision: revision.to_string(),
         }
+        .into(),
     }
 }
 

@@ -534,7 +534,7 @@ fn put_refuses_different_vector() {
             &polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
         )
         .unwrap_err();
-    assert!(matches!(error, crate::StoreError::Conflict(_)), "{error}");
+    assert!(matches!(error, crate::StoreError::Internal(_)), "{error}");
     assert_eq!(stored(), first);
 }
 
@@ -865,7 +865,7 @@ fn a_stored_vector_of_another_length_is_named_by_its_values() {
     };
     assert_eq!(
         error.to_string(),
-        "a stored vector under local/test/2/document/unit has 3 values, not 2"
+        "stored data is unreadable: a stored vector under local/test/2/document/unit has 3 values, not 2"
     );
 }
 

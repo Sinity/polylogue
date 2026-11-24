@@ -199,7 +199,7 @@ reasons! {
     TwoMessageAnchors "two_message_anchors" => BadRequest {}
         "context has two different message anchors; select one message";
     /// A time that does not resolve.
-    BadTime "bad_time" => BadValue { text: String, problem: String }
+    BadTime "bad_time" => BadRequest { text: String, problem: String }
         "`{text}` is not a time: {problem}";
     HistoricalContextTakesNoAround "historical_context_takes_no_around" => BadRequest {}
         "historical context does not accept around; select its context message";

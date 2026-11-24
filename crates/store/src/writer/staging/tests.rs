@@ -431,7 +431,7 @@ fn stored_reading_validation_uses_logical_lengths_without_archive_writes() {
     ] {
         assert!(matches!(
             stored_readings(&conn, &[item]),
-            Err(StoreError::Invalid(_))
+            Err(StoreError::StoredValue { column: None, .. })
         ));
     }
 }

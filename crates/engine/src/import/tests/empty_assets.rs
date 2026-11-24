@@ -365,7 +365,9 @@ fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
     );
     assert!(matches!(
         reader.attachment_hash(&asset),
-        Err(polylogue_store::StoreError::Conflict(_))
+        Err(polylogue_store::StoreError::Refused(
+            polylogue_model::Reason::AttachmentChanged { .. }
+        ))
     ));
     assert!(matches!(
         reader.attachment_range(&asset, 0..0),

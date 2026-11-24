@@ -896,7 +896,7 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
             let error = crate::items::refresh(&tx, &changes)
                 .expect_err("a transaction cannot commit unprepared content changes");
             assert!(
-                matches!(&error, crate::StoreError::Invalid(reason)
+                matches!(&error, crate::StoreError::Internal(reason)
                 if reason == "changed message items were not prepared"),
                 "{error}"
             );

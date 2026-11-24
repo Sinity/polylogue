@@ -124,7 +124,7 @@ impl<'pool> Reader<'pool> {
         let mut start_position = None;
         let mut end_position = None;
         let found = self.source_text_while(container, false, None, &mut |piece, text| {
-            bounds.push(text).map_err(crate::StoreError::internal)?;
+            bounds.push(text).map_err(bad_span)?;
             let next = bytes
                 .checked_add(text.len() as u64)
                 .or_internal("span text length overflows")?;

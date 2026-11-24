@@ -459,7 +459,7 @@ fn an_invalid_comparison_position_does_not_change_row_hashes() {
     update.from = t.length;
     update.length = t.length + 1;
     assert!(
-        matches!(update.write(&conn,pk), Err(crate::StoreError::Invalid(message)) if message == "negative database comparison length")
+        matches!(update.write(&conn,pk), Err(crate::StoreError::StoredValue { column: None, reason }) if reason == "negative database comparison length")
     );
     let after: Vec<u8> = conn
         .query_row("SELECT hash FROM tool_row WHERE tbl='items'", [], |r| {

@@ -255,7 +255,7 @@ fn an_exhausted_counter_refuses_instead_of_reusing_a_position() {
     let tx = conn.transaction().unwrap();
     assert_eq!(
         bump_counter(&tx).unwrap_err().to_string(),
-        "write counter exhausted"
+        "write counter exhausted; this is a Polylogue bug; report it with the request ID"
     );
     assert_eq!(
         tx.query_row("SELECT value FROM meta", [], |r| r.get::<_, String>(0))

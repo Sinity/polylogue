@@ -112,7 +112,7 @@ fn every_reason_has_one_code_and_one_text() {
                 text: "text-x".into(),
                 problem: "problem-x".into(),
             },
-            Code::BadValue,
+            Code::BadRequest,
             "`text-x` is not a time: problem-x",
         ),
         (

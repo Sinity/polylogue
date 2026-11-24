@@ -204,7 +204,7 @@ fn typed_failure_codes_keep_their_wire_names_and_classes() {
         (Code::Empty, "empty", FailureKind::Io),
         (Code::ModelCallsOff, "model_calls_off", FailureKind::Io),
         (Code::Store, "store", FailureKind::Io),
-        (Code::Internal, "internal", FailureKind::Io),
+        (Code::Internal, "internal", FailureKind::Internal),
         (
             Code::InvalidQuery,
             "invalid_query",
@@ -267,7 +267,7 @@ fn every_store_error_variant_has_a_code_and_kind() {
         ),
         (
             E::Json(serde_json::from_str::<u8>("x").unwrap_err()),
-            Code::Io,
+            Code::Store,
             FailureKind::Io,
             false,
         ),
@@ -419,7 +419,7 @@ fn every_store_error_variant_has_a_code_and_kind() {
         ),
         (
             E::Conflict("request-1".into()),
-            Code::IdempotencyKeyReused,
+            Code::Conflict,
             FailureKind::Conflict,
             false,
         ),
@@ -542,7 +542,7 @@ fn every_store_error_variant_has_a_code_and_kind() {
         ),
         (
             E::stored_data("an extent gap"),
-            Code::Io,
+            Code::Store,
             FailureKind::Io,
             false,
         ),
@@ -552,7 +552,7 @@ fn every_store_error_variant_has_a_code_and_kind() {
             }),
             Code::NotBuilt,
             FailureKind::NotYetAvailable,
-            false,
+            true,
         ),
         (
             E::ReferenceUnavailable {

@@ -468,7 +468,7 @@ impl Reader<'_> {
         }
         let missing = |what: &str| {
             StreamError::Selection(SelectionError::invalid(
-                polylogue_model::Code::Io,
+                polylogue_model::Code::Store,
                 format!("a selected row has no {what}"),
             ))
         };
@@ -765,7 +765,10 @@ pub fn shape_value(
         ColKind::Json => {
             if let Some(text) = v.as_str() {
                 *v = serde_json::from_str(text).map_err(|_| {
-                    SelectionError::invalid(polylogue_model::Code::Io, "invalid stored JSON value")
+                    SelectionError::invalid(
+                        polylogue_model::Code::Store,
+                        "invalid stored JSON value",
+                    )
                 })?;
             }
         }
@@ -776,7 +779,7 @@ pub fn shape_value(
             let selection: Value = if let Some(text) = v.as_str() {
                 serde_json::from_str(text).map_err(|e| {
                     SelectionError::invalid(
-                        polylogue_model::Code::Io,
+                        polylogue_model::Code::Store,
                         format!("invalid stored selection: {e}"),
                     )
                 })?
@@ -792,7 +795,7 @@ pub fn shape_value(
                     .all(|id| id.as_str().is_some_and(|id| !id.is_empty()))
             }) {
                 return Err(SelectionError::invalid(
-                    polylogue_model::Code::Io,
+                    polylogue_model::Code::Store,
                     "a stored selection must be an array of IDs",
                 ));
             }
@@ -801,7 +804,7 @@ pub fn shape_value(
         ColKind::Time => {
             if let Some(ms) = v.as_i64() {
                 let time = polylogue_model::Timestamp::from_unix_ms(ms).ok_or_else(|| {
-                    SelectionError::invalid(polylogue_model::Code::Io, "invalid stored time")
+                    SelectionError::invalid(polylogue_model::Code::Store, "invalid stored time")
                 })?;
                 *v = Value::String(polylogue_model::rfc3339_in(time, zone));
             }
@@ -817,7 +820,7 @@ pub fn shape_value(
                 *v = Value::Number(polylogue_model::money::usd_number(nusd));
             } else if !v.is_null() {
                 return Err(SelectionError::invalid(
-                    polylogue_model::Code::Io,
+                    polylogue_model::Code::Store,
                     "a money value must be integer nano-USD",
                 ));
             }

@@ -360,7 +360,7 @@ impl StoreError {
             Self::Blobs(hashed_blobs::Error::Corrupt { .. } | hashed_blobs::Error::Refused(_)) => {
                 Code::BlobCorrupt
             }
-            Self::Json(_) => Code::Io,
+            Self::Json(_) => Code::Store,
             Self::Bundle(issue) => bundle_code(issue),
             Self::Locked { .. } => Code::Conflict,
             Self::NewerSchema { .. } => Code::Refused,
@@ -380,7 +380,7 @@ impl StoreError {
             Self::ScopeChanged => Code::ScopeChanged,
             Self::ReadIndexReplaced => Code::Conflict,
             Self::IndexBuilding(_) => Code::IndexBuilding,
-            Self::Conflict(_) => Code::IdempotencyKeyReused,
+            Self::Conflict(_) => Code::Conflict,
             Self::Stale { .. } => Code::Stale,
             Self::Ambiguous { .. } => Code::Ambiguous,
             Self::IncompleteParents(_) => Code::IncompleteParents,
@@ -395,7 +395,7 @@ impl StoreError {
             Self::Refused(reason) => reason.code(),
             Self::Internal(_) => Code::Internal,
             Self::RowsRefused { .. } => Code::Import,
-            Self::StoredValue { .. } => Code::Io,
+            Self::StoredValue { .. } => Code::Store,
             Self::Query(error) => error.kind(),
             Self::ReferenceUnavailable { .. } => Code::NotYetAvailable,
             Self::Selection { code, .. } => *code,

@@ -1155,7 +1155,7 @@ fn read_at(reader: &Reader<'_>) -> Result<crate::protocol::query::Position, Fail
     let position = reader.change_position()?;
     let counter = |value: i64| {
         u64::try_from(value)
-            .map_err(|_| Failure::new(polylogue_model::Code::Io, "a change counter is negative"))
+            .map_err(|_| Failure::new(polylogue_model::Code::Store, "a change counter is negative"))
     };
     Ok(crate::protocol::query::Position {
         freshness: None,

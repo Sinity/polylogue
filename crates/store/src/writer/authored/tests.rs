@@ -668,8 +668,10 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
             }),
         ])
         .unwrap_err();
-    assert!(matches!(error, StoreError::Invalid(_)), "{error:?}");
-    assert!(error.to_string().contains("cannot be restored"));
+    assert!(
+        matches!(&error, StoreError::Internal(message) if message == "a tombstoned Sinex event cannot be restored"),
+        "{error:?}"
+    );
     commits.try_recv().unwrap();
     assert!(matches!(
         commits.try_recv(),

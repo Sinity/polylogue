@@ -147,7 +147,7 @@ fn a_document_page_stops_before_corrupt_later_blocks_but_full_transfer_refuses()
     .unwrap_err();
     // An undecodable stored body is a store failure, not a missing or
     // not-yet-available document.
-    assert_eq!(refusal.code(), polylogue_model::Code::Io);
+    assert_eq!(refusal.code(), polylogue_model::Code::Store);
     assert_eq!(visited, 0);
 }
 
