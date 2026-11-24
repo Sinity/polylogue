@@ -69,6 +69,7 @@ mod session_row;
 pub mod session_sql;
 mod session_values;
 pub mod signals;
+pub(crate) mod sorted_runs;
 pub(crate) mod source;
 pub mod sql_functions;
 pub mod sql_views;

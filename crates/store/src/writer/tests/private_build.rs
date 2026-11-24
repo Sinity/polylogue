@@ -83,7 +83,7 @@ pub(in crate::writer) fn runs(
     inputs: &[&str],
     chains: &[i64],
 ) -> Vec<std::path::PathBuf> {
-    let mut run = crate::writer::build::BuildRun::create(archive, 0).unwrap();
+    let mut run = crate::writer::build::BuildWorker::create(archive, 0, 32 << 20).unwrap();
     for (input, &chain) in inputs.iter().zip(chains) {
         let mut batch = one_message(input, &format!("{input}-m"), &format!("{input} text"));
         let mut reading = ChainParse::new().unwrap();
@@ -243,7 +243,7 @@ fn private_build_crash_child() {
     let (archive, _lock) = Archive::open_or_create(root).unwrap();
     let writer = Writer::start(&archive).unwrap();
     let mut runs = runs(&archive, &writer, &inputs[..1], &chains[..1]);
-    let mut second = crate::writer::build::BuildRun::create(&archive, 1).unwrap();
+    let mut second = crate::writer::build::BuildWorker::create(&archive, 1, 32 << 20).unwrap();
     let mut batch = one_message("second", "second-m", "second text");
     let mut reading = ChainParse::new().unwrap();
     for step in &mut batch.parse {
@@ -313,13 +313,13 @@ fn wait_stopped(pid: libc::pid_t) -> i32 {
     }
 }
 
-/// A build killed between loading one run and the next leaves no index
+/// A build killed in the middle of its load leaves no index
 /// and no partial build: the next open starts it again from the stored
 /// bytes (docs/architecture.md, Durability).
 #[cfg(feature = "faults")]
 #[test]
 fn a_killed_build_restarts_from_stored_bytes_and_leaves_no_partial_index() {
-    let directory = crash_at("index.build.after_run");
+    let directory = crash_at("index.build.loading");
     let paths = Paths::of(directory.path());
     assert!(paths.runs.exists());
     assert!(!paths.index.exists());

@@ -437,8 +437,8 @@ fn build_from_record(
     let w = w.reopened_without_index();
     let sender = w.writer.sender();
     let mut runs = [
-        crate::writer::build::BuildRun::create(&w.archive, 0).unwrap(),
-        crate::writer::build::BuildRun::create(&w.archive, 1).unwrap(),
+        crate::writer::build::BuildWorker::create(&w.archive, 0, 32 << 20).unwrap(),
+        crate::writer::build::BuildWorker::create(&w.archive, 1, 32 << 20).unwrap(),
     ];
     for (i, (&(n, chain), &stored)) in chains.iter().enumerate() {
         let records = stored_records[&(n, chain)];
@@ -453,7 +453,7 @@ fn build_from_record(
     }
     let paths = runs
         .into_iter()
-        .filter_map(|run| run.finish().unwrap())
+        .flat_map(|run| run.finish().unwrap())
         .collect();
     let phases = w.writer.build(paths).unwrap();
     assert_eq!(

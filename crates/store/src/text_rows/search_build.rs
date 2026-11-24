@@ -16,15 +16,16 @@ struct IndexedText {
     text: String,
 }
 
-/// Read each group's body once in a bounded window, then visit the texts in
-/// their original rowid order.
+/// Visits the texts group by group, in the order their groups were
+/// written, so each group's body is read and decoded once whatever order
+/// the text identities follow.
 pub(super) fn visit_indexed_texts(
     conn: &Connection,
     batch_bytes: usize,
     mut visit: impl FnMut(i64, i64, String) -> Result<()>,
 ) -> Result<()> {
     let mut select = conn.prepare(
-        "SELECT id,indexed,group_id,start,length FROM text WHERE indexed<>0 ORDER BY id",
+        "SELECT id,indexed,group_id,start,length FROM text WHERE indexed<>0 ORDER BY group_id,start",
     )?;
     let mut group = conn.prepare("SELECT body FROM text_group WHERE id=?1")?;
     let mut batch = Vec::with_capacity(BATCH_TEXTS);
@@ -80,7 +81,6 @@ fn visit_batch(
         }
         remaining = rest;
     }
-    batch.sort_unstable_by_key(|text| text.id);
     for text in batch.drain(..) {
         visit(text.id, text.indexed, text.text)?;
     }
