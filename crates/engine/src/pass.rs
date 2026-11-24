@@ -354,12 +354,29 @@ impl Engine {
             return self.read_pass(discover, paths);
         }
         let (mut built, mut seen) = self.read_pass(discover, paths)?;
-        if self.poll_request() || self.yielding() || self.archive.stop().is_cancelled() {
-            // A request came first; the next pass goes on storing.
+        // Requests are answered as they come and storing goes on, as the
+        // build answers them while it reads: a stream of requests never
+        // keeps the build from starting.
+        while self.answer_waiting(&mut built)? {
+            let first = self.found_before_build.take();
+            let looked_at: std::collections::BTreeSet<_> = first
+                .iter()
+                .flat_map(|(_, found)| found.iter().map(|f| f.path.clone()))
+                .chain(paths.iter().cloned())
+                .collect();
+            let (more, again) = self.read_pass(false, &looked_at)?;
+            built.add(more);
+            seen.extend(again);
+            if let Some((true, found)) = first {
+                // The walk stays the record of what the sources hold.
+                self.found_before_build = Some((true, found));
+            }
+        }
+        if self.archive.stop().is_cancelled() {
             self.found_before_build = None;
-            built.capture_pending = true;
             return Ok((built, seen));
         }
+        built.capture_pending = false;
         built.add(self.build_index()?.0);
         // The turn after the build looks again at what the storing turn
         // found ([`Engine::read_turn`]). After a walk it is a discovery turn,

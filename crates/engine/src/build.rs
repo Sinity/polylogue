@@ -335,7 +335,7 @@ impl Engine {
 
     /// Answers the requests waiting; true when one was answered. A stop
     /// request ends the build, and stays queued for the loop.
-    fn answer_waiting(&mut self, pass: &mut Pass) -> Result<bool, EngineError> {
+    pub(crate) fn answer_waiting(&mut self, pass: &mut Pass) -> Result<bool, EngineError> {
         let mut answered = false;
         while self.poll_request() {
             let Some(message) = self
