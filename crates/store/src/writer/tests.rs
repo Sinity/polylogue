@@ -470,10 +470,7 @@ fn a_tool_result_pairs_with_its_call_in_either_order() {
         );
         let hits = r
             .query(
-                &format!(
-                    "SELECT count(*) AS n FROM ({})",
-                    crate::search::matching_texts(crate::search::SnippetIndex::Output, "'cargo'")
-                ),
+                "SELECT COUNT(*) AS n FROM tool_call_trigram WHERE tool_call_trigram MATCH 'cargo'",
                 &[],
             )
             .unwrap();
