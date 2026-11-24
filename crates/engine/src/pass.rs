@@ -2974,17 +2974,25 @@ impl Engine {
             .map_err(ImportFailure::Parent)
             .and_then(|()| {
                 busy(true);
-                let report = self
-                    .import_with_options(
-                        &paths,
-                        &ImportOptions {
-                            authorship: Some(authorship),
-                            origin: format,
-                            dry_run,
-                            ..Default::default()
-                        },
-                    )
-                    .map_err(ImportFailure::Import);
+                let options = ImportOptions {
+                    authorship: Some(authorship),
+                    origin: format,
+                    dry_run,
+                    ..Default::default()
+                };
+                let mut report = self.import_with_options(&paths, &options);
+                // A build installed while the import read the index: its
+                // readers met the replaced file. The import is read again
+                // against the installed one; what it stored stays stored.
+                if matches!(
+                    report,
+                    Err(EngineError::Store(
+                        polylogue_store::StoreError::ReadIndexReplaced
+                    ))
+                ) {
+                    report = self.import_with_options(&paths, &options);
+                }
+                let report = report.map_err(ImportFailure::Import);
                 busy(pending);
                 report
             });
