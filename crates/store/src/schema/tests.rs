@@ -412,7 +412,8 @@ fn schema_check_lists_come_from_names() {
         .iter()
         .map(|(table, column, names)| (format!("source_{table}"), *column, *names))
         .collect();
-    let index_sets: [(&str, &str, &[&str]); 11] = [
+    let index_sets: [(&str, &str, &[&str]); 12] = [
+        ("input_ref", "route", Route::NAMES),
         ("message_parse", "id_kind", IdKind::NAMES),
         ("message_parse", "route", Route::NAMES),
         ("document_parse", "route", Route::NAMES),
