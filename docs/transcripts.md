@@ -48,9 +48,10 @@ Footer = CitedAndLinked[], More(ReadyCall)?
 - Copied messages are resolved within the selected message's physical session before the prefix relation is expanded; unrelated session edges add no per-message graph walk. Copied members keep their original source coordinates, and prefixes fixed at a branch point keep its bounds.
 - Every item carries its source reference (message and block), so the pager can cut between items and start again there. Pages carry no other state. A message header's reference is its `message:` reference; the containing-message and block fields are set only on block items.
 - A `ReadyCall` stores one complete typed request: operation, arguments, request ID, deadline, token budget, cursor, freshness and format. Each `next`, `previous` or other action carries it once. Clients send it directly; the operation table derives CLI lines, MCP calls and HTTP links only where those forms are shown. Every reading ends with ready calls.
+- **One line per indicator**, in every format: a mark, then the text: `↳` continues, `⑂` branches, `⟲` compacted and microcompacted, `⏸` rate limited, `↺` away summary, `·` the rest. Token counts everywhere use one rule: below 1,000 the number, then `k`, `M` or `B` with one decimal (two for `B`): `182.0k`, `14.5k`, `1.5M`.
 - Indicator kinds are a closed set: `continues`, `branches`, `compacted`, `microcompacted`, `rate_limited`, `model_switch`, `away_summary`, `harness`, `turn`, `link_issue`, `stale`, `alternate`.
 - **Pages** lay out as a `PageHeader` (title, template, counts of citations, changed sources, uncited paragraphs and proposals) followed by one `Slot` per placed item in section order, each wrapping the item its [form](pages.md#forms) shows. A text slot's footnotes follow it, numbered page-wide, a source cited several times being one footnote with its count ([page-text.md](page-text.md#how-a-citation-shows)); a live query cell is `pending` until it answers and never holds the page back. The `markdown` encoder writes a page as its [working copy](page-working-copy.md#the-format); the terminal and HTML encoders draw each relation as [page-text.md](page-text.md#the-four-relations) describes.
-- **The footer** of every reading is the **Cited and linked** block: the pages that place the object, the notes and pages that link to it, citations of it or inside it, and inclusions of it, exact rows first, then rows inside it rolled up ([page-text.md](page-text.md#backlinks)).
+- **The footer** of every reading is the **Cited and linked** block, headed `Cited and linked` in the text, Markdown and HTML formats: the pages that place the object, the notes and pages that link to it, citations of it or inside it, and inclusions of it, exact rows first, then rows inside it rolled up ([page-text.md](page-text.md#backlinks)).
 
 ## Composed transcripts
 
@@ -66,7 +67,7 @@ Footer = CitedAndLinked[], More(ReadyCall)?
   - shared ancestors are counted once; the walk is iterative with no depth limit;
   - cycles, missing parents, invalid parent IDs, missing copied messages, missing branch points, conflicting parents, and copied messages with no recorded or with conflicting relative order become `link_issue` indicators and `parents.issues[]` in JSON, with `kind` `cycle`, `missing_parent`, `invalid_parent`, `missing_copied_message`, `missing_branch_point`, `conflicting_parents`, `unknown_order` and `conflicting_order`. They are never resolved by choosing one link. Only the two order kinds can fail a reading: a read that needs the undetermined order of copied messages fails with `incomplete_parents`, naming the issue.
 - Every message row carries `source_session` and `inherited`. The header shows `10 own + 18 inherited`.
-- A copy whose source session is not stored shows as the child's own message, marked `(repeated from a session not in the archive, counted as own)`.
+- A copy whose source session is not stored shows as the child's own message, marked by one line before the first message, `(repeated from a session not in the archive, counted as own)`. It is no link issue; a parent that is missing from a link that copies nothing is.
 
 ## Branches
 
@@ -80,8 +81,8 @@ Footer = CitedAndLinked[], More(ReadyCall)?
 
 The compaction summary is a message (`written_by: harness`, `prompt_kind: compaction_summary`) and the boundary is an event linked to it ([sessions.md](sessions.md#compaction-boundaries)).
 
-- At the boundary the transcript shows one `compacted` indicator from the boundary event (`⟲ compacted (182k → 14.5k tokens) · 14:40 · auto`), then the summary message headed `[harness] compaction summary`, collapsed to its first line and shown whole with `--show harness:full`. Unknown token counts show `⟲ compacted (tokens not recorded)`; a boundary whose summary is not stored shows `summary not recorded`.
-- Other events are one dim line at their position: `⟲ 3 tool results removed from context (−40k tokens)` (microcompaction), `⏸ rate limited until 14:10`, `↺ away summary`, `model → <name>`.
+- At the boundary the transcript shows one `compacted` indicator from the boundary event (`⟲ compacted (182.0k → 14.5k tokens) · auto`), then the summary message headed `[harness] compaction summary`, collapsed to its first line and shown whole with `--show harness:full`. Unknown token counts show `⟲ compacted (tokens not recorded)`; a boundary whose summary is not stored shows `summary not recorded`.
+- Other events are one dim line at their position: `⟲ 3 tool results removed from context (−40.0k tokens)` (microcompaction), `⏸ rate limited until 14:10`, `↺ away summary`, `model → <name>`.
 - `injected_context` messages are one dim line of their first 80 characters, whole with `--show harness:full`; a matched delivery shows its reference.
 - An event without a message position goes at its time position when known, otherwise under "events with unknown position" at the end.
 
@@ -111,13 +112,13 @@ The context view reconstructs what the model had at the selected message from th
 
 ## Message headers
 
-- Each message starts with one header line: local time (`HH:MM`, with the date when the range spans days; `--:--` when unknown, never invented), then the author, labelled from [`written_by`](sessions.md#message-authorship), never from the provider's role. Shown times carry their recorded quality and precision; a bounded time shows its recorded upper bound in the same zone.
+- Each message starts with one header line: local time (`HH:MM`; `--:--` when unknown, never invented), then the author, labelled from [`written_by`](sessions.md#message-authorship), never from the provider's role. Shown times carry their recorded quality and precision (`09:12 (captured, minute)`); a bounded time shows its recorded upper bound as a clock time in the same zone (`09:12 (captured, bounded until 09:13)`). The date is its own line before the first message and before each message that starts a later day. A reading for a model (see below) writes every time with its date and offset instead.
 
   | `written_by` | Label to a person | Label to a model |
   |---|---|---|
   | `human` | `you` (`user` with `--neutral-names`) | `operator` |
   | `model` | `model`, or the model name when the session used several | the same |
-  | `harness` | `[<harness>]` | the same |
+  | `harness` | `[<harness>]`, the harness's name (`[claude-code]`) | the same |
   | `tool` | shown in its call line | the same |
   | `unknown` | `unknown author` | the same |
 
@@ -146,10 +147,10 @@ The context view reconstructs what the model had at the selected message from th
          test parse_dates::tomorrow_at_noon ... FAILED
 ```
 
-- **Target:** the command for shell tools, the path for file tools, the pattern for search, the description for subagents, the URL for fetches, otherwise the first string argument (cut at 60 characters with `…`). A shell command recorded as an argument list is joined with shell quoting. The tool-to-target table lives beside each origin's tool list.
+- **Target:** the command for shell tools, the path for file tools, the pattern for search, the description for subagents, the URL for fetches, otherwise the first string argument. Every target is cut at 120 characters with `…`, the length the session item index stores. A shell command recorded as an argument list is joined with shell quoting. The tool-to-target table lives beside each origin's tool list.
 - **Outcome:** `ok`, `error`, `pending` (computed at read while the session runs) or `unknown (reason)`. It is never blank and never `ok` by default; an exit code of 0 alone is not success. When the provider's error flag and the exit code conflict, the outcome is `error`, with `exit 0 but marked error`.
-- **Exit code** is shown when it is not 0, and always for shell errors. **Duration** is shown for shell and subagent calls, where it measures run time, from the call's [result time](measures.md#time).
-- **Errors:** beneath the line, the first output line that names the failure.
+- **Exit code** (`exit 101`) is shown when it is not 0, and always for shell errors. **Duration** is shown for shell and subagent calls when known, where it measures run time, from the call's [result time](measures.md#time); it reads `850ms`, `12s`, `3m 43s`, `7m`, `1h 5m`. An unknown duration prints nothing, and no other call shows one.
+- **Errors:** beneath the line, the first output line that names the failure: the first line containing `error`, `failed`, `failure`, `fatal`, `panicked`, `exception` or `denied` (any case), else the first non-blank line. A call recorded as an error with exit 0 shows `exit 0 but marked error` there instead. A failed call's output is read for this line even in the collapsed view.
 - **Subagent calls** end with `→ <child id> (N msgs)`.
 
 **`--show tools:full`** and **`--show tools:N`:**
@@ -169,9 +170,9 @@ The context view reconstructs what the model had at the selected message from th
 
 ## Attachments
 
-[Attachments](sessions.md#attachments) are shown as `▣ name (media type, size)`, with who supplied them when that is not the message's author, and their availability when it is not `present`: `unfetched`, `failed (reason)`, `unavailable at source`.
+[Attachments](sessions.md#attachments) are shown as `▣ name (media type, size)`, with who supplied them when that is not the message's author (a supplier equal to the author is not recorded in the item), and their availability when it is not `present`: `unfetched`, `failed (reason)`, `unavailable at source`. The three text formats and HTML show exactly this.
 
-- An HTML file embeds images as data URIs up to 10 MiB each (a setting) and links larger ones; the web reader uses daemon-served blob links. SVG and HTML attachments are always links, never inline.
+- An HTML file embeds images as data URIs up to 10 MiB each (a setting) and links larger ones. The web reader embeds images the same way and links larger files to the daemon's blob route. SVG and HTML attachments are always links, never inline.
 - A tool-result attachment is listed under its call.
 - Pages resolve attachment availability from stored file metadata without reading or hashing blob bodies; reading the bytes checks them ([reading.md](reading.md#attachments)).
 

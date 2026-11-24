@@ -99,9 +99,7 @@ pub fn context_at<'a>(
     let mut kept_ids = std::collections::HashSet::new();
     if let Some(data) = boundary_data {
         let mut ids = data.kept.clone();
-        if ids.is_empty()
-            && let Some(range) = &data.kept_range
-        {
+        if let Some(range) = &data.kept_range {
             let first = before.iter().position(|place| {
                 let entry = &entries(place.part)[place.entry];
                 entry.kind == EntryKind::Header && entry.key.message() == Some(&range.first)
@@ -112,6 +110,8 @@ pub fn context_at<'a>(
             });
             match (first, last) {
                 (Some(first), Some(last)) if first <= last => {
+                    // The range follows the listed messages; one in both is
+                    // kept once, at its listed place.
                     ids.extend(before[first..=last].iter().filter_map(|place| {
                         let entry = &entries(place.part)[place.entry];
                         (entry.kind == EntryKind::Header)

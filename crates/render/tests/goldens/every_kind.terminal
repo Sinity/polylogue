@@ -10,28 +10,48 @@ block:test:session:message#0
 ◆ note: "checked" (agent:codex)
 ◆ note: "checked" (unattributed)
 ◆ note: "checked" (script:nightly)
-↳ continues: as recorded
-↳ branches: as recorded
-↳ compacted: as recorded
-↳ microcompacted: as recorded
-↳ rate_limited: as recorded
-↳ model_switch: as recorded
-↳ away_summary: as recorded
-↳ harness: as recorded
-↳ turn: as recorded
-↳ link_issue: as recorded
-↳ stale: as recorded
-↳ alternate: as recorded
-▸ result for unknown call call-0  unknown  ok · unknown ms
+↳ as recorded
+⑂ as recorded
+⟲ as recorded
+⟲ as recorded
+⏸ as recorded
+· as recorded
+↺ as recorded
+· as recorded
+· as recorded
+· as recorded
+· as recorded
+· as recorded
+▸ result for unknown call call-0  unknown  ok
 null
 out
-▸ result for unknown call call-1  unknown  error · exit 2 · unknown ms
+▸ result for unknown call call-1  unknown  error  exit 2
 exit 2
 null
 out
-▸ result for unknown call call-2  unknown  unknown (status field unreadable) · unknown ms
+▸ result for unknown call call-2  unknown  unknown (status field unreadable)
 null
 out
-▸ result for unknown call call-3  unknown  unknown (running in the background) · unknown ms
+▸ result for unknown call call-3  unknown  unknown (running in the background)
 null
 out
+
+2026-11-09
+
+08:12 (captured, minute) [claude-code] · ctx 182.0k
+block:test:session:message#1
+▸ Bash  cargo test  error  exit 101  3m 43s
+test parse_dates::tomorrow_at_noon ... FAILED
+▸ Bash  ls  ok  850ms
+▸ Agent  Explore: Survey date crates  ok  7m
+▸ Grep  abababababababababababababababababababababababababababababababababababababababababababababababababababababababababababab…  ok
+▣ chart.png (image/png, 2048 bytes) · supplied by model
+▣ notes.txt (text/plain, 12 bytes) · unfetched
+
+2026-11-10
+
+09:05 (captured, minute) model
+block:test:session:message#2
+
+Cited and linked
+page:flaky-ci · cites

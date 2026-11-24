@@ -295,44 +295,51 @@ fn document_block_decode_obeys_cancellation_and_generation_changes_between_items
 }
 
 #[test]
-fn unsupported_document_pages_preserve_direct_errors_and_mixed_coverage() {
-    let options = ReadOptions {
-        view: View::Dialogue,
-        ..Default::default()
-    };
-    let mut footer = ReadFooter::default();
-    let refusal = output::document_omission("document:claude-ai:doc", &options, false, &mut footer)
-        .unwrap_err();
-    assert_eq!(refusal.code(), polylogue_model::Code::BadRequest);
-    assert_eq!(
-        refusal.to_string(),
-        "view dialogue does not read document:claude-ai:doc; use transcript or raw"
-    );
-    assert!(footer.coverage.is_empty());
-    let omitted = output::document_omission("document:claude-ai:doc", &options, true, &mut footer)
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        item(&omitted),
-        ReadItem {
-            source: Source::record("document:claude-ai:doc"),
-            kind: ItemKind::Omission {
-                count: ValueState::known(1),
-                unit: "document".into(),
-                why: "view dialogue does not read document:claude-ai:doc; use transcript or raw"
-                    .into(),
-                continue_call: None,
-            },
-        }
-    );
-    assert_eq!(footer.coverage.len(), 1);
-    assert_eq!(footer.coverage[0].omitted, 1);
-    assert_eq!(footer.coverage[0].target, TargetKind::Document);
-    output::document_omission("document:claude-ai:other", &options, true, &mut footer)
-        .unwrap()
-        .unwrap();
-    assert_eq!(footer.coverage.len(), 1);
-    assert_eq!(footer.coverage[0].omitted, 2);
+fn document_views_without_a_document_form_refuse_unsupported_target() {
+    for view in [
+        View::Dialogue,
+        View::Overview,
+        View::Tree,
+        View::Changes,
+        View::Live,
+    ] {
+        let options = ReadOptions {
+            view,
+            ..Default::default()
+        };
+        let reason =
+            format!("view {view} does not read document:claude-ai:doc; use transcript or raw");
+        let mut footer = ReadFooter::default();
+        let refusal =
+            output::document_omission("document:claude-ai:doc", &options, false, &mut footer)
+                .unwrap_err();
+        assert_eq!(refusal.code(), polylogue_model::Code::BadRequest);
+        assert_eq!(refusal.to_string(), reason);
+        assert!(footer.coverage.is_empty());
+        let omitted =
+            output::document_omission("document:claude-ai:doc", &options, true, &mut footer)
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            item(&omitted),
+            ReadItem {
+                source: Source::record("document:claude-ai:doc"),
+                kind: ItemKind::Omission {
+                    count: ValueState::known(1),
+                    unit: "document".into(),
+                    why: reason,
+                    continue_call: None,
+                },
+            }
+        );
+        output::document_omission("document:claude-ai:other", &options, true, &mut footer)
+            .unwrap()
+            .unwrap();
+        assert_eq!(footer.coverage.len(), 1);
+        assert_eq!(footer.coverage[0].view, view);
+        assert_eq!(footer.coverage[0].omitted, 2);
+        assert_eq!(footer.coverage[0].target, TargetKind::Document);
+    }
 }
 
 #[test]

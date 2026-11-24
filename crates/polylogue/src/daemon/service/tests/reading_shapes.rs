@@ -526,6 +526,85 @@ fn spawns_read_inline_at_their_call_to_the_asked_depth() {
     assert!(subtask < nested, "{full:?}");
 }
 
+/// The dialogue view hides the spawning call, so a cut after it leaves its
+/// message header with no shown block before the child; the header stays.
+#[test]
+fn a_spawn_cut_keeps_its_header() {
+    let d = test_daemon::start("placeholder");
+    let dir = d.home.join(".claude/projects/-p");
+    let root = [
+        user("s1", "spawner", "2026-03-01T10:00:00Z", "spawner question"),
+        line(json!({
+            "type": "assistant", "uuid": "s2", "parentUuid": "s1", "sessionId": "spawner",
+            "timestamp": "2026-03-01T10:00:01Z",
+            "message": {"id": "msg_s2", "role": "assistant", "stop_reason": "tool_use",
+                "content": [{"type": "tool_use", "id": "call-s", "name": "Task",
+                             "input": {"description": "check", "prompt": "check it"}},
+                            {"type": "text", "text": "spawned a checker"}]}
+        })),
+        line(json!({
+            "type": "user", "uuid": "s3", "parentUuid": "s2", "sessionId": "spawner",
+            "timestamp": "2026-03-01T10:00:02Z",
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "call-s", "content": "checked"}]},
+            "toolUseResult": {"agentId": "y1"}
+        })),
+    ]
+    .concat();
+    std::fs::write(dir.join("spawner.jsonl"), root).unwrap();
+    let agents = dir.join("spawner/subagents");
+    std::fs::create_dir_all(&agents).unwrap();
+    std::fs::write(
+        agents.join("agent-y1.jsonl"),
+        line(json!({
+            "type": "user", "uuid": "b1", "sessionId": "spawner", "agentId": "y1", "isSidechain": true,
+            "timestamp": "2026-03-01T10:00:01Z",
+            "message": {"role": "user", "content": "do the subtask"}
+        })),
+    )
+    .unwrap();
+    let spawner = polylogue_model::SessionId::parse("claude-code:spawner").unwrap();
+    let inline = || ReadOptions {
+        view: View::Dialogue,
+        spawns: SpawnDisplay::Inline { depth: Some(1) },
+        ..ReadOptions::default()
+    };
+    d.wait_for(|status| {
+        status["busy"] == false
+            && d.daemon
+                .reads
+                .reader()
+                .unwrap()
+                .session(&spawner)
+                .unwrap()
+                .is_some()
+            && texts(&read(&d, "session:claude-code:spawner", inline()))
+                .iter()
+                .any(|text| text == "do the subtask")
+    });
+    let page = read(&d, "session:claude-code:spawner", inline());
+    let place = |wanted: &dyn Fn(&ItemKind) -> bool| {
+        page.document
+            .items
+            .iter()
+            .position(|item| wanted(&item.kind))
+            .expect("item in the reading")
+    };
+    let spawner = page
+        .document
+        .items
+        .iter()
+        .position(|item| {
+            matches!(item.kind, ItemKind::MessageHeader { .. })
+                && item.source.reference == "message:claude-code:s2"
+        })
+        .expect("the spawning message keeps its header");
+    let child = place(&|kind| matches!(kind, ItemKind::Text { text } if text == "do the subtask"));
+    let after =
+        place(&|kind| matches!(kind, ItemKind::Text { text } if text == "spawned a checker"));
+    assert!(spawner < child && child < after);
+}
+
 #[test]
 fn a_microcompaction_removes_its_results_from_the_context_view() {
     let d = test_daemon::start("placeholder");

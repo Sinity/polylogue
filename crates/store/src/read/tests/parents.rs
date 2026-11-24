@@ -219,6 +219,22 @@ fn missing_parents_and_session_cycles_report_their_boundary() {
 }
 
 #[test]
+fn a_copied_prefix_from_an_unstored_session_is_no_parent_issue() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    session(&mut f, "copy", &["copy"]);
+    f.copying_link("claude-code:missing", "claude-code:copy", "fork")
+        .unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let copy = r
+        .select_messages(&SessionId::parse("claude-code:copy").unwrap(), true)
+        .unwrap();
+    assert_eq!(texts(&copy), ["copy"]);
+    assert!(copy.parents().issues.is_empty());
+}
+
+#[test]
 fn a_shared_ancestor_is_deduplicated_without_becoming_a_session_cycle() {
     let mut writer = crate::fixture::writer::WriterArchive::new();
     let p = recorded_messages(&mut writer, "p", &["p"], &[]);

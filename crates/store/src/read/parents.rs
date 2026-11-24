@@ -191,10 +191,14 @@ fn parent_keys(conn: &Connection, pk: i64, id: &SessionId) -> Result<(Vec<Key>, 
                 .query_row([parent.to_string()], |r| r.get::<_, i64>(0))
                 .optional()?;
             let Some(parent_pk) = parent_pk else {
-                frame.issues.push(ParentIssue::MissingParent {
-                    child: frame.session.clone(),
-                    parent,
-                });
+                // A copied prefix whose source is not stored leaves the
+                // child's messages its own; it is no broken link.
+                if !link.copies_prefix {
+                    frame.issues.push(ParentIssue::MissingParent {
+                        child: frame.session.clone(),
+                        parent,
+                    });
+                }
                 continue;
             };
             if active.contains(&parent_pk) {

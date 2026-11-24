@@ -48,17 +48,13 @@ pub(super) fn document_omission(
     mixed: bool,
     footer: &mut ReadFooter,
 ) -> Result<Option<ReadRecord>, Error> {
-    if options.view != View::Dialogue {
+    let Err(error) = polylogue_model::read::document_view(options.view, reference) else {
         return Ok(None);
-    }
+    };
     view_error(
         reference.into(),
         Some(TargetKind::Document),
-        ReadError::UnsupportedTarget {
-            view: options.view,
-            target: reference.into(),
-            accepted_views: vec![View::Transcript, View::Raw],
-        },
+        error,
         mixed,
         footer,
     )

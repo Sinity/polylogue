@@ -16,14 +16,14 @@ The most important surface. Message rendering, views and show/hide are [reading.
 
 | Element | Web form |
 |---|---|
-| Message header | `HH:MM` (with the date when the range spans days) · author (`you`, model name, `[claude-code]`, `injected context` with its delivery link, `unknown author`) · the first note right-aligned (`◆ decision: decided: chrono, not time · operator`) with `+N`; clicking expands all notes inline; at 1,440 px and wider notes also sit as margin sidenotes. The operator's messages on `--surface-sunk`. Permalink on the time; hover and focus show the action rail and **+ page**. |
+| Message header | `HH:MM` (a date line before the first message and each new day) · author (`you`, model name, `[claude-code]`, `injected context` with its delivery link, `unknown author`) · the first note right-aligned (`◆ decision: decided: chrono, not time · operator`) with `+N`; clicking expands all notes inline; at 1,440 px and wider notes also sit as margin sidenotes. The operator's messages on `--surface-sunk`. Permalink on the time; hover and focus show the action rail and **+ page**. |
 | Text | Markdown rendered, code highlighted, archived HTML inert |
 | Thinking | one dim line `thinking (N words)` with the first sentence; full text with `thinking:full`; `thinking (encrypted)` or `(redacted)` |
 | Tool call | one line, outcome first: `▸ Tool  target  outcome  [exit N]  [duration]`; on error, the first output line naming the failure beneath; the harness's result message joins the call line, and a footer says how many were joined. `tools:full` shows the family body below. Output cut to head and tail marks the omitted middle with its exact line count and a link that reads it whole |
 | Durations | shell and subagent calls, when known; never file or search tools |
 | Subagent call | `▸ Agent  Explore: Survey date crates  ok  7m  → claude-code:…/a7f3a2c1 (6 msgs)`; with `spawns:card`, the **delegation card**: child, type, counts, own and tree cost, instruction, final reply, the parent's next message, earlier attempts; `spawns:full` reads the child inline |
 | Harness messages | one dim line; full with `harness:full` |
-| Compaction | in place: `⟲ compacted (182k → 14.5k tokens) · 14:40 · manual · show summary`; the summary is a message shown on request, and the boundary lists what it evicted and kept ([sessions.md](sessions.md#compaction-boundaries)) |
+| Compaction | in place: `⟲ compacted (182.0k → 14.5k tokens) · manual · show summary`; the summary is a message shown on request, and the boundary lists what it evicted and kept ([sessions.md](sessions.md#compaction-boundaries)) |
 | Branches | `⑂ 2 other versions of this reply · show`; `branches` indents them under the split |
 | Inherited prefix | `↳ continues claude-code:7f3a2c10-0002 (18 earlier messages; show)`; `inherited` shows them |
 | Continuation | `↪ continued by claude-code:7f3a2c10-0004 (Oct 03 14:00, resume — repeats these 18 messages, adds 10)` |

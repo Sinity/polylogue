@@ -52,6 +52,7 @@ pub struct Encoder<'a> {
     first: bool,
     /// Clock times print in this zone; UTC when the header names none.
     zone: jiff::tz::TimeZone,
+    days: Days,
 }
 impl<'a> Encoder<'a> {
     fn call_text(&self, call: &ReadyCall) -> io::Result<String> {
@@ -75,6 +76,7 @@ impl<'a> Encoder<'a> {
             options,
             first: true,
             zone: header_zone(header),
+            days: Days::default(),
         };
         match format {
             Format::Json => {
@@ -174,22 +176,25 @@ impl<'a> Encoder<'a> {
                 json(self.out, &ReadPart::Item(item.clone()))?;
                 writeln!(self.out)?;
             }
-            Format::Html => write!(
-                self.out,
-                "{}",
-                html::item(
-                    item,
-                    if self.options.standalone_html {
-                        self.options.inline_image_bytes
-                    } else {
-                        0
-                    },
-                    &self.zone,
-                    self.options.commands,
-                )
-                .map_err(io::Error::other)?
-                .into_string()
-            )?,
+            Format::Html => {
+                if !self.options.model_facing
+                    && let Some(day) = self.days.announce(item, &self.zone)
+                {
+                    write!(self.out, "<p class=\"day\">{}</p>", html::escape(&day))?;
+                }
+                write!(
+                    self.out,
+                    "{}",
+                    html::item(
+                        item,
+                        self.options.inline_image_bytes,
+                        &self.zone,
+                        self.options.commands,
+                    )
+                    .map_err(io::Error::other)?
+                    .into_string()
+                )?;
+            }
             Format::Terminal | Format::Markdown => self.prose(item)?,
         }
         self.first = false;
@@ -209,13 +214,56 @@ impl<'a> Encoder<'a> {
                 writeln!(self.out)
             }
             Format::Html => {
+                write!(
+                    self.out,
+                    "{}",
+                    html::cited_and_linked(footer, self.options.commands)
+                        .map_err(io::Error::other)?
+                        .into_string()
+                )?;
                 self.out.write_all(b"</article>")?;
                 if self.options.standalone_html {
                     self.out.write_all(b"</body></html>")?;
                 }
                 Ok(())
             }
-            _ => Ok(()),
+            Format::Terminal | Format::Markdown => {
+                let (out, format, commands, via) = (
+                    self.out,
+                    self.format,
+                    self.options.commands,
+                    self.options.via,
+                );
+                if footer.referenced_by.is_empty() {
+                    return Ok(());
+                }
+                let heading = if format == Format::Markdown {
+                    format!("\n## {CITED_AND_LINKED}")
+                } else {
+                    format!("\n{CITED_AND_LINKED}")
+                };
+                writeln!(out, "{heading}")?;
+                for reference in &footer.referenced_by {
+                    let line = format!("{} · {}", reference.reference, reference.role);
+                    if format == Format::Markdown {
+                        writeln!(out, "{}", markdown_escape(&line))?;
+                    } else {
+                        writeln!(out, "{}", terminal::escape(&line))?;
+                    }
+                    if let Some(call) = &reference.open {
+                        let commands = commands.ok_or_else(|| {
+                            io::Error::other(
+                                "rendering a ready call requires operation declarations",
+                            )
+                        })?;
+                        let text = commands
+                            .follow_up(via, &call.request)
+                            .map_err(io::Error::other)?;
+                        writeln!(out, "{text}")?;
+                    }
+                }
+                Ok(())
+            }
         }
     }
     fn line(&mut self, text: &str) -> io::Result<()> {
@@ -236,7 +284,12 @@ impl<'a> Encoder<'a> {
         let md = self.format == Format::Markdown;
         match &item.kind {
             ItemKind::MessageHeader { header } => {
-                let time = message_time(&header.time, &self.zone);
+                if !self.options.model_facing
+                    && let Some(day) = self.days.announce(item, &self.zone)
+                {
+                    self.line(&format!("\n{day}"))?;
+                }
+                let time = message_time(&header.time, &self.zone, self.options.model_facing);
                 let author = if self.options.model_facing
                     && header.author.value().is_some_and(|a| a == "you")
                 {
@@ -252,13 +305,7 @@ impl<'a> Encoder<'a> {
                     text.push_str(" · inherited");
                 }
                 if let Some(context) = &header.context {
-                    let tokens = |n: u64| {
-                        if n >= 1000 {
-                            format!("{}k", n.div_ceil(1000))
-                        } else {
-                            n.to_string()
-                        }
-                    };
+                    let tokens = crate::measures::tokens;
                     text.push_str(&match context {
                         ValueState::Value { value } => format!(" · ctx {}", tokens(*value)),
                         ValueState::Inferred { value } => format!(" · ctx ≈{}", tokens(*value)),
@@ -320,16 +367,7 @@ impl<'a> Encoder<'a> {
                 }
             },
             ItemKind::Call { call } => {
-                self.line(&format!(
-                    "▸ {}  {}  {}{} · {} ms",
-                    call_label(call),
-                    value_text(&call.target),
-                    value_text(&call.outcome),
-                    call.exit
-                        .map(|exit| format!(" · exit {exit}"))
-                        .unwrap_or_default(),
-                    value_text(&call.duration_ms)
-                ))?;
+                self.line(&call_line(call))?;
                 if let Some(error) = &call.error_line {
                     self.line(error)?;
                 }
@@ -372,20 +410,7 @@ impl<'a> Encoder<'a> {
                 verified_hash: _,
                 open,
             } => {
-                self.line(&format!(
-                    "▣ {} ({}, {}) · supplied by {} · {}",
-                    attachment.name.as_deref().unwrap_or("unnamed attachment"),
-                    attachment
-                        .media_type
-                        .as_deref()
-                        .unwrap_or("media type unknown"),
-                    attachment
-                        .size
-                        .map(|n| format!("{n} bytes"))
-                        .unwrap_or_else(|| "size unknown".into()),
-                    value_text(supplied_by),
-                    value_text(availability)
-                ))?;
+                self.line(&attachment_line(attachment, supplied_by, availability))?;
                 if let Some(link) = link.as_deref().filter(|link| html::safe_url(link)) {
                     self.line(link)?;
                 }
@@ -421,7 +446,7 @@ impl<'a> Encoder<'a> {
                 text,
                 expand,
             } => {
-                self.line(&format!("↳ {}: {text}", indicator.as_str()))?;
+                self.line(&indicator_line(*indicator, text))?;
                 if let Some(call) = expand {
                     self.line(&self.call_text(call)?)?;
                 }
@@ -913,13 +938,42 @@ pub(crate) fn header_zone(header: &ReadHeader) -> jiff::tz::TimeZone {
         .unwrap_or(jiff::tz::TimeZone::UTC)
 }
 
-/// A message header's time: the recorded minute with its accuracy, or `--:--`
-/// when the message has no time.
-pub(crate) fn message_time(time: &TimeValue, zone: &jiff::tz::TimeZone) -> String {
-    time.at.map_or_else(
-        || "--:--".into(),
-        |at| recorded_time(Some(at), time.evidence, zone),
-    )
+/// The heading of the footer block that every format gives the same way.
+pub(crate) const CITED_AND_LINKED: &str = "Cited and linked";
+
+/// A message header's time with its recorded quality: the local `HH:MM`
+/// (the date is announced by [`Days`]), or for models the date and offset
+/// as well; `--:--` when the message has no time.
+pub(crate) fn message_time(
+    time: &TimeValue,
+    zone: &jiff::tz::TimeZone,
+    model_facing: bool,
+) -> String {
+    let Some(at) = time.at else {
+        return "--:--".into();
+    };
+    let shown = |at| {
+        if model_facing {
+            polylogue_model::local_minute(at, zone)
+        } else {
+            polylogue_model::local_clock(at, zone)
+        }
+    };
+    format!("{} ({})", shown(at), quality_text(time.evidence, &shown))
+}
+
+fn quality_text(
+    accuracy: polylogue_model::TimeAccuracy,
+    shown: &dyn Fn(polylogue_model::Timestamp) -> String,
+) -> String {
+    let mut quality = accuracy.quality.as_str().to_owned();
+    if let Some(precision) = accuracy.precision {
+        quality.push_str(&format!(", {}", precision.as_str()));
+    }
+    if let Some(until) = accuracy.until {
+        quality.push_str(&format!(" until {}", shown(until)));
+    }
+    quality
 }
 
 pub(crate) fn recorded_time(
@@ -927,20 +981,166 @@ pub(crate) fn recorded_time(
     accuracy: polylogue_model::TimeAccuracy,
     zone: &jiff::tz::TimeZone,
 ) -> String {
-    let time = at
-        .map(|at| polylogue_model::local_minute(at, zone))
-        .unwrap_or_else(|| "unknown".into());
-    let mut quality = accuracy.quality.as_str().to_owned();
-    if let Some(precision) = accuracy.precision {
-        quality.push_str(&format!(", {}", precision.as_str()));
+    let full = |at| polylogue_model::local_minute(at, zone);
+    let time = at.map(full).unwrap_or_else(|| "unknown".into());
+    format!("{time} ({})", quality_text(accuracy, &full))
+}
+
+/// Announces the local date before the first dated message and before each
+/// message that starts a later day, so a clock-only header is never
+/// ambiguous.
+#[derive(Debug, Default)]
+pub(crate) struct Days {
+    last: Option<String>,
+}
+impl Days {
+    pub(crate) fn announce(
+        &mut self,
+        item: &ReadItem,
+        zone: &jiff::tz::TimeZone,
+    ) -> Option<String> {
+        let ItemKind::MessageHeader { header } = &item.kind else {
+            return None;
+        };
+        let day = polylogue_model::local_day(header.time.at?, zone);
+        if self.last.as_ref() == Some(&day) {
+            return None;
+        }
+        self.last = Some(day.clone());
+        Some(day)
     }
-    if let Some(until) = accuracy.until {
-        quality.push_str(&format!(
-            " until {}",
-            polylogue_model::local_minute(until, zone)
-        ));
+}
+
+/// A duration as a person reads it: `850ms`, `12s`, `3m 43s`, `7m`, `1h 5m`.
+pub(crate) fn duration_text(ms: u64) -> String {
+    if ms < 1_000 {
+        return format!("{ms}ms");
     }
-    format!("{time} ({quality})")
+    let seconds = (ms + 500) / 1_000;
+    let part = |major: u64, unit: &str, minor: u64, minor_unit: &str| {
+        if minor == 0 {
+            format!("{major}{unit}")
+        } else {
+            format!("{major}{unit} {minor}{minor_unit}")
+        }
+    };
+    match seconds {
+        0..60 => format!("{seconds}s"),
+        60..3_600 => part(seconds / 60, "m", seconds % 60, "s"),
+        _ => part(seconds / 3_600, "h", seconds % 3_600 / 60, "m"),
+    }
+}
+
+/// How many characters of a call's target a line shows.
+const TARGET_CHARACTERS: usize = 120;
+
+/// A target as shown on the call line: cut with `…` when long.
+pub(crate) fn cut_target(target: &str) -> String {
+    if target.chars().count() <= TARGET_CHARACTERS {
+        return target.into();
+    }
+    let mut cut: String = target.chars().take(TARGET_CHARACTERS).collect();
+    cut.push('…');
+    cut
+}
+
+/// The call's target as the text encoders show it.
+pub(crate) fn call_target(call: &CallItem) -> String {
+    cut_target(&value_text(&call.target))
+}
+
+/// `exit N`, shown when the code is not 0 and always for a failed shell call.
+pub(crate) fn call_exit(call: &CallItem) -> Option<String> {
+    let failed_shell = call.action == polylogue_model::ToolAction::Shell
+        && call
+            .outcome
+            .value()
+            .is_some_and(|outcome| outcome == "error");
+    call.exit
+        .filter(|exit| *exit != 0 || failed_shell)
+        .map(|exit| format!("exit {exit}"))
+}
+
+/// Run time, for shell and subagent calls whose duration is known.
+pub(crate) fn call_duration(call: &CallItem) -> Option<String> {
+    matches!(
+        call.action,
+        polylogue_model::ToolAction::Shell | polylogue_model::ToolAction::Subagent
+    )
+    .then(|| call.duration_ms.value().copied().map(duration_text))
+    .flatten()
+}
+
+/// The call line of the text encoders: tool, target, outcome first, then
+/// exit code and duration.
+pub(crate) fn call_line(call: &CallItem) -> String {
+    let mut line = format!(
+        "▸ {}  {}  {}",
+        call_label(call),
+        call_target(call),
+        value_text(&call.outcome)
+    );
+    for part in [call_exit(call), call_duration(call)].into_iter().flatten() {
+        line.push_str("  ");
+        line.push_str(&part);
+    }
+    line
+}
+
+/// `▣ name (media type, size)`, with the supplier when it is not the
+/// message's author (the producer sets `supplied_by` only then) and the
+/// availability when it is not `present`.
+pub(crate) fn attachment_line(
+    attachment: &polylogue_model::Attachment,
+    supplied_by: &ValueState<String>,
+    availability: &ValueState<String>,
+) -> String {
+    let mut line = format!(
+        "▣ {} ({}, {})",
+        attachment.name.as_deref().unwrap_or("unnamed attachment"),
+        attachment
+            .media_type
+            .as_deref()
+            .unwrap_or("media type unknown"),
+        attachment
+            .size
+            .map(|n| format!("{n} bytes"))
+            .unwrap_or_else(|| "size unknown".into())
+    );
+    attachment_notes(supplied_by, availability, |note| {
+        line.push_str(" · ");
+        line.push_str(&note);
+    });
+    line
+}
+
+/// The notes after an attachment's description, shared with HTML.
+pub(crate) fn attachment_notes(
+    supplied_by: &ValueState<String>,
+    availability: &ValueState<String>,
+    mut note: impl FnMut(String),
+) {
+    if let Some(supplier) = supplied_by.value() {
+        note(format!("supplied by {supplier}"));
+    }
+    if availability.value().is_none_or(|state| state != "present") {
+        note(value_text(availability));
+    }
+}
+
+/// The mark an indicator line starts with.
+pub(crate) fn indicator_mark(kind: IndicatorKind) -> &'static str {
+    match kind {
+        IndicatorKind::Continues => "↳",
+        IndicatorKind::Branches => "⑂",
+        IndicatorKind::Compacted | IndicatorKind::Microcompacted => "⟲",
+        IndicatorKind::RateLimited => "⏸",
+        IndicatorKind::AwaySummary => "↺",
+        _ => "·",
+    }
+}
+pub(crate) fn indicator_line(kind: IndicatorKind, text: &str) -> String {
+    format!("{} {text}", indicator_mark(kind))
 }
 
 /// Human-readable structural facts; graph layout never supplies a root.

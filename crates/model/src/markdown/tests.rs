@@ -65,7 +65,7 @@ fn code_never_supplies_reference_links() {
 fn footnotes_cite_with_the_first_straight_or_curly_quote() {
     let text = "One.[^one] Two.[^two]\n\n\
                 [^one]: “retained *words*” <span:message:codex:m#c=0-14>\n\
-                [^two]: <message:codex:other> \"after the reference\" and \"not this\"\n";
+                [^two]: <span:message:codex:other#c=0-5> \"after the reference\" and \"not this\"\n";
     assert_eq!(
         links(text).unwrap(),
         [
@@ -77,7 +77,7 @@ fn footnotes_cite_with_the_first_straight_or_curly_quote() {
             ),
             link(
                 LinkRole::Cites,
-                "message:codex:other",
+                "span:message:codex:other#c=0-5",
                 Some("after the reference"),
                 None,
             ),
@@ -88,13 +88,18 @@ fn footnotes_cite_with_the_first_straight_or_curly_quote() {
 #[test]
 fn a_mention_and_a_citation_remain_distinct_and_repeated_cites_keep_first_quote() {
     let text = "[message](message:codex:m). One.[^one] Two.[^two]\n\n\
-                [^one]: \"first\" <message:codex:m>\n\
-                [^two]: \"second\" <message:codex:m>\n";
+                [^one]: \"first\" <span:message:codex:m#c=0-5>\n\
+                [^two]: \"second\" <span:message:codex:m#c=0-5>\n";
     assert_eq!(
         links(text).unwrap(),
         [
             link(LinkRole::Mentions, "message:codex:m", None, None),
-            link(LinkRole::Cites, "message:codex:m", Some("first"), None),
+            link(
+                LinkRole::Cites,
+                "span:message:codex:m#c=0-5",
+                Some("first"),
+                None
+            ),
         ],
     );
 }
@@ -147,6 +152,31 @@ fn query_values_and_session_citations_name_the_unbuilt_behavior() {
         links("![report](query:report \"card\")").unwrap(),
         [link(LinkRole::Embeds, "query:report", None, Some("card"))],
     );
+}
+
+#[test]
+fn a_message_cited_by_quote_names_the_unbuilt_behavior() {
+    assert_eq!(
+        links("A source.[^one]\n\n[^one]: \"words\" <message:codex:m>"),
+        Err(TextError::NotBuilt {
+            what: "citing a message by quote",
+        }),
+    );
+    // Without a quote a message is cited as written.
+    assert_eq!(
+        links("A source.[^one]\n\n[^one]: <message:codex:m>").unwrap(),
+        [link(LinkRole::Cites, "message:codex:m", None, None)],
+    );
+}
+
+#[test]
+fn an_unclosed_footnote_quote_is_refused_with_its_position() {
+    // "One.[^one]" is 10 bytes, the blank line 2 and "[^one]: " 8, so the
+    // quote after "see " is at byte 24.
+    let text = "One.[^one]\n\n[^one]: see \"unfinished <span:message:codex:m#c=0-5>";
+    assert_eq!(links(text), Err(TextError::UnclosedQuote { position: 24 }));
+    let curly = "One.[^one]\n\n[^one]: see “unfinished <span:message:codex:m#c=0-5>";
+    assert_eq!(links(curly), Err(TextError::UnclosedQuote { position: 24 }));
 }
 
 #[test]

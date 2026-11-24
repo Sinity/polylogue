@@ -5,7 +5,7 @@
 //! in, not the entries before it.
 use super::{Composed, Runs};
 use crate::Error;
-use polylogue_model::read::{EntryKind, IndexEntry, ItemCounts, ShowProfile, View};
+use polylogue_model::read::{IndexEntry, ItemCounts, ShowProfile};
 use polylogue_store::Reader;
 
 /// One shown entry: its part, its place in the part's session, and itself.
@@ -32,8 +32,6 @@ struct Span {
     part: usize,
     start: usize,
     end: usize,
-    /// A header the span shows none of the blocks of: hidden in this span.
-    dropped: Option<usize>,
     /// Shown entries before the span.
     before: u64,
 }
@@ -63,7 +61,6 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
             spans: Vec::new(),
             total: 0,
         };
-        let headers_alone = matches!(profile.view, View::Transcript | View::Context | View::Raw);
         for &(part, start, end) in &runs.spans {
             if start >= end {
                 continue;
@@ -72,27 +69,10 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
                 .counts_at(reader, part, end)?
                 .since(&composed.counts_at(reader, part, start)?)
                 .shown(&profile);
-            // A span cut inside a message can end after a header but before
-            // any of its shown blocks; the header is then not shown here.
-            let index = &composed.indexes[part];
-            let mut dropped = None;
-            if !headers_alone && end < index.entries as usize && shown > 0 {
-                let last =
-                    reader.item_window(index.pk, start as u64..end as u64, false, 1, |class| {
-                        profile.shows(class)
-                    })?;
-                if let Some(last) = last.first()
-                    && last.entry.kind == EntryKind::Header
-                {
-                    dropped = Some(last.seq as usize);
-                }
-            }
-            let shown = shown - u64::from(dropped.is_some());
             out.spans.push(Span {
                 part,
                 start,
                 end,
-                dropped,
                 before: out.total,
             });
             out.total += shown;
@@ -119,8 +99,7 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
             .counts_at(self.reader, part, seq)?
             .since(&self.composed.counts_at(self.reader, part, span.start)?)
             .shown(&self.profile);
-        let dropped = span.dropped.is_some_and(|dropped| dropped < seq);
-        Ok(span.before + shown - u64::from(dropped))
+        Ok(span.before + shown)
     }
 
     /// The first span that holds a place or comes after it.
@@ -160,9 +139,6 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
                 let Some(last) = rows.last() else { break };
                 seq = last.seq as usize + 1;
                 for stored in rows {
-                    if span.dropped == Some(stored.seq as usize) {
-                        continue;
-                    }
                     let entry = PageEntry {
                         part: span.part,
                         seq: stored.seq as usize,
@@ -209,9 +185,6 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
                 let Some(last) = rows.last() else { break };
                 end = last.seq as usize;
                 for stored in rows {
-                    if span.dropped == Some(stored.seq as usize) {
-                        continue;
-                    }
                     let entry = PageEntry {
                         part: span.part,
                         seq: stored.seq as usize,

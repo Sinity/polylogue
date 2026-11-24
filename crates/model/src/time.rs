@@ -185,5 +185,15 @@ pub fn local_minute(t: Timestamp, zone: &jiff::tz::TimeZone) -> String {
         .to_string()
 }
 
+/// The local `HH:MM` of an instant in a zone.
+pub fn local_clock(t: Timestamp, zone: &jiff::tz::TimeZone) -> String {
+    t.0.to_zoned(zone.clone()).strftime("%H:%M").to_string()
+}
+
+/// The local `YYYY-MM-DD` of an instant in a zone.
+pub fn local_day(t: Timestamp, zone: &jiff::tz::TimeZone) -> String {
+    t.0.to_zoned(zone.clone()).strftime("%Y-%m-%d").to_string()
+}
+
 #[cfg(test)]
 mod tests;

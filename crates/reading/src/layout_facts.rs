@@ -90,6 +90,16 @@ pub(super) struct Layout<'a> {
     pub backwards: bool,
     pub page_start: Option<u64>,
 }
+/// A stored tool pair no longer reads as the page saw it: the cursor names
+/// the session whose rows changed.
+fn session_changed(source: &Source) -> Error {
+    match &source.source_session {
+        Some(session) => Error::stale_cursor(format!(
+            "session {session} changed since this page was issued"
+        )),
+        None => Error::stale_cursor("a session changed since this page was issued"),
+    }
+}
 struct Segment {
     item: ReadItem,
     pair: Option<(MessageId, u64)>,
@@ -185,11 +195,7 @@ fn segments(
                 {
                     let (data, attachments) = reader
                         .message_tool_pair_result_shape(message, ordinal)?
-                        .ok_or_else(|| {
-                            Error::stale_cursor(
-                                "a tool result in this session changed since this page was issued",
-                            )
-                        })?;
+                        .ok_or_else(|| session_changed(&item.source))?;
                     count = count
                         .checked_add(u64::from(data))
                         .and_then(|value| value.checked_add(attachments))
@@ -239,9 +245,7 @@ fn pair_parts(
     } else {
         reader.message_tool_pair_header(message, *ordinal)
     }?;
-    let mut pair = pair.ok_or_else(|| {
-        Error::stale_cursor("a tool call or its result changed since this page was issued")
-    })?;
+    let mut pair = pair.ok_or_else(|| session_changed(&segment.item.source))?;
     if layout.options.view == View::Context
         && let Some(result) = &pair.result
         && !(layout.selected)(&result.source)?
@@ -259,11 +263,7 @@ fn pair_parts(
             .as_ref()
             .filter(|result| result.source.reference == segment.item.source.reference)
             .cloned()
-            .ok_or_else(|| {
-                Error::stale_cursor(
-                    "the result attached to a tool call changed since this page was issued",
-                )
-            })?
+            .ok_or_else(|| session_changed(&segment.item.source))?
     };
     pair.emit_at = source.source.reference.clone();
     let original = source
@@ -334,9 +334,7 @@ pub(super) fn visit_parts(
                 Ok(true)
             })?;
             if parts.len() as u64 != segment.count {
-                return Err(Error::stale_cursor(
-                    "a tool call on this page is laid out differently since its result was re-read",
-                ));
+                return Err(session_changed(&segment.item.source));
             }
             for (index, (item, attachment_index)) in parts.into_iter().enumerate().rev() {
                 let ordinal = segment.start + index as u64;
@@ -371,9 +369,7 @@ pub(super) fn visit_parts(
                 return Ok(false);
             }
             if offset != segment.count {
-                return Err(Error::stale_cursor(
-                    "a tool call on this page is laid out differently since its result was re-read",
-                ));
+                return Err(session_changed(&segment.item.source));
             }
         }
     }

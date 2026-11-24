@@ -4,12 +4,42 @@
 use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
-    Block, MessageId, SessionId,
+    Block, ErrorReason, MessageId, SessionId, ToolOutcome,
     bundle::ShownBlocks,
     read::{Source, SourceBlock, ToolPair, ValueState},
 };
 use rusqlite::{Row, params};
 
+/// The line beneath a failed call: the first output line that names the
+/// failure (error, failed, failure, fatal, panicked, exception or denied, in
+/// any case), else the first non-blank line.
+fn failure_line(output: &str) -> Option<String> {
+    const NAMES: [&str; 7] = [
+        "error",
+        "failed",
+        "failure",
+        "fatal",
+        "panicked",
+        "exception",
+        "denied",
+    ];
+    let mut lines = output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = lines.next()?;
+    let names = |line: &str| {
+        let line = line.to_lowercase();
+        NAMES.iter().any(|name| line.contains(name))
+    };
+    Some(
+        std::iter::once(first)
+            .chain(lines)
+            .find(|line| names(line))
+            .unwrap_or(first)
+            .to_owned(),
+    )
+}
 struct BlockFact {
     pk: i64,
     index: usize,
@@ -204,13 +234,37 @@ impl Reader<'_> {
                 reason: Some("no reported duration".into()),
             },
         };
+        // The conflict between the error flag and exit 0 is its own line; any
+        // other failure shows the output line that names it. A collapsed read
+        // leaves output unread, except to name a failure.
+        let error_line = match (&fact.result, result.as_ref().map(|result| &result.block)) {
+            (
+                Some(result_fact),
+                Some(Block::ToolResult {
+                    outcome: ToolOutcome::Error { reason },
+                    output,
+                    ..
+                }),
+            ) if *reason != Some(ErrorReason::ExitCode(0)) => {
+                let output = if full {
+                    output.clone()
+                } else {
+                    match crate::ordered_blocks::one(self.conn()?, result_fact.pk)? {
+                        Block::ToolResult { output, .. } => output,
+                        _ => None,
+                    }
+                };
+                output.as_deref().and_then(failure_line)
+            }
+            _ => None,
+        };
         let pair = ToolPair {
             emit_at: call.source.reference.clone(),
             call,
             result,
             running: false,
             duration_ms,
-            error_line: None,
+            error_line,
             child: None,
             edit: None,
         };
