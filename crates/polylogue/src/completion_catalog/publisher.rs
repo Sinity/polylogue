@@ -73,7 +73,15 @@ impl Publisher {
                             error.clone()
                         };
                         if last_error.as_ref() != Some(&condition) {
-                            polylogue_store::log!(warning, "completion catalog: {error}");
+                            if building {
+                                // Waiting for a build is normal; its progress is in `status`.
+                                polylogue_store::log!(
+                                    info,
+                                    "completion catalog: waits for the index being built"
+                                );
+                            } else {
+                                polylogue_store::log!(warning, "completion catalog: {error}");
+                            }
                             last_error = Some(condition);
                         }
                         // Nothing is readable until the index being built is

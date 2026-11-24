@@ -236,10 +236,7 @@ impl Engine {
         // asset lookup comes from stored observations and sidecars.
         self.refresh_import_assets(&mut pass)?;
         let through = self.reads.reader()?.last_input_id()?;
-        self.build_phase(
-            "read chains",
-            format_args!("each stored chain read whole into runs"),
-        );
+        self.enter_build_phase("read chains");
         let workers = self.config.workers.max(1);
         let (plans_tx, plans_rx) = sync_channel::<Plan>(workers * 2);
         let prepare = Prepare {
@@ -314,7 +311,7 @@ impl Engine {
         // answered while it works.
         loop {
             match announced.recv_timeout(REQUEST_POLL) {
-                Ok(phase) => self.build_phase(phase, format_args!("the writer's build phase")),
+                Ok(phase) => self.enter_build_phase(phase),
                 Err(RecvTimeoutError::Timeout) => {
                     self.answer_waiting(&mut pass)?;
                 }
