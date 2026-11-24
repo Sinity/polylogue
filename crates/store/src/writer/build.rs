@@ -305,6 +305,9 @@ impl BuildWorker {
         conn.pragma_update(None, "temp_store", "memory")?;
         conn.pragma_update(None, "cache_size", -SCRATCH_CACHE_KIB)?;
         crate::schema::ensure_index(&conn)?;
+        // A chain's rows leave the scratch index table by table; the build
+        // file's references are those of its own load.
+        conn.pragma_update(None, "foreign_keys", false)?;
         let tables = tables(&conn)?;
         let uri = format!("file:{}?mode=ro", archive.archive_db().display());
         conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
