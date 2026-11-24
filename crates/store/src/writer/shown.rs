@@ -95,12 +95,7 @@ impl ReadingValue {
             polylogue_model::read::MessagePlace::default(),
         );
         let content = packer.pack_content(&message.blocks, selection.source_version.0)?;
-        let words = message
-            .blocks
-            .iter()
-            .filter_map(Block::text)
-            .map(|t| t.split_whitespace().count() as i64)
-            .sum();
+        let words = text_words(&message);
         Ok(Self {
             message,
             words,
@@ -116,6 +111,16 @@ impl ReadingValue {
     pub(super) fn partial(&self) -> bool {
         self.selection.block_count != self.message.blocks.len() as u64
     }
+}
+
+/// The words of a message's text blocks.
+pub(super) fn text_words(message: &Message) -> i64 {
+    message
+        .blocks
+        .iter()
+        .filter_map(Block::text)
+        .map(|t| t.split_whitespace().count() as i64)
+        .sum()
 }
 
 /// Writes the shown rows of everything `touched` names; returns the number

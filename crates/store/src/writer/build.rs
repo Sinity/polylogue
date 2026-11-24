@@ -447,6 +447,7 @@ impl BuildWorker {
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
         Ok(OpenChain {
             steps: super::chain::ChainSteps::new(input, chain, length),
+            values: std::collections::HashMap::new(),
             changes,
             register: &self.register,
             tx,
@@ -481,6 +482,9 @@ impl BuildWorker {
 /// A chain being read into a build worker's scratch index.
 pub struct OpenChain<'w> {
     steps: super::chain::ChainSteps,
+    /// Each message reading's value as its last step prepared it, with the
+    /// layout it was written with, by message ID.
+    values: std::collections::HashMap<String, (Vec<u8>, Prepared)>,
     changes: crate::change_summary::ChangeSummary,
     register: &'w Connection,
     tx: Transaction<'w>,
@@ -513,7 +517,27 @@ impl super::chain::ChainSink for OpenChain<'_> {
             changes: &self.changes,
         };
         self.steps
-            .write(&self.tx, &w, step, &mut super::readings::Touched::default())
+            .write(&self.tx, &w, step, &mut super::readings::Touched::default())?;
+        // The values composition takes, kept from what the step prepared
+        // rather than read back from the scratch index.
+        for (row, prepared) in step.output.messages.iter().zip(&mut step.prepared.messages) {
+            let layout = crate::encoding::message_layout(&prepared.block_selection)?;
+            let block_count = prepared.block_selection.block_count;
+            let (items, content) = prepared.take_value();
+            self.values.insert(
+                row.message.id.to_string(),
+                (
+                    layout,
+                    Prepared {
+                        block_count,
+                        items,
+                        words: super::shown::text_words(&row.message),
+                        content,
+                    },
+                ),
+            );
+        }
+        Ok(())
     }
 
     fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()> {
@@ -534,7 +558,13 @@ impl OpenChain<'_> {
     /// the scratch index.
     pub fn finish(mut self) -> Result<()> {
         self.steps.finish()?;
-        move_out(&self.tx, &mut self.out, &self.input, self.chain)?;
+        move_out(
+            &self.tx,
+            &mut self.out,
+            &self.input,
+            self.chain,
+            &mut self.values,
+        )?;
         self.tx.commit()?;
         Ok(())
     }
@@ -551,7 +581,13 @@ struct Out<'a> {
 
 /// Moves the chain's rows from the scratch index into the stream and
 /// clears it.
-fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) -> Result<()> {
+fn move_out(
+    tx: &Transaction<'_>,
+    out: &mut Out<'_>,
+    input: &str,
+    chain: i64,
+    values: &mut std::collections::HashMap<String, (Vec<u8>, Prepared)>,
+) -> Result<()> {
     let mut value = Vec::new();
     let (format, route): (String, String) = tx.query_row(
         "SELECT format,route FROM input_ref WHERE id=?1",
@@ -662,7 +698,7 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
             out.sorter.push(&key, &value)?;
         }
     }
-    compose_records(tx, out, input, &route, chain)?;
+    compose_records(tx, out, input, &route, chain, values)?;
     for (n, table) in out.tables.iter().enumerate() {
         let stream = TABLES + n as u8;
         let mut statement = tx.prepare_cached(&format!("SELECT * FROM \"{}\"", table.name))?;
@@ -704,6 +740,7 @@ fn compose_records(
     input: &str,
     route: &str,
     chain: i64,
+    values: &mut std::collections::HashMap<String, (Vec<u8>, Prepared)>,
 ) -> Result<()> {
     let mut value = Vec::new();
     let input_pk: i64 = tx.query_row("SELECT pk FROM input_ref WHERE id=?1", [input], |r| {
@@ -735,10 +772,27 @@ fn compose_records(
             let session: String = row.get(1)?;
             out.sorter
                 .push(&mark_key(MESSAGE_ID, &[&message, &session]), &[])?;
-            let (read, selection) =
-                super::readings::read_message(tx, input_pk, chain, &message)?
+            // The value a step prepared is the reading's when the reading is
+            // that step's statement: the same version and blocks. A reading
+            // joined from several statements is read back.
+            let prepared = values.remove(&message).filter(|(layout, prepared)| {
+                row.get_ref(10).is_ok_and(|hash| {
+                    hash.as_blob()
+                        .is_ok_and(|hash| hash == prepared.content.hash)
+                }) && row
+                    .get_ref(12)
+                    .is_ok_and(|stored| stored.as_blob().is_ok_and(|stored| stored == layout))
+            });
+            let reading = match prepared {
+                Some((_, prepared)) => prepared,
+                None => {
+                    let (read, selection) = super::readings::read_message(
+                        tx, input_pk, chain, &message,
+                    )?
                     .ok_or_else(|| StoreError::Invalid("a message reading has no body".into()))?;
-            let reading = super::shown::ReadingValue::of(read, selection, out.packer)?;
+                    Prepared::of(super::shown::ReadingValue::of(read, selection, out.packer)?)
+                }
+            };
             if reading.partial() {
                 // Its value joins other readings of its version: the
                 // session is composed from the index.
@@ -810,6 +864,32 @@ fn compose_records(
         }
     }
     Ok(())
+}
+
+/// What composing a message reading takes from its value: whether it holds
+/// every block of its version, its index entries, its words and its packed
+/// content (see [`super::shown::ReadingValue`]).
+struct Prepared {
+    block_count: u64,
+    items: Vec<polylogue_model::read::IndexEntry>,
+    words: i64,
+    content: crate::encoding::PreparedContent,
+}
+
+impl Prepared {
+    fn of(value: super::shown::ReadingValue) -> Self {
+        Self {
+            block_count: value.selection.block_count,
+            items: value.items,
+            words: value.words,
+            content: value.content,
+        }
+    }
+
+    /// Whether the reading holds only some of its version's blocks.
+    fn partial(&self) -> bool {
+        self.block_count != self.content.blocks.len() as u64
+    }
 }
 
 /// What decides which sessions a build composes from the index rather than
