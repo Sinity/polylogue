@@ -8,18 +8,68 @@
 use crate::Result;
 use polylogue_model::{Event, MessageId, SessionId};
 use rusqlite::Connection;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 pub(crate) struct Identities<'c> {
-    conn: &'c Connection,
+    recorded: Recorded<'c>,
     shown: HashMap<String, String>,
     copies: HashMap<String, Vec<String>>,
+}
+
+/// Where the recorded copy names are read: the index's `session_alias`, or
+/// every row of it read once, for a build that composes from a stream.
+enum Recorded<'c> {
+    Stored(&'c Connection),
+    Loaded(Arc<Aliases>),
+}
+
+/// Every copy name the readings record, with the sessions recording it.
+#[derive(Debug, Default)]
+pub(crate) struct Aliases {
+    sessions: HashMap<String, BTreeSet<String>>,
+    names: HashMap<String, BTreeSet<String>>,
+}
+
+impl Aliases {
+    pub(crate) fn load(conn: &Connection) -> Result<Self> {
+        let mut aliases = Self::default();
+        let mut statement = conn.prepare(
+            "SELECT DISTINCT alias,session_id FROM session_alias WHERE alias<>session_id",
+        )?;
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let (alias, session): (String, String) = (row.get(0)?, row.get(1)?);
+            aliases
+                .sessions
+                .entry(alias.clone())
+                .or_default()
+                .insert(session.clone());
+            aliases.names.entry(session).or_default().insert(alias);
+        }
+        Ok(aliases)
+    }
+
+    /// Whether `id` is a copy name some session records, or records one:
+    /// which session it names is decided across sessions.
+    pub(crate) fn involve(&self, id: &str) -> bool {
+        self.sessions.contains_key(id) || self.names.contains_key(id)
+    }
 }
 
 impl<'c> Identities<'c> {
     pub(crate) fn new(conn: &'c Connection) -> Self {
         Self {
-            conn,
+            recorded: Recorded::Stored(conn),
+            shown: HashMap::new(),
+            copies: HashMap::new(),
+        }
+    }
+
+    /// Identities decided from copy names read once.
+    pub(crate) fn loaded(aliases: Arc<Aliases>) -> Self {
+        Self {
+            recorded: Recorded::Loaded(aliases),
             shown: HashMap::new(),
             copies: HashMap::new(),
         }
@@ -30,13 +80,23 @@ impl<'c> Identities<'c> {
         if let Some(shown) = self.shown.get(stated) {
             return Ok(shown.clone());
         }
-        let recorded = self
-            .conn
-            .prepare_cached(
-                "SELECT DISTINCT session_id FROM session_alias WHERE alias=?1 AND session_id<>?1 LIMIT 2",
-            )?
-            .query_map([stated], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let recorded = match &self.recorded {
+            Recorded::Stored(conn) => conn
+                .prepare_cached(
+                    "SELECT DISTINCT session_id FROM session_alias WHERE alias=?1 AND session_id<>?1 LIMIT 2",
+                )?
+                .query_map([stated], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            Recorded::Loaded(aliases) => aliases
+                .sessions
+                .get(stated)
+                .into_iter()
+                .flatten()
+                .filter(|session| *session != stated)
+                .take(2)
+                .cloned()
+                .collect(),
+        };
         let shown = match <[String; 1]>::try_from(recorded) {
             Ok([session]) => session,
             Err(_) => stated.to_owned(),
@@ -51,13 +111,22 @@ impl<'c> Identities<'c> {
         if let Some(copies) = self.copies.get(session) {
             return Ok(copies.clone());
         }
-        let recorded = self
-            .conn
-            .prepare_cached(
-                "SELECT DISTINCT alias FROM session_alias WHERE session_id=?1 AND alias<>?1 ORDER BY alias",
-            )?
-            .query_map([session], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let recorded: Vec<String> = match &self.recorded {
+            Recorded::Stored(conn) => conn
+                .prepare_cached(
+                    "SELECT DISTINCT alias FROM session_alias WHERE session_id=?1 AND alias<>?1 ORDER BY alias",
+                )?
+                .query_map([session], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?,
+            Recorded::Loaded(aliases) => aliases
+                .names
+                .get(session)
+                .into_iter()
+                .flatten()
+                .filter(|alias| *alias != session)
+                .cloned()
+                .collect(),
+        };
         let mut copies = Vec::new();
         for copy in recorded {
             if self.session(&copy)? == session {
