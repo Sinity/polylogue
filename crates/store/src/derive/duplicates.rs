@@ -105,8 +105,9 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
     // would otherwise scan every input of the format.
     let has_capture: bool = conn
         .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM parsed p CROSS JOIN input_ref r ON r.pk = p.input_pk
-                            WHERE p.session_pk = ?1 AND r.format = ?2)",
+            "SELECT EXISTS (SELECT 1 FROM session s CROSS JOIN session_record p ON p.session_id = s.id
+                            CROSS JOIN input_ref r ON r.pk = p.input_pk
+                            WHERE s.pk = ?1 AND r.format = ?2)",
         )?
         .query_row(params![session_pk, CAPTURE], |r| r.get(0))?;
     if !has_capture {
@@ -114,7 +115,7 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
     }
     let mut statement = conn.prepare_cached(
         "SELECT m.pk, m.id, m.role, count(*), sum(r.format = ?2)
-         FROM message m JOIN message_parse s ON s.message_pk = m.pk
+         FROM message m JOIN message_parse s ON s.message_id = m.id
          JOIN input_ref r ON r.pk = s.input_pk
          WHERE m.session_pk = ?1
          GROUP BY m.pk

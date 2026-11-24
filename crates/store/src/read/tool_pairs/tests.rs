@@ -324,7 +324,14 @@ fn hidden_current_blocks_never_fall_back_to_old_bodies() {
     assert_eq!(pair.result.as_ref().unwrap().source.block, Some(7));
     drop(reader);
     let conn = index(&archive);
-    conn.execute("UPDATE message_block_selection SET layout=?1 WHERE version_pk=(SELECT s.version_pk FROM message_parse s JOIN message m ON m.pk=s.message_pk WHERE m.id=?2 AND s.input_pk=m.input_pk AND s.chain=m.source_chain)", params![serde_json::to_vec(&(8u64, vec![6u64])).unwrap(), result.id.to_string()]).unwrap();
+    conn.execute(
+        "UPDATE message SET layout=?1 WHERE id=?2",
+        params![
+            serde_json::to_vec(&(8u64, vec![6u64])).unwrap(),
+            result.id.to_string()
+        ],
+    )
+    .unwrap();
     conn.execute(
         "UPDATE block SET body=?1 WHERE message_pk=(SELECT pk FROM message WHERE id=?2)",
         params![vec![255u8], result.id.to_string()],
@@ -359,7 +366,7 @@ fn a_corrupt_cross_session_or_mismatched_id_relation_cannot_expose_a_result_body
         );
         let conn = index(&archive);
         conn.pragma_update(None, "foreign_keys", "OFF").unwrap();
-        conn.execute("UPDATE tool_call SET result_block_pk=(SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1) WHERE call_block_pk IN (SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?2)", params![other_result.id.to_string(), call.id.to_string()]).unwrap();
+        conn.execute("UPDATE tool_call SET result_message_id=?1,result_idx=(SELECT b.idx FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?1 AND b.kind='tool_result') WHERE call_block_pk IN (SELECT b.pk FROM block b JOIN message m ON m.pk=b.message_pk WHERE m.id=?2)", params![other_result.id.to_string(), call.id.to_string()]).unwrap();
         conn.execute(
             "UPDATE block SET body=?1 WHERE message_pk=(SELECT pk FROM message WHERE id=?2)",
             params![vec![255u8], other_result.id.to_string()],

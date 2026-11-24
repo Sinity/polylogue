@@ -183,7 +183,7 @@ fn visible_tool_outcomes_use_original_source_block_indices() {
     fixture.event(session, "compaction", None).unwrap();
     let conn = rusqlite::Connection::open(fixture.archive.index_db()).unwrap();
     conn.execute(
-        "UPDATE event SET after_message_pk=?1 WHERE session_pk=?2",
+        "UPDATE event SET after_message_id=(SELECT id FROM message WHERE pk=?1) WHERE session_pk=?2",
         params![message, session],
     )
     .unwrap();

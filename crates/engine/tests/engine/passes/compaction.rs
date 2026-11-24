@@ -149,7 +149,7 @@ fn unknown_compaction_replays_keep_sessions_in_any_order() {
             };
             assert_eq!(message.session.to_string(), expected_session);
             assert_eq!(message.text(), "known original prose");
-            assert_eq!(reader.query("SELECT count(*) AS n FROM message_parse s JOIN message m ON m.pk=s.message_pk WHERE m.id='claude-code:shared-native'",&[]).unwrap()[0]["n"],2);
+            assert_eq!(reader.query("SELECT count(*) AS n FROM message_parse s WHERE s.message_id='claude-code:shared-native'",&[]).unwrap()[0]["n"],2);
             assert_eq!(matched(&home, "uniquecarrierword"), 1);
         }
     }

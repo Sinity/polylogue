@@ -33,11 +33,11 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>
                       PARTITION BY r.id ORDER BY
                         e.source_chain DESC, e.seq DESC, e.id
                     ) AS newest
-             FROM event e LEFT JOIN message m ON m.pk = e.after_message_pk
+             FROM event e LEFT JOIN message m ON m.id = e.after_message_id
              JOIN input_ref r ON r.pk = e.input_pk
              WHERE e.session_pk = ?1
                AND ((e.kind = 'active_leaf' AND m.pk IS NOT NULL)
-                 OR (e.kind IN ('active_path_empty','active_path_unknown') AND e.after_message_pk IS NULL))),
+                 OR (e.kind IN ('active_path_empty','active_path_unknown') AND m.pk IS NULL))),
            marker(id, kind) AS (
              SELECT id, kind FROM observations WHERE newest = 1
              ORDER BY at DESC, event_id, input_id LIMIT 1),

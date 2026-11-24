@@ -224,7 +224,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
             "--json",
             "dev",
             "sql",
-            "SELECT count(*) AS n FROM document_parse s JOIN document d ON d.pk=s.document_pk WHERE d.id='claude-ai:project:project-a:doc:doc-a'",
+            "SELECT count(*) AS n FROM document_parse s WHERE s.document_id='claude-ai:project:project-a:doc:doc-a'",
         ],
     );
     assert!(sources.status.success(), "{sources:?}");

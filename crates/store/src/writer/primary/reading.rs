@@ -13,7 +13,7 @@ impl WriterSender {
         if bodies.is_empty() {
             return Ok(());
         }
-        let location = self.0.resolver.location();
+        let location = &self.0.location;
         let token = location.read_scope.token()?;
         let commits = self.completion_commits();
         loop {
@@ -35,7 +35,7 @@ impl WriterSender {
         if batch.parse.is_empty() {
             return Ok(());
         }
-        let location = self.0.resolver.location();
+        let location = &self.0.location;
         let token = location.read_scope.token()?;
         let mut index = self.open_current(&token)?;
         let chain = validate_primary_reading(&index, batch)?;
@@ -90,7 +90,7 @@ impl WriterSender {
         length: u64,
         source: &mut ChainParse,
     ) -> Result<()> {
-        let location = self.0.resolver.location();
+        let location = &self.0.location;
         let token = location.read_scope.token()?;
         let commits = self.completion_commits();
         let mut version = None;
@@ -233,7 +233,7 @@ impl WriterSender {
         if self.0.stop.is_cancelled() {
             return Err(StoreError::Stopped);
         }
-        let location = self.0.resolver.location();
+        let location = &self.0.location;
         scoped::require_current(location, Some(token))?;
         let index = crate::archive::open_read(&location.index_db())?;
         crate::primary::scope::require_readable(&index)?;

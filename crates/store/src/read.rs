@@ -995,14 +995,17 @@ impl Reader<'_> {
     ) -> Result<Option<(Message, ShownBlocks)>> {
         let conn = self.conn()?;
         let id = crate::chain_names::resolved_message(conn, id)?;
-        let hash = conn.query_row(
-            "SELECT (SELECT version_hash FROM message_version WHERE pk=s.version_pk) FROM message m LEFT JOIN message_parse s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
-             WHERE m.id=?1",
-            [id.to_string()], |row| row.get::<_, Option<Vec<u8>>>(0),
-        ).optional()?;
-        match hash {
-            Some(Some(hash)) => crate::versions::read_message(conn, &hash),
-            Some(None) => Err(StoreError::stored(0, "the message has no source reading")),
+        let pk: Option<i64> = conn
+            .query_row(
+                "SELECT pk FROM message WHERE id=?1",
+                [id.to_string()],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match pk {
+            Some(pk) => crate::writer::shown_message(conn, pk)?
+                .map(Some)
+                .ok_or_else(|| StoreError::stored(0, "the message has no source reading")),
             None => Ok(None),
         }
     }
@@ -1015,10 +1018,8 @@ impl Reader<'_> {
         let id = crate::chain_names::resolved_message(conn, id)?;
         let commit = conn
             .query_row(
-                "SELECT p.committed,i.id,s.chain,s.source_end FROM message m
-             JOIN message_parse s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain
-             JOIN input_ref i ON i.pk=s.input_pk
-             LEFT JOIN message_block_selection p ON p.version_pk=s.version_pk WHERE m.id=?1",
+                "SELECT (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash),i.id,m.source_chain,m.source_end
+             FROM message m JOIN input_ref i ON i.pk=m.input_pk WHERE m.id=?1 AND m.version_hash IS NOT NULL",
                 [id.to_string()],
                 |row| {
                     Ok(MessageArrival {
@@ -1117,13 +1118,15 @@ impl Reader<'_> {
         const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
             m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
             m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
-            m.cache_write_1h_tokens, m.speed, (SELECT version_hash FROM message_version WHERE pk=shown.version_pk), block_selection.layout,
-            CASE WHEN block_selection.layout IS NULL THEN
+            m.cache_write_1h_tokens, m.speed, m.version_hash, m.layout,
+            CASE WHEN m.layout IS NULL THEN
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END,
-            block_selection.committed, source_input.id, shown.chain, shown.source_end";
-        const SOURCE: &str = "FROM message m LEFT JOIN message_parse shown ON shown.message_pk=m.pk AND shown.input_pk=m.input_pk AND shown.chain=m.source_chain
-            LEFT JOIN message_block_selection block_selection ON block_selection.version_pk=shown.version_pk
-            LEFT JOIN input_ref source_input ON source_input.pk=shown.input_pk";
+            (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash),
+            CASE WHEN m.version_hash IS NOT NULL THEN source_input.id END,
+            CASE WHEN m.version_hash IS NOT NULL THEN m.source_chain END,
+            CASE WHEN m.version_hash IS NOT NULL THEN m.source_end END";
+        const SOURCE: &str =
+            "FROM message m LEFT JOIN input_ref source_input ON source_input.pk=m.input_pk";
         const ORDER: &str = "ORDER BY m.session_order, m.id";
         let start: Option<(String, String)> = match from {
             Some(pk) => self
@@ -1306,7 +1309,7 @@ impl Reader<'_> {
             };
             let block_selection = hash
                 .map(|hash| {
-                    let mut block_selection = crate::versions::message_block_selection(
+                    let mut block_selection = crate::encoding::message_block_selection(
                         &hash,
                         layout.as_deref(),
                         if visible {

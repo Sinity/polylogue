@@ -87,11 +87,11 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Facts> {
         .query_row([session_pk], |r| r.get(0))?;
     let mut statement = conn.prepare_cached(
         "SELECT r.input_pk,r.facts,
-                (SELECT MIN(m.at) FROM message_parse ms JOIN message m ON m.pk=ms.message_pk
-                 WHERE ms.input_pk=r.input_pk AND m.session_pk=r.session_pk),
-                (SELECT MAX(m.at) FROM message_parse ms JOIN message m ON m.pk=ms.message_pk
-                 WHERE ms.input_pk=r.input_pk AND m.session_pk=r.session_pk)
-         FROM session_record r WHERE r.session_pk=?1
+                (SELECT MIN(m.at) FROM message_parse ms JOIN message m ON m.id=ms.message_id
+                 WHERE ms.input_pk=r.input_pk AND m.session_pk=x.session_pk),
+                (SELECT MAX(m.at) FROM message_parse ms JOIN message m ON m.id=ms.message_id
+                 WHERE ms.input_pk=r.input_pk AND m.session_pk=x.session_pk)
+         FROM session_stated x JOIN session_record r ON r.session_id=x.stated_id WHERE x.session_pk=?1
          ORDER BY r.input_pk,r.chain",
     )?;
     let mut rows = statement.query([session_pk])?;

@@ -56,7 +56,7 @@ fn array_order_and_parent_sessions_survive_rebuild() {
         let sources = r
             .query(
                 "SELECT s.id AS session, m.source_start, m.source_end \
-                 FROM message_parse m JOIN session s ON s.pk=m.session_pk",
+                 FROM message_parse m JOIN session_stated x ON x.stated_id=m.session_id JOIN session s ON s.pk=x.session_pk",
                 &[],
             )
             .unwrap();
@@ -122,7 +122,7 @@ fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
     let r = reads.reader().unwrap();
     let locations = r
         .query(
-            "SELECT m.source_start,m.source_end,s.seq AS source_order FROM message m JOIN message_parse s ON s.message_pk=m.pk AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY s.seq",
+            "SELECT m.source_start,m.source_end,s.seq AS source_order FROM message m JOIN message_parse s ON s.message_id=m.id AND s.input_pk=m.input_pk AND s.chain=m.source_chain ORDER BY s.seq",
             &[],
         )
         .unwrap();
@@ -289,7 +289,7 @@ fn repeated_conversation_markers_follow_logical_order_and_repeated_facts_keep_th
         );
         let reads = w.reads();
         let r = reads.reader().unwrap();
-        let orders = r.query("SELECT m.id,e.seq AS source_order FROM event e JOIN message m ON m.pk=e.after_message_pk WHERE e.kind='active_leaf' ORDER BY m.id", &[]).unwrap();
+        let orders = r.query("SELECT m.id,e.seq AS source_order FROM event e JOIN message m ON m.id=e.after_message_id WHERE e.kind='active_leaf' ORDER BY m.id", &[]).unwrap();
         assert_eq!(orders.len(), 2);
         assert_eq!(orders[0]["id"], "chatgpt:a");
         assert_eq!(orders[0]["source_order"], 3);

@@ -281,7 +281,7 @@ fn natural_rows(w: &TestArchive) -> Json {
     for (name, sql) in [
         (
             "sources",
-            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex((SELECT version_hash FROM message_version WHERE pk=s.version_pk)) AS version FROM message_parse s JOIN message m ON m.pk=s.message_pk JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
+            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex(s.hash) AS version FROM message_parse s JOIN message m ON m.id=s.message_id JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
         ),
         (
             "order",
@@ -297,11 +297,11 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "event_sources",
-            "SELECT e.id,i.id AS input,s.chain,hex(v.hash) AS hash FROM event_parse s JOIN event e ON e.pk=s.event_pk JOIN input_ref i ON i.pk=s.input_pk JOIN event_value v ON v.pk=s.value_pk ORDER BY e.id,i.id,s.chain",
+            "SELECT s.event_id AS id,i.id AS input,s.chain,hex(s.hash) AS hash FROM event_parse s JOIN input_ref i ON i.pk=s.input_pk ORDER BY s.event_id,i.id,s.chain",
         ),
         (
             "link_sources",
-            "SELECT l.parent_id,l.child_id,i.id AS input,s.chain,hex(v.hash) AS hash FROM link_parse s JOIN link l ON l.pk=s.link_pk JOIN input_ref i ON i.pk=s.input_pk JOIN link_value v ON v.pk=s.value_pk ORDER BY l.parent_id,l.child_id,i.id,s.chain",
+            "SELECT s.parent_id,s.child_id,i.id AS input,s.chain,hex(s.hash) AS hash FROM link_parse s JOIN input_ref i ON i.pk=s.input_pk ORDER BY s.parent_id,s.child_id,i.id,s.chain",
         ),
         (
             "documents",
@@ -829,7 +829,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     let pool = ReadPool::open(&w.archive).unwrap();
     let positions = || {
         pool.reader().unwrap().query(
-        "SELECT e.kind,m.id AS after,e.seq FROM event e LEFT JOIN message m ON m.pk=e.after_message_pk ORDER BY e.kind", &[]).unwrap()
+        "SELECT e.kind,m.id AS after,e.seq FROM event e LEFT JOIN message m ON m.id=e.after_message_id ORDER BY e.kind", &[]).unwrap()
     };
     let changed = || {
         pool.reader()
@@ -1031,29 +1031,14 @@ fn status_totals_equal_a_recount_across_imports_reparses_and_retractions() {
     assert_totals_equal_a_recount(&w);
 }
 
-/// Version bodies, values and texts that no row refers to.
+/// Texts that no reading holds.
 fn unreferenced(w: &TestArchive) -> Json {
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     json!(
         r.query(
-            "SELECT
-           (SELECT count(*) FROM message_version v
-            WHERE NOT EXISTS(SELECT 1 FROM message_parse s WHERE s.version_pk = v.pk))
-             AS message_versions,
-           (SELECT count(*) FROM document_version v
-            WHERE NOT EXISTS(SELECT 1 FROM document_parse s WHERE s.version_hash = v.version_hash))
-             AS document_versions,
-           (SELECT count(*) FROM event_value v
-            WHERE NOT EXISTS(SELECT 1 FROM event_parse s WHERE s.value_pk = v.pk)) AS event_values,
-           (SELECT count(*) FROM link_value v
-            WHERE NOT EXISTS(SELECT 1 FROM link_parse s WHERE s.value_pk = v.pk)) AS link_values,
-           (SELECT count(*) FROM text t
-            WHERE NOT EXISTS(SELECT 1 FROM block b WHERE b.text_id = t.id)
-              AND NOT EXISTS(SELECT 1 FROM document_block b WHERE b.text_id = t.id)
-              AND NOT EXISTS(SELECT 1 FROM message_version_text v WHERE v.text_id = t.id)
-              AND NOT EXISTS(SELECT 1 FROM document_version_text v WHERE v.text_id = t.id))
-             AS texts",
+            "SELECT (SELECT count(*) FROM text t
+                WHERE NOT EXISTS(SELECT 1 FROM parse_text r WHERE r.text_id = t.id)) AS texts",
             &[]
         )
         .unwrap()
@@ -1062,7 +1047,7 @@ fn unreferenced(w: &TestArchive) -> Json {
 
 #[test]
 fn no_unreferenced_versions_after_each_operation() {
-    let none = json!([{"message_versions":0,"document_versions":0,"event_values":0,"link_values":0,"texts":0}]);
+    let none = json!([{"texts":0}]);
     let w = test_archive();
     // Each commit, with no derive between them, leaves nothing unreferenced:
     // the first readings, readings that replace another input's shown

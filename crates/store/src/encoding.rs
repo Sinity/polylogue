@@ -682,3 +682,35 @@ pub(crate) fn session_order(
 
 #[cfg(test)]
 mod tests;
+
+/// A message reading's block layout: the original block count and the
+/// ordinals of the blocks it holds.
+pub(crate) fn message_layout(block_selection: &ShownBlocks) -> Result<Vec<u8>> {
+    Ok(serde_json::to_vec(&(
+        block_selection.block_count,
+        &block_selection.block_ordinals,
+    ))?)
+}
+
+/// The block selection a stored layout states for version `hash`; no layout
+/// means every one of `blocks` blocks.
+pub(crate) fn message_block_selection(
+    hash: &[u8],
+    layout: Option<&[u8]>,
+    blocks: usize,
+) -> Result<ShownBlocks> {
+    let source_version = polylogue_model::BlobHash(hash.try_into().map_err(|_| {
+        crate::StoreError::Invalid("a message source version is not a BLAKE3 hash".into())
+    })?);
+    let (block_count, block_ordinals) = match layout {
+        Some(layout) => read_json::<(u64, Vec<u64>)>(layout)?,
+        None => (blocks as u64, (0..blocks as u64).collect()),
+    };
+    let block_selection = ShownBlocks {
+        source_version,
+        block_count,
+        block_ordinals,
+    };
+    block_selection.validate(block_selection.block_ordinals.len())?;
+    Ok(block_selection)
+}

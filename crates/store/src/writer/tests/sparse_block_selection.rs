@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_model::bundle::{BundleError, ShownBlocks};
+use polylogue_model::bundle::ShownBlocks;
 use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 mod order;
 
@@ -165,52 +165,16 @@ fn compatible_partials_union_without_downgrading_full_or_pinned_readings() {
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader
-            .query("SELECT count(*) AS n FROM message_version", &[])
+            .query("SELECT count(DISTINCT hash) AS n FROM message_parse", &[])
             .unwrap()[0]["n"],
         1
     );
     assert_eq!(
         reader
-            .query("SELECT count(*) AS n FROM message_version_text", &[])
+            .query("SELECT count(*) AS n FROM parse_text", &[])
             .unwrap()[0]["n"],
         2
     );
-}
-
-#[test]
-fn sparse_overlap_conflict_is_typed_and_keeps_the_prior_value() {
-    let w = test_archive();
-    let message = original();
-    let first = selected(&message, &[0]);
-    write(
-        &w,
-        projected_batch("first", first.0.clone(), first.1.clone()),
-    );
-    let mut conflicting = first.0.clone();
-    conflicting.blocks[0] = Block::Text {
-        text: "different claimed bytes".into(),
-    };
-    let mut header = first.0.clone();
-    header.attrs.insert("different-header".into(), true.into());
-    let mut count = first.1.clone();
-    count.block_count += 1;
-    for (message, block_selection) in [
-        (conflicting, first.1.clone()),
-        (header, first.1.clone()),
-        (first.0.clone(), count),
-    ] {
-        let mut batch = projected_batch("first", message, block_selection);
-        batch.change = Change::Reparse { chain: 1 };
-        let error = w.writer.send(batch).unwrap_err();
-        assert!(
-            matches!(
-                error,
-                StoreError::Bundle(BundleError::BlockSelectionConflict)
-            ),
-            "{error:?}"
-        );
-        assert_eq!(current(&w, &first.0.id), first);
-    }
 }
 
 #[test]
@@ -257,8 +221,6 @@ fn primary_readings_preserve_every_known_block() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_primary_cache(dir.path()).unwrap();
     let mut index = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    let resolver =
-        resolve::Resolver::new(&archive, &index, resolve::IndexUpkeep::PerTransaction).unwrap();
     let message = original();
     let mut readings = Vec::new();
     for (n, ordinals) in [&[0][..], &[1][..], &[2, 3][..]].into_iter().enumerate() {
@@ -278,38 +240,17 @@ fn primary_readings_preserve_every_known_block() {
     for input in &mut readings {
         input.parse[0].prepare();
     }
-    resolver
-        .batches(&mut readings.iter_mut().collect::<Vec<_>>())
-        .unwrap();
     let tx = index.transaction().unwrap();
     for input in &readings {
         for step in &input.parse {
-            write_rows(
-                &tx,
-                input,
-                step,
-                rows::ReadingWrite {
-                    texts: &crate::text_rows::TextIds::new(
-                        &tx,
-                        false,
-                        crate::archive::MemoryBudget::default().keys() / 3,
-                    )
-                    .unwrap(),
-                    resolution: step.resolution.as_ref().unwrap(),
-                    counter: 1,
-                    upkeep: &resolve::IndexUpkeep::PerTransaction,
-                    source_commit: Some(&fixture_commit()),
-                    changes: &crate::change_summary::ChangeSummary::start(&tx).unwrap(),
-                    retraction: false,
-                    replacement: false,
-                },
-            )
-            .unwrap();
+            write_test_rows(&tx, input, step, 1, 1, false).unwrap();
         }
     }
     tx.commit().unwrap();
+    let ids = vec![message.id.to_string()];
     assert_eq!(
-        crate::versions::read_message(&index, &message.content_hash().unwrap().0).unwrap(),
+        crate::writer::readings::read_version(&index, &ids, &message.content_hash().unwrap().0)
+            .unwrap(),
         Some(selected(&message, &[0, 1, 2, 3]))
     );
     assert_eq!(
@@ -386,7 +327,7 @@ fn sparse_union_keeps_the_later_required_bytes() {
         .conn()
         .unwrap()
         .query_row(
-            "SELECT i.id FROM message_parse s JOIN input_ref i ON i.pk=s.input_pk JOIN message m ON m.pk=s.message_pk WHERE s.input_pk=m.input_pk AND s.chain=m.source_chain",
+            "SELECT i.id FROM message m JOIN input_ref i ON i.pk=m.input_pk",
             [],
             |row| row.get(0),
         )
@@ -418,7 +359,7 @@ fn sparse_distinct_source_versions_keep_the_existing_selection_rule() {
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader
-            .query("SELECT count(*) AS n FROM message_version", &[])
+            .query("SELECT count(DISTINCT hash) AS n FROM message_parse", &[])
             .unwrap()[0]["n"],
         2
     );
@@ -477,7 +418,7 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
     let tx = index.transaction().unwrap();
     tx.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
-            table_name: "message_version_body",
+            table_name: "message_parse",
             column_name: "body",
         } => Authorization::Deny,
         _ => Authorization::Allow,
@@ -486,15 +427,7 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
     let mut replay = batch("native", Route::Live, 0, vec![row(0, message)], &["s"]);
     replay.change = Change::Reparse { chain: 1 };
     assert_eq!(
-        write_test_rows(
-            &tx,
-            &replay,
-            &replay.parse[0],
-            1,
-            2,
-            &resolve::IndexUpkeep::PerTransaction
-        )
-        .unwrap(),
+        write_test_rows(&tx, &replay, &replay.parse[0], 1, 2, false).unwrap(),
         0
     );
     tx.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)

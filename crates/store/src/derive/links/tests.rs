@@ -208,7 +208,7 @@ fn compound_commands_keep_text_and_result_source() {
                 &json!({"type":"tool_result", "outcome":{"kind":"ok"}, "output":output}),
             )
             .unwrap();
-            index.execute("UPDATE block SET text_id=NULL, body=?1 WHERE pk IN (SELECT result_block_pk FROM tool_call)", [body]).unwrap();
+            index.execute("UPDATE block SET text_id=NULL, body=?1 WHERE pk IN (SELECT b.pk FROM tool_call t JOIN message m ON m.id=t.result_message_id JOIN block b ON b.message_pk=m.pk AND b.idx=t.result_idx)", [body]).unwrap();
         }
         let session_pk = index
             .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {
@@ -276,7 +276,8 @@ fn changed_block_link_lookup_does_not_walk_the_sessions_other_calls() {
         .query_row(
             "SELECT t.pk, t.session_pk, c.message_pk, r.message_pk
              FROM tool_call t JOIN block c ON c.pk = t.call_block_pk
-             JOIN block r ON r.pk = t.result_block_pk WHERE t.command = ?1",
+             JOIN message rm ON rm.id = t.result_message_id
+             JOIN block r ON r.message_pk = rm.pk AND r.idx = t.result_idx WHERE t.command = ?1",
             [command],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )

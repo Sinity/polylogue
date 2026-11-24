@@ -156,7 +156,8 @@ impl crate::read::Reader<'_> {
             .conn()?
             .prepare_cached(&format!(
                 "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix FROM session_link
-                 WHERE {column} = ?1 ORDER BY pk"
+                 WHERE {column} = ?1
+                 ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call"
             ))?
             .query_map([session], |row| {
                 Ok(SessionLink {
@@ -172,12 +173,12 @@ impl crate::read::Reader<'_> {
             .collect::<rusqlite::Result<_>>()?)
     }
 
-    /// Links from `id` to its children, in the order they were stored.
+    /// Links from `id` to its children, ordered by their coordinates.
     pub fn child_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
         self.links_where("parent_id", &id.to_string())
     }
 
-    /// Links from `id`'s parents to it, in the order they were stored.
+    /// Links from `id`'s parents to it, ordered by their coordinates.
     pub fn parent_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
         self.links_where("child_id", &id.to_string())
     }

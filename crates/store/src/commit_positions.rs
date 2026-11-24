@@ -34,13 +34,13 @@ impl Reader<'_> {
 
     /// Greatest commit position among the stored session facts.
     pub fn session_commit(&self, id: &SessionId) -> Result<Option<u64>> {
-        self.greatest_commit("SELECT r.committed FROM session_record r JOIN session s ON s.pk=r.session_pk WHERE s.id=?1 UNION ALL SELECT committed FROM prefix_copy WHERE child_id=?1", [id.to_string()])
+        self.greatest_commit("SELECT r.committed FROM session s JOIN session_stated x ON x.session_pk=s.pk JOIN session_record r ON r.session_id=x.stated_id WHERE s.id=?1 UNION ALL SELECT committed FROM prefix_copy WHERE child_id=?1", [id.to_string()])
     }
 
     /// Commit position of the selected document reading, independent of cache changes.
     pub fn document_commit(&self, id: &DocumentId) -> Result<Option<u64>> {
         let source = self.conn()?.query_row(
-            "SELECT ds.committed,i.id,ds.chain,ds.source_end FROM document_parse ds JOIN document d ON d.pk=ds.document_pk JOIN input_ref i ON i.pk=ds.input_pk WHERE d.id=?1 AND ds.shown=1",
+            "SELECT ds.committed,i.id,ds.chain,ds.source_end FROM document d JOIN document_parse ds ON ds.document_id=d.id AND ds.input_pk=d.input_pk AND ds.chain=d.source_chain JOIN input_ref i ON i.pk=ds.input_pk WHERE d.id=?1",
             [id.to_string()], |row| <(Option<i64>, String, i64, i64)>::try_from(row))
             .optional()?;
         let Some((committed, input, chain, end)) = source else {
@@ -62,6 +62,6 @@ impl Reader<'_> {
     pub fn link_commit(&self, link: &Link) -> Result<Option<u64>> {
         let kind = link.kind.as_str();
         let how = link.how.map(|how| how.as_str());
-        self.greatest_commit("SELECT s.committed FROM link_parse s JOIN link l ON l.pk=s.link_pk WHERE l.parent_id=?1 AND l.child_id=?2 AND l.kind=?3 AND l.how IS ?4 UNION ALL SELECT committed FROM prefix_copy WHERE parent_id=?1 AND child_id=?2", params![link.parent.to_string(),link.child.to_string(),kind,how])
+        self.greatest_commit("SELECT s.committed FROM link_parse s WHERE s.parent_id=?1 AND s.child_id=?2 AND s.kind=?3 AND s.how IS ?4 UNION ALL SELECT committed FROM prefix_copy WHERE parent_id=?1 AND child_id=?2", params![link.parent.to_string(),link.child.to_string(),kind,how])
     }
 }

@@ -31,13 +31,7 @@ fn authored_recovery_uses_completed_sinex_positions() {
         .execute_batch("DROP INDEX confirmed_event_changed")
         .unwrap();
     crate::schema::ensure_primary_index(&index).unwrap();
-    let resolver = crate::writer::resolve::Resolver::new(
-        &archive,
-        &index,
-        crate::writer::resolve::IndexUpkeep::PerTransaction,
-    )
-    .unwrap();
-    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-a", false).unwrap();
+    crate::primary::scope::reset(&mut index, &archive, "scope-a", false).unwrap();
     let a = setting(&index, "request-a", "drive.ai-studio");
     apply(
         &crate::text_rows::TextIds::new(
@@ -47,7 +41,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[live(10, "request-a", a), complete_at(20)],
     )
     .unwrap();
@@ -67,7 +60,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[live(21, "request-b", b), complete_at(21)],
     )
     .unwrap();
@@ -95,7 +87,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[lifecycle(30, "request-a", ConfirmedChange::Archived)],
     )
     .unwrap();
@@ -115,7 +106,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[complete_at(30)],
     )
     .unwrap();
@@ -143,7 +133,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[
             lifecycle(40, "request-a", ConfirmedChange::Restored),
             complete_at(40),
@@ -174,7 +163,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[
             lifecycle(45, "request-a", ConfirmedChange::Tombstoned),
             complete_at(45),
@@ -214,7 +202,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[
             live(
                 50,
@@ -255,7 +242,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[
             lifecycle(70, "query", ConfirmedChange::Archived),
             complete_at(70),
@@ -279,7 +265,6 @@ fn authored_recovery_uses_completed_sinex_positions() {
         )
         .unwrap(),
         &mut index,
-        &resolver,
         &[
             lifecycle(80, "query", ConfirmedChange::Restored),
             complete_at(80),
@@ -306,7 +291,7 @@ fn authored_recovery_uses_completed_sinex_positions() {
         "restoration does not replace the first commit position"
     );
     let before = reads.reader().unwrap().change_position().unwrap();
-    crate::primary::scope::reset(&mut index, &archive, &resolver, "scope-b", false).unwrap();
+    crate::primary::scope::reset(&mut index, &archive, "scope-b", false).unwrap();
     let reader = reads.reader().unwrap();
     assert_ne!(
         reader.change_position().unwrap().generation,
