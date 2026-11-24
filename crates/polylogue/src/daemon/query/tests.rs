@@ -1477,7 +1477,7 @@ fn failed_saved_result_storage_is_not_an_empty_catalog() {
     assert_eq!(failure.code(), "store");
     assert_eq!(
         failure.message,
-        "kept result \"broken\" field rows_json: invalid JSON"
+        "stored data is unreadable: kept result `broken` field rows_json: invalid JSON"
     );
     let pool = fixture.fx.reads().unwrap();
     let reader = pool.reader().unwrap();
