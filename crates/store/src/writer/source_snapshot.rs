@@ -11,11 +11,6 @@ impl Inner {
         } else {
             &self.archive
         };
-        let (mut status, confirmed) = crate::source::Source::confirmed_source(conn, &source)?;
-        let boundary = crate::source::SourceBoundary::read(&self.index, conn, &self.location)?;
-        if boundary.is_none() && status == SourceStatus::Ready {
-            status = SourceStatus::MissingEvidence;
-        }
         let pending = if let Some(sinex) = &self.sinex {
             sinex.pending_source(&source)?
         } else {
@@ -24,27 +19,9 @@ impl Inner {
                 ..Default::default()
             }
         };
-        status = match (status, pending.status) {
-            (SourceStatus::Ambiguous, _) | (_, SourceStatus::Ambiguous) => SourceStatus::Ambiguous,
-            (SourceStatus::MissingEvidence, _) | (_, SourceStatus::MissingEvidence) => {
-                SourceStatus::MissingEvidence
-            }
-            _ => SourceStatus::Ready,
-        };
+        let snapshot = crate::source::snapshot(&self.index, conn, &self.location, source, pending)?;
         token.check()?;
-        let base = SourceBase {
-            boundary,
-            resolved: None,
-            source,
-            status,
-            confirmed: confirmed.as_ref().map(|value| value.observation.id.clone()),
-            pending: pending.head.as_ref().map(|value| value.identity.clone()),
-        };
-        Ok(SourceSnapshot {
-            base,
-            confirmed,
-            pending,
-        })
+        Ok(snapshot)
     }
     /// Validate what was stated before provider I/O, without rebinding it to a
     /// later position or treating a missing original record as present.

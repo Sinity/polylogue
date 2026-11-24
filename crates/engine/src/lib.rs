@@ -36,6 +36,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+mod build_log;
 mod chain_names;
 mod collectors;
 mod databases;
@@ -480,6 +481,11 @@ pub struct Engine {
     readings_pending: bool,
     stored_planning: Option<pass::StoredPlanning>,
     captures: Databases,
+    /// Rollout captures waiting for a parse worker, the live ones first
+    /// ([`compressed::RolloutCapture`]).
+    rollout_captures: std::collections::VecDeque<compressed::RolloutCapture>,
+    /// The first build's current phase and when it began ([`build_log`]).
+    build_phase: Option<(&'static str, Instant)>,
     wake: Option<Sender<LoopMsg>>,
     watcher: Option<watch::Roots>,
     databases: BTreeMap<PathBuf, &'static OriginSpec>,
@@ -558,6 +564,8 @@ impl Engine {
             readings_pending: false,
             stored_planning: None,
             captures: Databases::default(),
+            rollout_captures: Default::default(),
+            build_phase: None,
             wake: None,
             watcher: None,
             databases: BTreeMap::new(),

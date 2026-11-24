@@ -438,7 +438,7 @@ impl Engine {
                         polylogue_store::primary::ReadRoute::NativeCapture,
                     )
                     .source;
-                let snapshot = self.writer.source_snapshot(source)?;
+                let snapshot = self.source_snapshot(source)?;
                 pass.capture_pending |= snapshot.pending.head.is_some();
             }
         }

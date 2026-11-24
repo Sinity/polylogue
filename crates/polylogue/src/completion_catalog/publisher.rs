@@ -64,10 +64,17 @@ impl Publisher {
                         }
                         let building =
                             matches!(error, polylogue_store::StoreError::IndexBuilding(_));
+                        // A build's message carries its progress; waiting
+                        // for it is logged once, not at every commit.
                         let error = error.to_string();
-                        if last_error.as_ref() != Some(&error) {
+                        let condition = if building {
+                            "the index is being built".to_owned()
+                        } else {
+                            error.clone()
+                        };
+                        if last_error.as_ref() != Some(&condition) {
                             eprintln!("polylogue: completion catalog: {error}");
-                            last_error = Some(error);
+                            last_error = Some(condition);
                         }
                         // Nothing is readable until the index being built is
                         // installed, which is a commit: wait for it.

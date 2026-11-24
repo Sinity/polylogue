@@ -126,6 +126,22 @@ pub fn scan_paths(
     (found, unreadable)
 }
 
+/// Whether `path` or a directory above it is among `paths`.
+pub(crate) fn under(paths: &std::collections::BTreeSet<PathBuf>, path: &Path) -> bool {
+    path.ancestors().any(|ancestor| paths.contains(ancestor))
+}
+
+/// The members of `paths` at or below `dir`. Paths order by component, so
+/// they are one run from `dir` on.
+fn beneath<'p>(
+    paths: &'p std::collections::BTreeSet<PathBuf>,
+    dir: &'p Path,
+) -> impl Iterator<Item = &'p PathBuf> {
+    paths
+        .range::<Path, _>((std::ops::Bound::Included(dir), std::ops::Bound::Unbounded))
+        .take_while(move |path| path.starts_with(dir))
+}
+
 fn walk_paths(
     dir: &Path,
     segs: &[&str],
@@ -133,11 +149,11 @@ fn walk_paths(
     out: &mut Vec<PathBuf>,
     unreadable: &mut Vec<PathBuf>,
 ) {
-    if paths.iter().any(|path| dir.starts_with(path)) {
+    if under(paths, dir) {
         walk(dir, segs, out, unreadable);
         return;
     }
-    if !paths.iter().any(|path| path.starts_with(dir)) {
+    if beneath(paths, dir).next().is_none() {
         return;
     }
     let Some((seg, rest)) = segs.split_first() else {
@@ -146,8 +162,7 @@ fn walk_paths(
     if *seg == "**" {
         walk_paths(dir, rest, paths, out, unreadable);
         // Descend only along changed paths, without listing sibling directories.
-        let children: std::collections::BTreeSet<_> = paths
-            .iter()
+        let children: std::collections::BTreeSet<_> = beneath(paths, dir)
             .filter_map(|path| {
                 path.strip_prefix(dir)
                     .ok()?
@@ -166,8 +181,7 @@ fn walk_paths(
             }
         }
     } else if seg.contains('*') {
-        let children: std::collections::BTreeSet<_> = paths
-            .iter()
+        let children: std::collections::BTreeSet<_> = beneath(paths, dir)
             .filter_map(|path| {
                 path.strip_prefix(dir)
                     .ok()?
@@ -192,9 +206,7 @@ fn walk_paths(
     } else {
         let child = dir.join(seg);
         if rest.is_empty() {
-            if paths.iter().any(|path| child.starts_with(path))
-                && fs::symlink_metadata(&child).is_ok_and(|m| m.is_file())
-            {
+            if under(paths, &child) && fs::symlink_metadata(&child).is_ok_and(|m| m.is_file()) {
                 out.push(child);
             }
         } else {

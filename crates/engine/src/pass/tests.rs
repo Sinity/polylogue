@@ -20,6 +20,8 @@ mod live_queue;
 #[cfg(feature = "faults")]
 mod planning;
 #[cfg(feature = "faults")]
+mod sampling;
+#[cfg(feature = "faults")]
 mod standings;
 
 #[test]

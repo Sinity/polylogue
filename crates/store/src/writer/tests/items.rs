@@ -1234,3 +1234,65 @@ fn reply_batches_keep_changed_and_unchanged_parent_branch_points_current() {
     assert_eq!(selected.at, Timestamp::from_unix_ms(1000));
     assert_matches_rows(&w, "s");
 }
+
+/// An append reads from the event table only the events it reaches. Events
+/// placed after the last message (timed later than it, or with no time and no
+/// message) are stored history the append does not change; their number
+/// changes what the refresh moves in the item index, not what it reads from
+/// the event table.
+#[test]
+fn an_append_reads_no_event_rows_of_stored_history() {
+    let mut reads = Vec::new();
+    for history in [8u64, 256] {
+        let w = test_archive();
+        let rows = (0..20u64)
+            .map(|n| {
+                let mut m = message(&format!("m{n}"), Role::Assistant, "earlier work");
+                m.at = Timestamp::from_unix_ms(1_000 + n as i64 * 10);
+                row(n, m)
+            })
+            .collect();
+        w.store_reading(
+            batch("i1", Route::Live, 0, rows, &["s"]),
+            Some(&SOURCE_RECORD),
+        )
+        .unwrap();
+        // Side records of the session from another input: half with no time
+        // and no message, half timed after every message.
+        let mut side = batch("i2", Route::Live, 0, Vec::new(), &["s"]);
+        for n in 0..history {
+            let mut event = hook_event(900_000 + n as i64, (n % 99, n % 99 + 1));
+            event.data = serde_json::json!({"number": n});
+            if n % 2 == 0 {
+                event.at = None;
+                event.kind = "file_snapshot".into();
+            }
+            side.parse[0].output.events.push(event);
+        }
+        w.store_reading(side, Some(&SOURCE_RECORD)).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        let before = stored(&w, "s");
+
+        let mut appended = message("next", Role::User, "one more question");
+        appended.at = Timestamp::from_unix_ms(5_000);
+        let mut append = batch("i1", Route::Live, 100, vec![row(110, appended)], &["s"]);
+        append.parse[0]
+            .output
+            .events
+            .push(hook_event(5_005, (115, 116)));
+        let read_before = crate::items::event_rows_read();
+        w.store_reading(append, Some(&SOURCE_RECORD)).unwrap();
+        let report = w.writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{report:?}");
+        reads.push(crate::items::event_rows_read() - read_before);
+
+        let after = stored(&w, "s");
+        assert_eq!(after.entries.len(), before.entries.len() + 3);
+        assert_matches_rows(&w, "s");
+    }
+    assert_eq!(
+        reads[0], reads[1],
+        "event rows read by one append, with 8 and with 256 events of stored history"
+    );
+}
