@@ -43,7 +43,11 @@ pub fn families(options: &str) -> Result<Vec<&'static str>> {
     }
 }
 
-/// Group the selection and the unit's defaults in one read transaction.
+/// Group the selection and the unit's defaults in one read transaction. A
+/// session outside both sets is a physical part of a logical session and
+/// counts for the logical session's root; a session the selection or the
+/// defaults hold (a root, or any session of a `physical:true` listing)
+/// counts for itself (docs/measures.md).
 pub fn query(selection_sql: &str, population_sql: &str, options: &str) -> Result<String> {
     let own = session_sql::own_messages("m", None);
     let mut parts = vec![];
@@ -68,10 +72,12 @@ pub fn query(selection_sql: &str, population_sql: &str, options: &str) -> Result
             "SELECT '{family}' AS family,f.pk,CAST(f.value AS TEXT) AS value FROM ({sql}) f"
         ));
     }
+    let root = crate::query::fields::logical_root("s");
     Ok(format!("WITH selected AS MATERIALIZED (SELECT _pk FROM ({selection_sql})),
         population AS MATERIALIZED ({population_sql}),
-        members AS MATERIALIZED ({}),
-        eligible AS (SELECT _pk FROM selected UNION SELECT _pk FROM population)
+        eligible AS MATERIALIZED (SELECT _pk FROM selected UNION SELECT _pk FROM population),
+        members AS MATERIALIZED (SELECT g.family,CASE WHEN g.pk IN (SELECT _pk FROM eligible) THEN g.pk ELSE {root} END AS pk,g.value
+          FROM ({}) g JOIN session s ON s.pk=g.pk)
         SELECT f.family,f.value,
           count(DISTINCT CASE WHEN f.pk IN (SELECT _pk FROM selected) THEN f.pk END) AS selected_count,
           count(DISTINCT CASE WHEN f.pk IN (SELECT _pk FROM population) THEN f.pk END) AS global_count

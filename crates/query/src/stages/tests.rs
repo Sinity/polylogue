@@ -95,16 +95,27 @@ fn selection_holds_the_stages_after_its_filters() {
 }
 
 #[test]
-fn a_measure_ends_the_query() {
-    let plan = plan("sessions | measure cost | limit 1");
-    let transforms = &plan.expanded_query().query().transforms;
-    let error = stages(transforms, 0).unwrap_err();
+fn measure_stage_refusals_point_at_the_written_text() {
+    let text = "sessions | measure cost | limit 1";
+    let error = prepare(
+        text,
+        &Bindings {
+            origins: vec!["claude-code".into()],
+            ..Bindings::default()
+        },
+        |_| Ok(()),
+    )
+    .unwrap_err();
     let QueryError::Invalid { message, position } = error else {
         panic!("{error:?}");
     };
     assert_eq!(message, "`| measure WHAT` is the last transform");
-    // The refusal points at the stage after the measure.
-    assert_eq!(position, transforms[1].span.start);
+    assert_eq!(position, 26);
+    assert_eq!(&text[position..], "limit 1");
+}
+
+#[test]
+fn a_measure_ends_the_query() {
     assert_eq!(
         shapes("sessions | limit 3 | measure cost"),
         vec![(0..1, StageKind::Rows), (1..2, StageKind::Rows)]

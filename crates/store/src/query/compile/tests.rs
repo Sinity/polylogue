@@ -704,6 +704,8 @@ mod snippets;
 
 mod titles;
 
+mod references;
+
 mod relations;
 
 mod slots;

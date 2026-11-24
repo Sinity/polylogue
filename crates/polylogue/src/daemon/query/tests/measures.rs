@@ -249,6 +249,59 @@ fn facets_use_the_selection_units_default_population() {
     );
 }
 
+/// The archive's logical sessions are #1, #2 with its subagent #3 and
+/// resumed #4, #5 with its fork #6, #7 and #8 (examples/morrow/FACTS.md).
+#[test]
+fn facet_counts_count_logical_sessions() {
+    let mut archive = morrow();
+    archive.fx.derive().unwrap();
+    let count = |query: &str, family: &str, value: &str| {
+        let facets = q(&archive, query);
+        let row = facets["data"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["family"] == family && row["value"] == value)
+            .unwrap_or_else(|| panic!("no {family} {value} in {facets}"))
+            .clone();
+        (row["selected_count"].clone(), row["global_count"].clone())
+    };
+    // #1 and the work of #2, #3 and #4 are two claude-code logical sessions.
+    assert_eq!(
+        count(
+            "sessions | measure facets:origins",
+            "origins",
+            "claude-code"
+        ),
+        (2.into(), 2.into())
+    );
+    assert_eq!(
+        count("sessions | measure facets:origins", "origins", "codex"),
+        (1.into(), 1.into())
+    );
+    // Subagent #3 alone answers with this model; its logical session is #2's.
+    assert_eq!(
+        count(
+            "sessions | measure facets:models",
+            "models",
+            "claude-opus-5-5"
+        ),
+        (1.into(), 1.into())
+    );
+    // A physical listing counts each physical session itself.
+    let physical = q(&archive, "sessions where physical:true origin:claude-code");
+    assert!(physical["count"].as_u64().unwrap() > 2);
+    assert_eq!(
+        count(
+            "sessions where physical:true | measure facets:origins",
+            "origins",
+            "claude-code"
+        )
+        .0,
+        physical["count"]
+    );
+}
+
 #[test]
 fn paged_measures_preserve_query_order_when_display_fields_omit_the_id() {
     let mut archive = morrow();

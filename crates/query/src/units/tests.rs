@@ -57,3 +57,29 @@ fn every_unit_is_declared_once_under_its_own_name() {
     let names: HashSet<_> = UNITS.iter().map(|s| s.name).collect();
     assert_eq!(names.len(), UNITS.len());
 }
+
+/// docs/query.md#units-and-fields lists every unit; the registry declares
+/// exactly those, built or designed.
+#[test]
+fn designed_units_match_the_query_page() {
+    let page = include_str!("../../../../docs/query.md");
+    let table = page
+        .split("| Unit | Rows |")
+        .nth(1)
+        .expect("the page has its unit table");
+    let mut listed: Vec<&str> = table
+        .lines()
+        .skip(2)
+        .take_while(|line| line.starts_with('|'))
+        .flat_map(|line| line.split('|').nth(1).unwrap().split(','))
+        .map(|name| name.trim().trim_matches('`'))
+        .collect();
+    listed.sort_unstable();
+    let mut declared: Vec<&str> = UNITS
+        .iter()
+        .map(|unit| unit.name)
+        .chain(DESIGNED_UNITS.iter().map(|unit| unit.name))
+        .collect();
+    declared.sort_unstable();
+    assert_eq!(listed, declared);
+}

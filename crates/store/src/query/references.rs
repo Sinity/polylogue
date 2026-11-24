@@ -55,6 +55,16 @@ pub(crate) fn membership(
                 format!("SELECT pk FROM ({messages})")
             }
         },
+        Unit::ToolCalls if matches!(reference, Reference::ToolCall(..)) => {
+            let Reference::ToolCall(session, call) = reference else {
+                return None;
+            };
+            format!(
+                "SELECT t.pk FROM tool_call t JOIN session s ON s.pk=t.session_pk WHERE s.id={} AND t.call_id={}",
+                bind(session.to_string()),
+                bind(call.clone())
+            )
+        }
         Unit::Blocks | Unit::ToolCalls => {
             let messages = messages?;
             let extra = if let Reference::Block { n, .. } = reference {
