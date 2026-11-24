@@ -738,7 +738,7 @@ impl Inner {
                 }
             }
             written += 1;
-            if written % ROWS_PER_TRANSACTION == 0 {
+            if written.is_multiple_of(ROWS_PER_TRANSACTION) {
                 self.stop.check()?;
                 tx.take().expect("a transaction is open").commit()?;
                 tx = Some(Transaction::new_unchecked(
