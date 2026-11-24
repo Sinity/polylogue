@@ -36,7 +36,7 @@ fn records(
 
 #[test]
 fn record_ordinals_precede_subsets_and_use_record_positions_before_ids() {
-    let w = installed_archive();
+    let w = test_archive();
     write(
         &w,
         batch(

@@ -167,26 +167,21 @@ impl TestArchive {
 // Each synthetic writer reading occupies the test's declared 100-byte chunk.
 const SOURCE_RECORD: [u8; 100] = [b'r'; 100];
 
+/// A new archive with its empty build installed, as a daemon's first pass
+/// over nothing leaves it: its index is in WAL, where a reader keeps its
+/// snapshot while the writer commits. A build file has a rollback journal,
+/// where a held read blocks the writer (docs/architecture.md, Durability).
 fn test_archive() -> TestArchive {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let writer = Writer::start(&archive).unwrap();
+    writer.build(Vec::new()).unwrap();
     TestArchive {
         _dir: dir,
         archive,
         _lock: lock,
         writer,
     }
-}
-
-/// An archive whose first build has ended: its index is installed in WAL,
-/// where a reader keeps its snapshot while the writer commits. A build
-/// file has a rollback journal, where a held read blocks the writer
-/// (docs/architecture.md, Durability).
-fn installed_archive() -> TestArchive {
-    let w = test_archive();
-    w.writer.derive().unwrap();
-    w
 }
 
 fn sid(n: &str) -> SessionId {
@@ -1368,7 +1363,12 @@ fn a_completed_empty_index_does_not_begin_another_build() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    writer.derive().unwrap();
+    assert!(
+        archive.index_build().is_some(),
+        "a new archive's index is built"
+    );
+    writer.build(Vec::new()).unwrap();
+    assert!(archive.index_build().is_none());
     drop(writer);
     drop(lock);
     let (archive, _lock) = crate::Archive::open_or_create(dir.path()).unwrap();

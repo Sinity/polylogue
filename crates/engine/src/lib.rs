@@ -493,6 +493,10 @@ pub struct Engine {
     rollout_captures: std::collections::VecDeque<compressed::RolloutCapture>,
     /// The first build's current phase and when it began ([`build_log`]).
     build_phase: Option<(&'static str, Instant)>,
+    /// What a build's storing turn found, and whether it walked the sources
+    /// to find it: the turn after the build looks at these again rather than
+    /// walking a second time.
+    found_before_build: Option<(bool, Vec<collect::Found>)>,
     wake: Option<Sender<LoopMsg>>,
     watcher: Option<watch::Roots>,
     databases: BTreeMap<PathBuf, &'static OriginSpec>,
@@ -573,6 +577,7 @@ impl Engine {
             captures: Databases::default(),
             rollout_captures: Default::default(),
             build_phase: None,
+            found_before_build: None,
             wake: None,
             watcher: None,
             databases: BTreeMap::new(),

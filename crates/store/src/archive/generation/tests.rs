@@ -88,7 +88,10 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
     .unwrap();
     let (archive, lock) = crate::Archive::open_or_create(dir.path()).unwrap();
     // An installed index, which is then removed by hand.
-    crate::Writer::start(&archive).unwrap().derive().unwrap();
+    crate::Writer::start(&archive)
+        .unwrap()
+        .build(Vec::new())
+        .unwrap();
     let publisher = archive.scope_token().unwrap();
     publisher
         .with_current(|| {
@@ -111,6 +114,12 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
         publisher.with_current(|| Ok(())),
         Err(crate::StoreError::ScopeChanged)
     ));
+    // The replacement is built and installed; its generation is the one
+    // its build established.
+    crate::Writer::start(&archive)
+        .unwrap()
+        .build(Vec::new())
+        .unwrap();
     let conn = super::super::open_read(&archive.index_db()).unwrap();
     let rebuilt = value(&conn, "generation");
     assert_ne!(rebuilt, before);

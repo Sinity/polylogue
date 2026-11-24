@@ -394,6 +394,9 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
 
     let fresh = ClaudeHome::new();
     let (mut e2, _lock2) = fresh.engine(64 << 20);
+    // An archive that receives an export is started without sources, and
+    // its first pass installs the empty index (docs/operations.md).
+    polylogue_testkit::install_empty_index(&mut e2);
     let report = e2.import(std::slice::from_ref(&file)).unwrap();
     assert_eq!(report.imported, std::slice::from_ref(&file), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");

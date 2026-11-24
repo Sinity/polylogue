@@ -52,7 +52,10 @@ fn an_index_from_another_schema_is_replaced_by_a_build_without_touching_the_arch
 fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    crate::Writer::start(&archive).unwrap().derive().unwrap();
+    crate::Writer::start(&archive)
+        .unwrap()
+        .build(Vec::new())
+        .unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
     index.execute_batch(change).unwrap();
     index
@@ -158,7 +161,10 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
 fn files_left_beside_a_built_index_are_removed_at_the_next_open() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
-    crate::Writer::start(&archive).unwrap().derive().unwrap();
+    crate::Writer::start(&archive)
+        .unwrap()
+        .build(Vec::new())
+        .unwrap();
     drop(lock);
     std::fs::create_dir(dir.path().join("index-build")).unwrap();
     std::fs::write(dir.path().join("index-build/previous.db"), b"").unwrap();
