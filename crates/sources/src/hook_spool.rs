@@ -95,7 +95,9 @@ pub fn open(path: &Path) -> Option<Parse> {
 /// directly under the spool, or `carriers/<provider>/<date>/…`. Lines
 /// that name their own provider keep it.
 fn provider_of(path: &Path) -> Option<String> {
-    let name = |path: Option<&Path>| path?.file_name()?.to_str();
+    fn name(path: Option<&Path>) -> Option<&str> {
+        path?.file_name()?.to_str()
+    }
     let parent = path.parent();
     let date_dir = parent.and_then(Path::parent);
     if name(date_dir.and_then(Path::parent)) == Some("carriers") {
