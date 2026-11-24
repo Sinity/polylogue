@@ -576,6 +576,26 @@ fn acp_eof_reports_unsent_queued_deliveries_once() {
     );
 }
 
+/// Messages waiting behind a running prompt are counted as they join the
+/// queue, and the count drops to zero when the connection closes and drops
+/// them.
+#[test]
+fn the_waiting_messages_are_reported_each_time_their_number_changes() {
+    let mut hosting = Hosting::start("gemini-cli", HostProtocol::Acp, ACP_AGENT, None);
+    let client =
+        HostedStdio::connect(&hosting.config.socket, HostProtocol::Acp, "s1".into()).unwrap();
+    let (changes, counts) = std::sync::mpsc::channel();
+    client.on_queue(Arc::new(move |waiting| {
+        let _ = changes.send(waiting);
+    }));
+    assert!(client.send("running turn", None).unwrap());
+    assert!(!client.send("waiting one", None).unwrap());
+    assert!(!client.send("waiting two", None).unwrap());
+    hosting.quit(&client);
+    wait_until("EOF from the host", || !client.open());
+    assert_eq!(counts.try_iter().collect::<Vec<_>>(), [1, 2, 0]);
+}
+
 /// ACP round trips: a message prompts an idle agent, an interrupt cancels the
 /// running prompt, and a denial selects the reject option.
 #[test]

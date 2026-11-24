@@ -1023,6 +1023,7 @@ fn live_items(
 fn session_item(
     s: &ScopeSession,
     summary: Option<&SessionSummary>,
+    now: i64,
     zone: &jiff::tz::TimeZone,
 ) -> Item {
     let id = s.session.id.to_string();
@@ -1084,7 +1085,7 @@ fn session_item(
     if s.open_tool_call() || summary.is_some_and(|w| w.unfinished_tool_call) {
         open.push("a tool call never finished".to_owned());
     }
-    if let Some(w) = s.waiting_on() {
+    if let Some(w) = s.waiting_on_at(now) {
         open.push(format!("waiting on {w}"));
     }
     if !open.is_empty() {
@@ -1299,7 +1300,14 @@ fn session_start(
     );
     let sessions = recent
         .iter()
-        .map(|s| session_item(s, None, context.clock.day.zone()))
+        .map(|s| {
+            session_item(
+                s,
+                None,
+                context.clock.now.as_millisecond(),
+                context.clock.day.zone(),
+            )
+        })
         .collect();
     fit.section(
         "Recent sessions here, and what they did:",
@@ -1396,6 +1404,7 @@ fn session_start(
         let mut expanded = session_item(
             session,
             reader.session_summary(session.pk)?.as_ref(),
+            context.clock.now.as_millisecond(),
             context.clock.day.zone(),
         );
         let notes = operator_notes(

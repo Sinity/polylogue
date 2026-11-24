@@ -373,6 +373,7 @@ impl Walk<'_, '_, '_, '_> {
                     reader,
                     &row.session.id.to_string(),
                     selection.cursor_context().clock.now.as_millisecond(),
+                    selection.cursor_context().clock.day.zone(),
                 )?);
             }
             if options.annotations

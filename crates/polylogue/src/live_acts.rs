@@ -162,12 +162,16 @@ impl HostedCodex {
     /// Answers the oldest pending approval request.
     pub(crate) fn answer(&mut self, approve: bool, text: Option<&str>) -> std::io::Result<()> {
         self.absorb();
+        // The request stays pending until the app-server has been sent the
+        // answer, so a failed answer can be given again.
         let (id, method, params) = self
             .requests
-            .pop_front()
+            .front()
             .ok_or_else(|| std::io::Error::other("no request is pending on the hosted thread"))?;
-        self.connection
-            .answer(&id, answer_result(&method, &params, approve, text)?)
+        let result = answer_result(method, params, approve, text)?;
+        self.connection.answer(id, result)?;
+        self.requests.pop_front();
+        Ok(())
     }
 
     pub(crate) fn interrupt(&mut self) -> std::io::Result<()> {
@@ -254,9 +258,9 @@ impl Hosted {
 
     /// Whether the connection still reaches the session: a host that
     /// exited closed it.
-    fn open(&self) -> bool {
+    fn open(&mut self) -> bool {
         match self {
-            Self::Codex(_) => true,
+            Self::Codex(h) => h.connection.is_running(),
             Self::Stdio(h) => h.open(),
         }
     }
@@ -281,6 +285,8 @@ pub(crate) enum Report {
         delivery: String,
         sent: Result<(), String>,
     },
+    /// How many messages of a hosted session wait behind its running turn.
+    Queued { session: SessionId, queued: usize },
     /// A resumed run to start; no run of its session is in progress.
     Resume(ResumeRun),
     /// The daemon stops.
@@ -434,7 +440,7 @@ impl Acts {
     pub(crate) fn is_hosted(&self, session: &SessionId) -> bool {
         self.handle(session)
             .is_some_and(|handle| match handle.try_lock() {
-                Ok(hosted) => hosted.open(),
+                Ok(mut hosted) => hosted.open(),
                 Err(std::sync::TryLockError::WouldBlock) => true,
                 Err(std::sync::TryLockError::Poisoned(hosted)) => hosted.into_inner().open(),
             })
@@ -469,6 +475,14 @@ impl Acts {
                 let _ = reports.send(Report::Sent {
                     delivery: delivery.to_owned(),
                     sent,
+                });
+            }));
+            let reports = self.reports.locked().clone();
+            let session = session.clone();
+            stdio.on_queue(Arc::new(move |queued| {
+                let _ = reports.send(Report::Queued {
+                    session: session.clone(),
+                    queued,
                 });
             }));
         }

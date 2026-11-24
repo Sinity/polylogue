@@ -610,3 +610,57 @@ fn unavailable_dependencies_keep_the_annotation_pending() {
     }));
     assert!(!status["held"].as_array().unwrap().is_empty());
 }
+
+/// A rule's last firing is the latest time of any of its stored
+/// deliveries, per rule name.
+#[test]
+fn signal_rules_report_when_they_last_fired() {
+    let mut fixture = crate::test_daemon::start_with_clock(
+        "synthetic",
+        polylogue_model::WallClock::fixed(
+            jiff::Timestamp::from_millisecond(1_792_332_000_000).unwrap(),
+        ),
+    );
+    fixture.pause_signals();
+    let context = operation(&fixture.daemon).unwrap();
+    let reader = fixture.daemon.reads.reader().unwrap();
+    let attention = local_attention(&reader, &context).unwrap();
+    assert!(reader.last_firings().unwrap().is_empty());
+    drop(reader);
+    let checkpoint = load(&fixture.daemon)
+        .unwrap()
+        .unwrap_or_else(|| initial(&fixture.daemon, &context, Some(&attention)).unwrap());
+    let prior = load(&fixture.daemon)
+        .unwrap()
+        .map(|c| c.identity().unwrap());
+    let delivery = |rule: &str, occurrence: &str, at: i64| {
+        polylogue_store::fixture::signals::pending_delivery(rule, occurrence, at, true)
+    };
+    assert!(
+        persist(
+            &fixture.daemon,
+            &context,
+            prior,
+            checkpoint,
+            vec![
+                delivery("waiting", "first", 5_000),
+                delivery("waiting", "second", 9_000),
+                delivery("waiting", "third", 7_000),
+                delivery("stalled", "only", 2_000),
+            ],
+            vec![],
+        )
+        .unwrap()
+    );
+    let firings = fixture
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .last_firings()
+        .unwrap();
+    assert_eq!(
+        firings.into_iter().collect::<Vec<_>>(),
+        [("stalled".to_owned(), 2_000), ("waiting".to_owned(), 9_000)]
+    );
+}

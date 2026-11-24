@@ -17,6 +17,7 @@ fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
         let status = answer.value().unwrap();
         assert_eq!(status.index_build, Some(progress.clone()));
         assert_eq!(status.totals_error, Some(progress.to_string()));
+        assert!(!status.warming, "a build names itself, it is not warming");
         assert!(status.vectors.is_none() && status.verification.is_none());
         assert_eq!(
             status.vectors_error,
@@ -24,6 +25,31 @@ fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
             "the unread reason is the build's progress"
         );
     }
+}
+
+/// Status is warming until the first reads are ready: with no snapshot and
+/// no build it says so, and once the daemon has read its scope index and
+/// snapshot it does not.
+#[test]
+fn status_is_warming_until_the_first_reads_are_ready() {
+    let daemon = crate::test_daemon::start("synthetic source");
+    daemon.daemon.status_snapshot.clear();
+    let warming = answer(&daemon.daemon, None, false);
+    assert_eq!(warming.exit_code(), 5);
+    assert!(warming.value().unwrap().warming);
+    assert!(
+        daemon
+            .daemon
+            .reads
+            .reader()
+            .map(|reader| daemon
+                .daemon
+                .status_snapshot
+                .refresh(&daemon.daemon, &reader))
+            .is_ok()
+    );
+    assert!(daemon.daemon.scope.is_loaded());
+    assert!(!answer(&daemon.daemon, None, false).value().unwrap().warming);
 }
 
 #[test]

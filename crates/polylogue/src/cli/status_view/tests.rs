@@ -34,6 +34,7 @@ fn answer() -> Answer {
         store: None,
         index_build: None,
         build_progress: None,
+        warming: false,
         totals_error: None,
         vectors: None,
         vectors_error: None,
@@ -326,13 +327,41 @@ fn archived_text_is_escaped_in_the_view() {
             name: "\x1b]0;title\x07\x7f".into(),
             query: "since:1d".into(),
             author: "operator".into(),
+            last_fired: None,
         }],
         unusable: Vec::new(),
         held: Vec::new(),
     });
     let text = plain(&status, &[]);
     assert!(
-        text.contains("RULES      \\x1b]0;title\\x07\\x7f · by operator\n"),
+        text.contains("RULES      \\x1b]0;title\\x07\\x7f · by operator · never fired\n"),
+        "{text}"
+    );
+}
+
+/// A rule shows how long ago it last fired, or that it never has.
+#[test]
+fn a_rule_shows_when_it_last_fired() {
+    let mut status = answer();
+    status.warming = true;
+    status.signals = Some(crate::protocol::status::Signals::Observed {
+        rules: vec![crate::protocol::status::SignalRule {
+            id: "authored:one".into(),
+            name: "stalled daemon".into(),
+            query: "since:1d".into(),
+            author: "operator".into(),
+            last_fired: polylogue_model::Timestamp::from_unix_ms(NOW - 5 * 60_000),
+        }],
+        unusable: Vec::new(),
+        held: Vec::new(),
+    });
+    let text = plain(&status, &[]);
+    assert!(
+        text.contains("RULES      stalled daemon · by operator · last fired 5m ago\n"),
+        "{text}"
+    );
+    assert!(
+        text.lines().next().unwrap().contains(" · warming"),
         "{text}"
     );
 }

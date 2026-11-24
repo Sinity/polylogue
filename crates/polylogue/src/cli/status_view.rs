@@ -95,6 +95,9 @@ fn header(status: &Answer, view: &View<'_>) -> String {
             short_duration(i64::try_from(status.uptime_seconds).unwrap_or(i64::MAX) * 1000)
         ),
     ];
+    if status.warming {
+        parts.push("warming".into());
+    }
     if status.loop_status.busy {
         parts.push("busy".into());
     }
@@ -492,7 +495,22 @@ fn rules(status: &Answer, view: &View<'_>) -> Vec<String> {
     };
     let mut lines: Vec<String> = rules
         .iter()
-        .map(|rule| format!("{} · by {}", clean(&rule.name), clean(&rule.author)))
+        .map(|rule| {
+            let fired = rule.last_fired.map_or_else(
+                || "never fired".to_owned(),
+                |at| {
+                    format!(
+                        "last fired {} ago",
+                        short_duration(view.now_ms.saturating_sub(at.unix_ms()))
+                    )
+                },
+            );
+            format!(
+                "{} · by {} · {fired}",
+                clean(&rule.name),
+                clean(&rule.author)
+            )
+        })
         .collect();
     lines.extend(
         unusable

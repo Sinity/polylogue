@@ -23,4 +23,24 @@ impl Reader<'_> {
         }
         Ok(())
     }
+
+    /// When each signal rule, by name, last fired: the evaluator's latest
+    /// firing time in the stored deliveries.
+    pub fn last_firings(&self) -> Result<std::collections::BTreeMap<String, i64>> {
+        let conn = self.conn()?;
+        let mut query = conn.prepare("SELECT id FROM source_delivery WHERE signal IS NOT NULL")?;
+        let ids = query
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut last = std::collections::BTreeMap::new();
+        for id in ids {
+            let Some(metadata) = crate::signals::metadata(conn, Source::Cache, &id)? else {
+                continue;
+            };
+            let fired = metadata.delivery.fired;
+            let at = last.entry(fired.rule_name).or_insert(fired.at);
+            *at = (*at).max(fired.at);
+        }
+        Ok(last)
+    }
 }

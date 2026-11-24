@@ -49,14 +49,6 @@ impl ScopeSession {
         self.live.last_at
     }
 
-    /// What it is waiting on: permission, question or notification.
-    pub fn waiting_on(&self) -> Option<&str> {
-        self.live
-            .hook_waiting_on
-            .as_ref()
-            .map(|waiting| waiting.value.as_str())
-    }
-
     /// The wait the common live model shows at this instant, including
     /// harness status and process observations that outrank an earlier hook.
     pub fn waiting_on_at(&self, now: i64) -> Option<&'static str> {

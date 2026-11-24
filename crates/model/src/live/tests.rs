@@ -447,3 +447,67 @@ fn hosted_lines_name_the_root_and_end_the_session() {
     let (facts, _) = run(&[("registry_status", 0, status("busy"))]);
     assert_eq!(facts.root, None);
 }
+
+/// A message waiting behind a hosted session's running turn is a queue
+/// stall, shown while the turn runs; it ends when the count returns to
+/// zero, the session goes idle or it ends, and it never counts as waiting.
+#[test]
+fn a_session_queued_behind_another_shows_the_queue_stall() {
+    let process = json!({"pid": 300, "start": 77, "boot_id": "boot-a"});
+    let mut busy = process.clone();
+    busy["status"] = json!("busy");
+    let queued = |n: u32| json!({"queued": n});
+    let stall_at = |events: &[(&str, i64, Json)], now: i64| {
+        let (facts, _) = run(events);
+        let v = view(Some(&facts), None, now);
+        (v.state, v.stall)
+    };
+    assert_eq!(
+        stall_at(
+            &[
+                ("registry_hosted_status", 0, busy.clone()),
+                ("registry_hosted_queued", MIN, queued(1)),
+            ],
+            2 * MIN
+        ),
+        (LiveState::Working, Some(Stall::Queue))
+    );
+    assert_eq!(
+        stall_at(
+            &[
+                ("registry_hosted_status", 0, busy.clone()),
+                ("registry_hosted_queued", MIN, queued(2)),
+                ("registry_hosted_queued", 2 * MIN, queued(0)),
+            ],
+            3 * MIN
+        ),
+        (LiveState::Working, None)
+    );
+    let mut idle = process.clone();
+    idle["status"] = json!("idle");
+    assert_eq!(
+        stall_at(
+            &[
+                ("registry_hosted_status", 0, busy.clone()),
+                ("registry_hosted_queued", MIN, queued(1)),
+                ("registry_hosted_status", 2 * MIN, idle),
+            ],
+            3 * MIN
+        ),
+        (LiveState::Idle, None)
+    );
+    // The queue is an interval of its own, closed when the count returns to zero.
+    let (facts, closed) = run(&[
+        ("registry_hosted_status", 0, busy),
+        ("registry_hosted_queued", MIN, queued(1)),
+        ("registry_hosted_queued", 3 * MIN, queued(0)),
+    ]);
+    assert_eq!(
+        closed
+            .iter()
+            .map(|i| (i.aspect, i.value.as_str(), i.start, i.end))
+            .collect::<Vec<_>>(),
+        vec![(Aspect::Stall, "queue", MIN, 3 * MIN)]
+    );
+    assert_eq!(view(Some(&facts), None, 4 * MIN).waiting_on, None);
+}
