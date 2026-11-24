@@ -37,9 +37,11 @@ pub const ORIGIN: &str = "ai-studio";
 pub const LOCATIONS: &[&str] = &["polylogue/drive/ai-studio/*.json"];
 
 /// The Drive collector's listing of the prompts folder, `files.json`:
-/// `{"files": [{"id", "name", "createdTime", …}]}`, as Drive's
-/// `files.list` returned it. It names the prompts: each entry offers its
-/// name as the title of the session `ai-studio:<id>`.
+/// `{"files": [{"id", "name", "createdTime", …}]}`, each entry the file's
+/// metadata as Drive last gave it, sorted by ID. It names the prompts: each
+/// entry offers its name as the title of the session `ai-studio:<id>`. An
+/// entry marked `"removed": true` is a prompt no longer in the folder, whose
+/// session is gone.
 pub const LISTING: &str = "files.json";
 
 fn is_listing(path: &Path) -> bool {
@@ -937,6 +939,7 @@ static LISTING_FIELDS: Fields = Fields::new(
             Rule::Excluded("the collector's own bookkeeping"),
         ),
         ("size", Rule::Excluded("each stored revision has its size")),
+        ("removed", Rule::Read(T::Boolean)),
     ],
 );
 
@@ -993,6 +996,7 @@ impl ExportParser for Listing {
         if let Some(name) = f.str("name").filter(|s| !s.is_empty()) {
             session.offer_title(name, TitleSource::Generated);
         }
+        session.gone = f.bool("removed") == Some(true);
         if let Some(at) = f
             .get("createdTime")
             .and_then(time_of)

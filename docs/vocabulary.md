@@ -174,6 +174,9 @@ generated page of the thing they belong to, or on the area page that owns them.
   an optional upper bound, stored beside each source time.
 - **paste**: a pasted range of a prompt.
 - **sidecar**: a file read into its session, never as a session of its own.
+- **gone**: a session its source no longer holds: absent from a complete
+  newer export of its account, or removed from the Drive folder. It keeps its
+  rows; the session field `source` reads `gone`.
 - **session alias**: the ID a copy of a session carries when the copy has no
   native ID (an AI Studio Takeout's content name), recorded by the route that
   knows the session's own ID; the index shows the copy as that session.

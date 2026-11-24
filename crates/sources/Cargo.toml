@@ -20,6 +20,10 @@ ureq.workspace = true
 blake3.workspace = true
 tempfile.workspace = true
 
+[features]
+# Test support: a fake Drive API for the AI Studio collector.
+fixture = []
+
 [dev-dependencies]
 proptest.workspace = true
 

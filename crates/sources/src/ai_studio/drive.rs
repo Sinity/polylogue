@@ -3,14 +3,21 @@
 //! `ai-studio` origin watches. It runs only with the archive's explicitly
 //! authorized `drive-token.json`, in Google's authorized-user format.
 //!
+//! The first sync takes a start page token from Drive's changes feed and
+//! lists the prompts folder once; every later sync reads the changes since
+//! the saved token and applies them to its listing (`files.json`). A prompt
+//! deleted, trashed or moved out of the folder keeps its entry, marked
+//! `removed`.
+//!
 //! Each prompt has one immutable pending revision. Its bytes are published at
 //! `<fileId>.json` until the engine acknowledges that the archive stored them. Only
 //! then does `.revisions.json` advance and another revision replace that path.
 //! Hidden pending bodies survive restart; their cleanup leaves the watched
-//! prompt in place. `files.json` holds the folder listing.
+//! prompt in place.
 
-use polylogue_model::JsonExt;
+use polylogue_model::{JsonExt, Timestamp};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as Json;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,6 +37,10 @@ const FOLDER: &str = "Google AI Studio";
 const FOLDER_MIME: &str = "application/vnd.google-apps.folder";
 const STATE: &str = ".revisions.json";
 const PENDING: &str = ".pending";
+/// The file metadata the listing keeps.
+const FILE_FIELDS: &str = "id,name,mimeType,createdTime,modifiedTime,headRevisionId";
+/// Change fields: the listing's file metadata, and where the file is.
+const CHANGE_FIELDS: &str = "nextPageToken,newStartPageToken,changes(changeType,fileId,removed,file(id,name,mimeType,createdTime,modifiedTime,headRevisionId,trashed,parents))";
 
 #[derive(Debug, thiserror::Error)]
 pub enum DriveError {
@@ -37,6 +48,9 @@ pub enum DriveError {
     Token(PathBuf, String),
     #[error("Drive request {0}: {1}")]
     Http(String, String),
+    /// A reply that arrived but does not say what the request asks.
+    #[error("Drive reply to {0} is unreadable: {1}")]
+    Unreadable(String, String),
     #[error("no Drive folder named {FOLDER:?}")]
     NoFolder,
     #[error(transparent)]
@@ -68,7 +82,10 @@ pub struct Drive {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct SyncReport {
+    /// Prompts in the folder.
     pub prompts: usize,
+    /// Prompts the listing keeps marked removed.
+    pub removed: usize,
     pub revisions_written: usize,
     /// Pending revisions, including further revisions observed in this sync.
     pub pending: usize,
@@ -97,132 +114,310 @@ impl AuthorizedUser {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// A Drive revision of one prompt, with its `modifiedTime` as Drive wrote
+/// it and as an instant.
+#[derive(Debug, Clone)]
 struct Revision {
     id: String,
-    #[serde(rename = "modifiedTime")]
     modified: String,
+    at: Timestamp,
+}
+
+/// The prompts folder's files by ID, as the listing keeps them.
+type Listing = BTreeMap<String, Json>;
+
+/// Drive's API with one access token.
+struct Api {
+    agent: ureq::Agent,
+    token: String,
+    base: String,
+}
+
+impl Api {
+    fn url(&self, path: &str) -> String {
+        format!("{}{path}", self.base)
+    }
+
+    fn bytes(&self, path: &str, query: &[(&str, &str)]) -> Result<Vec<u8>, DriveError> {
+        let url = self.url(path);
+        let mut request = self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {}", self.token));
+        for (key, value) in query {
+            request = request.query(*key, *value);
+        }
+        let mut reply = request
+            .call()
+            .map_err(|e| DriveError::Http(url.clone(), e.to_string()))?;
+        reply
+            .body_mut()
+            .with_config()
+            .limit(u64::MAX)
+            .read_to_vec()
+            .map_err(|e| DriveError::Http(url, e.to_string()))
+    }
+
+    fn json(&self, path: &str, query: &[(&str, &str)]) -> Result<Json, DriveError> {
+        serde_json::from_slice(&self.bytes(path, query)?)
+            .map_err(|e| DriveError::Unreadable(self.url(path), e.to_string()))
+    }
+
+    fn unreadable(&self, path: &str, reason: impl Into<String>) -> DriveError {
+        DriveError::Unreadable(self.url(path), reason.into())
+    }
+
+    fn start_page_token(&self) -> Result<String, DriveError> {
+        let path = "/changes/startPageToken";
+        self.json(path, &[("fields", "startPageToken")])?
+            .str("startPageToken")
+            .map(str::to_owned)
+            .ok_or_else(|| self.unreadable(path, "no `startPageToken`"))
+    }
+
+    fn folder(&self) -> Result<String, DriveError> {
+        let query = format!("name = '{FOLDER}' and mimeType = '{FOLDER_MIME}' and trashed = false");
+        let found = self.json("/files", &[("q", &query), ("fields", "files(id)")])?;
+        found
+            .pointer("/files/0/id")
+            .and_then(Json::as_str)
+            .map(str::to_owned)
+            .ok_or(DriveError::NoFolder)
+    }
+
+    /// Every file in the folder, through every page.
+    fn list(&self, folder: &str) -> Result<Vec<Json>, DriveError> {
+        let mut files = Vec::new();
+        let mut page: Option<String> = None;
+        let query = format!("'{folder}' in parents and trashed = false");
+        let fields = format!("nextPageToken,files({FILE_FIELDS})");
+        loop {
+            let mut params = vec![
+                ("q", query.as_str()),
+                ("fields", fields.as_str()),
+                ("pageSize", "1000"),
+            ];
+            if let Some(p) = &page {
+                params.push(("pageToken", p.as_str()));
+            }
+            let reply = self.json("/files", &params)?;
+            // A reply without `files` is not an empty folder: reading it so
+            // would mark every prompt removed.
+            let batch = reply
+                .array("files")
+                .ok_or_else(|| self.unreadable("/files", "no `files` array"))?;
+            files.extend(batch.iter().cloned());
+            match reply.str("nextPageToken") {
+                Some(p) => page = Some(p.to_owned()),
+                None => return Ok(files),
+            }
+        }
+    }
+
+    /// Applies every change since `token` to the listing and returns the
+    /// token to continue from, or `None` when the folder itself is gone.
+    fn follow(
+        &self,
+        token: &str,
+        folder: &str,
+        listing: &mut Listing,
+    ) -> Result<Option<String>, DriveError> {
+        let path = "/changes";
+        let mut page = token.to_owned();
+        loop {
+            let reply = self.json(
+                path,
+                &[
+                    ("pageToken", page.as_str()),
+                    ("fields", CHANGE_FIELDS),
+                    ("pageSize", "1000"),
+                    ("spaces", "drive"),
+                    ("includeRemoved", "true"),
+                ],
+            )?;
+            let changes = reply
+                .array("changes")
+                .ok_or_else(|| self.unreadable(path, "no `changes` array"))?;
+            for change in changes {
+                if !apply(change, folder, listing).map_err(|e| self.unreadable(path, e))? {
+                    return Ok(None);
+                }
+            }
+            if let Some(next) = reply.str("nextPageToken") {
+                page = next.to_owned();
+            } else if let Some(start) = reply.str("newStartPageToken") {
+                return Ok(Some(start.to_owned()));
+            } else {
+                return Err(
+                    self.unreadable(path, "neither `nextPageToken` nor `newStartPageToken`")
+                );
+            }
+        }
+    }
+
+    /// Every revision of a prompt, through every page, oldest first.
+    fn revisions(&self, id: &str) -> Result<Vec<Revision>, DriveError> {
+        let path = format!("/files/{id}/revisions");
+        let mut revisions = Vec::new();
+        let mut page: Option<String> = None;
+        loop {
+            let mut params = vec![("fields", "nextPageToken,revisions(id,modifiedTime)")];
+            if let Some(token) = &page {
+                params.push(("pageToken", token.as_str()));
+            }
+            let reply = self.json(&path, &params)?;
+            // A reply without `revisions` is not a prompt without revisions.
+            let batch = reply
+                .array("revisions")
+                .ok_or_else(|| self.unreadable(&path, "no `revisions` array"))?;
+            for revision in batch {
+                let (Some(id), Some(modified)) = (revision.str("id"), revision.str("modifiedTime"))
+                else {
+                    return Err(self.unreadable(&path, "a revision without `id` or `modifiedTime`"));
+                };
+                let at = Timestamp::parse_rfc3339(modified).ok_or_else(|| {
+                    self.unreadable(
+                        &path,
+                        format!("revision {id} has modifiedTime {modified:?}"),
+                    )
+                })?;
+                revisions.push(Revision {
+                    id: id.to_owned(),
+                    modified: modified.to_owned(),
+                    at,
+                });
+            }
+            match reply.str("nextPageToken") {
+                Some(token) => page = Some(token.to_owned()),
+                None => break,
+            }
+        }
+        // Instants, not texts: Drive writes fractions of varying width.
+        revisions.sort_by_key(|r| r.at);
+        Ok(revisions)
+    }
+}
+
+/// Applies one change to the listing; false when the change removes the
+/// folder itself.
+fn apply(change: &Json, folder: &str, listing: &mut Listing) -> Result<bool, String> {
+    if change.str("changeType").is_some_and(|kind| kind != "file") {
+        return Ok(true);
+    }
+    let id = change.str("fileId").ok_or("a change without `fileId`")?;
+    let file = change
+        .get("file")
+        .filter(|_| change.bool("removed") != Some(true))
+        .filter(|file| file.bool("trashed") != Some(true));
+    if id == folder {
+        return Ok(file.is_some());
+    }
+    let in_folder = file.filter(|file| {
+        file.array("parents")
+            .is_some_and(|parents| parents.iter().any(|p| p.as_str() == Some(folder)))
+    });
+    match in_folder {
+        Some(file) => {
+            let mut entry = file.clone();
+            if let Some(entry) = entry.as_object_mut() {
+                entry.remove("trashed");
+                entry.remove("parents");
+                entry.insert("id".into(), id.into());
+            }
+            listing.insert(id.to_owned(), entry);
+        }
+        None => {
+            if let Some(entry) = listing.get_mut(id) {
+                mark_removed(entry);
+            }
+        }
+    }
+    Ok(true)
+}
+
+fn mark_removed(entry: &mut Json) {
+    if let Some(entry) = entry.as_object_mut() {
+        entry.insert("removed".into(), true.into());
+    }
+}
+
+fn is_removed(entry: &Json) -> bool {
+    entry.bool("removed") == Some(true)
 }
 
 impl Drive {
     pub fn sync(&self) -> Result<SyncReport, DriveError> {
-        let token = self.access_token()?;
-        let state = self.load_state()?;
+        let api = Api {
+            agent: ureq::Agent::new_with_defaults(),
+            token: self.access_token()?,
+            base: self.endpoints.api.clone(),
+        };
+        let mut state = self.load_state()?;
         let pending = self.pending_revisions()?;
         for revision in pending.values() {
             self.publish(revision)?;
         }
-        let agent = ureq::Agent::new_with_defaults();
-        let get = |url: &str, query: &[(&str, &str)]| -> Result<Vec<u8>, DriveError> {
-            let mut req = agent
-                .get(url)
-                .header("Authorization", &format!("Bearer {token}"));
-            for (k, v) in query {
-                req = req.query(*k, *v);
-            }
-            let mut resp = req
-                .call()
-                .map_err(|e| DriveError::Http(url.to_owned(), e.to_string()))?;
-            resp.body_mut()
-                .with_config()
-                .limit(u64::MAX)
-                .read_to_vec()
-                .map_err(|e| DriveError::Http(url.to_owned(), e.to_string()))
+        let mut listing = self.load_listing()?;
+        let followed = match (&state.change_token, &state.folder) {
+            (Some(token), Some(folder)) => api
+                .follow(token, folder, &mut listing)?
+                .map(|next| (folder.clone(), next)),
+            _ => None,
         };
-        let json = |bytes: Vec<u8>, url: &str| -> Result<serde_json::Value, DriveError> {
-            serde_json::from_slice(&bytes)
-                .map_err(|e| DriveError::Http(url.to_owned(), e.to_string()))
+        let (folder, next_token) = match followed {
+            Some(followed) => followed,
+            None => {
+                // The token comes first, so a change made during the listing
+                // is read again from the feed.
+                let token = api.start_page_token()?;
+                let folder = api.folder()?;
+                let files = api.list(&folder)?;
+                let present: std::collections::BTreeSet<&str> =
+                    files.iter().filter_map(|f| f.str("id")).collect();
+                for (id, entry) in &mut listing {
+                    if !present.contains(id.as_str()) {
+                        mark_removed(entry);
+                    }
+                }
+                for file in &files {
+                    if let Some(id) = file.str("id") {
+                        listing.insert(id.to_owned(), file.clone());
+                    }
+                }
+                (folder, token)
+            }
         };
-
-        let files_url = format!("{}/files", self.endpoints.api);
-        let folder_q =
-            format!("name = '{FOLDER}' and mimeType = '{FOLDER_MIME}' and trashed = false");
-        let found = json(
-            get(&files_url, &[("q", &folder_q), ("fields", "files(id)")])?,
-            &files_url,
-        )?;
-        let folder = found
-            .pointer("/files/0/id")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(DriveError::NoFolder)?
-            .to_owned();
-
-        let mut files = Vec::new();
-        let mut page: Option<String> = None;
-        let list_q = format!("'{folder}' in parents and trashed = false");
-        loop {
-            let mut query = vec![
-                ("q", list_q.as_str()),
-                (
-                    "fields",
-                    "nextPageToken,files(id,name,mimeType,createdTime,modifiedTime,headRevisionId)",
-                ),
-                ("pageSize", "1000"),
-            ];
-            if let Some(p) = &page {
-                query.push(("pageToken", p.as_str()));
-            }
-            let v = json(get(&files_url, &query)?, &files_url)?;
-            // A reply without `files` is not an empty folder: writing it would
-            // replace the saved listing with nothing.
-            let batch = v.array("files").ok_or_else(|| {
-                DriveError::Http(files_url.clone(), "reply has no `files` array".into())
-            })?;
-            files.extend(batch.iter().cloned());
-            match v.str("nextPageToken") {
-                Some(p) => page = Some(p.to_owned()),
-                None => break,
-            }
-        }
 
         std::fs::create_dir_all(&self.spool)?;
-        let listing = serde_json::to_vec_pretty(&serde_json::json!({ "files": files }))
+        let files: Vec<&Json> = listing.values().collect();
+        let bytes = serde_json::to_vec_pretty(&serde_json::json!({ "files": files }))
             .expect("JSON value serializes");
-        write_if_changed(&self.spool.join(super::LISTING), &listing)?;
+        write_if_changed(&self.spool.join(super::LISTING), &bytes)?;
 
+        let removed = listing.values().filter(|f| is_removed(f)).count();
         let mut report = SyncReport {
-            prompts: files.len(),
+            prompts: listing.len() - removed,
+            removed,
             pending: pending.len(),
             ..SyncReport::default()
         };
-        for f in &files {
-            let Some(id) = f.str("id") else {
-                continue;
-            };
-            if pending.contains_key(id) {
+        for (id, file) in &listing {
+            if is_removed(file) || pending.contains_key(id) {
                 continue;
             }
-            let head = f.str("headRevisionId");
+            let head = file.str("headRevisionId");
             if head.is_some() && state.revision(id) == head {
                 continue;
             }
-            let rev_url = format!("{files_url}/{id}/revisions");
-            let mut revisions: Vec<Revision> = Vec::new();
-            let mut page: Option<String> = None;
-            loop {
-                let mut query = vec![("fields", "nextPageToken,revisions(id,modifiedTime)")];
-                if let Some(token) = &page {
-                    query.push(("pageToken", token.as_str()));
-                }
-                let v = json(get(&rev_url, &query)?, &rev_url)?;
-                let batch: Vec<Revision> =
-                    serde_json::from_value(v.get("revisions").cloned().ok_or_else(|| {
-                        DriveError::Http(rev_url.clone(), "reply has no `revisions` array".into())
-                    })?)
-                    .map_err(|e| DriveError::Http(rev_url.clone(), e.to_string()))?;
-                revisions.extend(batch);
-                match v.str("nextPageToken") {
-                    Some(token) => page = Some(token.to_owned()),
-                    None => break,
-                }
-            }
-            revisions.sort_by(|a, b| a.modified.cmp(&b.modified));
+            let revisions = api.revisions(id)?;
             let start = state.next_revision(id, &revisions);
             let Some(next) = revisions.get(start) else {
                 continue;
             };
-            let url = format!("{rev_url}/{}", next.id);
-            let bytes = get(&url, &[("alt", "media")])?;
+            let bytes = api.bytes(
+                &format!("/files/{id}/revisions/{}", next.id),
+                &[("alt", "media")],
+            )?;
             let revision = self.keep_revision(
                 id,
                 Some(Accepted {
@@ -235,7 +430,31 @@ impl Drive {
             report.revisions_written += 1;
             report.pending += revisions.len() - start;
         }
+        // Saved last: a sync that fails reads the same changes again.
+        state.folder = Some(folder);
+        state.change_token = Some(next_token);
+        self.save_state(&state)?;
         Ok(report)
+    }
+
+    /// The listing the last sync wrote; empty before the first.
+    fn load_listing(&self) -> Result<Listing, DriveError> {
+        let bytes = match std::fs::read(self.spool.join(super::LISTING)) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Listing::new());
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let invalid = |error: String| std::io::Error::new(std::io::ErrorKind::InvalidData, error);
+        let saved: Json = serde_json::from_slice(&bytes).map_err(|e| invalid(e.to_string()))?;
+        let files = saved
+            .array("files")
+            .ok_or_else(|| invalid("the saved Drive listing has no `files` array".into()))?;
+        Ok(files
+            .iter()
+            .filter_map(|f| Some((f.str("id")?.to_owned(), f.clone())))
+            .collect())
     }
 
     fn access_token(&self) -> Result<String, DriveError> {
@@ -284,7 +503,14 @@ impl Drive {
                 version: 1,
                 accepted,
                 modified,
-            } => Ok(Cursor { accepted, modified }),
+                change_token,
+                folder,
+            } => Ok(Cursor {
+                accepted,
+                modified,
+                change_token,
+                folder,
+            }),
             RevisionState::Accepted { .. } => {
                 Err(invalid("unsupported Drive revision state version").into())
             }
@@ -485,6 +711,8 @@ impl Drive {
             version: 1,
             accepted: state.accepted.clone(),
             modified: state.modified.clone(),
+            change_token: state.change_token.clone(),
+            folder: state.folder.clone(),
         })
         .expect("map serializes");
         write_if_changed(&self.spool.join(STATE), &bytes)
@@ -501,15 +729,24 @@ enum RevisionState {
         /// known: it places the cursor once Drive prunes that revision.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         modified: BTreeMap<String, String>,
+        /// The changes-feed page token the next sync reads from.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        change_token: Option<String>,
+        /// The prompts folder's Drive ID.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        folder: Option<String>,
     },
     Downloaded(BTreeMap<String, String>),
 }
 
-/// The last revision the archive accepted for each prompt.
+/// The last revision the archive accepted for each prompt, and where the
+/// changes feed continues.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct Cursor {
     accepted: BTreeMap<String, String>,
     modified: BTreeMap<String, String>,
+    change_token: Option<String>,
+    folder: Option<String>,
 }
 
 impl Cursor {
@@ -537,12 +774,15 @@ impl Cursor {
         if let Some(at) = revisions.iter().position(|r| r.id == accepted) {
             return at + 1;
         }
-        self.modified.get(file).map_or(0, |modified| {
-            revisions
-                .iter()
-                .position(|r| r.modified > *modified)
-                .unwrap_or(revisions.len())
-        })
+        self.modified
+            .get(file)
+            .and_then(|modified| Timestamp::parse_rfc3339(modified))
+            .map_or(0, |modified| {
+                revisions
+                    .iter()
+                    .position(|r| r.at > modified)
+                    .unwrap_or(revisions.len())
+            })
     }
 }
 
@@ -622,5 +862,7 @@ pub const COLLECTOR: crate::origin::Collector = crate::origin::Collector {
     },
 };
 
+#[cfg(any(test, feature = "fixture"))]
+pub mod fake;
 #[cfg(test)]
 mod tests;

@@ -63,6 +63,7 @@ fuzzy-matcher = "0.3"
 [dev-dependencies]
 polylogue-model = { workspace = true, features = ["fixture"] }
 polylogue-query = { workspace = true, features = ["fixture"] }
+polylogue-sources = { workspace = true, features = ["fixture"] }
 zip.workspace = true
 rustix = { workspace = true, features = ["pty"] }
 rusqlite.workspace = true
