@@ -317,6 +317,26 @@ impl PreparedMessage {
     pub(crate) fn projected(message: &Message, block_selection: &ShownBlocks) -> Result<Self> {
         RowPacker::new()?.pack_projected_message(message, block_selection)
     }
+
+    /// Takes the item entries and packed content out, once the message is
+    /// written.
+    pub(crate) fn take_value(
+        &mut self,
+    ) -> (Vec<polylogue_model::read::IndexEntry>, PreparedContent) {
+        let hash = self.content.hash;
+        (
+            std::mem::take(&mut self.items),
+            std::mem::replace(
+                &mut self.content,
+                PreparedContent {
+                    hash,
+                    blocks: Vec::new(),
+                    texts: Vec::new(),
+                    data: Vec::new(),
+                },
+            ),
+        )
+    }
 }
 
 pub(crate) fn read_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {

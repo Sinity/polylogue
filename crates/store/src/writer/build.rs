@@ -83,6 +83,32 @@ const STREAM_READS: &[&str] = &[
     "tool_call_session",
 ];
 
+/// The build file's mark that a round made its indexes: a later round loads
+/// into them instead of making them again over every row.
+const INDEXES_MADE: &str = "build_indexes_made";
+
+/// The indexes a build's load concerns, as (name, statement, table): every
+/// one on a stored table but the one that makes an equal text group one row.
+const LOAD_INDEXES: &str =
+    "SELECT name,sql,tbl_name FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
+     AND name <> 'text_group_hash'
+     AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')";
+
+fn load_indexes(conn: &Connection) -> Result<Vec<(String, String, String)>> {
+    Ok(conn
+        .prepare(LOAD_INDEXES)?
+        .query_map([], |r| <(String, String, String)>::try_from(r))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// [`load_indexes`] as a new build file declares them, so that an index an
+/// earlier round dropped is made again from its declaration.
+fn declared_load_indexes() -> Result<Vec<(String, String, String)>> {
+    let declared = Connection::open_in_memory()?;
+    crate::schema::ensure_build_index(&declared)?;
+    load_indexes(&declared)
+}
+
 /// Messages composed from the stream per transaction, at session ends.
 const MESSAGES_PER_TRANSACTION: usize = 20_000;
 
@@ -387,6 +413,9 @@ pub struct BuildWorker {
     groups: u64,
     scratch: PathBuf,
     packer: crate::encoding::RowPacker,
+    /// How many bytes of prepared values a chain keeps (see
+    /// [`OpenChain::values`]).
+    value_memory: usize,
 }
 
 impl BuildWorker {
@@ -428,6 +457,7 @@ impl BuildWorker {
             groups: 0,
             scratch,
             packer: crate::encoding::RowPacker::new()?,
+            value_memory: memory / 4,
         })
     }
 
@@ -447,6 +477,8 @@ impl BuildWorker {
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
         Ok(OpenChain {
             steps: super::chain::ChainSteps::new(input, chain, length),
+            values: std::collections::HashMap::new(),
+            value_room: self.value_memory,
             changes,
             register: &self.register,
             tx,
@@ -481,6 +513,12 @@ impl BuildWorker {
 /// A chain being read into a build worker's scratch index.
 pub struct OpenChain<'w> {
     steps: super::chain::ChainSteps,
+    /// Each message reading's value as its last step prepared it, with the
+    /// layout it was written with, by message ID.
+    values: std::collections::HashMap<String, (Vec<u8>, Prepared)>,
+    /// Bytes of values the chain may still keep; a reading whose value did
+    /// not fit is read back.
+    value_room: usize,
     changes: crate::change_summary::ChangeSummary,
     register: &'w Connection,
     tx: Transaction<'w>,
@@ -513,7 +551,35 @@ impl super::chain::ChainSink for OpenChain<'_> {
             changes: &self.changes,
         };
         self.steps
-            .write(&self.tx, &w, step, &mut super::readings::Touched::default())
+            .write(&self.tx, &w, step, &mut super::readings::Touched::default())?;
+        // The values composition takes, kept from what the step prepared
+        // rather than read back from the scratch index.
+        for (row, prepared) in step.output.messages.iter().zip(&mut step.prepared.messages) {
+            let layout = crate::encoding::message_layout(&prepared.block_selection)?;
+            let block_count = prepared.block_selection.block_count;
+            let size = prepared.blocks.iter().map(Vec::len).sum::<usize>()
+                + prepared.data.iter().flatten().map(Vec::len).sum::<usize>()
+                + prepared.items.len() * std::mem::size_of::<polylogue_model::read::IndexEntry>();
+            let id = row.message.id.to_string();
+            if size > self.value_room {
+                continue;
+            }
+            self.value_room -= size;
+            let (items, content) = prepared.take_value();
+            self.values.insert(
+                id,
+                (
+                    layout,
+                    Prepared {
+                        block_count,
+                        items,
+                        words: super::shown::text_words(&row.message),
+                        content,
+                    },
+                ),
+            );
+        }
+        Ok(())
     }
 
     fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()> {
@@ -534,7 +600,13 @@ impl OpenChain<'_> {
     /// the scratch index.
     pub fn finish(mut self) -> Result<()> {
         self.steps.finish()?;
-        move_out(&self.tx, &mut self.out, &self.input, self.chain)?;
+        move_out(
+            &self.tx,
+            &mut self.out,
+            &self.input,
+            self.chain,
+            &mut self.values,
+        )?;
         self.tx.commit()?;
         Ok(())
     }
@@ -551,7 +623,13 @@ struct Out<'a> {
 
 /// Moves the chain's rows from the scratch index into the stream and
 /// clears it.
-fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) -> Result<()> {
+fn move_out(
+    tx: &Transaction<'_>,
+    out: &mut Out<'_>,
+    input: &str,
+    chain: i64,
+    values: &mut std::collections::HashMap<String, (Vec<u8>, Prepared)>,
+) -> Result<()> {
     let mut value = Vec::new();
     let (format, route): (String, String) = tx.query_row(
         "SELECT format,route FROM input_ref WHERE id=?1",
@@ -662,7 +740,7 @@ fn move_out(tx: &Transaction<'_>, out: &mut Out<'_>, input: &str, chain: i64) ->
             out.sorter.push(&key, &value)?;
         }
     }
-    compose_records(tx, out, input, &route, chain)?;
+    compose_records(tx, out, input, &route, chain, values)?;
     for (n, table) in out.tables.iter().enumerate() {
         let stream = TABLES + n as u8;
         let mut statement = tx.prepare_cached(&format!("SELECT * FROM \"{}\"", table.name))?;
@@ -704,6 +782,7 @@ fn compose_records(
     input: &str,
     route: &str,
     chain: i64,
+    values: &mut std::collections::HashMap<String, (Vec<u8>, Prepared)>,
 ) -> Result<()> {
     let mut value = Vec::new();
     let input_pk: i64 = tx.query_row("SELECT pk FROM input_ref WHERE id=?1", [input], |r| {
@@ -735,22 +814,39 @@ fn compose_records(
             let session: String = row.get(1)?;
             out.sorter
                 .push(&mark_key(MESSAGE_ID, &[&message, &session]), &[])?;
-            let (read, selection) =
-                super::readings::read_message(tx, input_pk, chain, &message)?
+            // The value a step prepared is the reading's when the reading is
+            // that step's statement: the same version and blocks. A reading
+            // joined from several statements is read back.
+            let prepared = values.remove(&message).filter(|(layout, prepared)| {
+                row.get_ref(10).is_ok_and(|hash| {
+                    hash.as_blob()
+                        .is_ok_and(|hash| hash == prepared.content.hash)
+                }) && row
+                    .get_ref(12)
+                    .is_ok_and(|stored| stored.as_blob().is_ok_and(|stored| stored == layout))
+            });
+            let reading = match prepared {
+                Some((_, prepared)) => prepared,
+                None => {
+                    let (read, selection) = super::readings::read_message(
+                        tx, input_pk, chain, &message,
+                    )?
                     .ok_or_else(|| StoreError::Invalid("a message reading has no body".into()))?;
-            let reading = super::shown::ReadingValue::of(read, selection, out.packer)?;
+                    Prepared::of(super::shown::ReadingValue::of(read, selection, out.packer)?)
+                }
+            };
             if reading.partial() {
                 // Its value joins other readings of its version: the
                 // session is composed from the index.
                 out.sorter.push(&mark_key(FALLBACK, &[&session]), &[])?;
                 continue;
             }
-            let items = serde_json::to_string(&reading.items)?;
+            let items = crate::items::entry_bytes::encode_message(&reading.items)?;
             let mut values: Vec<ValueRef<'_>> = (2..13)
                 .map(|n| row.get_ref(n))
                 .collect::<rusqlite::Result<_>>()?;
             values.push(ValueRef::Integer(reading.words));
-            values.push(ValueRef::Text(items.as_bytes()));
+            values.push(ValueRef::Blob(&items));
             for ((block, data), text) in reading
                 .content
                 .blocks
@@ -812,6 +908,32 @@ fn compose_records(
     Ok(())
 }
 
+/// What composing a message reading takes from its value: whether it holds
+/// every block of its version, its index entries, its words and its packed
+/// content (see [`super::shown::ReadingValue`]).
+struct Prepared {
+    block_count: u64,
+    items: Vec<polylogue_model::read::IndexEntry>,
+    words: i64,
+    content: crate::encoding::PreparedContent,
+}
+
+impl Prepared {
+    fn of(value: super::shown::ReadingValue) -> Self {
+        Self {
+            block_count: value.selection.block_count,
+            items: value.items,
+            words: value.words,
+            content: value.content,
+        }
+    }
+
+    /// Whether the reading holds only some of its version's blocks.
+    fn partial(&self) -> bool {
+        self.block_count != self.content.blocks.len() as u64
+    }
+}
+
 /// What decides which sessions a build composes from the index rather than
 /// from the stream: those whose readings reach other sessions' readings.
 #[derive(Default)]
@@ -859,6 +981,9 @@ pub(super) struct ComposeState {
     step: Step,
     /// Indexes to make once the stream is composed.
     indexes: Vec<String>,
+    /// The triggers that keep `row_count`, dropped while composition writes
+    /// and made again once every table is counted.
+    counting: Vec<String>,
     /// The composition stream, decoded ahead on a thread of its own.
     pieces: std::sync::mpsc::Receiver<Result<Piece>>,
     stream_done: bool,
@@ -879,6 +1004,8 @@ enum Step {
     Index {
         next: usize,
     },
+    /// Counts each counted table and makes its triggers again.
+    Count,
     Done,
 }
 
@@ -891,6 +1018,18 @@ impl ComposeState {
             mut fallback,
         } = loaded;
         let aliases = Arc::new(super::identity::Aliases::load(index)?);
+        // Composing runs no trigger per row: each counted table is counted
+        // once when composition ends.
+        let counting: Vec<(String, String)> = index
+            .prepare(
+                "SELECT name,sql FROM sqlite_schema
+                 WHERE type='trigger' AND sql LIKE '%UPDATE row_count %'",
+            )?
+            .query_map([], |r| <(String, String)>::try_from(r))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (name, _) in &counting {
+            index.execute(&format!("DROP TRIGGER \"{name}\""), [])?;
+        }
         // The sessions a copy name involves are decided across sessions.
         fallback.extend(
             index
@@ -904,6 +1043,7 @@ impl ComposeState {
         Ok(Self {
             step: Step::Links,
             indexes,
+            counting: counting.into_iter().map(|(_, sql)| sql).collect(),
             pieces: read_stream(merged, texts, fallback.clone(), Arc::clone(&aliases)),
             stream_done: false,
             fallback: fallback.into_iter().collect(),
@@ -1041,24 +1181,29 @@ impl Inner {
         let stage = std::mem::replace(&mut job.stage, Stage::Install);
         job.stage = match stage {
             Stage::Start(runs) => {
-                job.phase("merge texts");
+                job.phase(if runs.is_empty() {
+                    "indexes"
+                } else {
+                    "merge texts"
+                });
                 self.index.flush_prepared_statement_cache();
                 let upkept = Fallback::upkept(&self.index)?;
-                // Every index goes during the load but the one that makes
-                // an equal group one row (see `Load::shared_groups`).
-                let indexes: Vec<(String, String, String)> = self
-                    .index
-                    .prepare(
-                        "SELECT name,sql,tbl_name FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
-                         AND name <> 'text_group_hash'
-                         AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')",
-                    )?
-                    .query_map([], |r| <(String, String, String)>::try_from(r))?
-                    .collect::<rusqlite::Result<_>>()?;
-                for (name, ..) in &indexes {
-                    self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                let present = load_indexes(&self.index)?;
+                // The first round drops every index for its load but the
+                // one that makes an equal group one row (see
+                // `Load::shared_groups`). A later round, after one that made
+                // the indexes, loads into them; any round makes only the
+                // declared indexes the file lacks.
+                if !runs.is_empty() && crate::meta_get(&self.index, INDEXES_MADE)?.is_none() {
+                    for (name, ..) in &present {
+                        self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                    }
                 }
-                for (name, sql, table) in indexes {
+                let kept = load_indexes(&self.index)?;
+                for (name, sql, table) in declared_load_indexes()? {
+                    if kept.iter().any(|(held, ..)| *held == name) {
+                        continue;
+                    }
                     if SHOWN_TABLES.contains(&table.as_str())
                         && !STREAM_READS.contains(&name.as_str())
                     {
@@ -1067,7 +1212,20 @@ impl Inner {
                         job.indexes.push((name, sql));
                     }
                 }
-                Stage::Load(Box::new(self.start_load(runs, upkept)?))
+                if runs.is_empty() {
+                    // Nothing to load: no text is merged and no row moves.
+                    let runs_dir = Paths::of(&self.location.root).runs;
+                    Stage::Indexes(
+                        0,
+                        Box::new(Loaded {
+                            merged: Merger::open(Vec::new(), &runs_dir)?,
+                            texts: Merger::open(Vec::new(), &runs_dir)?,
+                            fallback: upkept.sessions,
+                        }),
+                    )
+                } else {
+                    Stage::Load(Box::new(self.start_load(runs, upkept)?))
+                }
             }
             Stage::Load(mut load) => {
                 if self.load_step(job, &mut load)? {
@@ -1116,6 +1274,8 @@ impl Inner {
                     Stage::Indexes(next + 1, loaded)
                 }
                 None => {
+                    crate::meta_set(&self.index, INDEXES_MADE, "1")?;
+                    crate::fault::check("index.build.composing", "")?;
                     job.phase("compose");
                     let indexes = std::mem::take(&mut job.after_stream);
                     Stage::Compose(Box::new(ComposeState::new(*loaded, indexes, &self.index)?))
@@ -1173,6 +1333,8 @@ impl Inner {
                 }
             },
             Stage::Install => {
+                self.index
+                    .execute("DELETE FROM meta WHERE key=?1", [INDEXES_MADE])?;
                 self.install_build()?;
                 self.search.ready();
                 self.commits
@@ -1561,8 +1723,30 @@ impl Inner {
                 state.step = if next < state.fallback.len() {
                     Step::Index { next }
                 } else {
-                    Step::Done
+                    Step::Count
                 };
+            }
+            Step::Count => {
+                let tx = self
+                    .index
+                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
+                let tables: Vec<String> = tx
+                    .prepare("SELECT name FROM row_count")?
+                    .query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?;
+                for table in tables {
+                    tx.execute(
+                        &format!(
+                            "UPDATE row_count SET n=(SELECT count(*) FROM \"{table}\") WHERE name=?1"
+                        ),
+                        [&table],
+                    )?;
+                }
+                for sql in std::mem::take(&mut state.counting) {
+                    tx.execute(&sql, [])?;
+                }
+                tx.commit()?;
+                state.step = Step::Done;
             }
             Step::Done => {}
         }
@@ -1929,11 +2113,12 @@ fn read_session(
                         "a message reading's text rows differ from its blocks".into(),
                     ));
                 }
+                let items = crate::items::entry_bytes::decode_message(blob(12)?, &message.id)?;
                 let value = ReadingValue {
                     message,
                     words: int(11)?,
                     selection,
-                    items: serde_json::from_str(text(12)?)?,
+                    items,
                     content,
                     text_ids: Some(ids),
                 };

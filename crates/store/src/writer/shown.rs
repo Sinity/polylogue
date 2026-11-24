@@ -95,12 +95,7 @@ impl ReadingValue {
             polylogue_model::read::MessagePlace::default(),
         );
         let content = packer.pack_content(&message.blocks, selection.source_version.0)?;
-        let words = message
-            .blocks
-            .iter()
-            .filter_map(Block::text)
-            .map(|t| t.split_whitespace().count() as i64)
-            .sum();
+        let words = text_words(&message);
         Ok(Self {
             message,
             words,
@@ -110,12 +105,16 @@ impl ReadingValue {
             text_ids: None,
         })
     }
+}
 
-    /// Whether the reading holds only some of its version's blocks: its
-    /// value then joins the blocks every reading of that version holds.
-    pub(super) fn partial(&self) -> bool {
-        self.selection.block_count != self.message.blocks.len() as u64
-    }
+/// The words of a message's text blocks.
+pub(super) fn text_words(message: &Message) -> i64 {
+    message
+        .blocks
+        .iter()
+        .filter_map(Block::text)
+        .map(|t| t.split_whitespace().count() as i64)
+        .sum()
 }
 
 /// Writes the shown rows of everything `touched` names; returns the number
@@ -211,7 +210,7 @@ struct Call {
 /// A tool result block: (session order, message ID, block index) places it.
 struct CallResult {
     place: (String, String, i64),
-    body: Vec<u8>,
+    outcome: Option<ResultOutcome>,
     at: Option<i64>,
 }
 
@@ -1060,6 +1059,12 @@ impl<'c> Work<'_, 'c> {
         value.selection.validate(m.blocks.len())?;
         let origin = m.session.origin().as_str().to_owned();
         let at = m.at.map(Timestamp::unix_ms);
+        let mut insert = self.tx().prepare_cached(
+            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
+                 blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
+                 other_type, data, ordinal)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+        )?;
         for (idx, ((block, body), data)) in m
             .blocks
             .iter()
@@ -1096,33 +1101,28 @@ impl<'c> Work<'_, 'c> {
                 Block::Other { type_name, .. } => Some(type_name.as_str()),
                 _ => None,
             };
-            self.tx()
-                .prepare_cached(
-                    "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
-                         blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                         other_type, data, ordinal)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
-                )?
-                .execute(params![
-                    message_pk,
-                    session_pk,
-                    idx as i64,
-                    kind,
-                    text_id,
-                    body,
-                    call_id,
-                    attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
-                    attachment.and_then(|a| a.media_type.as_deref()),
-                    attachment.and_then(|a| a.name.as_deref()),
-                    attachment.and_then(|a| a.size).and_then(|s| i64::try_from(s).ok()),
-                    attachment.and_then(|a| a.url.as_deref()),
-                    attachment.map(|a| name(&a.direction)),
-                    signature,
-                    i64::from(encrypted),
-                    other_type,
-                    data.as_deref(),
-                    value.selection.block_ordinals[idx].to_string(),
-                ])?;
+            insert.execute(params![
+                message_pk,
+                session_pk,
+                idx as i64,
+                kind,
+                text_id,
+                body,
+                call_id,
+                attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
+                attachment.and_then(|a| a.media_type.as_deref()),
+                attachment.and_then(|a| a.name.as_deref()),
+                attachment
+                    .and_then(|a| a.size)
+                    .and_then(|s| i64::try_from(s).ok()),
+                attachment.and_then(|a| a.url.as_deref()),
+                attachment.map(|a| name(&a.direction)),
+                signature,
+                i64::from(encrypted),
+                other_type,
+                data.as_deref(),
+                value.selection.block_ordinals[idx].to_string(),
+            ])?;
             let block_pk = self.tx().last_insert_rowid();
             if let Some(stream) = &mut self.stream {
                 // A session from a stream pairs its calls from its own
@@ -1138,7 +1138,7 @@ impl<'c> Work<'_, 'c> {
                             call.clone(),
                             CallResult {
                                 place,
-                                body: body.clone(),
+                                outcome: ResultOutcome::of(block),
                                 at,
                             },
                         );
@@ -1231,7 +1231,7 @@ impl<'c> Work<'_, 'c> {
             if !paired.contains_key(call_id) {
                 let result = results
                     .get(call_id)
-                    .map(|r| (r.place.1.clone(), r.place.2, r.body.as_slice(), r.at));
+                    .map(|r| (r.place.1.clone(), r.place.2, r.outcome.clone(), r.at));
                 let background = self.background_outcome(session, call_id)?;
                 let pairing = Pairing::of(result, background.as_ref());
                 paired.insert(call_id.clone(), (pairing, background.is_some()));
@@ -1282,9 +1282,12 @@ impl<'c> Work<'_, 'c> {
                 .optional()?;
             let background = self.background_outcome(&session, &call_id)?;
             let columns = Pairing::of(
-                result
-                    .as_ref()
-                    .map(|(message, idx, body, at)| (message.clone(), *idx, body.as_slice(), *at)),
+                result.map(|(message, idx, body, at)| {
+                    let outcome = unpack_block(&body)
+                        .ok()
+                        .and_then(|block| ResultOutcome::of(&block));
+                    (message, idx, outcome, at)
+                }),
                 background.as_ref(),
             );
             let same = self.tx().exists(
@@ -1912,28 +1915,22 @@ impl Pairing {
     }
 
     /// The pairing of a call with its first result, a (message ID, block
-    /// index, packed block, message time), and with the outcome learned
-    /// after it for a call run in the background, which wins.
+    /// index, what the result block says, message time), and with the
+    /// outcome learned after it for a call run in the background, which wins.
     fn of(
-        result: Option<(String, i64, &[u8], Option<i64>)>,
+        result: Option<(String, i64, Option<ResultOutcome>, Option<i64>)>,
         background: Option<&polylogue_model::BackgroundUpdate>,
     ) -> Self {
         let mut columns = Self::unpaired();
-        if let Some((message, idx, body, at)) = result {
+        if let Some((message, idx, outcome, at)) = result {
             columns.message = Some(message);
             columns.idx = Some(idx);
-            if let Ok(Block::ToolResult {
-                outcome,
-                reported_duration_ms,
-                ..
-            }) = unpack_block(body)
-            {
-                let (outcome, reason, exit) = outcome_columns(&outcome);
-                columns.outcome = outcome.to_owned();
-                columns.reason = reason;
-                columns.exit = exit;
+            if let Some(result) = outcome {
+                columns.outcome = result.outcome.to_owned();
+                columns.reason = result.reason;
+                columns.exit = result.exit;
                 columns.result_at = at;
-                columns.duration = reported_duration_ms.and_then(|ms| i64::try_from(ms).ok());
+                columns.duration = result.duration;
             }
         }
         if let Some(update) = background {
@@ -1947,6 +1944,35 @@ impl Pairing {
                 .and_then(|ms| i64::try_from(ms).ok());
         }
         columns
+    }
+}
+
+/// What a tool result block states of its call's outcome.
+#[derive(Clone)]
+struct ResultOutcome {
+    outcome: &'static str,
+    reason: Option<String>,
+    exit: Option<i64>,
+    duration: Option<i64>,
+}
+
+impl ResultOutcome {
+    fn of(block: &Block) -> Option<Self> {
+        let Block::ToolResult {
+            outcome,
+            reported_duration_ms,
+            ..
+        } = block
+        else {
+            return None;
+        };
+        let (outcome, reason, exit) = outcome_columns(outcome);
+        Some(Self {
+            outcome,
+            reason,
+            exit,
+            duration: reported_duration_ms.and_then(|ms| i64::try_from(ms).ok()),
+        })
     }
 }
 

@@ -918,10 +918,14 @@ fn rebuild(
     let links_moved = state
         .as_ref()
         .is_some_and(|(_, _, stored, _)| stored.as_slice() != links.as_slice());
+    // A unit's first entry, and each later one, which holds only its entry.
     let mut insert = conn.prepare_cached(
         "INSERT INTO session_item(session_pk, seq, unit, message_pk, event_pk, time_bound, entry,
                                   class, call_id, counts)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+    )?;
+    let mut insert_later = conn.prepare_cached(
+        "INSERT INTO session_item(session_pk, seq, entry, class, call_id) VALUES (?1, ?2, ?3, ?4, ?5)",
     )?;
     // The counts before the first unit written below: those stored on the
     // first unit replaced, or after every entry when units are only added.
@@ -966,17 +970,12 @@ fn rebuild(
                 classes[0].bits()
             ])?;
             for (entry, class) in current.iter().zip(&classes).skip(stored.len()) {
-                insert.execute(params![
+                insert_later.execute(params![
                     session_pk,
                     next,
-                    None::<Vec<u8>>,
-                    None::<i64>,
-                    None::<i64>,
-                    None::<i64>,
                     encode(entry, Some(&current[0]))?,
                     class.bits(),
                     entry.call_id,
-                    None::<Vec<u8>>
                 ])?;
                 next += 1;
             }
@@ -1007,19 +1006,28 @@ fn rebuild(
         let (message_pk, event_pk, time_bound) = unit.columns();
         let before = encode_counts(&running);
         for (offset, (entry, class)) in entries.iter().zip(entry_classes(entries)).enumerate() {
-            let first = offset == 0;
-            insert.execute(params![
-                session_pk,
-                next,
-                first.then_some(identity.as_slice()),
-                message_pk.filter(|_| first),
-                event_pk.filter(|_| first),
-                time_bound.filter(|_| first),
-                encode(entry, (!first).then_some(&entries[0]))?,
-                class.bits(),
-                entry.call_id,
-                first.then_some(before.as_slice())
-            ])?;
+            if offset == 0 {
+                insert.execute(params![
+                    session_pk,
+                    next,
+                    identity,
+                    message_pk,
+                    event_pk,
+                    time_bound,
+                    encode(entry, None)?,
+                    class.bits(),
+                    entry.call_id,
+                    before
+                ])?;
+            } else {
+                insert_later.execute(params![
+                    session_pk,
+                    next,
+                    encode(entry, Some(&entries[0]))?,
+                    class.bits(),
+                    entry.call_id,
+                ])?;
+            }
             running.add(entry, class);
             next += 1;
         }
