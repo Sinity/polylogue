@@ -119,7 +119,7 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
     let mut config = original.config.clone();
     config.reads_sources = false;
     fault::clear();
-    fault::arm("write.replay_rows", "", Action::Hold, 0, 1);
+    fault::arm("index.build.prepare", "", Action::Hold, 0, 1);
     let mut runtime = crate::daemon::service::start(
         crate::config::Config::for_test(&config, &root),
         config.clone(),

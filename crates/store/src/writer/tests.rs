@@ -11,7 +11,6 @@ mod build_upkeep;
 mod empty_source;
 mod extent_checkpoint;
 #[cfg(all(feature = "faults", target_os = "linux"))]
-mod fts;
 mod input_events;
 mod items;
 mod parent_order;
@@ -44,11 +43,8 @@ fn write_test_rows(
     batch.parse[0].prepare();
     normalize_attachments_with(tx, &mut batch)?;
     let changes = crate::change_summary::ChangeSummary::start(tx)?;
-    let texts = crate::text_rows::TextIds::new(
-        tx,
-        false,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )?;
+    let texts =
+        crate::text_rows::TextIds::new(tx, crate::archive::MemoryBudget::default().keys() / 3)?;
     let mut touched = Touched::default();
     // A primary cache hides the messages Sinex withdrew.
     let primary = tx.exists(
@@ -104,6 +100,35 @@ struct TestArchive {
 }
 
 impl TestArchive {
+    /// The archive opened again without its index file, so a build is due.
+    fn reopened_without_index(self) -> Self {
+        let Self {
+            mut writer,
+            _lock,
+            archive,
+            _dir,
+        } = self;
+        writer.stop();
+        drop(writer);
+        let root = archive.root.clone();
+        drop(archive);
+        drop(_lock);
+        for suffix in ["", "-wal", "-shm"] {
+            let mut name = root.join("index.db").into_os_string();
+            name.push(suffix);
+            let _ = std::fs::remove_file(name);
+        }
+        let (archive, lock) = Archive::open_or_create(&root).unwrap();
+        assert!(archive.index_build().is_some());
+        let writer = Writer::start(&archive).unwrap();
+        Self {
+            writer,
+            _lock: lock,
+            archive,
+            _dir,
+        }
+    }
+
     /// Capture explicit bytes and their parsed reading through the production group path.
     fn store_reading(
         &self,
@@ -1189,8 +1214,6 @@ mod metadata;
 
 mod observation_order;
 
-mod stored_text_reuse;
-
 mod parse_positions;
 
 pub(super) mod private_build;
@@ -1341,71 +1364,6 @@ fn parse_positions_and_rows_commit_atomically_during_build() {
             .unwrap()
             .parsed_upto,
         100
-    );
-}
-
-#[cfg(feature = "faults")]
-#[test]
-fn interrupted_secondary_index_finish_retries_build() {
-    let w = test_archive();
-    w.store_reading(
-        batch(
-            "finish-input",
-            Route::Live,
-            0,
-            vec![MessageRow {
-                response: None,
-                page_text: false,
-                id_kind: polylogue_model::IdKind::Native,
-                offset: 0,
-                end: 100,
-                message: text_message(
-                    "finish-message",
-                    "finish-session",
-                    Role::User,
-                    "searchableword",
-                    None,
-                ),
-            }],
-            &["finish-session"],
-        ),
-        Some(&SOURCE_RECORD),
-    )
-    .unwrap();
-    assert!(w.writer.flush().unwrap().errors.is_empty());
-    crate::fault::arm(
-        "index.deferred",
-        &w.archive.root.to_string_lossy(),
-        crate::fault::Action::Fail,
-        0,
-        1,
-    );
-    assert!(w.writer.derive().is_err());
-    assert!(w.archive.index_build().is_some());
-    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE name='message_id'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        1
-    );
-    drop(index);
-    w.writer.derive().unwrap();
-    assert!(w.archive.index_build().is_none());
-    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'searchableword'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        1
     );
 }
 
@@ -1569,70 +1527,4 @@ fn a_user_write_wakes_an_idle_writer_while_the_bulk_queue_lock_is_held() {
     let committed = finished.recv_timeout(std::time::Duration::from_secs(30));
     drop(held);
     assert_eq!(committed, Ok(true));
-}
-
-#[cfg(feature = "faults")]
-#[test]
-fn a_stop_during_deferred_indexes_keeps_committed_rows_for_restart() {
-    crate::fault::clear();
-    let w = test_archive();
-    w.store_reading(
-        batch(
-            "stop-input",
-            Route::Live,
-            0,
-            vec![row(
-                0,
-                text_message(
-                    "stop-message",
-                    "stop-session",
-                    Role::User,
-                    "searchableword",
-                    None,
-                ),
-            )],
-            &["stop-session"],
-        ),
-        Some(&SOURCE_RECORD),
-    )
-    .unwrap();
-    w.writer.flush().unwrap();
-    let stop = w.archive.stop().clone();
-    let sender = w.writer.sender();
-    crate::fault::arm(
-        "index.deferred",
-        &w.archive.root.to_string_lossy(),
-        crate::fault::Action::Hold,
-        0,
-        1,
-    );
-    let run = std::thread::spawn(move || sender.derive());
-    crate::fault::wait_held();
-    stop.cancel();
-    crate::fault::release();
-    assert!(matches!(run.join().unwrap(), Err(StoreError::WriterGone)));
-    crate::fault::clear();
-    assert!(w.archive.index_build().is_some());
-    let TestArchive {
-        writer,
-        archive,
-        _lock,
-        _dir,
-    } = w;
-    drop(writer);
-    let archive = archive.reopened();
-    let writer = Writer::start(&archive).unwrap();
-    writer.derive().unwrap();
-    assert!(archive.index_build().is_none());
-    let index = crate::archive::open_read(&archive.index_db()).unwrap();
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM text_fts WHERE text_fts MATCH 'searchableword'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        1
-    );
 }

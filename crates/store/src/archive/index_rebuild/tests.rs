@@ -135,7 +135,10 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
     );
 
     // The build ends: the old index goes, the report stays.
-    crate::Writer::start(&archive).unwrap().derive().unwrap();
+    crate::Writer::start(&archive)
+        .unwrap()
+        .build(Vec::new())
+        .unwrap();
     assert_eq!(build_files(dir.path()), Vec::<String>::new(), "{change}");
     assert_eq!(
         rebuild_status(&archive),

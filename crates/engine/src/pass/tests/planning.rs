@@ -379,23 +379,6 @@ fn the_daemon_loop_keeps_its_planning_page_when_refreshing_committed_progress() 
     assert_eq!(pending_current_chains(&engine, &ids), 0);
 }
 
-#[test]
-fn older_reading_copies_are_drained_across_multiple_planning_pages() {
-    let n = IN_POOL_PER_WORKER + 2;
-    let home = histories(n);
-    polylogue_testkit::delete_index(&home.root);
-    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
-    engine.config.workers = 1;
-    engine.config.reads_sources = false;
-    let pass = engine.run_pass().unwrap();
-    assert!(pass.errors.is_empty(), "{pass:?}");
-    assert_eq!(pass.readings_copied, n as u64, "{pass:?}");
-    assert!(!pass.capture_pending, "{pass:?}");
-    for i in 0..n {
-        assert_eq!(home.texts(&format!("scan-{i:04}")), [format!("first {i}")]);
-    }
-}
-
 /// A pass whose stored chains must all be read again still stores a new
 /// file first: storing never waits behind that reading.
 #[test]

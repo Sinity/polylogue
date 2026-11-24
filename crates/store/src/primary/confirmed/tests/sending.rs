@@ -72,12 +72,8 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
     step.prepare();
     assert!(unsent(&index, first.reading().unwrap(), &first));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[live(1, "first", first.clone()), complete_at(1)],
     )
@@ -92,7 +88,6 @@ fn confirmed_event_is_not_sent_again_in_any_state() {
         apply(
             &crate::text_rows::TextIds::new(
                 &index,
-                false,
                 crate::archive::MemoryBudget::default().keys() / 3,
             )
             .unwrap(),
@@ -134,12 +129,8 @@ fn covered_absent_event_is_not_sent_but_unread_tail_is() {
         stopped_attempt: None,
     };
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[live(1, "covered", progress), complete_at(1)],
     )

@@ -43,12 +43,8 @@ fn complete_positions_rebuild_container_memberships_with_their_original_observat
     index.pragma_update(None, "foreign_keys", true).unwrap();
     let _archive = crate::Archive::on_sinex(dir.path(), &dir.path().join("bytes"));
     apply(
-        &crate::text_rows::TextIds::new(
-            &index,
-            false,
-            crate::archive::MemoryBudget::default().keys() / 3,
-        )
-        .unwrap(),
+        &crate::text_rows::TextIds::new(&index, crate::archive::MemoryBudget::default().keys() / 3)
+            .unwrap(),
         &mut index,
         &[
             input(1, "container"),
@@ -66,7 +62,6 @@ fn complete_positions_rebuild_container_memberships_with_their_original_observat
         apply(
             &crate::text_rows::TextIds::new(
                 &index,
-                false,
                 crate::archive::MemoryBudget::default().keys() / 3,
             )
             .unwrap(),

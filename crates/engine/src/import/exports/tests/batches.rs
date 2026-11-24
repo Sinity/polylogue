@@ -17,12 +17,6 @@ fn equal_conversations() -> Vec<u8> {
     serde_json::to_vec_pretty(&values).unwrap()
 }
 
-fn write_counter(w: &ClaudeHome) -> i64 {
-    w.count(
-        "SELECT coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='write_counter'), 0) AS n",
-    )
-}
-
 fn all_texts(w: &ClaudeHome) -> Vec<Vec<String>> {
     (0..CONVERSATIONS)
         .map(|i| texts(w, &format!("chatgpt:c{i:02}")))
@@ -30,17 +24,18 @@ fn all_texts(w: &ClaudeHome) -> Vec<Vec<String>> {
 }
 
 /// Imports `bytes` with `chunk`; returns the home and the index transactions
-/// the import committed.
+/// that committed its sessions: each such transaction gives the sessions it
+/// wrote its change counter (the search and derive threads' own
+/// transactions do not).
 fn import(bytes: &[u8], chunk: u64) -> (ClaudeHome, i64) {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     fs::write(&path, bytes).unwrap();
     let (mut e, _lock) = engine(&w, chunk);
-    let before = write_counter(&w);
     let report = e.import(std::slice::from_ref(&path)).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
-    let committed = write_counter(&w) - before;
+    let committed = w.count("SELECT count(DISTINCT changed) AS n FROM session");
     drop(e);
     (w, committed)
 }

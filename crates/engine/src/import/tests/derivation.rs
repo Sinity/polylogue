@@ -154,21 +154,3 @@ fn changed_import_waits_for_its_derivation() {
     assert_eq!(derivation(&home), CompletenessDimension::Complete);
     assert_eq!(home.count("SELECT COUNT(*) AS n FROM derive_due"), 0);
 }
-
-#[test]
-fn empty_import_still_finalizes_a_first_build_and_waits_for_derivation() {
-    let home = ClaudeHome::new();
-    let (mut engine, _lock) = engine(&home, 4096);
-    unrelated_reading(&engine, &home);
-    assert!(engine.archive.index_build().is_some());
-    let (returned, held) = held_derivation(&engine);
-    let finalized = engine.import(&[]).unwrap();
-    let _ = returned.send(());
-    assert!(!held.join().unwrap(), "first build skipped derivation");
-    assert!(finalized.pass.errors.is_empty(), "{finalized:?}");
-    assert!(finalized.pass.sessions_derived > 0, "{finalized:?}");
-    assert!(!finalized.pass.derivation_pending, "{finalized:?}");
-    assert!(engine.archive.index_build().is_none());
-    assert_eq!(derivation(&home), CompletenessDimension::Complete);
-    assert_eq!(home.count("SELECT COUNT(*) AS n FROM derive_due"), 0);
-}

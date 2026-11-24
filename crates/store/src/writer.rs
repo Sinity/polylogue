@@ -36,6 +36,7 @@ pub use dispatch::{DispatchPause, DispatchPhase};
 mod attachments;
 mod authored;
 mod batch;
+pub mod build;
 mod bytes;
 mod chain;
 mod compose;
@@ -101,6 +102,11 @@ enum Msg {
     StoreBlob(
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
+    ),
+    /// Load a build's runs, compose, index and install the build file.
+    Build(
+        Vec<std::path::PathBuf>,
+        SyncSender<Result<Vec<build::BuildPhase>>>,
     ),
     ReplaceChain(InputKey, i64, u64, Box<ChainParse>, SyncSender<Result<u64>>),
     /// Record one older chain's reading from a newer chain of the same
@@ -358,26 +364,6 @@ const QUEUE: usize = 256;
 /// keep parsing while the writer commits, instead of the two alternating.
 const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
-/// Records how many stored chains a build has read, from the counts the
-/// writer keeps with each change ([`crate::chain_progress`]).
-fn record_build_progress(archive: &Archive, index: &Connection) -> Result<()> {
-    if !archive.index_build.building() {
-        return Ok(());
-    }
-    let (mut chains, mut read) = (0, 0);
-    for (_, _, state, n) in crate::chain_progress::counts(index)? {
-        chains += n;
-        if matches!(
-            state,
-            crate::chain_progress::State::Current | crate::chain_progress::State::NoParser
-        ) {
-            read += n;
-        }
-    }
-    archive.index_build.record_progress(chains, read);
-    Ok(())
-}
-
 /// The writer's index connection: the private build file while a build runs,
 /// otherwise `index.db`, with a standalone archive's register attached.
 fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
@@ -447,9 +433,7 @@ impl Writer {
             conn
         };
         crate::chain_progress::open(&index, !archive.is_primary())?;
-        record_build_progress(archive, &index)?;
-        let texts =
-            crate::text_rows::TextIds::new(&index, building, archive.memory_budget().keys() / 3)?;
+        let texts = crate::text_rows::TextIds::new(&index, archive.memory_budget().keys() / 3)?;
         let segment = if sinex.is_none() {
             Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
         } else {
@@ -477,7 +461,6 @@ impl Writer {
             dispatch: dispatch.clone(),
             stop: stop.clone(),
             commits: commits.clone(),
-            at_build_end: building,
             segment,
             archive: archive_conn,
             index,
@@ -680,6 +663,13 @@ impl WriterSender {
             .map_err(|_| StoreError::WriterGone)?
     }
 
+    /// Ends a standalone build: loads `runs` ([`build::BuildRun`]) into the
+    /// build file, composes every session, writes the indexes and search
+    /// entries and installs the file. Returns the phases it took.
+    pub fn build(&self, runs: Vec<std::path::PathBuf>) -> Result<Vec<build::BuildPhase>> {
+        self.0.ask(|reply| Msg::Build(runs, reply))
+    }
+
     /// Queue a chain without waiting for its transaction to commit.
     pub fn queue_chain(
         &self,
@@ -831,9 +821,6 @@ struct Inner {
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::DispatchPauses,
     commits: crate::completion::CommitEvents,
-    /// The index being written is a first build's, whose search entries and
-    /// derived values are written when it ends.
-    at_build_end: bool,
     segment: Option<hashed_blobs::SegmentWriter>,
     archive: Connection,
     index: Connection,
@@ -860,6 +847,12 @@ impl Drop for Inner {
 }
 
 impl Inner {
+    /// A standalone build is in progress: the build file holds no rows
+    /// until the batch build loads them ([`build`]).
+    fn building(&self) -> bool {
+        self.sinex.is_none() && self.location.index_build.building()
+    }
+
     /// Writes every waiting user request, each answered once committed.
     fn serve_users(&mut self) {
         // New arrivals wake the next turn; this turn finishes its existing
@@ -984,6 +977,7 @@ impl Inner {
         let mut restorations = Vec::new();
         let mut annotation_restorations = Vec::new();
         let mut replacements = Vec::new();
+        let mut builds = Vec::new();
         let mut blobs = Vec::new();
         loop {
             let first = match rx.recv() {
@@ -1035,6 +1029,10 @@ impl Inner {
                     }
                     Msg::ReplaceChain(input, chain, length, reading, reply) => {
                         replacements.push((input, chain, length, *reading, reply));
+                        false
+                    }
+                    Msg::Build(runs, reply) => {
+                        builds.push((runs, reply));
                         false
                     }
                     Msg::DenyPrimaryReads(reply) => {
@@ -1177,6 +1175,10 @@ impl Inner {
                 }));
                 self.serve_users();
             }
+            for (runs, reply) in builds.drain(..) {
+                let built = self.until_stopped(|inner| inner.build(runs));
+                let _ = reply.send(built.and_then(|built| built.ok_or(StoreError::Stopped)));
+            }
             for (blob, reply) in blobs.drain(..) {
                 let (new_blob, file) = *blob;
                 let _ = reply.send(self.store_blob(new_blob, file));
@@ -1190,13 +1192,12 @@ impl Inner {
             self.serve_users();
 
             for reply in derives.drain(..) {
-                // A first build's indexes exist before anything is derived
-                // from its rows.
-                match self.finish_build() {
-                    Ok(()) => self.request_derive(derive_thread::Waiting::Derive(reply)),
-                    Err(e) => {
-                        let _ = reply.send(Err(StoreError::Invalid(format!("derive: {e}"))));
-                    }
+                // A build in progress holds no rows to derive from until it
+                // is installed.
+                if self.building() {
+                    let _ = reply.send(Ok(0));
+                } else {
+                    self.request_derive(derive_thread::Waiting::Derive(reply));
                 }
             }
             for (staged, reply) in assets.drain(..) {
@@ -1214,7 +1215,7 @@ impl Inner {
                 // A caller with no new reading must not wait for an unrelated
                 // computation, including the work preparing that computation.
                 let _ = reply.send(pending);
-                if requested && !self.at_build_end {
+                if requested && !self.building() {
                     self.request_derive(derive_thread::Waiting::Nobody);
                 }
             }
@@ -1278,9 +1279,6 @@ impl Inner {
             if let Err(error) = self.refresh_chain_progress() {
                 self.report.errors.push(format!("chain progress: {error}"));
             }
-            if let Err(error) = record_build_progress(&self.location, &self.index) {
-                self.report.errors.push(format!("build progress: {error}"));
-            }
             if let Some(reply) = primary_finish.take() {
                 let _ = reply.send(self.finish_primary_rebuild());
             }
@@ -1298,10 +1296,9 @@ impl Inner {
             }
             for (reply, derive) in flushes.drain(..) {
                 let report = std::mem::take(&mut self.report);
-                // Whatever a flush reports written is also derived, except in
-                // a first build, which a flush in the middle of a pass (each
-                // import item, each run of the parse pool) must not end.
-                if derive && !self.at_build_end {
+                // Whatever a flush reports written is also derived, once the
+                // index is out of a build.
+                if derive && !self.building() {
                     self.request_derive(derive_thread::Waiting::Flush(reply, Box::new(report)));
                 } else {
                     let _ = reply.send(Ok(report));
@@ -1326,13 +1323,6 @@ impl Inner {
         });
         if let Err(error) = closed {
             eprintln!("polylogue: writer: chain progress: {error}");
-        }
-        // A stop during a build keeps what it committed for the next start.
-        if self.sinex.is_none()
-            && self.location.index_build.building()
-            && let Err(error) = crate::archive::index_build::keep_progress(&self.location)
-        {
-            eprintln!("polylogue: writer: keep the index build: {error}");
         }
     }
 
@@ -1484,9 +1474,7 @@ impl Inner {
                     return Err(StoreError::WriterGone);
                 }
                 inner.project_alternate_text()?;
-                if !inner.at_build_end {
-                    crate::text_rows::index_pending(&inner.index, || ())?;
-                }
+                crate::text_rows::index_pending(&inner.index, || ())?;
                 crate::derive::mark_moved_versions(&mut inner.index)
             })
             .and_then(|prepared| prepared.ok_or(StoreError::WriterGone));
@@ -1543,26 +1531,6 @@ impl Inner {
             return Ok(());
         }
         crate::archive::index_rebuild::remove_when_built(&self.index, &self.location.index_db())
-    }
-
-    /// Ends a build once every deferred index has committed: the build file
-    /// is synced and installed as `index.db` ([`crate::archive::index_build`]),
-    /// and the writer continues on it. A stop or failure before the install
-    /// leaves the build to resume at the next start.
-    fn finish_build(&mut self) -> Result<()> {
-        if !self.at_build_end || self.stop.is_cancelled() {
-            return Ok(());
-        }
-        let finished = self.until_stopped(Inner::build_deferred);
-        if !matches!(finished, Ok(Some(()))) {
-            return finished.map(drop);
-        }
-        self.install_build()?;
-        self.at_build_end = false;
-        self.search.ready();
-        self.commits
-            .committed(crate::completion::Committed::CONTENT);
-        Ok(())
     }
 
     /// Closes the writer's connection to the build file, installs it and
@@ -1871,6 +1839,9 @@ impl Inner {
         }
 
         let indexed = batches.collect::<Vec<_>>();
+        // A standalone build reads the record at the position it started
+        // from; bytes stored meanwhile are read by upkeep once it is installed.
+        let reads = !self.building();
         let text_transaction = self.texts.transaction();
         let itx = self
             .index
@@ -1881,7 +1852,7 @@ impl Inner {
         let mut touched = readings::Touched::default();
         let mut batches = 0u64;
         for (b, chain) in indexed.iter().zip(chains) {
-            if let Some(chain) = chain {
+            if let Some(chain) = chain.filter(|_| reads) {
                 for p in &b.parse {
                     let source_commit = crate::source::Source::reading_commit(
                         &itx,
@@ -1909,14 +1880,7 @@ impl Inner {
             }
             batches += 1;
         }
-        let (messages, read) = rows::finish(
-            &itx,
-            touched,
-            &changes,
-            &self.texts,
-            self.at_build_end,
-            counter,
-        )?;
+        let (messages, read) = rows::finish(&itx, touched, &changes, &self.texts, false, counter)?;
         self.report.item_units_read += read;
         let source_changed = if !primary {
             let changed = crate::chain_progress::recorded(&self.archive)?;

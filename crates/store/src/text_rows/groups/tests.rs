@@ -102,12 +102,7 @@ fn prepared_texts_survive_a_staged_step_and_refuse_a_missing_group() {
 #[test]
 fn the_writer_stores_a_group_once_and_removes_it_with_its_last_text() {
     let mut conn = index();
-    let ids = TextIds::new(
-        &conn,
-        true,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )
-    .unwrap();
+    let ids = TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3).unwrap();
     let prepared = PreparedTexts::pack(["kept", "removed", "never new"]).unwrap();
     let transaction = ids.transaction();
     let tx = conn.transaction().unwrap();
@@ -124,11 +119,11 @@ fn the_writer_stores_a_group_once_and_removes_it_with_its_last_text() {
     assert_eq!(read(&conn, removed).unwrap(), "removed");
 
     remove(&conn, removed, 0).unwrap();
-    ids.removed(&hash("removed"), removed).unwrap();
+    ids.removed(removed);
     assert_eq!(count(&conn, "text_group"), 1);
     assert_eq!(read(&conn, kept).unwrap(), "kept");
     remove(&conn, kept, 0).unwrap();
-    ids.removed(&hash("kept"), kept).unwrap();
+    ids.removed(kept);
     assert_eq!(count(&conn, "text_group"), 0);
     assert_eq!(count(&conn, "text"), 0);
 }
@@ -136,12 +131,7 @@ fn the_writer_stores_a_group_once_and_removes_it_with_its_last_text() {
 #[test]
 fn a_known_text_adds_no_group_and_a_rolled_back_group_is_stored_again() {
     let mut conn = index();
-    let ids = TextIds::new(
-        &conn,
-        true,
-        crate::archive::MemoryBudget::default().keys() / 3,
-    )
-    .unwrap();
+    let ids = TextIds::new(&conn, crate::archive::MemoryBudget::default().keys() / 3).unwrap();
     let first = PreparedTexts::pack(["shared"]).unwrap();
     let id = ids
         .resolve(&conn, &hash("shared"), first.get(&hash("shared")), None)
