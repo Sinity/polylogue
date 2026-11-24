@@ -74,8 +74,9 @@ fn frames(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
         })
         .collect()
 }
-/// The stream of a read as the daemon's socket delivers it: one begin, one
-/// record, one completion, then the line's answer.
+/// The stream of a read as the daemon's socket delivers it: the transfer's
+/// begin, its one record and its completion (docs/interfaces.md, finite
+/// transfers), then the line's step report and answer.
 fn streamed(d: &test_daemon::TestDaemon, id: &str) -> (ReadBegin, ReadRecord, ReadComplete) {
     let request = crate::client::request("rows", read(id).arguments, format!("stream-{id}"));
     let mut frames = Vec::new();
@@ -90,13 +91,12 @@ fn streamed(d: &test_daemon::TestDaemon, id: &str) -> (ReadBegin, ReadRecord, Re
         },
     )
     .unwrap();
-    assert_eq!(
-        frames
-            .iter()
-            .map(|(event, _): &(String, serde_json::Value)| event.as_str())
-            .collect::<Vec<_>>(),
-        ["begin", "record", "complete", "answer"]
-    );
+    let events: Vec<&str> = frames
+        .iter()
+        .map(|(event, _): &(String, serde_json::Value)| event.as_str())
+        .collect();
+    assert_eq!(events[..3], ["begin", "record", "complete"]);
+    assert_eq!(events[3..], ["steps", "answer"]);
     (
         serde_json::from_value(frames[0].1.clone()).unwrap(),
         serde_json::from_value(frames[1].1.clone()).unwrap(),
