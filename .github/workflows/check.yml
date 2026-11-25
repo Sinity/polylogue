@@ -50,7 +50,7 @@ jobs:
         with:
           node-version: '22'
       - name: Shells for completion tests
-        run: sudo apt-get install --yes zip zsh fish
+        run: sudo apt-get install --yes zip zsh fish gdb && sudo sysctl kernel.yama.ptrace_scope=0
       - name: Rust toolchain from rust-toolchain.toml
         run: rustup show active-toolchain || rustup toolchain install
       - uses: taiki-e/install-action@nextest

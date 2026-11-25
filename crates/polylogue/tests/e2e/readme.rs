@@ -81,8 +81,98 @@ impl Terminal {
     }
 }
 
+/// Diagnostic: after 85 s print every descendant process's thread stacks.
+fn watchdog(step: std::sync::Arc<std::sync::Mutex<String>>) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(85));
+        let me = std::process::id();
+        let mut parents = std::collections::HashMap::new();
+        for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                continue;
+            };
+            let after = stat.rsplit_once(") ").unwrap().1;
+            let ppid: u32 = after.split_whitespace().nth(1).unwrap().parse().unwrap();
+            parents.insert(pid, ppid);
+        }
+        let descends = |mut pid: u32| loop {
+            match parents.get(&pid) {
+                Some(&p) if p == me => return true,
+                Some(&p) if p > 1 => pid = p,
+                _ => return false,
+            }
+        };
+        eprintln!("DIAG step: {}", step.lock().unwrap());
+        for (&pid, _) in parents.iter().filter(|(pid, _)| descends(**pid)) {
+            let cmd = std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
+                .unwrap_or_default()
+                .replace('\0', " ");
+            eprintln!("DIAG process {pid}: {cmd}");
+            if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+                for task in tasks.flatten() {
+                    let t = task.path();
+                    let comm = std::fs::read_to_string(t.join("comm")).unwrap_or_default();
+                    let wchan = std::fs::read_to_string(t.join("wchan")).unwrap_or_default();
+                    let stat = std::fs::read_to_string(t.join("stat")).unwrap_or_default();
+                    eprintln!(
+                        "DIAG   task {:?} {} wchan={} stat={}",
+                        task.file_name(),
+                        comm.trim(),
+                        wchan,
+                        stat.trim()
+                    );
+                }
+            }
+            if cmd.contains("polylogue") {
+                let out = std::process::Command::new("sudo")
+                    .args([
+                        "-n",
+                        "gdb",
+                        "-p",
+                        &pid.to_string(),
+                        "-batch",
+                        "-ex",
+                        "thread apply all bt 40",
+                    ])
+                    .output();
+                match out {
+                    Ok(out) => eprintln!(
+                        "DIAG gdb {pid}:\n{}\n{}",
+                        String::from_utf8_lossy(&out.stdout),
+                        String::from_utf8_lossy(&out.stderr)
+                    ),
+                    Err(e) => eprintln!("DIAG gdb failed: {e}"),
+                }
+            }
+        }
+        eprintln!("DIAG done");
+    });
+}
+
 #[test]
 fn readme_examples_run_against_morrow() {
+    readme_once();
+}
+
+#[test]
+fn readme_examples_run_against_morrow_copy_a() {
+    readme_once();
+}
+
+#[test]
+fn readme_examples_run_against_morrow_copy_b() {
+    readme_once();
+}
+
+fn readme_once() {
+    let step = std::sync::Arc::new(std::sync::Mutex::new(String::from("start")));
+    watchdog(std::sync::Arc::clone(&step));
+    let mark = |name: &str| {
+        *step.lock().unwrap() = format!("{name} at {:?}", std::time::SystemTime::now());
+    };
     assert_eq!(
         readme_examples(),
         [
@@ -103,6 +193,7 @@ fn readme_examples_run_against_morrow() {
     );
     let mut terminal = Terminal::new();
     let examples = readme_examples();
+    mark("demo");
     let demo = terminal.run(&operator, &examples[0]);
     assert!(demo.starts_with("# Morrow tour\n"), "{demo}");
     let directory = temp.path().join("morrow");
@@ -113,12 +204,15 @@ fn readme_examples_run_against_morrow() {
         &directory.join("config"),
     );
     // The daemon line: the daemon serves the archive the demo built.
+    mark("daemon");
     let _daemon = super::cli::start_daemon(&env);
+    mark("wait_status");
     let status = super::cli::wait_status(&env, |_| true);
     assert_eq!(status["store"]["sessions"], 8);
 
     // The orientation screen counts what FACTS.md lists: eight sessions and
     // 12 + 18 + 6 + 11 + 13 + 10 + (6 + 2) + 4 = 82 messages.
+    mark("orientation");
     let orientation = terminal.run(&env, &examples[2]);
     assert!(
         orientation.contains("ARCHIVE    8 sessions   82 messages"),
@@ -127,6 +221,7 @@ fn readme_examples_run_against_morrow() {
 
     // Only session #5 is in the repository the morrow remote names and
     // started on or after 2026-10-05 (expected.json examples 5 and 26).
+    mark("recent");
     let recent = terminal.run(&env, &examples[3]);
     assert_eq!(
         listed_ids(&recent),
@@ -137,6 +232,7 @@ fn readme_examples_run_against_morrow() {
     // The word "chrono" occurs in the sessions of README wording (#8), Date
     // parsing (#2 and #4) and Date format edge cases (#7); the strongest
     // match is the README question that is only about chrono.
+    mark("hits");
     let hits = terminal.run(&env, &examples[4]);
     let mut ids = listed_ids(&hits);
     assert_eq!(
@@ -155,6 +251,7 @@ fn readme_examples_run_against_morrow() {
     );
 
     // Row 1 is that README session, read in full.
+    mark("read");
     let read = terminal.run(&env, &examples[5]);
     assert!(read.starts_with("README wording\n"), "{read}");
     assert!(
@@ -165,7 +262,9 @@ fn readme_examples_run_against_morrow() {
     );
 
     // The note lands on row 1 as the operator's decision.
+    mark("note");
     terminal.run(&env, &examples[6]);
+    mark("annotations");
     let notes = super::cli::cli(&env, &["--json", "annotations"]);
     // Beside the decision the tour recorded on session #2.
     let mut written: Vec<_> = super::cli::query_rows(&notes)["rows"]
