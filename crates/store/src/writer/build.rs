@@ -2403,7 +2403,7 @@ impl Inner {
                 state.stream_done = true;
                 break;
             };
-            pool.append(&tx, &composed)?;
+            pool.append(&tx, composed.rows)?;
             gate.release(composed.bytes);
             state.deferred.extend(composed.late);
             state.assembled += composed.sessions;

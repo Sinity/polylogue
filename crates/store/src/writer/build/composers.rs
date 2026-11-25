@@ -500,36 +500,33 @@ impl Pool {
 
     /// Appends a composed batch to the build file, each key carried past
     /// the keys its table already holds.
-    pub(super) fn append(&mut self, tx: &Transaction<'_>, composed: &Composed) -> Result<()> {
+    pub(super) fn append(
+        &mut self,
+        tx: &Transaction<'_>,
+        rows: Vec<(usize, Vec<Vec<Value>>)>,
+    ) -> Result<()> {
         let offsets = self.keys.clone();
-        for (n, rows) in &composed.rows {
-            let table = &self.tables.0[*n];
+        for (n, mut rows) in rows {
+            let table = &self.tables.0[n];
             let mut insert = tx.prepare_cached(&table.insert)?;
-            for row in rows {
-                let row = row
-                    .iter()
-                    .zip(&table.keys)
-                    .map(|(value, key)| match (key, value) {
-                        (Key::Own, Value::Integer(local)) => Value::Integer(offsets[*n] + local),
-                        (Key::Of(of), Value::Integer(local)) => {
-                            Value::Integer(offsets[*of] + local)
+            let mut most = 0;
+            for row in &mut rows {
+                for (value, key) in row.iter_mut().zip(&table.keys) {
+                    if let Value::Integer(local) = value {
+                        match key {
+                            Key::Own => {
+                                most = most.max(*local);
+                                *local += offsets[n];
+                            }
+                            Key::Of(of) => *local += offsets[*of],
+                            Key::Kept => {}
                         }
-                        (_, value) => value.clone(),
-                    });
-                insert.execute(rusqlite::params_from_iter(row))?;
+                    }
+                }
+                insert.execute(rusqlite::params_from_iter(row.iter()))?;
             }
-            if table.keyed
-                && let Some(at) = table.keys.iter().position(|key| matches!(key, Key::Own))
-            {
-                let most = rows
-                    .iter()
-                    .filter_map(|row| match row.get(at) {
-                        Some(Value::Integer(local)) => Some(*local),
-                        _ => None,
-                    })
-                    .max()
-                    .unwrap_or(0);
-                self.keys[*n] = offsets[*n] + most;
+            if table.keyed {
+                self.keys[n] = offsets[n] + most;
             }
         }
         Ok(())
