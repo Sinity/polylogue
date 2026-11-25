@@ -123,9 +123,10 @@ impl Engine {
         let file = std::fs::File::open(&plan.path)?;
         let metadata = file.metadata()?;
         if FileFacts::of(&metadata) != facts {
-            return Err(
-                std::io::Error::other("source file changed before the spool lookup").into(),
-            );
+            return Err(std::io::Error::other(
+                "the file changed after it was listed; it is read again next time",
+            )
+            .into());
         }
         let context =
             self.source_read_context(&plan.path, &plan.input.format, ReadRoute::NativeCapture);
@@ -151,7 +152,7 @@ impl Engine {
             || FileFacts::of(&std::fs::metadata(&plan.path)?) != facts
         {
             return Err(
-                std::io::Error::other("source file changed during the spool lookup").into(),
+                std::io::Error::other("the file changed while its stored bytes were looked up; it is read again next time").into(),
             );
         }
         if let Some(cursor) = cursor.filter(|cursor| {

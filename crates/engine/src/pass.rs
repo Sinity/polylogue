@@ -353,6 +353,7 @@ impl Engine {
         if self.archive.is_primary() || self.archive.index_build().is_none() {
             return self.read_pass(discover, paths);
         }
+        self.plan_build_steps();
         let (mut built, mut seen) = self.read_pass(discover, paths)?;
         // Requests are answered as they come and storing goes on, as the
         // build answers them while it reads: a stream of requests never
@@ -427,10 +428,10 @@ impl Engine {
         self.archive.record_build_bytes(bytes, 0);
         pass.inputs_changed = (fresh.len() + self.rollout_captures.len()) as u64;
         if !fresh.is_empty() || !self.rollout_captures.is_empty() {
-            self.build_phase(
-                "storing new files",
+            self.log_build_step(
+                crate::build_log::STORING_FILES,
                 format_args!(
-                    "{} plans, {} rollouts to capture",
+                    "{} files to store, {} rollouts to capture",
                     fresh.len(),
                     self.rollout_captures.len()
                 ),
@@ -590,8 +591,8 @@ impl Engine {
             ..Pass::default()
         };
         if walked {
-            self.build_phase(
-                "discovery",
+            self.log_build_step(
+                crate::build_log::FINDING_FILES,
                 format_args!(
                     "found {} files in {:.0} s",
                     found.len(),
@@ -679,10 +680,10 @@ impl Engine {
         }
         let mut changed_inputs = (fresh.len() + self.rollout_captures.len()) as u64;
         if !fresh.is_empty() || !self.rollout_captures.is_empty() {
-            self.build_phase(
+            self.log_build_step(
                 "storing and reading new files",
                 format_args!(
-                    "{} plans, {} rollouts to capture",
+                    "{} files to store, {} rollouts to capture",
                     fresh.len(),
                     self.rollout_captures.len()
                 ),
@@ -690,8 +691,8 @@ impl Engine {
             self.execute(fresh, &mut pass)?;
         }
         if self.readings_pending && !self.yielding() && !self.archive.stop().is_cancelled() {
-            self.build_phase(
-                "reading stored newest chains",
+            self.log_build_step(
+                "reading the newest stored files",
                 format_args!(
                     "{:.0} MB stored, {:.0} MB read so far",
                     pass.bytes_stored as f64 / 1e6,
@@ -843,10 +844,10 @@ impl Engine {
             self.archive.record_build_bytes(bytes, read);
         }
         if !plans.is_empty() || !self.rollout_captures.is_empty() {
-            self.build_phase(
+            self.log_build_step(
                 "storing and reading changed files",
                 format_args!(
-                    "{} plans, {} rollouts to capture",
+                    "{} files to store, {} rollouts to capture",
                     plans.len(),
                     self.rollout_captures.len()
                 ),
@@ -866,7 +867,7 @@ impl Engine {
             // Every input's newest chain is read: a first build ends here, so
             // its read indexes exist while the older chains are read.
             if !pass.capture_pending && !self.captures.pending() {
-                self.build_phase(
+                self.log_build_step(
                     "finishing the index",
                     format_args!(
                         "{:.0} MB stored, {:.0} MB read",
@@ -877,8 +878,8 @@ impl Engine {
                 pass.sessions_derived += self.derive()?;
             }
             if !self.poll_request() {
-                self.build_phase(
-                    "reading older chains",
+                self.log_build_step(
+                    "reading older stored files",
                     format_args!("{} sessions derived", pass.sessions_derived),
                 );
                 self.reparse_behind(RevisionChains::Older, &mut pass)?;
@@ -901,7 +902,7 @@ impl Engine {
         }
         pass.capture_pending |= self.captures.pending();
         if !pass.capture_pending {
-            self.build_phase(
+            self.log_build_step(
                 "finishing the index",
                 format_args!(
                     "{:.0} MB stored, {:.0} MB read",
@@ -925,11 +926,11 @@ impl Engine {
             }
         }
         if self.archive.index_build().is_none()
-            && let Some((phase, began)) = self.build_phase.take()
+            && let Some((step, began)) = self.build_step.take()
         {
             polylogue_store::log!(
                 info,
-                "build: the index is installed; {phase} took {:.0} s",
+                "index: installed; {step} took {:.0} s",
                 began.elapsed().as_secs_f64()
             );
         }
@@ -2185,7 +2186,7 @@ impl Engine {
             // the parse backlog and parsing does not wait for every input to
             // be stored.
             let capture_room = (self.config.workers / 2).max(1);
-            let mut progress = build_log::Progress::start(self, pass, pool.worker_cpu_seconds());
+            let mut progress = build_log::Progress::start(pass, pool.worker_cpu_seconds());
             // Rollout captures on workers, by path, with the input each names.
             let mut capturing: HashMap<PathBuf, String> = HashMap::new();
             // Live exports, read once the pool's work has committed.
@@ -2385,7 +2386,7 @@ impl Engine {
                 if outstanding == 0 {
                     break;
                 }
-                progress.log(self, pass, || pool.worker_cpu_seconds());
+                progress.record(self, pass, || pool.worker_cpu_seconds());
                 let d = match done_rx.recv_timeout(every.max(Duration::from_millis(10))) {
                     Ok(d) => d,
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,

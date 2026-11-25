@@ -3,9 +3,10 @@
 //! plain style has the same layout without color, with ASCII bars.
 use crate::protocol::status::{Answer, Mode, Notices, Running};
 use command_surface::TextStyle;
-use polylogue_model::freshness::{CompletenessDimension, IndexFreshness};
+use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, IndexFreshness};
 use polylogue_render::short_duration;
 use polylogue_render::terminal::escape as clean;
+use polylogue_store::archive::build_progress::CountUnit;
 use polylogue_store::log::Priority;
 
 /// The label column's width.
@@ -35,6 +36,9 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         out.push('\n');
     }
     let building = status.index_build.is_some();
+    // While an index is built, its section says what that means for reads,
+    // and the last check of the sources is from before it.
+    let index_building = CompletenessReason::IndexBuilding.text();
     let sections: [(&str, Vec<String>); 13] = [
         ("ARCHIVE", archive(status, view)),
         (
@@ -45,9 +49,16 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
                 reading(status, view)
             },
         ),
-        ("BUILD", build(status, view)),
+        ("INDEX", index(status, view)),
         ("PRIMARY", primary(status, view)),
-        ("LAST PASS", last_pass(status, view)),
+        (
+            "LAST CHECK",
+            if building {
+                Vec::new()
+            } else {
+                last_check(status, view)
+            },
+        ),
         ("RUNNING", running(status, view)),
         ("NOTICES", notices(status, view)),
         ("RULES", rules(status, view)),
@@ -57,7 +68,11 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         ("RECENT", recent(status, view)),
         (
             "NOTES",
-            problems.iter().map(|note| view.warning(note)).collect(),
+            problems
+                .iter()
+                .filter(|note| !(building && note.as_str() == index_building))
+                .map(|note| view.warning(note))
+                .collect(),
         ),
     ];
     for (label, lines) in sections {
@@ -170,7 +185,7 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
     if total > 0 {
         let done = store.parse_states.get("done").copied().unwrap_or(0);
         lines.push(format!(
-            "{}  {}   {} of {} chains read",
+            "{}  {}   {} of {} files read",
             view.bar(done, total),
             percent(done, total),
             count(done),
@@ -202,9 +217,9 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
     let mut words = Vec::new();
     for (name, dimension) in [
         ("parsing", &local.parsing),
-        ("derivation", &local.derivation),
+        ("session figures", &local.derivation),
         ("search", &local.search),
-        ("confirmed stream", &local.confirmed_stream),
+        ("Sinex stream", &local.confirmed_stream),
     ] {
         let reasons = |reasons: &[polylogue_model::freshness::CompletenessReason]| {
             reasons
@@ -234,96 +249,196 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
     lines
 }
 
-fn build(status: &Answer, view: &View<'_>) -> Vec<String> {
+/// An index build: what it does and why, what it means for reads, its
+/// steps (finished with their time, the current one with its count, rate
+/// and estimate, those to come) and the time left.
+fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
+    use polylogue_store::archive::index_rebuild::IndexRebuildReason;
     let Some(build) = &status.index_build else {
         return Vec::new();
     };
-    let (done, total) = if build.bytes > 0 {
-        (build.bytes_read, build.bytes)
-    } else {
-        (build.chains_read, build.chains)
+    let progress = status.build_progress.as_ref();
+    let why = match progress.and_then(|progress| progress.reason.as_ref()) {
+        None => "the archive had no index".to_owned(),
+        Some(IndexRebuildReason::SchemaDiffers) => "the index's tables changed".to_owned(),
+        Some(IndexRebuildReason::FormatVersion { found, wanted }) => {
+            format!("the index format changed from version {found} to {wanted}")
+        }
+        Some(IndexRebuildReason::OlderFormat) => {
+            "the index was written by an older Polylogue".to_owned()
+        }
     };
-    let mut lines = Vec::new();
-    // A round with no chain to read has no reading to show.
-    if total > 0 {
-        lines.push(format!(
-            "{}  {}   {} of {} · {} of {} chains",
-            view.bar(done, total),
-            percent(done, total),
-            bytes(build.bytes_read),
-            bytes(build.bytes),
-            count(build.chains_read),
-            count(build.chains)
-        ));
-    }
-    let Some(progress) = &status.build_progress else {
+    let mut lines = vec![if build.bytes > 0 {
+        format!(
+            "building the index from {} of stored files, because {why}",
+            bytes(build.bytes)
+        )
+    } else {
+        format!("building the index, because {why}")
+    }];
+    lines.push(if build.serving_previous {
+        "reads and searches use the previous index until the new one is installed".into()
+    } else {
+        "reads and searches answer \"index building\" until it is installed".into()
+    });
+    let Some(progress) = progress else {
         return lines;
     };
-    // The rates measure reading; once every byte is read the phase line
-    // says what the build is doing.
-    if let (Some(rate), Some(seconds)) = (progress.bytes_per_second, progress.rate_seconds)
-        && build.bytes_read < build.bytes
+    if let Some(failed) = &progress.failed_attempt {
+        let during = failed
+            .step
+            .as_ref()
+            .map(|step| format!(" while {}", clean(step)))
+            .unwrap_or_default();
+        lines.push(view.error(&format!(
+            "an earlier attempt failed{during}: {}; this one started again from the stored files",
+            failed.error
+        )));
+    }
+    let steps =
+        progress.finished.len() + usize::from(progress.current.is_some()) + progress.to_come.len();
+    if let Some(current) = &progress.current
+        && let Some(count) = &current.count
+        && let Some(total) = count.total
     {
+        lines.push(format!(
+            "{}  {}   step {} of {steps}, {}",
+            view.bar(count.done, total),
+            percent(count.done, total),
+            progress.finished.len() + 1,
+            clean(&current.name)
+        ));
+    }
+    let width = progress
+        .finished
+        .iter()
+        .map(|step| step.name.chars().count())
+        .chain(
+            progress
+                .current
+                .iter()
+                .map(|step| step.name.chars().count()),
+        )
+        .chain(progress.to_come.iter().map(|step| step.chars().count()))
+        .max()
+        .unwrap_or(0);
+    for step in &progress.finished {
         let mut line = format!(
-            "{:.1} MB/s over the last {}",
-            rate / 1e6,
-            // Whole minutes are rounded: 119 s reads as 2m, not 1m.
-            short_duration(if seconds < 60. {
-                (seconds * 1000.) as i64
-            } else {
-                ((seconds / 60.).round() * 60_000.) as i64
-            })
+            "✓ {:<width$} {:>6}",
+            clean(&step.name),
+            short_duration((step.seconds * 1000.) as i64)
         );
-        if let Some(chains) = progress.chains_per_second.filter(|rate| *rate > 0.) {
-            line.push_str(&format!(" · {} chains/s", decimal(chains)));
-        }
-        if let Some(eta) = progress.eta_seconds {
-            line.push_str(&format!(" · {}", left(eta)));
-        } else if progress.rate_varying {
-            line.push_str(" · rate varying");
+        if let Some(count) = &step.count {
+            line.push_str(&format!("  {}", amount(count.done, count.unit)));
         }
         lines.push(line);
     }
-    let mut parts = Vec::new();
-    if let Some(phase) = &progress.phase {
-        let mut part = format!("phase {}", clean(phase));
-        if let Some(since) = progress.phase_since {
-            part.push_str(&format!(
-                " for {}",
-                short_duration(view.now_ms.saturating_sub(since.unix_ms()))
+    if let Some(current) = &progress.current {
+        let mut parts = vec![match &current.count {
+            Some(count) => match count.total {
+                Some(total) => format!(
+                    "{} of {}",
+                    amount_number(count.done, count.unit),
+                    amount(total, count.unit)
+                ),
+                None => format!("{} so far", amount(count.done, count.unit)),
+            },
+            None => "not counted".into(),
+        }];
+        // Reading counts bytes; the files read go beside them.
+        if current
+            .count
+            .as_ref()
+            .is_some_and(|count| count.unit == CountUnit::Bytes)
+            && build.chains > 0
+        {
+            parts.push(format!(
+                "{} of {} files",
+                count(build.chains_read),
+                count(build.chains)
             ));
         }
-        if let Some(phase) = &progress.phase_progress {
-            part.push_str(&match phase.total {
-                Some(total) => format!(
-                    " · {} of {} {}",
-                    count(phase.done),
-                    count(total),
-                    clean(&phase.unit)
-                ),
-                None => format!(" · {} {}", count(phase.done), clean(&phase.unit)),
+        if let (Some(rate), Some(count)) = (current.per_second, &current.count) {
+            parts.push(if rate > 0. {
+                match count.unit {
+                    CountUnit::Bytes => format!("{:.1} MB/s", rate / 1e6),
+                    _ => format!("{}/s", decimal(rate)),
+                }
+            } else {
+                format!(
+                    "no progress in the last {}",
+                    short_duration((current.rate_seconds.unwrap_or(0.) * 1000.) as i64)
+                )
             });
         }
-        lines.push(part);
+        if let Some(eta) = current.eta_seconds {
+            parts.push(left(eta));
+        } else if current.rate_varying {
+            parts.push("rate varying, no estimate".into());
+        } else if let Some(count) = &current.count {
+            if count.total.is_none() {
+                parts.push("total known when the step ends".into());
+            } else if current.rate_seconds.is_none_or(|seconds| seconds < 60.) {
+                parts.push("estimate after a minute of progress".into());
+            }
+        }
+        lines.push(format!(
+            "▸ {:<width$} {:>6}  {}",
+            clean(&current.name),
+            short_duration(view.now_ms.saturating_sub(current.since.unix_ms())),
+            parts.join(" · ")
+        ));
     }
+    for step in &progress.to_come {
+        lines.push(format!("· {}", clean(step)));
+    }
+    if let Some(eta) = progress.eta_seconds {
+        lines.push(format!("whole job: {}", left(eta)));
+    } else if !progress.to_come.is_empty() {
+        let n = progress.to_come.len();
+        lines.push(format!(
+            "whole job: time unknown; the {n} {} to come {} measured only as {} run",
+            if n == 1 { "step" } else { "steps" },
+            if n == 1 { "is" } else { "are" },
+            if n == 1 { "it" } else { "they" },
+        ));
+    }
+    let mut parts = Vec::new();
     if let Some(busy) = progress.writer_busy {
-        parts.push(format!("writer busy {:.0}%", busy * 100.));
+        parts.push(format!(
+            "database writer busy {:.0}% of the last minute",
+            busy * 100.
+        ));
     }
     if !progress.worker_cpu_seconds.is_empty() {
         let workers = progress.worker_cpu_seconds.len();
         let each = progress.worker_cpu_seconds.iter().sum::<f64>() / workers as f64;
         parts.push(format!(
-            "{workers} {}, {each:.1} s CPU/min each",
+            "{workers} parse {}, {each:.1} s CPU/min each",
             if workers == 1 { "worker" } else { "workers" }
         ));
     }
     if !parts.is_empty() {
         lines.push(parts.join(" · "));
     }
-    if build.serving_previous {
-        lines.push("reads are answered from the previous index meanwhile".into());
-    }
     lines
+}
+
+/// An amount of `unit`: a size for bytes, a count and the unit's word
+/// otherwise.
+fn amount(n: u64, unit: CountUnit) -> String {
+    match unit {
+        CountUnit::Bytes => bytes(n),
+        unit => format!("{} {}", count(n), unit.word()),
+    }
+}
+
+/// [`amount`] without the unit's word, which the total after it carries.
+fn amount_number(n: u64, unit: CountUnit) -> String {
+    match unit {
+        CountUnit::Bytes => bytes(n),
+        _ => count(n),
+    }
 }
 
 fn primary(status: &Answer, view: &View<'_>) -> Vec<String> {
@@ -378,7 +493,8 @@ fn primary(status: &Answer, view: &View<'_>) -> Vec<String> {
     lines
 }
 
-fn last_pass(status: &Answer, view: &View<'_>) -> Vec<String> {
+/// The daemon's last check of its sources for new and changed files.
+fn last_check(status: &Answer, view: &View<'_>) -> Vec<String> {
     let looped = &status.loop_status;
     if looped.passes == 0 {
         return Vec::new();
@@ -390,7 +506,7 @@ fn last_pass(status: &Answer, view: &View<'_>) -> Vec<String> {
     }
     parts.push(format!("{} s", decimal(pass.seconds)));
     parts.push(format!(
-        "{} of {} inputs changed",
+        "{} of {} files changed",
         count(pass.inputs_changed),
         count(pass.inputs_seen)
     ));

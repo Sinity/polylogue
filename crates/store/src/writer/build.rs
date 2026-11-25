@@ -13,6 +13,7 @@
 //! build that does not finish is discarded and starts again from the stored
 //! bytes ([`crate::archive::index_build`]).
 use super::*;
+use crate::archive::build_progress::{CountUnit, StepCount};
 use crate::archive::index_build::Paths;
 use crate::sorted_runs::{Merger, Sorter};
 use rusqlite::types::{Value, ValueRef};
@@ -135,17 +136,49 @@ pub struct BuildPhase {
     pub items: u64,
 }
 
+/// The steps the writer runs in a build, in order, as `status`, the log and
+/// the docs name them.
+pub const SORTING_TEXTS: &str = "sorting texts";
+pub const WRITING_TABLES: &str = "writing tables";
+pub const INDEXING: &str = "indexing";
+pub const ASSEMBLING_SESSIONS: &str = "assembling sessions";
+pub const FINISHING_INDEXES: &str = "finishing indexes";
+pub const SEARCH_INDEX: &str = "search index";
+pub const INSTALLING: &str = "installing";
+pub const STEPS: &[&str] = &[
+    SORTING_TEXTS,
+    WRITING_TABLES,
+    INDEXING,
+    ASSEMBLING_SESSIONS,
+    FINISHING_INDEXES,
+    SEARCH_INDEX,
+    INSTALLING,
+];
+
+/// What a writer step counts as it works.
+fn counted(step: &str) -> Option<CountUnit> {
+    match step {
+        SORTING_TEXTS | WRITING_TABLES => Some(CountUnit::Records),
+        INDEXING => Some(CountUnit::Indexes),
+        ASSEMBLING_SESSIONS => Some(CountUnit::Sessions),
+        _ => None,
+    }
+}
+
 /// Measures one phase from the process's storage counters.
 pub struct PhaseClock {
     name: &'static str,
+    unit: Option<CountUnit>,
     started: Instant,
     io: (u64, u64),
 }
 
 impl PhaseClock {
-    pub fn start(name: &'static str) -> Self {
+    /// Starts measuring step `name`, whose items are `unit`.
+    pub fn start(name: &'static str, unit: Option<CountUnit>) -> Self {
         Self {
             name,
+            unit,
             started: Instant::now(),
             io: process_io(),
         }
@@ -163,10 +196,11 @@ impl PhaseClock {
         };
         crate::log!(
             info,
-            "build: {} took {:.1} s; {} items; {:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
+            "index: {} took {:.1} s; {} {}; {:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
             phase.name,
             phase.seconds,
             phase.items,
+            self.unit.map_or("items", CountUnit::word),
             phase.bytes_read as f64 / 1e6,
             phase.bytes_written as f64 / 1e6,
             phase.peak_memory as f64 / 1e6,
@@ -1027,7 +1061,10 @@ pub(super) struct ComposeState {
     shared_events: Arc<HashSet<String>>,
     /// Events left by the stream for the index to compose.
     deferred: Vec<(Option<String>, String)>,
+    /// Sessions composed so far, and of how many: every session a reading
+    /// states and every name composed from the index.
     pub(super) sessions: u64,
+    pub(super) total: u64,
 }
 
 enum Step {
@@ -1075,6 +1112,15 @@ impl ComposeState {
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?,
         );
+        let mut total: u64 = index.scalar(
+            "SELECT count(*) FROM (SELECT DISTINCT session_id FROM session_record)",
+            [],
+        )?;
+        for name in &fallback {
+            if !index.exists("SELECT 1 FROM session_record WHERE session_id=?1", [name])? {
+                total += 1;
+            }
+        }
         Ok(Self {
             step: Step::Links,
             indexes,
@@ -1086,6 +1132,7 @@ impl ComposeState {
             shared_events: Arc::new(shared_events),
             deferred: Vec::new(),
             sessions: 0,
+            total,
         })
     }
 }
@@ -1099,6 +1146,8 @@ pub(super) struct BuildJob {
     reply: SyncSender<Result<Vec<BuildPhase>>>,
     phases: Vec<BuildPhase>,
     clock: Option<(PhaseClock, u64)>,
+    /// The sessions composition will assemble, known once it starts.
+    sessions: Option<u64>,
     /// The indexes dropped for the load, recreated after it; the shown
     /// tables' indexes composition does not keep are made after the
     /// streamed sessions (see [`SHOWN_TABLES`]).
@@ -1176,6 +1225,7 @@ impl BuildJob {
             reply,
             phases: Vec::new(),
             clock: None,
+            sessions: None,
             indexes: Vec::new(),
             after_stream: Vec::new(),
             search: None,
@@ -1199,7 +1249,7 @@ impl BuildJob {
         if let Some(announce) = &self.announce {
             let _ = announce.send(name);
         }
-        self.clock = Some((PhaseClock::start(name), 0));
+        self.clock = Some((PhaseClock::start(name, counted(name)), 0));
     }
 
     fn count(&mut self, items: u64) {
@@ -1229,9 +1279,9 @@ impl Inner {
         job.stage = match stage {
             Stage::Start(runs) => {
                 job.phase(if runs.is_empty() {
-                    "indexes"
+                    INDEXING
                 } else {
-                    "merge texts"
+                    SORTING_TEXTS
                 });
                 self.index.flush_prepared_statement_cache();
                 let upkept = Fallback::upkept(&self.index)?;
@@ -1327,7 +1377,7 @@ impl Inner {
                     Stage::TextHolders(holders)
                 } else {
                     self.index.pragma_update(None, "foreign_keys", true)?;
-                    job.phase("indexes");
+                    job.phase(INDEXING);
                     Stage::Indexes(0, holders.composing)
                 }
             }
@@ -1339,9 +1389,11 @@ impl Inner {
                 }
                 None => {
                     crate::fault::check("index.build.composing", "")?;
-                    job.phase("compose");
+                    job.phase(ASSEMBLING_SESSIONS);
                     let indexes = std::mem::take(&mut job.after_stream);
-                    Stage::Compose(Box::new(ComposeState::new(*loaded, indexes, &self.index)?))
+                    let state = ComposeState::new(*loaded, indexes, &self.index)?;
+                    job.sessions = Some(state.total);
+                    Stage::Compose(Box::new(state))
                 }
             },
             Stage::Compose(mut state) => {
@@ -1353,7 +1405,7 @@ impl Inner {
                 } else {
                     drop(state);
                     crate::archive::index_build::remove_runs(&Paths::of(&self.location.root))?;
-                    job.phase("read indexes");
+                    job.phase(FINISHING_INDEXES);
                     // Composition wrote shown rows only: the search
                     // membership of every text comes from the blocks now,
                     // and from here on membership and the trigram index
@@ -1388,7 +1440,7 @@ impl Inner {
                     Stage::Deferred(deferred)
                 }
                 None => {
-                    job.phase("full text");
+                    job.phase(SEARCH_INDEX);
                     Stage::FullText
                 }
             },
@@ -1401,7 +1453,7 @@ impl Inner {
                     .ok_or_else(|| StoreError::internal("a build has no full-text fill"))?;
                 if search.wait(STEP_TIME)? {
                     job.search = None;
-                    job.phase("install");
+                    job.phase(INSTALLING);
                     Stage::Install
                 } else {
                     Stage::FullText
@@ -1416,23 +1468,22 @@ impl Inner {
                 return Ok(true);
             }
         };
-        if let Some((clock, done)) = &job.clock {
-            let counted = match clock.name {
-                "merge texts" | "load" => Some(("records", None)),
-                "indexes" => Some(("indexes", Some(job.indexes.len() as u64))),
-                "compose" => Some(("sessions", None)),
+        if let Some((clock, done)) = &job.clock
+            && let Some(unit) = clock.unit
+        {
+            let total = match clock.name {
+                INDEXING => Some(job.indexes.len() as u64),
+                ASSEMBLING_SESSIONS => job.sessions,
                 _ => None,
             };
-            if let Some((unit, total)) = counted {
-                self.location.record_build_phase_progress(
-                    clock.name,
-                    crate::archive::build_progress::PhaseProgress {
-                        done: *done,
-                        total,
-                        unit: unit.into(),
-                    },
-                );
-            }
+            self.location.record_build_count(
+                clock.name,
+                StepCount {
+                    done: *done,
+                    total,
+                    unit,
+                },
+            );
         }
         Ok(false)
     }
@@ -1518,8 +1569,8 @@ impl Inner {
                 .ok_or_else(|| StoreError::Invalid("a build stream holds an empty key".into()))?;
             if load.stream != Some(kind) {
                 job.phase(match kind {
-                    INPUTS | GROUPS | TEXTS => "merge texts",
-                    _ => "load",
+                    INPUTS | GROUPS | TEXTS => SORTING_TEXTS,
+                    _ => WRITING_TABLES,
                 });
                 load.stream = Some(kind);
             }

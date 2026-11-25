@@ -155,7 +155,7 @@ impl CompletenessReason {
                 "some stored inputs have missing earlier bytes"
             }
             CompletenessReason::KnownRawOnly => "some stored inputs have no parser",
-            CompletenessReason::DerivationBehind => "derived values are pending",
+            CompletenessReason::DerivationBehind => "session figures are still being computed",
             CompletenessReason::SearchPending => "search text is pending",
             CompletenessReason::IndexBuilding => "the index is being built",
             CompletenessReason::StreamNotApplied => "the confirmed stream has not been applied",

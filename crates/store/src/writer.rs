@@ -1623,7 +1623,7 @@ impl Inner {
                 // The full-text fill's threads write the files the restart
                 // removes: they end first.
                 job.search = None;
-                let error = match self.restart_build() {
+                let error = match self.restart_build(&error.to_string()) {
                     Ok(()) => error,
                     Err(restart) => StoreError::Invalid(format!(
                         "{error}; the failed build could not be discarded: {restart}"
@@ -1639,13 +1639,13 @@ impl Inner {
     /// chain again and composes from its own runs; the failed build's
     /// readings and partly composed sessions would otherwise read as
     /// upkeep's, which composition takes from the index session by session.
-    fn restart_build(&mut self) -> Result<()> {
+    fn restart_build(&mut self, error: &str) -> Result<()> {
         self.index.flush_prepared_statement_cache();
         let failed = std::mem::replace(&mut self.index, Connection::open_in_memory()?);
         let restarted = failed
             .close()
             .map_err(|(_, error)| StoreError::from(error))
-            .and_then(|()| crate::archive::index_build::restart(&self.location));
+            .and_then(|()| crate::archive::index_build::restart(&self.location, error));
         // The writer goes on with the build file there is, made again or not.
         self.index = open_index_writer(&self.location, true)?;
         crate::chain_progress::open(&self.index, true)?;

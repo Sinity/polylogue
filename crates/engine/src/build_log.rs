@@ -1,28 +1,44 @@
-//! A first build's own record in the log: a line each time the pass enters a
-//! phase, naming what the phase before it did and how long it took, and a
-//! line a minute with the rates while inputs are stored and read. The phase
-//! and the workers' CPU also go to the archive's build progress, which
-//! `status` reports.
+//! An index build's own record in the log and in `status`: a line each time
+//! the build starts a step, naming how long the step before took, and the
+//! steps, counts and workers' CPU in the archive's build progress, which
+//! `status` reports. While files are stored a line a minute gives the
+//! storing rate; it goes to the journal only, since `status` shows the
+//! count and rate itself.
 use crate::{Engine, Pass};
+use polylogue_store::archive::build_progress::{CountUnit, StepCount};
 use std::time::{Duration, Instant};
 
-/// How often a build logs its rates while inputs are stored and read.
+/// The steps the engine runs in a build, as `status`, the log and the docs
+/// name them; the writer's steps follow ([`polylogue_store::writer::build::STEPS`]).
+pub(crate) const FINDING_FILES: &str = "finding files";
+pub(crate) const STORING_FILES: &str = "storing files";
+pub(crate) const READING_STORED_FILES: &str = "reading stored files";
+
+/// How often a build logs its storing rate.
 const EVERY: Duration = Duration::from_secs(60);
 
 impl Engine {
-    /// Logs that a first build entered `phase`, with the time the previous
-    /// phase took. Outside a first build nothing is logged.
-    pub(crate) fn build_phase(&mut self, phase: &'static str, detail: std::fmt::Arguments<'_>) {
+    /// Records the steps a build runs once its files are stored.
+    pub(crate) fn plan_build_steps(&self) {
+        let mut steps = vec![READING_STORED_FILES];
+        steps.extend_from_slice(polylogue_store::writer::build::STEPS);
+        self.archive.record_build_plan(&steps);
+    }
+
+    /// Logs that a build started `step`, with the time the previous step
+    /// took. Outside a build nothing is logged.
+    pub(crate) fn log_build_step(&mut self, step: &'static str, detail: std::fmt::Arguments<'_>) {
         if self.archive.index_build().is_none() {
             return;
         }
         let now = Instant::now();
         if let Some(since) = polylogue_model::Timestamp::from_unix_ms(self.config.clock.now_ms()) {
-            self.archive.record_build_phase(phase, since);
+            self.archive.record_build_step(step, since);
         }
         let previous = self
-            .build_phase
-            .replace((phase, now))
+            .build_step
+            .replace((step, now))
+            .filter(|(name, _)| *name != step)
             .map(|(name, started)| {
                 format!(
                     "; {name} took {:.0} s",
@@ -30,88 +46,83 @@ impl Engine {
                 )
             })
             .unwrap_or_default();
-        polylogue_store::log!(info, "build: {phase}: {detail}{previous}");
+        polylogue_store::log!(info, "index: {step}: {detail}{previous}");
     }
 
-    /// Records that a batch build entered `phase`, for `status`, without a
-    /// line of its own: the phase's line, when it ends, carries its time,
-    /// items, bytes and peak memory ([`polylogue_store::writer::build::PhaseClock`]).
-    pub(crate) fn enter_build_phase(&mut self, phase: &'static str) {
+    /// Records that a build started `step`, for `status`, without a line of
+    /// its own: the step's line, when it ends, carries its time, items,
+    /// bytes and peak memory ([`polylogue_store::writer::build::PhaseClock`]).
+    pub(crate) fn enter_build_step(&mut self, step: &'static str) {
         if self.archive.index_build().is_none() {
             return;
         }
         if let Some(since) = polylogue_model::Timestamp::from_unix_ms(self.config.clock.now_ms()) {
-            self.archive.record_build_phase(phase, since);
+            self.archive.record_build_step(step, since);
         }
-        self.build_phase = Some((phase, Instant::now()));
+        self.build_step = Some((step, Instant::now()));
     }
 }
 
-/// What the minute's rates are measured from.
+/// What the minute's storing rate is measured from.
 pub(crate) struct Progress {
     at: Instant,
     stored: u64,
-    parsed: u64,
     writer: f64,
     cpu: Vec<f64>,
 }
 
 impl Progress {
-    pub(crate) fn start(engine: &Engine, pass: &Pass, cpu: Vec<f64>) -> Self {
+    /// Starts measuring from `cpu`, each parse worker's CPU seconds so far.
+    pub(crate) fn start(pass: &Pass, cpu: Vec<f64>) -> Self {
         Self {
             at: Instant::now(),
             stored: pass.bytes_stored,
-            parsed: engine
-                .archive
-                .index_build()
-                .map_or(0, |build| build.bytes_read),
             writer: polylogue_store::timing::writer_seconds(),
             cpu,
         }
     }
 
-    /// Logs the rates since the last line once a minute has passed, during
-    /// a first build.
-    pub(crate) fn log(&mut self, engine: &Engine, pass: &Pass, cpu: impl FnOnce() -> Vec<f64>) {
+    /// During a build's storing step, records the bytes stored of those to
+    /// store and the workers' CPU, and logs the storing rate once a minute
+    /// has passed.
+    pub(crate) fn record(&mut self, engine: &Engine, pass: &Pass, cpu: impl FnOnce() -> Vec<f64>) {
+        let Some(build) = engine.archive.index_build() else {
+            return;
+        };
+        engine.archive.record_build_count(
+            STORING_FILES,
+            StepCount {
+                done: pass.bytes_stored,
+                total: Some(build.bytes.max(pass.bytes_stored)),
+                unit: CountUnit::Bytes,
+            },
+        );
         let elapsed = self.at.elapsed();
         if elapsed < EVERY {
             return;
         }
-        let Some(build) = engine.archive.index_build() else {
-            return;
-        };
         let seconds = elapsed.as_secs_f64();
         let cpu = cpu();
-        let busy: Vec<String> = cpu
-            .iter()
-            .zip(self.cpu.iter().chain(std::iter::repeat(&0.0)))
-            .map(|(now, before)| format!("{:.0}", now - before))
-            .collect();
-        let writer = polylogue_store::timing::writer_seconds();
         engine.archive.record_build_workers(
             cpu.iter()
                 .zip(self.cpu.iter().chain(std::iter::repeat(&0.0)))
                 .map(|(now, before)| (now - before) * 60. / seconds)
                 .collect(),
         );
+        let writer = polylogue_store::timing::writer_seconds();
         polylogue_store::log!(
-            info,
-            "build: {:.0} of {:.0} MB parsed, {:.1} MB/s; {:.1} MB/s stored; \
-             {} of {} input chains read; writer busy {:.0} s and parse workers {} s of the last {:.0} s",
-            build.bytes_read as f64 / 1e6,
-            build.bytes as f64 / 1e6,
-            build.bytes_read.saturating_sub(self.parsed) as f64 / 1e6 / seconds,
+            progress,
+            "index: {STORING_FILES}: {:.0} of {:.0} MB stored, {:.1} MB/s over the last {:.0} s; \
+             database writer busy {:.0} s of them",
+            pass.bytes_stored as f64 / 1e6,
+            build.bytes.max(pass.bytes_stored) as f64 / 1e6,
             pass.bytes_stored.saturating_sub(self.stored) as f64 / 1e6 / seconds,
-            build.chains_read,
-            build.chains,
-            writer - self.writer,
-            busy.join(" "),
             seconds,
+            writer - self.writer,
         );
         *self = Self {
             at: Instant::now(),
             stored: pass.bytes_stored,
-            parsed: build.bytes_read,
             writer,
             cpu,
         };

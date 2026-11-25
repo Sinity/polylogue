@@ -269,11 +269,12 @@ fn unread(
         Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
     let mode = mode(d);
-    // While warming nothing is known yet; a build names itself.
+    // While warming nothing is known yet; a build names itself, and its
+    // session figures are one of its steps.
     let (reasons, derivation) = if build.is_some() {
         (
             vec![CompletenessReason::IndexBuilding],
-            CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind]),
+            CompletenessDimension::Incomplete(vec![CompletenessReason::IndexBuilding]),
         )
     } else {
         (Vec::new(), CompletenessDimension::Unknown(Vec::new()))

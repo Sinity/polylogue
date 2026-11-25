@@ -135,7 +135,7 @@ struct Inner {
     chains_read: u64,
     bytes: u64,
     bytes_read: u64,
-    /// The build's phase and rate samples.
+    /// The build's steps, counts and samples.
     measured: super::build_progress::Record,
 }
 
@@ -168,17 +168,6 @@ pub(crate) fn state(root: &Path) -> Arc<State> {
 }
 
 impl Inner {
-    /// Samples the counts just recorded.
-    fn sample(&mut self) {
-        let (bytes_read, chains_read) = (self.bytes_read, self.chains_read);
-        self.measured.sample(
-            std::time::Instant::now(),
-            bytes_read,
-            chains_read,
-            crate::timing::writer_seconds,
-        );
-    }
-
     fn progress(&self) -> Option<IndexBuild> {
         self.file.map(|_| IndexBuild {
             serving_previous: self.serving_previous,
@@ -224,7 +213,6 @@ impl State {
         let mut inner = self.inner();
         inner.chains = chains;
         inner.chains_read = chains_read;
-        inner.sample();
     }
 
     fn set(&self, file: Option<BuildFile>, serving_previous: bool) {
@@ -328,7 +316,6 @@ impl Archive {
         let mut inner = self.index_build.inner();
         inner.bytes = bytes;
         inner.bytes_read = bytes_read.min(bytes);
-        inner.sample();
     }
 
     /// Advance byte progress only after a range's write is acknowledged.
@@ -336,7 +323,6 @@ impl Archive {
         let mut inner = self.index_build.inner();
         if inner.file.is_some() {
             inner.bytes_read = inner.bytes_read.saturating_add(bytes).min(inner.bytes);
-            inner.sample();
         }
     }
 
@@ -345,25 +331,34 @@ impl Archive {
         self.index_build.progress()
     }
 
-    /// Records that the build in progress entered `phase` at `since`.
-    pub fn record_build_phase(&self, phase: &str, since: polylogue_model::Timestamp) {
+    /// Records the steps the build in progress runs after the one it is
+    /// in, in order, for `status` to list those still to come.
+    pub fn record_build_plan(&self, steps: &[&str]) {
         let mut inner = self.index_build.inner();
         if inner.file.is_some() {
-            inner.measured.phase(phase, since);
+            inner.measured.plan(steps);
         }
     }
 
-    /// Records how far the writer's phase `phase` of the build is, and
-    /// samples the writer's busy time with it.
-    pub(crate) fn record_build_phase_progress(
-        &self,
-        phase: &str,
-        progress: super::build_progress::PhaseProgress,
-    ) {
+    /// Records that the build in progress started `step` at `since`.
+    pub fn record_build_step(&self, step: &str, since: polylogue_model::Timestamp) {
         let mut inner = self.index_build.inner();
         if inner.file.is_some() {
-            inner.measured.phase_progress(phase, progress);
-            inner.sample();
+            inner.measured.step(step, since);
+        }
+    }
+
+    /// Records how much of its work `step` of the build has done, and
+    /// samples it with the writer's busy time.
+    pub fn record_build_count(&self, step: &str, count: super::build_progress::StepCount) {
+        let mut inner = self.index_build.inner();
+        if inner.file.is_some() {
+            inner.measured.count(
+                std::time::Instant::now(),
+                step,
+                count,
+                crate::timing::writer_seconds,
+            );
         }
     }
 
@@ -377,15 +372,15 @@ impl Archive {
         }
     }
 
-    /// The phase, rates and estimate of the build in progress.
+    /// The steps, rate and estimates of the build in progress.
     pub fn build_progress(&self) -> Option<super::build_progress::BuildProgress> {
         let inner = self.index_build.inner();
-        let build = inner.progress()?;
-        Some(inner.measured.report(
-            std::time::Instant::now(),
-            &build,
-            crate::timing::writer_seconds(),
-        ))
+        inner.file?;
+        Some(
+            inner
+                .measured
+                .report(std::time::Instant::now(), crate::timing::writer_seconds()),
+        )
     }
 }
 
@@ -428,11 +423,11 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
     }
     let build = open_setup(&paths.build)?;
     archive.ensure_index(&build, true)?;
-    if let Some((reason, previous)) = replaced {
+    if let Some((reason, previous)) = &replaced {
         crate::archive::index_rebuild::record(
             &build,
-            reason,
-            previous,
+            reason.clone(),
+            previous.clone(),
             schema::build_index_identity(false)?,
         )?;
     }
@@ -441,6 +436,11 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
     archive
         .index_build
         .set(Some(BuildFile::Writing), serving_previous);
+    archive
+        .index_build
+        .inner()
+        .measured
+        .reason(replaced.map(|(reason, _)| reason));
     crate::fault::check("index.after_creation", "")?;
     crate::archive::generation::open(archive, &build)
 }
@@ -627,14 +627,20 @@ fn discard(paths: &Paths) -> Result<()> {
     sync_directory(&paths.dir)
 }
 
-/// Discards a build that failed in this process and creates its file again,
-/// empty, as [`prepare`] does after a crash, keeping the record of why the
-/// index is rebuilt. The writer has closed its connection; pipeline pools
+/// Discards a build that failed in this process with `error` and creates
+/// its file again, empty, as [`prepare`] does after a crash, keeping the
+/// record of why the index is rebuilt; `status` shows the failure until the
+/// build ends. The writer has closed its connection; pipeline pools
 /// release their idle ones, and a pool drops any other at its next use, the
 /// file being a new one.
-pub(crate) fn restart(archive: &Archive) -> Result<()> {
+pub(crate) fn restart(archive: &Archive, error: &str) -> Result<()> {
     let paths = Paths::of(&archive.root);
     archive.index_build.release();
+    archive
+        .index_build
+        .inner()
+        .measured
+        .failed(error.to_owned());
     let rebuild = crate::meta_get(
         &open_setup(&paths.build)?,
         crate::archive::index_rebuild::META_KEY,

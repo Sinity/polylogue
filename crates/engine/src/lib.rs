@@ -491,8 +491,8 @@ pub struct Engine {
     /// Rollout captures waiting for a parse worker, the live ones first
     /// ([`compressed::RolloutCapture`]).
     rollout_captures: std::collections::VecDeque<compressed::RolloutCapture>,
-    /// The first build's current phase and when it began ([`build_log`]).
-    build_phase: Option<(&'static str, Instant)>,
+    /// The index build's current step and when it began ([`build_log`]).
+    build_step: Option<(&'static str, Instant)>,
     /// What a build's storing turn found, and whether it walked the sources
     /// to find it: the turn after the build looks at these again rather than
     /// walking a second time.
@@ -576,7 +576,7 @@ impl Engine {
             stored_planning: None,
             captures: Databases::default(),
             rollout_captures: Default::default(),
-            build_phase: None,
+            build_step: None,
             found_before_build: None,
             wake: None,
             watcher: None,
