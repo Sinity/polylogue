@@ -1614,7 +1614,11 @@ impl Inner {
             Ok(Some(false)) => self.build_job = Some(job),
             Ok(Some(true)) => job.finish(Ok(())),
             Ok(None) => job.finish(Err(StoreError::Stopped)),
-            Err(error) if job.installing => job.finish(Err(error)),
+            // A job that ran with no build in progress, or failed while
+            // installing, leaves the files as they are.
+            Err(error) if job.installing || !self.location.index_build.building() => {
+                job.finish(Err(error))
+            }
             Err(error) => {
                 // The full-text fill's threads write the files the restart
                 // removes: they end first.
@@ -1638,11 +1642,14 @@ impl Inner {
     fn restart_build(&mut self) -> Result<()> {
         self.index.flush_prepared_statement_cache();
         let failed = std::mem::replace(&mut self.index, Connection::open_in_memory()?);
-        failed.close().map_err(|(_, error)| error)?;
-        crate::archive::index_build::restart(&self.location)?;
+        let restarted = failed
+            .close()
+            .map_err(|(_, error)| StoreError::from(error))
+            .and_then(|()| crate::archive::index_build::restart(&self.location));
+        // The writer goes on with the build file there is, made again or not.
         self.index = open_index_writer(&self.location, true)?;
         crate::chain_progress::open(&self.index, true)?;
-        Ok(())
+        restarted
     }
 
     /// Closes the writer's connection to the build file, installs it and
