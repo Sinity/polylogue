@@ -259,7 +259,7 @@ fn opaque(rng: &mut Rng, len: u64) -> String {
 
 /// One Codex rollout being written: outer records `{timestamp, type,
 /// payload}`, and what its compactions restate.
-struct Rollout<'a> {
+struct RolloutWriter<'a> {
     w: BufWriter<fs::File>,
     rng: &'a mut Rng,
     thread: String,
@@ -272,7 +272,7 @@ struct Rollout<'a> {
     history: std::collections::VecDeque<serde_json::Value>,
 }
 
-impl Rollout<'_> {
+impl RolloutWriter<'_> {
     fn record(&mut self, kind: &str, payload: serde_json::Value) -> std::io::Result<u64> {
         self.seconds += 1 + self.rng.below(20) as i64;
         let at = jiff::Timestamp::from_second(self.start.as_second() + self.seconds).unwrap();
@@ -462,7 +462,7 @@ fn rollout_file(sessions: &Path, index: u64, target: u64, rng: &mut Rng) -> std:
         "rollout-{}-{thread}.jsonl",
         start.strftime("%Y-%m-%dT%H-%M-%S")
     );
-    let mut rollout = Rollout {
+    let mut rollout = RolloutWriter {
         w: BufWriter::new(fs::File::create(dir.join(name))?),
         rng,
         thread,
