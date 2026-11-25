@@ -534,7 +534,7 @@ fn a_failed_attempt_is_shown_while_the_build_runs_again() {
     let text = plain(&status, &[BUILDING]);
     assert!(
         text.contains(
-            "\n           ✖ an earlier attempt failed while assembling sessions: disk full; this one started…\n"
+            "\n           ✖ an earlier attempt failed while assembling sessions: disk full; started over\n"
         ),
         "{text}"
     );

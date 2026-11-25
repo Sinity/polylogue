@@ -290,7 +290,7 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
             .map(|step| format!(" while {}", clean(step)))
             .unwrap_or_default();
         lines.push(view.error(&format!(
-            "an earlier attempt failed{during}: {}; this one started again from the stored files",
+            "an earlier attempt failed{during}: {}; started over",
             failed.error
         )));
     }
