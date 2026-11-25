@@ -2393,6 +2393,7 @@ impl Engine {
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
                 };
                 outstanding -= 1;
+                progress.file_done(self, pass);
                 let d = match d {
                     pool::Finished::Range(done) => *done,
                     pool::Finished::Chain(done) => {

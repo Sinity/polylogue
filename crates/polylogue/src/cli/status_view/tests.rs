@@ -326,7 +326,7 @@ fn a_build_lists_its_steps_with_counts_times_and_estimates() {
         assembling,
         vec![
             finished("finding files", 95., None),
-            finished("storing files", 4_800., Some((STORED, CountUnit::Bytes))),
+            finished("storing files", 4_800., Some((10_687, CountUnit::Files))),
             finished(
                 "reading stored files",
                 4_133.5,
@@ -381,7 +381,7 @@ INDEX      building the index from 63.1 GiB of stored files: the archive had no 
            reads and searches answer \"index building\" until it is installed
            ##............................  7%   step 7 of 10, assembling sessions
            ✓ finding files            1m
-           ✓ storing files         1h20m  63.1 GiB
+           ✓ storing files         1h20m  10,687 files
            ✓ reading stored files   1h8m  63.1 GiB
            ✓ sorting texts           57m  9.26M records
            ✓ writing tables          46m  50.25M records
@@ -492,12 +492,12 @@ INDEX      building the index: the archive had no index
         "storing files",
         1,
         Some(StepCount {
-            done: 400 << 20,
-            total: Some(4 << 30),
-            unit: CountUnit::Bytes,
+            done: 120,
+            total: Some(559),
+            unit: CountUnit::Files,
         }),
     );
-    storing.per_second = Some(20_000_000.);
+    storing.per_second = Some(2.);
     storing.rate_seconds = Some(30.);
     let status = building(
         build,
@@ -505,7 +505,7 @@ INDEX      building the index: the archive had no index
     );
     assert!(
         plain(&status, &[BUILDING]).contains(
-            "▸ storing files            1m  400.0 MiB of 4.0 GiB\n                                          20.0 MB/s · estimate after a minute of progress\n"
+            "▸ storing files            1m  120 of 559 files\n                                          2.0 files/s · estimate after a minute of progress\n"
         ),
         "{}",
         plain(&status, &[BUILDING])

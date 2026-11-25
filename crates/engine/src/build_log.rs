@@ -16,9 +16,6 @@ pub(crate) const READING_STORED_FILES: &str = "reading stored files";
 
 /// How often a build logs its storing rate.
 const EVERY: Duration = Duration::from_secs(60);
-/// How often the storing step records its count; the work loop turns far
-/// more often.
-const COUNT_EVERY: Duration = Duration::from_secs(1);
 
 impl Engine {
     /// Records the steps a build runs once its files are stored.
@@ -66,10 +63,11 @@ impl Engine {
     }
 }
 
-/// What the minute's storing rate is measured from.
+/// What the minute's storing rate is measured from, and the files the
+/// storing step has finished.
 pub(crate) struct Progress {
     at: Instant,
-    counted: Option<Instant>,
+    files: u64,
     stored: u64,
     writer: f64,
     cpu: Vec<f64>,
@@ -80,37 +78,35 @@ impl Progress {
     pub(crate) fn start(pass: &Pass, cpu: Vec<f64>) -> Self {
         Self {
             at: Instant::now(),
-            counted: None,
+            files: 0,
             stored: pass.bytes_stored,
             writer: polylogue_store::timing::writer_seconds(),
             cpu,
         }
     }
 
-    /// During a build's storing step, records the bytes stored of those to
-    /// store and the workers' CPU, and logs the storing rate once a minute
-    /// has passed.
-    pub(crate) fn record(&mut self, engine: &Engine, pass: &Pass, cpu: impl FnOnce() -> Vec<f64>) {
-        if self
-            .counted
-            .is_some_and(|counted| counted.elapsed() < COUNT_EVERY)
-        {
+    /// During a build's storing step, records that one more file of the
+    /// pass's changed inputs is stored.
+    pub(crate) fn file_done(&mut self, engine: &Engine, pass: &Pass) {
+        if engine.archive.index_build().is_none() {
             return;
         }
-        self.counted = Some(Instant::now());
-        let Some(build) = engine.archive.index_build() else {
-            return;
-        };
+        self.files += 1;
         engine.archive.record_build_count(
             STORING_FILES,
             StepCount {
-                done: pass.bytes_stored,
-                total: Some(build.bytes.max(pass.bytes_stored)),
-                unit: CountUnit::Bytes,
+                done: self.files,
+                total: Some(pass.inputs_changed.max(self.files)),
+                unit: CountUnit::Files,
             },
         );
+    }
+
+    /// During a build's storing step, records the workers' CPU and logs the
+    /// storing rate once a minute has passed.
+    pub(crate) fn record(&mut self, engine: &Engine, pass: &Pass, cpu: impl FnOnce() -> Vec<f64>) {
         let elapsed = self.at.elapsed();
-        if elapsed < EVERY {
+        if elapsed < EVERY || engine.archive.index_build().is_none() {
             return;
         }
         let seconds = elapsed.as_secs_f64();
@@ -124,20 +120,18 @@ impl Progress {
         let writer = polylogue_store::timing::writer_seconds();
         polylogue_store::log!(
             progress,
-            "index: {STORING_FILES}: {:.0} of {:.0} MB stored, {:.1} MB/s over the last {:.0} s; \
-             database writer busy {:.0} s of them",
+            "index: {STORING_FILES}: {} of {} files stored, {:.0} MB added to the archive, \
+             {:.1} MB/s over the last {:.0} s; database writer busy {:.0} s of them",
+            self.files,
+            pass.inputs_changed.max(self.files),
             pass.bytes_stored as f64 / 1e6,
-            build.bytes.max(pass.bytes_stored) as f64 / 1e6,
             pass.bytes_stored.saturating_sub(self.stored) as f64 / 1e6 / seconds,
             seconds,
             writer - self.writer,
         );
-        *self = Self {
-            at: Instant::now(),
-            counted: self.counted,
-            stored: pass.bytes_stored,
-            writer,
-            cpu,
-        };
+        self.at = Instant::now();
+        self.stored = pass.bytes_stored;
+        self.writer = writer;
+        self.cpu = cpu;
     }
 }

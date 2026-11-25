@@ -1152,6 +1152,9 @@ pub(super) struct BuildJob {
     clock: Option<(PhaseClock, u64)>,
     /// The sessions composition will assemble, known once it starts.
     sessions: Option<u64>,
+    /// The counted step that ended in this build step, with its final
+    /// count, for `status` to record before the step that follows.
+    ended: Option<(&'static str, u64, CountUnit)>,
     /// The indexes dropped for the load, recreated after it; the shown
     /// tables' indexes composition does not keep are made after the
     /// streamed sessions (see [`SHOWN_TABLES`]).
@@ -1230,6 +1233,7 @@ impl BuildJob {
             phases: Vec::new(),
             clock: None,
             sessions: None,
+            ended: None,
             indexes: Vec::new(),
             after_stream: Vec::new(),
             search: None,
@@ -1248,6 +1252,9 @@ impl BuildJob {
             return;
         }
         if let Some((clock, items)) = self.clock.take() {
+            if let Some(unit) = clock.unit {
+                self.ended = Some((clock.name, items, unit));
+            }
             self.phases.push(clock.end(items));
         }
         if let Some(announce) = &self.announce {
@@ -1472,22 +1479,19 @@ impl Inner {
                 return Ok(true);
             }
         };
-        if let Some((clock, done)) = &job.clock
-            && let Some(unit) = clock.unit
-        {
-            let total = match clock.name {
+        let ended = job.ended.take();
+        let running = job
+            .clock
+            .as_ref()
+            .and_then(|(clock, done)| clock.unit.map(|unit| (clock.name, *done, unit)));
+        for (step, done, unit) in ended.into_iter().chain(running) {
+            let total = match step {
                 INDEXING => Some(job.indexes.len() as u64),
                 ASSEMBLING_SESSIONS => job.sessions,
                 _ => None,
             };
-            self.location.record_build_count(
-                clock.name,
-                StepCount {
-                    done: *done,
-                    total,
-                    unit,
-                },
-            );
+            self.location
+                .record_build_count(step, StepCount { done, total, unit });
         }
         Ok(false)
     }
