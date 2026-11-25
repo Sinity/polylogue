@@ -33,6 +33,12 @@ const REQUEST_POLL: Duration = Duration::from_millis(5);
 /// range holds about ten times its bytes.
 const PREPARED_PER_INPUT_BYTE: u64 = 10;
 
+/// A chain's rows in its worker's scratch index, held in memory until the
+/// chain ends, take about a sixth of its bytes: the reading tables of an
+/// index built from the reproduction archive hold 1.7 GB of rows and keys
+/// for 11.5 GB of chains.
+const SCRATCH_DIVISOR: u64 = 6;
+
 /// The memory the prepared readings in flight may take at once. A
 /// worker reads a chain one range at a time, so a chain holds at most a
 /// range's share; a worker waits before it starts a chain until that share
@@ -170,11 +176,10 @@ impl Prepare {
                 continue;
             };
             let (input, length) = (plan.input.clone(), plan.size);
-            let admitted = self
-                .admission
-                .admit(length.min(self.chunk) * PREPARED_PER_INPUT_BYTE, || {
-                    self.abandoned()
-                })?;
+            let admitted = self.admission.admit(
+                length.min(self.chunk) * PREPARED_PER_INPUT_BYTE + length / SCRATCH_DIVISOR,
+                || self.abandoned(),
+            )?;
             if run.is_none() {
                 let number = self.next_run.fetch_add(1, Ordering::Relaxed);
                 run = Some((

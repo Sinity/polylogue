@@ -18,12 +18,16 @@ use crate::archive::index_build::Paths;
 use crate::sorted_runs::{Merger, Sorter};
 use rusqlite::types::{Value, ValueRef};
 use std::collections::{BTreeSet, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-/// The scratch index's page cache, at most; the rest of a worker's memory
-/// is its sort buffer.
+/// The cache of a worker's content-group file, at most; the rest of a
+/// worker's memory is its sort buffer.
 const SCRATCH_CACHE: usize = 64 << 20;
+
+/// A worker's scratch index past this size after a chain is opened again,
+/// so that a large chain's rows leave no memory behind them.
+const SCRATCH_KEPT: i64 = 64 << 20;
 
 /// Sessions composed per transaction.
 const SESSIONS_PER_TRANSACTION: usize = 512;
@@ -595,15 +599,67 @@ pub struct BuildWorker {
     sorter: Sorter,
     number: u32,
     groups: u64,
+    /// The file the scratch index's content groups are written to.
     scratch: PathBuf,
+    archive_db: PathBuf,
+    cache: usize,
     /// How many bytes of prepared values a chain keeps (see
     /// [`OpenChain::values`]).
     value_memory: usize,
 }
 
+/// A worker's scratch index: its rows in memory, where a chain's writes
+/// look them up at random, and its content groups, which are only appended
+/// and read back in order, in an attached file. A chain's rows take memory
+/// in proportion to the chain, which the engine admits it by.
+fn open_scratch(
+    groups: &Path,
+    archive_db: &Path,
+    cache: usize,
+) -> Result<(Connection, Vec<Table>)> {
+    let conn = Connection::open_in_memory()?;
+    conn.pragma_update(None, "temp_store", "memory")?;
+    crate::schema::ensure_index(&conn)?;
+    // A chain's rows leave the scratch index table by table; the build
+    // file's references are those of its own load.
+    conn.pragma_update(None, "foreign_keys", false)?;
+    let tables = tables(&conn)?;
+    let declared: Vec<String> = conn
+        .prepare(
+            "SELECT sql FROM sqlite_schema WHERE tbl_name='content_group' AND sql IS NOT NULL
+             ORDER BY type='index'",
+        )?
+        .query_map([], |r| r.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    conn.execute_batch("DROP TABLE main.content_group")?;
+    crate::archive::index_build::remove_run(groups)?;
+    conn.execute(
+        "ATTACH DATABASE ?1 AS g",
+        [groups
+            .to_str()
+            .ok_or_else(|| StoreError::Invalid("a scratch path is not UTF-8".into()))?],
+    )?;
+    conn.pragma_update(Some("g"), "journal_mode", "off")?;
+    conn.pragma_update(Some("g"), "synchronous", "off")?;
+    conn.pragma_update(Some("g"), "cache_size", -((cache >> 10) as i64))?;
+    for sql in declared {
+        // The same table and index in the attached file, which the chain
+        // writer's unqualified name then finds.
+        let sql = sql
+            .replacen("TABLE content_group", "TABLE g.content_group", 1)
+            .replacen("INDEX content_group_hash", "INDEX g.content_group_hash", 1);
+        conn.execute_batch(&sql)?;
+    }
+    let uri = format!("file:{}?mode=ro", archive_db.display());
+    conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+    crate::source::views(&conn)?;
+    Ok((conn, tables))
+}
+
 impl BuildWorker {
     /// Creates worker `number` of the build in progress, holding at most
-    /// `memory` bytes in its scratch index's cache and its sort buffer.
+    /// `memory` bytes in its content-group file's cache and its sort
+    /// buffer.
     pub fn create(archive: &Archive, number: u64, memory: usize) -> Result<Self> {
         if archive.is_primary() || !archive.index_build.building() {
             return Err(StoreError::Invalid(
@@ -615,22 +671,10 @@ impl BuildWorker {
         let paths = Paths::of(&archive.root);
         std::fs::create_dir_all(&paths.runs)?;
         let scratch = paths.runs.join(format!("scratch-{number:06}.db"));
-        crate::archive::index_build::remove_run(&scratch)?;
-        let conn = Connection::open(&scratch)?;
-        conn.pragma_update(None, "journal_mode", "off")?;
-        conn.pragma_update(None, "synchronous", "off")?;
-        conn.pragma_update(None, "temp_store", "memory")?;
         let cache = SCRATCH_CACHE.min(memory / 2).max(16 << 20);
-        conn.pragma_update(None, "cache_size", -((cache >> 10) as i64))?;
-        crate::schema::ensure_index(&conn)?;
-        // A chain's rows leave the scratch index table by table; the build
-        // file's references are those of its own load.
-        conn.pragma_update(None, "foreign_keys", false)?;
-        let tables = tables(&conn)?;
-        let uri = format!("file:{}?mode=ro", archive.archive_db().display());
-        conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
-        crate::source::views(&conn)?;
-        let register = crate::archive::open_read(&archive.archive_db())?;
+        let archive_db = archive.archive_db();
+        let (conn, tables) = open_scratch(&scratch, &archive_db, cache)?;
+        let register = crate::archive::open_read(&archive_db)?;
         Ok(Self {
             conn,
             register,
@@ -644,6 +688,8 @@ impl BuildWorker {
             number,
             groups: 0,
             scratch,
+            archive_db,
+            cache,
             value_memory: memory.saturating_sub(cache).max(16 << 20) / 4,
         })
     }
@@ -660,6 +706,16 @@ impl BuildWorker {
         length: u64,
     ) -> Result<OpenChain<'w>> {
         crate::fault::check("index.build.prepare", &input.id)?;
+        let held: i64 = self.conn.query_row(
+            "SELECT page_count*page_size FROM pragma_page_count(), pragma_page_size()",
+            [],
+            |r| r.get(0),
+        )?;
+        if held > SCRATCH_KEPT {
+            let (conn, tables) = open_scratch(&self.scratch, &self.archive_db, self.cache)?;
+            self.conn = conn;
+            self.tables = tables;
+        }
         let tx = Transaction::new_unchecked(&self.conn, TransactionBehavior::Immediate)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;
         Ok(OpenChain {
