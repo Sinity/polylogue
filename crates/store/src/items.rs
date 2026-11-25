@@ -822,6 +822,9 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
                        AND m.session_pk = e.session_pk AND m.duplicate_of IS NULL)
          FROM event e WHERE e.pk = ?1 AND e.session_pk = ?2",
     )?;
+    // A later time places an event at the same entry or a later one, so the
+    // earliest time among events placed by time gives the earliest place.
+    let mut earliest_timed: Option<i64> = None;
     for &pk in &change.events {
         if let Some(seq) = header(conn, session_pk, "event_pk", pk)? {
             lower(&mut limit, seq);
@@ -838,10 +841,15 @@ fn start(conn: &Connection, session_pk: i64, change: &SessionChange) -> Result<S
                     keep(&mut limit, seq);
                 }
             }
-            Some((None, Some(at), _)) => keep(&mut limit, timed_place(conn, session_pk, at)?),
+            Some((None, Some(at), _)) => {
+                earliest_timed = Some(earliest_timed.map_or(at, |old| old.min(at)));
+            }
             // At the end.
             Some(_) => lower(&mut limit, end),
         }
+    }
+    if let Some(at) = earliest_timed {
+        keep(&mut limit, timed_place(conn, session_pk, at)?);
     }
     let Some(limit) = limit else {
         return Ok(Start::Links);
