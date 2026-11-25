@@ -501,6 +501,7 @@ fn remove_messages(out: &mut Output, removed: &[bool]) {
             .collect();
     }
     rekey(&mut out.hook_fields, &position);
+    rekey(&mut out.stored_fields, &position);
     rekey(&mut out.declared_injections, &position);
     rekey(&mut out.declared_attachment_bindings, &position);
     rekey(&mut out.message_order, &position);

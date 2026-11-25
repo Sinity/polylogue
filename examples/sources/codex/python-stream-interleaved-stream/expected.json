@@ -113,6 +113,16 @@
         "at_quality": "unknown"
       }
     ],
+    "stored_event_fields": {
+      "2": [
+        {
+          "end": 1638,
+          "field": "/replacement_history",
+          "pointer": "/payload/replacement_history",
+          "start": 1493
+        }
+      ]
+    },
     "links": [],
     "messages": [
       {

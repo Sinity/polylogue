@@ -442,6 +442,17 @@
         "offset": 3212
       }
     ],
+    "stored_fields": {
+      "3": [
+        {
+          "block": 0,
+          "end": 1630,
+          "field": "/signature",
+          "pointer": "/payload/encrypted_content",
+          "start": 1419
+        }
+      ]
+    },
     "sessions": [
       {
         "cwd": [

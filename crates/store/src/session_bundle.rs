@@ -85,14 +85,27 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let mut reader = crate::content::Reader::default();
         let mut statement = conn.prepare_cached(&format!(
-            "SELECT {} FROM event e LEFT JOIN session s ON s.pk=e.session_pk
+            "SELECT {},i.id,e.source_chain FROM event e LEFT JOIN session s ON s.pk=e.session_pk
+             JOIN input_ref i ON i.pk=e.input_pk
              WHERE e.session_pk=?1 ORDER BY e.seq,e.id",
             crate::events::SHOWN_EVENT_COLUMNS
         ))?;
-        statement
+        let events = statement
             .query_and_then([pk], |row| {
-                crate::events::shown_event(conn, &mut reader, row, 0)
+                Ok::<_, crate::StoreError>((
+                    crate::events::shown_event(conn, &mut reader, row, 0)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, i64>(7)?,
+                ))
             })?
+            .collect::<Result<Vec<_>>>()?;
+        // What a reading left in the stored bytes is shown from them.
+        events
+            .into_iter()
+            .map(|(mut event, input, chain)| {
+                self.resolve_stored_value(&input, chain, &mut event.data)?;
+                Ok(event)
+            })
             .collect()
     }
 

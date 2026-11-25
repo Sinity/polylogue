@@ -1050,3 +1050,63 @@ fn a_spawned_threads_nickname_in_its_spawn_source_titles_it() {
         && l.parent.native().as_str() == PARENT
         && l.child.native().as_str() == THREAD));
 }
+
+/// Encrypted reasoning and a compaction's restated history are named where
+/// the record holds them, so the index need not copy them; the place given
+/// reads back as the value parsed, for enveloped and 2025 bare items alike.
+#[test]
+fn encrypted_reasoning_and_restated_history_are_named_in_their_records() {
+    let pointed = |bytes: &[u8], field: &polylogue_model::StoredField| -> Json {
+        let record: Json =
+            serde_json::from_slice(bytes[field.start as usize..field.end as usize].trim_ascii())
+                .unwrap();
+        record.pointer(&field.pointer).unwrap().clone()
+    };
+    let mut records = turn();
+    records.push(env(
+        30,
+        "compacted",
+        json!({"message": "", "replacement_history": [
+            {"type": "message", "id": "msg_p1", "role": "user",
+             "content": [{"type": "input_text", "text": "restated prompt"}]}]}),
+    ));
+    let bytes = jsonl(&records);
+    let step = run(&rollout(), &mut ParserState::default(), &bytes, 0).unwrap();
+    let reasoning = step
+        .output
+        .messages
+        .iter()
+        .position(|row| matches!(row.message.blocks[0], Block::Thinking { .. }))
+        .unwrap();
+    let fields = &step.output.stored_fields[&reasoning];
+    assert_eq!(fields.len(), 1);
+    assert_eq!(
+        (fields[0].block, fields[0].field.as_str()),
+        (Some(0), "/signature")
+    );
+    assert_eq!(pointed(&bytes, &fields[0]), json!("gAAA"));
+    let compaction = step
+        .output
+        .events
+        .iter()
+        .position(|event| event.kind == "compaction")
+        .unwrap();
+    let fields = &step.output.stored_event_fields[&compaction];
+    assert_eq!(
+        (fields[0].block, fields[0].field.as_str()),
+        (None, "/replacement_history")
+    );
+    assert_eq!(
+        pointed(&bytes, &fields[0]),
+        step.output.events[compaction].data["replacement_history"]
+    );
+    // A 2025 rollout's items are bare.
+    let bare = jsonl(&[
+        json!({"id": THREAD, "timestamp": "2025-08-11T16:59:28.000Z", "instructions": null}),
+        json!({"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "gBBB"}),
+    ]);
+    let step = run(&rollout(), &mut ParserState::default(), &bare, 0).unwrap();
+    let fields = &step.output.stored_fields[&0];
+    assert_eq!(fields[0].pointer, "/encrypted_content");
+    assert_eq!(pointed(&bare, &fields[0]), json!("gBBB"));
+}

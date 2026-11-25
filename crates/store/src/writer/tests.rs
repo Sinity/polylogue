@@ -25,6 +25,7 @@ mod sinex_lifecycle;
 mod sparse_block_selection;
 mod stopping;
 mod stored_replay;
+mod stored_values;
 mod tool_durations;
 mod unreported_derive_failures;
 mod usage_range;

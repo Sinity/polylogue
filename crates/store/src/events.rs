@@ -61,7 +61,7 @@ impl Reader<'_> {
             .transpose()?;
         let Some(StoredEvent {
             pk,
-            event,
+            mut event,
             input,
             chain,
             end,
@@ -70,6 +70,15 @@ impl Reader<'_> {
         else {
             return Ok(None);
         };
+        // What the reading left in the stored bytes is shown from them; an
+        // event still reads while they are not at hand (docs/archive.md,
+        // content), with the value's place where the value would be.
+        if let Err(error) = self.resolve_stored_value(&input, chain, &mut event.data) {
+            crate::log!(
+                warning,
+                "event {id}: a value left in the stored bytes is not shown: {error}"
+            );
+        }
         let readings = crate::writer::readings::event_readings(self.conn()?, pk)?;
         let selected = readings
             .iter()

@@ -21,9 +21,10 @@ impl PreparedRows {
         &mut self,
         index: usize,
         message: &mut Message,
+        stored: &[polylogue_model::StoredField],
     ) -> Result<()> {
         let mut packer = crate::content::Packer::continuing(std::mem::take(&mut self.content));
-        let prepared = PreparedMessage::new(message, &mut packer);
+        let prepared = PreparedMessage::new(message, stored, &mut packer);
         self.content = packer.finish()?;
         self.messages[index] = prepared?;
         Ok(())
@@ -160,16 +161,23 @@ impl ParseStep {
         // the order the step states them.
         let mut content = crate::content::Packer::default();
         let block_selections = &self.output.block_selections;
+        let stored = &self.output.stored_fields;
         let Ok(messages) = self
             .output
             .messages
             .iter_mut()
             .enumerate()
-            .map(|(index, r)| match block_selections.get(&index) {
-                Some(block_selection) => {
-                    PreparedMessage::projected(&mut r.message, block_selection, &mut content)
+            .map(|(index, r)| {
+                let stored = stored.get(&index).map_or(&[][..], Vec::as_slice);
+                match block_selections.get(&index) {
+                    Some(block_selection) => PreparedMessage::projected(
+                        &mut r.message,
+                        block_selection,
+                        stored,
+                        &mut content,
+                    ),
+                    None => PreparedMessage::new(&mut r.message, stored, &mut content),
                 }
-                None => PreparedMessage::new(&mut r.message, &mut content),
             })
             .collect::<Result<Vec<_>>>()
         else {
@@ -184,11 +192,16 @@ impl ParseStep {
         else {
             return;
         };
+        let stored = &self.output.stored_event_fields;
         let Ok(events) = self
             .output
             .events
             .iter_mut()
-            .map(|event| crate::encoding::PreparedEvent::new(event, &mut content))
+            .enumerate()
+            .map(|(index, event)| {
+                let stored = stored.get(&index).map_or(&[][..], Vec::as_slice);
+                crate::encoding::PreparedEvent::new(event, stored, &mut content)
+            })
             .collect::<Result<Vec<_>>>()
         else {
             return;
@@ -248,8 +261,13 @@ impl ParseStep {
         for row in &mut self.output.documents {
             row.document.metadata = Json::Null;
         }
-        for event in &mut self.output.events {
-            event.data = Json::Null;
+        // An event whose data holds a value left in the stored bytes keeps
+        // its data: the index has only the value's place, and a producer of
+        // complete rows needs the value ([`Self::complete_output`]).
+        for (index, event) in self.output.events.iter_mut().enumerate() {
+            if !self.output.stored_event_fields.contains_key(&index) {
+                event.data = Json::Null;
+            }
         }
     }
 }
@@ -293,7 +311,9 @@ impl ParseStep {
             row.document.blocks = blocks;
         }
         for (index, event) in output.events.iter_mut().enumerate() {
-            event.data = self.prepared.event_data(index)?;
+            if !output.stored_event_fields.contains_key(&index) {
+                event.data = self.prepared.event_data(index)?;
+            }
         }
         Ok(output)
     }

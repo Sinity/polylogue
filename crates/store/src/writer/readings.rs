@@ -569,7 +569,13 @@ fn write_messages(
         let (prepared, packed, content) = match merged {
             Some((mut message, selection)) => {
                 let mut packer = crate::content::Packer::default();
-                let prepared = PreparedMessage::projected(&mut message, &selection, &mut packer)?;
+                let stored = step
+                    .output
+                    .stored_fields
+                    .get(&i)
+                    .map_or(&[][..], Vec::as_slice);
+                let prepared =
+                    PreparedMessage::projected(&mut message, &selection, stored, &mut packer)?;
                 let groups = packer.finish()?;
                 let content = crate::content::Stored::new(&groups).place(tx, prepared.content)?;
                 let mut packed = step.prepared.texts.clone();

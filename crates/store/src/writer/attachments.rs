@@ -82,8 +82,14 @@ fn normalize_using(
             }
             row.message.blocks = blocks;
             if prepared {
-                step.prepared
-                    .repack_message(message_index, &mut row.message)?;
+                step.prepared.repack_message(
+                    message_index,
+                    &mut row.message,
+                    step.output
+                        .stored_fields
+                        .get(&message_index)
+                        .map_or(&[][..], Vec::as_slice),
+                )?;
             }
         }
         for (document_index, row) in step.output.documents.iter_mut().enumerate() {

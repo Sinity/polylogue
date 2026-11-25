@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 11;
+pub const VERSION: u32 = 12;
 
 pub mod database;
 mod fields;
@@ -229,6 +229,10 @@ pub struct ParserState {
     /// The byte range of the record being read, for events.
     #[serde(skip)]
     current: Option<(u64, u64)>,
+    /// Where the record being read holds its item: under `/payload`, or
+    /// at its top in a 2025 rollout's bare item.
+    #[serde(skip)]
+    item_at: &'static str,
     #[serde(skip)]
     copied_session: Option<SessionId>,
     /// The previous record, when it was a stored user prompt: an item or a
@@ -694,10 +698,12 @@ impl Rollout {
                 });
             }
             parser_state.branch_point = Some(id);
+            stored_reasoning(out, ty, item, parser_state.item_at, &row);
             out.messages.push(row);
             return RecordOutcome::Used;
         }
         parser_state.last = Some(id);
+        stored_reasoning(out, ty, item, parser_state.item_at, &row);
         out.messages.push(row);
         RecordOutcome::Used
     }
@@ -1254,6 +1260,7 @@ impl Parser for Rollout {
         }
         let rec = unwrap(v);
         let p = rec.payload;
+        parser_state.item_at = if std::ptr::eq(p, v) { "" } else { "/payload" };
         if rec.ty != "session_meta"
             && let (Some(until), Some(ordinal)) = (parser_state.copied_until, rec.ordinal)
             && ordinal >= until.saturating_sub(1)
@@ -1466,8 +1473,22 @@ impl Parser for Rollout {
                         boundary.summary = parser_state.last.clone();
                     }
                 }
+                let restated = !boundary.replacement_history.is_null();
                 if let Some(event) = out.events.last_mut() {
                     event.data = serde_json::to_value(boundary).expect("boundary is JSON");
+                }
+                // The restated history stays in the stored record.
+                if restated && !out.events.is_empty() {
+                    out.stored_event_fields.insert(
+                        out.events.len() - 1,
+                        vec![polylogue_model::StoredField {
+                            block: None,
+                            field: "/replacement_history".into(),
+                            start: record.offset,
+                            end: record.offset + record.bytes.len() as u64,
+                            pointer: format!("{}/replacement_history", parser_state.item_at),
+                        }],
+                    );
                 }
                 outcome
             }
@@ -1505,3 +1526,31 @@ impl Parser for Rollout {
 
 #[cfg(test)]
 mod tests;
+
+/// Encrypted reasoning stays in the stored record: the message about to be
+/// added keeps where it is (docs/archive.md, content).
+fn stored_reasoning(out: &mut Output, ty: &str, item: &Json, item_at: &str, row: &MessageRow) {
+    if ty == "reasoning"
+        && item
+            .str("encrypted_content")
+            .is_some_and(|content| !content.is_empty())
+        && matches!(
+            row.message.blocks.first(),
+            Some(Block::Thinking {
+                signature: Some(_),
+                ..
+            })
+        )
+    {
+        out.stored_fields.insert(
+            out.messages.len(),
+            vec![polylogue_model::StoredField {
+                block: Some(0),
+                field: "/signature".into(),
+                start: row.offset,
+                end: row.end,
+                pointer: format!("{item_at}/encrypted_content"),
+            }],
+        );
+    }
+}

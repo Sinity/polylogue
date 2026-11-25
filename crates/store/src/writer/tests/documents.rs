@@ -222,8 +222,12 @@ fn document_hash_uses_sorted_json_and_does_not_change_message_hash_domain() {
         "Source text",
         Some("end_turn"),
     );
-    let prepared =
-        PreparedMessage::new(&mut message.clone(), &mut crate::content::Packer::default()).unwrap();
+    let prepared = PreparedMessage::new(
+        &mut message.clone(),
+        &[],
+        &mut crate::content::Packer::default(),
+    )
+    .unwrap();
     let mut archive_conn = serde_json::to_value(&message).unwrap();
     archive_conn.sort_all_objects();
     assert_eq!(

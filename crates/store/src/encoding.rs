@@ -270,13 +270,17 @@ pub(crate) struct PreparedMessage {
 impl PreparedMessage {
     /// Prepares a message holding every block of its version, laying its
     /// content into `packer`.
-    pub(crate) fn new(message: &mut Message, packer: &mut crate::content::Packer) -> Result<Self> {
+    pub(crate) fn new(
+        message: &mut Message,
+        stored: &[polylogue_model::StoredField],
+        packer: &mut crate::content::Packer,
+    ) -> Result<Self> {
         let block_selection = ShownBlocks {
             source_version: message.content_hash()?,
             block_count: message.blocks.len() as u64,
             block_ordinals: (0..message.blocks.len() as u64).collect(),
         };
-        Self::of(message, block_selection, packer)
+        Self::of(message, block_selection, stored, packer)
     }
 
     /// Prepares a message holding the blocks `block_selection` names of its
@@ -284,6 +288,7 @@ impl PreparedMessage {
     pub(crate) fn projected(
         message: &mut Message,
         block_selection: &ShownBlocks,
+        stored: &[polylogue_model::StoredField],
         packer: &mut crate::content::Packer,
     ) -> Result<Self> {
         block_selection.validate(message.blocks.len())?;
@@ -292,15 +297,16 @@ impl PreparedMessage {
         {
             return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
         }
-        Self::of(message, block_selection.clone(), packer)
+        Self::of(message, block_selection.clone(), stored, packer)
     }
 
     fn of(
         message: &mut Message,
         block_selection: ShownBlocks,
+        stored: &[polylogue_model::StoredField],
         packer: &mut crate::content::Packer,
     ) -> Result<Self> {
-        let content = packer.add(&message_content(message)?)?;
+        let content = packer.add(&message_content(message, stored)?)?;
         Ok(Self {
             id: message.id.clone(),
             time: time_bytes(message.at, message.time_accuracy())?,
@@ -328,15 +334,31 @@ pub(crate) fn text_hashes(blocks: &[Block]) -> Vec<Option<[u8; 32]>> {
 /// A message's content as stored once (docs/archive.md, content): its fields
 /// without blocks, then each block with its text moved out and the block's
 /// structured value apart from it (empty when it has none), as the parts of
-/// one piece ([`crate::content::join_parts`]). The message is given back as
-/// it was.
-pub(crate) fn message_content(message: &mut Message) -> Result<Vec<u8>> {
+/// one piece ([`crate::content::join_parts`]). A value the parser left in
+/// the stored bytes (`stored`) is its marker ([`crate::content::stored_marker`]).
+/// The message is given back as it was.
+pub(crate) fn message_content(
+    message: &mut Message,
+    stored: &[polylogue_model::StoredField],
+) -> Result<Vec<u8>> {
     let blocks = std::mem::take(&mut message.blocks);
     let header = serde_json::to_vec(&*message);
     message.blocks = blocks;
     let mut parts = vec![header?];
-    for block in &message.blocks {
-        parts.push(block_bytes(block)?);
+    for (n, block) in message.blocks.iter().enumerate() {
+        let left: Vec<_> = stored
+            .iter()
+            .filter(|field| field.block == Some(n as u64))
+            .collect();
+        if left.is_empty() {
+            parts.push(block_bytes(block)?);
+        } else {
+            let mut body: serde_json::Value = serde_json::from_slice(&block_bytes(block)?)?;
+            for field in left {
+                crate::content::leave_stored(&mut body, field)?;
+            }
+            parts.push(serde_json::to_vec(&body)?);
+        }
         parts.push(
             block_data(block)
                 .map(serde_json::to_vec)
@@ -401,9 +423,20 @@ pub(crate) struct PreparedEvent {
 }
 
 impl PreparedEvent {
-    pub(crate) fn new(event: &mut Event, packer: &mut crate::content::Packer) -> Result<Self> {
-        let (content_id, data) = event_bytes(event)?;
+    pub(crate) fn new(
+        event: &mut Event,
+        stored: &[polylogue_model::StoredField],
+        packer: &mut crate::content::Packer,
+    ) -> Result<Self> {
+        let (content_id, mut data) = event_bytes(event)?;
         let hash = value_hash(&event.data)?;
+        if !stored.is_empty() {
+            let mut value = event.data.clone();
+            for field in stored {
+                crate::content::leave_stored(&mut value, field)?;
+            }
+            data = serde_json::to_vec(&value)?;
+        }
         let fields = event_fields(event)?;
         let mut piece = fields;
         let fields_length = piece.len() as u64;

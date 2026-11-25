@@ -81,6 +81,8 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         mut sessions,
         mut messages,
         hook_fields,
+        stored_fields,
+        stored_event_fields,
         declared_injections,
         declared_attachment_bindings,
         mut documents,
@@ -125,6 +127,8 @@ fn append_output(output: &mut polylogue_sources::Output, next: polylogue_sources
         repo_lookups
     );
     shift!(hook_fields, message_base);
+    shift!(stored_fields, message_base);
+    shift!(stored_event_fields, event_base);
     shift!(declared_injections, message_base);
     shift!(declared_attachment_bindings, message_base);
     shift!(message_order, message_base);
