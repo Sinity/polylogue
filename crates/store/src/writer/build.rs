@@ -823,8 +823,11 @@ fn compose_records(
     {
         // In each chain's order, so that its texts are read group by group.
         let mut statement = tx.prepare_cached(
-            "SELECT message_id,session_id,source_start,source_end,seq,record_position,order_time,route,
-                 completion,id_kind='content',hash,body,layout FROM message_parse ORDER BY seq,record_position",
+            "SELECT r.message_id,r.session_id,r.source_start,r.source_end,r.seq,r.record_position,
+                 r.order_time,r.route,r.completion,r.id_kind='content',r.hash,b.body,r.layout
+             FROM message_parse r JOIN message_parse_body b
+                 ON b.input_pk=r.input_pk AND b.chain=r.chain AND b.message_id=r.message_id
+             ORDER BY r.seq,r.record_position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {

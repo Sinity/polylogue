@@ -111,6 +111,7 @@ const READING_TABLES: &[&str] = &[
     "session_record",
     "session_alias",
     "message_parse",
+    "message_parse_body",
     "parse_text",
     "message_alias",
     "event_parse",
@@ -579,12 +580,12 @@ fn write_messages(
             let route = row.route(chain.route);
             tx.prepare_cached(
                 "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_end,seq,record_position,
-                     at,route,completion,id_kind,hash,body,layout,response_key,content_name,committed)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+                     at,route,completion,id_kind,hash,layout,response_key,content_name,committed)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
                  ON CONFLICT(input_pk,chain,message_id) DO UPDATE SET session_id=excluded.session_id,
                      source_start=excluded.source_start,source_end=excluded.source_end,seq=excluded.seq,
                      record_position=excluded.record_position,at=excluded.at,route=excluded.route,
-                     completion=excluded.completion,id_kind=excluded.id_kind,hash=excluded.hash,body=excluded.body,
+                     completion=excluded.completion,id_kind=excluded.id_kind,hash=excluded.hash,
                      layout=excluded.layout,response_key=excluded.response_key,content_name=excluded.content_name,
                      committed=excluded.committed",
             )?
@@ -602,7 +603,6 @@ fn write_messages(
                 Completion::of(message, route).as_str(),
                 if row.id_kind == IdKind::Content { "content" } else { "native" },
                 prepared.hash.as_slice(),
-                prepared.body,
                 layout,
                 row.response,
                 crate::chain_names::content_name(row),
@@ -611,10 +611,15 @@ fn write_messages(
             kept.entry(session.clone()).or_default().push(place);
         } else {
             tx.prepare_cached(
-                "UPDATE message_parse SET body=?4,layout=?5 WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
+                "UPDATE message_parse SET layout=?4 WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
             )?
-            .execute(params![chain.input_pk, chain.chain, id, prepared.body, layout])?;
+            .execute(params![chain.input_pk, chain.chain, id, layout])?;
         }
+        tx.prepare_cached(
+            "INSERT INTO message_parse_body(input_pk,chain,message_id,body) VALUES (?1,?2,?3,?4)
+             ON CONFLICT(input_pk,chain,message_id) DO UPDATE SET body=excluded.body",
+        )?
+        .execute(params![chain.input_pk, chain.chain, id, prepared.body])?;
         write_injection_fields(tx, chain, step, i, &id)?;
         touched.messages.insert((session, id));
     }
@@ -961,9 +966,13 @@ pub(crate) fn read_message(
 ) -> Result<Option<(Message, polylogue_model::bundle::ShownBlocks)>> {
     let stored: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = conn
         .prepare_cached(
-            "SELECT body,layout,hash FROM message_parse WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
+            "SELECT b.body,r.layout,r.hash FROM message_parse r JOIN message_parse_body b
+                 ON b.input_pk=r.input_pk AND b.chain=r.chain AND b.message_id=r.message_id
+             WHERE r.input_pk=?1 AND r.chain=?2 AND r.message_id=?3",
         )?
-        .query_row(params![input_pk, chain, message], |r| <(_, _, _)>::try_from(r))
+        .query_row(params![input_pk, chain, message], |r| {
+            <(_, _, _)>::try_from(r)
+        })
         .optional()?;
     let Some((body, layout, hash)) = stored else {
         return Ok(None);
