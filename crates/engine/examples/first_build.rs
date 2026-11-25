@@ -10,14 +10,32 @@
 //! `--from-record` stores the corpus first, unmeasured, and removes the
 //! index; the measured pass then builds the index from the stored record.
 //!
-//! `--generate-mb` writes a corpus shaped like the operator's: file sizes
-//! drawn from the measured size list (`stat.tsv` from the corpus
-//! measurement: kind, bytes, ...; Claude Code session and subagent rows),
-//! records in Claude Code's layout (one record per content block, tool
-//! calls with results of varied size, progress and system records), and
-//! prose from a vocabulary large enough for the search index to be real.
-//! Then one pass of the loop builds an archive from nothing, and the run
-//! prints input MB/s and the index size against the input.
+//! `--generate-mb` writes a corpus shaped like the operator's, with prose
+//! from a vocabulary large enough for the search index to be real. Then one
+//! pass of the loop builds an archive from nothing, and the run prints input
+//! MB/s and the index size against the input.
+//!
+//! `--shape claude-code` (the default) writes Claude Code sessions: file
+//! sizes drawn from the measured size list (`--sizes stat.tsv` from the
+//! corpus measurement: kind, bytes, ...; its `claude-jsonl` and
+//! `claude-subagent` rows), records in Claude Code's layout (one record per
+//! content block, tool calls with results of varied size, progress records).
+//!
+//! `--shape codex` writes Codex rollouts under `.codex/sessions/`, with
+//! bytes shared out as in real rollouts: about 38% `item_completed` events,
+//! mostly command executions that carry their output three times; 25% call
+//! outputs carrying it once more; 11% reasoning items, mostly an opaque
+//! encrypted string; 10% compactions restating the session's earlier
+//! messages; 6% token counts, which are most event records by count; and
+//! the rest calls, messages, their mirroring events and turn contexts. File
+//! sizes come from the `codex-rollout` rows of `--sizes` when given, else
+//! from a log-normal (median 1.5 MB, sigma 1.7) under which the 1% largest
+//! files hold about a quarter of the bytes. `--largest-mb N` adds one
+//! rollout of N MB, counted in the total, for one very long chain.
+//!
+//! ```text
+//! first_build --shape codex --generate-mb 4000 --largest-mb 600 --from-record --dir <scratch>
+//! ```
 
 #[path = "support/mod.rs"]
 mod support;
@@ -48,6 +66,15 @@ impl Rng {
     fn heavy(&mut self, typical: u64, max: u64) -> u64 {
         let r = (self.next() % 10_000) as f64 / 10_000.0;
         ((typical as f64) * (-(1.0 - r).ln()).powf(2.0)).min(max as f64) as u64 + 1
+    }
+    /// Uniform in (0, 1].
+    fn unit(&mut self) -> f64 {
+        ((self.next() >> 11) + 1) as f64 / (1u64 << 53) as f64
+    }
+    /// Log-normal with the given median and sigma (Box-Muller).
+    fn log_normal(&mut self, median: f64, sigma: f64) -> u64 {
+        let z = (-2.0 * self.unit().ln()).sqrt() * (std::f64::consts::TAU * self.unit()).cos();
+        (median * (sigma * z).exp()) as u64
     }
 }
 
@@ -139,18 +166,20 @@ fn prose_h(rng: &mut Rng, typical: u64, max: u64) -> String {
     prose(rng, len)
 }
 
+/// Writes one JSON record as a line; returns its length.
+fn emit(w: &mut BufWriter<fs::File>, v: serde_json::Value) -> std::io::Result<u64> {
+    let line = v.to_string();
+    w.write_all(line.as_bytes())?;
+    w.write_all(b"\n")?;
+    Ok(line.len() as u64 + 1)
+}
+
 /// Writes one Claude Code session file of about `target` bytes.
 fn session_file(path: &Path, session: &str, target: u64, rng: &mut Rng) -> std::io::Result<u64> {
     let mut w = BufWriter::new(fs::File::create(path)?);
     let mut written = 0u64;
     let mut n = 0u64;
     let mut parent = serde_json::Value::Null;
-    let emit = |w: &mut BufWriter<fs::File>, v: serde_json::Value| -> std::io::Result<u64> {
-        let line = v.to_string();
-        w.write_all(line.as_bytes())?;
-        w.write_all(b"\n")?;
-        Ok(line.len() as u64 + 1)
-    };
     let base = |kind: &str, uuid: &str, parent: &serde_json::Value| {
         serde_json::json!({
             "type": kind, "uuid": uuid, "parentUuid": parent, "sessionId": session,
@@ -214,32 +243,314 @@ fn session_file(path: &Path, session: &str, target: u64, rng: &mut Rng) -> std::
     Ok(written)
 }
 
-fn generate(home: &Path, sizes_path: &Path, total_mb: u64) -> std::io::Result<u64> {
-    let mut sizes: Vec<u64> = fs::read_to_string(sizes_path)?
-        .lines()
-        .filter_map(|l| {
-            let mut f = l.split('\t');
-            let kind = f.next()?;
-            let size: u64 = f.next()?.parse().ok()?;
-            matches!(kind, "claude-jsonl" | "claude-subagent").then_some(size)
-        })
-        .collect();
+/// Random base64, as incompressible as a real encrypted reasoning string.
+fn opaque(rng: &mut Rng, len: u64) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity(len as usize + 10);
+    while (s.len() as u64) < len {
+        let mut bits = rng.next();
+        for _ in 0..10 {
+            s.push(ALPHABET[(bits & 63) as usize] as char);
+            bits >>= 6;
+        }
+    }
+    s
+}
+
+/// One Codex rollout being written: outer records `{timestamp, ordinal,
+/// type, payload}`, and what its compactions restate.
+struct Rollout<'a> {
+    w: BufWriter<fs::File>,
+    rng: &'a mut Rng,
+    thread: String,
+    start: jiff::Timestamp,
+    seconds: i64,
+    ordinal: u64,
+    written: u64,
+    compacted: u64,
+    tokens: u64,
+    /// The latest user and assistant message items, for compactions.
+    history: std::collections::VecDeque<serde_json::Value>,
+}
+
+impl Rollout<'_> {
+    fn record(&mut self, kind: &str, payload: serde_json::Value) -> std::io::Result<u64> {
+        self.seconds += 1 + self.rng.below(20) as i64;
+        let at = jiff::Timestamp::from_second(self.start.as_second() + self.seconds).unwrap();
+        let n = emit(
+            &mut self.w,
+            serde_json::json!({"timestamp": at.to_string(), "ordinal": self.ordinal, "type": kind, "payload": payload}),
+        )?;
+        self.ordinal += 1;
+        self.written += n;
+        Ok(n)
+    }
+
+    fn event(&mut self, payload: serde_json::Value) -> std::io::Result<u64> {
+        self.record("event_msg", payload)
+    }
+
+    fn item(&mut self, payload: serde_json::Value) -> std::io::Result<u64> {
+        self.record("response_item", payload)
+    }
+
+    fn token_count(&mut self) -> std::io::Result<u64> {
+        let last = 20_000 + self.rng.below(100_000);
+        self.tokens += last;
+        let usage = |input: u64| {
+            serde_json::json!({"input_tokens": input, "cached_input_tokens": input / 10 * 9,
+            "output_tokens": input / 50, "reasoning_output_tokens": input / 100, "total_tokens": input + input / 50})
+        };
+        let used = self.rng.below(100);
+        self.event(serde_json::json!({"type": "token_count",
+            "info": {"total_token_usage": usage(self.tokens), "last_token_usage": usage(last), "model_context_window": 258_400},
+            "rate_limits": {"limit_id": "codex", "plan_type": "pro",
+                "primary": {"used_percent": used, "window_minutes": 300, "resets_at": 1_788_300_000},
+                "secondary": {"used_percent": used / 4, "window_minutes": 10_080, "resets_at": 1_788_800_000}}}))
+    }
+
+    /// A user or assistant message item, remembered for compactions.
+    fn message(&mut self, role: &str, id: String, text: String) -> std::io::Result<u64> {
+        let part = if role == "user" {
+            "input_text"
+        } else {
+            "output_text"
+        };
+        let item = serde_json::json!({"type": "message", "id": id, "role": role,
+            "content": [{"type": part, "text": text}]});
+        self.history.push_back(item.clone());
+        if self.history.len() > 64 {
+            self.history.pop_front();
+        }
+        self.item(item)
+    }
+
+    /// One tool call with its output: a code-mode script whose command the
+    /// harness records with its output three times, a direct command whose
+    /// completion record carries only its status, or a patch.
+    fn call(&mut self, id: &str) -> std::io::Result<()> {
+        let command = format!("cargo test -p crate{}", self.rng.below(20));
+        let output = prose_h(self.rng, 2_400, 4_000_000);
+        let exit_code = if self.rng.below(8) == 0 { 101 } else { 0 };
+        let duration =
+            serde_json::json!({"secs": self.rng.below(90), "nanos": self.rng.below(1_000_000_000)});
+        let (thread, turn) = (self.thread.clone(), format!("turn-{}", self.ordinal));
+        let completed = move |item: serde_json::Value| {
+            serde_json::json!({"type": "item_completed",
+            "thread_id": thread, "turn_id": turn, "item": item})
+        };
+        match self.rng.below(8) {
+            0..4 => {
+                self.item(
+                    serde_json::json!({"type": "custom_tool_call", "id": format!("ctc_{id}"),
+                    "call_id": id, "name": "exec", "status": "completed",
+                    "input": format!("text(await tools.exec_command({{cmd:\"{command}\"}}));\n")}),
+                )?;
+                self.event(completed(serde_json::json!({"type": "CommandExecution",
+                    "id": format!("{id}_cmd"), "command": command, "cwd": "/workspace/project",
+                    "status": "completed", "exit_code": exit_code, "duration": duration,
+                    "aggregated_output": output, "stdout": output, "formatted_output": output})))?;
+                self.item(serde_json::json!({"type": "custom_tool_call_output", "id": format!("ctco_{id}"),
+                    "call_id": id, "output": [{"type": "input_text", "text": "Script completed\nOutput:\n"},
+                                              {"type": "input_text", "text": output}]}))?;
+            }
+            4..7 => {
+                let arguments =
+                    serde_json::json!({"cmd": command, "workdir": "/workspace/project"});
+                self.item(
+                    serde_json::json!({"type": "function_call", "id": format!("fc_{id}"),
+                    "call_id": id, "name": "exec_command", "arguments": arguments.to_string()}),
+                )?;
+                self.event(completed(serde_json::json!({"type": "CommandExecution", "id": id,
+                    "command": command, "status": "completed", "exit_code": exit_code, "duration": duration})))?;
+                self.item(serde_json::json!({"type": "function_call_output", "call_id": id,
+                    "output": format!("Chunk ID: {id}\nWall time: 1.5 seconds\nProcess exited with code {exit_code}\nOutput:\n{output}")}))?;
+            }
+            _ => {
+                let file = format!("src/module{}.rs", self.rng.below(50));
+                let patch = format!(
+                    "*** Begin Patch\n*** Update File: {file}\n@@\n-{}\n+{}\n*** End Patch\n",
+                    prose_h(self.rng, 200, 20_000),
+                    prose_h(self.rng, 200, 20_000)
+                );
+                self.item(
+                    serde_json::json!({"type": "custom_tool_call", "id": format!("ctc_{id}"),
+                    "call_id": id, "name": "apply_patch", "status": "completed", "input": patch}),
+                )?;
+                self.event(completed(
+                    serde_json::json!({"type": "FileChange", "id": id, "status": "completed",
+                    "changes": {file.clone(): {"type": "update"}}}),
+                ))?;
+                self.item(serde_json::json!({"type": "custom_tool_call_output", "id": format!("ctco_{id}"),
+                    "call_id": id, "output": format!("Success. Updated the following files:\nM {file}")}))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One turn: context, prompt, reasoning and calls, the answer, and a
+    /// compaction when compactions are behind their share of the bytes.
+    fn turn(&mut self, n: u64) -> std::io::Result<()> {
+        self.record(
+            "turn_context",
+            serde_json::json!({"cwd": "/workspace/project", "model": "gpt-6.1-sol",
+            "effort": "high", "summary": "auto", "approval_policy": "never",
+            "sandbox_policy": {"type": "danger-full-access"}, "timezone": "UTC"}),
+        )?;
+        if n == 0 {
+            let text = format!(
+                "# AGENTS.md instructions for /workspace/project\n\n{}",
+                prose(self.rng, 6_000)
+            );
+            self.message("user", format!("msg_{}_agents", self.thread), text)?;
+        }
+        let prompt = prose_h(self.rng, 300, 30_000);
+        self.message("user", format!("msg_{}_{n}_u", self.thread), prompt.clone())?;
+        self.event(serde_json::json!({"type": "user_message", "message": prompt}))?;
+        self.token_count()?;
+        for c in 0..1 + self.rng.below(6) {
+            let summary: Vec<_> = (0..self.rng.below(3))
+                .map(|_| serde_json::json!({"type": "summary_text", "text": prose_h(self.rng, 150, 2_000)}))
+                .collect();
+            let length = self.rng.heavy(1_200, 100_000);
+            let encrypted = opaque(self.rng, length);
+            self.item(
+                serde_json::json!({"type": "reasoning", "id": format!("rs_{}_{n}_{c}", self.thread),
+                "summary": summary, "encrypted_content": encrypted}),
+            )?;
+            self.token_count()?;
+            self.call(&format!("call_{}_{n}_{c}", self.thread))?;
+            self.token_count()?;
+        }
+        let answer = prose_h(self.rng, 400, 20_000);
+        self.message(
+            "assistant",
+            format!("msg_{}_{n}_a", self.thread),
+            answer.clone(),
+        )?;
+        self.event(serde_json::json!({"type": "agent_message", "message": answer}))?;
+        self.token_count()?;
+        self.event(serde_json::json!({"type": "task_complete", "turn_id": format!("turn-{n}")}))?;
+        if self.compacted * 10 < self.written {
+            let summary = prose_h(self.rng, 1_500, 20_000);
+            let history: Vec<_> = self.history.iter().cloned().collect();
+            let n = self.record(
+                "compacted",
+                serde_json::json!({"message": summary, "replacement_history": history}),
+            )?;
+            self.compacted += n;
+        }
+        Ok(())
+    }
+}
+
+/// Writes one Codex rollout of about `target` bytes under `sessions`.
+fn rollout_file(sessions: &Path, index: u64, target: u64, rng: &mut Rng) -> std::io::Result<u64> {
+    let r = rng.next();
+    let thread = format!(
+        "{:08x}-{:04x}-7{:03x}-8{:03x}-{:012x}",
+        r >> 32,
+        r & 0xffff,
+        index & 0xfff,
+        (index >> 12) & 0xfff,
+        rng.next() & 0xffff_ffff_ffff
+    );
+    let base: jiff::Timestamp = "2026-09-01T00:00:00Z".parse().unwrap();
+    let start = jiff::Timestamp::from_second(base.as_second() + index as i64 * 5_000).unwrap();
+    let dir = sessions.join(start.strftime("%Y/%m/%d").to_string());
+    fs::create_dir_all(&dir)?;
+    let name = format!(
+        "rollout-{}-{thread}.jsonl",
+        start.strftime("%Y-%m-%dT%H-%M-%S")
+    );
+    let mut rollout = Rollout {
+        w: BufWriter::new(fs::File::create(dir.join(name))?),
+        rng,
+        thread,
+        start,
+        seconds: 0,
+        ordinal: 0,
+        written: 0,
+        compacted: 0,
+        tokens: 0,
+        history: Default::default(),
+    };
+    let meta = serde_json::json!({"id": rollout.thread, "timestamp": start.to_string(),
+        "cwd": "/workspace/project", "originator": "codex_cli_rs", "cli_version": "0.170.0", "source": "cli",
+        "thread_source": "user", "model_provider": "openai",
+        "base_instructions": {"text": prose(rollout.rng, 2_000)},
+        "git": {"commit_hash": format!("{:016x}", rollout.rng.next()), "branch": "master",
+                "repository_url": "https://example.com/project.git"}});
+    rollout.record("session_meta", meta)?;
+    let mut n = 0;
+    while rollout.written < target {
+        rollout.turn(n)?;
+        n += 1;
+    }
+    rollout.w.flush()?;
+    Ok(rollout.written)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    ClaudeCode,
+    Codex,
+}
+
+fn generate(
+    home: &Path,
+    shape: Shape,
+    sizes_path: Option<&Path>,
+    total_mb: u64,
+    largest_mb: Option<u64>,
+) -> std::io::Result<u64> {
+    let kinds: &[&str] = match shape {
+        Shape::ClaudeCode => &["claude-jsonl", "claude-subagent"],
+        Shape::Codex => &["codex-rollout"],
+    };
+    let mut sizes: Vec<u64> = match sizes_path {
+        Some(path) => fs::read_to_string(path)?
+            .lines()
+            .filter_map(|l| {
+                let mut f = l.split('\t');
+                let kind = f.next()?;
+                let size: u64 = f.next()?.parse().ok()?;
+                kinds.contains(&kind).then_some(size)
+            })
+            .collect(),
+        None if shape == Shape::Codex => Vec::new(),
+        None => panic!("--sizes <stat.tsv> for the Claude Code shape"),
+    };
     sizes.sort_unstable();
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let project = home.join(".claude/projects/-generated");
-    fs::create_dir_all(&project)?;
-    let target = total_mb << 20;
+    let sessions = home.join(".codex/sessions");
+    let mut largest = largest_mb.map(|mb| mb << 20);
+    let target = (total_mb << 20).max(largest.unwrap_or(0));
     let mut total = 0;
     let mut i = 0;
     while total < target {
-        let size = sizes[rng.below(sizes.len() as u64) as usize].max(500);
-        let session = format!("{:08x}-gen{i}", rng.next() as u32);
-        total += session_file(
-            &project.join(format!("{session}.jsonl")),
-            &session,
-            size,
-            &mut rng,
-        )?;
+        let drawn = largest.take().unwrap_or_else(|| {
+            if sizes.is_empty() {
+                rng.log_normal(1.5e6, 1.7)
+            } else {
+                sizes[rng.below(sizes.len() as u64) as usize]
+            }
+        });
+        let size = drawn.min(target - total).max(500);
+        total += match shape {
+            Shape::ClaudeCode => {
+                fs::create_dir_all(&project)?;
+                let session = format!("{:08x}-gen{i}", rng.next() as u32);
+                session_file(
+                    &project.join(format!("{session}.jsonl")),
+                    &session,
+                    size,
+                    &mut rng,
+                )?
+            }
+            Shape::Codex => rollout_file(&sessions, i, size, &mut rng)?,
+        };
         i += 1;
     }
     eprintln!("generated {i} files, {:.1} MB", total as f64 / 1e6);
@@ -295,8 +606,14 @@ fn main() {
                 .expect("--home or --generate-mb")
                 .parse()
                 .unwrap();
-            let sizes = PathBuf::from(arg("--sizes").expect("--sizes <stat.tsv>"));
-            generate(&home, &sizes, mb).unwrap();
+            let shape = match arg("--shape").as_deref() {
+                None | Some("claude-code") => Shape::ClaudeCode,
+                Some("codex") => Shape::Codex,
+                Some(other) => panic!("--shape claude-code|codex, not {other}"),
+            };
+            let sizes = arg("--sizes").map(PathBuf::from);
+            let largest = arg("--largest-mb").map(|mb| mb.parse().expect("--largest-mb MB"));
+            generate(&home, shape, sizes.as_deref(), mb, largest).unwrap();
             home
         }
     };
@@ -459,21 +776,24 @@ fn capture_only(home: &Path, root: &Path) -> polylogue_store::Result<()> {
     let (archive, _lock) = Archive::open_or_create(root)?;
     let mut writer = Writer::start(&archive)?;
     let (mut inputs, mut bytes) = (0_u64, 0_u64);
-    for entry in fs::read_dir(home.join(".claude/projects/-generated"))? {
-        let path = entry?.path();
-        if path
-            .extension()
-            .is_none_or(|extension| extension != "jsonl")
-        {
-            continue;
-        }
+    let mut files = Vec::new();
+    jsonl_files(&home.join(".claude/projects/-generated"), &mut files)?;
+    jsonl_files(&home.join(".codex/sessions"), &mut files)?;
+    for path in files {
         let prepared = archive.prepare_bytes(fs::File::open(&path)?)?;
         let length = prepared.len();
         let name = path.file_name().unwrap().to_string_lossy();
+        // Inputs named as capture names them: a rollout by its thread.
+        let (id, format) = match polylogue_sources::codex::File::from_path(&path) {
+            Some(polylogue_sources::codex::File::Rollout {
+                thread: Some(thread),
+            }) => (format!("codex:rollout:{thread}"), "codex"),
+            _ => (format!("generated:{name}"), "claude-code"),
+        };
         let batch = Batch {
             input: InputKey {
-                id: format!("generated:{name}"),
-                format: "claude-code".into(),
+                id,
+                format: format.into(),
                 route: polylogue_model::Route::Live,
             },
             change: Change::First,
@@ -507,6 +827,26 @@ fn capture_only(home: &Path, root: &Path) -> polylogue_store::Result<()> {
         "{}",
         serde_json::json!({"stored_inputs":inputs, "stored_bytes":bytes})
     );
+    Ok(())
+}
+
+/// The `.jsonl` files under `dir`, recursively, in name order; none when
+/// `dir` is missing.
+fn jsonl_files(dir: &Path, files: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Ok(());
+    };
+    let mut paths: Vec<PathBuf> = entries
+        .map(|e| e.map(|e| e.path()))
+        .collect::<Result<_, _>>()?;
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            jsonl_files(&path, files)?;
+        } else if path.extension().is_some_and(|e| e == "jsonl") {
+            files.push(path);
+        }
+    }
     Ok(())
 }
 
