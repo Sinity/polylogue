@@ -82,73 +82,79 @@ impl Terminal {
 }
 
 /// Diagnostic: after 85 s print every descendant process's thread stacks.
-fn watchdog(step: std::sync::Arc<std::sync::Mutex<String>>) {
+fn watchdog(
+    step: std::sync::Arc<std::sync::Mutex<String>>,
+    fired: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
     std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_secs(85));
-        let me = std::process::id();
-        let mut parents = std::collections::HashMap::new();
-        for entry in std::fs::read_dir("/proc").unwrap().flatten() {
-            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
-                continue;
-            };
-            let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-                continue;
-            };
-            let after = stat.rsplit_once(") ").unwrap().1;
-            let ppid: u32 = after.split_whitespace().nth(1).unwrap().parse().unwrap();
-            parents.insert(pid, ppid);
-        }
-        let descends = |mut pid: u32| loop {
-            match parents.get(&pid) {
-                Some(&p) if p == me => return true,
-                Some(&p) if p > 1 => pid = p,
-                _ => return false,
+        for wait in [40, 30] {
+            std::thread::sleep(std::time::Duration::from_secs(wait));
+            fired.store(true, std::sync::atomic::Ordering::SeqCst);
+            let me = std::process::id();
+            let mut parents = std::collections::HashMap::new();
+            for entry in std::fs::read_dir("/proc").unwrap().flatten() {
+                let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                    continue;
+                };
+                let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+                    continue;
+                };
+                let after = stat.rsplit_once(") ").unwrap().1;
+                let ppid: u32 = after.split_whitespace().nth(1).unwrap().parse().unwrap();
+                parents.insert(pid, ppid);
             }
-        };
-        eprintln!("DIAG step: {}", step.lock().unwrap());
-        for (&pid, _) in parents.iter().filter(|(pid, _)| descends(**pid)) {
-            let cmd = std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
-                .unwrap_or_default()
-                .replace('\0', " ");
-            eprintln!("DIAG process {pid}: {cmd}");
-            if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
-                for task in tasks.flatten() {
-                    let t = task.path();
-                    let comm = std::fs::read_to_string(t.join("comm")).unwrap_or_default();
-                    let wchan = std::fs::read_to_string(t.join("wchan")).unwrap_or_default();
-                    let stat = std::fs::read_to_string(t.join("stat")).unwrap_or_default();
-                    eprintln!(
-                        "DIAG   task {:?} {} wchan={} stat={}",
-                        task.file_name(),
-                        comm.trim(),
-                        wchan,
-                        stat.trim()
-                    );
+            let descends = |mut pid: u32| loop {
+                match parents.get(&pid) {
+                    Some(&p) if p == me => return true,
+                    Some(&p) if p > 1 => pid = p,
+                    _ => return false,
+                }
+            };
+            eprintln!("DIAG step: {}", step.lock().unwrap());
+            for (&pid, _) in parents.iter().filter(|(pid, _)| descends(**pid)) {
+                let cmd = std::fs::read_to_string(format!("/proc/{pid}/cmdline"))
+                    .unwrap_or_default()
+                    .replace('\0', " ");
+                eprintln!("DIAG process {pid}: {cmd}");
+                if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+                    for task in tasks.flatten() {
+                        let t = task.path();
+                        let comm = std::fs::read_to_string(t.join("comm")).unwrap_or_default();
+                        let wchan = std::fs::read_to_string(t.join("wchan")).unwrap_or_default();
+                        let stat = std::fs::read_to_string(t.join("stat")).unwrap_or_default();
+                        eprintln!(
+                            "DIAG   task {:?} {} wchan={} stat={}",
+                            task.file_name(),
+                            comm.trim(),
+                            wchan,
+                            stat.trim()
+                        );
+                    }
+                }
+                if cmd.contains("polylogue") {
+                    let out = std::process::Command::new("sudo")
+                        .args([
+                            "-n",
+                            "gdb",
+                            "-p",
+                            &pid.to_string(),
+                            "-batch",
+                            "-ex",
+                            "thread apply all bt 40",
+                        ])
+                        .output();
+                    match out {
+                        Ok(out) => eprintln!(
+                            "DIAG gdb {pid}:\n{}\n{}",
+                            String::from_utf8_lossy(&out.stdout),
+                            String::from_utf8_lossy(&out.stderr)
+                        ),
+                        Err(e) => eprintln!("DIAG gdb failed: {e}"),
+                    }
                 }
             }
-            if cmd.contains("polylogue") {
-                let out = std::process::Command::new("sudo")
-                    .args([
-                        "-n",
-                        "gdb",
-                        "-p",
-                        &pid.to_string(),
-                        "-batch",
-                        "-ex",
-                        "thread apply all bt 40",
-                    ])
-                    .output();
-                match out {
-                    Ok(out) => eprintln!(
-                        "DIAG gdb {pid}:\n{}\n{}",
-                        String::from_utf8_lossy(&out.stdout),
-                        String::from_utf8_lossy(&out.stderr)
-                    ),
-                    Err(e) => eprintln!("DIAG gdb failed: {e}"),
-                }
-            }
+            eprintln!("DIAG done");
         }
-        eprintln!("DIAG done");
     });
 }
 
@@ -167,9 +173,25 @@ fn readme_examples_run_against_morrow_copy_b() {
     readme_once();
 }
 
+#[test]
+fn readme_examples_run_against_morrow_copy_c() {
+    readme_once();
+}
+
+#[test]
+fn readme_examples_run_against_morrow_copy_d() {
+    readme_once();
+}
+
+#[test]
+fn readme_examples_run_against_morrow_copy_e() {
+    readme_once();
+}
+
 fn readme_once() {
     let step = std::sync::Arc::new(std::sync::Mutex::new(String::from("start")));
-    watchdog(std::sync::Arc::clone(&step));
+    let fired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    watchdog(std::sync::Arc::clone(&step), std::sync::Arc::clone(&fired));
     let mark = |name: &str| {
         *step.lock().unwrap() = format!("{name} at {:?}", std::time::SystemTime::now());
     };
@@ -294,6 +316,10 @@ fn readme_once() {
                 "session:claude-ai:0b9d4e6c-0008-4000-8000-000000000008".to_owned()
             ),
         ]
+    );
+    assert!(
+        !fired.load(std::sync::atomic::Ordering::SeqCst),
+        "DIAG: slow run"
     );
 }
 
