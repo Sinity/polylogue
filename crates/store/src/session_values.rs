@@ -184,8 +184,8 @@ fn prompt_place(conn: &Connection, pk: i64, session_pk: i64) -> Result<Option<Or
             "SELECT m.session_order, m.id FROM message m
              WHERE m.pk = ?1 AND m.session_pk = ?2 AND m.written_by = 'human'
                AND m.prompt_kind = 'prose'
-               AND EXISTS (SELECT 1 FROM block b JOIN text t ON t.id = b.text_id
-                           WHERE b.message_pk = m.pk AND b.kind = 'text')",
+               AND EXISTS (SELECT 1 FROM block b
+                           WHERE b.message_pk = m.pk AND b.kind = 'text' AND b.text_id IS NOT NULL)",
         )?
         .query_row([pk, session_pk], |row| <(_, _)>::try_from(row))
         .optional()?)
@@ -197,8 +197,8 @@ fn first_prompt(conn: &Connection, session_pk: i64) -> Result<Option<i64>> {
         .prepare_cached(
             "SELECT m.pk FROM message m
              WHERE m.session_pk = ?1 AND m.written_by = 'human' AND m.prompt_kind = 'prose'
-               AND EXISTS (SELECT 1 FROM block b JOIN text t ON t.id = b.text_id
-                           WHERE b.message_pk = m.pk AND b.kind = 'text')
+               AND EXISTS (SELECT 1 FROM block b
+                           WHERE b.message_pk = m.pk AND b.kind = 'text' AND b.text_id IS NOT NULL)
              ORDER BY m.session_order, m.id LIMIT 1",
         )?
         .query_row([session_pk], |row| row.get(0))
