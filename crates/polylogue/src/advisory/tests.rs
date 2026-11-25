@@ -109,6 +109,10 @@ fn judge(w: &TestDaemon, reference: &RevisionReference, id: &str) {
 }
 pub(crate) fn selected(w: &TestDaemon, prompt: &str, cwd: &str) -> Prepared {
     let reader = w.daemon.reads.reader().unwrap();
+    // Selection reads the scope index without waiting; the daemon's scope
+    // worker brings it forward after a commit on its own thread, so the
+    // test brings it to this reader's snapshot before selecting.
+    w.daemon.scope.refresh(&reader).unwrap();
     prepare(
         &reader,
         &w.daemon.scope,
