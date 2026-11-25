@@ -122,10 +122,10 @@ impl Reader<'_> {
             })?
             .next()
             .transpose()?;
-        if let Some(event) = relocated {
-            if let Some(dir) = event.data.str("relocatedCwd").filter(|dir| !dir.is_empty()) {
-                return Ok(Some(dir.to_owned()));
-            }
+        if let Some(event) = relocated
+            && let Some(dir) = event.data.str("relocatedCwd").filter(|dir| !dir.is_empty())
+        {
+            return Ok(Some(dir.to_owned()));
         }
         let cwd: Vec<String> = cwd_json
             .map(|json| serde_json::from_str(&json))
