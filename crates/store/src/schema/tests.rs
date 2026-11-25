@@ -18,8 +18,8 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 6);
-    assert_eq!(INDEX_VERSION, 11);
-    assert_eq!(PRIMARY_INDEX_VERSION, 14);
+    assert_eq!(INDEX_VERSION, 12);
+    assert_eq!(PRIMARY_INDEX_VERSION, 15);
     for (create, expected) in [
         (
             ensure_archive as fn(&Connection) -> Result<()>,
