@@ -52,12 +52,15 @@ impl Terminal {
     }
 
     /// Runs `line` in a shell where `polylogue` is the binary under test,
-    /// standard output on the terminal; returns what it printed.
+    /// standard output on the terminal; returns what it printed. The
+    /// terminal is read while the command runs: a terminal holds only what
+    /// its buffers fit, and a command writing more waits until it is read.
     fn run(&mut self, env: &crate::Fixture, line: &str) -> String {
+        use std::os::fd::AsRawFd;
         let mut shell = std::process::Command::new("sh");
         env.environment(&mut shell);
         let script = format!("polylogue() {{ \"$POLYLOGUE_TEST_BINARY\" \"$@\"; }}\n{line}");
-        let output = shell
+        let mut child = shell
             .env("POLYLOGUE_TEST_BINARY", crate::BIN)
             .env_remove("NO_COLOR")
             .env("NO_COLOR", "")
@@ -65,19 +68,52 @@ impl Terminal {
             .stdin(self.slave.try_clone().unwrap())
             .stdout(self.slave.try_clone().unwrap())
             .stderr(Stdio::piped())
-            .output()
+            .spawn()
             .unwrap();
-        assert!(output.status.success(), "{line}: {output:?}");
+        let mut stderr = child.stderr.take().unwrap();
+        let errors = std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            stderr.read_to_end(&mut bytes).map(|_| bytes)
+        });
         let mut bytes = Vec::new();
+        let status = loop {
+            self.read_available(&mut bytes);
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            let mut event = libc::pollfd {
+                fd: self.master.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: event is writable, and the master stays open through poll.
+            #[allow(unsafe_code)]
+            let _ready = unsafe { libc::poll(&mut event, 1, 20) };
+        };
+        // What the command wrote before it ended.
+        self.read_available(&mut bytes);
+        let stderr = errors.join().unwrap().unwrap();
+        let text = String::from_utf8(bytes).unwrap().replace("\r\n", "\n");
+        assert!(
+            status.success(),
+            "{line}: {status}; stderr:\n{}\nterminal:\n{text}",
+            String::from_utf8_lossy(&stderr)
+        );
+        text
+    }
+
+    /// Appends what the terminal holds now; the master never blocks.
+    fn read_available(&mut self, bytes: &mut Vec<u8>) {
         let mut chunk = [0; 4096];
         loop {
             match self.master.read(&mut chunk) {
-                Ok(0) => break,
+                Ok(0) => return,
                 Ok(n) => bytes.extend_from_slice(&chunk[..n]),
-                Err(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => return,
+                Err(error) => panic!("read the terminal: {error}"),
             }
         }
-        String::from_utf8(bytes).unwrap().replace("\r\n", "\n")
     }
 }
 
