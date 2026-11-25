@@ -63,10 +63,14 @@ const MESSAGE: u8 = 1;
 const EVENT: u8 = 2;
 const OUTCOME: u8 = 3;
 
-/// The tables composition writes, and those of their indexes that composing
-/// a session from the stream reads: its rows in order, the replies to each
-/// message and the message an event follows, for its item index, counts and
-/// values. Their other indexes are made after the stream.
+/// The tables composition writes, and those of their indexes kept while it
+/// composes from the stream: those it reads (its rows in order, the replies
+/// to each message and the message an event follows, for its item index,
+/// counts and values), and those whose first column is the session, message
+/// or event a row belongs to. Composition makes those keys in the order it
+/// writes, so each such entry lands at its index's end and costs no read;
+/// made after the stream, each would scan its whole table again. Their
+/// other indexes are made after the stream.
 const SHOWN_TABLES: &[&str] = &[
     "message",
     "message_route",
@@ -75,14 +79,22 @@ const SHOWN_TABLES: &[&str] = &[
     "event",
     "session_item",
 ];
-const STREAM_READS: &[&str] = &[
-    "message_id",
-    "message_session",
-    "message_parent",
-    "block_message",
-    "event_session",
-    "tool_call_session",
-];
+const STREAM_READS: &[&str] = &["message_id"];
+const COMPOSED_IN_ORDER: &[&str] = &["session_pk", "message_pk", "event_pk"];
+
+/// The table an index statement is on, and its first column.
+fn index_target(sql: &str) -> Option<(&str, &str)> {
+    let (_, on) = sql.split_once(" ON ")?;
+    let (table, columns) = on.split_once('(')?;
+    let first = columns.split([',', ')']).next()?;
+    Some((table.trim().trim_matches('"'), first.trim()))
+}
+
+/// Whether an index on a shown table is kept while composition writes it.
+fn kept_while_composing(name: &str, sql: &str) -> bool {
+    STREAM_READS.contains(&name)
+        || index_target(sql).is_some_and(|(_, first)| COMPOSED_IN_ORDER.contains(&first))
+}
 
 /// The indexes a build's load concerns, as (name, statement, table): every
 /// one on a stored table but the one that makes an equal text group one row.
@@ -1074,9 +1086,9 @@ pub(super) struct BuildJob {
     phases: Vec<BuildPhase>,
     clock: Option<(PhaseClock, u64)>,
     /// The indexes dropped for the load, recreated after it; the shown
-    /// tables' indexes composing from the stream does not read are made
-    /// after the streamed sessions (see [`STREAM_READS`]).
-    indexes: Vec<(String, String)>,
+    /// tables' indexes composition does not keep are made after the
+    /// streamed sessions (see [`SHOWN_TABLES`]).
+    indexes: Vec<String>,
     after_stream: Vec<String>,
     /// The full-text files, filled while the build composes.
     pub(super) search: Option<crate::text_rows::SearchFill>,
@@ -1223,12 +1235,20 @@ impl Inner {
                     if kept.iter().any(|(held, ..)| *held == name) {
                         continue;
                     }
-                    if SHOWN_TABLES.contains(&table.as_str())
-                        && !STREAM_READS.contains(&name.as_str())
+                    if SHOWN_TABLES.contains(&table.as_str()) && !kept_while_composing(&name, &sql)
                     {
                         job.after_stream.push(sql);
                     } else {
-                        job.indexes.push((name, sql));
+                        job.indexes.push(sql);
+                    }
+                }
+                // Of the indexes a build makes at its end, those composition
+                // fills in order are made before it; the end finds them made.
+                for sql in crate::schema::built_at_end_sql()? {
+                    if index_target(&sql).is_some_and(|(table, first)| {
+                        SHOWN_TABLES.contains(&table) && COMPOSED_IN_ORDER.contains(&first)
+                    }) {
+                        job.indexes.push(sql);
                     }
                 }
                 job.search = Some(crate::text_rows::SearchFill::start(&self.index)?);
@@ -1290,7 +1310,7 @@ impl Inner {
                 }
             }
             Stage::Indexes(next, loaded) => match job.indexes.get(next) {
-                Some((_, sql)) => {
+                Some(sql) => {
                     self.index.execute(sql, [])?;
                     job.count(1);
                     Stage::Indexes(next + 1, loaded)
