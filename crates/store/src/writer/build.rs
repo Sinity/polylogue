@@ -1830,8 +1830,10 @@ impl Inner {
     /// bytes the current step holds of its own and what the process holds
     /// already outside that cache (its other connections' caches, the
     /// program, what the allocator kept).
-    /// A step that creates indexes (`sorting`) gives the cache half of that:
-    /// SQLite's sorter takes up to as much as the cache beside it.
+    /// A step that creates indexes (`sorting`) gives the cache a third of
+    /// that: SQLite's sorter keeps records in memory up to the cache's size
+    /// beside it, in a buffer that grows by doubling, so up to twice that
+    /// while it grows.
     fn size_build_cache(&self, held: impl TryInto<u64>, sorting: bool) -> Result<()> {
         let held = held.try_into().unwrap_or(u64::MAX);
         let outside = status_bytes("VmRSS:").saturating_sub(cache_used(&self.index));
@@ -1840,7 +1842,7 @@ impl Inner {
             .memory_budget()
             .build_cache_beside(held.saturating_add(outside));
         if sorting {
-            mib = (mib / 2).max(32);
+            mib = (mib / 3).max(32);
         }
         self.index
             .pragma_update(None, "cache_size", -(mib * 1024))?;
