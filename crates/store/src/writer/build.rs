@@ -196,11 +196,12 @@ impl PhaseClock {
         };
         crate::log!(
             info,
-            "index: {} took {:.1} s; {} {}; {:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
+            "index: {} took {:.1} s; {}{:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
             phase.name,
             phase.seconds,
-            phase.items,
-            self.unit.map_or("items", CountUnit::word),
+            self.unit
+                .map(|unit| format!("{} {}; ", phase.items, unit.word()))
+                .unwrap_or_default(),
             phase.bytes_read as f64 / 1e6,
             phase.bytes_written as f64 / 1e6,
             phase.peak_memory as f64 / 1e6,

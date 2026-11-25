@@ -260,21 +260,19 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
     let progress = status.build_progress.as_ref();
     let why = match progress.and_then(|progress| progress.reason.as_ref()) {
         None => "the archive had no index".to_owned(),
-        Some(IndexRebuildReason::SchemaDiffers) => "the index's tables changed".to_owned(),
+        Some(IndexRebuildReason::SchemaDiffers) => "its tables changed".to_owned(),
         Some(IndexRebuildReason::FormatVersion { found, wanted }) => {
-            format!("the index format changed from version {found} to {wanted}")
+            format!("its format changed ({found} to {wanted})")
         }
-        Some(IndexRebuildReason::OlderFormat) => {
-            "the index was written by an older Polylogue".to_owned()
-        }
+        Some(IndexRebuildReason::OlderFormat) => "it was written by an older Polylogue".to_owned(),
     };
     let mut lines = vec![if build.bytes > 0 {
         format!(
-            "building the index from {} of stored files, because {why}",
+            "building the index from {} of stored files: {why}",
             bytes(build.bytes)
         )
     } else {
-        format!("building the index, because {why}")
+        format!("building the index: {why}")
     }];
     lines.push(if build.serving_previous {
         "reads and searches use the previous index until the new one is installed".into()
@@ -299,7 +297,7 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
         progress.finished.len() + usize::from(progress.current.is_some()) + progress.to_come.len();
     if let Some(current) = &progress.current
         && let Some(count) = &current.count
-        && let Some(total) = count.total
+        && let Some(total) = count.total.filter(|total| *total > 0)
     {
         lines.push(format!(
             "{}  {}   step {} of {steps}, {}",
@@ -343,7 +341,7 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
                 ),
                 None => format!("{} so far", amount(count.done, count.unit)),
             },
-            None => "not counted".into(),
+            None => "this step has no progress count".into(),
         }];
         // Reading counts bytes; the files read go beside them.
         if current
@@ -358,11 +356,20 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
                 count(build.chains)
             ));
         }
+        lines.push(format!(
+            "▸ {:<width$} {:>6}  {}",
+            clean(&current.name),
+            short_duration(view.now_ms.saturating_sub(current.since.unix_ms())),
+            parts.join(" · ")
+        ));
+        // The rate and estimate on a line of their own, so a narrow
+        // terminal does not cut them.
+        let mut parts = Vec::new();
         if let (Some(rate), Some(count)) = (current.per_second, &current.count) {
             parts.push(if rate > 0. {
                 match count.unit {
                     CountUnit::Bytes => format!("{:.1} MB/s", rate / 1e6),
-                    _ => format!("{}/s", decimal(rate)),
+                    unit => format!("{} {}/s", decimal(rate), unit.word()),
                 }
             } else {
                 format!(
@@ -382,12 +389,9 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
                 parts.push("estimate after a minute of progress".into());
             }
         }
-        lines.push(format!(
-            "▸ {:<width$} {:>6}  {}",
-            clean(&current.name),
-            short_duration(view.now_ms.saturating_sub(current.since.unix_ms())),
-            parts.join(" · ")
-        ));
+        if !parts.is_empty() {
+            lines.push(format!("  {:<width$} {:>6}  {}", "", "", parts.join(" · ")));
+        }
     }
     for step in &progress.to_come {
         lines.push(format!("· {}", clean(step)));
