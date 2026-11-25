@@ -2,69 +2,79 @@ use super::*;
 
 const MB: u64 = 1_000_000;
 
-fn build(bytes_read: u64, chains_read: u64) -> IndexBuild {
-    IndexBuild {
-        serving_previous: false,
-        chains: 1_000,
-        chains_read,
-        bytes: 10 * MB,
-        bytes_read,
+fn bytes(done: u64) -> StepCount {
+    StepCount {
+        done,
+        total: Some(10 * MB),
+        unit: CountUnit::Bytes,
     }
 }
 
-/// Samples every ten seconds through `seconds`, with the bytes and chains
-/// read by then.
-fn sampled(start: Instant, seconds: u64, read: impl Fn(u64) -> (u64, u64)) -> (Record, IndexBuild) {
+fn since(seconds: i64) -> Timestamp {
+    Timestamp::from_unix_ms(1_700_000_000_000 + seconds * 1000).unwrap()
+}
+
+/// A record in step `reading`, counted every ten seconds through `seconds`
+/// with the bytes done by then; the writer is busy half of each second.
+fn sampled(start: Instant, seconds: u64, done: impl Fn(u64) -> u64) -> Record {
     let mut record = Record::default();
+    record.step("reading", since(0));
     for at in (0..=seconds).step_by(10) {
-        let (bytes, chains) = read(at);
-        record.sample(start + Duration::from_secs(at), bytes, chains, || {
-            at as f64 / 2.
-        });
+        record.count(
+            start + Duration::from_secs(at),
+            "reading",
+            bytes(done(at)),
+            || at as f64 / 2.,
+        );
     }
-    let (bytes, chains) = read(seconds);
-    (record, build(bytes, chains))
+    record
+}
+
+fn current(progress: &BuildProgress) -> &CurrentStep {
+    progress.current.as_ref().expect("a current step")
 }
 
 #[test]
 fn under_a_minute_of_samples_gives_a_rate_and_no_estimate() {
     let start = Instant::now();
-    let (record, build) = sampled(start, 50, |at| (at * 1_000, at));
-    let progress = record.report(start + Duration::from_secs(50), &build, 25.);
-    assert_eq!(progress.bytes_per_second, Some(1_000.));
-    assert_eq!(progress.rate_seconds, Some(50.));
-    assert_eq!(progress.eta_seconds, None);
-    assert!(!progress.rate_varying);
+    let record = sampled(start, 50, |at| at * 1_000);
+    let progress = record.report(start + Duration::from_secs(50), 25.);
+    let step = current(&progress);
+    assert_eq!(step.per_second, Some(1_000.));
+    assert_eq!(step.rate_seconds, Some(50.));
+    assert_eq!(step.eta_seconds, None);
+    assert!(!step.rate_varying);
 }
 
 #[test]
 fn a_zero_rate_gives_no_estimate() {
     let start = Instant::now();
-    let (record, build) = sampled(start, 120, |_| (3 * MB, 7));
-    let progress = record.report(start + Duration::from_secs(120), &build, 60.);
-    assert_eq!(progress.bytes_per_second, Some(0.));
-    assert_eq!(progress.chains_per_second, Some(0.));
-    assert_eq!(progress.eta_seconds, None);
+    let record = sampled(start, 120, |_| 3 * MB);
+    let progress = record.report(start + Duration::from_secs(120), 60.);
+    assert_eq!(current(&progress).per_second, Some(0.));
+    assert_eq!(current(&progress).eta_seconds, None);
 }
 
 #[test]
 fn the_rate_covers_the_last_five_minutes_and_estimates_what_is_left() {
     let start = Instant::now();
-    // 1 kB/s for five minutes, then 3 kB/s and one chain a second.
-    let read = |at: u64| {
+    // 1 kB/s for five minutes, then 3 kB/s.
+    let done = |at: u64| {
         if at <= 300 {
-            (at * 1_000, 0)
+            at * 1_000
         } else {
-            (300_000 + (at - 300) * 3_000, at - 300)
+            300_000 + (at - 300) * 3_000
         }
     };
-    let (record, build) = sampled(start, 600, read);
-    let progress = record.report(start + Duration::from_secs(600), &build, 300.);
-    assert_eq!(progress.bytes_per_second, Some(3_000.));
-    assert_eq!(progress.chains_per_second, Some(1.));
-    assert_eq!(progress.rate_seconds, Some(300.));
-    assert!(!progress.rate_varying);
-    // 10 MB less the 1.2 MB read, at 3 kB/s.
+    let record = sampled(start, 600, done);
+    let progress = record.report(start + Duration::from_secs(600), 300.);
+    let step = current(&progress);
+    assert_eq!(step.per_second, Some(3_000.));
+    assert_eq!(step.rate_seconds, Some(300.));
+    assert!(!step.rate_varying);
+    // 10 MB less the 1.2 MB done, at 3 kB/s.
+    assert_eq!(step.eta_seconds, Some(2_934));
+    // No step is to come, so the step's estimate is the whole build's.
     assert_eq!(progress.eta_seconds, Some(2_934));
     // Half a writer second per second, over the last minute.
     assert_eq!(progress.writer_busy, Some(0.5));
@@ -74,104 +84,172 @@ fn the_rate_covers_the_last_five_minutes_and_estimates_what_is_left() {
 fn a_rate_that_changes_within_the_span_gives_no_estimate() {
     let start = Instant::now();
     // 1 kB/s for the first half of the five minutes, 3 kB/s for the second.
-    let read = |at: u64| {
+    let done = |at: u64| {
         if at <= 150 {
-            (at * 1_000, 0)
+            at * 1_000
         } else {
-            (150_000 + (at - 150) * 3_000, 0)
+            150_000 + (at - 150) * 3_000
         }
     };
-    let (record, build) = sampled(start, 300, read);
-    let progress = record.report(start + Duration::from_secs(300), &build, 150.);
-    assert_eq!(progress.bytes_per_second, Some(2_000.));
-    assert!(progress.rate_varying);
-    assert_eq!(progress.eta_seconds, None);
+    let record = sampled(start, 300, done);
+    let progress = record.report(start + Duration::from_secs(300), 150.);
+    let step = current(&progress);
+    assert_eq!(step.per_second, Some(2_000.));
+    assert!(step.rate_varying);
+    assert_eq!(step.eta_seconds, None);
+}
+
+#[test]
+fn a_step_without_a_total_has_a_rate_and_no_estimate() {
+    let start = Instant::now();
+    let mut record = Record::default();
+    record.step("sorting", since(0));
+    for at in (0..=120).step_by(10) {
+        let count = StepCount {
+            done: at * 100,
+            total: None,
+            unit: CountUnit::Records,
+        };
+        record.count(start + Duration::from_secs(at), "sorting", count, || 0.);
+    }
+    let progress = record.report(start + Duration::from_secs(120), 0.);
+    let step = current(&progress);
+    assert_eq!(step.per_second, Some(100.));
+    assert_eq!(step.eta_seconds, None);
+    assert!(!step.rate_varying);
 }
 
 #[test]
 fn samples_are_ten_seconds_apart_and_cover_fifteen_minutes() {
     let start = Instant::now();
     let mut record = Record::default();
+    record.step("reading", since(0));
     for at in 0..=1_800 {
-        record.sample(start + Duration::from_secs(at), at, 0, || 0.);
+        record.count(start + Duration::from_secs(at), "reading", bytes(at), || 0.);
     }
     assert_eq!(record.samples.len(), 91);
+    assert_eq!(record.samples.front().map(|sample| sample.done), Some(900));
+    assert_eq!(record.samples.back().map(|sample| sample.done), Some(1_800));
+}
+
+/// Steps finish as the next starts, with the time between and their last
+/// count; the plan's steps after the current one are to come, and a
+/// planned step the build passed over is not.
+#[test]
+fn steps_finish_in_order_and_the_plan_names_those_to_come() {
+    let start = Instant::now();
+    let mut record = Record::default();
+    record.plan(&["reading", "sorting", "indexing", "installing"]);
+    record.step("storing", since(0));
+    // The writer's count of a step can come before the step is recorded.
+    let indexes = StepCount {
+        done: 3,
+        total: Some(40),
+        unit: CountUnit::Indexes,
+    };
+    record.count(start, "indexing", indexes.clone(), || 0.);
+    let progress = record.report(start, 0.);
+    assert_eq!(current(&progress).name, "storing");
     assert_eq!(
-        record.samples.front().map(|sample| sample.bytes_read),
-        Some(900)
+        progress.to_come,
+        ["reading", "sorting", "indexing", "installing"]
     );
+    record.step("reading", since(90));
+    record.step("reading", since(95));
+    // Nothing to sort: the build goes from reading to indexing.
+    record.step("indexing", since(150));
+    let progress = record.report(start, 0.);
     assert_eq!(
-        record.samples.back().map(|sample| sample.bytes_read),
-        Some(1_800)
+        progress.finished,
+        [
+            FinishedStep {
+                name: "storing".into(),
+                seconds: 90.,
+                count: None,
+            },
+            FinishedStep {
+                name: "reading".into(),
+                seconds: 60.,
+                count: None,
+            },
+        ]
     );
+    assert_eq!(current(&progress).name, "indexing");
+    assert_eq!(current(&progress).since, since(150));
+    assert_eq!(current(&progress).count, Some(indexes));
+    assert_eq!(progress.to_come, ["installing"]);
+    // With a step to come there is no estimate for the whole build.
+    assert_eq!(progress.eta_seconds, None);
 }
 
 #[test]
-fn the_phase_and_the_workers_are_reported_as_recorded() {
+fn a_failed_attempt_starts_the_steps_again_and_stays_reported() {
     let start = Instant::now();
-    let since = Timestamp::from_unix_ms(1_700_000_000_000).unwrap();
     let mut record = Record::default();
-    record.phase("read chains", since);
+    record.plan(&["reading", "assembling"]);
+    record.step("reading", since(0));
+    record.step("assembling", since(60));
+    record.failed("disk full".into());
+    record.step("reading", since(70));
+    let progress = record.report(start, 0.);
+    assert_eq!(
+        progress.failed_attempt,
+        Some(FailedAttempt {
+            step: Some("assembling".into()),
+            error: "disk full".into(),
+        })
+    );
+    assert!(progress.finished.is_empty());
+    assert_eq!(current(&progress).name, "reading");
+    assert_eq!(progress.to_come, ["assembling"]);
+}
+
+#[test]
+fn the_workers_are_reported_while_recent() {
+    let start = Instant::now();
+    let mut record = Record::default();
     record.workers(start, vec![3., 4.5]);
-    let progress = record.report(start + Duration::from_secs(30), &build(0, 0), 0.);
-    assert_eq!(progress.phase.as_deref(), Some("read chains"));
-    assert_eq!(progress.phase_since, Some(since));
+    let progress = record.report(start + Duration::from_secs(30), 0.);
     assert_eq!(progress.worker_cpu_seconds, [3., 4.5]);
-    assert_eq!(progress.bytes_per_second, None, "no sample yet");
+    assert_eq!(progress.current, None);
     // Worker figures older than two minutes are no longer reported.
-    let later = record.report(start + Duration::from_secs(150), &build(0, 0), 0.);
+    let later = record.report(start + Duration::from_secs(150), 0.);
     assert!(later.worker_cpu_seconds.is_empty());
 }
 
-/// Progress recorded once a minute, read between two steps: the time since
-/// the last step is not taken for slower work.
-/// The writer's count is reported for the phase it was recorded in, and
-/// not once the build has moved to another.
-#[test]
-fn a_writer_phase_progress_is_reported_while_its_phase_runs() {
-    let start = Instant::now();
-    let mut record = Record::default();
-    let since = Timestamp::from_unix_ms(1_000).unwrap();
-    let counted = PhaseProgress {
-        done: 7,
-        total: None,
-        unit: "sessions".into(),
-    };
-    record.phase_progress("compose", counted.clone());
-    record.phase("compose", since);
-    let report = |record: &Record| record.report(start, &build(10 * MB, 1_000), 0.);
-    assert_eq!(report(&record).phase_progress, Some(counted));
-    record.phase("full text", since);
-    assert_eq!(report(&record).phase_progress, None);
-}
-
+/// Progress recorded once a minute, read between two records: the time
+/// since the last record is not taken for slower work.
 #[test]
 fn progress_recorded_in_steps_is_steady_between_them() {
     let start = Instant::now();
     let mut record = Record::default();
+    record.step("reading", since(0));
     for minute in 0..=5u64 {
-        record.sample(
+        record.count(
             start + Duration::from_secs(minute * 60),
-            minute * 60_000,
-            minute,
+            "reading",
+            bytes(minute * 60_000),
             || 0.,
         );
     }
-    let progress = record.report(start + Duration::from_secs(330), &build(300_000, 5), 0.);
-    assert!(!progress.rate_varying);
+    let progress = record.report(start + Duration::from_secs(330), 0.);
+    let step = current(&progress);
+    assert!(!step.rate_varying);
     // From the minute-one sample: 240 kB over 270 s.
-    assert_eq!(progress.rate_seconds, Some(270.));
+    assert_eq!(step.rate_seconds, Some(270.));
     // 9.7 MB left at 240 kB per 270 s.
-    assert_eq!(progress.eta_seconds, Some(10_913));
+    assert_eq!(step.eta_seconds, Some(10_913));
 }
 
 #[test]
-fn a_build_with_every_byte_read_has_no_estimate() {
+fn a_step_with_its_total_done_has_no_estimate() {
     let start = Instant::now();
-    let (record, _) = sampled(start, 120, |at| (at * 1_000, at));
-    let mut read = build(10 * MB, 1_000);
-    read.bytes = 10 * MB;
-    let progress = record.report(start + Duration::from_secs(120), &read, 0.);
-    assert_eq!(progress.eta_seconds, None);
-    assert!(!progress.rate_varying);
+    let record = sampled(
+        start,
+        120,
+        |at| if at == 120 { 10 * MB } else { at * 1_000 },
+    );
+    let progress = record.report(start + Duration::from_secs(120), 0.);
+    assert_eq!(current(&progress).eta_seconds, None);
+    assert!(!current(&progress).rate_varying);
 }

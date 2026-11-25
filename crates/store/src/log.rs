@@ -7,6 +7,10 @@
 //! completion catalog); the engine and the daemon depend on it. The model
 //! crate does no I/O.
 //!
+//! Progress records (`log!(progress, ...)`, a rate logged once a minute) go
+//! to the journal at the information priority and are not kept: `status`
+//! shows progress itself, and its recent records stay events.
+//!
 //! Messages a command prints for the person running it are not log records
 //! and do not come here.
 use polylogue_model::{LockExt as _, Timestamp};
@@ -78,6 +82,11 @@ pub(crate) fn journal_line(priority: Priority, text: &str) -> String {
     format!("<{}>polylogue: {text}", priority.journal())
 }
 
+/// Logs a progress record to the journal only; use [`log!`](crate::log!).
+pub fn write_progress(text: std::fmt::Arguments<'_>) {
+    eprintln!("{}", journal_line(Priority::Info, &text.to_string()));
+}
+
 /// Logs `text` with `priority`; use [`log!`](crate::log!).
 pub fn write(priority: Priority, text: std::fmt::Arguments<'_>) {
     let text = text.to_string();
@@ -110,6 +119,9 @@ macro_rules! log {
     };
     (info, $($message:tt)+) => {
         $crate::log::write($crate::log::Priority::Info, format_args!($($message)+))
+    };
+    (progress, $($message:tt)+) => {
+        $crate::log::write_progress(format_args!($($message)+))
     };
 }
 

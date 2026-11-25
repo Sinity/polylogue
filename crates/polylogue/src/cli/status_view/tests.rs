@@ -211,11 +211,11 @@ polylogue  standalone · daemon 4479 · up 17h35m · /home/op/archive
 ARCHIVE    37,419 sessions   11.24M messages   4.77M tool calls   288 documents
            132,286 inputs · 98.6 GiB stored · 134,089 revisions
 
-READING    #############################.  99.9%   109,793 of 109,887 chains read
+READING    #############################.  99.9%   109,793 of 109,887 files read
            48 parsing · 31 failed · 15 without a parser
-           parsing behind: parsing is behind the stored bytes · derivation current · search current
+           parsing is behind the stored bytes · session figures current · search current
 
-LAST PASS  12:58:04 · 4.2 s · 37 of 132,286 inputs changed
+LAST CHECK 12:58:04 · 4.2 s · 37 of 132,286 files changed
            12.4 MiB read · 1,204 messages written
 
 RUNNING    2 running · 1 waiting 7m
@@ -236,116 +236,347 @@ NOTES      ⚠ parsing is behind the stored bytes
     );
 }
 
-/// A first build in progress: its bar, rate, estimate and phase; the
-/// sections the unreadable index cannot fill are left out.
-#[test]
-fn a_building_answer_renders_the_build_progress() {
+use polylogue_store::archive::build_progress::{
+    BuildProgress, CountUnit, CurrentStep, FailedAttempt, FinishedStep, StepCount,
+};
+use polylogue_store::archive::index_build::IndexBuild;
+
+/// 63.1 GiB.
+const STORED: u64 = 67_755_000_000;
+
+fn finished(name: &str, seconds: f64, count: Option<(u64, CountUnit)>) -> FinishedStep {
+    FinishedStep {
+        name: name.into(),
+        seconds,
+        count: count.map(|(done, unit)| StepCount {
+            done,
+            total: None,
+            unit,
+        }),
+    }
+}
+
+fn current(name: &str, minutes: i64, count: Option<StepCount>) -> CurrentStep {
+    CurrentStep {
+        name: name.into(),
+        since: at(NOW - minutes * MINUTE),
+        count,
+        per_second: None,
+        rate_seconds: None,
+        rate_varying: false,
+        eta_seconds: None,
+    }
+}
+
+fn progress(current: CurrentStep, finished: Vec<FinishedStep>, to_come: &[&str]) -> BuildProgress {
+    BuildProgress {
+        reason: None,
+        finished,
+        current: Some(current),
+        to_come: to_come.iter().map(|step| (*step).to_owned()).collect(),
+        eta_seconds: None,
+        failed_attempt: None,
+        writer_busy: None,
+        worker_cpu_seconds: Vec::new(),
+    }
+}
+
+/// An answer while an index is built and none can be read: the sections
+/// the index fills are unavailable, and the last check is from before.
+fn building(build: IndexBuild, progress: BuildProgress) -> Answer {
     let mut status = answer();
-    status.uptime_seconds = 300;
+    status.uptime_seconds = 8 * 3600 + 2 * 60;
     status.loop_status.busy = true;
-    let build = polylogue_store::archive::index_build::IndexBuild {
-        serving_previous: false,
-        chains: 21_678,
-        chains_read: 4_120,
-        bytes: 70_437_463_654,
-        bytes_read: 39_513_699_123,
-    };
+    status.loop_status.passes = 1;
+    status.loop_status.last_pass_at = Some(at(today(2, 32, 32)));
+    status.loop_status.last_pass.errors = vec!["the file changed after it was listed".into()];
     let unread = build.to_string();
     status.index_build = Some(build);
-    status.build_progress = Some(polylogue_store::archive::build_progress::BuildProgress {
-        phase: Some("read chains".into()),
-        phase_since: Some(at(NOW - 34 * MINUTE)),
-        bytes_per_second: Some(18_400_000.),
-        chains_per_second: Some(2.4),
-        rate_seconds: Some(300.),
-        rate_varying: false,
-        eta_seconds: Some(1_560),
-        writer_busy: Some(0.97),
-        worker_cpu_seconds: vec![3.0, 3.2],
-        phase_progress: None,
-    });
+    status.build_progress = Some(progress);
     status.totals_error = Some(unread.clone());
     status.running = Running::Unavailable {
         error: unread.clone(),
     };
     status.notices = Notices::Unavailable { error: unread };
-    status.recent_log = vec![record(
-        today(13, 31, 0),
-        Priority::Info,
-        "build: read chains: each stored chain read whole into runs",
-    )];
+    status
+}
+
+const BUILDING: &str = "the index is being built";
+
+/// Mid-build, in a writer step (docs/operations.md#status): why the index
+/// is built, what that means for reads, each step with its time and count,
+/// the current one's count of its total, rate and estimate, and the whole
+/// job's time unknown while steps remain unmeasured. The stale last check
+/// and the note restating the build are left out.
+#[test]
+fn a_build_lists_its_steps_with_counts_times_and_estimates() {
+    let mut assembling = current(
+        "assembling sessions",
+        86,
+        Some(StepCount {
+            done: 3_205,
+            total: Some(41_822),
+            unit: CountUnit::Sessions,
+        }),
+    );
+    assembling.per_second = Some(0.62);
+    assembling.rate_seconds = Some(300.);
+    assembling.eta_seconds = Some(62_280);
+    let mut steps = progress(
+        assembling,
+        vec![
+            finished("finding files", 95., None),
+            finished("storing files", 4_800., Some((10_687, CountUnit::Files))),
+            finished(
+                "reading stored files",
+                4_133.5,
+                Some((STORED, CountUnit::Bytes)),
+            ),
+            finished(
+                "sorting texts",
+                3_476.4,
+                Some((9_257_783, CountUnit::Records)),
+            ),
+            finished(
+                "writing tables",
+                2_806.7,
+                Some((50_252_966, CountUnit::Records)),
+            ),
+            finished("indexing", 8_801.6, Some((61, CountUnit::Indexes))),
+        ],
+        &["finishing indexes", "search index", "installing"],
+    );
+    steps.writer_busy = Some(1.);
+    let mut status = building(
+        IndexBuild {
+            serving_previous: false,
+            chains: 10_687,
+            chains_read: 10_687,
+            bytes: STORED,
+            bytes_read: STORED,
+        },
+        steps,
+    );
+    status.recent_log = vec![
+        record(
+            today(6, 45, 32),
+            Priority::Info,
+            "index: writing tables took 2806.7 s; 50252966 records",
+        ),
+        record(
+            today(9, 12, 13),
+            Priority::Info,
+            "index: indexing took 8801.6 s; 61 indexes",
+        ),
+    ];
     assert_eq!(
-        plain(&status, &["the index is being built"]),
+        plain(
+            &status,
+            &[BUILDING, "AI Studio through Drive is not authorized"]
+        ),
         "\
-polylogue  standalone · daemon 4479 · up 5m · busy · /home/op/archive
+polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
-BUILD      ################..............  56%   36.8 GiB of 65.6 GiB · 4,120 of 21,678 chains
-           18.4 MB/s over the last 5m · 2.4 chains/s · about 26 min left
-           phase read chains for 34m
-           writer busy 97% · 2 workers, 3.1 s CPU/min each
+INDEX      building the index from 63.1 GiB of stored files: the archive had no index
+           reads and searches answer \"index building\" until it is installed
+           ##............................  7%   step 7 of 10, assembling sessions
+           ✓ finding files            1m
+           ✓ storing files         1h20m  10,687 files
+           ✓ reading stored files   1h8m  63.1 GiB
+           ✓ sorting texts           57m  9.26M records
+           ✓ writing tables          46m  50.25M records
+           ✓ indexing              2h26m  61 indexes
+           ▸ assembling sessions   1h26m  3,205 of 41,822 sessions
+                                          0.6 sessions/s · about 17 h 18 min left
+           · finishing indexes
+           · search index
+           · installing
+           whole job: time unknown; the 3 steps to come are measured only as they run
+           database writer busy 100% of the last minute
 
-RECENT     13:31:00  build: read chains: each stored chain read whole into runs
+RECENT     06:45:32  index: writing tables took 2806.7 s; 50252966 records
+           09:12:13  index: indexing took 8801.6 s; 61 indexes
 
-NOTES      ⚠ the index is being built
+NOTES      ⚠ AI Studio through Drive is not authorized
 "
     );
 }
 
-/// Once the chains are read the writer's phase says how far it is; a round
-/// with no chain to read shows no reading bar.
+/// Reading the stored files counts bytes and files; with the previous
+/// index readable, reads use it meanwhile.
 #[test]
-fn a_writer_phase_renders_its_own_progress() {
-    let mut status = answer();
-    status.uptime_seconds = 300;
-    status.loop_status.busy = true;
-    let build = polylogue_store::archive::index_build::IndexBuild {
+fn reading_stored_files_shows_bytes_and_files() {
+    let mut reading = current(
+        "reading stored files",
+        34,
+        Some(StepCount {
+            done: 39_513_699_123,
+            total: Some(70_437_463_654),
+            unit: CountUnit::Bytes,
+        }),
+    );
+    reading.per_second = Some(18_400_000.);
+    reading.rate_seconds = Some(300.);
+    reading.eta_seconds = Some(1_560);
+    let mut steps = progress(reading, Vec::new(), &["sorting texts", "installing"]);
+    steps.reason = Some(
+        polylogue_store::archive::index_rebuild::IndexRebuildReason::FormatVersion {
+            found: 41,
+            wanted: 42,
+        },
+    );
+    steps.worker_cpu_seconds = vec![3.0, 3.2];
+    let status = building(
+        IndexBuild {
+            serving_previous: true,
+            chains: 21_678,
+            chains_read: 4_120,
+            bytes: 70_437_463_654,
+            bytes_read: 39_513_699_123,
+        },
+        steps,
+    );
+    assert_eq!(
+        plain(&status, &[BUILDING]),
+        "\
+polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
+
+INDEX      building the index from 65.6 GiB of stored files: its format changed (41 to 42)
+           reads and searches use the previous index until the new one is installed
+           ################..............  56%   step 1 of 3, reading stored files
+           ▸ reading stored files    34m  36.8 GiB of 65.6 GiB · 4,120 of 21,678 files
+                                          18.4 MB/s · about 26 min left
+           · sorting texts
+           · installing
+           whole job: time unknown; the 2 steps to come are measured only as they run
+           2 parse workers, 3.1 s CPU/min each
+"
+    );
+}
+
+/// Where no estimate can be given the view says why: a step whose total is
+/// known only when it ends, and one measured for less than a minute.
+#[test]
+fn a_step_without_an_estimate_says_why() {
+    let mut sorting = current(
+        "sorting texts",
+        20,
+        Some(StepCount {
+            done: 2_100_000,
+            total: None,
+            unit: CountUnit::Records,
+        }),
+    );
+    sorting.per_second = Some(2_650.);
+    sorting.rate_seconds = Some(300.);
+    let build = IndexBuild {
         serving_previous: false,
         chains: 0,
         chains_read: 0,
         bytes: 0,
         bytes_read: 0,
     };
-    let unread = build.to_string();
-    status.index_build = Some(build);
-    let progress = |phase: &str, done, total, unit: &str| {
-        Some(polylogue_store::archive::build_progress::BuildProgress {
-            phase: Some(phase.into()),
-            phase_since: Some(at(NOW - 12 * MINUTE)),
-            bytes_per_second: None,
-            chains_per_second: None,
-            rate_seconds: None,
-            rate_varying: false,
-            eta_seconds: None,
-            writer_busy: Some(1.),
-            worker_cpu_seconds: Vec::new(),
-            phase_progress: Some(polylogue_store::archive::build_progress::PhaseProgress {
-                done,
-                total,
-                unit: unit.into(),
-            }),
-        })
-    };
-    status.build_progress = progress("compose", 2_556, None, "sessions");
-    status.totals_error = Some(unread.clone());
-    status.running = Running::Unavailable {
-        error: unread.clone(),
-    };
-    status.notices = Notices::Unavailable { error: unread };
+    let status = building(build.clone(), progress(sorting, Vec::new(), &[]));
     assert_eq!(
-        plain(&status, &["the index is being built"]),
+        plain(&status, &[BUILDING]),
         "\
-polylogue  standalone · daemon 4479 · up 5m · busy · /home/op/archive
+polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
-BUILD      phase compose for 12m · 2,556 sessions
-           writer busy 100%
-
-NOTES      ⚠ the index is being built
+INDEX      building the index: the archive had no index
+           reads and searches answer \"index building\" until it is installed
+           ▸ sorting texts    20m  2.10M records so far
+                                   2,650 records/s · total known when the step ends
 "
     );
-    status.build_progress = progress("indexes", 12, Some(40), "indexes");
+    let mut storing = current(
+        "storing files",
+        1,
+        Some(StepCount {
+            done: 120,
+            total: Some(559),
+            unit: CountUnit::Files,
+        }),
+    );
+    storing.per_second = Some(2.);
+    storing.rate_seconds = Some(30.);
+    let status = building(
+        build,
+        progress(storing, Vec::new(), &["reading stored files"]),
+    );
     assert!(
-        plain(&status, &["the index is being built"])
-            .contains("BUILD      phase indexes for 12m · 12 of 40 indexes\n")
+        plain(&status, &[BUILDING]).contains(
+            "▸ storing files            1m  120 of 559 files\n                                          2.0 files/s · estimate after a minute of progress\n"
+        ),
+        "{}",
+        plain(&status, &[BUILDING])
+    );
+}
+
+/// An attempt that failed is shown, with its step and error, while the
+/// build that replaced it runs.
+#[test]
+fn a_failed_attempt_is_shown_while_the_build_runs_again() {
+    let mut steps = progress(current("reading stored files", 2, None), Vec::new(), &[]);
+    steps.failed_attempt = Some(FailedAttempt {
+        step: Some("assembling sessions".into()),
+        error: "disk full".into(),
+    });
+    let status = building(
+        IndexBuild {
+            serving_previous: false,
+            chains: 10,
+            chains_read: 0,
+            bytes: 0,
+            bytes_read: 0,
+        },
+        steps,
+    );
+    let text = plain(&status, &[BUILDING]);
+    assert!(
+        text.contains(
+            "\n           ✖ an earlier attempt failed while assembling sessions: disk full; started over\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("▸ reading stored files     2m  this step has no progress count\n"),
+        "{text}"
+    );
+}
+
+/// Once the index is installed the build's section is gone; the last
+/// check and the step lines of the log remain.
+#[test]
+fn a_finished_build_leaves_its_steps_in_the_log() {
+    let mut status = answer();
+    status.loop_status.passes = 3;
+    status.loop_status.last_pass_at = Some(at(today(13, 50, 0)));
+    status.loop_status.last_pass.seconds = 1.5;
+    status.loop_status.last_pass.inputs_changed = 2;
+    status.loop_status.last_pass.inputs_seen = 10_687;
+    status.recent_log = vec![
+        record(
+            today(13, 40, 0),
+            Priority::Info,
+            "index: installing took 12.0 s; 0 items",
+        ),
+        record(
+            today(13, 40, 1),
+            Priority::Info,
+            "index: installed; installing took 12 s",
+        ),
+    ];
+    assert_eq!(
+        plain(&status, &[]),
+        "\
+polylogue  standalone · daemon 4479 · up 17h35m · /home/op/archive
+
+LAST CHECK 13:50:00 · 1.5 s · 2 of 10,687 files changed
+           0 B read · 0 messages written
+
+RECENT     13:40:00  index: installing took 12.0 s; 0 items
+           13:40:01  index: installed; installing took 12 s
+"
     );
 }
 

@@ -13,6 +13,7 @@
 //! the installed index forward from the build's position.
 use crate::plan::Plan;
 use crate::{Engine, EngineError, LoopMsg, Pass, has_reading, pool};
+use polylogue_store::archive::build_progress::{CountUnit, StepCount};
 use polylogue_store::writer::ChainSink as _;
 use polylogue_store::writer::build::{BuildPhase, BuildWorker, PhaseClock};
 use polylogue_store::{Change, InputKey};
@@ -130,9 +131,18 @@ impl Prepare {
             self.chains.load(Ordering::Relaxed),
             self.chains_read.load(Ordering::Relaxed),
         );
-        self.archive.record_build_bytes(
+        let (bytes, bytes_read) = (
             self.bytes.load(Ordering::Relaxed),
             self.bytes_read.load(Ordering::Relaxed),
+        );
+        self.archive.record_build_bytes(bytes, bytes_read);
+        self.archive.record_build_count(
+            crate::build_log::READING_STORED_FILES,
+            StepCount {
+                done: bytes_read,
+                total: Some(bytes),
+                unit: CountUnit::Bytes,
+            },
         );
     }
 
@@ -236,8 +246,11 @@ impl Engine {
         // asset lookup comes from stored observations and sidecars.
         self.refresh_import_assets(&mut pass)?;
         let through = self.reads.reader()?.last_input_id()?;
-        self.enter_build_phase("read chains");
         let workers = self.config.workers.max(1);
+        self.log_build_step(
+            crate::build_log::READING_STORED_FILES,
+            format_args!("{workers} parse workers"),
+        );
         let (plans_tx, plans_rx) = sync_channel::<Plan>(workers * 2);
         let prepare = Prepare {
             archive: self.archive.clone(),
@@ -261,7 +274,10 @@ impl Engine {
             runs: Mutex::new(Vec::new()),
             failed: Mutex::new(Vec::new()),
         };
-        let clock = PhaseClock::start("read chains");
+        let clock = PhaseClock::start(
+            crate::build_log::READING_STORED_FILES,
+            Some(CountUnit::Files),
+        );
         let prepared = std::thread::scope(|scope| {
             let handles: Vec<_> = (0..workers)
                 .map(|n| {
@@ -311,7 +327,7 @@ impl Engine {
         // answered while it works.
         loop {
             match announced.recv_timeout(REQUEST_POLL) {
-                Ok(phase) => self.enter_build_phase(phase),
+                Ok(step) => self.enter_build_step(step),
                 Err(RecvTimeoutError::Timeout) => {
                     self.answer_waiting(&mut pass)?;
                 }

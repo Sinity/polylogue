@@ -523,13 +523,13 @@ fn build_from_record(
     assert_eq!(
         phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
         [
-            "merge texts",
-            "load",
-            "indexes",
-            "compose",
-            "read indexes",
-            "full text",
-            "install"
+            "sorting texts",
+            "writing tables",
+            "indexing",
+            "assembling sessions",
+            "finishing indexes",
+            "search index",
+            "installing"
         ]
     );
     assert!(w.archive.index_build().is_none());

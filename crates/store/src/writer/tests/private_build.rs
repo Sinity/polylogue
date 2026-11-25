@@ -252,13 +252,13 @@ fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
         assert_eq!(
             phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
             [
-                "merge texts",
-                "load",
-                "indexes",
-                "compose",
-                "read indexes",
-                "full text",
-                "install"
+                "sorting texts",
+                "writing tables",
+                "indexing",
+                "assembling sessions",
+                "finishing indexes",
+                "search index",
+                "installing"
             ],
             "{point}"
         );

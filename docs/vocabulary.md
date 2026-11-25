@@ -19,7 +19,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **index build**: writing a new index in the private file
   `index-build/index.db`, which is installed over `index.db` when the build
   ends; the first build of an archive, or one replacing an index from another
-  schema.
+  schema. It runs in named **steps** (reading stored files, sorting texts,
+  writing tables, indexing, assembling sessions, finishing indexes, search
+  index, installing), which status and the log list by those names.
 - **previous index**: the index a build replaces, kept as
   `index-build/previous.db` until the new one is installed, and read
   meanwhile when its schema identity is the build's.
