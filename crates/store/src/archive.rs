@@ -42,7 +42,7 @@ impl Default for MemoryBudget {
 }
 
 /// A parse worker's own memory, at least: the cache of its working index
-/// and its sort buffer, from the quarter of the budget workers share.
+/// and its sort buffer, from the third of the budget workers share.
 const WORKER_MEMORY: u64 = 128 << 20;
 
 impl MemoryBudget {
@@ -111,9 +111,9 @@ impl MemoryBudget {
         self.total / 3
     }
     /// Each of `workers` build workers' own memory: its sort buffer and the
-    /// cache of its working index, together a quarter of the budget.
+    /// cache of its working index, together a third of the budget.
     pub fn build_worker_memory(self, workers: usize) -> usize {
-        (self.total / 4 / workers.max(1) as u64) as usize
+        (self.total / 3 / workers.max(1) as u64) as usize
     }
     /// Parse workers: one per core the process may use, as long as each
     /// has at least [`WORKER_MEMORY`] of its own ([`Self::build_worker_memory`]).
@@ -123,7 +123,7 @@ impl MemoryBudget {
     pub fn worker_count(self, cores: usize, requested: usize) -> usize {
         cores
             .min(requested)
-            .min((self.total / 4 / WORKER_MEMORY) as usize)
+            .min((self.total / 3 / WORKER_MEMORY) as usize)
             .max(1)
     }
 }
