@@ -178,8 +178,16 @@ pub struct BuildPhase {
     /// Bytes this process read from and wrote to storage during the phase.
     pub bytes_read: u64,
     pub bytes_written: u64,
-    /// The process's peak resident memory when the phase ended.
+    /// Reads the process's control group made from its devices during the
+    /// phase, and their bytes, when the system reports them: the mean read
+    /// size tells reads in file order (large) from reads at random (a page
+    /// or a few).
+    pub device_reads: Option<(u64, u64)>,
+    /// The process's peak resident memory when the phase ended, and the
+    /// most SQLite held at once during the phase (its caches and
+    /// statements, all connections).
     pub peak_memory: u64,
+    pub sqlite_memory: u64,
     /// What the phase handled: chains, rows, sessions or texts.
     pub items: u64,
 }
@@ -227,43 +235,89 @@ pub struct PhaseClock {
     unit: Option<CountUnit>,
     started: Instant,
     io: (u64, u64),
+    device: Option<(u64, u64)>,
 }
 
 impl PhaseClock {
     /// Starts measuring step `name`, whose items are `unit`.
     pub fn start(name: &'static str, unit: Option<CountUnit>) -> Self {
+        // The phase's own high-water mark of SQLite's memory.
+        sqlite_memory_highwater(true);
         Self {
             name,
             unit,
             started: Instant::now(),
             io: process_io(),
+            device: device_reads(),
         }
     }
 
     pub fn end(self, items: u64) -> BuildPhase {
         let (read, written) = process_io();
+        let device = device_reads()
+            .zip(self.device)
+            .map(|(now, then)| (now.0.saturating_sub(then.0), now.1.saturating_sub(then.1)));
+        let sqlite = sqlite_memory_highwater(false);
         let phase = BuildPhase {
             name: self.name.to_owned(),
             seconds: self.started.elapsed().as_secs_f64(),
             bytes_read: read.saturating_sub(self.io.0),
             bytes_written: written.saturating_sub(self.io.1),
+            device_reads: device,
             peak_memory: peak_memory(),
+            sqlite_memory: sqlite,
             items,
         };
         crate::log!(
             info,
-            "index: {} took {:.1} s; {}{:.1} MB read, {:.1} MB written; peak memory {:.0} MB",
+            "index: {} took {:.1} s; {}{:.1} MB read{}, {:.1} MB written; peak memory {:.0} MB, SQLite {:.0} MB",
             phase.name,
             phase.seconds,
             self.unit
                 .map(|unit| format!("{} {}; ", phase.items, unit.word()))
                 .unwrap_or_default(),
             phase.bytes_read as f64 / 1e6,
+            phase
+                .device_reads
+                .filter(|(reads, _)| *reads > 0)
+                .map(|(reads, bytes)| format!(
+                    " in {reads} reads of {:.0} KiB",
+                    bytes as f64 / reads as f64 / 1024.
+                ))
+                .unwrap_or_default(),
             phase.bytes_written as f64 / 1e6,
             phase.peak_memory as f64 / 1e6,
+            phase.sqlite_memory as f64 / 1e6,
         );
         phase
     }
+}
+
+/// The most memory SQLite held at once since the last reset, all
+/// connections together; `reset` starts a new mark.
+#[allow(unsafe_code)]
+fn sqlite_memory_highwater(reset: bool) -> u64 {
+    // SAFETY: reads (and resets) SQLite's process-wide memory statistics,
+    // which SQLite keeps under its own mutex.
+    let bytes = unsafe { rusqlite::ffi::sqlite3_memory_highwater(i32::from(reset)) };
+    bytes.max(0) as u64
+}
+
+/// Reads and bytes read from devices by this process's control group,
+/// summed over its devices (Linux cgroup v2 `io.stat`).
+fn device_reads() -> Option<(u64, u64)> {
+    let group = std::fs::read_to_string("/proc/self/cgroup").ok()?;
+    let path = group.lines().find_map(|line| line.strip_prefix("0::"))?;
+    let stat = std::fs::read_to_string(format!("/sys/fs/cgroup{}/io.stat", path.trim())).ok()?;
+    let mut total = (0, 0);
+    for field in stat.split_whitespace() {
+        if let Some(n) = field.strip_prefix("rios=") {
+            total.0 += n.parse::<u64>().ok()?;
+        } else if let Some(n) = field.strip_prefix("rbytes=") {
+            total.1 += n.parse::<u64>().ok()?;
+        }
+    }
+    Some(total)
 }
 
 /// Bytes this process read from and wrote to storage (Linux `/proc`).
