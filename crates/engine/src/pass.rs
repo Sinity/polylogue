@@ -415,6 +415,13 @@ impl Engine {
                 }
             }
         }
+        // A rollout's capture reads its first record for the session ID that
+        // names its input, and compares its bytes with what is stored; its
+        // reading is the build's, like every other stored chain's. Each
+        // capture adds what it stored to the build's bytes as it is recorded.
+        for capture in &mut self.rollout_captures {
+            capture.storing_only = true;
+        }
         // The build counts what it reads once it starts; until then its
         // progress names the bytes to be stored for it.
         self.archive.record_build_bytes(bytes, 0);

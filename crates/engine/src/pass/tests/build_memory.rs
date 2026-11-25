@@ -97,6 +97,85 @@ fn a_new_archive_stores_found_files_then_builds_its_index() {
     assert_eq!(home.texts("other"), ["another file"]);
 }
 
+/// Codex rollouts, plain and compressed, are named by the session ID their
+/// first record states, so their capture reads that record. A new archive's
+/// first pass still only stores them, and every reading of them is the
+/// build's, on its workers (docs/installing.md, replacing an index).
+#[test]
+fn a_new_archive_stores_codex_rollouts_and_its_build_reads_them() {
+    let home = ClaudeHome::new();
+    let sessions = home.home.join(".codex/sessions");
+    let archived = home.home.join(".codex/archived_sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::create_dir_all(&archived).unwrap();
+    let rollout = |id: &str, text: &str| {
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{id}\"}}}}\n{}\n",
+            serde_json::json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":text}]}})
+        )
+    };
+    std::fs::write(
+        sessions.join("rollout-firstbuild-plain.jsonl"),
+        rollout("firstbuild-plain", "a plain rollout"),
+    )
+    .unwrap();
+    std::fs::write(
+        archived.join("rollout-firstbuild-packed.jsonl.zst"),
+        zstd::stream::encode_all(
+            rollout("firstbuild-packed", "a compressed rollout").as_bytes(),
+            1,
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let (mut engine, _lock) = home.engine(1 << 20);
+    assert!(engine.archive.index_build().is_some());
+    fault::arm("parse", "rollout-firstbuild-", Action::Record, 0, u32::MAX);
+    let pass = engine.run_pass();
+    let reads = fault::recorded("parse");
+    fault::clear();
+    let pass = pass.unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(engine.archive.index_build().is_none());
+    let mut readers: Vec<_> = reads
+        .iter()
+        .map(|(path, thread)| {
+            (
+                std::path::Path::new(path)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                thread.starts_with("polylogue-build-"),
+            )
+        })
+        .collect();
+    readers.sort();
+    readers.dedup();
+    assert_eq!(
+        readers,
+        [
+            ("rollout-firstbuild-packed.jsonl.zst".to_owned(), true),
+            ("rollout-firstbuild-plain.jsonl".to_owned(), true),
+        ],
+        "each rollout is read, and only by the build's workers: {reads:?}"
+    );
+    for (session, text) in [
+        ("codex:firstbuild-plain", "a plain rollout"),
+        ("codex:firstbuild-packed", "a compressed rollout"),
+    ] {
+        let session = polylogue_model::SessionId::parse(session).unwrap();
+        let messages = home.read(|reader| reader.messages(&session, false));
+        assert_eq!(
+            messages
+                .iter()
+                .map(polylogue_model::Message::text)
+                .collect::<Vec<_>>(),
+            [text]
+        );
+    }
+}
+
 /// With nothing stored and no sources, the empty build installs in the
 /// first pass, so a daemon started that way serves reads at once.
 #[test]
