@@ -295,22 +295,24 @@ impl Engine {
         if plan.origin.name != polylogue_sources::polylogue_bundle::ORIGIN {
             return Ok(());
         }
-        let reader = self.reads.reader()?;
-        let chain = match plan.change {
-            Change::Reparse { chain } => chain,
-            _ => {
-                reader
-                    .input_progress(&plan.input.id)?
-                    .ok_or_else(|| {
-                        polylogue_store::StoreError::internal(
-                            "a stored bundle has no committed source revision",
-                        )
-                    })?
-                    .chain
-            }
-        };
-        let stored = reader.stored_chain(&plan.input.id, chain, plan.size)?;
-        drop(reader);
+        // A build installed while an import is answered replaces the index
+        // under this read; the bundle is read from the installed one.
+        let stored = self.reads.read_current(|reader| {
+            let chain = match plan.change {
+                Change::Reparse { chain } => chain,
+                _ => {
+                    reader
+                        .input_progress(&plan.input.id)?
+                        .ok_or_else(|| {
+                            polylogue_store::StoreError::internal(
+                                "a stored bundle has no committed source revision",
+                            )
+                        })?
+                        .chain
+                }
+            };
+            reader.stored_chain(&plan.input.id, chain, plan.size)
+        })?;
         polylogue_store::fault::check("import.before_authored_restore", &plan.input.id)?;
         authored::replay(stored.reader(Arc::clone(&self.blobs)), |entry| {
             let outcome = entry

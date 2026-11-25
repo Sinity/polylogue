@@ -444,6 +444,19 @@ impl ReadPool {
         self.acquire(|path| self.connect(path))
     }
 
+    /// Runs `read` on a new reader, and again on another when a build's
+    /// install replaced the index under the first
+    /// ([`StoreError::ReadIndexReplaced`]): the replacement is the index to
+    /// read, so the error is never the answer.
+    pub fn read_current<T>(&self, read: impl Fn(&Reader<'_>) -> Result<T>) -> Result<T> {
+        loop {
+            match self.reader().and_then(|reader| read(&reader)) {
+                Err(StoreError::ReadIndexReplaced) => continue,
+                result => return result,
+            }
+        }
+    }
+
     fn acquire(&self, connect: impl FnOnce(&Path) -> Result<Connection>) -> Result<Reader<'_>> {
         // Refused before a slot is taken: nothing can be read until the build ends.
         self.index_path()?;
