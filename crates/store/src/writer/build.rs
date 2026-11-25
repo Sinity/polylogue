@@ -96,6 +96,15 @@ fn kept_while_composing(name: &str, sql: &str) -> bool {
         || index_target(sql).is_some_and(|(_, first)| COMPOSED_IN_ORDER.contains(&first))
 }
 
+/// Whether an index on a reading table is kept while the load writes it:
+/// one whose first column is the input. The load writes the reading tables
+/// input by input, chain by chain, so such an index only grows at its end;
+/// made after the load, it would scan its whole table again.
+fn kept_while_loading(sql: &str) -> bool {
+    index_target(sql)
+        .is_some_and(|(table, first)| !SHOWN_TABLES.contains(&table) && first == "input_pk")
+}
+
 /// The indexes a build's load concerns, as (name, statement, table): every
 /// one on a stored table but the one that makes an equal text group one row.
 const LOAD_INDEXES: &str =
@@ -814,8 +823,11 @@ fn compose_records(
     {
         // In each chain's order, so that its texts are read group by group.
         let mut statement = tx.prepare_cached(
-            "SELECT message_id,session_id,source_start,source_end,seq,record_position,order_time,route,
-                 completion,id_kind='content',hash,body,layout FROM message_parse ORDER BY seq,record_position",
+            "SELECT r.message_id,r.session_id,r.source_start,r.source_end,r.seq,r.record_position,
+                 r.order_time,r.route,r.completion,r.id_kind='content',r.hash,b.body,r.layout
+             FROM message_parse r JOIN message_parse_body b
+                 ON b.input_pk=r.input_pk AND b.chain=r.chain AND b.message_id=r.message_id
+             ORDER BY r.seq,r.record_position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -1237,11 +1249,14 @@ impl Inner {
                 let upkept = Fallback::upkept(&self.index)?;
                 let present = load_indexes(&self.index)?;
                 // A load drops every index but the one that makes an equal
-                // group one row (see `Load::shared_groups`); the build makes
-                // the declared indexes the file lacks.
+                // group one row (see `Load::shared_groups`) and those it fills
+                // in key order; the build makes the declared indexes the file
+                // lacks, those the load fills before it.
                 if !runs.is_empty() {
-                    for (name, ..) in &present {
-                        self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                    for (name, sql, _) in &present {
+                        if !kept_while_loading(sql) {
+                            self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                        }
                     }
                 }
                 let kept = load_indexes(&self.index)?;
@@ -1249,7 +1264,10 @@ impl Inner {
                     if kept.iter().any(|(held, ..)| *held == name) {
                         continue;
                     }
-                    if SHOWN_TABLES.contains(&table.as_str()) && !kept_while_composing(&name, &sql)
+                    if kept_while_loading(&sql) {
+                        self.index.execute(&sql, [])?;
+                    } else if SHOWN_TABLES.contains(&table.as_str())
+                        && !kept_while_composing(&name, &sql)
                     {
                         job.after_stream.push(sql);
                     } else {

@@ -159,15 +159,16 @@ CREATE TABLE session_alias (
 CREATE INDEX session_alias_name ON session_alias(alias, session_id);
 CREATE INDEX session_alias_session ON session_alias(session_id);
 
--- The reading tables whose rows carry bodies (message_parse, event_parse)
--- keep a rowid: a WITHOUT ROWID row keeps only about 1 KB in its page and
--- puts the rest in overflow pages it fills partly, so those tables took 1.5
--- to 1.8 times their bytes; their keys are a separate index of small entries.
+-- The reading tables whose rows carry bodies (message_parse_body,
+-- event_parse) keep a rowid: a WITHOUT ROWID row keeps only about 1 KB in
+-- its page and puts the rest in overflow pages it fills partly, so those
+-- tables took 1.5 to 1.8 times their bytes; their keys are a separate index
+-- of small entries.
 -- One chain's reading of a message: where the chain first states it (a chain
--- that restates whole conversations: last), its place and order time, and
--- its body. The body is the model Message with text moved to `text`
--- (parse_text holds the keys); a reading of a sparse export also keeps the
--- block layout it selected.
+-- that restates whole conversations: last), its place and order time; its
+-- body is in message_parse_body. The body is the model Message with text
+-- moved to `text` (parse_text holds the keys); a reading of a sparse export
+-- also keeps the block layout it selected.
 CREATE TABLE message_parse (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
@@ -184,7 +185,6 @@ CREATE TABLE message_parse (
   completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
   id_kind           TEXT NOT NULL CHECK (id_kind IN ('native','content')),
   hash              BLOB NOT NULL,          -- the message's content hash (its version)
-  body              BLOB NOT NULL,
   layout            BLOB NOT NULL,          -- original block count and selected ordinals
   response_key      TEXT,                   -- the key the source gives the records of one response
   content_name      TEXT,                   -- a content-named message's name without its number
@@ -198,6 +198,15 @@ CREATE INDEX message_parse_start ON message_parse(input_pk, chain, source_start)
 CREATE INDEX message_parse_response ON message_parse(input_pk, chain, response_key) WHERE response_key IS NOT NULL;
 CREATE INDEX message_parse_content ON message_parse(input_pk, chain, content_name, source_start) WHERE content_name IS NOT NULL;
 CREATE INDEX message_parse_hash ON message_parse(hash);
+-- Each message reading's body, beside its row: every index made over
+-- message_parse scans the table, and the bodies are most of its bytes.
+CREATE TABLE message_parse_body (
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
+  chain             INTEGER NOT NULL,
+  message_id        TEXT NOT NULL,
+  body              BLOB NOT NULL,
+  PRIMARY KEY (input_pk, chain, message_id)
+) STRICT;
 -- The message readings an input still holds: once a newer chain of the
 -- input is read to its end, a content-named message it no longer holds is
 -- gone from that input (an edit has a new ID). Composition reads the same.

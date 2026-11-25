@@ -47,6 +47,13 @@ impl MemoryBudget {
     pub fn writer_cache_mib(self) -> i64 {
         ((self.total / 8) >> 20).max(1) as i64
     }
+    /// The build file's cache: the writer's build work (load, indexes,
+    /// composition) runs once the workers have ended, so it takes their
+    /// share beside its own; the indexes it keeps live while it writes then
+    /// stay in memory the build owns rather than in the page cache.
+    pub fn build_cache_mib(self) -> i64 {
+        ((self.total / 4) >> 20).max(1) as i64
+    }
     pub fn archive_cache_mib(self) -> i64 {
         ((self.total / 32) >> 20).max(1) as i64
     }
