@@ -159,6 +159,10 @@ CREATE TABLE session_alias (
 CREATE INDEX session_alias_name ON session_alias(alias, session_id);
 CREATE INDEX session_alias_session ON session_alias(session_id);
 
+-- The reading tables whose rows carry bodies (message_parse, event_parse)
+-- keep a rowid: a WITHOUT ROWID row keeps only about 1 KB in its page and
+-- puts the rest in overflow pages it fills partly, so those tables took 1.5
+-- to 1.8 times their bytes; their keys are a separate index of small entries.
 -- One chain's reading of a message: where the chain first states it (a chain
 -- that restates whole conversations: last), its place and order time, and
 -- its body. The body is the model Message with text moved to `text`
@@ -186,7 +190,7 @@ CREATE TABLE message_parse (
   content_name      TEXT,                   -- a content-named message's name without its number
   committed         INTEGER CHECK(committed > 0),
   PRIMARY KEY (input_pk, chain, message_id)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 CREATE INDEX message_parse_id ON message_parse(message_id);
 CREATE INDEX message_parse_session ON message_parse(session_id);
 CREATE INDEX message_parse_place ON message_parse(input_pk, chain, session_id, seq, record_position);
@@ -248,7 +252,7 @@ CREATE TABLE event_parse (
   imported_sources  TEXT NOT NULL CHECK(json_valid(imported_sources)),
   committed         INTEGER CHECK(committed > 0),
   PRIMARY KEY (input_pk, chain, event_id)
-) STRICT, WITHOUT ROWID;
+) STRICT;
 CREATE INDEX event_parse_id ON event_parse(event_id);
 CREATE INDEX event_parse_session ON event_parse(session_id) WHERE session_id IS NOT NULL;
 
