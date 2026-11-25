@@ -66,11 +66,13 @@ impl MemoryBudget {
     /// The build file's cache beside `held` bytes the process holds or will
     /// hold outside it in the writer's build step (what is resident beside
     /// the cache, and the step's run readers, sort buffers and composition
-    /// read-ahead): the budget less that and a reserve for the work itself
-    /// (a session being composed, the full-text files' queues).
+    /// read-ahead): the budget less that and a reserve for the work itself,
+    /// at most a quarter of the budget. Composing a session holds its rows'
+    /// item entries, values and the like in proportion to the session, which
+    /// no share bounds, so the cache leaves it that room.
     pub fn build_cache_beside(self, held: u64) -> i64 {
         let others = held.saturating_add(self.total / 8);
-        (self.total.saturating_sub(others) >> 20).max(32) as i64
+        (self.total.saturating_sub(others).min(self.total / 4) >> 20).max(32) as i64
     }
     pub fn archive_cache_mib(self) -> i64 {
         ((self.total / 32) >> 20).max(1) as i64
