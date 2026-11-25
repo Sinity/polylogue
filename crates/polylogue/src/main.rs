@@ -41,8 +41,11 @@ mod web;
 use std::process::ExitCode;
 
 /// mimalloc instead of glibc's allocator: it fragments less across parse
-/// threads. Built without transparent huge pages (`no_thp`): marking its
-/// arena for them slows every short-lived process (hook, `--version`).
+/// threads. It also serves `malloc` (`override`), so SQLite's page caches
+/// come from it: memory a cache gives back is returned to the system, where
+/// glibc kept it, and a build's resident memory follows the caches it sizes.
+/// Built without transparent huge pages (`no_thp`): marking its arena for
+/// them slows every short-lived process (hook, `--version`).
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
