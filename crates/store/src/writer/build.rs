@@ -1238,8 +1238,8 @@ impl Inner {
                     Stage::Indexes(
                         0,
                         Box::new(Loaded {
-                            merged: Merger::open(Vec::new(), &runs_dir)?,
-                            texts: Merger::open(Vec::new(), &runs_dir)?,
+                            merged: Merger::open(Vec::new(), &runs_dir, 0)?,
+                            texts: Merger::open(Vec::new(), &runs_dir, 0)?,
                             fallback: upkept.sessions,
                             shared_events: HashSet::new(),
                         }),
@@ -1261,13 +1261,21 @@ impl Inner {
                         .expect("the reading texts' sorter");
                     let load = *load;
                     let composing = Box::new(Loaded {
-                        texts: Merger::open(reading_texts.finish()?, &paths.runs)?,
+                        texts: Merger::open(
+                            reading_texts.finish()?,
+                            &paths.runs,
+                            self.location.memory_budget().side_merge_memory(),
+                        )?,
                         merged: load.merged,
                         fallback: load.fallback,
                         shared_events: load.shared_events,
                     });
                     Stage::TextHolders(Box::new(TextHolders {
-                        merged: Merger::open(holders.finish()?, &paths.runs)?,
+                        merged: Merger::open(
+                            holders.finish()?,
+                            &paths.runs,
+                            self.location.memory_budget().side_merge_memory(),
+                        )?,
                         input: None,
                         composing,
                         table: Table::new(
@@ -1413,7 +1421,11 @@ impl Inner {
         // load; tables arrive in name order, not in reference order.
         self.index.pragma_update(None, "foreign_keys", false)?;
         Ok(Load {
-            merged: Merger::open(runs, &paths.runs)?,
+            merged: Merger::open(
+                runs,
+                &paths.runs,
+                self.location.memory_budget().run_merge_memory(),
+            )?,
             tables: tables(&self.index)?,
             held: held.into_iter().peekable(),
             shared_groups: Vec::new(),
