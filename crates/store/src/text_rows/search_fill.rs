@@ -29,12 +29,15 @@ use std::time::{Duration, Instant};
 const REPORTS: usize = 4096;
 /// Texts read and folded together: their groups are each decoded once.
 const FETCH_TEXTS: usize = 8192;
-/// Rows one read transaction on the build file covers, so the writer's
-/// commit never waits long for the coordinator.
-const READ_ROWS: usize = 1024;
+/// How long one read transaction on the build file runs at most. In the
+/// build file's rollback journal a reader's lock holds off the writer's
+/// commit, which waits only its busy timeout; a slow disk makes any count
+/// of rows take arbitrarily long, so a read ends by time.
+const READ_TIME: Duration = Duration::from_millis(100);
+/// Groups read and decoded together.
 const READ_GROUPS: usize = 64;
-/// Text keys one settling statement reads.
-const SETTLE_ROWS: i64 = 65_536;
+/// Text keys one settling transaction reads.
+const SETTLE_ROWS: i64 = 8192;
 /// Batches of entries waiting for each file's thread.
 const FILE_QUEUE: usize = 8;
 /// A file's thread commits after this many entries or this long.
@@ -417,11 +420,15 @@ impl Coordinator {
             }
             // Where each text is: (group, start, length, id, bits).
             let mut places = Vec::with_capacity(texts.len());
-            for chunk in texts.chunks(READ_ROWS) {
+            let mut next = 0;
+            while next < texts.len() {
+                let read = Instant::now();
                 let tx = self.reader.unchecked_transaction()?;
                 let mut place =
                     tx.prepare_cached("SELECT group_id, start, length FROM text WHERE id = ?1")?;
-                for &(id, bits) in chunk {
+                while next < texts.len() && read.elapsed() < READ_TIME {
+                    let (id, bits) = texts[next];
+                    next += 1;
                     match place
                         .query_row([id], |r| <(i64, i64, i64)>::try_from(r))
                         .optional()?
@@ -459,13 +466,14 @@ impl Coordinator {
                     end += 1;
                 }
                 let mut bodies = Vec::with_capacity(groups.len());
-                {
+                while bodies.len() < groups.len() {
+                    let read = Instant::now();
                     let tx = self.reader.unchecked_transaction()?;
                     let mut body =
                         tx.prepare_cached("SELECT body FROM text_group WHERE id = ?1")?;
-                    for &group in &groups {
+                    while bodies.len() < groups.len() && read.elapsed() < READ_TIME {
                         let bytes: Vec<u8> = body
-                            .query_row([group], |r| r.get(0))
+                            .query_row([groups[bodies.len()]], |r| r.get(0))
                             .optional()?
                             .ok_or_else(|| StoreError::stored(0, "a text row has no group"))?;
                         bodies.push(bytes);
@@ -502,15 +510,17 @@ impl Coordinator {
     fn settle_entries(&mut self, work: &Receiver<Work>) -> Result<()> {
         let mut members = [Keys::default(), Keys::default()];
         let mut after = 0i64;
-        // One read from the writer's commit of the membership on: the
-        // writer's next work (the trigram index, read indexes) holds the
-        // file for long stretches, and a read started now runs beside it.
-        let tx = self.reader.unchecked_transaction()?;
+        // Read from the writer's commit of the membership on, in short
+        // transactions beside the writer's next work: a change the writer
+        // makes between them is queued for upkeep by the index's triggers,
+        // which apply it as the same entry.
         loop {
+            let tx = self.reader.unchecked_transaction()?;
             let rows: Vec<(i64, i64)> = tx
                 .prepare_cached("SELECT id, indexed FROM text WHERE id > ?1 ORDER BY id LIMIT ?2")?
                 .query_map([after, SETTLE_ROWS], |r| <(i64, i64)>::try_from(r))?
                 .collect::<rusqlite::Result<_>>()?;
+            tx.finish()?;
             for &(id, indexed) in &rows {
                 for (bit, keys) in members.iter_mut().enumerate() {
                     if indexed & (1 << bit) != 0 {
@@ -523,7 +533,6 @@ impl Coordinator {
                 _ => break,
             }
         }
-        tx.finish()?;
         let mut removed: Vec<Vec<Entry>> = (0..FILES).map(|_| Vec::new()).collect();
         for (bit, members) in members.iter().enumerate() {
             let gone: Vec<i64> = self.entered[bit].without(members).collect();
