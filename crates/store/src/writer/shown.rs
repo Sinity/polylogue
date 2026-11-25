@@ -180,6 +180,9 @@ struct Stream {
     /// a message, and its event readings and background outcomes.
     own: bool,
     events: Vec<EventRow>,
+    /// Where each event ID's readings are in `events`, so that composing an
+    /// event finds its readings without passing over the session's others.
+    event_readings: HashMap<String, Vec<usize>>,
     outcomes: Vec<OutcomeRow>,
     /// Each composed message's place in its main reading's input, for the
     /// events that follow it.
@@ -284,6 +287,7 @@ impl<'a, 'c> Composer<'a, 'c> {
         let stream = self.stream();
         stream.own = false;
         stream.events.clear();
+        stream.event_readings.clear();
         stream.outcomes.clear();
         stream.seqs.clear();
         stream.calls.clear();
@@ -331,7 +335,16 @@ impl<'a, 'c> Composer<'a, 'c> {
             let (shown, stated) = work.shown_event_id(&event.event_id)?;
             shown_events.entry(shown).or_default().extend(stated);
         }
-        work.stream().events = events;
+        let stream = work.stream();
+        stream.event_readings.clear();
+        for (n, event) in events.iter().enumerate() {
+            stream
+                .event_readings
+                .entry(event.event_id.clone())
+                .or_default()
+                .push(n);
+        }
+        stream.events = events;
         for (shown, stated) in shown_events {
             work.compose_event(&shown, &stated)?;
         }
@@ -1441,10 +1454,11 @@ impl<'c> Work<'_, 'c> {
     fn event_rows(&mut self, id: &str) -> Result<Vec<EventRow>> {
         if let Some(stream) = &self.stream {
             return Ok(stream
-                .events
-                .iter()
-                .filter(|r| r.event_id == id)
-                .cloned()
+                .event_readings
+                .get(id)
+                .into_iter()
+                .flatten()
+                .map(|&n| stream.events[n].clone())
                 .collect());
         }
         Ok(self
