@@ -16,6 +16,9 @@ pub(crate) const READING_STORED_FILES: &str = "reading stored files";
 
 /// How often a build logs its storing rate.
 const EVERY: Duration = Duration::from_secs(60);
+/// How often the storing step records its count; the work loop turns far
+/// more often.
+const COUNT_EVERY: Duration = Duration::from_secs(1);
 
 impl Engine {
     /// Records the steps a build runs once its files are stored.
@@ -66,6 +69,7 @@ impl Engine {
 /// What the minute's storing rate is measured from.
 pub(crate) struct Progress {
     at: Instant,
+    counted: Option<Instant>,
     stored: u64,
     writer: f64,
     cpu: Vec<f64>,
@@ -76,6 +80,7 @@ impl Progress {
     pub(crate) fn start(pass: &Pass, cpu: Vec<f64>) -> Self {
         Self {
             at: Instant::now(),
+            counted: None,
             stored: pass.bytes_stored,
             writer: polylogue_store::timing::writer_seconds(),
             cpu,
@@ -86,6 +91,13 @@ impl Progress {
     /// store and the workers' CPU, and logs the storing rate once a minute
     /// has passed.
     pub(crate) fn record(&mut self, engine: &Engine, pass: &Pass, cpu: impl FnOnce() -> Vec<f64>) {
+        if self
+            .counted
+            .is_some_and(|counted| counted.elapsed() < COUNT_EVERY)
+        {
+            return;
+        }
+        self.counted = Some(Instant::now());
         let Some(build) = engine.archive.index_build() else {
             return;
         };
@@ -122,6 +134,7 @@ impl Progress {
         );
         *self = Self {
             at: Instant::now(),
+            counted: self.counted,
             stored: pass.bytes_stored,
             writer,
             cpu,
