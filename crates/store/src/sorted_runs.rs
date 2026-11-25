@@ -90,9 +90,13 @@ impl RecordReader {
         })
     }
 
-    /// Reads the next record; false at the end.
+    /// Reads the next record; false at the end, where the reader lets go of
+    /// its file and buffers.
     fn advance(&mut self) -> io::Result<bool> {
         let Some(key) = read_varint(&mut self.inner)? else {
+            self.inner = Box::new(io::empty());
+            self.key = Vec::new();
+            self.value = Vec::new();
             return Ok(false);
         };
         let value = read_varint(&mut self.inner)?.ok_or(io::ErrorKind::UnexpectedEof)?;
@@ -220,6 +224,11 @@ impl Merger {
             m.sift_down(i);
         }
         Ok(m)
+    }
+
+    /// What the runs still being read hold.
+    pub(crate) fn memory(&self) -> usize {
+        self.heap.len() * RUN_MEMORY
     }
 
     fn less(&self, a: usize, b: usize) -> bool {

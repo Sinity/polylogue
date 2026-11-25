@@ -506,10 +506,13 @@ fn archive_override_selects_its_own_mode_configuration() {
 #[test]
 fn startup_sizes_the_pipeline_within_the_process_allowance() {
     let root = tempfile::tempdir().unwrap();
+    // Workers follow the cores while each has 128 MiB of half the budget
+    // (three quarters of the allowance); no share has a fixed ceiling.
     for (cpus, bytes, workers, readers, queued) in [
-        (24, 4u64 << 30, 8, 128 << 20, 192 << 20),
-        (16, 1 << 30, 2, 48 << 20, 48 << 20),
+        (24, 4u64 << 30, 12, 128 << 20, 192 << 20),
+        (16, 1 << 30, 3, 48 << 20, 48 << 20),
         (2, 4 << 30, 2, 128 << 20, 192 << 20),
+        (16, 32 << 30, 16, 128 << 20, 512 << 20),
     ] {
         let mut inputs = process(root.path());
         inputs.workers = Some(cpus);

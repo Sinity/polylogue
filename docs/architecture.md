@@ -381,7 +381,16 @@ The daemon reaches the index two ways, which must agree.
   the number of chains, sessions or texts: prepared rows go to sorted files,
   the merge reads them forward, and the largest single record, text or
   message is the largest thing held whole. A unit larger than a working
-  share runs alone. No valid input is refused or cut for its size.
+  share runs alone. No valid input is refused or cut for its size. The
+  process's allowance is the memory the system has available when it
+  starts, at most its control group's limit, and three quarters of it is
+  shared by the caches and the work, with no fixed ceiling: a build's
+  prepared readings in flight, its workers' sort buffers, each step's run
+  readers and read-ahead are given fixed shares, and the build file's cache
+  takes what the step leaves. Parse workers follow the physical cores the
+  process may use, each with at least a minimum share of memory; the
+  memory a chain's prepared readings need is admitted per chain, so the
+  number of workers does not trade against the caches.
 
 A writer's transactions are sized by the bytes and rows they cover, not by
 input boundaries: a growing file is read and committed in steps, and each

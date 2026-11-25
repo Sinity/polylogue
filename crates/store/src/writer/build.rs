@@ -21,8 +21,9 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::time::Instant;
 
-/// The scratch index's page cache.
-const SCRATCH_CACHE_KIB: i64 = 64 << 10;
+/// The scratch index's page cache, at most; the rest of a worker's memory
+/// is its sort buffer.
+const SCRATCH_CACHE: usize = 64 << 20;
 
 /// Sessions composed per transaction.
 const SESSIONS_PER_TRANSACTION: usize = 512;
@@ -183,11 +184,10 @@ pub struct BuildPhase {
     /// size tells reads in file order (large) from reads at random (a page
     /// or a few).
     pub device_reads: Option<(u64, u64)>,
-    /// The process's peak resident memory when the phase ended, and the
-    /// most SQLite held at once during the phase (its caches and
-    /// statements, all connections).
+    /// The process's peak resident memory when the phase ended, and its
+    /// resident memory then.
     pub peak_memory: u64,
-    pub sqlite_memory: u64,
+    pub resident_memory: u64,
     /// What the phase handled: chains, rows, sessions or texts.
     pub items: u64,
 }
@@ -241,8 +241,6 @@ pub struct PhaseClock {
 impl PhaseClock {
     /// Starts measuring step `name`, whose items are `unit`.
     pub fn start(name: &'static str, unit: Option<CountUnit>) -> Self {
-        // The phase's own high-water mark of SQLite's memory.
-        sqlite_memory_highwater(true);
         Self {
             name,
             unit,
@@ -257,20 +255,19 @@ impl PhaseClock {
         let device = device_reads()
             .zip(self.device)
             .map(|(now, then)| (now.0.saturating_sub(then.0), now.1.saturating_sub(then.1)));
-        let sqlite = sqlite_memory_highwater(false);
         let phase = BuildPhase {
             name: self.name.to_owned(),
             seconds: self.started.elapsed().as_secs_f64(),
             bytes_read: read.saturating_sub(self.io.0),
             bytes_written: written.saturating_sub(self.io.1),
             device_reads: device,
-            peak_memory: peak_memory(),
-            sqlite_memory: sqlite,
+            peak_memory: status_bytes("VmHWM:"),
+            resident_memory: status_bytes("VmRSS:"),
             items,
         };
         crate::log!(
             info,
-            "index: {} took {:.1} s; {}{:.1} MB read{}, {:.1} MB written; peak memory {:.0} MB, SQLite {:.0} MB",
+            "index: {} took {:.1} s; {}{:.1} MB read{}, {:.1} MB written; peak memory {:.0} MB, resident {:.0} MB",
             phase.name,
             phase.seconds,
             self.unit
@@ -287,20 +284,10 @@ impl PhaseClock {
                 .unwrap_or_default(),
             phase.bytes_written as f64 / 1e6,
             phase.peak_memory as f64 / 1e6,
-            phase.sqlite_memory as f64 / 1e6,
+            phase.resident_memory as f64 / 1e6,
         );
         phase
     }
-}
-
-/// The most memory SQLite held at once since the last reset, all
-/// connections together; `reset` starts a new mark.
-#[allow(unsafe_code)]
-fn sqlite_memory_highwater(reset: bool) -> u64 {
-    // SAFETY: reads (and resets) SQLite's process-wide memory statistics,
-    // which SQLite keeps under its own mutex.
-    let bytes = unsafe { rusqlite::ffi::sqlite3_memory_highwater(i32::from(reset)) };
-    bytes.max(0) as u64
 }
 
 /// Reads and bytes read from devices by this process's control group,
@@ -334,14 +321,16 @@ fn process_io() -> (u64, u64) {
     (field("read_bytes:"), field("write_bytes:"))
 }
 
-/// The process's peak resident memory in bytes (Linux `/proc`).
-fn peak_memory() -> u64 {
+/// A memory figure of this process in bytes, by its field name in
+/// `/proc/self/status` (`VmHWM:` the peak resident memory, `VmRSS:` the
+/// resident memory now).
+fn status_bytes(field: &str) -> u64 {
     std::fs::read_to_string("/proc/self/status")
         .ok()
         .and_then(|status| {
             status
                 .lines()
-                .find_map(|line| line.strip_prefix("VmHWM:"))
+                .find_map(|line| line.strip_prefix(field))
                 .and_then(|value| {
                     value
                         .trim()
@@ -587,8 +576,8 @@ pub struct BuildWorker {
 }
 
 impl BuildWorker {
-    /// Creates worker `number` of the build in progress, sorting in at most
-    /// `memory` bytes.
+    /// Creates worker `number` of the build in progress, holding at most
+    /// `memory` bytes in its scratch index's cache and its sort buffer.
     pub fn create(archive: &Archive, number: u64, memory: usize) -> Result<Self> {
         if archive.is_primary() || !archive.index_build.building() {
             return Err(StoreError::Invalid(
@@ -605,7 +594,8 @@ impl BuildWorker {
         conn.pragma_update(None, "journal_mode", "off")?;
         conn.pragma_update(None, "synchronous", "off")?;
         conn.pragma_update(None, "temp_store", "memory")?;
-        conn.pragma_update(None, "cache_size", -SCRATCH_CACHE_KIB)?;
+        let cache = SCRATCH_CACHE.min(memory / 2).max(16 << 20);
+        conn.pragma_update(None, "cache_size", -((cache >> 10) as i64))?;
         crate::schema::ensure_index(&conn)?;
         // A chain's rows leave the scratch index table by table; the build
         // file's references are those of its own load.
@@ -620,11 +610,15 @@ impl BuildWorker {
             register,
             blobs: Arc::new(archive.blobs()?),
             tables,
-            sorter: Sorter::new(&paths.runs, format!("w{number:06}"), memory.max(32 << 20)),
+            sorter: Sorter::new(
+                &paths.runs,
+                format!("w{number:06}"),
+                memory.saturating_sub(cache).max(16 << 20),
+            ),
             number,
             groups: 0,
             scratch,
-            value_memory: memory / 4,
+            value_memory: memory.saturating_sub(cache).max(16 << 20) / 4,
         })
     }
 
@@ -1190,7 +1184,7 @@ pub(super) struct ComposeState {
     /// and made again once every table is counted.
     counting: Vec<String>,
     /// The composition stream, decoded ahead on a thread of its own.
-    pieces: std::sync::mpsc::Receiver<Result<Piece>>,
+    pieces: ReadAhead,
     stream_done: bool,
     /// Sessions composed from the index instead of the stream, which the
     /// stream reader passes over.
@@ -1229,8 +1223,14 @@ enum Step {
 }
 
 impl ComposeState {
-    /// The composition of a loaded build file.
-    pub(super) fn new(loaded: Loaded, indexes: Vec<String>, index: &Connection) -> Result<Self> {
+    /// The composition of a loaded build file; the stream is read ahead in
+    /// at most `ahead` bytes.
+    pub(super) fn new(
+        loaded: Loaded,
+        indexes: Vec<String>,
+        index: &Connection,
+        ahead: usize,
+    ) -> Result<Self> {
         let Loaded {
             merged,
             texts,
@@ -1302,6 +1302,7 @@ impl ComposeState {
                 fallback.clone(),
                 Arc::clone(&aliases),
                 groups,
+                ahead,
             ),
             stream_done: false,
             fallback: fallback.into_iter().collect(),
@@ -1631,12 +1632,16 @@ impl Inner {
                         groups: Arc::new(load.groups),
                         elsewhere: load.elsewhere,
                     });
+                    let holders = Merger::open(
+                        holders.finish()?,
+                        &paths.runs,
+                        self.location.memory_budget().side_merge_memory(),
+                    )?;
+                    self.size_build_cache(
+                        composing.merged.memory() + composing.texts.memory() + holders.memory(),
+                    )?;
                     Stage::TextHolders(Box::new(TextHolders {
-                        merged: Merger::open(
-                            holders.finish()?,
-                            &paths.runs,
-                            self.location.memory_budget().side_merge_memory(),
-                        )?,
+                        merged: holders,
                         input: None,
                         composing,
                         table: Table::new(
@@ -1670,7 +1675,11 @@ impl Inner {
                         crate::fault::check("index.build.composing", "")?;
                         job.phase(ASSEMBLING_SESSIONS);
                         let indexes = std::mem::take(&mut job.after_stream);
-                        let state = ComposeState::new(*loaded, indexes, &self.index)?;
+                        let ahead = self.location.memory_budget().read_ahead_memory();
+                        self.size_build_cache(
+                            (loaded.merged.memory() + loaded.texts.memory() + ahead) as u64,
+                        )?;
+                        let state = ComposeState::new(*loaded, indexes, &self.index, ahead)?;
                         job.counted_to(ASSEMBLING_SESSIONS, state.count(ASSEMBLING_SESSIONS));
                         Stage::Compose(Box::new(state))
                     }
@@ -1689,6 +1698,9 @@ impl Inner {
                 } else {
                     drop(state);
                     crate::archive::index_build::remove_runs(&Paths::of(&self.location.root))?;
+                    // The runs are read: what is left of the build is its
+                    // file's indexes and full text.
+                    self.size_build_cache(0)?;
                     job.phase(FINISHING_INDEXES);
                     // Composition wrote shown rows only: the search
                     // membership of every text comes from the blocks now,
@@ -1771,6 +1783,16 @@ impl Inner {
         Ok(false)
     }
 
+    /// Gives the build file's cache what the budget leaves beside `held`
+    /// bytes the current step holds of its own.
+    fn size_build_cache(&self, held: impl TryInto<u64>) -> Result<()> {
+        let held = held.try_into().unwrap_or(u64::MAX);
+        let mib = self.location.memory_budget().build_cache_beside(held);
+        self.index
+            .pragma_update(None, "cache_size", -(mib * 1024))?;
+        Ok(())
+    }
+
     /// Opens the merge of every worker's runs.
     fn start_load(&mut self, runs: Vec<PathBuf>, upkept: Fallback) -> Result<Load> {
         let paths = Paths::of(&self.location.root);
@@ -1797,12 +1819,13 @@ impl Inner {
         // References are checked by the indexes and composition after the
         // load; tables arrive in name order, not in reference order.
         self.index.pragma_update(None, "foreign_keys", false)?;
+        let budget = self.location.memory_budget();
+        let merged = Merger::open(runs, &paths.runs, budget.run_merge_memory())?;
+        // The load's own memory: the run readers and the two sorts of text
+        // holders.
+        self.size_build_cache(merged.memory() + 2 * budget.side_merge_memory())?;
         Ok(Load {
-            merged: Merger::open(
-                runs,
-                &paths.runs,
-                self.location.memory_budget().run_merge_memory(),
-            )?,
+            merged,
             tables: tables(&self.index)?,
             held: held.into_iter().peekable(),
             next_group,
@@ -1810,7 +1833,7 @@ impl Inner {
             holders: Some(Sorter::new(
                 &paths.runs,
                 "text-holders".into(),
-                (self.location.memory_budget().total() / 8) as usize,
+                self.location.memory_budget().side_merge_memory(),
             )),
             input: None,
             current_text: None,
@@ -1818,7 +1841,7 @@ impl Inner {
             reading_texts: Some(Sorter::new(
                 &paths.runs,
                 "reading-texts".into(),
-                (self.location.memory_budget().total() / 16) as usize,
+                self.location.memory_budget().side_merge_memory(),
             )),
             fallback: upkept.sessions,
             upkept_messages: upkept.messages,
@@ -2313,10 +2336,10 @@ impl Inner {
                 && sessions < SESSIONS_PER_TRANSACTION
                 && started.elapsed() < STEP_TIME)
         {
-            let piece = match state.pieces.recv() {
-                Ok(piece) => piece?,
+            let piece = match state.pieces.next() {
+                Some(piece) => piece?,
                 // The reader ended: every session of the stream is composed.
-                Err(_) => {
+                None => {
                     state.stream_done = true;
                     break;
                 }
@@ -2437,8 +2460,33 @@ pub(super) enum Piece {
     End(String),
 }
 
-/// Pieces decoded ahead of composition.
-const PIECES_AHEAD: usize = 1024;
+/// The composition stream decoded ahead of the writer, in at most a given
+/// number of bytes: the reader waits while what it decoded and the writer
+/// has not taken holds that many, unless nothing waits (a piece larger than
+/// the allowance goes alone).
+pub(super) struct ReadAhead {
+    pieces: std::sync::mpsc::Receiver<(Result<Piece>, usize)>,
+    held: Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
+}
+
+impl ReadAhead {
+    /// The next piece; `None` once the stream is read.
+    fn next(&self) -> Option<Result<Piece>> {
+        let (piece, bytes) = self.pieces.recv().ok()?;
+        let (held, room) = &*self.held;
+        if let Ok(mut held) = held.lock() {
+            *held -= bytes;
+        }
+        room.notify_one();
+        Some(piece)
+    }
+}
+
+/// About what a decoded piece holds, from the bytes it was decoded from: a
+/// message's decoded value beside its packed blocks.
+fn piece_bytes(record: usize) -> usize {
+    2 * record + 256
+}
 
 /// Reads the composition stream on a thread of its own, merging it with
 /// each message reading's text keys and decoding its records, so that the
@@ -2449,12 +2497,29 @@ fn read_stream(
     skipped: BTreeSet<String>,
     aliases: Arc<super::identity::Aliases>,
     groups: Arc<GroupKeys>,
-) -> std::sync::mpsc::Receiver<Result<Piece>> {
-    let (sender, receiver) = std::sync::mpsc::sync_channel(PIECES_AHEAD);
+    ahead: usize,
+) -> ReadAhead {
+    let (sender, receiver) = std::sync::mpsc::channel();
+    let held = Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
+    let gate = Arc::clone(&held);
     let spawned = std::thread::Builder::new()
         .name("polylogue-compose-stream".into())
         .spawn(move || {
-            let mut send = |piece: Piece| sender.send(Ok(piece)).is_ok();
+            let mut send = |piece: Piece, bytes: usize| {
+                let (held, room) = &*gate;
+                let Ok(mut held) = held.lock() else {
+                    return false;
+                };
+                while *held > 0 && *held + bytes > ahead {
+                    match room.wait(held) {
+                        Ok(guard) => held = guard,
+                        Err(_) => return false,
+                    }
+                }
+                *held += bytes;
+                drop(held);
+                sender.send((Ok(piece), bytes)).is_ok()
+            };
             let result = (|| -> Result<()> {
                 while let Some((key, _)) = merged.peek()? {
                     if key.first() != Some(&COMPOSE) {
@@ -2472,27 +2537,33 @@ fn read_stream(
                         }
                         continue;
                     }
-                    if !send(Piece::Begin)
+                    if !send(Piece::Begin, 0)
                         || !read_session(&mut merged, &mut texts, &groups, &session, &mut send)?
                     {
                         return Ok(());
                     }
-                    if !send(Piece::End(session)) {
+                    if !send(Piece::End(session), 0) {
                         return Ok(());
                     }
                 }
                 Ok(())
             })();
             if let Err(error) = result {
-                let _ = sender.send(Err(error));
+                let _ = sender.send((Err(error), 0));
             }
         });
     if let Err(error) = spawned {
-        let (sender, failed) = std::sync::mpsc::sync_channel(1);
-        let _ = sender.send(Err(error.into()));
-        return failed;
+        let (sender, failed) = std::sync::mpsc::channel();
+        let _ = sender.send((Err(error.into()), 0));
+        return ReadAhead {
+            pieces: failed,
+            held,
+        };
     }
-    receiver
+    ReadAhead {
+        pieces: receiver,
+        held,
+    }
 }
 
 /// Whether `key` is one of `session`'s composition records.
@@ -2510,11 +2581,13 @@ fn read_session(
     texts: &mut Merger,
     groups: &GroupKeys,
     session: &str,
-    send: &mut impl FnMut(Piece) -> bool,
+    send: &mut impl FnMut(Piece, usize) -> bool,
 ) -> Result<bool> {
     use super::shown::{EventRow, Given, MessageReading, OutcomeRow};
     let bad = || StoreError::Invalid("a composition record is malformed".into());
     let mut pending: Option<(String, Vec<MessageReading>)> = None;
+    // What the pending message's readings were decoded from.
+    let mut pending_bytes = 0;
     let prefix = session.len() + 2;
     while let Some((key, value)) = merged.peek()? {
         if !of_session(key, session) {
@@ -2537,7 +2610,10 @@ fn read_session(
         let chain = i64::from_be_bytes(chain.try_into().map_err(|_| bad())?);
         if kind != MESSAGE
             && let Some((id, readings)) = pending.take()
-            && !send(Piece::Message { id, readings })
+            && !send(
+                Piece::Message { id, readings },
+                piece_bytes(std::mem::take(&mut pending_bytes)),
+            )
         {
             return Ok(false);
         }
@@ -2571,17 +2647,21 @@ fn read_session(
                     ),
                     _ => None,
                 };
-                if !send(Piece::Facts { input, chain, kind }) {
+                if !send(Piece::Facts { input, chain, kind }, 0) {
                     return Ok(false);
                 }
             }
             MESSAGE => {
                 if pending.as_ref().is_some_and(|(id, _)| *id != item)
                     && let Some((id, readings)) = pending.take()
-                    && !send(Piece::Message { id, readings })
+                    && !send(
+                        Piece::Message { id, readings },
+                        piece_bytes(std::mem::take(&mut pending_bytes)),
+                    )
                 {
                     return Ok(false);
                 }
+                pending_bytes += value.len();
                 // Columns: start, end, seq, position, order time, route,
                 // completion, content-named, hash, the content's group, start
                 // and length, words, items; then each block's text hash.
@@ -2656,36 +2736,44 @@ fn read_session(
                     .push(reading);
             }
             EVENT => {
-                if !send(Piece::Event(EventRow {
-                    input,
-                    input_pk: 0,
-                    chain,
-                    event_id: item,
-                    route: route(0)?,
-                    hash: blob(1)?.to_vec(),
-                    piece: crate::content::Piece {
-                        group: groups.key(int(2)?)?,
-                        start: int(3)?,
-                        length: int(4)?,
-                        data_length: Some(int(5)?),
-                    },
-                    seq: int(6)?,
-                    start: int_or_null(7)?,
-                    end: int_or_null(8)?,
-                })) {
+                let bytes = piece_bytes(value.len());
+                if !send(
+                    Piece::Event(EventRow {
+                        input,
+                        input_pk: 0,
+                        chain,
+                        event_id: item,
+                        route: route(0)?,
+                        hash: blob(1)?.to_vec(),
+                        piece: crate::content::Piece {
+                            group: groups.key(int(2)?)?,
+                            start: int(3)?,
+                            length: int(4)?,
+                            data_length: Some(int(5)?),
+                        },
+                        seq: int(6)?,
+                        start: int_or_null(7)?,
+                        end: int_or_null(8)?,
+                    }),
+                    bytes,
+                ) {
                     return Ok(false);
                 }
             }
             OUTCOME => {
-                if !send(Piece::Outcome(OutcomeRow {
-                    input_pk: 0,
-                    chain,
-                    position: int(0)?,
-                    input,
-                    route: route(2)?,
-                    call_id: item,
-                    body: text(1)?.to_owned(),
-                })) {
+                let bytes = piece_bytes(value.len());
+                if !send(
+                    Piece::Outcome(OutcomeRow {
+                        input_pk: 0,
+                        chain,
+                        position: int(0)?,
+                        input,
+                        route: route(2)?,
+                        call_id: item,
+                        body: text(1)?.to_owned(),
+                    }),
+                    bytes,
+                ) {
                     return Ok(false);
                 }
             }
@@ -2693,7 +2781,10 @@ fn read_session(
         }
     }
     if let Some((id, readings)) = pending.take() {
-        return Ok(send(Piece::Message { id, readings }));
+        return Ok(send(
+            Piece::Message { id, readings },
+            piece_bytes(pending_bytes),
+        ));
     }
     Ok(true)
 }

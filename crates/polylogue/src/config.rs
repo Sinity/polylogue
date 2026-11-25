@@ -188,15 +188,18 @@ impl ProcessInputs {
         })
     }
 }
-/// CPU affinity, physical memory and enclosing cgroup ceilings constrain this process.
+/// What this process may use: its cores (physical cores within its CPU
+/// affinity, at most its control groups' CPU quota) and its memory (what
+/// the system has available now, at most its control groups' limit).
 fn process_allowance() -> (Option<usize>, Option<u64>) {
-    let mut workers = std::thread::available_parallelism().ok().map(usize::from);
+    let mut workers =
+        physical_cores().or_else(|| std::thread::available_parallelism().ok().map(usize::from));
     let mut bytes = std::fs::read_to_string("/proc/meminfo")
         .ok()
         .and_then(|memory| {
             memory.lines().find_map(|line| {
                 let mut fields = line.split_whitespace();
-                if fields.next()? != "MemTotal:" {
+                if fields.next()? != "MemAvailable:" {
                     return None;
                 }
                 fields.next()?.parse::<u64>().ok()?.checked_mul(1024)
@@ -229,6 +232,34 @@ fn process_allowance() -> (Option<usize>, Option<u64>) {
         }
     }
     (workers, bytes)
+}
+
+/// The physical cores among the CPUs this process may run on: hardware
+/// threads of one core share its execution units, so a second worker on a
+/// core adds little.
+fn physical_cores() -> Option<usize> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let allowed = status
+        .lines()
+        .find_map(|line| line.strip_prefix("Cpus_allowed_list:"))?;
+    let mut cores = std::collections::BTreeSet::new();
+    for range in allowed.trim().split(',') {
+        let (first, last) = match range.split_once('-') {
+            Some((first, last)) => (first.parse::<usize>().ok()?, last.parse::<usize>().ok()?),
+            None => {
+                let cpu = range.parse::<usize>().ok()?;
+                (cpu, cpu)
+            }
+        };
+        for cpu in first..=last {
+            let siblings = std::fs::read_to_string(format!(
+                "/sys/devices/system/cpu/cpu{cpu}/topology/core_cpus_list"
+            ))
+            .ok()?;
+            cores.insert(siblings.trim().to_owned());
+        }
+    }
+    (!cores.is_empty()).then_some(cores.len())
 }
 
 #[derive(Debug, Clone)]
