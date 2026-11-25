@@ -13,8 +13,9 @@ mod counts;
 pub(crate) struct ChangeSummary {
     changed: RefCell<Changed>,
     /// The sessions the transaction composes hold every message their
-    /// events follow, or none holds it (a build's stream).
-    sessions_alone: bool,
+    /// events follow, or the message is one of these, shown in another
+    /// session, or none shows it (a build's stream).
+    sessions_alone: Option<std::sync::Arc<std::collections::HashSet<String>>>,
 }
 
 /// A message's place in session order (`message_session`): its
@@ -115,22 +116,28 @@ impl ChangeSummary {
     pub(crate) fn start(_conn: &Connection) -> Result<Self> {
         Ok(Self {
             changed: RefCell::default(),
-            sessions_alone: false,
+            sessions_alone: None,
         })
     }
 
     /// Starts the summary of a transaction composing sessions each of which
-    /// holds every message its events follow, or none holds it: the item
+    /// holds every message its events follow, unless the message is one of
+    /// `elsewhere`, shown in another session, or none shows it: the item
     /// index finds those messages among the session's own.
-    pub(crate) fn start_sessions_alone(conn: &Connection) -> Result<Self> {
+    pub(crate) fn start_sessions_alone(
+        conn: &Connection,
+        elsewhere: std::sync::Arc<std::collections::HashSet<String>>,
+    ) -> Result<Self> {
         Ok(Self {
-            sessions_alone: true,
+            sessions_alone: Some(elsewhere),
             ..Self::start(conn)?
         })
     }
 
-    pub(crate) fn sessions_alone(&self) -> bool {
-        self.sessions_alone
+    /// When the transaction composes sessions alone, the messages their
+    /// events follow that other sessions show.
+    pub(crate) fn sessions_alone(&self) -> Option<&std::collections::HashSet<String>> {
+        self.sessions_alone.as_deref()
     }
 
     /// Records a message before its row changes or is inserted.

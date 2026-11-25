@@ -110,22 +110,30 @@ enum MessageEntries<'a> {
 }
 
 /// Where the message an event follows is looked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Placement {
+#[derive(Debug, Clone, Copy)]
+enum Placement<'a> {
     /// In the whole index, by its ID.
     Index,
-    /// Among the session's own messages: a build composing sessions from
-    /// its stream composes alone only those whose events follow their own
-    /// messages or messages no reading states, so nothing is looked up by
-    /// ID in an index it is still writing.
-    SessionAlone,
+    /// Among the session's own messages, then among these, which other
+    /// sessions show: a build composing sessions from its stream knows
+    /// which messages its events follow outside their session, so nothing
+    /// is looked up by ID in an index it is still writing.
+    SessionAlone(&'a std::collections::HashSet<String>),
 }
 
-impl MessageEntries<'_> {
-    fn placement(self) -> Placement {
+/// The row key of a message only known to be shown in another session: no
+/// row has it.
+const OTHER_SESSION: i64 = 0;
+
+impl<'a> MessageEntries<'a> {
+    fn placement(self) -> Placement<'a> {
         match self {
-            Self::Prepared(changes) if changes.sessions_alone() => Placement::SessionAlone,
-            _ => Placement::Index,
+            Self::Prepared(changes) => match changes.sessions_alone() {
+                Some(elsewhere) => Placement::SessionAlone(elsewhere),
+                None => Placement::Index,
+            },
+            #[cfg(any(test, feature = "fixture"))]
+            Self::Fixture => Placement::Index,
         }
     }
 
@@ -378,7 +386,7 @@ fn units_from(
     session_pk: i64,
     start_point: Option<StartPoint>,
     extra: &BTreeSet<i64>,
-    placement: Placement,
+    placement: Placement<'_>,
 ) -> Result<Vec<Unit>> {
     // A message with no stored version (rows written directly by the
     // fixture builder) is identified by its block rows.
@@ -504,12 +512,13 @@ fn events_from(
     start_point: Option<StartPoint>,
     rows: &[MessageRow],
     extra: &BTreeSet<i64>,
-    placement: Placement,
+    placement: Placement<'_>,
 ) -> Result<Vec<EventRow>> {
     let Some(start_point) = start_point else {
-        if placement == Placement::SessionAlone {
+        if let Placement::SessionAlone(elsewhere) = placement {
             // `rows` are every message of the session: an event whose
-            // message is not among them follows no stored message.
+            // message is not among them follows one another session shows,
+            // or none.
             let pks: HashMap<&str, i64> =
                 rows.iter().map(|row| (row.id.as_str(), row.pk)).collect();
             let mut statement = conn.prepare_cached(&format!(
@@ -523,7 +532,11 @@ fn events_from(
                     .get_ref(10)?
                     .as_str_or_null()
                     .map_err(rusqlite::Error::from)?
-                    .and_then(|id| pks.get(id).copied());
+                    .and_then(|id| {
+                        pks.get(id)
+                            .copied()
+                            .or(elsewhere.contains(id).then_some(OTHER_SESSION))
+                    });
                 events.push(event);
             }
             read_data(conn, &mut events)?;
