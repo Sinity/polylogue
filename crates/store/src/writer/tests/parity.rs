@@ -166,6 +166,34 @@ fn message(id: String, session: &str, n: usize, version: u8, parent: Option<Stri
     if version == 2 {
         m.model = Some(format!("model-{n}"));
     }
+    // An assistant message calls a tool and the user message after it
+    // answers, with structured data beside the output: the build carries
+    // blocks and their data apart from the rest of a message.
+    if role == Role::Assistant {
+        m.blocks.push(Block::ToolCall {
+            call_id: Some(format!("call-{n}")),
+            tool: Some("Bash".into()),
+            action: polylogue_model::ToolAction::Shell,
+            input: serde_json::json!({ "command": format!("make {n}") }),
+            written_text: None,
+            command: Some(format!("make {n}")),
+            path: None,
+            run_by_script: false,
+        });
+    } else if n > 0 {
+        m.blocks.push(Block::ToolResult {
+            reported_duration_ms: None,
+            call_id: Some(format!("call-{}", n - 1)),
+            outcome: if version == 1 {
+                polylogue_model::ToolOutcome::Error { reason: None }
+            } else {
+                polylogue_model::ToolOutcome::Ok
+            },
+            output: Some(format!("output {n} version {version}")),
+            data: Some(serde_json::json!({ "exit_code": version })),
+            attachments: Vec::new(),
+        });
+    }
     m
 }
 
@@ -219,7 +247,14 @@ fn step(n: usize, input: &Input, chain: usize, from: usize, to: usize) -> Batch 
                     id_kind: polylogue_model::IdKind::Content,
                     offset,
                     end,
-                    message: message(format!("claude-code:{COPY}~{n}"), COPY, *n, *version, None),
+                    message: {
+                        // A copy's text only: its tool calls would repeat
+                        // the call IDs of the session it is shown in.
+                        let mut copy =
+                            message(format!("claude-code:{COPY}~{n}"), COPY, *n, *version, None);
+                        copy.blocks.truncate(1);
+                        copy
+                    },
                 });
             }
             Row::Event {
@@ -338,6 +373,13 @@ fn replies(w: &TestArchive) -> Vec<String> {
         out.push(format!("session {id}: {:?}", r.session(&id).unwrap()));
         for message in r.messages(&id, false).unwrap() {
             out.push(format!("  message {message:?}"));
+            // Each call with the result paired to it, and each result.
+            for (ordinal, block) in message.blocks.iter().enumerate() {
+                if matches!(block, Block::ToolCall { .. } | Block::ToolResult { .. }) {
+                    let pair = r.message_tool_pair(&message.id, ordinal as u64).unwrap();
+                    out.push(format!("    pair {ordinal} {pair:?}"));
+                }
+            }
         }
         let mut events = Vec::new();
         r.visit_event_records(&id, 0, |mut event| {

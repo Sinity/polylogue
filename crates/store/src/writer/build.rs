@@ -839,9 +839,13 @@ fn compose_records(
                 continue;
             }
             let items = crate::items::entry_bytes::encode_message(&reading.items)?;
+            // The body's blocks are the packed blocks and data the record
+            // carries after it: the record holds the rest of the message.
+            let head = message_head(row.get_ref(11)?.as_blob().map_err(rusqlite::Error::from)?)?;
             let mut values: Vec<ValueRef<'_>> = (2..13)
                 .map(|n| row.get_ref(n))
                 .collect::<rusqlite::Result<_>>()?;
+            values[9] = ValueRef::Blob(&head);
             values.push(ValueRef::Integer(reading.words));
             values.push(ValueRef::Blob(&items));
             for ((block, data), text) in reading
@@ -905,6 +909,16 @@ fn compose_records(
         }
     }
     Ok(())
+}
+
+/// A packed message body as JSON without its blocks.
+fn message_head(body: &[u8]) -> Result<Vec<u8>> {
+    let mut message: serde_json::Value = crate::encoding::unpack_json(body)?;
+    let blocks = message
+        .get_mut("blocks")
+        .ok_or_else(|| StoreError::Invalid("a message body has no blocks".into()))?;
+    *blocks = serde_json::Value::Array(Vec::new());
+    Ok(serde_json::to_vec(&message)?)
 }
 
 /// What composing a message reading takes from its value: whether it holds
@@ -2129,19 +2143,23 @@ fn read_session(
                     return Ok(false);
                 }
                 // Columns: start, end, seq, position, order time, route,
-                // completion, content-named, hash, body, layout, words,
-                // items; then each block's body, data and text hash.
+                // completion, content-named, hash, the message without its
+                // blocks, layout, words, items; then each block's packed
+                // body, data and text hash. The message's blocks are read
+                // back from their packed bodies as a block row is, without
+                // their data: composition writes each block's data from the
+                // record and reads none from the message.
                 let hash = blob(8)?.to_vec();
-                let message: Message = crate::encoding::unpack_json(blob(9)?)?;
-                let selection = crate::encoding::message_block_selection(
-                    &hash,
-                    Some(blob(10)?),
-                    message.blocks.len(),
-                )?;
-                let blocks = (row.len() - 13) / 3;
-                if blocks != message.blocks.len() || (row.len() - 13) % 3 != 0 {
+                if row.len() < 13 || (row.len() - 13) % 3 != 0 {
                     return Err(bad());
                 }
+                let blocks = (row.len() - 13) / 3;
+                let mut message: Message = crate::encoding::read_json(blob(9)?)?;
+                message.blocks = (0..blocks)
+                    .map(|n| crate::encoding::unpack_block(blob(13 + 3 * n)?))
+                    .collect::<Result<_>>()?;
+                let selection =
+                    crate::encoding::message_block_selection(&hash, Some(blob(10)?), blocks)?;
                 let mut content = crate::encoding::PreparedContent {
                     hash: selection.source_version.0,
                     blocks: Vec::with_capacity(blocks),
