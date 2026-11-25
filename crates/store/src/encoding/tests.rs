@@ -104,7 +104,7 @@ fn row_frames_and_message_content_read_back_across_sizes() {
         }))
         .unwrap();
         let before = message.clone();
-        let content = message_content(&mut message).unwrap();
+        let content = message_content(&mut message, &[]).unwrap();
         assert_eq!(message, before);
         assert_eq!(read_message_content(&content, true).unwrap().0, message);
     }
@@ -177,7 +177,7 @@ fn prepared_rows_preserve_values_for_every_block_kind() {
     }))
     .unwrap();
     let mut stored = message.clone();
-    let content = message_content(&mut stored).unwrap();
+    let content = message_content(&mut stored, &[]).unwrap();
     let (read, pieces) = read_message_content(&content, false).unwrap();
     assert_eq!(pieces.len(), message.blocks.len());
     for ((block, piece), read) in message.blocks.iter().zip(&pieces).zip(&read.blocks) {
@@ -344,7 +344,7 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
     };
     let mut packer = crate::content::Packer::default();
     let mut stated = event.clone();
-    let prepared = PreparedEvent::new(&mut stated, &mut packer).unwrap();
+    let prepared = PreparedEvent::new(&mut stated, &[], &mut packer).unwrap();
     assert_eq!(stated, event);
     let piece = packer.finish().unwrap().read(prepared.content).unwrap();
     let (fields, data) = piece.split_at(prepared.fields_length as usize);

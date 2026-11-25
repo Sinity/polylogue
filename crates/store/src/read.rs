@@ -1022,19 +1022,25 @@ impl Reader<'_> {
     ) -> Result<Option<(Message, ShownBlocks)>> {
         let conn = self.conn()?;
         let id = crate::chain_names::resolved_message(conn, id)?;
-        let pk: Option<i64> = conn
+        let shown: Option<(i64, String, Option<i64>)> = conn
             .query_row(
-                "SELECT pk FROM message WHERE id=?1",
+                "SELECT m.pk,i.id,m.source_chain FROM message m JOIN input_ref i ON i.pk=m.input_pk
+                 WHERE m.id=?1",
                 [id.to_string()],
-                |row| row.get(0),
+                |row| <(i64, String, Option<i64>)>::try_from(row),
             )
             .optional()?;
-        match pk {
-            Some(pk) => crate::writer::shown_message(conn, pk)?
-                .map(Some)
-                .ok_or_else(|| StoreError::stored(0, "the message has no source reading")),
-            None => Ok(None),
+        let Some((pk, input, chain)) = shown else {
+            return Ok(None);
+        };
+        let (mut message, selection) = crate::writer::shown_message(conn, pk)?
+            .ok_or_else(|| StoreError::stored(0, "the message has no source reading"))?;
+        // A message read whole shows what its reading left in the stored
+        // bytes.
+        if let Some(chain) = chain {
+            self.resolve_stored_blocks(&input, chain, &mut message.blocks)?;
         }
+        Ok(Some((message, selection)))
     }
 
     /// Commit of the shown stored rows, including all contributing sparse
@@ -1262,11 +1268,18 @@ impl Reader<'_> {
                         .query_row([pk], |row| row.get::<_, bool>(0))?
                 }
             };
-            let blocks = if visible {
+            let mut blocks = if visible {
                 self.message_blocks(pk, content.structured)?
             } else {
                 Vec::new()
             };
+            // A read of whole values shows what the reading left in the
+            // stored bytes.
+            if content.structured
+                && let (Some(input), Some(chain)) = (&source_input, source_chain)
+            {
+                self.resolve_stored_blocks(input, chain, &mut blocks)?;
+            }
             let message = Message {
                 id,
                 session: session.clone(),
@@ -1410,6 +1423,59 @@ impl Reader<'_> {
     ) -> Result<crate::blobs::StoredChain> {
         self.check_bytes_present(input, chain, 0..length)?;
         crate::blobs::StoredChain::load(&self.chain_source(), input, chain, length)
+    }
+
+    /// Puts back the values a reading of `input`'s chain `chain` left in the
+    /// stored bytes (docs/archive.md, content): each block value that reads
+    /// as a stored marker is read from the record the marker names.
+    pub(crate) fn resolve_stored_blocks(
+        &self,
+        input: &str,
+        chain: i64,
+        blocks: &mut [Block],
+    ) -> Result<()> {
+        let mut records = StoredRecords::default();
+        for block in blocks {
+            if let Block::Thinking {
+                signature: Some(signature),
+                ..
+            } = block
+                && let Some((start, end, pointer)) = crate::content::stored_at(signature)
+            {
+                let value = records.value(self, input, chain, start, end, pointer)?;
+                *signature = value
+                    .as_str()
+                    .ok_or_else(|| StoreError::stored_data("a stored signature is not a string"))?
+                    .to_owned();
+            }
+        }
+        Ok(())
+    }
+
+    /// [`Self::resolve_stored_blocks`] for any JSON value: every string in it
+    /// that is a stored marker becomes the value it names.
+    pub(crate) fn resolve_stored_value(
+        &self,
+        input: &str,
+        chain: i64,
+        value: &mut serde_json::Value,
+    ) -> Result<()> {
+        let mut records = StoredRecords::default();
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            match value {
+                serde_json::Value::String(text) => {
+                    if let Some((start, end, pointer)) = crate::content::stored_at(text) {
+                        let found = records.value(self, input, chain, start, end, pointer)?;
+                        *value = found;
+                    }
+                }
+                serde_json::Value::Array(items) => pending.extend(items.iter_mut()),
+                serde_json::Value::Object(members) => pending.extend(members.values_mut()),
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     /// Reads only the extents a range covers, with their integrity checks.
@@ -1701,6 +1767,39 @@ impl Reader<'_> {
             parsed_upto: parsed_upto as u64,
             parsed,
         }))
+    }
+}
+
+/// The record a stored marker names, read once for the markers that name it.
+#[derive(Default)]
+struct StoredRecords {
+    last: Option<((u64, u64), serde_json::Value)>,
+}
+
+impl StoredRecords {
+    fn value(
+        &mut self,
+        reader: &Reader<'_>,
+        input: &str,
+        chain: i64,
+        start: u64,
+        end: u64,
+        pointer: &str,
+    ) -> Result<serde_json::Value> {
+        if self
+            .last
+            .as_ref()
+            .is_none_or(|(range, _)| *range != (start, end))
+        {
+            let store = reader.blob_store()?;
+            let bytes = reader.stored_range(input, chain, start, end, &store)?;
+            let record: serde_json::Value = serde_json::from_slice(bytes.trim_ascii())?;
+            self.last = Some(((start, end), record));
+        }
+        let (_, record) = self.last.as_ref().expect("just read");
+        record.pointer(pointer).cloned().ok_or_else(|| {
+            StoreError::stored_data(format!("the stored record holds no value at {pointer}"))
+        })
     }
 }
 

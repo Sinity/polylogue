@@ -61,7 +61,7 @@ impl Reader<'_> {
             .transpose()?;
         let Some(StoredEvent {
             pk,
-            event,
+            mut event,
             input,
             chain,
             end,
@@ -70,6 +70,8 @@ impl Reader<'_> {
         else {
             return Ok(None);
         };
+        // What the reading left in the stored bytes is shown from them.
+        self.resolve_stored_value(&input, chain, &mut event.data)?;
         let readings = crate::writer::readings::event_readings(self.conn()?, pk)?;
         let selected = readings
             .iter()

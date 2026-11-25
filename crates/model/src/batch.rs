@@ -63,6 +63,13 @@ pub struct Output {
     /// their source before promoting them to observed injection evidence.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub hook_fields: BTreeMap<usize, Vec<crate::ParsedHookField>>,
+    /// Values the parser leaves in the stored bytes, by message: the index
+    /// keeps where each is and reads it from those bytes when it is shown.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stored_fields: BTreeMap<usize, Vec<StoredField>>,
+    /// Values the parser leaves in the stored bytes, by event.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub stored_event_fields: BTreeMap<usize, Vec<StoredField>>,
     /// Imported hook evidence remains declared, independent of local capture_read.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub declared_injections: BTreeMap<usize, Vec<crate::injection::InjectionEvidence>>,
@@ -113,6 +120,26 @@ pub struct Output {
     /// Repository lookups (a `polylogue-repo-lookup` input holds one).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub repo_lookups: Vec<RepoLookup>,
+}
+
+/// A value a parser leaves in the stored bytes rather than the index: an
+/// opaque payload no search or reading uses until it is shown, such as
+/// encrypted reasoning or a compaction's restated history. The index holds
+/// where it is; a reader takes it from the record when it shows the value.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StoredField {
+    /// For a message, the block holding the value; none for an event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<u64>,
+    /// Where the value is in what was parsed, as a JSON pointer: in the
+    /// block (`/signature`) or in the event's data (`/replacement_history`).
+    pub field: String,
+    /// The record holding the value: its byte range in the input, and the
+    /// value's JSON pointer in the record.
+    pub start: u64,
+    pub end: u64,
+    pub pointer: String,
 }
 
 /// What a repository directory is, as read on this host: where its `.git`

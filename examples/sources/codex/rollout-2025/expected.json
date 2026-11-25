@@ -161,6 +161,17 @@
         "offset": 736
       }
     ],
+    "stored_fields": {
+      "1": [
+        {
+          "block": 0,
+          "end": 423,
+          "field": "/signature",
+          "pointer": "/encrypted_content",
+          "start": 350
+        }
+      ]
+    },
     "sessions": [
       {
         "git_branch": "main",

@@ -64,7 +64,7 @@ pub use alternate::{
 
 pub use batch::{
     Alias, BackgroundUpdate, CountMismatch, DocumentRow, ExtractedBlob, IdKind, MessageRow,
-    OrderKey, Output, RecordCounts, RecordOutcome, RepoLookup, WireShape,
+    OrderKey, Output, RecordCounts, RecordOutcome, RepoLookup, StoredField, WireShape,
 };
 pub use block::{
     Attachment, AttachmentDirection, Block, BlockKind, CallOutcome, ErrorReason, ToolAction,

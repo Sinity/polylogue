@@ -463,6 +463,38 @@ fn within(group: &[u8], range: Range<usize>) -> Result<&[u8]> {
         .ok_or_else(|| StoreError::stored(0, "a stored piece lies outside its group"))
 }
 
+/// What a value left in the stored bytes reads as in the index (docs/
+/// archive.md, content): a string naming the record that holds it, as a byte
+/// range of the reading's chain, and the value's JSON pointer in that record.
+/// Only a reader showing the value reads the record
+/// ([`crate::read::Reader::resolve_stored`]).
+pub(crate) fn stored_marker(field: &polylogue_model::StoredField) -> String {
+    format!("{STORED}{} {} {}", field.start, field.end, field.pointer)
+}
+
+const STORED: &str = "\u{0}stored ";
+
+/// Where a value [`stored_marker`] names is: the record's byte range in the
+/// chain and the value's pointer in it.
+pub(crate) fn stored_at(text: &str) -> Option<(u64, u64, &str)> {
+    let rest = text.strip_prefix(STORED)?;
+    let (start, rest) = rest.split_once(' ')?;
+    let (end, pointer) = rest.split_once(' ')?;
+    Some((start.parse().ok()?, end.parse().ok()?, pointer))
+}
+
+/// Replaces the value at `field.field` in `value` with its marker.
+pub(crate) fn leave_stored(
+    value: &mut serde_json::Value,
+    field: &polylogue_model::StoredField,
+) -> Result<()> {
+    let slot = value.pointer_mut(&field.field).ok_or_else(|| {
+        StoreError::Invalid(format!("a stored field names no value at {}", field.field))
+    })?;
+    *slot = serde_json::Value::String(stored_marker(field));
+    Ok(())
+}
+
 /// Parts laid out as one piece: the part count and each part's length as
 /// varints, then the parts one after another.
 pub(crate) fn join_parts(parts: &[&[u8]]) -> Vec<u8> {

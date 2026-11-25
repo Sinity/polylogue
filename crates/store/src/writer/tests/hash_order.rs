@@ -60,6 +60,7 @@ fn version_hash_ignores_nested_json_member_order() {
         blake3::Hash::from_bytes(
             crate::encoding::PreparedMessage::new(
                 &mut first.clone(),
+                &[],
                 &mut crate::content::Packer::default()
             )
             .unwrap()
