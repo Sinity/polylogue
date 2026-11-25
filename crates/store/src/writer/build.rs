@@ -53,14 +53,16 @@ const TABLES: u8 = 3;
 
 /// What decides which sessions are composed from the stream, read before
 /// it: sessions whose composition reaches other sessions' readings
-/// ([`FALLBACK`]), and each message ID with the session stating it
-/// ([`MESSAGE_ID`]), an event's message with its session ([`FOLLOWED`]) or
-/// an event ID with its session ([`EVENT_ID`]).
+/// ([`FALLBACK`]); each message ID with the sessions stating it and the
+/// sessions with an event following it ([`MESSAGE_ID`], then [`STATES`] or
+/// [`FOLLOWS`]: one message's marks come together, its statements first);
+/// and each event ID with its session ([`EVENT_ID`]).
 const MARKS: u8 = 253;
 const FALLBACK: u8 = 0;
 const MESSAGE_ID: u8 = 1;
-const FOLLOWED: u8 = 2;
 const EVENT_ID: u8 = 3;
+const STATES: u8 = 0;
+const FOLLOWS: u8 = 1;
 /// The readings composition takes, grouped by the session stating them:
 /// its facts' kinds, each message's readings with their values, its event
 /// readings and its calls' background outcomes, in that order.
@@ -71,13 +73,14 @@ const EVENT: u8 = 2;
 const OUTCOME: u8 = 3;
 
 /// The tables composition writes, and those of their indexes kept while it
-/// composes from the stream: those it reads (its rows in order, the replies
-/// to each message and the message an event follows, for its item index,
-/// counts and values), and those whose first column is the session, message
-/// or event a row belongs to. Composition makes those keys in the order it
-/// writes, so each such entry lands at its index's end and costs no read;
-/// made after the stream, each would scan its whole table again. Their
-/// other indexes are made after the stream.
+/// composes from the stream: those whose first column is the session,
+/// message or event a row belongs to, which are also all it reads (its rows
+/// in order, the replies to each message, for its item index, counts and
+/// values). Composition makes those keys in the order it writes, so each
+/// such entry lands at its index's end and costs no read; made after the
+/// stream, each would scan its whole table again. Their other indexes,
+/// keyed by IDs in no order (a message's, an event's), are made after the
+/// stream: kept while it writes, each new row would read a page at random.
 const SHOWN_TABLES: &[&str] = &[
     "message",
     "message_route",
@@ -86,7 +89,6 @@ const SHOWN_TABLES: &[&str] = &[
     "event",
     "session_item",
 ];
-const STREAM_READS: &[&str] = &["message_id"];
 const COMPOSED_IN_ORDER: &[&str] = &["session_pk", "message_pk", "event_pk"];
 
 /// The table an index statement is on, and its first column.
@@ -98,9 +100,8 @@ fn index_target(sql: &str) -> Option<(&str, &str)> {
 }
 
 /// Whether an index on a shown table is kept while composition writes it.
-fn kept_while_composing(name: &str, sql: &str) -> bool {
-    STREAM_READS.contains(&name)
-        || index_target(sql).is_some_and(|(_, first)| COMPOSED_IN_ORDER.contains(&first))
+fn kept_while_composing(sql: &str) -> bool {
+    index_target(sql).is_some_and(|(_, first)| COMPOSED_IN_ORDER.contains(&first))
 }
 
 /// Whether an index on a reading table is kept while the load writes it:
@@ -472,6 +473,18 @@ fn mark_key(kind: u8, parts: &[&str]) -> Vec<u8> {
         key.extend_from_slice(part.as_bytes());
         key.push(0);
     }
+    key
+}
+
+/// The mark that `session` states message `message` ([`STATES`]) or holds
+/// an event following it ([`FOLLOWS`]).
+fn message_mark(message: &str, how: u8, session: &str) -> Vec<u8> {
+    let mut key = vec![MARKS, MESSAGE_ID];
+    key.extend_from_slice(message.as_bytes());
+    key.push(0);
+    key.push(how);
+    key.extend_from_slice(session.as_bytes());
+    key.push(0);
     key
 }
 
@@ -920,7 +933,7 @@ fn compose_records(
             let message: String = row.get(0)?;
             let session: String = row.get(1)?;
             out.sorter
-                .push(&mark_key(MESSAGE_ID, &[&message, &session]), &[])?;
+                .push(&message_mark(&message, STATES, &session), &[])?;
             // What a step prepared is the reading's when the reading is that
             // step's statement: the same version and blocks. A reading
             // joined from several statements is read back.
@@ -982,7 +995,7 @@ fn compose_records(
             let (event, session): (String, String) = (row.get(0)?, row.get(1)?);
             if let Some(after) = row.get::<_, Option<String>>(11)? {
                 out.sorter
-                    .push(&mark_key(FOLLOWED, &[&after, &session]), &[])?;
+                    .push(&message_mark(&after, FOLLOWS, &session), &[])?;
             }
             out.sorter
                 .push(&mark_key(EVENT_ID, &[&event, &session]), &[])?;
@@ -1251,14 +1264,16 @@ struct Load {
     /// stream.
     reading_texts: Option<Sorter>,
     /// Sessions composed from the index, the message and event IDs of
-    /// readings upkeep wrote meanwhile, the copy names, the last message and
-    /// event ID seen with its session, and the event IDs several sessions
-    /// state (see [`MARKS`]).
+    /// readings upkeep wrote meanwhile, the copy names, the message and the
+    /// event ID whose marks are being read, and the event IDs several
+    /// sessions state (see [`MARKS`]).
     fallback: BTreeSet<String>,
     upkept_messages: BTreeSet<String>,
     upkept_events: HashSet<String>,
     aliases: Option<super::identity::Aliases>,
-    last_message: Option<(String, String)>,
+    /// The message ID whose marks are being read, with the sessions stating
+    /// it so far.
+    message: Option<(String, Vec<String>)>,
     last_event: Option<(String, String)>,
     shared_events: HashSet<String>,
 }
@@ -1366,8 +1381,7 @@ impl Inner {
                     }
                     if kept_while_loading(&sql) {
                         self.index.execute(&sql, [])?;
-                    } else if SHOWN_TABLES.contains(&table.as_str())
-                        && !kept_while_composing(&name, &sql)
+                    } else if SHOWN_TABLES.contains(&table.as_str()) && !kept_while_composing(&sql)
                     {
                         job.after_stream.push(sql);
                     } else {
@@ -1608,7 +1622,7 @@ impl Inner {
             upkept_messages: upkept.messages,
             upkept_events: upkept.events,
             aliases: None,
-            last_message: None,
+            message: None,
             last_event: None,
             shared_events: HashSet::new(),
         })
@@ -1769,8 +1783,11 @@ impl Inner {
                         FALLBACK => {
                             load.fallback.insert(split_id(rest)?.0.to_owned());
                         }
-                        MESSAGE_ID | FOLLOWED => {
+                        MESSAGE_ID => {
                             let (message, rest) = split_id(rest)?;
+                            let (&how, rest) = rest.split_first().ok_or_else(|| {
+                                StoreError::Invalid("a build mark of no kind".into())
+                            })?;
                             let session = split_id(rest)?.0;
                             // A message one of whose names is a copy's is
                             // shown as its session decides.
@@ -1779,20 +1796,40 @@ impl Inner {
                             if named {
                                 load.fallback.insert(session.to_owned());
                             }
-                            if mark == MESSAGE_ID {
+                            if load.message.as_ref().is_none_or(|(id, _)| id != message) {
+                                load.message = Some((message.to_owned(), Vec::new()));
+                            }
+                            let (_, stating) = load.message.as_mut().expect("set above");
+                            match how {
                                 // A message stated under several sessions, or
                                 // also by a reading upkeep wrote.
-                                if load.upkept_messages.contains(message) {
-                                    load.fallback.insert(session.to_owned());
+                                STATES => {
+                                    if load.upkept_messages.contains(message) {
+                                        load.fallback.insert(session.to_owned());
+                                    }
+                                    if stating.iter().any(|other| other != session) {
+                                        load.fallback.extend(stating.iter().cloned());
+                                        load.fallback.insert(session.to_owned());
+                                    }
+                                    stating.push(session.to_owned());
                                 }
-                                if let Some((last, other)) = &load.last_message
-                                    && last == message
-                                    && other != session
-                                {
-                                    load.fallback.insert(other.clone());
-                                    load.fallback.insert(session.to_owned());
+                                // An event following a message stated under
+                                // another session, or by a reading upkeep
+                                // wrote: its session's item index places the
+                                // event by that message, which only the index
+                                // finds.
+                                FOLLOWS => {
+                                    if load.upkept_messages.contains(message)
+                                        || stating.iter().any(|other| other != session)
+                                    {
+                                        load.fallback.insert(session.to_owned());
+                                    }
                                 }
-                                load.last_message = Some((message.to_owned(), session.to_owned()));
+                                _ => {
+                                    return Err(StoreError::Invalid(
+                                        "a build mark of no kind".into(),
+                                    ));
+                                }
                             }
                         }
                         EVENT_ID => {
@@ -2014,7 +2051,9 @@ impl Inner {
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&tx)?;
-        let changes = crate::change_summary::ChangeSummary::start(&tx)?;
+        // A session an event of which follows a message stated under another
+        // session is composed from the index ([`MARKS`]).
+        let changes = crate::change_summary::ChangeSummary::start_sessions_alone(&tx)?;
         let context = super::shown::Context {
             tx: &tx,
             counter,

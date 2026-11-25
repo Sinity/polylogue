@@ -418,6 +418,16 @@ fn replies(w: &TestArchive) -> Vec<String> {
                 }
             }
         }
+        // The session's entries in reading order, events placed by the
+        // messages they follow. A session left with no rows reads the same
+        // with an empty index or none.
+        let items = r
+            .item_index(&id)
+            .ok()
+            .flatten()
+            .map(|items| items.entries)
+            .unwrap_or_default();
+        out.push(format!("  items {items:?}"));
         let mut events = Vec::new();
         r.visit_event_records(&id, 0, |mut event| {
             // When its record was committed belongs to the record's arrival,
@@ -671,7 +681,7 @@ fn a_reading_two_sessions_state_is_built_once() {
     assert_eq!(
         expected
             .iter()
-            .filter(|line| line.contains("quota_report"))
+            .filter(|line| line.starts_with("  event") && line.contains("quota_report"))
             .count(),
         1
     );

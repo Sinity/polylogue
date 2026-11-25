@@ -339,8 +339,11 @@ The daemon reaches the index two ways, which must agree.
   composition upkeep uses, with nothing stored to compare against. A session whose shown rows depend on readings stated
   under other sessions is composed from the loaded readings instead, as
   upkeep composes it: a copy named through another session, a message stated
-  under several sessions, a reading holding part of a version other readings
-  complete, or readings upkeep wrote while the build ran. An event several
+  under several sessions, an event following a message another session
+  states, a reading holding part of a version other readings complete, or
+  readings upkeep wrote while the build ran. So a session composed from its
+  group finds every message its events follow among its own, and the
+  build's index of message IDs is made after the sessions are written. An event several
   sessions state, such as a quota reading every session of an origin
   shares, is composed from the loaded readings once the sessions are. Links
   and documents, which no session holds, are composed before the sessions.

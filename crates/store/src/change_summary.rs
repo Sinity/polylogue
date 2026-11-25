@@ -12,6 +12,9 @@ mod counts;
 
 pub(crate) struct ChangeSummary {
     changed: RefCell<Changed>,
+    /// The sessions the transaction composes hold every message their
+    /// events follow, or none holds it (a build's stream).
+    sessions_alone: bool,
 }
 
 /// A message's place in session order (`message_session`): its
@@ -112,7 +115,22 @@ impl ChangeSummary {
     pub(crate) fn start(_conn: &Connection) -> Result<Self> {
         Ok(Self {
             changed: RefCell::default(),
+            sessions_alone: false,
         })
+    }
+
+    /// Starts the summary of a transaction composing sessions each of which
+    /// holds every message its events follow, or none holds it: the item
+    /// index finds those messages among the session's own.
+    pub(crate) fn start_sessions_alone(conn: &Connection) -> Result<Self> {
+        Ok(Self {
+            sessions_alone: true,
+            ..Self::start(conn)?
+        })
+    }
+
+    pub(crate) fn sessions_alone(&self) -> bool {
+        self.sessions_alone
     }
 
     /// Records a message before its row changes or is inserted.
