@@ -206,7 +206,8 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
     assert_eq!(
         plain(&status, &["parsing is behind the stored bytes"]),
         "\
-polylogue  standalone · daemon 4479 · up 17h35m · /home/op/archive
+polylogue  ⚠ parsing is behind the stored bytes
+           standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
 
 ARCHIVE    37,419 sessions   11.24M messages   4.77M tool calls   288 documents
            132,286 inputs · 98.6 GiB stored · 134,089 revisions
@@ -375,11 +376,13 @@ fn a_build_lists_its_steps_with_counts_times_and_estimates() {
             &[BUILDING, "AI Studio through Drive is not authorized"]
         ),
         "\
-polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
+polylogue  ◐ building the index, step 7 of 10
+           standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
 INDEX      building the index from 63.1 GiB of stored files: the archive had no index
            reads and searches answer \"index building\" until it is installed
-           ##............................  7%   step 7 of 10, assembling sessions
+           ##............................  7% of assembling sessions · about 17 h 18 min left
+
            ✓ finding files            1m
            ✓ storing files         1h20m  10,687 files
            ✓ reading stored files   1h8m  63.1 GiB
@@ -387,15 +390,13 @@ INDEX      building the index from 63.1 GiB of stored files: the archive had no 
            ✓ writing tables          46m  50.25M records
            ✓ indexing              2h26m  61 indexes
            ▸ assembling sessions   1h26m  3,205 of 41,822 sessions
-                                          0.6 sessions/s · about 17 h 18 min left
+                                          0.6 sessions/s
            · finishing indexes
            · search index
            · installing
-           whole job: time unknown; the 3 steps to come are measured only as they run
-           database writer busy 100% of the last minute
 
-RECENT     06:45:32  index: writing tables took 2806.7 s; 50252966 records
-           09:12:13  index: indexing took 8801.6 s; 61 indexes
+           whole build: time left known once the last step runs (3 steps to come)
+           database writer busy 100% of the last minute
 
 NOTES      ⚠ AI Studio through Drive is not authorized
 "
@@ -439,16 +440,19 @@ fn reading_stored_files_shows_bytes_and_files() {
     assert_eq!(
         plain(&status, &[BUILDING]),
         "\
-polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
+polylogue  ◐ building the index, step 1 of 3
+           standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
 INDEX      building the index from 65.6 GiB of stored files: its format changed (41 to 42)
            reads and searches use the previous index until the new one is installed
-           ################..............  56%   step 1 of 3, reading stored files
+           ################..............  56% of reading stored files · about 26 min left
+
            ▸ reading stored files    34m  36.8 GiB of 65.6 GiB · 4,120 of 21,678 files
-                                          18.4 MB/s · about 26 min left
+                                          18.4 MB/s
            · sorting texts
            · installing
-           whole job: time unknown; the 2 steps to come are measured only as they run
+
+           whole build: time left known once the last step runs (2 steps to come)
            2 parse workers, 3.1 s CPU/min each
 "
     );
@@ -480,10 +484,12 @@ fn a_step_without_an_estimate_says_why() {
     assert_eq!(
         plain(&status, &[BUILDING]),
         "\
-polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
+polylogue  ◐ building the index, step 1 of 1
+           standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
 INDEX      building the index: the archive had no index
            reads and searches answer \"index building\" until it is installed
+
            ▸ sorting texts    20m  2.10M records so far
                                    2,650 records/s · total known when the step ends
 "
@@ -533,13 +539,19 @@ fn a_failed_attempt_is_shown_while_the_build_runs_again() {
     );
     let text = plain(&status, &[BUILDING]);
     assert!(
+        text.starts_with(
+            "polylogue  ◐ building the index, step 1 of 1, again after a failed attempt\n"
+        ),
+        "{text}"
+    );
+    assert!(
         text.contains(
             "\n           ✖ an earlier attempt failed while assembling sessions: disk full; started over\n"
         ),
         "{text}"
     );
     assert!(
-        text.contains("▸ reading stored files     2m  this step has no progress count\n"),
+        text.contains("\n\n           ▸ reading stored files     2m\n"),
         "{text}"
     );
 }
@@ -569,7 +581,8 @@ fn a_finished_build_leaves_its_steps_in_the_log() {
     assert_eq!(
         plain(&status, &[]),
         "\
-polylogue  standalone · daemon 4479 · up 17h35m · /home/op/archive
+polylogue  ✓ up to date
+           standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
 
 LAST CHECK 13:50:00 · 1.5 s · 2 of 10,687 files changed
            0 B read · 0 messages written
@@ -651,7 +664,171 @@ fn a_rule_shows_when_it_last_fired() {
         "{text}"
     );
     assert!(
-        text.lines().next().unwrap().contains(" · warming"),
+        text.starts_with("polylogue  ◐ warming up after the index was installed\n"),
+        "{text}"
+    );
+}
+
+/// A blocked daemon says so in its headline, in red on a color terminal.
+#[test]
+fn a_blocked_daemon_says_so_first() {
+    let mut status = answer();
+    status.mode = Mode::Blocked {
+        configured: None,
+        path: "/home/op/archive".into(),
+        error: "the archive is locked by another daemon".into(),
+    };
+    assert_eq!(
+        plain(&status, &[]),
+        "\
+polylogue  ✖ blocked: /home/op/archive: the archive is locked by another daemon
+           blocked · daemon 4479 · up 17h35m · idle · /home/op/archive
+"
+    );
+}
+
+/// The view shows the newest five log records and how many more `--log`
+/// prints; while an index is built only warnings and errors are shown.
+#[test]
+fn recent_shows_the_newest_records_and_points_at_the_rest() {
+    let mut status = answer();
+    status.recent_log = (0..7)
+        .map(|n| record(today(13, n, 0), Priority::Info, &format!("record {n}")))
+        .collect();
+    assert_eq!(
+        plain(&status, &[]),
+        "\
+polylogue  ✓ up to date
+           standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
+
+RECENT     2 earlier in `polylogue status --log`
+           13:02:00  record 2
+           13:03:00  record 3
+           13:04:00  record 4
+           13:05:00  record 5
+           13:06:00  record 6
+"
+    );
+    let mut status = building(
+        IndexBuild {
+            serving_previous: true,
+            chains: 0,
+            chains_read: 0,
+            bytes: 0,
+            bytes_read: 0,
+        },
+        progress(current("indexing", 1, None), Vec::new(), &[]),
+    );
+    status.recent_log = (0..3)
+        .map(|n| record(today(13, n, 0), Priority::Info, "index: a step"))
+        .chain([record(
+            today(13, 7, 0),
+            Priority::Warning,
+            "a source root is unreadable",
+        )])
+        .collect();
+    let text = plain(&status, &[BUILDING]);
+    assert!(
+        text.ends_with("RECENT     13:07:00  ⚠ a source root is unreadable\n"),
+        "{text}"
+    );
+}
+
+/// On a color terminal the headline carries the state's color, the running
+/// step is bold and the finished ones are dimmed.
+#[test]
+fn color_marks_the_state_and_the_running_step() {
+    let mut assembling = current(
+        "assembling sessions",
+        10,
+        Some(StepCount {
+            done: 50,
+            total: Some(100),
+            unit: CountUnit::Sessions,
+        }),
+    );
+    assembling.per_second = Some(5.);
+    assembling.rate_seconds = Some(300.);
+    let status = building(
+        IndexBuild {
+            serving_previous: false,
+            chains: 0,
+            chains_read: 0,
+            bytes: 0,
+            bytes_read: 0,
+        },
+        progress(
+            assembling,
+            vec![finished("indexing", 60., Some((3, CountUnit::Indexes)))],
+            &[],
+        ),
+    );
+    let text = render(
+        &status,
+        &[],
+        &View {
+            style: TextStyle::Ansi,
+            width: 100,
+            now_ms: NOW,
+            zone: &jiff::tz::TimeZone::UTC,
+            whole_log: false,
+        },
+    );
+    let first = text.lines().next().unwrap();
+    assert_eq!(
+        first,
+        "\x1b[1mpolylogue  \x1b[0m\x1b[1;33m◐ building the index, step 2 of 2\x1b[0m"
+    );
+    assert!(
+        text.contains("\x1b[32m✓\x1b[0m \x1b[2mindexing                1m  3 indexes\x1b[0m\n"),
+        "{text:?}"
+    );
+    assert!(
+        text.contains(
+            "\x1b[1;36m▸\x1b[0m \x1b[1massembling sessions    10m  50 of 100 sessions\x1b[0m\n"
+        ),
+        "{text:?}"
+    );
+}
+
+/// A step whose count has not moved over the measured span says so in its
+/// own unit, beside its own count.
+#[test]
+fn a_step_without_progress_says_what_did_not_move() {
+    let mut joining = current(
+        "joining sessions across files",
+        70,
+        Some(StepCount {
+            done: 1_024,
+            total: Some(3_310),
+            unit: CountUnit::Sessions,
+        }),
+    );
+    joining.per_second = Some(0.);
+    joining.rate_seconds = Some(900.);
+    let status = building(
+        IndexBuild {
+            serving_previous: false,
+            chains: 0,
+            chains_read: 0,
+            bytes: 0,
+            bytes_read: 0,
+        },
+        progress(
+            joining,
+            vec![finished(
+                "assembling sessions",
+                600.,
+                Some((33_261, CountUnit::Sessions)),
+            )],
+            &["finishing indexes"],
+        ),
+    );
+    let text = plain(&status, &[BUILDING]);
+    assert!(
+        text.contains(
+            "\n           ▸ joining sessions across files  1h10m  1,024 of 3,310 sessions\n                                                   no sessions done in the last 15m\n"
+        ),
         "{text}"
     );
 }

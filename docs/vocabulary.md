@@ -20,8 +20,12 @@ generated page of the thing they belong to, or on the area page that owns them.
   `index-build/index.db`, which is installed over `index.db` when the build
   ends; the first build of an archive, or one replacing an index from another
   schema. It runs in named **steps** (reading stored files, sorting texts,
-  writing tables, indexing, assembling sessions, finishing indexes, search
-  index, installing), which status and the log list by those names.
+  writing tables, indexing, assembling sessions, indexing sessions, joining
+  sessions across files, finishing indexes, search index, installing), which
+  status and the log list by those names. Assembling sessions writes each
+  session whose readings one file states; joining sessions across files
+  writes, from the index, the sessions whose readings several files state or
+  that copies name.
 - **previous index**: the index a build replaces, kept as
   `index-build/previous.db` until the new one is installed, and read
   meanwhile when its schema identity is the build's.

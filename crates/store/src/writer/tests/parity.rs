@@ -574,6 +574,8 @@ fn build_from_record(
             "writing tables",
             "indexing",
             "assembling sessions",
+            "indexing sessions",
+            "joining sessions across files",
             "finishing indexes",
             "search index",
             "installing"

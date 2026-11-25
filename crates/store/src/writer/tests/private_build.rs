@@ -164,6 +164,75 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
     assert_eq!(found, 2);
 }
 
+/// The sessions assembling counts and the total it counts towards are one
+/// set: a session a message names without any chain stating its record is
+/// assembled, so it is also in the total (docs/operations.md, Replacing an
+/// index from another schema).
+#[cfg(feature = "faults")]
+#[test]
+fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() {
+    use crate::archive::build_progress::{CountUnit, StepCount};
+    let dir = tempfile::tempdir().unwrap();
+    let inputs = ["stated", "unstated"];
+    let chains = due_a_build(dir.path(), &inputs);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let writer = Writer::start(&archive).unwrap();
+    let mut run = crate::writer::build::BuildWorker::create(&archive, 0, 32 << 20).unwrap();
+    for (input, &chain) in inputs.iter().zip(&chains) {
+        let mut batch = one_message(input, &format!("{input}-m"), &format!("{input} text"));
+        if *input == "unstated" {
+            batch.parse[0].output.sessions.clear();
+        }
+        let sender = writer.sender();
+        let mut open = run
+            .begin(&sender, &batch.input, chain, batch.length)
+            .unwrap();
+        for step in &mut batch.parse {
+            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        }
+        open.finish().unwrap();
+    }
+    let runs: Vec<_> = run.finish().unwrap().into_iter().collect();
+    // Held once composition has ended, the build's progress holds each
+    // composition step's last count; its steps are recorded as the engine
+    // records them, from the names the writer announces.
+    crate::fault::arm("index.deferred", "", crate::fault::Action::Hold, 0, 1);
+    let (announce, announced) = std::sync::mpsc::channel();
+    let built = writer.start_build(runs, announce).unwrap();
+    crate::fault::wait_held();
+    for step in announced.try_iter() {
+        archive.record_build_step(step, polylogue_model::Timestamp::from_unix_ms(1).unwrap());
+    }
+    let progress = archive.build_progress().unwrap();
+    crate::fault::release();
+    built.recv().unwrap().unwrap();
+    crate::fault::clear();
+    let counts: Vec<(String, Option<StepCount>)> = progress
+        .finished
+        .into_iter()
+        .filter(|step| {
+            step.count
+                .as_ref()
+                .is_some_and(|count| count.unit == CountUnit::Sessions)
+        })
+        .map(|step| (step.name, step.count))
+        .collect();
+    let sessions = |done, total| {
+        Some(StepCount {
+            done,
+            total: Some(total),
+            unit: CountUnit::Sessions,
+        })
+    };
+    assert_eq!(
+        counts,
+        [
+            ("assembling sessions".to_owned(), sessions(2, 2)),
+            ("joining sessions across files".to_owned(), sessions(0, 0)),
+        ]
+    );
+}
+
 #[test]
 fn a_build_is_private_until_installed_and_reads_answer_its_progress() {
     let dir = tempfile::tempdir().unwrap();
@@ -258,6 +327,8 @@ fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
                 "writing tables",
                 "indexing",
                 "assembling sessions",
+                "indexing sessions",
+                "joining sessions across files",
                 "finishing indexes",
                 "search index",
                 "installing"
