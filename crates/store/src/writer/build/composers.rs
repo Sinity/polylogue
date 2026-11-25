@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 /// Messages a batch gathers before it is handed to a composer, at session
 /// ends.
-pub(super) const BATCH_MESSAGES: usize = 4_000;
+pub(super) const BATCH_MESSAGES: usize = 1_000;
 
 /// Tables composition writes that the build file's own triggers fill when
 /// a session row is appended: they are not taken from the composer.
@@ -382,6 +382,8 @@ impl Composing {
             }
         }
         tx.rollback()?;
+        // The batch's pages go back, so a composer holds one batch at most.
+        self.conn.execute_batch("PRAGMA shrink_memory")?;
         Ok(Composed {
             seq: batch.seq,
             bytes: batch.bytes,

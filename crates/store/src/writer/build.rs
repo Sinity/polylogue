@@ -1718,21 +1718,24 @@ impl Inner {
                         job.phase(ASSEMBLING_SESSIONS);
                         let indexes = std::mem::take(&mut job.after_stream);
                         let budget = self.location.memory_budget();
-                        let ahead = budget.read_ahead_memory();
-                        // Beside the run readers and the read-ahead, the
+                        let composing = budget.composition_memory();
+                        // Beside the run readers and the composition, the
                         // full-text fill follows the blocks composition writes.
                         self.size_build_cache(
                             (loaded.merged.memory()
                                 + loaded.texts.memory()
-                                + ahead
+                                + composing
                                 + budget.search_fill_memory()) as u64,
                             false,
                         )?;
+                        // A batch's decoded pieces, its composer's index and its
+                        // composed rows each take about what was decoded: the
+                        // stream is read ahead in a third of the share.
                         let state = ComposeState::new(
                             *loaded,
                             indexes,
                             &self.index,
-                            ahead,
+                            composing / 3,
                             job.composers,
                         )?;
                         job.counted_to(ASSEMBLING_SESSIONS, state.count(ASSEMBLING_SESSIONS));
@@ -2537,9 +2540,9 @@ impl Drop for ComposeState {
 }
 
 /// About what a decoded piece holds, from the bytes it was decoded from: a
-/// message's decoded value beside its packed blocks, then its composed rows.
+/// message's decoded value beside its packed blocks.
 fn piece_bytes(record: usize) -> usize {
-    3 * record + 256
+    2 * record + 256
 }
 
 /// Reads the composition stream on a thread of its own, merging it with

@@ -86,10 +86,11 @@ impl MemoryBudget {
     pub(crate) fn side_merge_memory(self) -> usize {
         (self.total / 16) as usize
     }
-    /// What the decoded composition records read ahead of the writer may
-    /// hold.
-    pub(crate) fn read_ahead_memory(self) -> usize {
-        (self.total / 32) as usize
+    /// What a build's composition holds besides the build file's cache: the
+    /// stream decoded ahead of the composers, the composers' own indexes and
+    /// the rows they composed that wait for the writer.
+    pub(crate) fn composition_memory(self) -> usize {
+        (self.total / 8) as usize
     }
     /// What a build's full-text fill holds of texts read ahead of its
     /// files' threads.
