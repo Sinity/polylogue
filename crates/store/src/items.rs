@@ -109,7 +109,34 @@ enum MessageEntries<'a> {
     Fixture,
 }
 
-impl MessageEntries<'_> {
+/// Where the message an event follows is looked for.
+#[derive(Debug, Clone, Copy)]
+enum Placement<'a> {
+    /// In the whole index, by its ID.
+    Index,
+    /// Among the session's own messages, then among these, which other
+    /// sessions show: a build composing sessions from its stream knows
+    /// which messages its events follow outside their session, so nothing
+    /// is looked up by ID in an index it is still writing.
+    SessionAlone(&'a std::collections::HashSet<String>),
+}
+
+/// The row key of a message only known to be shown in another session: no
+/// row has it.
+const OTHER_SESSION: i64 = 0;
+
+impl<'a> MessageEntries<'a> {
+    fn placement(self) -> Placement<'a> {
+        match self {
+            Self::Prepared(changes) => match changes.sessions_alone() {
+                Some(elsewhere) => Placement::SessionAlone(elsewhere),
+                None => Placement::Index,
+            },
+            #[cfg(any(test, feature = "fixture"))]
+            Self::Fixture => Placement::Index,
+        }
+    }
+
     fn has_prepared_items(self, pk: i64) -> bool {
         match self {
             Self::Prepared(changes) => changes.has_prepared_items(pk),
@@ -277,12 +304,25 @@ const MESSAGE_COLUMNS: &str = "m.pk, m.id,
     m.on_active_path, m.at,
     EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
            AND c.duplicate_of IS NULL LIMIT 1 OFFSET 1)";
-/// The data an entry needs is read only for the kinds whose entry holds it
-/// (see [`read_data`]).
-const EVENT_COLUMNS: &str = "e.pk, e.id, e.kind, e.at, e.data_length,
-    (SELECT m.pk FROM message m WHERE m.id = e.after_message_id), e.seq,
+/// The columns an event is read with, `$after` finding the message it
+/// follows. The data an entry needs is read only for the kinds whose entry
+/// holds it (see [`read_data`]).
+macro_rules! event_columns {
+    ($after:literal) => {
+        concat!(
+            "e.pk, e.id, e.kind, e.at, e.data_length, ",
+            $after,
+            ", e.seq,
     CASE WHEN e.kind IN ('compaction','microcompaction') THEN e.content_group END,
-    e.content_start + e.content_length, e.data_length";
+    e.content_start + e.content_length, e.data_length, e.after_message_id"
+        )
+    };
+}
+const EVENT_COLUMNS: &str =
+    event_columns!("(SELECT m.pk FROM message m WHERE m.id = e.after_message_id)");
+/// [`EVENT_COLUMNS`] for a session composed alone, whose events' messages
+/// are found from their IDs by the caller ([`Placement::SessionAlone`]).
+const EVENT_COLUMNS_ALONE: &str = event_columns!("NULL");
 
 fn message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -346,6 +386,7 @@ fn units_from(
     session_pk: i64,
     start_point: Option<StartPoint>,
     extra: &BTreeSet<i64>,
+    placement: Placement<'_>,
 ) -> Result<Vec<Unit>> {
     // A message with no stored version (rows written directly by the
     // fixture builder) is identified by its block rows.
@@ -371,7 +412,7 @@ fn units_from(
             .query_map(params![session_pk, start_point.pk], message_row)?
             .collect::<rusqlite::Result<_>>()?,
     };
-    let events = events_from(conn, session_pk, start_point, &rows, extra)?;
+    let events = events_from(conn, session_pk, start_point, &rows, extra, placement)?;
     let loaded: HashSet<i64> = rows.iter().map(|row| row.pk).collect();
     let mut after: HashMap<i64, Vec<Unit>> = HashMap::new();
     let mut timed: Vec<(i64, Unit)> = Vec::new();
@@ -451,10 +492,9 @@ fn units_from(
     }
     out.extend(timed.map(|(_, unit)| unit));
     // Events whose message is not shown (a duplicate, or not stored) keep
-    // their order at the end with the events that name no message.
-    orphaned.sort_by_key(|unit| match unit {
-        Unit::Event { pk, .. } | Unit::Kept { pk, .. } | Unit::Message { pk, .. } => *pk,
-    });
+    // their order (by place in their input, then ID) at the end with the
+    // events that name no message; their row keys depend on the order the
+    // rows were written in, so they order nothing.
     out.extend(unplaced);
     out.extend(orphaned);
     Ok(out)
@@ -472,8 +512,36 @@ fn events_from(
     start_point: Option<StartPoint>,
     rows: &[MessageRow],
     extra: &BTreeSet<i64>,
+    placement: Placement<'_>,
 ) -> Result<Vec<EventRow>> {
     let Some(start_point) = start_point else {
+        if let Placement::SessionAlone(elsewhere) = placement {
+            // `rows` are every message of the session: an event whose
+            // message is not among them follows one another session shows,
+            // or none.
+            let pks: HashMap<&str, i64> =
+                rows.iter().map(|row| (row.id.as_str(), row.pk)).collect();
+            let mut statement = conn.prepare_cached(&format!(
+                "SELECT {EVENT_COLUMNS_ALONE} FROM event e WHERE e.session_pk = ?1 ORDER BY e.seq, e.id"
+            ))?;
+            let mut found = statement.query([session_pk])?;
+            let mut events = Vec::new();
+            while let Some(row) = found.next()? {
+                let mut event = event_row(row)?;
+                event.after = row
+                    .get_ref(10)?
+                    .as_str_or_null()
+                    .map_err(rusqlite::Error::from)?
+                    .and_then(|id| {
+                        pks.get(id)
+                            .copied()
+                            .or(elsewhere.contains(id).then_some(OTHER_SESSION))
+                    });
+                events.push(event);
+            }
+            read_data(conn, &mut events)?;
+            return Ok(events);
+        }
         let mut events: Vec<EventRow> = conn
             .prepare_cached(&format!(
                 "SELECT {EVENT_COLUMNS} FROM event e WHERE e.session_pk = ?1 ORDER BY e.seq, e.id"
@@ -565,7 +633,7 @@ fn events_from(
 #[cfg(test)]
 pub(crate) fn computed_entries(conn: &Connection, session_pk: i64) -> Result<Vec<IndexEntry>> {
     let mut out = Vec::new();
-    for unit in units_from(conn, session_pk, None, &BTreeSet::new())? {
+    for unit in units_from(conn, session_pk, None, &BTreeSet::new(), Placement::Index)? {
         match unit {
             Unit::Message { pk, place, .. } => {
                 let (message, ordinals) = message_body(conn, pk)?;
@@ -907,7 +975,13 @@ fn rebuild(
         .prepare_cached("SELECT changed FROM session WHERE pk = ?1")?
         .query_row([session_pk], |row| row.get(0))?;
     let first_seq = start_point.map_or(0, |start_point| start_point.seq);
-    let units = units_from(conn, session_pk, start_point, changed_events)?;
+    let units = units_from(
+        conn,
+        session_pk,
+        start_point,
+        changed_events,
+        prepared.placement(),
+    )?;
     let identities: Vec<Vec<u8>> = units.iter().map(Unit::identity).collect::<Result<_>>()?;
     let indexed: Vec<(i64, Vec<u8>)> = conn
         .prepare_cached(
