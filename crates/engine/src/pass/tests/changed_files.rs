@@ -1,32 +1,27 @@
 use super::*;
 use polylogue_store::fault::{self, Action};
 
-/// Runs a pass on its own thread, holds it as it admits the plan of
+/// Runs `pass` on its own thread, holds it as it admits the plan of
 /// `grows.jsonl`, appends `record` to that file, and lets the pass go on.
+/// The pass's errors, or the error that ended it.
 fn pass_while_a_file_grows(
     home: &ClaudeHome,
-    engine: Engine,
-    lock: polylogue_store::ArchiveLock,
     record: &str,
-) -> Pass {
+    pass: impl FnOnce() -> Result<Vec<String>, String> + Send + 'static,
+) -> Vec<String> {
     fault::arm("pass.admit", "grows.jsonl", Action::Hold, 0, 1);
-    let mut engine = engine;
-    let running = std::thread::spawn(move || {
-        let result = engine.run_pass();
-        drop(engine);
-        drop(lock);
-        result
-    });
+    let running = std::thread::spawn(pass);
     while !fault::held() && !running.is_finished() {
         std::thread::yield_now();
     }
     let held = fault::held();
     home.append("grows.jsonl", record);
     fault::release();
-    let pass = running.join().unwrap();
+    let errors = running.join().unwrap();
     fault::clear();
     assert!(held, "the pass admitted the planned file");
-    pass.expect("a file that changed after it was planned is that file's condition, not the pass's")
+    errors
+        .expect("a file that changed after it was planned is that file's condition, not the pass's")
 }
 
 /// A new archive's first pass stores every file found before its build
@@ -52,13 +47,19 @@ fn a_file_growing_in_the_first_build_is_stored_with_every_other_file() {
         engine.archive.index_build().is_some(),
         "the first pass is a build"
     );
-    let pass = pass_while_a_file_grows(
+    let errors = pass_while_a_file_grows(
         &home,
-        engine,
-        lock,
         &claude_user("g2", "grows", "written while planned"),
+        move || {
+            let result = engine.run_pass();
+            drop(engine);
+            drop(lock);
+            result
+                .map(|pass| pass.errors)
+                .map_err(|error| error.to_string())
+        },
     );
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(home.texts("before"), ["beside it, before"]);
     assert_eq!(
         home.texts("grows"),
@@ -82,13 +83,19 @@ fn a_file_growing_after_its_append_was_planned_is_read_with_every_other_file() {
     assert!(first.errors.is_empty(), "{:?}", first.errors);
     home.append("grows.jsonl", &claude_user("g2", "grows", "second record"));
     home.append("fresh.jsonl", &claude_user("f1", "fresh", "new beside it"));
-    let pass = pass_while_a_file_grows(
+    let errors = pass_while_a_file_grows(
         &home,
-        engine,
-        lock,
         &claude_user("g3", "grows", "written while planned"),
+        move || {
+            let result = engine.run_pass();
+            drop(engine);
+            drop(lock);
+            result
+                .map(|pass| pass.errors)
+                .map_err(|error| error.to_string())
+        },
     );
-    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(errors.is_empty(), "{errors:?}");
     assert_eq!(home.texts("steady"), ["unchanged"]);
     assert_eq!(home.texts("fresh"), ["new beside it"]);
     assert_eq!(
