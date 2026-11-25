@@ -366,9 +366,9 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
         // The rate and estimate on a line of their own, so a narrow
         // terminal does not cut them.
         let mut parts = Vec::new();
-        if let (Some(rate), Some(count)) = (current.per_second, &current.count) {
+        if let (Some(rate), Some(counted)) = (current.per_second, &current.count) {
             parts.push(if rate > 0. {
-                match count.unit {
+                match counted.unit {
                     CountUnit::Bytes => format!("{:.1} MB/s", rate / 1e6),
                     unit if rate >= 1000. => format!("{} {}/s", count(rate as u64), unit.word()),
                     unit => format!("{} {}/s", decimal(rate), unit.word()),
