@@ -15,6 +15,8 @@ use std::os::unix::fs::{FileExt, MetadataExt};
 #[cfg(feature = "faults")]
 mod build_memory;
 #[cfg(feature = "faults")]
+mod changed_files;
+#[cfg(feature = "faults")]
 #[cfg(feature = "faults")]
 mod live_queue;
 #[cfg(feature = "faults")]

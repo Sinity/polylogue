@@ -109,30 +109,50 @@ pub(crate) fn file_snapshot(
 /// Headers read per page when looking for a group member; a page is one
 /// store read, so this bounds memory per page, not what can be found.
 const GROUP_HEADER_PAGE: usize = 32;
+/// What checking a planned file against the facts it was planned from found.
+pub(crate) enum PlannedFile {
+    /// The file still matches its plan; what the spool holds of it is known.
+    Ready,
+    /// The file changed after it was planned; it is planned again.
+    Changed,
+    /// The file could not be opened or examined.
+    Unreadable(std::io::Error),
+}
 impl Engine {
+    /// Checks a planned file against the facts it was planned from and finds
+    /// what the spool already holds of it. A file that changed, or cannot be
+    /// read, is that file's condition, never the pass's; only a failure to
+    /// look up the spool is returned as an error.
     pub(crate) fn prepare_byte_read(
         &mut self,
         plan: &mut crate::plan::Plan,
-    ) -> Result<(), EngineError> {
+    ) -> Result<PlannedFile, EngineError> {
         if !plan.tracked || !matches!(plan.source, crate::pool::Bytes::File) {
-            return Ok(());
+            return Ok(PlannedFile::Ready);
         }
         let Some(facts) = plan.facts else {
-            return Ok(());
+            return Ok(PlannedFile::Ready);
         };
-        let file = std::fs::File::open(&plan.path)?;
-        let metadata = file.metadata()?;
+        let opened = std::fs::File::open(&plan.path).and_then(|file| {
+            let metadata = file.metadata()?;
+            let snapshot = file_snapshot(&metadata)?;
+            Ok((file, metadata, snapshot))
+        });
+        let (file, metadata, snapshot) = match opened {
+            Ok(opened) => opened,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(PlannedFile::Changed);
+            }
+            Err(error) => return Ok(PlannedFile::Unreadable(error)),
+        };
         if FileFacts::of(&metadata) != facts {
-            return Err(std::io::Error::other(
-                "the file changed after it was listed; it is read again next time",
-            )
-            .into());
+            return Ok(PlannedFile::Changed);
         }
         let context =
             self.source_read_context(&plan.path, &plan.input.format, ReadRoute::NativeCapture);
         let generation = context.observed_file(
             plan.input.clone(),
-            file_snapshot(&metadata)?,
+            snapshot,
             polylogue_store::primary::RawStreamRole::ProviderBytes,
             RawRange {
                 start: match plan.change {
@@ -148,12 +168,11 @@ impl Engine {
                 generation,
                 tail_body: None,
             })?;
-        if FileFacts::of(&file.metadata()?) != facts
-            || FileFacts::of(&std::fs::metadata(&plan.path)?) != facts
-        {
-            return Err(
-                std::io::Error::other("the file changed while its stored bytes were looked up; it is read again next time").into(),
-            );
+        let still = |metadata: std::io::Result<std::fs::Metadata>| {
+            metadata.is_ok_and(|metadata| FileFacts::of(&metadata) == facts)
+        };
+        if !still(file.metadata()) || !still(std::fs::metadata(&plan.path)) {
+            return Ok(PlannedFile::Changed);
         }
         if let Some(cursor) = cursor.filter(|cursor| {
             cursor.range().end > plan.stored_upto || (plan.size == 0 && cursor.is_complete_window())
@@ -166,7 +185,7 @@ impl Engine {
             plan.parser_state = None;
             plan.storing_started = true;
         }
-        Ok(())
+        Ok(PlannedFile::Ready)
     }
 
     pub(crate) fn record_byte_read_status(
