@@ -390,7 +390,10 @@ The daemon reaches the index two ways, which must agree.
   takes what the step leaves. Parse workers follow the physical cores the
   process may use, each with at least a minimum share of memory; the
   memory a chain's prepared readings need is admitted per chain, so the
-  number of workers does not trade against the caches.
+  number of workers does not trade against the caches. A worker holds the
+  rows a chain's records look each other up by in memory while it reads
+  the chain, admitted with the chain, and writes the chain's content only
+  in the order it was read.
 
 A writer's transactions are sized by the bytes and rows they cover, not by
 input boundaries: a growing file is read and committed in steps, and each
