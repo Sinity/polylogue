@@ -44,7 +44,7 @@ fn matching(conn: &Connection, table: &str, expression: Option<&str>) -> Vec<i64
 /// The files are attached afterwards, as the installed index's are.
 fn fill(conn: &Connection) -> Result<()> {
     let filled = (|| {
-        let mut fill = SearchFill::start(conn)?;
+        let mut fill = SearchFill::start(conn, 64 << 20)?;
         fill.settle(conn)?;
         while !fill.wait(std::time::Duration::from_secs(1))? {}
         Ok(())

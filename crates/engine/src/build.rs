@@ -109,8 +109,8 @@ struct Prepare {
     chunk: u64,
     plans: Mutex<Receiver<Plan>>,
     next_run: AtomicU64,
-    /// Each worker's sort buffer.
-    sort_memory: usize,
+    /// Each worker's own memory: its sort buffer and scratch cache.
+    worker_memory: usize,
     chains: AtomicU64,
     chains_read: AtomicU64,
     bytes: AtomicU64,
@@ -179,7 +179,7 @@ impl Prepare {
                 let number = self.next_run.fetch_add(1, Ordering::Relaxed);
                 run = Some((
                     number,
-                    BuildWorker::create(&self.archive, number, self.sort_memory)?,
+                    BuildWorker::create(&self.archive, number, self.worker_memory)?,
                 ));
             }
             let (_, worker) = run.as_mut().expect("a worker was opened");
@@ -261,11 +261,11 @@ impl Engine {
                 read_memory: self.config.reader_memory_per_connection()?,
                 yielding: Arc::new(AtomicBool::new(false)),
             },
-            admission: Admission::new(self.archive.memory_budget().total() / 3),
+            admission: Admission::new(self.archive.memory_budget().prepared_in_flight()),
             chunk: self.config.chunk.max(1),
             plans: Mutex::new(plans_rx),
             next_run: AtomicU64::new(0),
-            sort_memory: (self.archive.memory_budget().total() / 8) as usize / workers,
+            worker_memory: self.archive.memory_budget().build_worker_memory(workers),
             chains: AtomicU64::new(0),
             chains_read: AtomicU64::new(0),
             bytes: AtomicU64::new(0),

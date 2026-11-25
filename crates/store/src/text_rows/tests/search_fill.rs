@@ -101,7 +101,7 @@ fn a_build_fills_the_files_upkeep_would_write_while_it_composes() {
         .unwrap();
     // Text 6 was held before the build began, so only settling enters it.
     block(&built, 100, "text", 6);
-    let mut fill = SearchFill::start(&built).unwrap();
+    let mut fill = SearchFill::start(&built, 64 << 20).unwrap();
     // Composition: blocks follow, one of which leaves again.
     let blocks = [
         (1, "text", 1),

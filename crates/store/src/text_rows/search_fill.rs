@@ -19,7 +19,7 @@ use crate::search::files::{FILES, file_of};
 use crate::{Result, StoreError};
 use polylogue_model::LockExt as _;
 use rusqlite::{Connection, OpenFlags, OptionalExtension as _};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -73,6 +73,27 @@ enum Entry {
     Remove { id: i64, bit: u8 },
 }
 
+/// The bytes a batch of entries holds.
+fn batch_bytes(batch: &[Entry]) -> usize {
+    batch
+        .iter()
+        .map(|entry| match entry {
+            Entry::Write { folded, .. } => folded.len() + 32,
+            Entry::Remove { .. } => 32,
+        })
+        .sum()
+}
+
+/// What the fill holds of texts at once, at most: the texts read and
+/// folded ahead of their files' threads, split between those waiting for a
+/// thread and the next ones being read (a text longer than that is held
+/// alone).
+#[derive(Clone)]
+struct Held {
+    queued: Arc<AtomicUsize>,
+    memory: usize,
+}
+
 /// The reports of the writer's trigger, gathered.
 struct Feed {
     reports: Vec<(i64, u8)>,
@@ -102,8 +123,9 @@ pub(crate) struct SearchFill {
 
 impl SearchFill {
     /// Starts filling the full-text files of the build file `index` (the
-    /// writer's connection to it), following the blocks it inserts.
-    pub(crate) fn start(index: &Connection) -> Result<Self> {
+    /// writer's connection to it), following the blocks it inserts, holding
+    /// at most about `memory` bytes of texts at once.
+    pub(crate) fn start(index: &Connection, memory: usize) -> Result<Self> {
         let build = index
             .path()
             .filter(|path| !path.is_empty())
@@ -152,7 +174,11 @@ impl SearchFill {
         let coordinator = {
             let stop = Arc::clone(&stop);
             polylogue_model::spawn_named("polylogue-search-fill", move || {
-                let _ = done_tx.send(coordinate(reader, files, entered, &work_rx, &stop));
+                let held = Held {
+                    queued: Arc::new(AtomicUsize::new(0)),
+                    memory,
+                };
+                let _ = done_tx.send(coordinate(reader, files, entered, &work_rx, &stop, held));
             })?
         };
         let feed = Arc::new(Mutex::new(Feed {
@@ -294,6 +320,7 @@ fn coordinate(
     entered: [Keys; 2],
     work: &Receiver<Work>,
     stop: &AtomicBool,
+    held: Held,
 ) -> Result<()> {
     let mut senders = Vec::with_capacity(files.len());
     let mut threads = Vec::with_capacity(files.len());
@@ -302,10 +329,14 @@ fn coordinate(
         senders.push(sender);
         threads.push(polylogue_model::spawn_named(
             format!("polylogue-search-file-{n}"),
-            move || fill_file(file, &batches),
+            {
+                let queued = Arc::clone(&held.queued);
+                move || fill_file(file, &batches, &queued)
+            },
         )?);
     }
     let mut coordinator = Coordinator {
+        held,
         reader,
         entered,
         files: senders,
@@ -328,6 +359,7 @@ fn coordinate(
 }
 
 struct Coordinator {
+    held: Held,
     reader: Connection,
     /// The (text, index) entries handed to the files' threads.
     entered: [Keys; 2],
@@ -386,6 +418,19 @@ impl Coordinator {
     /// Hands `batch` to file `n`'s thread. While it is full, the writer's
     /// reports are taken in, so they never wait on a file.
     fn send(&mut self, n: usize, mut batch: Vec<Entry>, work: &Receiver<Work>) -> Result<()> {
+        // Half of what the fill may hold waits for the files' threads.
+        let bytes = batch_bytes(&batch);
+        loop {
+            let queued = self.held.queued.load(Ordering::Acquire);
+            if queued == 0 || queued + bytes <= self.held.memory / 2 {
+                break;
+            }
+            while let Ok(next) = work.try_recv() {
+                self.take(next);
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        self.held.queued.fetch_add(bytes, Ordering::AcqRel);
         loop {
             match self.files[n].try_send(batch) {
                 Ok(()) => return Ok(()),
@@ -451,6 +496,7 @@ impl Coordinator {
             }
             places.sort_unstable();
             let mut batches: Vec<Vec<Entry>> = (0..FILES).map(|_| Vec::new()).collect();
+            let mut folded_bytes = 0;
             let mut at = 0;
             while at < places.len() {
                 // The next groups, each read once.
@@ -492,9 +538,20 @@ impl Coordinator {
                     }
                     let (_, body) = decoded.as_ref().expect("the group is decoded");
                     let (folded, _) = folded_text(groups::slice_decoded(body, start, length)?);
+                    folded_bytes += folded.len();
                     batches[file_of(id)].push(Entry::Write { id, bits, folded });
                 }
                 at = end;
+                // The other half of what the fill may hold is texts being
+                // read: past it, they go to their files' threads.
+                if folded_bytes >= self.held.memory / 2 {
+                    for (n, batch) in batches.iter_mut().enumerate() {
+                        if !batch.is_empty() {
+                            self.send(n, std::mem::take(batch), work)?;
+                        }
+                    }
+                    folded_bytes = 0;
+                }
             }
             crate::timing::add(crate::timing::Stage::SearchIndex, started.elapsed());
             for (n, batch) in batches.into_iter().enumerate() {
@@ -566,11 +623,12 @@ impl Coordinator {
 
 /// A full-text file's thread: writes each batch it is handed, committing
 /// every [`COMMIT_ENTRIES`] entries or [`COMMIT_TIME`].
-fn fill_file(file: Connection, batches: &Receiver<Vec<Entry>>) -> Result<()> {
+fn fill_file(file: Connection, batches: &Receiver<Vec<Entry>>, queued: &AtomicUsize) -> Result<()> {
     file.execute_batch("BEGIN")?;
     let mut written = 0usize;
     let mut since = Instant::now();
     while let Ok(batch) = batches.recv() {
+        let bytes = batch_bytes(&batch);
         let started = Instant::now();
         for entry in &batch {
             match entry {
@@ -588,6 +646,8 @@ fn fill_file(file: Connection, batches: &Receiver<Vec<Entry>>) -> Result<()> {
             }
         }
         written += batch.len();
+        drop(batch);
+        queued.fetch_sub(bytes, Ordering::AcqRel);
         if written >= COMMIT_ENTRIES || since.elapsed() >= COMMIT_TIME {
             file.execute_batch("COMMIT; BEGIN")?;
             written = 0;

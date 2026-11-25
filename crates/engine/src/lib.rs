@@ -236,6 +236,9 @@ impl Config {
                 "resource and host identity inputs must be nonempty".into(),
             ));
         }
+        // The working shares at most; the budget the process is given
+        // (`with_memory_budget`, which the engine applies) lowers them and
+        // the worker count, so a default never caps a larger machine.
         Ok(Self {
             clock,
             home,
@@ -246,11 +249,10 @@ impl Config {
             bytes_in_flight: 512 << 20,
             machine,
             host,
-            chunk: 64 << 20,
+            chunk: 16 << 20,
             live_every: Duration::from_secs(2),
             reads_sources: true,
-        }
-        .with_memory_budget(Default::default()))
+        })
     }
 }
 

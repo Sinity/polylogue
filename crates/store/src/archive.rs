@@ -25,7 +25,12 @@ pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
     Ok(next)
 }
 
-/// One process allowance, split between the index pipeline's resident caches and work.
+/// One process allowance, split between the index pipeline's resident caches
+/// and its work. The allowance is the memory the process may use (its
+/// control group's limit, else the memory the system has available when it
+/// starts); the budget is three quarters of it, leaving room for the
+/// program, the allocator's slack and the kernel. Nothing is capped at a
+/// fixed size: a machine with more memory gives every share more.
 #[derive(Debug, Clone, Copy)]
 pub struct MemoryBudget {
     total: u64,
@@ -35,10 +40,15 @@ impl Default for MemoryBudget {
         Self::from_allowance(4 << 30)
     }
 }
+
+/// A parse worker's own memory, at least: the cache of its working index
+/// and its sort buffer, from the third of the budget workers share.
+const WORKER_MEMORY: u64 = 128 << 20;
+
 impl MemoryBudget {
     pub fn from_allowance(bytes: u64) -> Self {
         Self {
-            total: bytes.saturating_mul(3).saturating_div(4).min(3 << 30),
+            total: bytes.saturating_mul(3).saturating_div(4),
         }
     }
     pub fn total(self) -> u64 {
@@ -47,23 +57,43 @@ impl MemoryBudget {
     pub fn writer_cache_mib(self) -> i64 {
         ((self.total / 8) >> 20).max(1) as i64
     }
-    /// The build file's cache: the writer's build work (load, indexes,
-    /// composition) runs once the workers have ended, so it takes their
-    /// share beside its own; the indexes it keeps live while it writes then
-    /// stay in memory the build owns rather than in the page cache.
+    /// The build file's cache while the workers prepare: the writer then
+    /// only applies what upkeep writes meanwhile. Each later step of the
+    /// writer's build sets it to what that step leaves ([`Self::build_cache_beside`]).
     pub fn build_cache_mib(self) -> i64 {
-        ((self.total / 4) >> 20).max(1) as i64
+        ((self.total / 8) >> 20).max(1) as i64
+    }
+    /// The build file's cache beside `held` bytes the process holds or will
+    /// hold outside it in the writer's build step (what is resident beside
+    /// the cache, and the step's run readers, sort buffers and composition
+    /// read-ahead): the budget less that and a reserve for the work itself,
+    /// at most a quarter of the budget. Composing a session holds its rows'
+    /// item entries, values and the like in proportion to the session, which
+    /// no share bounds, so the cache leaves it that room.
+    pub fn build_cache_beside(self, held: u64) -> i64 {
+        let others = held.saturating_add(self.total / 8);
+        (self.total.saturating_sub(others).min(self.total / 4) >> 20).max(32) as i64
     }
     pub fn archive_cache_mib(self) -> i64 {
         ((self.total / 32) >> 20).max(1) as i64
     }
-    /// What the merge of a build's runs reads them with: the share the
+    /// What the merge of a build's runs may read them with: the share the
     /// workers' prepared readings held, free once they are done.
     pub(crate) fn run_merge_memory(self) -> usize {
         (self.total / 3) as usize
     }
-    /// What each smaller merge beside it reads its runs with.
+    /// What each smaller merge or sort beside it takes.
     pub(crate) fn side_merge_memory(self) -> usize {
+        (self.total / 16) as usize
+    }
+    /// What the decoded composition records read ahead of the writer may
+    /// hold.
+    pub(crate) fn read_ahead_memory(self) -> usize {
+        (self.total / 32) as usize
+    }
+    /// What a build's full-text fill holds of texts read ahead of its
+    /// files' threads.
+    pub(crate) fn search_fill_memory(self) -> usize {
         (self.total / 16) as usize
     }
     pub fn search_cache_mib(self) -> i64 {
@@ -75,12 +105,25 @@ impl MemoryBudget {
     pub fn in_flight(self) -> u64 {
         self.total / 16
     }
-    pub fn keys(self) -> u64 {
-        self.total / 16
+    /// The parse workers' prepared readings in flight, at most: a worker
+    /// waits before it starts a chain until the chain's share fits.
+    pub fn prepared_in_flight(self) -> u64 {
+        self.total / 3
     }
-    pub fn worker_count(self, cpus: usize, requested: usize) -> usize {
-        cpus.min(requested)
-            .min((self.total / 3 / (128 << 20)) as usize)
+    /// Each of `workers` build workers' own memory: its sort buffer and the
+    /// cache of its working index, together a third of the budget.
+    pub fn build_worker_memory(self, workers: usize) -> usize {
+        (self.total / 3 / workers.max(1) as u64) as usize
+    }
+    /// Parse workers: one per core the process may use, as long as each
+    /// has at least [`WORKER_MEMORY`] of its own ([`Self::build_worker_memory`]).
+    /// The count does not trade against the caches: memory a worker's
+    /// prepared readings need is admitted per chain
+    /// ([`Self::prepared_in_flight`]).
+    pub fn worker_count(self, cores: usize, requested: usize) -> usize {
+        cores
+            .min(requested)
+            .min((self.total / 3 / WORKER_MEMORY) as usize)
             .max(1)
     }
 }
