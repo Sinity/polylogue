@@ -89,6 +89,11 @@ impl MemoryBudget {
     pub(crate) fn read_ahead_memory(self) -> usize {
         (self.total / 32) as usize
     }
+    /// What a build's full-text fill holds of texts read ahead of its
+    /// files' threads.
+    pub(crate) fn search_fill_memory(self) -> usize {
+        (self.total / 16) as usize
+    }
     pub fn search_cache_mib(self) -> i64 {
         ((self.total / 64) >> 20).max(1) as i64
     }

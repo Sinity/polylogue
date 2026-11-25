@@ -1611,7 +1611,10 @@ impl Inner {
                         job.indexes.push(sql);
                     }
                 }
-                job.search = Some(crate::text_rows::SearchFill::start(&self.index)?);
+                job.search = Some(crate::text_rows::SearchFill::start(
+                    &self.index,
+                    self.location.memory_budget().search_fill_memory(),
+                )?);
                 if runs.is_empty() {
                     // Nothing to load: no text is merged and no row moves.
                     let runs_dir = Paths::of(&self.location.root).runs;
@@ -1704,9 +1707,15 @@ impl Inner {
                         crate::fault::check("index.build.composing", "")?;
                         job.phase(ASSEMBLING_SESSIONS);
                         let indexes = std::mem::take(&mut job.after_stream);
-                        let ahead = self.location.memory_budget().read_ahead_memory();
+                        let budget = self.location.memory_budget();
+                        let ahead = budget.read_ahead_memory();
+                        // Beside the run readers and the read-ahead, the
+                        // full-text fill follows the blocks composition writes.
                         self.size_build_cache(
-                            (loaded.merged.memory() + loaded.texts.memory() + ahead) as u64,
+                            (loaded.merged.memory()
+                                + loaded.texts.memory()
+                                + ahead
+                                + budget.search_fill_memory()) as u64,
                             false,
                         )?;
                         let state = ComposeState::new(*loaded, indexes, &self.index, ahead)?;
