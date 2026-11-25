@@ -188,9 +188,12 @@ struct Stream {
     calls: Vec<Call>,
     /// The first result of each call ID in session order.
     results: HashMap<String, CallResult>,
-    /// Events whose place comes from a message another session shows:
-    /// composed from the index once every session is written.
+    /// Events whose place comes from a message another session shows, and
+    /// events several sessions state: composed from the index once every
+    /// session is written.
     deferred: Vec<(Option<String>, String)>,
+    /// The event IDs several sessions state.
+    shared_events: Arc<std::collections::HashSet<String>>,
 }
 
 /// A tool call row waiting for its pairing.
@@ -260,11 +263,15 @@ impl<'a, 'c> Composer<'a, 'c> {
     pub(super) fn new(
         context: &'a Context<'c>,
         aliases: Arc<super::identity::Aliases>,
+        shared_events: Arc<std::collections::HashSet<String>>,
     ) -> Result<Self> {
         Ok(Self(Work::new(
             context,
             Identities::loaded(aliases),
-            Some(Stream::default()),
+            Some(Stream {
+                shared_events,
+                ..Stream::default()
+            }),
         )?))
     }
 
@@ -313,6 +320,14 @@ impl<'a, 'c> Composer<'a, 'c> {
         let events = std::mem::take(&mut work.stream().events);
         let mut shown_events = BTreeMap::<String, BTreeSet<String>>::new();
         for event in &events {
+            let stream = work.stream();
+            if stream.shared_events.contains(&event.event_id) {
+                // This session holds only some of its readings.
+                stream
+                    .deferred
+                    .push((Some(session.to_owned()), event.event_id.clone()));
+                continue;
+            }
             let (shown, stated) = work.shown_event_id(&event.event_id)?;
             shown_events.entry(shown).or_default().extend(stated);
         }

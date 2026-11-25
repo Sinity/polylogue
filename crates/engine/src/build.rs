@@ -318,14 +318,14 @@ impl Engine {
                 Err(RecvTimeoutError::Disconnected) => break,
             }
         }
-        phases.extend(
-            built
-                .recv()
-                .map_err(|_| polylogue_store::StoreError::WriterGone)??,
-        );
+        let built = built
+            .recv()
+            .map_err(|_| polylogue_store::StoreError::WriterGone)?;
         // Positions read before the build named the build file's empty
-        // index; the next pass reads them from the installed one.
+        // index; the next pass reads them from the installed one, or, when
+        // the build failed, from the build file the writer made again.
         self.discard_confirmed_state();
+        phases.extend(built?);
         for (mut plan, error) in failed {
             self.record_failure(&mut plan, error, &mut pass);
         }

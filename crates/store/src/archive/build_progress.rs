@@ -55,6 +55,22 @@ pub struct BuildProgress {
     /// Each parse worker's CPU seconds over the last minute it measured.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub worker_cpu_seconds: Vec<f64>,
+    /// How far the writer's phase is, once the chains are read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub phase_progress: Option<PhaseProgress>,
+}
+
+/// What a writer phase of a build has done: how many of what it counts,
+/// and of how many when that is known before the phase ends.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct PhaseProgress {
+    pub done: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<u64>,
+    /// What is counted: `records` loaded, `indexes` made or `sessions`
+    /// composed.
+    pub unit: String,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -73,6 +89,8 @@ pub(crate) struct Record {
     /// When the workers' CPU was last measured, and each one's seconds
     /// per minute.
     workers: Option<(Instant, Vec<f64>)>,
+    /// The writer phase that last recorded its progress, and that progress.
+    phase_progress: Option<(String, PhaseProgress)>,
 }
 
 impl Record {
@@ -82,6 +100,10 @@ impl Record {
 
     pub(crate) fn workers(&mut self, at: Instant, cpu_seconds_per_minute: Vec<f64>) {
         self.workers = Some((at, cpu_seconds_per_minute));
+    }
+
+    pub(crate) fn phase_progress(&mut self, phase: &str, progress: PhaseProgress) {
+        self.phase_progress = Some((phase.to_owned(), progress));
     }
 
     /// Takes a sample unless the newest is younger than [`SAMPLE_EVERY`].
@@ -171,6 +193,18 @@ impl Record {
                 .filter(|(at, _)| now.saturating_duration_since(*at) <= 2 * BUSY_OVER)
                 .map(|(_, cpu)| cpu.clone())
                 .unwrap_or_default(),
+            // Progress the writer recorded for the phase it is in; the
+            // phase is announced to the engine, which records it, so the
+            // writer's count of a new phase may come first.
+            phase_progress: self
+                .phase_progress
+                .as_ref()
+                .filter(|(phase, _)| {
+                    self.phase
+                        .as_ref()
+                        .is_some_and(|(current, _)| current == phase)
+                })
+                .map(|(_, progress)| progress.clone()),
         };
         if let Some((from, (bytes_per_second, _, seconds))) = measured
             && seconds >= ESTIMATE_AFTER.as_secs_f64()

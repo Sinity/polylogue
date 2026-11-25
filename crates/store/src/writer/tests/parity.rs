@@ -25,6 +25,9 @@ enum Row {
         after: usize,
         version: u8,
     },
+    /// A quota reading in session `session`: every session of the origin
+    /// states it under one ID, and `version` picks its value.
+    Quota { session: usize, version: u8 },
     /// A link from session `parent` to `child`; the child may never arrive.
     Link { parent: usize, child: usize },
     /// A record that is not a message but stands for message `target`.
@@ -75,6 +78,7 @@ fn row() -> impl Strategy<Value = Row> {
         2 => (0usize..3, 0u8..2).prop_map(|(n, version)| Row::Copy { n, version }),
         2 => (0usize..SESSIONS, 0usize..8, 0u8..2)
             .prop_map(|(session, after, version)| Row::Event { session, after, version }),
+        1 => (0usize..SESSIONS, 0u8..2).prop_map(|(session, version)| Row::Quota { session, version }),
         1 => (0usize..SESSIONS, 0usize..SESSIONS + 1)
             .prop_map(|(parent, child)| Row::Link { parent, child }),
         1 => (0usize..3, 0usize..6).prop_map(|(name, target)| Row::Alias { name, target }),
@@ -236,6 +240,24 @@ fn step(n: usize, input: &Input, chain: usize, from: usize, to: usize) -> Batch 
                     after: Some(MessageId::parse(&format!("claude-code:m{after}")).unwrap()),
                     range: Some((offset, end)),
                     data: serde_json::json!({ "version": version }),
+                });
+            }
+            Row::Quota {
+                session: s,
+                version,
+            } => {
+                let id = state(&mut sessions, &session_name(*s));
+                let (at, at_quality, at_precision) = timed(Some(7_000));
+                output.events.push(Event {
+                    session: Some(id),
+                    kind: polylogue_model::reports::QUOTA_REPORT.into(),
+                    at,
+                    at_quality,
+                    at_precision,
+                    at_until: None,
+                    after: None,
+                    range: Some((offset, end)),
+                    data: serde_json::json!({ "report_id": "quota", "limit": version }),
                 });
             }
             Row::Link { parent, child } => {
@@ -547,6 +569,37 @@ proptest! {
         let expected = reference(&inputs, &cuts, &picks);
         prop_assert_eq!(built_then_upkeep(&inputs, &cuts, &picks, built), expected);
     }
+}
+
+/// Two sessions state one quota reading: the build shows it once, from both
+/// sessions' readings, as upkeep does.
+#[test]
+fn a_reading_two_sessions_state_is_built_once() {
+    let input = |session: usize, version: u8| Input {
+        route: Route::Live,
+        records: vec![
+            Row::Message {
+                n: session,
+                version: 1,
+                parent: None,
+            },
+            Row::Quota { session, version },
+        ],
+        rewrite: None,
+    };
+    let inputs = vec![input(0, 0), input(1, 1)];
+    let expected = reference(&inputs, &[true; 8], &[0; 6]);
+    assert_eq!(
+        expected
+            .iter()
+            .filter(|line| line.contains("quota_report"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        built_then_upkeep(&inputs, &[true; 8], &[0; 6], 12),
+        expected
+    );
 }
 
 /// Two Drive revisions of one AI Studio prompt record the same copy name:

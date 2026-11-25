@@ -243,15 +243,19 @@ fn build(status: &Answer, view: &View<'_>) -> Vec<String> {
     } else {
         (build.chains_read, build.chains)
     };
-    let mut lines = vec![format!(
-        "{}  {}   {} of {} · {} of {} chains",
-        view.bar(done, total),
-        percent(done, total),
-        bytes(build.bytes_read),
-        bytes(build.bytes),
-        count(build.chains_read),
-        count(build.chains)
-    )];
+    let mut lines = Vec::new();
+    // A round with no chain to read has no reading to show.
+    if total > 0 {
+        lines.push(format!(
+            "{}  {}   {} of {} · {} of {} chains",
+            view.bar(done, total),
+            percent(done, total),
+            bytes(build.bytes_read),
+            bytes(build.bytes),
+            count(build.chains_read),
+            count(build.chains)
+        ));
+    }
     let Some(progress) = &status.build_progress else {
         return lines;
     };
@@ -288,6 +292,17 @@ fn build(status: &Answer, view: &View<'_>) -> Vec<String> {
                 " for {}",
                 short_duration(view.now_ms.saturating_sub(since.unix_ms()))
             ));
+        }
+        if let Some(phase) = &progress.phase_progress {
+            part.push_str(&match phase.total {
+                Some(total) => format!(
+                    " · {} of {} {}",
+                    count(phase.done),
+                    count(total),
+                    clean(&phase.unit)
+                ),
+                None => format!(" · {} {}", count(phase.done), clean(&phase.unit)),
+            });
         }
         lines.push(part);
     }

@@ -262,6 +262,7 @@ fn a_building_answer_renders_the_build_progress() {
         eta_seconds: Some(1_560),
         writer_busy: Some(0.97),
         worker_cpu_seconds: vec![3.0, 3.2],
+        phase_progress: None,
     });
     status.totals_error = Some(unread.clone());
     status.running = Running::Unavailable {
@@ -287,6 +288,64 @@ RECENT     13:31:00  build: read chains: each stored chain read whole into runs
 
 NOTES      ⚠ the index is being built
 "
+    );
+}
+
+/// Once the chains are read the writer's phase says how far it is; a round
+/// with no chain to read shows no reading bar.
+#[test]
+fn a_writer_phase_renders_its_own_progress() {
+    let mut status = answer();
+    status.uptime_seconds = 300;
+    status.loop_status.busy = true;
+    let build = polylogue_store::archive::index_build::IndexBuild {
+        serving_previous: false,
+        chains: 0,
+        chains_read: 0,
+        bytes: 0,
+        bytes_read: 0,
+    };
+    let unread = build.to_string();
+    status.index_build = Some(build);
+    let progress = |phase: &str, done, total, unit: &str| {
+        Some(polylogue_store::archive::build_progress::BuildProgress {
+            phase: Some(phase.into()),
+            phase_since: Some(at(NOW - 12 * MINUTE)),
+            bytes_per_second: None,
+            chains_per_second: None,
+            rate_seconds: None,
+            rate_varying: false,
+            eta_seconds: None,
+            writer_busy: Some(1.),
+            worker_cpu_seconds: Vec::new(),
+            phase_progress: Some(polylogue_store::archive::build_progress::PhaseProgress {
+                done,
+                total,
+                unit: unit.into(),
+            }),
+        })
+    };
+    status.build_progress = progress("compose", 2_556, None, "sessions");
+    status.totals_error = Some(unread.clone());
+    status.running = Running::Unavailable {
+        error: unread.clone(),
+    };
+    status.notices = Notices::Unavailable { error: unread };
+    assert_eq!(
+        plain(&status, &["the index is being built"]),
+        "\
+polylogue  standalone · daemon 4479 · up 5m · busy · /home/op/archive
+
+BUILD      phase compose for 12m · 2,556 sessions
+           writer busy 100%
+
+NOTES      ⚠ the index is being built
+"
+    );
+    status.build_progress = progress("indexes", 12, Some(40), "indexes");
+    assert!(
+        plain(&status, &["the index is being built"])
+            .contains("BUILD      phase indexes for 12m · 12 of 40 indexes\n")
     );
 }
 

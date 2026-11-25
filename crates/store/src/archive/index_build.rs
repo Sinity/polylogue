@@ -353,6 +353,20 @@ impl Archive {
         }
     }
 
+    /// Records how far the writer's phase `phase` of the build is, and
+    /// samples the writer's busy time with it.
+    pub(crate) fn record_build_phase_progress(
+        &self,
+        phase: &str,
+        progress: super::build_progress::PhaseProgress,
+    ) {
+        let mut inner = self.index_build.inner();
+        if inner.file.is_some() {
+            inner.measured.phase_progress(phase, progress);
+            inner.sample();
+        }
+    }
+
     /// Records each parse worker's CPU seconds over the last minute.
     pub fn record_build_workers(&self, cpu_seconds_per_minute: Vec<f64>) {
         let mut inner = self.index_build.inner();
@@ -611,6 +625,28 @@ fn discard(paths: &Paths) -> Result<()> {
     remove_database(&paths.build)?;
     remove_runs(paths)?;
     sync_directory(&paths.dir)
+}
+
+/// Discards a build that failed in this process and creates its file again,
+/// empty, as [`prepare`] does after a crash, keeping the record of why the
+/// index is rebuilt. The writer has closed its connection; pipeline pools
+/// release their idle ones, and a pool drops any other at its next use, the
+/// file being a new one.
+pub(crate) fn restart(archive: &Archive) -> Result<()> {
+    let paths = Paths::of(&archive.root);
+    archive.index_build.release();
+    let rebuild = crate::meta_get(
+        &open_setup(&paths.build)?,
+        crate::archive::index_rebuild::META_KEY,
+    )?;
+    discard(&paths)?;
+    let build = open_setup(&paths.build)?;
+    archive.ensure_index(&build, true)?;
+    if let Some(record) = rebuild {
+        crate::meta_set(&build, crate::archive::index_rebuild::META_KEY, record)?;
+    }
+    sync_directory(&paths.dir)?;
+    crate::archive::generation::open(archive, &build)
 }
 
 /// Removes one run file and the text map beside it.

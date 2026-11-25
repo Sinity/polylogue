@@ -226,32 +226,44 @@ fn a_stopped_build_starts_again_from_the_stored_bytes() {
     assert_eq!(messages(&serving(&archive)), 1);
 }
 
-/// A round that follows one which made the indexes, and has nothing new to
-/// load, merges no texts and makes no index again.
+/// A round that fails, before composing or after composition and the
+/// search triggers, leaves the build file as the next open would after a
+/// crash: empty, so a pool reading it finds no chain read. The next round
+/// on the same writer reads the chains again and takes the whole batch
+/// path, composing from its runs.
 #[test]
-fn a_later_round_with_nothing_to_load_keeps_the_indexes_made() {
-    let dir = tempfile::tempdir().unwrap();
-    let chains = due_a_build(dir.path(), &["first-round"]);
-    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    let writer = Writer::start(&archive).unwrap();
-    let runs = runs(&archive, &writer, &["first-round"], &chains);
-    crate::fault::arm(
-        "index.build.composing",
-        "",
-        crate::fault::Action::Fail,
-        0,
-        1,
-    );
-    let first = writer.build(runs);
-    crate::fault::clear();
-    assert!(first.is_err());
-    let phases = writer.build(Vec::new()).unwrap();
-    assert_eq!(
-        phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
-        ["indexes", "compose", "read indexes", "full text", "install"]
-    );
-    assert_eq!(phases[0].items, 0);
-    assert_eq!(messages(&serving(&archive)), 1);
+fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
+    for point in ["index.build.composing", "index.deferred"] {
+        let dir = tempfile::tempdir().unwrap();
+        let chains = due_a_build(dir.path(), &["first-round"]);
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        let writer = Writer::start(&archive).unwrap();
+        let pipeline = ReadPool::open(&archive).unwrap();
+        let first = runs(&archive, &writer, &["first-round"], &chains);
+        crate::fault::arm(point, "", crate::fault::Action::Fail, 0, 1);
+        let failed = writer.build(first);
+        crate::fault::clear();
+        assert!(failed.is_err(), "{point}");
+        let status = pipeline.reader().unwrap().status().unwrap();
+        assert_eq!(status.parse_states.get("done"), None, "{point}");
+        assert_eq!(status.inputs, 1, "{point}");
+        let again = runs(&archive, &writer, &["first-round"], &chains);
+        let phases = writer.build(again).unwrap();
+        assert_eq!(
+            phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            [
+                "merge texts",
+                "load",
+                "indexes",
+                "compose",
+                "read indexes",
+                "full text",
+                "install"
+            ],
+            "{point}"
+        );
+        assert_eq!(messages(&serving(&archive)), 1, "{point}");
+    }
 }
 
 #[test]
