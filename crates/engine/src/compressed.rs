@@ -98,6 +98,10 @@ pub(crate) struct RolloutCapture {
     original_context: Option<crate::source_read::SourceReadContext>,
     has_pending: bool,
     observation: Observation,
+    /// A build's storing turn stores the rollout and leaves its reading to
+    /// the build's workers, as it does for every other found file
+    /// ([`Plan::storing_only`]).
+    pub(crate) storing_only: bool,
 }
 
 /// What a worker's rollout capture did, for the feeder to record.
@@ -107,6 +111,7 @@ pub(crate) struct CapturedRollout {
     found_origin: &'static OriginSpec,
     priority: pool::Priority,
     facts: FileFacts,
+    storing_only: bool,
     /// None when the file changed before or while it was read: nothing was
     /// stored, and the capture is prepared again from the new file facts.
     outcome: Result<Option<Captured>, EngineError>,
@@ -165,7 +170,8 @@ impl RolloutCapture {
         read_memory: u64,
     ) -> CapturedRollout {
         let (path, input, facts) = (self.path.clone(), self.input.clone(), self.facts);
-        let (found_origin, priority) = (self.found_origin, self.priority);
+        let (found_origin, priority, storing_only) =
+            (self.found_origin, self.priority, self.storing_only);
         let stored = polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
             self.store(archive, blobs, writer, read_memory)
         });
@@ -180,6 +186,7 @@ impl RolloutCapture {
             found_origin,
             priority,
             facts,
+            storing_only,
             outcome,
             reply,
         }
@@ -492,11 +499,12 @@ impl Engine {
             original_context,
             has_pending,
             observation: self.observation(path, Some(facts)),
+            storing_only: false,
         })))
     }
 
     /// Records a worker's rollout capture and plans the reading of what it
-    /// stored.
+    /// stored, unless the capture only stores.
     pub(crate) fn captured_rollout(
         &mut self,
         captured: CapturedRollout,
@@ -508,6 +516,7 @@ impl Engine {
             found_origin,
             priority,
             facts,
+            storing_only,
             outcome,
             reply,
         } = captured;
@@ -530,7 +539,8 @@ impl Engine {
             };
             match self.rollout_step(&found, FileFacts::of(&meta), priority, pass)? {
                 RolloutStep::Planned(plan) => return Ok(plan.map(|plan| *plan)),
-                RolloutStep::Capture(capture) => {
+                RolloutStep::Capture(mut capture) => {
+                    capture.storing_only = storing_only;
                     self.rollout_captures.push_front(*capture);
                     return Ok(None);
                 }
@@ -562,6 +572,9 @@ impl Engine {
         state.facts = Some(facts);
         state.take_progress(&progress);
         self.inputs.insert(path.clone(), state);
+        if storing_only {
+            return Ok(None);
+        }
         self.stored_plan(&path)
     }
 
