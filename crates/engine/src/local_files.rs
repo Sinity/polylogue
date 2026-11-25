@@ -68,9 +68,9 @@ impl Engine {
         let Change::Reparse { chain } = plan.change else {
             return Ok(());
         };
-        let reader = self.reads.reader()?;
-        let stored = reader.stored_chain(&plan.input.id, chain, plan.size)?;
-        drop(reader);
+        let stored = self
+            .reads
+            .read_current(|reader| reader.stored_chain(&plan.input.id, chain, plan.size))?;
         self.capture_local_files(
             std::io::BufReader::new(stored.reader(Arc::clone(&self.blobs))),
             &plan.input.id,

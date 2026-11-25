@@ -80,13 +80,7 @@ impl ClaudeHome {
         &self,
         read: impl Fn(&polylogue_store::Reader<'_>) -> polylogue_store::Result<T>,
     ) -> T {
-        loop {
-            let pool = self.reads();
-            match pool.reader().and_then(|reader| read(&reader)) {
-                Err(polylogue_store::StoreError::ReadIndexReplaced) => continue,
-                result => return result.expect("read the archive"),
-            }
-        }
+        self.reads().read_current(read).expect("read the archive")
     }
 
     /// The index file as the archive holds it now: the private build file

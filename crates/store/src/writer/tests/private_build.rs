@@ -527,6 +527,51 @@ fn pipeline_readers_open_the_ready_build_and_refuse_it_after_install() {
 
 #[cfg(feature = "faults")]
 #[test]
+fn a_current_read_that_meets_the_install_reads_the_installed_index() {
+    crate::fault::clear();
+    let dir = tempfile::tempdir().unwrap();
+    let chains = due_a_build(dir.path(), &["read-current"]);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let paths = Paths::of(dir.path());
+    let writer = Writer::start(&archive).unwrap();
+    let runs = runs(&archive, &writer, &["read-current"], &chains);
+    let pipeline = ReadPool::open(&archive).unwrap();
+    crate::fault::arm(
+        "index.build.before_rename",
+        &archive.root.to_string_lossy(),
+        crate::fault::Action::Hold,
+        0,
+        1,
+    );
+    let sender = writer.sender();
+    let installer = std::thread::spawn(move || sender.build(runs));
+    while !crate::fault::held() && !installer.is_finished() {
+        std::thread::yield_now();
+    }
+    assert!(
+        crate::fault::held(),
+        "the install reached its rename boundary"
+    );
+    // The first reader opens the build file; the install completes before
+    // its read starts, as when the writer installs while an import is read.
+    let installer = std::cell::RefCell::new(Some(installer));
+    let opened = std::cell::RefCell::new(Vec::new());
+    let status = pipeline.read_current(|reader| {
+        opened.borrow_mut().push(archive.index_db());
+        if let Some(installer) = installer.borrow_mut().take() {
+            crate::fault::release();
+            installer.join().unwrap().unwrap();
+        }
+        reader.status()
+    });
+    crate::fault::clear();
+
+    assert_eq!(status.unwrap().messages, 1);
+    assert_eq!(*opened.borrow(), [paths.built.clone(), paths.index.clone()]);
+}
+
+#[cfg(feature = "faults")]
+#[test]
 fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
     crate::fault::clear();
     let dir = tempfile::tempdir().unwrap();
