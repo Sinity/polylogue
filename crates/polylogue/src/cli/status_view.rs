@@ -231,7 +231,8 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
         match dimension {
             CompletenessDimension::Complete => words.push(format!("{name} current")),
             CompletenessDimension::Incomplete(found) => {
-                words.push(format!("{name} behind: {}", reasons(found)));
+                // The reasons say what is behind.
+                words.push(reasons(found));
             }
             CompletenessDimension::Unknown(found) => {
                 words.push(format!("{name} unknown: {}", reasons(found)));

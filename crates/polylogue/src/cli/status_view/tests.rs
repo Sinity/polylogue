@@ -213,7 +213,7 @@ ARCHIVE    37,419 sessions   11.24M messages   4.77M tool calls   288 documents
 
 READING    #############################.  99.9%   109,793 of 109,887 files read
            48 parsing · 31 failed · 15 without a parser
-           parsing behind: parsing is behind the stored bytes · session figures current · search current
+           parsing is behind the stored bytes · session figures current · search current
 
 LAST CHECK 12:58:04 · 4.2 s · 37 of 132,286 files changed
            12.4 MiB read · 1,204 messages written
@@ -377,7 +377,7 @@ fn a_build_lists_its_steps_with_counts_times_and_estimates() {
         "\
 polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
-INDEX      building the index from 63.1 GiB of stored files, because the archive had no index
+INDEX      building the index from 63.1 GiB of stored files: the archive had no index
            reads and searches answer \"index building\" until it is installed
            ##............................  7%   step 7 of 10, assembling sessions
            ✓ finding files            1m
@@ -385,8 +385,9 @@ INDEX      building the index from 63.1 GiB of stored files, because the archive
            ✓ reading stored files   1h8m  63.1 GiB
            ✓ sorting texts           57m  9.26M records
            ✓ writing tables          46m  50.25M records
-           ✓ indexing             2h26m  61 indexes
-           ▸ assembling sessions  1h26m  3,205 of 41,822 sessions · 0.6/s · about 17 h 18 min left
+           ✓ indexing              2h26m  61 indexes
+           ▸ assembling sessions   1h26m  3,205 of 41,822 sessions
+                                          0.6 sessions/s · about 17 h 18 min left
            · finishing indexes
            · search index
            · installing
@@ -440,10 +441,11 @@ fn reading_stored_files_shows_bytes_and_files() {
         "\
 polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
-INDEX      building the index from 65.6 GiB of stored files, because the index format changed fro…
+INDEX      building the index from 65.6 GiB of stored files: its format changed (41 to 42)
            reads and searches use the previous index until the new one is installed
            ################..............  56%   step 1 of 3, reading stored files
-           ▸ reading stored files    34m  36.8 GiB of 65.6 GiB · 4,120 of 21,678 files · 18.4 MB/s ·…
+           ▸ reading stored files    34m  36.8 GiB of 65.6 GiB · 4,120 of 21,678 files
+                                          18.4 MB/s · about 26 min left
            · sorting texts
            · installing
            whole job: time unknown; the 2 steps to come are measured only as they run
@@ -480,9 +482,10 @@ fn a_step_without_an_estimate_says_why() {
         "\
 polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
-INDEX      building the index, because the archive had no index
+INDEX      building the index: the archive had no index
            reads and searches answer \"index building\" until it is installed
-           ▸ sorting texts  20m  2.10M records so far · 2650/s · total known when the step ends
+           ▸ sorting texts    20m  2.10M records so far
+                                   2650 records/s · total known when the step ends
 "
     );
     let mut storing = current(
@@ -502,7 +505,7 @@ INDEX      building the index, because the archive had no index
     );
     assert!(
         plain(&status, &[BUILDING]).contains(
-            "▸ storing files  1m  400.0 MiB of 4.0 GiB · 20.0 MB/s · estimate after a minute of progress\n"
+            "▸ storing files            1m  400.0 MiB of 4.0 GiB\n                                          20.0 MB/s · estimate after a minute of progress\n"
         ),
         "{}",
         plain(&status, &[BUILDING])
@@ -536,7 +539,7 @@ fn a_failed_attempt_is_shown_while_the_build_runs_again() {
         "{text}"
     );
     assert!(
-        text.contains("▸ reading stored files  2m  not counted\n"),
+        text.contains("▸ reading stored files     2m  this step has no progress count\n"),
         "{text}"
     );
 }
