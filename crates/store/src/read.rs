@@ -1036,9 +1036,16 @@ impl Reader<'_> {
         let (mut message, selection) = crate::writer::shown_message(conn, pk)?
             .ok_or_else(|| StoreError::stored(0, "the message has no source reading"))?;
         // A message read whole shows what its reading left in the stored
-        // bytes.
-        if let Some(chain) = chain {
-            self.resolve_stored_blocks(&input, chain, &mut message.blocks)?;
+        // bytes. Reading a message does not depend on those bytes being at
+        // hand (docs/archive.md, text): without them the value keeps its
+        // place, which still reads as encrypted reasoning or restated history.
+        if let Some(chain) = chain
+            && let Err(error) = self.resolve_stored_blocks(&input, chain, &mut message.blocks)
+        {
+            crate::log!(
+                warning,
+                "message {id}: a value left in the stored bytes is not shown: {error}"
+            );
         }
         Ok(Some((message, selection)))
     }
