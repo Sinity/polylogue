@@ -28,6 +28,10 @@ const SCRATCH_CACHE: usize = 64 << 20;
 /// Sessions composed per transaction.
 const SESSIONS_PER_TRANSACTION: usize = 512;
 
+/// Live events a transaction composing sessions from the index gathers
+/// before it ends, at a session's end.
+const LIVE_PER_TRANSACTION: usize = 10_000;
+
 /// Rows the merge writes per transaction, at most.
 const ROWS_PER_TRANSACTION: u64 = 200_000;
 
@@ -2261,12 +2265,19 @@ impl Inner {
                 }
             }
             Step::Index { next } => {
-                let chunk = &state.fallback[next.min(state.fallback.len())
-                    ..(next + SESSIONS_PER_TRANSACTION).min(state.fallback.len())];
                 let mut touched = super::readings::Touched::default();
-                touched.whole.extend(chunk.iter().cloned());
-                touched.sessions.extend(chunk.iter().cloned());
-                for session in chunk {
+                // A transaction composes up to its share of sessions, and
+                // ends early once their live events, which it holds decoded
+                // until it applies them, are many.
+                let mut end = next;
+                while end < state.fallback.len()
+                    && end < next + SESSIONS_PER_TRANSACTION
+                    && touched.live.len() < LIVE_PER_TRANSACTION
+                {
+                    let session = &state.fallback[end];
+                    end += 1;
+                    touched.whole.insert(session.clone());
+                    touched.sessions.insert(session.clone());
                     for row in self
                         .index
                         .prepare_cached(
@@ -2297,7 +2308,7 @@ impl Inner {
                         }
                     }
                 }
-                state.joined += chunk.len() as u64;
+                state.joined += (end - next) as u64;
                 if next == 0 {
                     // What no session holds: input events; and events that
                     // follow another session's message.
@@ -2311,9 +2322,8 @@ impl Inner {
                     touched.events.extend(std::mem::take(&mut state.deferred));
                 }
                 self.compose_from_index(touched)?;
-                let next = next + SESSIONS_PER_TRANSACTION;
-                state.step = if next < state.fallback.len() {
-                    Step::Index { next }
+                state.step = if end < state.fallback.len() {
+                    Step::Index { next: end }
                 } else {
                     Step::Count
                 };

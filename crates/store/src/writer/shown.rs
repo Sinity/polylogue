@@ -347,27 +347,26 @@ impl<'a, 'c> Composer<'a, 'c> {
             work.compose_event(&shown, &stated)?;
         }
         work.settle_session(session)?;
-        let mut live: Vec<&EventRow> = Vec::new();
+        // The live events in (time, line) order. Each is read again to be
+        // applied, so a session's events are never held decoded at once.
         let events = std::mem::take(&mut work.stream().events);
-        let mut decoded = Vec::new();
-        for event in &events {
+        let mut live = Vec::new();
+        for (n, event) in events.iter().enumerate() {
             let value = readings::read_event(work.tx(), &mut work.reader, event.piece)?;
             if polylogue_model::live::is_live_event(&value.kind) {
-                live.push(event);
-                decoded.push(value);
+                live.push((
+                    value.at.map(Timestamp::unix_ms),
+                    event.input_pk,
+                    event.chain,
+                    event.seq,
+                    n,
+                ));
             }
         }
-        let mut order: Vec<usize> = (0..live.len()).collect();
-        order.sort_by_key(|&n| {
-            (
-                decoded[n].at.map(Timestamp::unix_ms),
-                live[n].input_pk,
-                live[n].chain,
-                live[n].seq,
-            )
-        });
-        for n in order {
-            work.apply_live(&decoded[n])?;
+        live.sort_unstable();
+        for (.., n) in live {
+            let value = readings::read_event(work.tx(), &mut work.reader, events[n].piece)?;
+            work.apply_live(&value)?;
         }
         Ok(())
     }
