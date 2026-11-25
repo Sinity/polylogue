@@ -241,3 +241,47 @@ fn status_answers_within_its_default_deadline_while_a_pass_ingests_a_large_corpu
         "status replies while the pass was ingesting: {during_ingest}, while reads were held: {held_replies}"
     );
 }
+
+/// Status takes no executor place (docs/operations.md, interactive work):
+/// with every place an interactive request may take held by requests that
+/// wait on something else, as requests waiting on a busy writer hold them,
+/// status through the socket still answers within its default deadline.
+#[test]
+fn status_answers_while_every_request_place_is_held() {
+    let daemon = crate::test_daemon::start("synthetic source");
+    let executor = &daemon.daemon.executor;
+    // The background place is the only one an interactive request cannot take.
+    let held = executor.places() - 1;
+    let (started, on_start) = std::sync::mpsc::channel();
+    let releases: Vec<_> = (0..held)
+        .map(|_| {
+            let started = started.clone();
+            let (release, released) = std::sync::mpsc::channel::<()>();
+            assert!(executor.submit(
+                crate::daemon::executor::Class::Interactive,
+                None,
+                move || {
+                    started.send(()).unwrap();
+                    let _ = released.recv();
+                }
+            ));
+            release
+        })
+        .collect();
+    for _ in 0..held {
+        on_start
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("every place is held");
+    }
+    let request = crate::client::request(
+        "status",
+        serde_json::json!({}),
+        polylogue_store::user_writes::new_request_id(),
+    );
+    let answer = crate::client::call(&daemon.daemon.archive.socket(), &request).unwrap();
+    drop(releases);
+    let status = answer
+        .value()
+        .unwrap_or_else(|| panic!("{:?}", answer.outcome));
+    assert_eq!(status["pid"], std::process::id());
+}

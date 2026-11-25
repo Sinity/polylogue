@@ -116,6 +116,31 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
         }),
         "{change}"
     );
+    assert_eq!(
+        archive.build_progress().unwrap().reason.as_ref(),
+        Some(&reason)
+    );
+
+    // The daemon stops before the build ends: the next open discards the
+    // build file and starts again, for the same reason.
+    drop((archive, lock));
+    let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
+    assert_eq!(
+        archive.build_progress().unwrap().reason.as_ref(),
+        Some(&reason),
+        "{change}"
+    );
+    assert_eq!(
+        rebuild_status(&archive),
+        Some(IndexRebuild {
+            reason: reason.clone(),
+            previous_schema: previous.clone(),
+            schema: build.clone(),
+            building: true,
+            set_aside: None,
+        }),
+        "{change}"
+    );
     let archive_conn = open_read(&archive.archive_db()).unwrap();
     assert_eq!(
         archive_conn

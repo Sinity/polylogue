@@ -18,7 +18,8 @@
 //! - `built.db` present: the build was finished, synced and switched to WAL
 //!   but not yet installed, and it is installed now;
 //! - otherwise a build file or runs: a build that did not finish, discarded
-//!   with its runs; the build starts again from the stored bytes.
+//!   with its runs; the build starts again from the stored bytes, and the
+//!   reason the index is replaced is read again from `previous.db`.
 //!
 //! An index that is replaced is moved into the build directory as
 //! `previous.db` when the build starts. While its schema identity is this
@@ -45,8 +46,8 @@ pub const DIR: &str = "index-build";
 pub struct IndexBuild {
     /// Whether reads are answered from the index being replaced meanwhile.
     pub serving_previous: bool,
-    /// Stored input chains, and how many of them the build has read at
-    /// their current reading version or found without a parser.
+    /// Stored chains of formats with a reading, counted before the build
+    /// plans them, and how many of them it has read or found unreadable.
     pub chains: u64,
     pub chains_read: u64,
     /// Newest readable chains' bytes and their committed parser positions.
@@ -417,6 +418,12 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
                 replaced = Some((reason, previous));
             }
         }
+    } else if paths.previous.exists() {
+        // A build that did not finish set this index aside; the reason it
+        // was replaced still holds for the build that starts again.
+        replaced = crate::archive::index_rebuild::set_aside_reason(&crate::archive::open_read(
+            &paths.previous,
+        )?)?;
     }
     if create_build_dir(&paths)? {
         sync_directory(&archive.root)?;
