@@ -396,12 +396,11 @@ fn recorded_reports_remain_a_separate_population_with_confirmation_counts() {
         f.event(s, "usage_report", at).unwrap();
         let conn = crate::archive::open_write(&f.archive.index_db(), 64).unwrap();
         let value = json!({"report_id":format!("r{i}"),"usage":{"input":100,"cached_input":0,"cache_write":0,"output":1,"reasoning":0},"model":"gpt-6.1-sol","response":null,"measured_completion":confirmed,"measured_at":at.and_then(polylogue_model::Timestamp::from_unix_ms),"input_including_cache":null,"output_including_reasoning":null});
-        let packed = crate::encoding::pack_json(&value).unwrap();
-        conn.execute(
-            "UPDATE event SET data=?1 WHERE pk=(SELECT max(pk) FROM event)",
-            [packed],
-        )
-        .unwrap();
+        let event: i64 = conn
+            .query_row("SELECT max(pk) FROM event", [], |r| r.get(0))
+            .unwrap();
+        let data = serde_json::to_vec(&value).unwrap();
+        crate::content::rewrite_piece(&conn, "event", event, None, Some(&data)).unwrap();
     }
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();

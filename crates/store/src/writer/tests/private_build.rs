@@ -137,7 +137,9 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
     writer.build(run.finish().unwrap()).unwrap();
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
     let groups: i64 = index
-        .query_row("SELECT count(*) FROM text_group", [], |r| r.get(0))
+        .query_row("SELECT count(DISTINCT group_id) FROM text", [], |r| {
+            r.get(0)
+        })
         .unwrap();
     assert_eq!(groups, 1);
     let mut texts: Vec<String> = index

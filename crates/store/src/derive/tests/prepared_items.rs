@@ -70,7 +70,7 @@ fn revealed_message_items_are_prepared_before_the_derive_commit() {
     conn.flush_prepared_statement_cache();
     conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Read {
-            table_name: "block" | "text_group" | "message_version_body",
+            table_name: "content_group",
             column_name: "body",
         } => Authorization::Deny,
         _ => Authorization::Allow,

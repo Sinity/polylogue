@@ -325,11 +325,21 @@ impl Fixture {
         text_id: Option<i64>,
         body: serde_json::Value,
     ) -> Result<i64> {
-        let packed = crate::encoding::pack_json(&body)?;
+        let piece = crate::content::store_piece(&self.index, &serde_json::to_vec(&body)?, None)?;
         self.index.execute(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![message_pk, session_pk, idx, kind, text_id, packed],
+            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+                 content_start, content_length)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                message_pk,
+                session_pk,
+                idx,
+                kind,
+                text_id,
+                piece.group,
+                piece.start,
+                piece.length
+            ],
         )?;
         let block = self.index.last_insert_rowid();
         // The block's text joins its search index as it is written.
@@ -487,11 +497,15 @@ impl Fixture {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 3)",
             )?;
             let mut block = tx.prepare(
-                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body)
-                 VALUES (?1, ?2, 0, 'text', ?3, ?4)",
+                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+                     content_start, content_length)
+                 VALUES (?1, ?2, 0, 'text', ?3, ?4, ?5, ?6)",
             )?;
-            let text_body =
-                crate::encoding::pack_json(&serde_json::json!({"type": "text", "text": ""}))?;
+            let text_body = crate::content::store_piece(
+                &tx,
+                &serde_json::to_vec(&serde_json::json!({"type": "text", "text": ""}))?,
+                None,
+            )?;
             for n in 0..spec.sessions {
                 let native = format!("many-{n}");
                 let cwd = format!("{}/d{}/w{}", spec.prefix, n % 97, n % 13);
@@ -529,7 +543,14 @@ impl Fixture {
                             &tx,
                             &format!("Answer {n}: the synthetic work is finished."),
                         )?;
-                        block.execute(params![message_pk, pk, text, text_body])?;
+                        block.execute(params![
+                            message_pk,
+                            pk,
+                            text,
+                            text_body.group,
+                            text_body.start,
+                            text_body.length
+                        ])?;
                     }
                 }
                 pks.push(pk);
@@ -587,7 +608,6 @@ impl Fixture {
 
     pub fn event(&mut self, session_pk: i64, kind: &str, at: Option<i64>) -> Result<()> {
         self.seq += 1;
-        let data = crate::encoding::pack_json(&serde_json::json!({}))?;
         let id = format!("e{}", self.seq);
         let session: String =
             self.index
@@ -601,7 +621,7 @@ impl Fixture {
         } else {
             polylogue_model::TimeAccuracy::UNKNOWN
         };
-        let fields = crate::encoding::pack_json(&polylogue_model::Event {
+        let fields = serde_json::to_vec(&polylogue_model::Event {
             at_quality: accuracy.quality,
             at_precision: accuracy.precision,
             at_until: accuracy.until,
@@ -614,14 +634,32 @@ impl Fixture {
             range: None,
             data: serde_json::Value::Null,
         })?;
+        let piece = crate::content::store_piece(&self.index, &fields, Some(b"{}"))?;
         self.index.execute(
-            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,data,fields,source_chain) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,1)",
-            params![id, session_pk, self.seq, kind, at, self.input_pk, data,fields],
+            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,source_chain,content_group,content_start,
+                 content_length,data_length) VALUES (?1,?2,?3,?4,?5,?6,1,?7,?8,?9,?10)",
+            params![id, session_pk, self.seq, kind, at, self.input_pk, piece.group, piece.start,
+                piece.length, piece.data_length],
         )?;
         let hash = *blake3::hash(b"{}").as_bytes();
-        self.index.execute("INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,kind,at,hash,fields,data,imported_sources)
-            SELECT ?2,1,?1,s.id,'live',?6,?7,?8,?5,?4,?3,'[]' FROM session s WHERE s.pk=?9",
-            params![id,self.input_pk,data,fields,hash.as_slice(),self.seq,kind,at,session_pk])?;
+        self.index.execute(
+            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,kind,at,hash,
+                imported_sources,content_group,content_start,content_length,data_length)
+            SELECT ?2,1,?1,s.id,'live',?4,?5,?6,?3,'[]',?8,?9,?10,?11 FROM session s WHERE s.pk=?7",
+            params![
+                id,
+                self.input_pk,
+                hash.as_slice(),
+                self.seq,
+                kind,
+                at,
+                session_pk,
+                piece.group,
+                piece.start,
+                piece.length,
+                piece.data_length
+            ],
+        )?;
         self.index.execute(
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],

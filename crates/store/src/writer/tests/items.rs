@@ -880,9 +880,17 @@ fn indexing_errors_abort_the_changed_rows_transaction() {
             tx.execute("UPDATE message SET on_active_path = 0", [])
                 .unwrap();
             if invalid_json {
-                let body =
-                    crate::encoding::pack_json(&serde_json::json!({"type":"not-a-block"})).unwrap();
-                tx.execute("UPDATE block SET body = ?1", [body]).unwrap();
+                let body = serde_json::to_vec(&serde_json::json!({"type":"not-a-block"})).unwrap();
+                let blocks: Vec<i64> = tx
+                    .prepare("SELECT pk FROM block")
+                    .unwrap()
+                    .query_map([], |r| r.get(0))
+                    .unwrap()
+                    .collect::<rusqlite::Result<_>>()
+                    .unwrap();
+                for block in blocks {
+                    crate::content::rewrite_piece(&tx, "block", block, Some(&body), None).unwrap();
+                }
             } else {
                 tx.execute("UPDATE block SET idx = -1, ordinal = NULL", [])
                     .unwrap();

@@ -213,7 +213,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
             polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
         let reader = pool.reader().unwrap();
         let stored = reader
-            .query("SELECT pl_block(data) AS data FROM event", &[])
+            .query("SELECT (SELECT pl_text_at(g.body,e.content_start+e.content_length,e.data_length) FROM content_group g WHERE g.id=e.content_group) AS data FROM event e", &[])
             .unwrap();
         let data: serde_json::Value =
             serde_json::from_str(stored[0]["data"].as_str().unwrap()).unwrap();

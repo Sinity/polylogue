@@ -244,7 +244,8 @@ fn a_text_is_one_row_and_a_removed_texts_key_is_never_given_again() {
 /// composition writes it.
 fn block(conn: &Connection, pk: i64, kind: &str, text: i64) {
     conn.execute(
-        "INSERT INTO block(pk,message_pk,session_pk,idx,kind,text_id,body) VALUES (?1,1,1,?1,?2,?3,x'00')",
+        "INSERT INTO block(pk,message_pk,session_pk,idx,kind,text_id,content_group,content_start,content_length)
+         VALUES (?1,1,1,?1,?2,?3,0,0,0)",
         params![pk, kind, text],
     )
     .unwrap();

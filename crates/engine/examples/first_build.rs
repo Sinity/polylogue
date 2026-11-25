@@ -513,19 +513,21 @@ fn capture_only(home: &Path, root: &Path) -> polylogue_store::Result<()> {
 /// Compare levels on exactly the same groups, independently of parsing/chunk sizes.
 fn compression_sizes(index: &Path) -> polylogue_store::Result<serde_json::Value> {
     let conn = polylogue_store::archive::open_read(index)?;
-    let mut statement = conn.prepare("SELECT body FROM text_group ORDER BY id")?;
+    let mut statement = conn.prepare("SELECT body FROM content_group ORDER BY id")?;
     let mut rows = statement.query([])?;
-    let (mut groups, mut raw, mut three, mut nine) = (0_u64, 0_u64, 0_u64, 0_u64);
+    let (mut groups, mut stored, mut raw, mut three, mut nine) =
+        (0_u64, 0_u64, 0_u64, 0_u64, 0_u64);
     while let Some(row) = rows.next()? {
         let body: Vec<u8> = row.get(0)?;
         let decoded = zstd::stream::decode_all(body.as_slice())?;
+        stored += body.len() as u64;
         raw += decoded.len() as u64;
         three += zstd::bulk::compress(&decoded, 3)?.len() as u64;
         nine += zstd::bulk::compress(&decoded, 9)?.len() as u64;
         groups += 1;
     }
     Ok(
-        serde_json::json!({"groups":groups,"raw_bytes":raw,"level3_bytes":three,"level9_bytes":nine,"level3_over9":three as f64/nine.max(1) as f64}),
+        serde_json::json!({"groups":groups,"stored_bytes":stored,"raw_bytes":raw,"level3_bytes":three,"level9_bytes":nine,"level3_over9":three as f64/nine.max(1) as f64}),
     )
 }
 

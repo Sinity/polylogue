@@ -59,15 +59,18 @@ impl Reader<'_> {
     /// Whether the newest capture is still waiting for attachment bytes.
     pub fn downloading_files(&self, session: &polylogue_model::SessionId) -> Result<bool> {
         let data: Option<Vec<u8>> = self.conn()?.scalar_optional(
-            "SELECT e.data FROM event e JOIN session s ON s.pk = e.session_pk
-             WHERE s.id = ?1 AND e.kind = 'browser_capture'
-             ORDER BY e.at DESC, e.pk DESC LIMIT 1",
+            &format!(
+                "SELECT {} FROM event e JOIN session s ON s.pk = e.session_pk
+                 WHERE s.id = ?1 AND e.kind = 'browser_capture'
+                 ORDER BY e.at DESC, e.pk DESC LIMIT 1",
+                crate::content::sql_for(crate::content::DATA_BYTES_SQL, "e")
+            ),
             [session.to_string()],
         )?;
         let Some(data) = data else {
             return Ok(false);
         };
-        let data: polylogue_model::Json = crate::encoding::unpack_json(&data)?;
+        let data: polylogue_model::Json = crate::encoding::read_json(&data)?;
         Ok(data["attachments"]
             .as_array()
             .into_iter()
@@ -78,14 +81,18 @@ impl Reader<'_> {
     /// The files of `session` whose bytes are stored, by the provider's
     /// file ID; one entry per ID.
     pub fn stored_files(&self, session: &polylogue_model::SessionId) -> Result<Vec<StoredFile>> {
-        let mut stmt = self.conn()?.prepare_cached(
-            "SELECT b.body FROM block b JOIN session s ON s.pk = b.session_pk
+        let conn = self.conn()?;
+        let mut stmt = conn.prepare_cached(
+            "SELECT b.content_group,b.content_start,b.content_length,b.data_length FROM block b
+             JOIN session s ON s.pk = b.session_pk
              WHERE s.id = ?1 AND b.kind IN ('image', 'file', 'tool_result')",
         )?;
         let mut rows = stmt.query([session.to_string()])?;
         let mut found: BTreeMap<String, StoredFile> = BTreeMap::new();
+        let mut reader = crate::content::Reader::default();
         while let Some(row) = rows.next()? {
-            let block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
+            let piece = crate::content::Piece::of(row, 0)?;
+            let block = crate::ordered_blocks::body(conn, &mut reader, piece, false)?;
             let attachments = block.attachments();
             for a in attachments {
                 if let (Some(id), Some(blob)) = (&a.source_id, a.blob) {

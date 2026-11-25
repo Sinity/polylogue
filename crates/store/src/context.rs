@@ -19,7 +19,7 @@ fn message_text_parts(
 ) -> Result<Vec<String>> {
     let mut stmt = conn.prepare_cached(
         "SELECT g.body, t.start, t.length FROM block b JOIN text t ON t.id = b.text_id
-           JOIN text_group g ON g.id = t.group_id
+           JOIN content_group g ON g.id = t.group_id
           WHERE b.message_pk = ?1 AND b.kind = 'text' ORDER BY b.idx",
     )?;
     let mut parts = Vec::new();
@@ -233,7 +233,7 @@ impl Reader<'_> {
                JOIN message m ON m.session_pk = s.pk
                JOIN block b ON b.message_pk = m.pk AND b.kind = 'text'
                JOIN text t ON t.id = b.text_id
-               JOIN text_group g ON g.id = t.group_id
+               JOIN content_group g ON g.id = t.group_id
               WHERE s.id = ?1 AND m.written_by = 'human'
                 AND coalesce(m.prompt_kind, 'prose') = 'prose'
               ORDER BY m.session_order, m.id, b.idx",

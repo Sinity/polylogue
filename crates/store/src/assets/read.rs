@@ -1,5 +1,4 @@
 use super::*;
-use crate::encoding::unpack_block;
 use polylogue_model::{Attachment, BlobHash, Block, MessageId};
 use std::collections::BTreeSet;
 
@@ -47,12 +46,17 @@ impl Reader<'_> {
         attachment_index: usize,
     ) -> Result<AttachmentResolution> {
         let conn = self.conn()?;
-        let (version,body,source_input,source_chain):(Vec<u8>,Vec<u8>,String,i64)=conn.query_row(
-            "SELECT m.version_hash,b.body,i.id,m.source_chain FROM message m JOIN input_ref i ON i.pk=m.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND m.version_hash IS NOT NULL AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
+        let (version,piece,source_input,source_chain):(Vec<u8>,crate::content::Piece,String,i64)=conn.query_row(
+            "SELECT m.version_hash,b.content_group,b.content_start,b.content_length,b.data_length,i.id,m.source_chain FROM message m JOIN input_ref i ON i.pk=m.input_pk JOIN block b ON b.message_pk=m.pk WHERE m.id=?1 AND m.version_hash IS NOT NULL AND coalesce(b.ordinal,CAST(b.idx AS TEXT))=?2",
             params![message.to_string(),block.to_string()],
-            |r| <(_, _, _, _)>::try_from(r)).optional()?
+            |r| Ok((r.get(0)?, crate::content::Piece::of(r, 1)?, r.get(5)?, r.get(6)?))).optional()?
             .ok_or_else(||StoreError::NotFound(format!("attachment block {message}:{block}")))?;
-        let source = match unpack_block(&body)? {
+        let source = match crate::ordered_blocks::body(
+            conn,
+            &mut crate::content::Reader::default(),
+            piece,
+            false,
+        )? {
             Block::Image(a) | Block::File(a) if attachment_index == 0 => a,
             Block::ToolResult { attachments, .. } => attachments
                 .into_iter()

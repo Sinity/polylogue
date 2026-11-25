@@ -709,7 +709,7 @@ static EVENTS: UnitSpec = UnitSpec {
         ("at", T("{r}.at"), Time),
         (
             "data",
-            T("pl_block({r}.data)"),
+            T(crate::content::DATA_SQL),
             crate::query::compile::ColKind::Json,
         ),
     ],

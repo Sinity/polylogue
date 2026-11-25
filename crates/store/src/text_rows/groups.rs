@@ -1,29 +1,20 @@
-//! Stored text bodies. Texts are compressed together in groups of about
-//! `GROUP_BYTES`: each `text_group` row is one zstd frame holding the UTF-8
-//! of its texts one after another, and each `text` row names its group, start
-//! and length. Compressing neighbouring texts together keeps most of zstd's
-//! ratio, which texts compressed one by one lose; reading one text decodes
-//! its group. Groups are made on the parse workers, before the writer.
+//! Stored text bodies. Texts are compressed together in content groups
+//! ([`crate::content`]) of their own: each holds the UTF-8 of its texts one
+//! after another, and each `text` row names its group, start and length.
+//! Compressing neighbouring texts together keeps most of zstd's ratio, which
+//! texts compressed one by one lose; reading one text decodes its group.
+//! Groups are made on the parse workers, before the writer.
+use crate::content::{Group, Packer};
 use crate::{Result, StoreError};
 use rusqlite::Connection;
-use std::cell::RefCell;
 use std::collections::HashMap;
-
-/// Uncompressed bytes a group collects before it is closed. A text longer
-/// than this is a group of its own.
-const GROUP_BYTES: usize = 64 * 1024;
-/// Workers compress; the writer and readers only copy and decode.
-const LEVEL: i32 = 3;
-/// The decoded group a thread last read is kept for the next read when it is
-/// no larger than this, so a group holding one very large text is not held.
-const KEPT_GROUP_BYTES: usize = 4 * GROUP_BYTES;
 
 /// Texts a parse step brings, compressed into groups on the worker. The
 /// writer stores a group once one of its texts is new to the index.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct PreparedTexts {
     texts: HashMap<[u8; 32], PreparedText>,
-    groups: Vec<PreparedGroup>,
+    groups: Vec<Group>,
 }
 
 /// Where one prepared text lies in its step's groups.
@@ -35,19 +26,11 @@ pub(crate) struct PreparedText {
     pub(crate) normalized_hash: [u8; 32],
 }
 
-/// One compressed group and the hash that names it while its step is
-/// written.
-#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PreparedGroup {
-    hash: [u8; 32],
-    body: Vec<u8>,
-}
-
 /// A prepared text with its group, as the writer stores them.
 #[derive(Clone, Copy)]
 pub(crate) struct Prepared<'a> {
     pub(crate) text: &'a PreparedText,
-    pub(crate) group: &'a PreparedGroup,
+    pub(crate) group: &'a Group,
 }
 
 impl PreparedTexts {
@@ -61,50 +44,26 @@ impl PreparedTexts {
 
     /// Adds the texts not yet prepared, in new groups after the existing ones.
     pub(crate) fn add<'t>(&mut self, texts: impl IntoIterator<Item = &'t str>) -> Result<()> {
-        let mut pending = Vec::new();
-        // Counted apart from the bytes: an empty text still needs its group.
-        let mut members = 0;
+        let mut packer = Packer::continuing(crate::content::Groups::from(std::mem::take(
+            &mut self.groups,
+        )));
         for text in texts {
             let hash = *blake3::hash(text.as_bytes()).as_bytes();
             if self.texts.contains_key(&hash) {
                 continue;
             }
-            if members > 0 && pending.len() + text.len() > GROUP_BYTES {
-                self.close(&mut pending)?;
-                members = 0;
-            }
+            let placed = packer.add(text.as_bytes())?;
             self.texts.insert(
                 hash,
                 PreparedText {
-                    group: self.groups.len(),
-                    start: pending.len() as u64,
-                    length: text.len() as u64,
+                    group: placed.group,
+                    start: placed.start,
+                    length: placed.length,
                     normalized_hash: crate::encoding::normalized_text_hash(text),
                 },
             );
-            pending.extend_from_slice(text.as_bytes());
-            members += 1;
         }
-        if members > 0 {
-            self.close(&mut pending)?;
-        }
-        Ok(())
-    }
-
-    fn close(&mut self, pending: &mut Vec<u8>) -> Result<()> {
-        let body = COMPRESSOR.with(|compressor| {
-            let mut compressor = compressor.borrow_mut();
-            let compressor = match &mut *compressor {
-                Some(compressor) => compressor,
-                empty => empty.insert(zstd::bulk::Compressor::new(LEVEL)?),
-            };
-            compressor.compress(pending)
-        })?;
-        self.groups.push(PreparedGroup {
-            hash: *blake3::hash(&body).as_bytes(),
-            body,
-        });
-        pending.clear();
+        self.groups = packer.finish()?.into();
         Ok(())
     }
 
@@ -119,7 +78,7 @@ impl PreparedTexts {
 
 /// The stored form of prepared texts in a staged step file.
 #[derive(serde::Serialize, serde::Deserialize)]
-struct StoredTexts(Vec<([u8; 32], PreparedText)>, Vec<PreparedGroup>);
+struct StoredTexts(Vec<([u8; 32], PreparedText)>, Vec<Group>);
 
 impl serde::Serialize for PreparedTexts {
     fn serialize<S: serde::Serializer>(
@@ -146,11 +105,10 @@ impl<'de> serde::Deserialize<'de> for PreparedTexts {
     }
 }
 
-/// Inserts a prepared text and returns its key. Its group is stored once:
-/// a group is named by the hash of its compressed body, so a step that
-/// brings a group already stored shares its row.
+/// Inserts a prepared text and returns its key. Its group is stored once
+/// ([`crate::content::store`]).
 pub(crate) fn insert(conn: &Connection, hash: &[u8; 32], prepared: Prepared<'_>) -> Result<i64> {
-    let group = group_row(conn, prepared.group)?;
+    let group = crate::content::store(conn, prepared.group)?;
     conn.prepare_cached(
         "INSERT INTO text(hash,normalized_hash,group_id,start,length) VALUES (?1,?2,?3,?4,?5)",
     )?
@@ -164,36 +122,15 @@ pub(crate) fn insert(conn: &Connection, hash: &[u8; 32], prepared: Prepared<'_>)
     Ok(conn.last_insert_rowid())
 }
 
-fn group_row(conn: &Connection, group: &PreparedGroup) -> Result<i64> {
-    let stored = rusqlite::OptionalExtension::optional(
-        conn.prepare_cached("SELECT id FROM text_group WHERE hash=?1")?
-            .query_row([group.hash.as_slice()], |r| r.get::<_, i64>(0)),
-    )?;
-    if let Some(id) = stored {
-        return Ok(id);
-    }
-    conn.prepare_cached("INSERT INTO text_group(hash,body) VALUES (?1,?2)")?
-        .execute(rusqlite::params![group.hash.as_slice(), group.body])?;
-    Ok(conn.last_insert_rowid())
-}
-
-/// Removes a text row, and its group once no text is left in it.
+/// Removes a text row, and its group once nothing names it.
 pub(crate) fn delete(conn: &Connection, id: i64) -> Result<()> {
     let group: Option<i64> = rusqlite::OptionalExtension::optional(
         conn.prepare_cached("DELETE FROM text WHERE id=?1 RETURNING group_id")?
             .query_row([id], |r| r.get(0)),
     )?;
     if let Some(group) = group {
-        remove_empty_group(conn, group)?;
+        crate::content::release(conn, group)?;
     }
-    Ok(())
-}
-
-fn remove_empty_group(conn: &Connection, group: i64) -> Result<()> {
-    conn.prepare_cached(
-        "DELETE FROM text_group WHERE id=?1 AND NOT EXISTS(SELECT 1 FROM text WHERE group_id=?1)",
-    )?
-    .execute([group])?;
     Ok(())
 }
 
@@ -225,60 +162,26 @@ pub(crate) fn joined(row: &rusqlite::Row<'_>, at: usize) -> Result<String> {
 pub(crate) fn read(conn: &Connection, id: i64) -> Result<String> {
     let (body, start, length) = conn
         .prepare_cached(
-            "SELECT g.body,t.start,t.length FROM text t JOIN text_group g ON g.id=t.group_id
+            "SELECT g.body,t.start,t.length FROM text t JOIN content_group g ON g.id=t.group_id
              WHERE t.id=?1",
         )?
         .query_row([id], |r| <(Vec<u8>, _, _)>::try_from(r))?;
     slice(&body, start, length)
 }
 
-thread_local! {
-    /// Each worker reuses its compression context: creating one per step
-    /// costs more than compressing a small step.
-    static COMPRESSOR: RefCell<Option<zstd::bulk::Compressor<'static>>> = const { RefCell::new(None) };
-    /// The compressed and decoded bytes of the group this thread last read.
-    /// Groups are compared by their bytes, so the entry is right for any
-    /// connection and any snapshot.
-    static LAST_GROUP: RefCell<(Vec<u8>, Vec<u8>)> = const { RefCell::new((Vec::new(), Vec::new())) };
-}
-
 /// The text at `start..start + length` of the group `body`. Consecutive reads
 /// from one group decode it once.
 pub(crate) fn slice(body: &[u8], start: i64, length: i64) -> Result<String> {
-    let range = text_range(start, length)?;
-    LAST_GROUP.with(|last| {
-        let mut last = last.borrow_mut();
-        if last.0 != body {
-            let decoded = decode(body)?;
-            if decoded.len() > KEPT_GROUP_BYTES {
-                return text_of(&decoded, range);
-            }
-            *last = (body.to_vec(), decoded);
-        }
-        text_of(&last.1, range)
-    })
+    crate::content::text(body, start, length)
 }
 
 pub(super) fn decode(body: &[u8]) -> Result<Vec<u8>> {
-    crate::encoding::unpack_bytes(body)
-        .map_err(|error| StoreError::stored(0, format!("a text group does not decode: {error}")))
+    crate::content::decode(body)
 }
 
 pub(super) fn slice_decoded(group: &[u8], start: i64, length: i64) -> Result<String> {
-    text_of(group, text_range(start, length)?)
-}
-
-fn text_range(start: i64, length: i64) -> Result<std::ops::Range<usize>> {
-    usize::try_from(start)
-        .ok()
-        .zip(usize::try_from(length).ok())
-        .and_then(|(start, length)| Some(start..start.checked_add(length)?))
-        .ok_or_else(|| StoreError::stored(0, "a stored text has an invalid place"))
-}
-
-fn text_of(group: &[u8], range: std::ops::Range<usize>) -> Result<String> {
     let bytes = group
-        .get(range)
+        .get(crate::content::range(start, length)?)
         .ok_or_else(|| StoreError::stored(0, "a stored text lies outside its group"))?;
     String::from_utf8(bytes.to_vec())
         .map_err(|_| StoreError::stored(0, "a stored text is not valid UTF-8"))

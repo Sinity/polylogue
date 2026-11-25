@@ -55,11 +55,7 @@ fn row_continuation_resumes_at_its_start_key() {
     drop(pool);
     // An earlier body that cannot decode is never read by a continuation.
     let conn = crate::archive::open_write(&fixture.archive.index_db(), 1).unwrap();
-    conn.execute(
-        "UPDATE event SET data=X'ff' WHERE id=(SELECT min(id) FROM event)",
-        [],
-    )
-    .unwrap();
+    crate::content::poison_data(&conn, "event", "id=(SELECT min(id) FROM event)", []).unwrap();
     drop(conn);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -193,8 +189,7 @@ fn reverse_callback_stops_before_poisoned_earlier_body() {
             .collect()
     };
     let conn = crate::archive::open_write(&fixture.archive.index_db(), 1).unwrap();
-    conn.execute("UPDATE event SET data=X'ff' WHERE id='e1'", [])
-        .unwrap();
+    crate::content::poison_data(&conn, "event", "id='e1'", []).unwrap();
     drop(conn);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

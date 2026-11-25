@@ -16,7 +16,7 @@ fn repeated_text_blocks_reuse_the_same_frame_and_keep_distinct_text_ids() {
         .pack_row(&block_bytes(&blocks[0]).unwrap())
         .unwrap();
     let mut packer = RowPacker::new().unwrap();
-    let packed = packer.pack_content(&blocks, [0; 32]).unwrap();
+    let packed = packer.pack_blocks(&blocks, [0; 32]).unwrap();
     assert_eq!(packed.blocks, [expected.clone(), expected.clone()]);
     assert_eq!(
         packer.empty_text_block.as_deref(),
@@ -41,14 +41,14 @@ fn event_identity_depends_on_its_message_not_its_range() {
         range: Some((10, 20)),
         data: json!(null),
     };
-    let first = pack_event(&event).unwrap().0;
+    let first = event_content_id(&event).unwrap();
     event.range = Some((100, 200));
-    assert_eq!(pack_event(&event).unwrap().0, first);
+    assert_eq!(event_content_id(&event).unwrap(), first);
     event.after = Some(polylogue_model::MessageId::parse("chatgpt:b").unwrap());
-    let second = pack_event(&event).unwrap().0;
+    let second = event_content_id(&event).unwrap();
     assert_ne!(second, first);
     event.after = None;
-    let unplaced = pack_event(&event).unwrap().0;
+    let unplaced = event_content_id(&event).unwrap();
     assert_ne!(unplaced, first);
     assert_ne!(unplaced, second);
 }
@@ -73,11 +73,11 @@ fn event_id_independent_of_map_insertion_order() {
     let reverse: serde_json::Value =
         serde_json::from_str(r#"{"b": {"y": [true], "x": 1.50}, "a": 1}"#).unwrap();
     assert_ne!(forward.to_string(), reverse.to_string());
-    let (id, _) = pack_event(&event(forward)).unwrap();
-    assert_eq!(id, pack_event(&event(reverse)).unwrap().0);
+    let id = event_content_id(&event(forward)).unwrap();
+    assert_eq!(id, event_content_id(&event(reverse)).unwrap());
     let respelled: serde_json::Value =
         serde_json::from_str(r#"{"a": 1, "b": {"x": 1.5, "y": [true]}}"#).unwrap();
-    assert_ne!(id, pack_event(&event(respelled)).unwrap().0);
+    assert_ne!(id, event_content_id(&event(respelled)).unwrap());
 }
 
 #[test]
@@ -90,7 +90,7 @@ fn text_bodies_read_any_compression_level() {
 }
 
 #[test]
-fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
+fn row_frames_and_message_content_read_back_across_sizes() {
     let mut packer = RowPacker::new().unwrap();
     for size in [0, 64 * 1024, 3, 1024 * 1024, 1] {
         let text = "λ".repeat(size);
@@ -98,36 +98,15 @@ fn batch_encoder_keeps_independent_frames_across_row_types_and_sizes() {
         let packed = packer.pack_json(&value).unwrap();
         assert!(packed.len() <= pack_json(&value).unwrap().len());
         assert_eq!(unpack_json::<serde_json::Value>(&packed).unwrap(), value);
-        let event = Event {
-            at_quality: polylogue_model::TimeQuality::Unknown,
-            at_precision: None,
-            at_until: None,
-            session: Some(polylogue_model::SessionId::parse("claude-code:session").unwrap()),
-            kind: "synthetic".into(),
-            at: None,
-            after: None,
-            range: None,
-            data: value.clone(),
-        };
-        let (id, packed) = packer.pack_event(&event).unwrap();
-        let (old_id, old_packed) = pack_event(&event).unwrap();
-        assert_eq!(id, old_id);
-        assert!(packed.len() <= old_packed.len());
-        assert_eq!(
-            unpack_json::<serde_json::Value>(&packed).unwrap(),
-            event.data
-        );
-        let message: Message = serde_json::from_value(json!({
+        let mut message: Message = serde_json::from_value(json!({
             "id":"claude-code:message", "session":"claude-code:session", "role":"assistant",
             "blocks":[{"type":"tool_call","input":value}], "usage":{}
         }))
         .unwrap();
-        let prepared = packer.pack_message(&message).unwrap();
-        assert_eq!(prepared, PreparedMessage::new(&message).unwrap());
-        assert_eq!(
-            unpack_block(&prepared.blocks[0]).unwrap(),
-            unpack_block(&pack_block(&message.blocks[0]).unwrap()).unwrap()
-        );
+        let before = message.clone();
+        let content = message_content(&mut message).unwrap();
+        assert_eq!(message, before);
+        assert_eq!(read_message_content(&content, true).unwrap().0, message);
     }
 }
 
@@ -143,7 +122,7 @@ fn block_rows_separate_text_and_data_and_restore_the_complete_value() {
     ] {
         let block: Block = serde_json::from_value(value).unwrap();
         let text = block_text(&block).map(str::to_owned);
-        let data = block_data(&block).map(|data| pack_json(data).unwrap());
+        let data = block_data(&block).cloned();
         let mut restored = unpack_block(&pack_block(&block).unwrap()).unwrap();
         assert!(block_data(&restored).is_none());
         if let Some(text) = text {
@@ -151,7 +130,7 @@ fn block_rows_separate_text_and_data_and_restore_the_complete_value() {
             restore_text(&mut restored, text);
         }
         if let Some(data) = data {
-            restore_data(&mut restored, &data).unwrap();
+            set_data(&mut restored, data);
         }
         assert_eq!(restored, block);
     }
@@ -197,13 +176,11 @@ fn prepared_rows_preserve_values_for_every_block_kind() {
         "production":{"effort":"high","permission":{"decision":"allowed"},"request_id":"request"}
     }))
     .unwrap();
-    let prepared = PreparedMessage::new(&message).unwrap();
-    for ((block, packed), data) in message
-        .blocks
-        .iter()
-        .zip(&prepared.blocks)
-        .zip(&prepared.data)
-    {
+    let mut stored = message.clone();
+    let content = message_content(&mut stored).unwrap();
+    let (read, pieces) = read_message_content(&content, false).unwrap();
+    assert_eq!(pieces.len(), message.blocks.len());
+    for ((block, piece), read) in message.blocks.iter().zip(&pieces).zip(&read.blocks) {
         let mut body = block.clone();
         match &mut body {
             Block::Text { text }
@@ -218,13 +195,24 @@ fn prepared_rows_preserve_values_for_every_block_kind() {
             }
             _ => {}
         }
-        assert_eq!(unpack_block(packed).unwrap(), body);
+        assert_eq!(*read, body);
         assert_eq!(
-            data.as_deref()
-                .map(|data| unpack_json::<serde_json::Value>(data).unwrap()),
-            block_data(block).cloned()
+            read_json::<Block>(&content[piece.start..piece.start + piece.length]).unwrap(),
+            body
         );
+        let data = piece.data_length.map(|length| {
+            let at = piece.start + piece.length;
+            read_json::<serde_json::Value>(&content[at..at + length]).unwrap()
+        });
+        assert_eq!(data.as_ref(), block_data(block));
     }
+    let (mut whole, _) = read_message_content(&content, true).unwrap();
+    for (block, original) in whole.blocks.iter_mut().zip(&message.blocks) {
+        if let Some(text) = block_text(original) {
+            restore_text(block, text.to_owned());
+        }
+    }
+    assert_eq!(whole, message);
 }
 
 #[test]
@@ -354,11 +342,19 @@ fn boundary_suppliedness_and_unassociated_usage_survive_row_codecs() {
         range: Some((1, 2)),
         data: serde_json::to_value(&reading).unwrap(),
     };
-    let (_, packed) = RowPacker::new().unwrap().pack_event(&event).unwrap();
+    let mut packer = crate::content::Packer::default();
+    let mut stated = event.clone();
+    let prepared = PreparedEvent::new(&mut stated, &mut packer).unwrap();
+    assert_eq!(stated, event);
+    let piece = packer.finish().unwrap().read(prepared.content).unwrap();
+    let (fields, data) = piece.split_at(prepared.fields_length as usize);
     assert_eq!(
-        unpack_json::<polylogue_model::UsageReport>(&packed).unwrap(),
+        read_json::<polylogue_model::UsageReport>(data).unwrap(),
         reading
     );
+    let mut fields: Event = read_json(fields).unwrap();
+    fields.data = event.data.clone();
+    assert_eq!(fields, event);
 }
 
 mod columns;

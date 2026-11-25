@@ -3,10 +3,11 @@
 //! logical day without a second pass in Rust:
 //!
 //! - `pl_text(body)`: a compressed UTF-8 body (a delivery's) decompressed;
-//! - `pl_text_at(group_body, start, length)`: a stored text, from its
-//!   `text_group` body and its `text` row's place in it;
-//! - `pl_block(body)`: a `block.body` decompressed to its JSON (text moved
-//!   to `text` is not in it);
+//! - `pl_text_at(group_body, start, length)`: a stored text or JSON piece,
+//!   from its `content_group` body and its place in it (a `text` row's, a
+//!   block's body or data, an event's fields or data;
+//!   [`crate::content`] has the expressions);
+//! - `pl_content(group_body, start, length)`: the same piece as bytes;
 //! - `pl_fold(text)`: letters with a stroke folded, as the index does;
 //! - `pl_key(text)`: [`polylogue_model::text::key`], for case- and
 //!   accent-blind substring tests;
@@ -131,8 +132,13 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
             .map(Some)
             .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
     })?;
-    conn.create_scalar_function("pl_block", 1, FLAGS, |ctx| {
-        decompress(ctx, 0).map(|b| b.map(|b| String::from_utf8_lossy(&b).into_owned()))
+    conn.create_scalar_function("pl_content", 3, FLAGS, |ctx| {
+        let Some(body) = ctx.get_raw(0).as_blob_or_null()? else {
+            return Ok(None);
+        };
+        crate::content::slice(body, ctx.get(1)?, ctx.get(2)?)
+            .map(Some)
+            .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))
     })?;
     conn.create_scalar_function("pl_fold", 1, FLAGS, |ctx| {
         Ok(ctx

@@ -159,16 +159,13 @@ CREATE TABLE session_alias (
 CREATE INDEX session_alias_name ON session_alias(alias, session_id);
 CREATE INDEX session_alias_session ON session_alias(session_id);
 
--- The reading tables whose rows carry bodies (message_parse_body,
--- event_parse) keep a rowid: a WITHOUT ROWID row keeps only about 1 KB in
--- its page and puts the rest in overflow pages it fills partly, so those
--- tables took 1.5 to 1.8 times their bytes; their keys are a separate index
--- of small entries.
 -- One chain's reading of a message: where the chain first states it (a chain
--- that restates whole conversations: last), its place and order time; its
--- body is in message_parse_body. The body is the model Message with text
--- moved to `text` (parse_text holds the keys); a reading of a sparse export
--- also keeps the block layout it selected.
+-- that restates whole conversations: last), its place and order time, and
+-- its content: the model Message with text moved to `text` (parse_text holds
+-- the keys), stored once in a content group (content.rs) as its fields
+-- without blocks, then each block and its structured value; the shown
+-- message's blocks name those pieces. A reading of a sparse export also
+-- keeps the block layout it selected.
 CREATE TABLE message_parse (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
@@ -189,6 +186,9 @@ CREATE TABLE message_parse (
   response_key      TEXT,                   -- the key the source gives the records of one response
   content_name      TEXT,                   -- a content-named message's name without its number
   committed         INTEGER CHECK(committed > 0),
+  content_group     INTEGER NOT NULL REFERENCES content_group(id),
+  content_start     INTEGER NOT NULL,       -- its content's place in the group's decoded bytes
+  content_length    INTEGER NOT NULL,
   PRIMARY KEY (input_pk, chain, message_id)
 ) STRICT;
 CREATE INDEX message_parse_id ON message_parse(message_id);
@@ -198,15 +198,7 @@ CREATE INDEX message_parse_start ON message_parse(input_pk, chain, source_start)
 CREATE INDEX message_parse_response ON message_parse(input_pk, chain, response_key) WHERE response_key IS NOT NULL;
 CREATE INDEX message_parse_content ON message_parse(input_pk, chain, content_name, source_start) WHERE content_name IS NOT NULL;
 CREATE INDEX message_parse_hash ON message_parse(hash);
--- Each message reading's body, beside its row: every index made over
--- message_parse scans the table, and the bodies are most of its bytes.
-CREATE TABLE message_parse_body (
-  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
-  chain             INTEGER NOT NULL,
-  message_id        TEXT NOT NULL,
-  body              BLOB NOT NULL,
-  PRIMARY KEY (input_pk, chain, message_id)
-) STRICT;
+CREATE INDEX message_parse_group ON message_parse(content_group);   -- whether a group is still named
 -- The message readings an input still holds: once a newer chain of the
 -- input is read to its end, a content-named message it no longer holds is
 -- gone from that input (an edit has a new ID). Composition reads the same.
@@ -242,7 +234,8 @@ CREATE TABLE message_alias (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_alias_name ON message_alias(name);
 
--- One chain's reading of an event.
+-- One chain's reading of an event. Its content is the encoded Event without
+-- its data, followed by its data as JSON, in a content group.
 CREATE TABLE event_parse (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
@@ -256,14 +249,17 @@ CREATE TABLE event_parse (
   kind              TEXT NOT NULL,
   at                INTEGER,
   hash              BLOB NOT NULL,          -- the value's hash
-  fields            BLOB NOT NULL,          -- the encoded Event without its data
-  data              BLOB NOT NULL,          -- its data, zstd-compressed JSON
   imported_sources  TEXT NOT NULL CHECK(json_valid(imported_sources)),
   committed         INTEGER CHECK(committed > 0),
+  content_group     INTEGER NOT NULL REFERENCES content_group(id),
+  content_start     INTEGER NOT NULL,       -- its fields' place in the group's decoded bytes,
+  content_length    INTEGER NOT NULL,       --   and their length
+  data_length       INTEGER NOT NULL,       -- the length of its data, which follows its fields
   PRIMARY KEY (input_pk, chain, event_id)
 ) STRICT;
 CREATE INDEX event_parse_id ON event_parse(event_id);
 CREATE INDEX event_parse_session ON event_parse(session_id) WHERE session_id IS NOT NULL;
+CREATE INDEX event_parse_group ON event_parse(content_group);   -- whether a group is still named
 
 -- One chain's statement of a link between sessions. `statement` is the
 -- link's coordinates (parent, child, kind, how, branch point, spawning
@@ -340,16 +336,18 @@ CREATE TABLE message_route (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_route_input ON message_route(input_pk, chain);
 
--- Text bodies, compressed together: each group is one zstd frame of the UTF-8
--- of its texts one after another, made by the parse worker that read them
--- (about 64 KiB before compression; a longer text is a group alone). The
--- full-text files are contentless, so this is the only copy in the index.
-CREATE TABLE text_group (
-  id                INTEGER PRIMARY KEY,
-  hash              BLOB NOT NULL,          -- unique: text_group_hash. BLAKE3 of the compressed body
+-- Content stored once (content.rs): each group is one zstd frame of pieces
+-- laid one after another in the order a parse worker wrote them (about
+-- 64 KiB before compression; a longer piece is a group alone). A group holds
+-- texts, or message and event readings' content. The full-text files are
+-- contentless and the shown rows name pieces of their readings, so this is
+-- the only copy in the index. A group's key is never given to another group.
+CREATE TABLE content_group (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  hash              BLOB NOT NULL,          -- unique: content_group_hash. BLAKE3 of the compressed body
   body              BLOB NOT NULL
 ) STRICT;
-CREATE UNIQUE INDEX text_group_hash ON text_group(hash);
+CREATE UNIQUE INDEX content_group_hash ON content_group(hash);
 
 -- Text is stored once per distinct content; `id` is the rowid of its search
 -- entries, never given to another text after this one is removed.
@@ -358,7 +356,7 @@ CREATE TABLE text (
   normalized_hash   BLOB NOT NULL,          -- BLAKE3 of NFC UTF-8; raw spellings may share this identity
   hash              BLOB NOT NULL,          -- unique: text_hash. BLAKE3 of the UTF-8 text; embeddings are keyed by it
   indexed           INTEGER NOT NULL DEFAULT 0, -- bit 1: a member of text_fts (prose); bit 2: of output_fts (tool output)
-  group_id          INTEGER NOT NULL REFERENCES text_group(id), -- the group leaves with its last text
+  group_id          INTEGER NOT NULL REFERENCES content_group(id), -- the group leaves once nothing names it
   start             INTEGER NOT NULL,       -- byte offset of the text in its group's decoded bytes
   length            INTEGER NOT NULL        -- its length in bytes
 ) STRICT;
@@ -372,8 +370,11 @@ CREATE TABLE block (
   idx               INTEGER,                -- compact position among the stored blocks, used for ordering
   kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
   text_id           INTEGER REFERENCES text(id),
-  body              BLOB NOT NULL,          -- the model Block as zstd-compressed JSON, with its prose or output
-                                            --   text moved to `text` (text_id): reading a block back is lossless
+  content_group     INTEGER NOT NULL,       -- the model Block as JSON, with its prose or output text moved to
+  content_start     INTEGER NOT NULL,       --   `text` (text_id) and its structured value after it: a piece of
+  content_length    INTEGER NOT NULL,       --   its message's main reading's content (message_parse), so
+  data_length       INTEGER,                --   reading a block back is lossless. data_length: tool_result's
+                                            --   structured data, kept apart so a text read never decodes it
   call_id           TEXT,                   -- tool_call and tool_result: the provider's call id (unique only in a session)
   blob_hash         BLOB,                   -- image/file, large tool output: bytes in the blob store; export `blob`
   direction         TEXT,                   -- image/file: input | output | unknown
@@ -381,11 +382,8 @@ CREATE TABLE block (
   file_name         TEXT,                   -- export `name`
   size              INTEGER,                -- image/file
   url               TEXT,                   -- image/file downloaded from a link
-  signature         TEXT,                   -- thinking
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
-  data              BLOB,                   -- tool_result: its structured data as zstd-compressed JSON, kept
-                                            --   out of body, so a text read never reads or decodes it
   ordinal           TEXT,                   -- original u64 source position; NULL means the dense index the source implies
   FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
   UNIQUE (pk, session_pk)
@@ -592,8 +590,10 @@ CREATE TABLE event (
   source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
   source_start      INTEGER,
   source_end        INTEGER,
-  fields            BLOB NOT NULL,          -- the encoded Event without its shared data payload
-  data              BLOB NOT NULL           -- normalized event payload, zstd-compressed JSON; export `data`
+  content_group     INTEGER NOT NULL,       -- the shown reading's content (event_parse): the encoded Event
+  content_start     INTEGER NOT NULL,       --   without its data, with its session and the message it
+  content_length    INTEGER NOT NULL,       --   follows as stated (this row names them as shown), then
+  data_length       INTEGER NOT NULL        --   its normalized payload as JSON; export `data`
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session ON event(session_pk, seq);

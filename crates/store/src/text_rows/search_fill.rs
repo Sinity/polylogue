@@ -470,7 +470,7 @@ impl Coordinator {
                     let read = Instant::now();
                     let tx = self.reader.unchecked_transaction()?;
                     let mut body =
-                        tx.prepare_cached("SELECT body FROM text_group WHERE id = ?1")?;
+                        tx.prepare_cached("SELECT body FROM content_group WHERE id = ?1")?;
                     while bodies.len() < groups.len() && read.elapsed() < READ_TIME {
                         let bytes: Vec<u8> = body
                             .query_row([groups[bodies.len()]], |r| r.get(0))

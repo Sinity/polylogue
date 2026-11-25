@@ -9,7 +9,6 @@
 //! session's links again.
 
 use crate::Result;
-use crate::encoding::unpack_block;
 use polylogue_model::Block;
 use polylogue_model::command::{Stage, effective_stages};
 use rusqlite::{Connection, Transaction, params};
@@ -39,25 +38,38 @@ pub(crate) struct Links {
 /// The stored output of a call. Only commands that make a commit or pull
 /// request read it.
 fn result(conn: &Connection, call_pk: i64) -> Result<Option<String>> {
-    let (text, body): (Option<String>, Option<Vec<u8>>) = conn
+    let (text, piece): (Option<String>, Option<crate::content::Piece>) = conn
         .prepare_cached(
-            "SELECT rg.body, rt.start, rt.length, rb.body FROM tool_call t
+            "SELECT rg.body, rt.start, rt.length, rb.content_group, rb.content_start,
+                 rb.content_length, rb.data_length FROM tool_call t
              LEFT JOIN message rm ON rm.id = t.result_message_id
              LEFT JOIN block rb ON rb.message_pk = rm.pk AND rb.idx = t.result_idx
              LEFT JOIN text rt ON rt.id = rb.text_id
-             LEFT JOIN text_group rg ON rg.id = rt.group_id WHERE t.pk = ?1",
+             LEFT JOIN content_group rg ON rg.id = rt.group_id WHERE t.pk = ?1",
         )?
         .query_and_then([call_pk], |r| {
-            Ok::<_, crate::StoreError>((crate::text_rows::column(r, 0)?, r.get(3)?))
+            let piece = match r.get::<_, Option<i64>>(3)? {
+                Some(_) => Some(crate::content::Piece::of(r, 3)?),
+                None => None,
+            };
+            Ok::<_, crate::StoreError>((crate::text_rows::column(r, 0)?, piece))
         })?
         .next()
         .ok_or(rusqlite::Error::QueryReturnedNoRows)??;
-    match text {
-        Some(text) => Ok(Some(text)),
-        None => Ok(match body.map(|body| unpack_block(&body)) {
-            Some(Ok(Block::ToolResult { output, .. })) => output,
-            _ => None,
-        }),
+    match (text, piece) {
+        (Some(text), _) => Ok(Some(text)),
+        (None, Some(piece)) => Ok(
+            match crate::ordered_blocks::body(
+                conn,
+                &mut crate::content::Reader::default(),
+                piece,
+                false,
+            )? {
+                Block::ToolResult { output, .. } => output,
+                _ => None,
+            },
+        ),
+        (None, None) => Ok(None),
     }
 }
 

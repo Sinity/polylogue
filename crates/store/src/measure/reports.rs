@@ -16,13 +16,14 @@ pub(super) fn visit<T: DeserializeOwned>(
     params.push(kind.to_owned().into());
     let conn = reader.conn()?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT s.origin, m.at, m.data FROM event m
+        "SELECT s.origin, m.at, {} FROM event m
          JOIN session s ON s.pk = m.session_pk WHERE {cond} AND m.kind = ?{} ORDER BY m.at, m.id",
+        crate::content::sql_for(crate::content::DATA_BYTES_SQL, "m"),
         params.len()
     ))?;
     let mut rows = stmt.query(rusqlite::params_from_iter(params.iter()))?;
     while let Some(row) = rows.next()? {
-        let value: serde_json::Value = crate::encoding::unpack_json(&row.get::<_, Vec<u8>>(2)?)?;
+        let value: serde_json::Value = crate::encoding::read_json(&row.get::<_, Vec<u8>>(2)?)?;
         visit(
             &row.get::<_, String>(0)?,
             row.get(1)?,

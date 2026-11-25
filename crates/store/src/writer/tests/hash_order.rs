@@ -57,9 +57,16 @@ fn version_hash_ignores_nested_json_member_order() {
     value.sort_all_objects();
     assert_eq!(serde_json::to_vec(&value).unwrap(), canonical.as_bytes());
     assert_eq!(
-        blake3::Hash::from_bytes(crate::encoding::PreparedMessage::new(&first).unwrap().hash)
-            .to_hex()
-            .as_str(),
+        blake3::Hash::from_bytes(
+            crate::encoding::PreparedMessage::new(
+                &mut first.clone(),
+                &mut crate::content::Packer::default()
+            )
+            .unwrap()
+            .hash
+        )
+        .to_hex()
+        .as_str(),
         "d94d0f12773c570a79ff4e9bd940775ec4c36efac5e63da9c3d9dfbb00e1e9ac",
         "the archive fixture stays stable across JSON map features"
     );
