@@ -485,7 +485,7 @@ polylogue  standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 INDEX      building the index: the archive had no index
            reads and searches answer \"index building\" until it is installed
            ▸ sorting texts    20m  2.10M records so far
-                                   2650 records/s · total known when the step ends
+                                   2,650 records/s · total known when the step ends
 "
     );
     let mut storing = current(

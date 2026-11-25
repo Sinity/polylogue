@@ -370,6 +370,7 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
             parts.push(if rate > 0. {
                 match count.unit {
                     CountUnit::Bytes => format!("{:.1} MB/s", rate / 1e6),
+                    unit if rate >= 1000. => format!("{} {}/s", count(rate as u64), unit.word()),
                     unit => format!("{} {}/s", decimal(rate), unit.word()),
                 }
             } else {
@@ -520,7 +521,10 @@ fn last_check(status: &Answer, view: &View<'_>) -> Vec<String> {
         format!("{} messages written", count(pass.messages_written)),
     ];
     if pass.sessions_derived > 0 {
-        work.push(format!("{} sessions derived", count(pass.sessions_derived)));
+        work.push(format!(
+            "figures computed for {} sessions",
+            count(pass.sessions_derived)
+        ));
     }
     let mut lines = vec![parts.join(" · "), work.join(" · ")];
     if let Some(first) = pass.errors.first() {
