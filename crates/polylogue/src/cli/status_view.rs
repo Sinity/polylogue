@@ -1,5 +1,8 @@
-//! `polylogue status` as text: a header line, then sections with their
-//! labels in a left column, each left out when it has nothing to say. The
+//! `polylogue status` as text: a headline saying what the daemon is doing
+//! and what most needs attention, a line of daemon facts, then sections with
+//! their labels in a left column, each left out when it has nothing to say.
+//! Color marks the state (green current, yellow working or worth a look, red
+//! failed), puts the step running in bold and dims what is context. The
 //! plain style has the same layout without color, with ASCII bars.
 use crate::protocol::status::{Answer, Mode, Notices, Running};
 use command_surface::TextStyle;
@@ -13,6 +16,8 @@ use polylogue_store::log::Priority;
 const LABEL: usize = 11;
 /// The widest a progress bar gets.
 const BAR: usize = 30;
+/// Log records the view shows; `--log` prints every kept one.
+const RECENT: usize = 5;
 
 /// How the view is drawn.
 pub(crate) struct View<'a> {
@@ -28,17 +33,25 @@ pub(crate) struct View<'a> {
 /// The view of `status` with `problems`, the answer's degraded reasons and
 /// notes.
 pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> String {
-    let mut out = String::new();
-    out.push_str(&view.cut(&header(status, view)));
-    out.push('\n');
-    if let Mode::Blocked { path, error, .. } = &status.mode {
-        out.push_str(&view.cut(&view.warning(&format!("blocked: {}: {error}", path.display()))));
-        out.push('\n');
-    }
     let building = status.index_build.is_some();
     // While an index is built, its section says what that means for reads,
     // and the last check of the sources is from before it.
     let index_building = CompletenessReason::IndexBuilding.text();
+    let notes: Vec<&String> = problems
+        .iter()
+        .filter(|note| !(building && note.as_str() == index_building))
+        .collect();
+    let mut out = String::new();
+    for (n, line) in header(status, &notes, view).iter().enumerate() {
+        let label = if n == 0 {
+            view.label(&format!("{:<LABEL$}", "polylogue"))
+        } else {
+            " ".repeat(LABEL)
+        };
+        out.push_str(&label);
+        out.push_str(&view.cut_to(line, view.width.saturating_sub(LABEL)));
+        out.push('\n');
+    }
     let sections: [(&str, Vec<String>); 13] = [
         ("ARCHIVE", archive(status, view)),
         (
@@ -68,11 +81,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         ("RECENT", recent(status, view)),
         (
             "NOTES",
-            problems
-                .iter()
-                .filter(|note| !(building && note.as_str() == index_building))
-                .map(|note| view.warning(note))
-                .collect(),
+            notes.iter().map(|note| view.warning(note)).collect(),
         ),
     ];
     for (label, lines) in sections {
@@ -81,6 +90,10 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         }
         out.push('\n');
         for (n, line) in lines.iter().enumerate() {
+            if line.is_empty() {
+                out.push('\n');
+                continue;
+            }
             let label = if n == 0 { label } else { "" };
             let padded = format!("{label:<LABEL$}");
             let value = if label == "RECENT" && view.whole_log {
@@ -96,7 +109,46 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
     out
 }
 
-fn header(status: &Answer, view: &View<'_>) -> String {
+/// The headline, then the daemon's facts dimmed: what it is doing (blocked,
+/// building the index, warming) or whether the reply is current, and
+/// otherwise the first note.
+fn header(status: &Answer, notes: &[&String], view: &View<'_>) -> Vec<String> {
+    let headline = if let Mode::Blocked { path, error, .. } = &status.mode {
+        view.paint(
+            "1;31",
+            &format!(
+                "✖ blocked: {}: {}",
+                clean(&path.display().to_string()),
+                clean(error)
+            ),
+        )
+    } else if status.index_build.is_some() {
+        let progress = status.build_progress.as_ref();
+        let mut words = "building the index".to_owned();
+        if let Some(progress) = progress
+            && progress.current.is_some()
+        {
+            words.push_str(&format!(
+                ", step {} of {}",
+                progress.finished.len() + 1,
+                progress.finished.len() + 1 + progress.to_come.len()
+            ));
+        }
+        if progress.is_some_and(|progress| progress.failed_attempt.is_some()) {
+            words.push_str(", again after a failed attempt");
+        }
+        view.paint("1;33", &format!("◐ {words}"))
+    } else if status.warming {
+        view.paint("1;33", "◐ warming up after the index was installed")
+    } else if let Some(first) = notes.first() {
+        let more = match notes.len() {
+            1 => String::new(),
+            n => format!("  (+{} more under NOTES)", n - 1),
+        };
+        view.paint("1;33", &format!("⚠ {}{more}", clean(first)))
+    } else {
+        view.paint("1;32", "✓ up to date")
+    };
     let mode = match &status.mode {
         Mode::Standalone => "standalone",
         Mode::Primary => "primary",
@@ -109,17 +161,17 @@ fn header(status: &Answer, view: &View<'_>) -> String {
             "up {}",
             short_duration(i64::try_from(status.uptime_seconds).unwrap_or(i64::MAX) * 1000)
         ),
+        if status.loop_status.busy {
+            "busy"
+        } else {
+            "idle"
+        }
+        .to_owned(),
     ];
-    if status.warming {
-        parts.push("warming".into());
-    }
-    if status.loop_status.busy {
-        parts.push("busy".into());
-    }
     if let Some(archive) = &status.archive {
         parts.push(clean(&archive.display().to_string()));
     }
-    format!("{}  {}", view.label("polylogue"), parts.join(" · "))
+    vec![headline, view.dim(&parts.join(" · "))]
 }
 
 fn archive(status: &Answer, view: &View<'_>) -> Vec<String> {
@@ -250,9 +302,10 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
     lines
 }
 
-/// An index build: what it does and why, what it means for reads, its
-/// steps (finished with their time, the current one with its count, rate
-/// and estimate, those to come) and the time left.
+/// An index build: what it does and why, what it means for reads, the
+/// running step's bar, then the steps (finished with their time and count,
+/// the running one in bold with its count, rate and estimate, those to come)
+/// and the time left.
 fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
     use polylogue_store::archive::index_rebuild::IndexRebuildReason;
     let Some(build) = &status.index_build else {
@@ -275,11 +328,11 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
     } else {
         format!("building the index: {why}")
     }];
-    lines.push(if build.serving_previous {
-        "reads and searches use the previous index until the new one is installed".into()
+    lines.push(view.dim(if build.serving_previous {
+        "reads and searches use the previous index until the new one is installed"
     } else {
-        "reads and searches answer \"index building\" until it is installed".into()
-    });
+        "reads and searches answer \"index building\" until it is installed"
+    }));
     let Some(progress) = progress else {
         return lines;
     };
@@ -294,20 +347,22 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
             failed.error
         )));
     }
-    let steps =
-        progress.finished.len() + usize::from(progress.current.is_some()) + progress.to_come.len();
     if let Some(current) = &progress.current
         && let Some(count) = &current.count
         && let Some(total) = count.total.filter(|total| *total > 0)
     {
-        lines.push(format!(
-            "{}  {}   step {} of {steps}, {}",
+        let mut line = format!(
+            "{}  {} of {}",
             view.bar(count.done, total),
-            percent(count.done, total),
-            progress.finished.len() + 1,
+            view.bold(&percent(count.done, total)),
             clean(&current.name)
-        ));
+        );
+        if let Some(eta) = current.eta_seconds {
+            line.push_str(&format!(" · {}", view.bold(&left(eta))));
+        }
+        lines.push(line);
     }
+    lines.push(String::new());
     let width = progress
         .finished
         .iter()
@@ -323,27 +378,27 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
         .unwrap_or(0);
     for step in &progress.finished {
         let mut line = format!(
-            "✓ {:<width$} {:>6}",
+            "{:<width$} {:>6}",
             clean(&step.name),
             short_duration((step.seconds * 1000.) as i64)
         );
         if let Some(count) = &step.count {
             line.push_str(&format!("  {}", amount(count.done, count.unit)));
         }
-        lines.push(line);
+        lines.push(format!("{} {}", view.paint("32", "✓"), view.dim(&line)));
     }
     if let Some(current) = &progress.current {
-        let mut parts = vec![match &current.count {
-            Some(count) => match count.total {
+        let mut parts = Vec::new();
+        if let Some(count) = &current.count {
+            parts.push(match count.total {
                 Some(total) => format!(
                     "{} of {}",
                     amount_number(count.done, count.unit),
                     amount(total, count.unit)
                 ),
                 None => format!("{} so far", amount(count.done, count.unit)),
-            },
-            None => "this step has no progress count".into(),
-        }];
+            });
+        }
         // Reading counts bytes; the files read go beside them.
         if current
             .count
@@ -357,11 +412,16 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
                 count(build.chains)
             ));
         }
-        lines.push(format!(
-            "▸ {:<width$} {:>6}  {}",
+        let line = format!(
+            "{:<width$} {:>6}  {}",
             clean(&current.name),
             short_duration(view.now_ms.saturating_sub(current.since.unix_ms())),
             parts.join(" · ")
+        );
+        lines.push(format!(
+            "{} {}",
+            view.paint("1;36", "▸"),
+            view.bold(line.trim_end())
         ));
         // The rate and estimate on a line of their own, so a narrow
         // terminal does not cut them.
@@ -374,21 +434,23 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
                     unit => format!("{} {}/s", decimal(rate), unit.word()),
                 }
             } else {
-                format!(
-                    "no progress in the last {}",
-                    short_duration((current.rate_seconds.unwrap_or(0.) * 1000.) as i64)
-                )
+                let over = short_duration((current.rate_seconds.unwrap_or(0.) * 1000.) as i64);
+                view.warning_text(&match counted.unit {
+                    CountUnit::Bytes => format!("nothing read in the last {over}"),
+                    unit => format!("no {} done in the last {over}", unit.word()),
+                })
             });
         }
-        if let Some(eta) = current.eta_seconds {
-            parts.push(left(eta));
-        } else if current.rate_varying {
-            parts.push("rate varying, no estimate".into());
-        } else if let Some(count) = &current.count {
-            if count.total.is_none() {
-                parts.push("total known when the step ends".into());
-            } else if current.rate_seconds.is_none_or(|seconds| seconds < 60.) {
-                parts.push("estimate after a minute of progress".into());
+        // An estimate is on the bar's line; without one, this says why.
+        if current.eta_seconds.is_none() {
+            if current.rate_varying {
+                parts.push("rate varying, no estimate".into());
+            } else if let Some(count) = &current.count {
+                if count.total.is_none() {
+                    parts.push("total known when the step ends".into());
+                } else if current.rate_seconds.is_none_or(|seconds| seconds < 60.) {
+                    parts.push("estimate after a minute of progress".into());
+                }
             }
         }
         if !parts.is_empty() {
@@ -396,17 +458,16 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
         }
     }
     for step in &progress.to_come {
-        lines.push(format!("· {}", clean(step)));
+        lines.push(view.dim(&format!("· {}", clean(step))));
     }
+    lines.push(String::new());
     if let Some(eta) = progress.eta_seconds {
-        lines.push(format!("whole job: {}", left(eta)));
+        lines.push(format!("whole build: {}", view.bold(&left(eta))));
     } else if !progress.to_come.is_empty() {
         let n = progress.to_come.len();
         lines.push(format!(
-            "whole job: time unknown; the {n} {} to come {} measured only as {} run",
+            "whole build: time left known once the last step runs ({n} {} to come)",
             if n == 1 { "step" } else { "steps" },
-            if n == 1 { "is" } else { "are" },
-            if n == 1 { "it" } else { "they" },
         ));
     }
     let mut parts = Vec::new();
@@ -425,7 +486,10 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
         ));
     }
     if !parts.is_empty() {
-        lines.push(parts.join(" · "));
+        lines.push(view.dim(&parts.join(" · ")));
+    }
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
     }
     lines
 }
@@ -771,9 +835,23 @@ fn unused(status: &Answer) -> Vec<String> {
     vec![line]
 }
 
+/// The newest log records, warnings and errors marked. While an index is
+/// built only warnings and errors are shown: its steps, their times and what
+/// waits for it are in `INDEX`. Without `--log` the newest [`RECENT`] are
+/// shown, with a pointer to the rest.
 fn recent(status: &Answer, view: &View<'_>) -> Vec<String> {
-    status
+    let building = status.index_build.is_some();
+    let shown: Vec<_> = status
         .recent_log
+        .iter()
+        .filter(|record| !building || record.priority != Priority::Info)
+        .collect();
+    let skipped = if view.whole_log {
+        0
+    } else {
+        shown.len().saturating_sub(RECENT)
+    };
+    let mut lines: Vec<String> = shown[skipped..]
         .iter()
         .map(|record| {
             let text = match record.priority {
@@ -781,9 +859,16 @@ fn recent(status: &Answer, view: &View<'_>) -> Vec<String> {
                 Priority::Warning => view.warning(&record.text),
                 Priority::Info => clean(&record.text),
             };
-            format!("{}  {text}", view.time(record.at.unix_ms()))
+            format!("{}  {text}", view.dim(&view.time(record.at.unix_ms())))
         })
-        .collect()
+        .collect();
+    if skipped > 0 {
+        lines.insert(
+            0,
+            view.dim(&format!("{skipped} earlier in `polylogue status --log`")),
+        );
+    }
+    lines
 }
 
 impl View<'_> {
@@ -798,12 +883,26 @@ impl View<'_> {
         if text.trim().is_empty() {
             text.to_owned()
         } else {
-            self.paint("1;2", text)
+            self.paint("1", text)
         }
+    }
+
+    /// Context: what a reader can skip.
+    fn dim(&self, text: &str) -> String {
+        self.paint("2", text)
+    }
+
+    fn bold(&self, text: &str) -> String {
+        self.paint("1", text)
     }
 
     fn warning(&self, text: &str) -> String {
         self.paint("33", &format!("⚠ {}", clean(text)))
+    }
+
+    /// Text in the warning color, without the mark.
+    fn warning_text(&self, text: &str) -> String {
+        self.paint("33", text)
     }
 
     fn error(&self, text: &str) -> String {
@@ -826,8 +925,7 @@ impl View<'_> {
                     bar.push(['▏', '▎', '▍', '▌', '▋', '▊', '▉'][eighths % 8 - 1]);
                 }
                 let empty = width - bar.chars().count();
-                bar.push_str(&"░".repeat(empty));
-                bar
+                format!("{}{}", self.paint("36", &bar), self.dim(&"░".repeat(empty)))
             }
             _ => {
                 let full = eighths / 8;
@@ -850,10 +948,6 @@ impl View<'_> {
         } else {
             at.strftime("%Y-%m-%d %H:%M").to_string()
         }
-    }
-
-    fn cut(&self, line: &str) -> String {
-        self.cut_to(line, self.width)
     }
 
     /// `line` cut to `columns` visible characters, color sequences kept;

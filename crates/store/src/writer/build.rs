@@ -189,7 +189,13 @@ pub struct BuildPhase {
 pub const SORTING_TEXTS: &str = "sorting texts";
 pub const WRITING_TABLES: &str = "writing tables";
 pub const INDEXING: &str = "indexing";
+/// Sessions whose every reading one file states, read in key order.
 pub const ASSEMBLING_SESSIONS: &str = "assembling sessions";
+/// The session tables' indexes that assembling does not fill as it writes.
+pub const INDEXING_SESSIONS: &str = "indexing sessions";
+/// Sessions whose readings several files state or that copies name, and the
+/// events no session holds, read from the index.
+pub const JOINING_SESSIONS: &str = "joining sessions across files";
 pub const FINISHING_INDEXES: &str = "finishing indexes";
 pub const SEARCH_INDEX: &str = "search index";
 pub const INSTALLING: &str = "installing";
@@ -198,6 +204,8 @@ pub const STEPS: &[&str] = &[
     WRITING_TABLES,
     INDEXING,
     ASSEMBLING_SESSIONS,
+    INDEXING_SESSIONS,
+    JOINING_SESSIONS,
     FINISHING_INDEXES,
     SEARCH_INDEX,
     INSTALLING,
@@ -207,8 +215,8 @@ pub const STEPS: &[&str] = &[
 fn counted(step: &str) -> Option<CountUnit> {
     match step {
         SORTING_TEXTS | WRITING_TABLES => Some(CountUnit::Records),
-        INDEXING => Some(CountUnit::Indexes),
-        ASSEMBLING_SESSIONS => Some(CountUnit::Sessions),
+        INDEXING | INDEXING_SESSIONS => Some(CountUnit::Indexes),
+        ASSEMBLING_SESSIONS | JOINING_SESSIONS => Some(CountUnit::Sessions),
         _ => None,
     }
 }
@@ -1142,10 +1150,15 @@ pub(super) struct ComposeState {
     elsewhere: Arc<HashSet<String>>,
     /// Events left by the stream for the index to compose.
     deferred: Vec<(Option<String>, String)>,
-    /// Sessions composed so far, and of how many: every session a reading
-    /// states and every name composed from the index.
-    pub(super) sessions: u64,
-    pub(super) total: u64,
+    /// Sessions the stream composed, of the sessions it holds: every session
+    /// a reading states that is not composed from the index.
+    assembled: u64,
+    to_assemble: u64,
+    /// Indexes made after the stream, of how many.
+    indexes_made: u64,
+    indexes_total: u64,
+    /// Names composed from the index so far, of `fallback`'s length.
+    joined: u64,
 }
 
 enum Step {
@@ -1195,23 +1208,36 @@ impl ComposeState {
                 .query_map([], |r| r.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?,
         );
-        let mut total: u64 = index.scalar(
-            "SELECT count(*) FROM (SELECT DISTINCT session_id FROM session_record)",
+        // The stream holds a session for every ID a reading states (its
+        // record, a message, an event or a call's outcome), less those
+        // composed from the index, which it passes over.
+        let stated: u64 = index.scalar(
+            "SELECT count(*) FROM (
+                 SELECT DISTINCT session_id FROM session_record
+                 UNION SELECT DISTINCT session_id FROM message_parse
+                 UNION SELECT DISTINCT session_id FROM event_parse WHERE session_id IS NOT NULL
+                 UNION SELECT DISTINCT session_id FROM call_outcome)",
             [],
         )?;
+        let mut passed_over = 0;
         for name in &fallback {
-            if !index.exists(
-                "SELECT EXISTS(SELECT 1 FROM session_record WHERE session_id=?1)",
+            if index.exists(
+                "SELECT EXISTS(SELECT 1 FROM session_record WHERE session_id=?1)
+                     OR EXISTS(SELECT 1 FROM message_parse WHERE session_id=?1)
+                     OR EXISTS(SELECT 1 FROM event_parse WHERE session_id=?1)
+                     OR EXISTS(SELECT 1 FROM call_outcome WHERE session_id=?1)",
                 [name],
             )? {
-                total += 1;
+                passed_over += 1;
             }
         }
+        let to_assemble = stated.saturating_sub(passed_over);
         crate::log!(
             info,
-            "index: assembling {total} sessions, {} of them from the loaded readings",
+            "index: assembling {to_assemble} sessions, then joining {} across files",
             fallback.len(),
         );
+        let indexes_total = indexes.len() as u64;
         Ok(Self {
             step: Step::Links,
             indexes,
@@ -1229,9 +1255,30 @@ impl ComposeState {
             shared_events: Arc::new(shared_events),
             elsewhere: Arc::new(elsewhere),
             deferred: Vec::new(),
-            sessions: 0,
-            total,
+            assembled: 0,
+            to_assemble,
+            indexes_made: 0,
+            indexes_total,
+            joined: 0,
         })
+    }
+
+    /// The build step composition is in.
+    fn build_step(&self) -> &'static str {
+        match self.step {
+            Step::Links | Step::Stream => ASSEMBLING_SESSIONS,
+            Step::Indexes => INDEXING_SESSIONS,
+            Step::Index { .. } | Step::Count | Step::Done => JOINING_SESSIONS,
+        }
+    }
+
+    /// How much of `step`'s work is done, of how much.
+    fn count(&self, step: &str) -> (u64, u64) {
+        match step {
+            ASSEMBLING_SESSIONS => (self.assembled, self.to_assemble),
+            INDEXING_SESSIONS => (self.indexes_made, self.indexes_total),
+            _ => (self.joined, self.fallback.len() as u64),
+        }
     }
 }
 
@@ -1244,11 +1291,11 @@ pub(super) struct BuildJob {
     reply: SyncSender<Result<Vec<BuildPhase>>>,
     phases: Vec<BuildPhase>,
     clock: Option<(PhaseClock, u64)>,
-    /// The sessions composition will assemble, known once it starts.
-    sessions: Option<u64>,
+    /// The running step's total, when it is known before the step ends.
+    total: Option<u64>,
     /// The counted step that ended in this build step, with its final
     /// count, for `status` to record before the step that follows.
-    ended: Option<(&'static str, u64, CountUnit)>,
+    ended: Option<(&'static str, StepCount)>,
     /// The indexes dropped for the load, recreated after it; the shown
     /// tables' indexes composition does not keep are made after the
     /// streamed sessions (see [`SHOWN_TABLES`]).
@@ -1371,7 +1418,7 @@ impl BuildJob {
             reply,
             phases: Vec::new(),
             clock: None,
-            sessions: None,
+            total: None,
             ended: None,
             indexes: Vec::new(),
             after_stream: Vec::new(),
@@ -1390,9 +1437,17 @@ impl BuildJob {
         {
             return;
         }
+        let total = self.total.take();
         if let Some((clock, items)) = self.clock.take() {
             if let Some(unit) = clock.unit {
-                self.ended = Some((clock.name, items, unit));
+                self.ended = Some((
+                    clock.name,
+                    StepCount {
+                        done: items,
+                        total,
+                        unit,
+                    },
+                ));
             }
             self.phases.push(clock.end(items));
         }
@@ -1406,6 +1461,15 @@ impl BuildJob {
         if let Some((_, counted)) = &mut self.clock {
             *counted += items;
         }
+    }
+
+    /// Runs `step`, `done` of `total`.
+    fn counted_to(&mut self, step: &'static str, (done, total): (u64, u64)) {
+        self.phase(step);
+        if let Some((_, counted)) = &mut self.clock {
+            *counted = done;
+        }
+        self.total = Some(total);
     }
 
     /// Answers the caller: the phases, or why the build stopped.
@@ -1540,25 +1604,32 @@ impl Inner {
                     Stage::Indexes(0, holders.composing)
                 }
             }
-            Stage::Indexes(next, loaded) => match job.indexes.get(next) {
-                Some(sql) => {
-                    self.index.execute(sql, [])?;
-                    job.count(1);
-                    Stage::Indexes(next + 1, loaded)
+            Stage::Indexes(next, loaded) => {
+                job.total = Some(job.indexes.len() as u64);
+                match job.indexes.get(next) {
+                    Some(sql) => {
+                        self.index.execute(sql, [])?;
+                        job.count(1);
+                        Stage::Indexes(next + 1, loaded)
+                    }
+                    None => {
+                        crate::fault::check("index.build.composing", "")?;
+                        job.phase(ASSEMBLING_SESSIONS);
+                        let indexes = std::mem::take(&mut job.after_stream);
+                        let state = ComposeState::new(*loaded, indexes, &self.index)?;
+                        job.counted_to(ASSEMBLING_SESSIONS, state.count(ASSEMBLING_SESSIONS));
+                        Stage::Compose(Box::new(state))
+                    }
                 }
-                None => {
-                    crate::fault::check("index.build.composing", "")?;
-                    job.phase(ASSEMBLING_SESSIONS);
-                    let indexes = std::mem::take(&mut job.after_stream);
-                    let state = ComposeState::new(*loaded, indexes, &self.index)?;
-                    job.sessions = Some(state.total);
-                    Stage::Compose(Box::new(state))
-                }
-            },
+            }
             Stage::Compose(mut state) => {
-                let before = state.sessions;
+                // A part of composition may end within this step: what it
+                // did is counted to it before the next part starts.
+                let ran = state.build_step();
                 let done = self.compose_step(&mut state)?;
-                job.count(state.sessions - before);
+                job.counted_to(ran, state.count(ran));
+                let now = state.build_step();
+                job.counted_to(now, state.count(now));
                 if !done {
                     Stage::Compose(state)
                 } else {
@@ -1628,18 +1699,20 @@ impl Inner {
             }
         };
         let ended = job.ended.take();
-        let running = job
-            .clock
-            .as_ref()
-            .and_then(|(clock, done)| clock.unit.map(|unit| (clock.name, *done, unit)));
-        for (step, done, unit) in ended.into_iter().chain(running) {
-            let total = match step {
-                INDEXING => Some(job.indexes.len() as u64),
-                ASSEMBLING_SESSIONS => job.sessions,
-                _ => None,
-            };
-            self.location
-                .record_build_count(step, StepCount { done, total, unit });
+        let running = job.clock.as_ref().and_then(|(clock, done)| {
+            clock.unit.map(|unit| {
+                (
+                    clock.name,
+                    StepCount {
+                        done: *done,
+                        total: job.total,
+                        unit,
+                    },
+                )
+            })
+        });
+        for (step, count) in ended.into_iter().chain(running) {
+            self.location.record_build_count(step, count);
         }
         Ok(false)
     }
@@ -2041,17 +2114,22 @@ impl Inner {
             Step::Stream => {
                 self.compose_stream(state)?;
                 if state.stream_done {
-                    state.step = Step::Indexes;
+                    state.step = if state.indexes.is_empty() {
+                        Step::Index { next: 0 }
+                    } else {
+                        Step::Indexes
+                    };
                 }
             }
-            Step::Indexes => match state.indexes.pop() {
-                Some(sql) => {
+            Step::Indexes => {
+                if let Some(sql) = state.indexes.pop() {
                     self.index.execute(&sql, [])?;
+                    state.indexes_made += 1;
                 }
-                None => {
+                if state.indexes.is_empty() {
                     state.step = Step::Index { next: 0 };
                 }
-            },
+            }
             Step::Index { next } => {
                 let chunk = &state.fallback[next.min(state.fallback.len())
                     ..(next + SESSIONS_PER_TRANSACTION).min(state.fallback.len())];
@@ -2089,7 +2167,7 @@ impl Inner {
                         }
                     }
                 }
-                state.sessions += chunk.len() as u64;
+                state.joined += chunk.len() as u64;
                 if next == 0 {
                     // What no session holds: input events; and events that
                     // follow another session's message.
@@ -2230,7 +2308,7 @@ impl Inner {
         }
         let (_, mut late) = composer.finish();
         state.deferred.append(&mut late);
-        state.sessions += sessions as u64;
+        state.assembled += sessions as u64;
         rows::finish_summaries(&tx, &changes, counter)?;
         tx.commit()?;
         Ok(())
