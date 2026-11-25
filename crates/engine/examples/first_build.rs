@@ -257,15 +257,14 @@ fn opaque(rng: &mut Rng, len: u64) -> String {
     s
 }
 
-/// One Codex rollout being written: outer records `{timestamp, ordinal,
-/// type, payload}`, and what its compactions restate.
+/// One Codex rollout being written: outer records `{timestamp, type,
+/// payload}`, and what its compactions restate.
 struct Rollout<'a> {
     w: BufWriter<fs::File>,
     rng: &'a mut Rng,
     thread: String,
     start: jiff::Timestamp,
     seconds: i64,
-    ordinal: u64,
     written: u64,
     compacted: u64,
     tokens: u64,
@@ -279,9 +278,8 @@ impl Rollout<'_> {
         let at = jiff::Timestamp::from_second(self.start.as_second() + self.seconds).unwrap();
         let n = emit(
             &mut self.w,
-            serde_json::json!({"timestamp": at.to_string(), "ordinal": self.ordinal, "type": kind, "payload": payload}),
+            serde_json::json!({"timestamp": at.to_string(), "type": kind, "payload": payload}),
         )?;
-        self.ordinal += 1;
         self.written += n;
         Ok(n)
     }
@@ -470,7 +468,6 @@ fn rollout_file(sessions: &Path, index: u64, target: u64, rng: &mut Rng) -> std:
         thread,
         start,
         seconds: 0,
-        ordinal: 0,
         written: 0,
         compacted: 0,
         tokens: 0,
