@@ -324,10 +324,11 @@ impl Engine {
         pass.bytes_read += prepare.parsed.load(Ordering::Relaxed);
         let mut phases = vec![clock.end(prepare.chains_read.load(Ordering::Relaxed))];
         let (announce, announced) = std::sync::mpsc::channel();
-        let built = self
-            .writer
-            .sender()
-            .start_build(runs.into_iter().map(|(_, path)| path).collect(), announce)?;
+        let built = self.writer.sender().start_build(
+            runs.into_iter().map(|(_, path)| path).collect(),
+            workers,
+            announce,
+        )?;
         // The writer drops its sender when the build ends; requests are
         // answered while it works.
         loop {

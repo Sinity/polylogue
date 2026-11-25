@@ -102,9 +102,11 @@ enum Msg {
         Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
         SyncSender<Result<BlobHash>>,
     ),
-    /// Load a build's runs, compose, index and install the build file.
+    /// Load a build's runs, compose (on this many threads), index and
+    /// install the build file.
     Build(
         Vec<std::path::PathBuf>,
+        usize,
         Option<std::sync::mpsc::Sender<&'static str>>,
         SyncSender<Result<Vec<build::BuildPhase>>>,
     ),
@@ -674,20 +676,23 @@ impl WriterSender {
     /// build file, composes every session, writes the indexes and search
     /// entries and installs the file. Returns the phases it took.
     pub fn build(&self, runs: Vec<std::path::PathBuf>) -> Result<Vec<build::BuildPhase>> {
-        self.0.ask(|reply| Msg::Build(runs, None, reply))
+        // Two composers, so that batches meet the writer out of order.
+        self.0.ask(|reply| Msg::Build(runs, 2, None, reply))
     }
 
-    /// [`Self::build`] without waiting: each phase's name is sent to
-    /// `announce` as it starts, and the phases come on the returned
-    /// receiver once the file is installed.
+    /// [`Self::build`] without waiting, its sessions composed by
+    /// `composers` threads: each phase's name is sent to `announce` as it
+    /// starts, and the phases come on the returned receiver once the file
+    /// is installed.
     pub fn start_build(
         &self,
         runs: Vec<std::path::PathBuf>,
+        composers: usize,
         announce: std::sync::mpsc::Sender<&'static str>,
     ) -> Result<Receiver<Result<Vec<build::BuildPhase>>>> {
         let (reply, wait) = sync_channel(1);
         self.0
-            .send(Msg::Build(runs, Some(announce), reply))
+            .send(Msg::Build(runs, composers, Some(announce), reply))
             .map_err(|_| StoreError::WriterGone)?;
         Ok(wait)
     }
@@ -1068,8 +1073,8 @@ impl Inner {
                         replacements.push((input, chain, length, *reading, reply));
                         false
                     }
-                    Msg::Build(runs, announce, reply) => {
-                        builds.push((runs, announce, reply));
+                    Msg::Build(runs, composers, announce, reply) => {
+                        builds.push((runs, composers, announce, reply));
                         false
                     }
                     Msg::DenyPrimaryReads(reply) => {
@@ -1219,13 +1224,13 @@ impl Inner {
                 }));
                 self.serve_users();
             }
-            for (runs, announce, reply) in builds.drain(..) {
+            for (runs, composers, announce, reply) in builds.drain(..) {
                 if self.build_job.is_some() {
                     let _ = reply.send(Err(StoreError::Invalid(
                         "a build is already being loaded".into(),
                     )));
                 } else {
-                    self.build_job = Some(build::BuildJob::new(runs, announce, reply));
+                    self.build_job = Some(build::BuildJob::new(runs, composers, announce, reply));
                 }
             }
             for (blob, reply) in blobs.drain(..) {

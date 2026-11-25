@@ -14,6 +14,8 @@
 //! bytes ([`crate::archive::index_build`]).
 use super::*;
 use crate::archive::build_progress::{CountUnit, StepCount};
+
+mod composers;
 use crate::archive::index_build::Paths;
 use crate::sorted_runs::{Merger, Sorter};
 use rusqlite::types::{Value, ValueRef};
@@ -175,9 +177,6 @@ fn declared_load_indexes() -> Result<Vec<(String, String, String)>> {
     crate::schema::ensure_build_index(&declared)?;
     load_indexes(&declared)
 }
-
-/// Messages composed from the stream per transaction, at session ends.
-const MESSAGES_PER_TRANSACTION: usize = 20_000;
 
 /// One phase of a build, as its record shows it.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
@@ -1265,8 +1264,14 @@ pub(super) struct ComposeState {
     /// The triggers that keep `row_count`, dropped while composition writes
     /// and made again once every table is counted.
     counting: Vec<String>,
-    /// The composition stream, decoded ahead on a thread of its own.
-    pieces: ReadAhead,
+    /// The stream's runs (the composition records and each message
+    /// reading's text keys), until composition reaches them.
+    unread: Option<(Merger, Merger, Arc<GroupKeys>)>,
+    /// The stream being composed: its reader groups sessions into batches
+    /// that the composer threads compose, in at most `ahead` bytes.
+    composing: Option<(composers::Pool, Arc<Gate>)>,
+    ahead: usize,
+    composers: usize,
     stream_done: bool,
     /// Sessions composed from the index instead of the stream, which the
     /// stream reader passes over.
@@ -1305,13 +1310,14 @@ enum Step {
 }
 
 impl ComposeState {
-    /// The composition of a loaded build file; the stream is read ahead in
-    /// at most `ahead` bytes.
+    /// The composition of a loaded build file by `composers` threads; the
+    /// stream is read ahead of the writer in at most `ahead` bytes.
     pub(super) fn new(
         loaded: Loaded,
         indexes: Vec<String>,
         index: &Connection,
         ahead: usize,
+        composers: usize,
     ) -> Result<Self> {
         let Loaded {
             merged,
@@ -1378,14 +1384,10 @@ impl ComposeState {
             step: Step::Links,
             indexes,
             counting: counting.into_iter().map(|(_, sql)| sql).collect(),
-            pieces: read_stream(
-                merged,
-                texts,
-                fallback.clone(),
-                Arc::clone(&aliases),
-                groups,
-                ahead,
-            ),
+            unread: Some((merged, texts, groups)),
+            composing: None,
+            ahead,
+            composers,
             stream_done: false,
             fallback: fallback.into_iter().collect(),
             aliases,
@@ -1424,6 +1426,8 @@ impl ComposeState {
 /// keeps its position, so nothing a step did is done again.
 pub(super) struct BuildJob {
     stage: Stage,
+    /// The threads that compose the stream's sessions.
+    composers: usize,
     announce: Option<std::sync::mpsc::Sender<&'static str>>,
     reply: SyncSender<Result<Vec<BuildPhase>>>,
     phases: Vec<BuildPhase>,
@@ -1546,11 +1550,13 @@ struct TextHolders {
 impl BuildJob {
     pub(super) fn new(
         runs: Vec<PathBuf>,
+        composers: usize,
         announce: Option<std::sync::mpsc::Sender<&'static str>>,
         reply: SyncSender<Result<Vec<BuildPhase>>>,
     ) -> Self {
         Self {
             stage: Stage::Start(runs),
+            composers: composers.max(1),
             announce,
             reply,
             phases: Vec::new(),
@@ -1768,17 +1774,26 @@ impl Inner {
                         job.phase(ASSEMBLING_SESSIONS);
                         let indexes = std::mem::take(&mut job.after_stream);
                         let budget = self.location.memory_budget();
-                        let ahead = budget.read_ahead_memory();
-                        // Beside the run readers and the read-ahead, the
+                        let composing = budget.composition_memory();
+                        // Beside the run readers and the composition, the
                         // full-text fill follows the blocks composition writes.
                         self.size_build_cache(
                             (loaded.merged.memory()
                                 + loaded.texts.memory()
-                                + ahead
+                                + composing
                                 + budget.search_fill_memory()) as u64,
                             false,
                         )?;
-                        let state = ComposeState::new(*loaded, indexes, &self.index, ahead)?;
+                        // A batch's decoded pieces, its composer's index and its
+                        // composed rows each take about what was decoded: the
+                        // stream is read ahead in a third of the share.
+                        let state = ComposeState::new(
+                            *loaded,
+                            indexes,
+                            &self.index,
+                            composing / 3,
+                            job.composers,
+                        )?;
                         job.counted_to(ASSEMBLING_SESSIONS, state.count(ASSEMBLING_SESSIONS));
                         Stage::Compose(Box::new(state))
                     }
@@ -2413,9 +2428,8 @@ impl Inner {
         Ok(matches!(state.step, Step::Done))
     }
 
-    /// Composes sessions from the stream, in one transaction, until about
-    /// [`MESSAGES_PER_TRANSACTION`] messages or [`SESSIONS_PER_TRANSACTION`]
-    /// sessions are written.
+    /// Appends sessions the composers composed from the stream, in one
+    /// transaction of whole batches.
     fn compose_stream(&mut self, state: &mut ComposeState) -> Result<()> {
         // A session from the stream refers only to rows the build wrote.
         self.index.pragma_update(None, "foreign_keys", false)?;
@@ -2425,90 +2439,68 @@ impl Inner {
     }
 
     fn compose_stream_transaction(&mut self, state: &mut ComposeState) -> Result<()> {
+        if state.composing.is_none() {
+            self.start_composers(state)?;
+        }
+        let (pool, gate) = state
+            .composing
+            .as_mut()
+            .ok_or_else(|| StoreError::internal("a build's composers did not start"))?;
+        let tx = self
+            .index
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        bump_counter(&tx)?;
+        // A transaction ends with a batch, once it took its share of the
+        // writer's time.
+        let started = std::time::Instant::now();
+        while started.elapsed() < STEP_TIME {
+            let Some(composed) = pool.next()? else {
+                // Every batch of the stream is composed and appended.
+                state.stream_done = true;
+                break;
+            };
+            pool.append(&tx, composed.rows)?;
+            gate.release(composed.bytes);
+            state.deferred.extend(composed.late);
+            state.assembled += composed.sessions;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Starts reading the stream into batches and the composer threads,
+    /// once links and documents are composed: a session's item index reads
+    /// its links.
+    fn start_composers(&mut self, state: &mut ComposeState) -> Result<()> {
+        let (merged, texts, groups) = state
+            .unread
+            .take()
+            .ok_or_else(|| StoreError::internal("a build's stream was read twice"))?;
+        // Every batch is composed under one write counter.
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&tx)?;
-        // Each session holds every message its events follow, or the
-        // message is shown in another session or not at all ([`MARKS`]).
-        let changes = crate::change_summary::ChangeSummary::start_sessions_alone(
-            &tx,
-            Arc::clone(&state.elsewhere),
-        )?;
-        let context = super::shown::Context {
-            tx: &tx,
-            counter,
-            changes: &changes,
-        };
-        let mut composer = super::shown::Composer::new(
-            &context,
+        tx.commit()?;
+        let shared = composers::Shared::read(
+            &self.index,
             Arc::clone(&state.aliases),
             Arc::clone(&state.shared_events),
+            Arc::clone(&state.elsewhere),
+            counter,
         )?;
-        let mut inputs = InputState::default();
-        let mut kinds = std::collections::HashMap::new();
-        let (mut messages, mut sessions) = (0usize, 0usize);
-        // A transaction ends with a session, once it holds enough or took
-        // its share of the writer's time.
-        let started = std::time::Instant::now();
-        let mut open = false;
-        while open
-            || (messages < MESSAGES_PER_TRANSACTION
-                && sessions < SESSIONS_PER_TRANSACTION
-                && started.elapsed() < STEP_TIME)
-        {
-            let piece = match state.pieces.next() {
-                Some(piece) => piece?,
-                // The reader ended: every session of the stream is composed.
-                None => {
-                    state.stream_done = true;
-                    break;
-                }
-            };
-            match piece {
-                Piece::Begin => {
-                    composer.begin();
-                    kinds.clear();
-                    open = true;
-                }
-                Piece::Facts { input, chain, kind } => {
-                    composer.facts();
-                    let (pk, _) = inputs.of(&tx, &input)?;
-                    kinds.insert((pk, chain), kind);
-                }
-                Piece::Message { id, mut readings } => {
-                    for reading in &mut readings {
-                        let (pk, finished) = inputs.of(&tx, &reading.input)?;
-                        reading.input_pk = pk;
-                        if let Some(given) = &mut reading.given {
-                            given.kind = kinds.get(&(pk, reading.chain)).copied().flatten();
-                            given.superseded =
-                                finished.is_some_and(|newest| newest > reading.chain);
-                        }
-                    }
-                    composer.message(&id, readings)?;
-                    messages += 1;
-                }
-                Piece::Event(mut event) => {
-                    event.input_pk = inputs.of(&tx, &event.input)?.0;
-                    composer.event(event);
-                }
-                Piece::Outcome(mut outcome) => {
-                    outcome.input_pk = inputs.of(&tx, &outcome.input)?.0;
-                    composer.outcome(outcome);
-                }
-                Piece::End(session) => {
-                    composer.end(&session)?;
-                    sessions += 1;
-                    open = false;
-                }
-            }
-        }
-        let (_, mut late) = composer.finish();
-        state.deferred.append(&mut late);
-        state.assembled += sessions as u64;
-        rows::finish_summaries(&tx, &changes, counter)?;
-        tx.commit()?;
+        let skipped: BTreeSet<String> = state.fallback.iter().cloned().collect();
+        let (batches, gate) = read_stream(
+            merged,
+            texts,
+            skipped,
+            Arc::clone(&state.aliases),
+            groups,
+            state.ahead,
+            state.composers,
+        );
+        let pool = composers::Pool::start(state.composers, shared, batches, &self.index)?;
+        state.composing = Some((pool, gate));
         Ok(())
     }
 
@@ -2523,40 +2515,6 @@ impl Inner {
         rows::finish(&tx, touched, &changes, counter)?;
         tx.commit()?;
         Ok(())
-    }
-}
-
-/// The input a session's readings last named: its key in the build file
-/// and its newest chain read to its end or waiting for more. A session's
-/// readings come from few inputs, so each is looked up once per run of it.
-#[derive(Default)]
-struct InputState {
-    id: String,
-    pk: i64,
-    finished: Option<i64>,
-}
-
-impl InputState {
-    fn of(&mut self, tx: &Transaction<'_>, id: &str) -> Result<(i64, Option<i64>)> {
-        if self.id != id || self.id.is_empty() {
-            let (pk, finished): (i64, Option<i64>) = tx
-                .prepare_cached(
-                    "SELECT i.pk,(SELECT max(p.chain) FROM parse_state p WHERE p.input_pk=i.pk
-                         AND p.status IN ('done','waiting'))
-                     FROM input_ref i WHERE i.id=?1",
-                )?
-                .query_row([id], |r| <(i64, Option<i64>)>::try_from(r))
-                .optional()?
-                .ok_or_else(|| {
-                    StoreError::Invalid("a reading names an input the build lacks".into())
-                })?;
-            *self = Self {
-                id: id.to_owned(),
-                pk,
-                finished,
-            };
-        }
-        Ok((self.pk, self.finished))
     }
 }
 
@@ -2581,25 +2539,59 @@ pub(super) enum Piece {
     End(String),
 }
 
-/// The composition stream decoded ahead of the writer, in at most a given
-/// number of bytes: the reader waits while what it decoded and the writer
-/// has not taken holds that many, unless nothing waits (a piece larger than
-/// the allowance goes alone).
-pub(super) struct ReadAhead {
-    pieces: std::sync::mpsc::Receiver<(Result<Piece>, usize)>,
-    held: Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
+/// What the stream's reader has decoded and the writer has not yet
+/// appended, in bytes, at most a given number: the reader waits while that
+/// many are held, unless nothing is (a batch larger than the allowance goes
+/// alone), or until the composition is dropped.
+pub(super) struct Gate {
+    held: std::sync::Mutex<(usize, bool)>,
+    room: std::sync::Condvar,
 }
 
-impl ReadAhead {
-    /// The next piece; `None` once the stream is read.
-    fn next(&self) -> Option<Result<Piece>> {
-        let (piece, bytes) = self.pieces.recv().ok()?;
-        let (held, room) = &*self.held;
-        if let Ok(mut held) = held.lock() {
-            *held -= bytes;
+impl Gate {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            held: std::sync::Mutex::new((0, false)),
+            room: std::sync::Condvar::new(),
+        })
+    }
+
+    /// Waits until `bytes` more fit in `ahead`; false once closed.
+    fn take(&self, bytes: usize, ahead: usize) -> bool {
+        let Ok(mut held) = self.held.lock() else {
+            return false;
+        };
+        while !held.1 && held.0 > 0 && held.0 + bytes > ahead {
+            match self.room.wait(held) {
+                Ok(guard) => held = guard,
+                Err(_) => return false,
+            }
         }
-        room.notify_one();
-        Some(piece)
+        held.0 += bytes;
+        !held.1
+    }
+
+    fn release(&self, bytes: usize) {
+        if let Ok(mut held) = self.held.lock() {
+            held.0 = held.0.saturating_sub(bytes);
+        }
+        self.room.notify_all();
+    }
+
+    fn close(&self) {
+        if let Ok(mut held) = self.held.lock() {
+            held.1 = true;
+        }
+        self.room.notify_all();
+    }
+}
+
+impl Drop for ComposeState {
+    /// A composition dropped before its end lets its reader go.
+    fn drop(&mut self) {
+        if let Some((_, gate)) = &self.composing {
+            gate.close();
+        }
     }
 }
 
@@ -2610,8 +2602,10 @@ fn piece_bytes(record: usize) -> usize {
 }
 
 /// Reads the composition stream on a thread of its own, merging it with
-/// each message reading's text keys and decoding its records, so that the
-/// writer only composes. Sessions composed from the index are passed over.
+/// each message reading's text keys and decoding its records, and hands
+/// whole sessions to the composers in batches of about
+/// [`composers::BATCH_MESSAGES`] messages or a share of `ahead` bytes.
+/// Sessions composed from the index are passed over.
 fn read_stream(
     mut merged: Merger,
     mut texts: Merger,
@@ -2619,27 +2613,26 @@ fn read_stream(
     aliases: Arc<super::identity::Aliases>,
     groups: Arc<GroupKeys>,
     ahead: usize,
-) -> ReadAhead {
+    composers: usize,
+) -> (
+    std::sync::mpsc::Receiver<Result<composers::Batch>>,
+    Arc<Gate>,
+) {
     let (sender, receiver) = std::sync::mpsc::channel();
-    let held = Arc::new((std::sync::Mutex::new(0usize), std::sync::Condvar::new()));
-    let gate = Arc::clone(&held);
+    let gate = Gate::new();
+    let held = Arc::clone(&gate);
+    // Enough batches in flight for every composer and the writer.
+    let batch_bytes = (ahead / (2 * composers.max(1) + 1)).max(1 << 20);
     let spawned = std::thread::Builder::new()
         .name("polylogue-compose-stream".into())
         .spawn(move || {
-            let mut send = |piece: Piece, bytes: usize| {
-                let (held, room) = &*gate;
-                let Ok(mut held) = held.lock() else {
-                    return false;
-                };
-                while *held > 0 && *held + bytes > ahead {
-                    match room.wait(held) {
-                        Ok(guard) => held = guard,
-                        Err(_) => return false,
-                    }
-                }
-                *held += bytes;
-                drop(held);
-                sender.send((Ok(piece), bytes)).is_ok()
+            let mut batch = composers::Batch::default();
+            let mut seq = 0;
+            let mut ship = |batch: &mut composers::Batch| -> bool {
+                let mut full = std::mem::take(batch);
+                full.seq = seq;
+                seq += 1;
+                held.take(full.bytes, ahead) && sender.send(Ok(full)).is_ok()
             };
             let result = (|| -> Result<()> {
                 while let Some((key, _)) = merged.peek()? {
@@ -2658,33 +2651,38 @@ fn read_stream(
                         }
                         continue;
                     }
-                    if !send(Piece::Begin, 0)
-                        || !read_session(&mut merged, &mut texts, &groups, &session, &mut send)?
+                    batch.pieces.push(Piece::Begin);
+                    let mut add = |piece: Piece, bytes: usize| {
+                        if matches!(piece, Piece::Message { .. }) {
+                            batch.messages += 1;
+                        }
+                        batch.bytes += bytes;
+                        batch.pieces.push(piece);
+                        true
+                    };
+                    read_session(&mut merged, &mut texts, &groups, &session, &mut add)?;
+                    batch.pieces.push(Piece::End(session));
+                    if (batch.messages >= composers::BATCH_MESSAGES || batch.bytes >= batch_bytes)
+                        && !ship(&mut batch)
                     {
                         return Ok(());
                     }
-                    if !send(Piece::End(session), 0) {
-                        return Ok(());
-                    }
+                }
+                if !batch.pieces.is_empty() {
+                    ship(&mut batch);
                 }
                 Ok(())
             })();
             if let Err(error) = result {
-                let _ = sender.send((Err(error), 0));
+                let _ = sender.send(Err(error));
             }
         });
     if let Err(error) = spawned {
         let (sender, failed) = std::sync::mpsc::channel();
-        let _ = sender.send((Err(error.into()), 0));
-        return ReadAhead {
-            pieces: failed,
-            held,
-        };
+        let _ = sender.send(Err(error.into()));
+        return (failed, gate);
     }
-    ReadAhead {
-        pieces: receiver,
-        held,
-    }
+    (receiver, gate)
 }
 
 /// Whether `key` is one of `session`'s composition records.

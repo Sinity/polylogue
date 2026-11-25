@@ -336,7 +336,13 @@ The daemon reaches the index two ways, which must agree.
   into a stream sorted by the session that states it; no body travels in the
   stream. The merge gives each reading its text keys and each content group
   its key. Each session is composed once from its readings, by the
-  composition upkeep uses, with nothing stored to compare against. A session whose shown rows depend on readings stated
+  composition upkeep uses, with nothing stored to compare against. Groups of
+  whole sessions are composed on as many threads as the build has workers,
+  each into an index of its own held in memory together with what follows
+  from the shown rows (the item index, counts, values, live facts), reading
+  the readings' content from the build file; the writer only appends their
+  rows, in stream order, each key carried past the keys its table already
+  holds. A session whose shown rows depend on readings stated
   under other sessions is composed from the loaded readings instead, as
   upkeep composes it: a copy named through another session, a message stated
   under several sessions, a reading holding part of a version other readings

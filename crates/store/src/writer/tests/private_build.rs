@@ -198,7 +198,7 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
     // records them, from the names the writer announces.
     crate::fault::arm("index.deferred", "", crate::fault::Action::Hold, 0, 1);
     let (announce, announced) = std::sync::mpsc::channel();
-    let built = writer.start_build(runs, announce).unwrap();
+    let built = writer.start_build(runs, 2, announce).unwrap();
     crate::fault::wait_held();
     for step in announced.try_iter() {
         archive.record_build_step(step, polylogue_model::Timestamp::from_unix_ms(1).unwrap());
