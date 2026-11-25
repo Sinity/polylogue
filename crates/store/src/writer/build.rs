@@ -290,6 +290,28 @@ impl PhaseClock {
     }
 }
 
+/// The bytes `conn`'s page cache holds now.
+#[allow(unsafe_code)]
+fn cache_used(conn: &Connection) -> u64 {
+    let (mut now, mut most) = (0, 0);
+    // SAFETY: the handle is `conn`'s own, used on its thread for a read of
+    // its statistics, which SQLite keeps per connection.
+    let status = unsafe {
+        rusqlite::ffi::sqlite3_db_status(
+            conn.handle(),
+            rusqlite::ffi::SQLITE_DBSTATUS_CACHE_USED,
+            &mut now,
+            &mut most,
+            0,
+        )
+    };
+    if status == rusqlite::ffi::SQLITE_OK {
+        now.max(0) as u64
+    } else {
+        0
+    }
+}
+
 /// Reads and bytes read from devices by this process's control group,
 /// summed over its devices (Linux cgroup v2 `io.stat`).
 fn device_reads() -> Option<(u64, u64)> {
@@ -1639,6 +1661,7 @@ impl Inner {
                     )?;
                     self.size_build_cache(
                         composing.merged.memory() + composing.texts.memory() + holders.memory(),
+                        false,
                     )?;
                     Stage::TextHolders(Box::new(TextHolders {
                         merged: holders,
@@ -1660,7 +1683,13 @@ impl Inner {
                 } else {
                     self.index.pragma_update(None, "foreign_keys", true)?;
                     job.phase(INDEXING);
-                    Stage::Indexes(0, holders.composing)
+                    let composing = holders.composing;
+                    drop(holders.merged);
+                    self.size_build_cache(
+                        composing.merged.memory() + composing.texts.memory(),
+                        true,
+                    )?;
+                    Stage::Indexes(0, composing)
                 }
             }
             Stage::Indexes(next, loaded) => {
@@ -1678,6 +1707,7 @@ impl Inner {
                         let ahead = self.location.memory_budget().read_ahead_memory();
                         self.size_build_cache(
                             (loaded.merged.memory() + loaded.texts.memory() + ahead) as u64,
+                            false,
                         )?;
                         let state = ComposeState::new(*loaded, indexes, &self.index, ahead)?;
                         job.counted_to(ASSEMBLING_SESSIONS, state.count(ASSEMBLING_SESSIONS));
@@ -1700,7 +1730,7 @@ impl Inner {
                     crate::archive::index_build::remove_runs(&Paths::of(&self.location.root))?;
                     // The runs are read: what is left of the build is its
                     // file's indexes and full text.
-                    self.size_build_cache(0)?;
+                    self.size_build_cache(0, true)?;
                     job.phase(FINISHING_INDEXES);
                     // Composition wrote shown rows only: the search
                     // membership of every text comes from the blocks now,
@@ -1784,10 +1814,21 @@ impl Inner {
     }
 
     /// Gives the build file's cache what the budget leaves beside `held`
-    /// bytes the current step holds of its own.
-    fn size_build_cache(&self, held: impl TryInto<u64>) -> Result<()> {
+    /// bytes the current step holds of its own and what the process holds
+    /// already outside that cache (its other connections' caches, the
+    /// program, what the allocator kept).
+    /// A step that creates indexes (`sorting`) gives the cache half of that:
+    /// SQLite's sorter takes up to as much as the cache beside it.
+    fn size_build_cache(&self, held: impl TryInto<u64>, sorting: bool) -> Result<()> {
         let held = held.try_into().unwrap_or(u64::MAX);
-        let mib = self.location.memory_budget().build_cache_beside(held);
+        let outside = status_bytes("VmRSS:").saturating_sub(cache_used(&self.index));
+        let mut mib = self
+            .location
+            .memory_budget()
+            .build_cache_beside(held.saturating_add(outside));
+        if sorting {
+            mib = (mib / 2).max(32);
+        }
         self.index
             .pragma_update(None, "cache_size", -(mib * 1024))?;
         Ok(())
@@ -1823,7 +1864,7 @@ impl Inner {
         let merged = Merger::open(runs, &paths.runs, budget.run_merge_memory())?;
         // The load's own memory: the run readers and the two sorts of text
         // holders.
-        self.size_build_cache(merged.memory() + 2 * budget.side_merge_memory())?;
+        self.size_build_cache(merged.memory() + 2 * budget.side_merge_memory(), false)?;
         Ok(Load {
             merged,
             tables: tables(&self.index)?,
@@ -2191,6 +2232,8 @@ impl Inner {
             Step::Stream => {
                 self.compose_stream(state)?;
                 if state.stream_done {
+                    // The stream's reader has ended with its runs.
+                    self.size_build_cache(0, true)?;
                     state.step = if state.indexes.is_empty() {
                         Step::Index { next: 0 }
                     } else {
@@ -2204,6 +2247,7 @@ impl Inner {
                     state.indexes_made += 1;
                 }
                 if state.indexes.is_empty() {
+                    self.size_build_cache(0, false)?;
                     state.step = Step::Index { next: 0 };
                 }
             }
