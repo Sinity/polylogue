@@ -50,6 +50,15 @@ impl MemoryBudget {
     pub fn archive_cache_mib(self) -> i64 {
         ((self.total / 32) >> 20).max(1) as i64
     }
+    /// What the merge of a build's runs reads them with: the share the
+    /// workers' prepared readings held, free once they are done.
+    pub(crate) fn run_merge_memory(self) -> usize {
+        (self.total / 3) as usize
+    }
+    /// What each smaller merge beside it reads its runs with.
+    pub(crate) fn side_merge_memory(self) -> usize {
+        (self.total / 16) as usize
+    }
     pub fn search_cache_mib(self) -> i64 {
         ((self.total / 64) >> 20).max(1) as i64
     }

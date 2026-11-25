@@ -1,15 +1,24 @@
 //! One external sorter for every sorted stream a build writes: records are
 //! (key, value) byte strings, buffered up to a memory budget, sorted by key
 //! and spilled as zstd-compressed runs; a k-way merge reads the runs
-//! forward in key order. Memory is the budget plus one read buffer per run
+//! forward in key order. Memory is the budget plus one reader per run
 //! merged, whatever the number of records.
 use std::fs::File;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Runs merged at once; more are merged in passes first.
-const FAN_IN: usize = 128;
-const READ_BUFFER: usize = 128 << 10;
+/// The compression window of a run. What a build sorts is mostly values
+/// compressed already, so a long window gains little, and a reader's
+/// memory is mostly its window.
+const WINDOW_LOG: u32 = 17;
+/// The read buffer on a run's file: reads of this size keep the merge's
+/// reads across many runs sequential enough for a disk.
+const FILE_BUFFER: usize = 128 << 10;
+/// The buffer records are parsed from.
+const RECORD_BUFFER: usize = 16 << 10;
+/// What one open run takes: its file buffer, the decoder's window, block
+/// and input buffers, and the record buffer.
+pub(crate) const RUN_MEMORY: usize = FILE_BUFFER + (1 << WINDOW_LOG) + (384 << 10) + RECORD_BUFFER;
 
 pub(crate) fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {
@@ -43,7 +52,9 @@ pub(crate) struct RecordWriter(zstd::stream::write::Encoder<'static, BufWriter<F
 impl RecordWriter {
     pub(crate) fn create(path: &Path) -> io::Result<Self> {
         let file = BufWriter::with_capacity(1 << 20, File::create(path)?);
-        Ok(Self(zstd::stream::write::Encoder::new(file, 1)?))
+        let mut encoder = zstd::stream::write::Encoder::new(file, 1)?;
+        encoder.window_log(WINDOW_LOG)?;
+        Ok(Self(encoder))
     }
 
     pub(crate) fn record(&mut self, key: &[u8], value: &[u8]) -> io::Result<()> {
@@ -69,12 +80,11 @@ pub(crate) struct RecordReader {
 
 impl RecordReader {
     pub(crate) fn open(path: &Path) -> io::Result<Self> {
-        let file = BufReader::with_capacity(READ_BUFFER, File::open(path)?);
+        let file = BufReader::with_capacity(FILE_BUFFER, File::open(path)?);
+        let mut decoder = zstd::stream::read::Decoder::with_buffer(file)?;
+        decoder.window_log_max(WINDOW_LOG)?;
         Ok(Self {
-            inner: Box::new(BufReader::with_capacity(
-                READ_BUFFER,
-                zstd::stream::read::Decoder::with_buffer(file)?,
-            )),
+            inner: Box::new(BufReader::with_capacity(RECORD_BUFFER, decoder)),
             key: Vec::new(),
             value: Vec::new(),
         })
@@ -166,27 +176,33 @@ pub(crate) struct Merger {
 }
 
 impl Merger {
-    /// Opens `runs`; past [`FAN_IN`], groups are first merged into larger
-    /// runs in `dir`, and the runs they replace are removed.
-    pub(crate) fn open(mut runs: Vec<PathBuf>, dir: &Path) -> io::Result<Self> {
-        let mut pass = 0;
-        while runs.len() > FAN_IN {
-            let mut next = Vec::new();
-            for (i, group) in runs.chunks(FAN_IN).enumerate() {
-                let path = dir.join(format!("pass{pass}-{i:05}.run"));
-                let mut merged = Merger::open(group.to_vec(), dir)?;
-                let mut w = RecordWriter::create(&path)?;
-                while let Some((k, v)) = merged.next()? {
-                    w.record(k, v)?;
-                }
-                w.finish()?;
-                for run in group {
-                    std::fs::remove_file(run)?;
-                }
-                next.push(path);
+    /// Opens `runs`, read forward in at most `memory` bytes. Runs that fit
+    /// are merged as written; past what fits, the fewest leading runs that
+    /// bring the rest within it are first merged into one run in `dir`, so
+    /// that only those are written again. The runs a merge replaces are
+    /// removed.
+    pub(crate) fn open(mut runs: Vec<PathBuf>, dir: &Path, memory: usize) -> io::Result<Self> {
+        let fan_in = (memory / RUN_MEMORY).max(2);
+        while runs.len() > fan_in {
+            let group: Vec<PathBuf> = runs
+                .drain(..(runs.len() - fan_in + 1).min(fan_in))
+                .collect();
+            // Merges of one directory never share a name.
+            static MERGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = dir.join(format!(
+                "merged-{}.run",
+                MERGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let mut merged = Merger::open(group.clone(), dir, memory)?;
+            let mut w = RecordWriter::create(&path)?;
+            while let Some((k, v)) = merged.next()? {
+                w.record(k, v)?;
             }
-            runs = next;
-            pass += 1;
+            w.finish()?;
+            for run in &group {
+                std::fs::remove_file(run)?;
+            }
+            runs.insert(0, path);
         }
         let mut readers = Vec::new();
         for path in &runs {
