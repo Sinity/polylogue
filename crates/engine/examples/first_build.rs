@@ -294,19 +294,23 @@ impl Rollout<'_> {
         self.record("response_item", payload)
     }
 
-    fn token_count(&mut self) -> std::io::Result<u64> {
+    /// A token count; the rate limits ride on one count per turn.
+    fn token_count(&mut self, limits: bool) -> std::io::Result<u64> {
         let last = 20_000 + self.rng.below(100_000);
         self.tokens += last;
         let usage = |input: u64| {
             serde_json::json!({"input_tokens": input, "cached_input_tokens": input / 10 * 9,
             "output_tokens": input / 50, "reasoning_output_tokens": input / 100, "total_tokens": input + input / 50})
         };
-        let used = self.rng.below(100);
-        self.event(serde_json::json!({"type": "token_count",
-            "info": {"total_token_usage": usage(self.tokens), "last_token_usage": usage(last), "model_context_window": 258_400},
-            "rate_limits": {"limit_id": "codex", "plan_type": "pro",
+        let mut payload = serde_json::json!({"type": "token_count",
+            "info": {"total_token_usage": usage(self.tokens), "last_token_usage": usage(last), "model_context_window": 258_400}});
+        if limits {
+            let used = self.rng.below(100);
+            payload["rate_limits"] = serde_json::json!({"limit_id": "codex", "plan_type": "pro",
                 "primary": {"used_percent": used, "window_minutes": 300, "resets_at": 1_788_300_000},
-                "secondary": {"used_percent": used / 4, "window_minutes": 10_080, "resets_at": 1_788_800_000}}}))
+                "secondary": {"used_percent": used / 4, "window_minutes": 10_080, "resets_at": 1_788_800_000}});
+        }
+        self.event(payload)
     }
 
     /// A user or assistant message item, remembered for compactions.
@@ -325,47 +329,39 @@ impl Rollout<'_> {
         self.item(item)
     }
 
-    /// One tool call with its output: a code-mode script whose command the
-    /// harness records with its output three times, a direct command whose
-    /// completion record carries only its status, or a patch.
-    fn call(&mut self, id: &str) -> std::io::Result<()> {
+    /// One tool call, its completion record and its output: a code-mode
+    /// script whose command the harness records with its output three
+    /// times, a direct command whose completion carries only its status, or
+    /// a patch.
+    fn call(&mut self, turn: u64, index: u64) -> std::io::Result<()> {
+        let id = &format!("call_{}_{turn}_{index}", self.thread);
         let command = format!("cargo test -p crate{}", self.rng.below(20));
-        let output = prose_h(self.rng, 2_400, 4_000_000);
+        let output = prose_h(self.rng, 2_800, 4_000_000);
         let exit_code = if self.rng.below(8) == 0 { 101 } else { 0 };
         let duration =
             serde_json::json!({"secs": self.rng.below(90), "nanos": self.rng.below(1_000_000_000)});
-        let (thread, turn) = (self.thread.clone(), format!("turn-{}", self.ordinal));
-        let completed = move |item: serde_json::Value| {
-            serde_json::json!({"type": "item_completed",
-            "thread_id": thread, "turn_id": turn, "item": item})
-        };
-        match self.rng.below(8) {
-            0..4 => {
-                self.item(
-                    serde_json::json!({"type": "custom_tool_call", "id": format!("ctc_{id}"),
+        let (call, completed, result) = match self.rng.below(16) {
+            0..7 => (
+                serde_json::json!({"type": "custom_tool_call", "id": format!("ctc_{id}"),
                     "call_id": id, "name": "exec", "status": "completed",
                     "input": format!("text(await tools.exec_command({{cmd:\"{command}\"}}));\n")}),
-                )?;
-                self.event(completed(serde_json::json!({"type": "CommandExecution",
-                    "id": format!("{id}_cmd"), "command": command, "cwd": "/workspace/project",
+                serde_json::json!({"type": "CommandExecution", "id": format!("{id}_cmd"),
+                    "command": command, "cwd": "/workspace/project",
                     "status": "completed", "exit_code": exit_code, "duration": duration,
-                    "aggregated_output": output, "stdout": output, "formatted_output": output})))?;
-                self.item(serde_json::json!({"type": "custom_tool_call_output", "id": format!("ctco_{id}"),
+                    "aggregated_output": output, "stdout": output, "formatted_output": output}),
+                serde_json::json!({"type": "custom_tool_call_output", "id": format!("ctco_{id}"),
                     "call_id": id, "output": [{"type": "input_text", "text": "Script completed\nOutput:\n"},
-                                              {"type": "input_text", "text": output}]}))?;
-            }
-            4..7 => {
-                let arguments =
-                    serde_json::json!({"cmd": command, "workdir": "/workspace/project"});
-                self.item(
-                    serde_json::json!({"type": "function_call", "id": format!("fc_{id}"),
-                    "call_id": id, "name": "exec_command", "arguments": arguments.to_string()}),
-                )?;
-                self.event(completed(serde_json::json!({"type": "CommandExecution", "id": id,
-                    "command": command, "status": "completed", "exit_code": exit_code, "duration": duration})))?;
-                self.item(serde_json::json!({"type": "function_call_output", "call_id": id,
-                    "output": format!("Chunk ID: {id}\nWall time: 1.5 seconds\nProcess exited with code {exit_code}\nOutput:\n{output}")}))?;
-            }
+                                              {"type": "input_text", "text": output}]}),
+            ),
+            7..14 => (
+                serde_json::json!({"type": "function_call", "id": format!("fc_{id}"),
+                    "call_id": id, "name": "exec_command",
+                    "arguments": serde_json::json!({"cmd": command, "workdir": "/workspace/project"}).to_string()}),
+                serde_json::json!({"type": "CommandExecution", "id": id, "command": command,
+                    "status": "completed", "exit_code": exit_code, "duration": duration}),
+                serde_json::json!({"type": "function_call_output", "call_id": id,
+                    "output": format!("Chunk ID: {id}\nWall time: 1.5 seconds\nProcess exited with code {exit_code}\nOutput:\n{output}")}),
+            ),
             _ => {
                 let file = format!("src/module{}.rs", self.rng.below(50));
                 let patch = format!(
@@ -373,18 +369,24 @@ impl Rollout<'_> {
                     prose_h(self.rng, 200, 20_000),
                     prose_h(self.rng, 200, 20_000)
                 );
-                self.item(
+                (
                     serde_json::json!({"type": "custom_tool_call", "id": format!("ctc_{id}"),
-                    "call_id": id, "name": "apply_patch", "status": "completed", "input": patch}),
-                )?;
-                self.event(completed(
+                        "call_id": id, "name": "apply_patch", "status": "completed", "input": patch}),
                     serde_json::json!({"type": "FileChange", "id": id, "status": "completed",
-                    "changes": {file.clone(): {"type": "update"}}}),
-                ))?;
-                self.item(serde_json::json!({"type": "custom_tool_call_output", "id": format!("ctco_{id}"),
-                    "call_id": id, "output": format!("Success. Updated the following files:\nM {file}")}))?;
+                        "changes": {file.clone(): {"type": "update"}}}),
+                    serde_json::json!({"type": "custom_tool_call_output", "id": format!("ctco_{id}"),
+                        "call_id": id, "output": format!("Success. Updated the following files:\nM {file}")}),
+                )
             }
-        }
+        };
+        self.item(call)?;
+        self.token_count(false)?;
+        self.event(
+            serde_json::json!({"type": "item_completed", "thread_id": self.thread,
+            "turn_id": format!("turn-{turn}"), "item": completed}),
+        )?;
+        self.item(result)?;
+        self.token_count(false)?;
         Ok(())
     }
 
@@ -407,20 +409,19 @@ impl Rollout<'_> {
         let prompt = prose_h(self.rng, 300, 30_000);
         self.message("user", format!("msg_{}_{n}_u", self.thread), prompt.clone())?;
         self.event(serde_json::json!({"type": "user_message", "message": prompt}))?;
-        self.token_count()?;
+        self.token_count(false)?;
         for c in 0..1 + self.rng.below(6) {
             let summary: Vec<_> = (0..self.rng.below(3))
                 .map(|_| serde_json::json!({"type": "summary_text", "text": prose_h(self.rng, 150, 2_000)}))
                 .collect();
-            let length = self.rng.heavy(1_200, 100_000);
+            let length = self.rng.heavy(1_000, 100_000);
             let encrypted = opaque(self.rng, length);
             self.item(
                 serde_json::json!({"type": "reasoning", "id": format!("rs_{}_{n}_{c}", self.thread),
                 "summary": summary, "encrypted_content": encrypted}),
             )?;
-            self.token_count()?;
-            self.call(&format!("call_{}_{n}_{c}", self.thread))?;
-            self.token_count()?;
+            self.token_count(false)?;
+            self.call(n, c)?;
         }
         let answer = prose_h(self.rng, 400, 20_000);
         self.message(
@@ -429,7 +430,7 @@ impl Rollout<'_> {
             answer.clone(),
         )?;
         self.event(serde_json::json!({"type": "agent_message", "message": answer}))?;
-        self.token_count()?;
+        self.token_count(true)?;
         self.event(serde_json::json!({"type": "task_complete", "turn_id": format!("turn-{n}")}))?;
         if self.compacted * 10 < self.written {
             let summary = prose_h(self.rng, 1_500, 20_000);
