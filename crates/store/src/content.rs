@@ -463,11 +463,11 @@ fn within(group: &[u8], range: Range<usize>) -> Result<&[u8]> {
         .ok_or_else(|| StoreError::stored(0, "a stored piece lies outside its group"))
 }
 
-/// What a value left in the stored bytes reads as in the index (docs/
-/// archive.md, content): a string naming the record that holds it, as a byte
-/// range of the reading's chain, and the value's JSON pointer in that record.
-/// Only a reader showing the value reads the record
-/// ([`crate::read::Reader::resolve_stored`]).
+/// What a value left in the stored bytes reads as in the index
+/// (docs/archive.md, content): a string naming the record that holds it, as
+/// a byte range of the reading's chain, and the value's JSON pointer in that
+/// record. Only a reader showing the value reads the record
+/// ([`crate::read::Reader::resolve_stored_value`]).
 pub(crate) fn stored_marker(field: &polylogue_model::StoredField) -> String {
     format!("{STORED}{} {} {}", field.start, field.end, field.pointer)
 }
