@@ -1118,7 +1118,10 @@ impl ComposeState {
             [],
         )?;
         for name in &fallback {
-            if !index.exists("SELECT 1 FROM session_record WHERE session_id=?1", [name])? {
+            if !index.exists(
+                "SELECT EXISTS(SELECT 1 FROM session_record WHERE session_id=?1)",
+                [name],
+            )? {
                 total += 1;
             }
         }
