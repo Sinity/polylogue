@@ -75,17 +75,19 @@ fn a_merge_writes_again_only_the_runs_past_its_memory() {
     let runs = spill("b", 5);
     let mut merged = Merger::open(runs, dir.path(), 3 * RUN_MEMORY).unwrap();
     // Five runs in the memory of three: the first three become one.
+    let listed = listing();
     assert_eq!(
-        listing(),
+        listed[..5],
         [
             "a-00000.run",
             "a-00001.run",
             "a-00002.run",
             "b-00003.run",
-            "b-00004.run",
-            "pass0.run"
+            "b-00004.run"
         ]
     );
+    assert_eq!(listed.len(), 6);
+    assert!(listed[5].starts_with("merged-"));
     let mut keys = Vec::new();
     while let Some((key, _)) = merged.next().unwrap() {
         keys.push(key.to_vec());

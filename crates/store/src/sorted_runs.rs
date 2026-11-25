@@ -183,12 +183,16 @@ impl Merger {
     /// removed.
     pub(crate) fn open(mut runs: Vec<PathBuf>, dir: &Path, memory: usize) -> io::Result<Self> {
         let fan_in = (memory / RUN_MEMORY).max(2);
-        let mut pass = 0;
         while runs.len() > fan_in {
             let group: Vec<PathBuf> = runs
                 .drain(..(runs.len() - fan_in + 1).min(fan_in))
                 .collect();
-            let path = dir.join(format!("pass{pass}.run"));
+            // Merges of one directory never share a name.
+            static MERGED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = dir.join(format!(
+                "merged-{}.run",
+                MERGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
             let mut merged = Merger::open(group.clone(), dir, memory)?;
             let mut w = RecordWriter::create(&path)?;
             while let Some((k, v)) = merged.next()? {
@@ -199,7 +203,6 @@ impl Merger {
                 std::fs::remove_file(run)?;
             }
             runs.insert(0, path);
-            pass += 1;
         }
         let mut readers = Vec::new();
         for path in &runs {
