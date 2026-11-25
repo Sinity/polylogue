@@ -41,8 +41,8 @@ impl Default for MemoryBudget {
     }
 }
 
-/// The least a parse worker needs to be worth running: one range in flight
-/// and its share of sort buffers.
+/// A parse worker's own memory, at least: the cache of its working index
+/// and its sort buffer, from the quarter of the budget workers share.
 const WORKER_MEMORY: u64 = 128 << 20;
 
 impl MemoryBudget {
@@ -109,13 +109,14 @@ impl MemoryBudget {
         (self.total / 4 / workers.max(1) as u64) as usize
     }
     /// Parse workers: one per core the process may use, as long as each
-    /// has at least [`WORKER_MEMORY`] of half the budget. The count does
-    /// not trade against the caches: memory a worker's prepared readings
-    /// need is admitted per chain ([`Self::prepared_in_flight`]).
+    /// has at least [`WORKER_MEMORY`] of its own ([`Self::build_worker_memory`]).
+    /// The count does not trade against the caches: memory a worker's
+    /// prepared readings need is admitted per chain
+    /// ([`Self::prepared_in_flight`]).
     pub fn worker_count(self, cores: usize, requested: usize) -> usize {
         cores
             .min(requested)
-            .min((self.total / 2 / WORKER_MEMORY) as usize)
+            .min((self.total / 4 / WORKER_MEMORY) as usize)
             .max(1)
     }
 }
