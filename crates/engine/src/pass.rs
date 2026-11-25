@@ -2,6 +2,7 @@
 //! runs passes.
 
 use crate::plan::{InputState, Plan, span, whole};
+use crate::source_read::PlannedFile;
 use crate::*;
 use polylogue_sources::export::ExportParser;
 use polylogue_store::RevisionChains;
@@ -980,7 +981,7 @@ impl Engine {
             if !self.track(&f) {
                 continue;
             }
-            if let Some(plan) = self.plan(&f.path, now)? {
+            if let Some(plan) = self.plan_file(&f.path, now, pass)? {
                 plans.push(plan);
             }
         }
@@ -1125,7 +1126,7 @@ impl Engine {
             let plan = if st.facts == Some(now) && st.working.is_none() && st.stored >= now.size {
                 self.stored_plan(&f.path)?
             } else {
-                self.plan(&f.path, now)?
+                self.plan_file(&f.path, now, pass)?
             };
             if let Some(mut plan) = plan {
                 plan.priority = Priority::Live;
@@ -1201,6 +1202,26 @@ impl Engine {
         st.facts = Some(now);
         st.unread = None;
         self.stored_plan(path)
+    }
+
+    /// Plans one tracked path. A file that cannot be read while it is
+    /// compared with what is stored (gone, or replaced meanwhile) is that
+    /// file's error and is looked at again next pass; a store failure stays
+    /// the pass's.
+    fn plan_file(
+        &mut self,
+        path: &Path,
+        now: FileFacts,
+        pass: &mut Pass,
+    ) -> Result<Option<Plan>, EngineError> {
+        match self.plan(path, now) {
+            Err(EngineError::Io(error)) => {
+                pass.errors
+                    .push(format!("plan {}: {error}", path.display()));
+                Ok(None)
+            }
+            planned => planned,
+        }
     }
 
     /// Decides what to read for one tracked path.
@@ -1962,8 +1983,11 @@ impl Engine {
     /// Readies a plan for reading: what a byte read already holds, the
     /// captured authored records and local references are recorded first.
     /// None when nothing is left to read, or the plan is refused or failed.
-    fn admit(&mut self, mut plan: Plan, pass: &mut Pass) -> Result<Option<Plan>, EngineError> {
-        self.prepare_byte_read(&mut plan)?;
+    fn admit(&mut self, plan: Plan, pass: &mut Pass) -> Result<Option<Plan>, EngineError> {
+        polylogue_store::fault::check("pass.admit", &plan.path.to_string_lossy())?;
+        let Some(mut plan) = self.current_plan(plan, pass)? else {
+            return Ok(None);
+        };
         if plan.byte_read.is_some() && plan.finished() {
             self.record_byte_read_status(&plan, None, pass)?;
             self.finish_plan(plan);
@@ -2003,6 +2027,60 @@ impl Engine {
             return Ok(None);
         }
         Ok(Some(plan))
+    }
+
+    /// The plan of a file as it is now. A file that changed after it was
+    /// planned (a session being written) is planned again from its current
+    /// state; one that changes again before it is read waits for the next
+    /// pass, and one that cannot be read fails alone. The pass goes on with
+    /// every other file either way.
+    fn current_plan(
+        &mut self,
+        mut plan: Plan,
+        pass: &mut Pass,
+    ) -> Result<Option<Plan>, EngineError> {
+        let mut planned_again = false;
+        loop {
+            match self.prepare_byte_read(&mut plan)? {
+                PlannedFile::Ready => return Ok(Some(plan)),
+                PlannedFile::Unreadable(error) => {
+                    pass.errors
+                        .push(format!("read {}: {error}", plan.path.display()));
+                    plan.failed = true;
+                    self.finish_plan(plan);
+                    return Ok(None);
+                }
+                PlannedFile::Changed => {}
+            }
+            let now = match std::fs::metadata(&plan.path) {
+                Ok(metadata) if !planned_again && self.inputs.contains_key(&plan.path) => {
+                    FileFacts::of(&metadata)
+                }
+                // Changing still, or gone: the next pass finds it as it is then.
+                _ => {
+                    pass.capture_pending = true;
+                    return Ok(None);
+                }
+            };
+            planned_again = true;
+            // Planning counts the file's bytes into the build's total again.
+            if has_reading(plan.origin)
+                && let Some(build) = self.archive.index_build()
+            {
+                self.archive.record_build_bytes(
+                    build
+                        .bytes
+                        .saturating_sub(plan.size.saturating_sub(plan.stored_upto)),
+                    build.bytes_read,
+                );
+            }
+            let Some(mut again) = self.plan_file(&plan.path, now, pass)? else {
+                return Ok(None);
+            };
+            again.priority = plan.priority;
+            again.storing_only |= plan.storing_only;
+            plan = again;
+        }
     }
 
     /// Runs plans on the parse pool, one job per input at a time, until
