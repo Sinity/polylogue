@@ -191,3 +191,58 @@ fn a_prepared_step_gives_complete_rows_with_the_values_the_index_leaves_out() {
         .is_some()
     );
 }
+
+/// A message whose value's record cannot be read still reads, with the
+/// value's place where the value would be (docs/archive.md, content).
+#[test]
+fn a_message_reads_while_the_record_holding_its_value_is_not_at_hand() {
+    let w = test_archive();
+    let store = Arc::new(w.archive.blobs().unwrap());
+    for result in w
+        .writer
+        .store_group(vec![stored_batch(&w)], Arc::clone(&store))
+        .unwrap()
+    {
+        result.unwrap();
+    }
+    w.writer.flush().unwrap();
+    // The reading names a record beyond its chain's stored bytes.
+    let far = polylogue_model::StoredField {
+        block: Some(0),
+        field: "/signature".into(),
+        start: 9_999_999,
+        end: 99_999_999,
+        pointer: "/payload/encrypted_content".into(),
+    };
+    let gone = crate::content::stored_marker(&far);
+    {
+        let conn = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+        let mut message = text_message("rs", "s", Role::Assistant, "", None);
+        message.blocks = vec![Block::Thinking {
+            text: None,
+            signature: Some(SIGNATURE.into()),
+            redacted: true,
+        }];
+        let content = crate::encoding::message_content(&mut message, &[far]).unwrap();
+        let piece = crate::content::store_piece(&conn, &content, None).unwrap();
+        conn.execute(
+            "UPDATE message_parse SET content_group=?1,content_start=?2,content_length=?3",
+            rusqlite::params![piece.group, piece.start, piece.length],
+        )
+        .unwrap();
+    }
+    let pool = ReadPool::open(&w.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let (message, _) = reader
+        .message_with_block_selection(&MessageId::parse("claude-code:rs").unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        message.blocks,
+        [Block::Thinking {
+            text: None,
+            signature: Some(gone),
+            redacted: true,
+        }]
+    );
+}
