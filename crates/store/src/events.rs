@@ -3,20 +3,33 @@
 use crate::{Reader, Result, StoreError};
 use polylogue_model::bundle::{ImportedEventIdentity, InputEventRecord, StatedSource};
 use polylogue_model::{Event, SessionId};
-use rusqlite::OptionalExtension;
 
-/// An event's metadata and its payload are stored as two separate blobs; the
-/// payload is decoded into `event.data`.
-pub(crate) fn decode_event(fields: &[u8], data: &[u8]) -> Result<Event> {
-    let mut event: Event = crate::encoding::unpack_json(fields)?;
-    event.data = crate::encoding::unpack_json(data)?;
+/// The columns [`shown_event`] reads from `event e LEFT JOIN session s ON
+/// s.pk=e.session_pk`.
+pub(crate) const SHOWN_EVENT_COLUMNS: &str =
+    "e.content_group,e.content_start,e.content_length,e.data_length,s.id,e.after_message_id";
+
+/// A shown event from the [`SHOWN_EVENT_COLUMNS`] of `row` starting at `at`:
+/// its reading's stored fields and data, with its session and the message it
+/// follows as the row shows them (a copy's event is shown under the names its
+/// session gives).
+pub(crate) fn shown_event(
+    conn: &rusqlite::Connection,
+    reader: &mut crate::content::Reader,
+    row: &rusqlite::Row<'_>,
+    at: usize,
+) -> Result<Event> {
+    use crate::encoding::Columns as _;
+    let mut event =
+        crate::writer::readings::read_event(conn, reader, crate::content::Piece::of(row, at)?)?;
+    event.session = row.optional_id(at + 4)?;
+    event.after = row.optional_id(at + 5)?;
     Ok(event)
 }
 
 struct StoredEvent {
     pk: i64,
-    fields: Vec<u8>,
-    data: Vec<u8>,
+    event: Event,
     input: String,
     chain: i64,
     end: Option<i64>,
@@ -26,17 +39,29 @@ struct StoredEvent {
 impl Reader<'_> {
     /// The selected event, with every kept source citation and its local source.
     pub fn event_record(&self, id: &str) -> Result<Option<InputEventRecord>> {
-        let stored: Option<StoredEvent> = self
-            .conn()?
-            .query_row("SELECT e.pk,e.fields,e.data,i.id,e.source_chain,e.source_end,NULL FROM event e JOIN input_ref i ON i.pk=e.input_pk
-                WHERE e.id=?1", [id], |r| {
-                Ok(StoredEvent{pk:r.get(0)?,fields:r.get(1)?,data:r.get(2)?,input:r.get(3)?,chain:r.get(4)?,end:r.get(5)?,committed:r.get(6)?})
-            })
-            .optional()?;
+        let conn = self.conn()?;
+        let mut reader = crate::content::Reader::default();
+        let stored: Option<StoredEvent> = conn
+            .prepare_cached(&format!(
+                "SELECT e.pk,i.id,e.source_chain,e.source_end,NULL,{SHOWN_EVENT_COLUMNS}
+                 FROM event e JOIN input_ref i ON i.pk=e.input_pk LEFT JOIN session s ON s.pk=e.session_pk
+                 WHERE e.id=?1"
+            ))?
+            .query_and_then([id], |r| {
+                Ok::<_, StoreError>(StoredEvent {
+                    pk: r.get(0)?,
+                    input: r.get(1)?,
+                    chain: r.get(2)?,
+                    end: r.get(3)?,
+                    committed: r.get(4)?,
+                    event: shown_event(conn, &mut reader, r, 5)?,
+                })
+            })?
+            .next()
+            .transpose()?;
         let Some(StoredEvent {
             pk,
-            fields,
-            data,
+            event,
             input,
             chain,
             end,
@@ -45,7 +70,6 @@ impl Reader<'_> {
         else {
             return Ok(None);
         };
-        let event = decode_event(&fields, &data)?;
         let readings = crate::writer::readings::event_readings(self.conn()?, pk)?;
         let selected = readings
             .iter()

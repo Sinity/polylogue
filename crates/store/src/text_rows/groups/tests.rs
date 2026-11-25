@@ -1,4 +1,5 @@
 use super::*;
+use crate::content::GROUP_BYTES;
 use crate::text_rows::{remove, resolve};
 
 fn hash(text: &str) -> [u8; 32] {
@@ -52,7 +53,7 @@ fn a_step_packs_neighbouring_texts_together_and_a_long_text_alone() {
     }
     let one: usize = short
         .iter()
-        .map(|t| zstd::bulk::compress(t.as_bytes(), LEVEL).unwrap().len())
+        .map(|t| zstd::bulk::compress(t.as_bytes(), 3).unwrap().len())
         .sum();
     let grouped = PreparedTexts::pack(short.iter().map(String::as_str)).unwrap();
     assert_eq!(grouped.groups.len(), 1);
@@ -107,15 +108,15 @@ fn the_writer_stores_a_group_once_and_removes_it_with_its_last_text() {
     let kept = resolve(&tx, &hash("kept"), prepared.get(&hash("kept"))).unwrap();
     let removed = resolve(&tx, &hash("removed"), prepared.get(&hash("removed"))).unwrap();
     tx.commit().unwrap();
-    assert_eq!(count(&conn, "text_group"), 1);
+    assert_eq!(count(&conn, "content_group"), 1);
     assert_eq!(read(&conn, kept).unwrap(), "kept");
     assert_eq!(read(&conn, removed).unwrap(), "removed");
 
     remove(&conn, removed).unwrap();
-    assert_eq!(count(&conn, "text_group"), 1);
+    assert_eq!(count(&conn, "content_group"), 1);
     assert_eq!(read(&conn, kept).unwrap(), "kept");
     remove(&conn, kept).unwrap();
-    assert_eq!(count(&conn, "text_group"), 0);
+    assert_eq!(count(&conn, "content_group"), 0);
     assert_eq!(count(&conn, "text"), 0);
 }
 
@@ -127,23 +128,23 @@ fn an_equal_group_is_one_row_across_steps_and_a_rolled_back_group_is_stored_agai
     // A later step whose group has the same bytes shares the stored row.
     let same = PreparedTexts::pack(["shared", "first only"]).unwrap();
     let other = resolve(&conn, &hash("first only"), same.get(&hash("first only"))).unwrap();
-    assert_eq!(count(&conn, "text_group"), 1);
+    assert_eq!(count(&conn, "content_group"), 1);
     assert_eq!(read(&conn, other).unwrap(), "first only");
     let later = PreparedTexts::pack(["shared", "fresh"]).unwrap();
     {
         let tx = conn.transaction().unwrap();
         let again = resolve(&tx, &hash("shared"), later.get(&hash("shared"))).unwrap();
         assert_eq!(again, id);
-        assert_eq!(count(&tx, "text_group"), 1);
+        assert_eq!(count(&tx, "content_group"), 1);
         resolve(&tx, &hash("fresh"), later.get(&hash("fresh"))).unwrap();
-        assert_eq!(count(&tx, "text_group"), 2);
+        assert_eq!(count(&tx, "content_group"), 2);
         // Rolled back with its group.
     }
-    assert_eq!(count(&conn, "text_group"), 1);
+    assert_eq!(count(&conn, "content_group"), 1);
     let fresh = resolve(&conn, &hash("fresh"), later.get(&hash("fresh"))).unwrap();
     assert_eq!(read(&conn, fresh).unwrap(), "fresh");
     assert_eq!(read(&conn, id).unwrap(), "shared");
-    assert_eq!(count(&conn, "text_group"), 2);
+    assert_eq!(count(&conn, "content_group"), 2);
 }
 
 #[test]

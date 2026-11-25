@@ -45,63 +45,69 @@ pub(super) struct MessageReading {
     pub completion: Completion,
     pub content: bool,
     pub hash: Vec<u8>,
-    /// The reading's value and its session's kind, when they come with it
-    /// (a build's stream); otherwise they are read from the index.
+    /// Where the reading's content is stored.
+    pub stored: crate::content::Stretch,
+    /// What the reading brings with it and its session's kind, when they
+    /// come with it (a build's stream); otherwise they are read from the
+    /// index.
     pub given: Option<Given>,
 }
 
 /// What a reading supplied with it brings: the kind its chain states for
-/// its session, and its value.
+/// its session, and what composition takes from its value besides its
+/// stored content.
 #[derive(Debug)]
 pub(super) struct Given {
     pub kind: Option<polylogue_model::SessionKind>,
     /// A newer chain of its input was read to its end or waits for more.
     pub superseded: bool,
-    pub value: ReadingValue,
+    pub words: i64,
+    pub items: Vec<polylogue_model::read::IndexEntry>,
+    /// Each block's text hash and text row.
+    pub texts: Vec<Option<[u8; 32]>>,
+    pub text_ids: Vec<Option<i64>>,
 }
 
-/// What composition takes from a reading's value: its message and the rows
-/// packed from it. The message's texts are needed only for its word count,
-/// so a value that travels may carry the message without them.
+/// What composition takes from a reading's value: its message and where its
+/// blocks' pieces are stored. The message's texts are needed only for its
+/// word count and items, so a value given those may carry the message
+/// without them.
 #[derive(Debug)]
 pub(super) struct ReadingValue {
     pub message: Message,
     pub words: i64,
     pub selection: polylogue_model::bundle::ShownBlocks,
     pub items: Vec<polylogue_model::read::IndexEntry>,
-    pub content: crate::encoding::PreparedContent,
+    /// Each block's piece, in the content of a reading that holds it.
+    pub pieces: Vec<crate::content::Piece>,
+    /// Each block's text hash, for a block that keeps its text in `text`.
+    pub texts: Vec<Option<[u8; 32]>>,
     /// Each block's text row, when the reading came with them; otherwise
     /// each text is found by its hash.
     pub text_ids: Option<Vec<Option<i64>>>,
 }
 
 impl ReadingValue {
-    /// The value of a message as a reading holds it: `selection` names the
-    /// blocks the reading holds of its version.
-    pub(super) fn of(
-        message: Message,
-        selection: polylogue_model::bundle::ShownBlocks,
-        packer: &mut crate::encoding::RowPacker,
-    ) -> Result<Self> {
+    /// The value of a message as its readings hold it, with its texts.
+    pub(super) fn of(stored: readings::StoredReading) -> Result<Self> {
+        let readings::StoredReading {
+            message,
+            selection,
+            pieces,
+        } = stored;
         selection.validate(message.blocks.len())?;
-        if selection.block_count == message.blocks.len() as u64
-            && message.content_hash()? != selection.source_version
-        {
-            return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
-        }
         let items = polylogue_model::read::message_entries(
             &message,
             &selection.block_ordinals,
             polylogue_model::read::MessagePlace::default(),
         );
-        let content = packer.pack_content(&message.blocks, selection.source_version.0)?;
-        let words = text_words(&message);
         Ok(Self {
+            words: text_words(&message),
+            texts: crate::encoding::text_hashes(&message.blocks),
             message,
-            words,
             selection,
             items,
-            content,
+            pieces,
             text_ids: None,
         })
     }
@@ -162,7 +168,7 @@ struct Work<'a, 'c> {
     /// (stated session, stated event ID).
     events: BTreeSet<(Option<String>, String)>,
     written: u64,
-    packer: crate::encoding::RowPacker,
+    reader: crate::content::Reader,
     /// Set when the readings come grouped by session from a build's stream.
     stream: Option<Stream>,
 }
@@ -229,19 +235,11 @@ pub(super) struct EventRow {
     pub event_id: String,
     pub route: Route,
     pub hash: Vec<u8>,
-    pub fields: Vec<u8>,
-    pub data: Vec<u8>,
+    /// Its stored content: its fields, then its data.
+    pub piece: crate::content::Piece,
     pub seq: i64,
     pub start: Option<i64>,
     pub end: Option<i64>,
-}
-
-impl EventRow {
-    fn event(&self) -> Result<Event> {
-        let mut event: Event = crate::encoding::unpack_json(&self.fields)?;
-        event.data = crate::encoding::unpack_json(&self.data)?;
-        Ok(event)
-    }
 }
 
 /// One chain's statement of a call's background outcome.
@@ -353,7 +351,7 @@ impl<'a, 'c> Composer<'a, 'c> {
         let events = std::mem::take(&mut work.stream().events);
         let mut decoded = Vec::new();
         for event in &events {
-            let value = event.event()?;
+            let value = readings::read_event(work.tx(), &mut work.reader, event.piece)?;
             if polylogue_model::live::is_live_event(&value.kind) {
                 live.push(event);
                 decoded.push(value);
@@ -391,7 +389,7 @@ impl<'a, 'c> Work<'a, 'c> {
             calls: BTreeSet::new(),
             events: BTreeSet::new(),
             written: 0,
-            packer: crate::encoding::RowPacker::new()?,
+            reader: crate::content::Reader::default(),
             stream,
         })
     }
@@ -416,6 +414,7 @@ impl<'c> Work<'_, 'c> {
             documents,
             calls,
             released_texts,
+            released_groups,
             live,
         } = touched;
         // Sessions composed whole: every message, event and link their
@@ -542,6 +541,7 @@ impl<'c> Work<'_, 'c> {
             self.apply_live(&event)?;
         }
         readings::remove_released_texts(self.tx(), &released_texts)?;
+        readings::remove_released_groups(self.tx(), &released_groups)?;
         Ok(())
     }
 
@@ -673,7 +673,8 @@ impl<'c> Work<'_, 'c> {
                 .tx()
                 .prepare_cached(
                     "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_end,r.seq,
-                         r.record_position,r.order_time,r.route,r.completion,r.id_kind='content',r.hash
+                         r.record_position,r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
+                         r.content_group,r.content_start,r.content_length
                      FROM message_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.message_id=?1",
                 )?
                 .query_map([&stated], |r| {
@@ -692,6 +693,11 @@ impl<'c> Work<'_, 'c> {
                         completion: r.name(11)?,
                         content: r.get(12)?,
                         hash: r.get(13)?,
+                        stored: crate::content::Stretch {
+                            group: r.get(14)?,
+                            start: r.get(15)?,
+                            length: r.get(16)?,
+                        },
                         given: None,
                     })
                 })?
@@ -735,19 +741,55 @@ impl<'c> Work<'_, 'c> {
     /// shows every block the readings of that version hold.
     fn value(&mut self, r: &mut MessageReading) -> Result<ReadingValue> {
         if let Some(given) = r.given.take() {
-            return Ok(given.value);
+            // The content without texts or structured values: composition
+            // writes neither, and the words and items came with the reading.
+            let (message, pieces) = crate::encoding::read_message_content(
+                self.reader.bytes(self.context.tx, r.stored)?,
+                false,
+            )?;
+            let selection =
+                crate::encoding::message_block_selection(&r.hash, None, message.blocks.len())?;
+            if given.texts.len() != message.blocks.len()
+                || given
+                    .text_ids
+                    .iter()
+                    .zip(&given.texts)
+                    .any(|(id, text)| id.is_some() != text.is_some())
+            {
+                return Err(StoreError::Invalid(
+                    "a message reading's text rows differ from its blocks".into(),
+                ));
+            }
+            return Ok(ReadingValue {
+                message,
+                words: given.words,
+                selection,
+                items: given.items,
+                pieces: readings::placed(r.stored, &pieces),
+                texts: given.texts,
+                text_ids: Some(given.text_ids),
+            });
         }
-        let (message, selection) =
-            readings::read_message(self.tx(), r.input_pk, r.chain, &r.message)?
-                .ok_or_else(|| StoreError::Invalid("a message reading has no body".into()))?;
-        let (message, selection) = if selection.block_count == message.blocks.len() as u64 {
-            (message, selection)
+        let stored = readings::read_reading(
+            self.context.tx,
+            &mut self.reader,
+            r.input_pk,
+            r.chain,
+            &r.message,
+        )?
+        .ok_or_else(|| StoreError::Invalid("a message reading has no body".into()))?;
+        let stored = if stored.selection.block_count == stored.message.blocks.len() as u64 {
+            stored
         } else {
             let shown = self.ids.message(&r.message)?;
             let ids = self.ids.stated_messages(&shown)?;
-            readings::read_version(self.tx(), &ids, &r.hash)?.unwrap_or((message, selection))
+            match readings::read_version_reading(self.context.tx, &mut self.reader, &ids, &r.hash)?
+            {
+                Some(merged) => merged,
+                None => stored,
+            }
         };
-        ReadingValue::of(message, selection, &mut self.packer)
+        ReadingValue::of(stored)
     }
 
     /// Composes one shown message from its readings and writes its rows;
@@ -886,6 +928,9 @@ impl<'c> Work<'_, 'c> {
                 let content_same = before[..CONTENT_COLUMNS] == row[..CONTENT_COLUMNS]
                     && stored_routes == new_routes;
                 if content_same {
+                    // The same content may be stored again elsewhere (a
+                    // reading written anew): its blocks name it there.
+                    self.move_blocks(pk, &value.pieces)?;
                     if before[CONTENT_COLUMNS..] != row[CONTENT_COLUMNS..] {
                         // Where the main reading is changes no item; its
                         // place and completion do.
@@ -953,8 +998,8 @@ impl<'c> Work<'_, 'c> {
     }
 
     /// A message shown whole from one reading is unchanged when its row
-    /// already shows that reading, in its session and place: nothing is
-    /// read or written for it.
+    /// already shows that reading, in its session and place, and its blocks
+    /// name that reading's stored content: nothing is read or written for it.
     fn unchanged(&mut self, r: &MessageReading, stored: Option<(i64, i64)>) -> Result<bool> {
         let Some((pk, session_pk)) = stored else {
             return Ok(false);
@@ -970,6 +1015,10 @@ impl<'c> Work<'_, 'c> {
             )?
             .query_row(params![r.input_pk, r.chain, r.message], |row| row.get(0))?;
         let selection = crate::encoding::message_block_selection(&r.hash, Some(&layout), 0)?;
+        // A reading holding some blocks shows blocks other readings hold.
+        if selection.block_count != selection.block_ordinals.len() as u64 {
+            return Ok(false);
+        }
         let layout = layout_column(&selection)?;
         let order = crate::encoding::session_order(r.order_time, &r.input, r.seq, r.position);
         let in_progress = r.completion == Completion::InProgress;
@@ -977,13 +1026,64 @@ impl<'c> Work<'_, 'c> {
             "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND version_hash IS ?2 AND layout IS ?3
                  AND input_pk=?4 AND source_chain=?5 AND source_start=?6 AND source_end=?7
                  AND session_order=?8 AND in_progress=?9)
-             AND NOT EXISTS(SELECT 1 FROM message_route WHERE message_pk=?1)",
-            params![pk, r.hash, layout, r.input_pk, r.chain, r.start, r.end, order, in_progress],
+             AND NOT EXISTS(SELECT 1 FROM message_route WHERE message_pk=?1)
+             AND NOT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND (content_group IS NOT ?10
+                 OR content_start < ?11 OR content_start >= ?11 + ?12))",
+            params![
+                pk,
+                r.hash,
+                layout,
+                r.input_pk,
+                r.chain,
+                r.start,
+                r.end,
+                order,
+                in_progress,
+                r.stored.group,
+                r.stored.start,
+                r.stored.length
+            ],
         )?;
         if same {
             self.context.changes.session(self.tx(), session_pk)?;
         }
         Ok(same)
+    }
+
+    /// Points a message's blocks at the pieces given, where they differ.
+    fn move_blocks(&self, message_pk: i64, pieces: &[crate::content::Piece]) -> Result<()> {
+        let stored = self
+            .tx()
+            .prepare_cached(
+                "SELECT idx,content_group,content_start,content_length,data_length FROM block
+                 WHERE message_pk=?1 ORDER BY idx",
+            )?
+            .query_map([message_pk], |r| {
+                Ok((r.get::<_, i64>(0)?, crate::content::Piece::of(r, 1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for (idx, before) in stored {
+            let piece = usize::try_from(idx)
+                .ok()
+                .and_then(|idx| pieces.get(idx))
+                .ok_or_else(|| StoreError::Invalid("a shown block has no piece".into()))?;
+            if *piece != before {
+                self.tx()
+                    .prepare_cached(
+                        "UPDATE block SET content_group=?3,content_start=?4,content_length=?5,data_length=?6
+                         WHERE message_pk=?1 AND idx=?2",
+                    )?
+                    .execute(params![
+                        message_pk,
+                        idx,
+                        piece.group,
+                        piece.start,
+                        piece.length,
+                        piece.data_length
+                    ])?;
+            }
+        }
+        Ok(())
     }
 
     fn stored_message_columns(&self, pk: i64) -> Result<Vec<Value>> {
@@ -1078,8 +1178,8 @@ impl<'c> Work<'_, 'c> {
         order: &str,
         value: &ReadingValue,
     ) -> Result<()> {
-        let (m, content) = (&value.message, &value.content);
-        if content.blocks.len() != m.blocks.len() {
+        let m = &value.message;
+        if value.pieces.len() != m.blocks.len() || value.texts.len() != m.blocks.len() {
             return Err(StoreError::Invalid(
                 "prepared message differs from its parsed blocks".into(),
             ));
@@ -1088,19 +1188,13 @@ impl<'c> Work<'_, 'c> {
         let origin = m.session.origin().as_str().to_owned();
         let at = m.at.map(Timestamp::unix_ms);
         let mut insert = self.tx().prepare_cached(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, body, call_id,
-                 blob_hash, media_type, file_name, size, url, direction, signature, encrypted,
-                 other_type, data, ordinal)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+                 content_start, content_length, data_length, call_id, blob_hash, media_type,
+                 file_name, size, url, direction, encrypted, other_type, ordinal)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         )?;
-        for (idx, ((block, body), data)) in m
-            .blocks
-            .iter()
-            .zip(&content.blocks)
-            .zip(&content.data)
-            .enumerate()
-        {
-            let text_id = match (&content.texts[idx], &value.text_ids) {
+        for (idx, (block, piece)) in m.blocks.iter().zip(&value.pieces).enumerate() {
+            let text_id = match (&value.texts[idx], &value.text_ids) {
                 (None, _) => None,
                 (Some(_), Some(ids)) => Some(ids.get(idx).copied().flatten().ok_or_else(|| {
                     StoreError::Invalid("a message reading's text reference is missing".into())
@@ -1117,14 +1211,7 @@ impl<'c> Work<'_, 'c> {
                 Block::Other { .. } => ("other", None, None),
             };
             let call_id = call_id.map(|id| self.ids.call(&origin, id)).transpose()?;
-            let (signature, encrypted) = match block {
-                Block::Thinking {
-                    signature,
-                    redacted,
-                    ..
-                } => (signature.as_deref(), *redacted),
-                _ => (None, false),
-            };
+            let encrypted = matches!(block, Block::Thinking { redacted: true, .. });
             let other_type = match block {
                 Block::Other { type_name, .. } => Some(type_name.as_str()),
                 _ => None,
@@ -1135,7 +1222,10 @@ impl<'c> Work<'_, 'c> {
                 idx as i64,
                 kind,
                 text_id,
-                body,
+                piece.group,
+                piece.start,
+                piece.length,
+                piece.data_length,
                 call_id,
                 attachment.and_then(|a| a.blob).map(|h| h.0.to_vec()),
                 attachment.and_then(|a| a.media_type.as_deref()),
@@ -1145,10 +1235,8 @@ impl<'c> Work<'_, 'c> {
                     .and_then(|s| i64::try_from(s).ok()),
                 attachment.and_then(|a| a.url.as_deref()),
                 attachment.map(|a| name(&a.direction)),
-                signature,
                 i64::from(encrypted),
                 other_type,
-                data.as_deref(),
                 value.selection.block_ordinals[idx].to_string(),
             ])?;
             let block_pk = self.tx().last_insert_rowid();
@@ -1297,27 +1385,27 @@ impl<'c> Work<'_, 'c> {
             )? {
                 continue;
             }
-            let result: Option<(String, i64, Vec<u8>, Option<i64>)> = self
+            let result: Option<(String, i64, crate::content::Piece, Option<i64>)> = self
                 .tx()
                 .prepare_cached(
-                    "SELECT m.id,b.idx,b.body,m.at FROM block b JOIN message m ON m.pk=b.message_pk
+                    "SELECT m.id,b.idx,b.content_group,b.content_start,b.content_length,b.data_length,m.at
+                     FROM block b JOIN message m ON m.pk=b.message_pk
                      WHERE b.session_pk=?1 AND b.call_id=?2 AND b.kind='tool_result'
                      ORDER BY m.session_order,m.id,b.idx LIMIT 1",
                 )?
                 .query_row(params![session_pk, call_id], |r| {
-                    <(_, _, _, _)>::try_from(r)
+                    Ok((r.get(0)?, r.get(1)?, crate::content::Piece::of(r, 2)?, r.get(6)?))
                 })
                 .optional()?;
+            let result = match result {
+                Some((message, idx, piece, at)) => {
+                    let block: Block = self.reader.json(self.context.tx, piece.body())?;
+                    Some((message, idx, ResultOutcome::of(&block), at))
+                }
+                None => None,
+            };
             let background = self.background_outcome(&session, &call_id)?;
-            let columns = Pairing::of(
-                result.map(|(message, idx, body, at)| {
-                    let outcome = unpack_block(&body)
-                        .ok()
-                        .and_then(|block| ResultOutcome::of(&block));
-                    (message, idx, outcome, at)
-                }),
-                background.as_ref(),
-            );
+            let columns = Pairing::of(result, background.as_ref());
             let same = self.tx().exists(
                 "SELECT NOT EXISTS(SELECT 1 FROM tool_call WHERE session_pk=?1 AND call_id=?2 AND NOT (
                      result_message_id IS ?3 AND result_idx IS ?4 AND outcome IS ?5 AND outcome_reason IS ?6
@@ -1419,29 +1507,24 @@ impl<'c> Work<'_, 'c> {
     /// show it.
     fn shown_event_id(&mut self, stated: &str) -> Result<(String, BTreeSet<String>)> {
         let mut ids = BTreeSet::from([stated.to_owned()]);
-        let event = match &self.stream {
+        let piece = match &self.stream {
             Some(stream) => stream
                 .events
                 .iter()
                 .find(|r| r.event_id == stated)
-                .map(EventRow::event)
-                .transpose()?,
-            None => {
-                let row: Option<(Vec<u8>, Vec<u8>)> = self
-                    .tx()
-                    .prepare_cached(
-                        "SELECT fields,data FROM event_parse WHERE event_id=?1 LIMIT 1",
-                    )?
-                    .query_row([stated], |r| <(_, _)>::try_from(r))
-                    .optional()?;
-                row.map(|(fields, data)| {
-                    let mut event: Event = crate::encoding::unpack_json(&fields)?;
-                    event.data = crate::encoding::unpack_json(&data)?;
-                    Ok::<_, StoreError>(event)
-                })
-                .transpose()?
-            }
+                .map(|r| r.piece),
+            None => self
+                .tx()
+                .prepare_cached(
+                    "SELECT content_group,content_start,content_length,data_length FROM event_parse
+                     WHERE event_id=?1 LIMIT 1",
+                )?
+                .query_row([stated], |r| crate::content::Piece::of(r, 0))
+                .optional()?,
         };
+        let event = piece
+            .map(|piece| readings::read_event(self.tx(), &mut self.reader, piece))
+            .transpose()?;
         let Some(event) = event else {
             return Ok((stated.to_owned(), ids));
         };
@@ -1464,7 +1547,8 @@ impl<'c> Work<'_, 'c> {
         Ok(self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.fields,r.data,r.seq,r.source_start,r.source_end
+                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.seq,r.source_start,r.source_end,
+                     r.content_group,r.content_start,r.content_length,r.data_length
                  FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.event_id=?1",
             )?
             .query_map([id], |r| {
@@ -1474,11 +1558,10 @@ impl<'c> Work<'_, 'c> {
                     input_pk: r.get(2)?,
                     route: r.name(3)?,
                     hash: r.get(4)?,
-                    fields: r.get(5)?,
-                    data: r.get(6)?,
-                    seq: r.get(7)?,
-                    start: r.get(8)?,
-                    end: r.get(9)?,
+                    seq: r.get(5)?,
+                    start: r.get(6)?,
+                    end: r.get(7)?,
+                    piece: crate::content::Piece::of(r, 8)?,
                     event_id: id.to_owned(),
                 })
             })?
@@ -1498,25 +1581,16 @@ impl<'c> Work<'_, 'c> {
             seq: i64,
             start: Option<i64>,
             end: Option<i64>,
-            fields: Vec<u8>,
-            data: Vec<u8>,
+            piece: crate::content::Piece,
         }
         let mut found = Vec::new();
         for id in stated {
             for row in self.event_rows(id)? {
-                let event = row.event()?;
+                let event = readings::read_event(self.tx(), &mut self.reader, row.piece)?;
                 let (moved, id_shown) = self.ids.event(&event, id)?;
                 if id_shown != shown {
                     continue;
                 }
-                let fields = match &moved {
-                    Some(moved) => {
-                        let mut fields = moved.clone();
-                        fields.data = Json::Null;
-                        crate::encoding::pack_json(&fields)?
-                    }
-                    None => row.fields,
-                };
                 found.push(Reading {
                     input: row.input,
                     chain: row.chain,
@@ -1527,8 +1601,7 @@ impl<'c> Work<'_, 'c> {
                     seq: row.seq,
                     start: row.start,
                     end: row.end,
-                    fields,
-                    data: row.data,
+                    piece: row.piece,
                 });
             }
         }
@@ -1539,12 +1612,17 @@ impl<'c> Work<'_, 'c> {
         }
         found.retain(|r| newest.get(&r.input_pk) == Some(&r.chain));
         found.sort_by(|a, b| (&a.input, a.chain).cmp(&(&b.input, b.chain)));
-        let stored: Option<(i64, Option<i64>)> = if self.stream.is_some() {
+        let stored: Option<(i64, Option<i64>, crate::content::Piece)> = if self.stream.is_some() {
             None
         } else {
             self.tx()
-                .prepare_cached("SELECT pk,session_pk FROM event WHERE id=?1")?
-                .query_row([shown], |r| <(i64, Option<i64>)>::try_from(r))
+                .prepare_cached(
+                    "SELECT pk,session_pk,content_group,content_start,content_length,data_length
+                     FROM event WHERE id=?1",
+                )?
+                .query_row([shown], |r| {
+                    Ok((r.get(0)?, r.get(1)?, crate::content::Piece::of(r, 2)?))
+                })
                 .optional()?
         };
         let winner = compose::value(
@@ -1554,7 +1632,7 @@ impl<'c> Work<'_, 'c> {
                 .collect::<Vec<_>>(),
         );
         let Some(winner) = winner.map(|n| &found[n]) else {
-            if let Some((pk, _)) = stored {
+            if let Some((pk, ..)) = stored {
                 self.context.changes.event(self.tx(), pk)?;
                 self.tx().execute("DELETE FROM event WHERE pk=?1", [pk])?;
             }
@@ -1587,6 +1665,7 @@ impl<'c> Work<'_, 'c> {
             Some(session) => Some(self.session_row(&session.to_string())?),
             None => None,
         };
+        let piece = winner.piece;
         let values = params![
             shown,
             session_pk,
@@ -1598,34 +1677,48 @@ impl<'c> Work<'_, 'c> {
             winner.chain,
             winner.start,
             winner.end,
-            winner.fields,
-            winner.data
+            piece.group,
+            piece.start,
+            piece.length,
+            piece.data_length,
         ];
         match stored {
-            Some((pk, before_session)) => {
+            Some((pk, before_session, before)) => {
                 let same = self.tx().exists(
                     "SELECT EXISTS(SELECT 1 FROM event WHERE id=?1 AND session_pk IS ?2 AND seq IS ?3 AND after_message_id IS ?4
                      AND kind IS ?5 AND at IS ?6 AND input_pk IS ?7 AND source_chain IS ?8 AND source_start IS ?9
-                     AND source_end IS ?10 AND fields IS ?11 AND data IS ?12)",
-                    values,
+                     AND source_end IS ?10)",
+                    params![shown, session_pk, seq, after, winner.event.kind,
+                        winner.event.at.map(Timestamp::unix_ms), winner.input_pk, winner.chain,
+                        winner.start, winner.end],
                 )?;
-                if same {
+                if same && before == piece {
                     return Ok(());
                 }
-                self.context.changes.event(self.tx(), pk)?;
-                if let Some(session) = before_session.filter(|s| Some(*s) != session_pk) {
-                    self.context.changes.session(self.tx(), session)?;
+                // The same reading's content stored again elsewhere moves the
+                // row without changing what it shows.
+                let moved_only = same && self.same_bytes(before, piece)?;
+                if !moved_only {
+                    self.context.changes.event(self.tx(), pk)?;
+                    if let Some(session) = before_session.filter(|s| Some(*s) != session_pk) {
+                        self.context.changes.session(self.tx(), session)?;
+                    }
                 }
                 self.tx().prepare_cached(
                     "UPDATE event SET session_pk=?2,seq=?3,after_message_id=?4,kind=?5,at=?6,input_pk=?7,
-                         source_chain=?8,source_start=?9,source_end=?10,fields=?11,data=?12 WHERE id=?1",
+                         source_chain=?8,source_start=?9,source_end=?10,content_group=?11,content_start=?12,
+                         content_length=?13,data_length=?14 WHERE id=?1",
                 )?
                 .execute(values)?;
+                if moved_only {
+                    return Ok(());
+                }
             }
             None => {
                 self.tx().prepare_cached(
-                    "INSERT INTO event(id,session_pk,seq,after_message_id,kind,at,input_pk,source_chain,source_start,source_end,fields,data)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+                    "INSERT INTO event(id,session_pk,seq,after_message_id,kind,at,input_pk,source_chain,source_start,
+                         source_end,content_group,content_start,content_length,data_length)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
                 )?
                 .execute(values)?;
                 let pk = self.tx().last_insert_rowid();
@@ -1636,6 +1729,20 @@ impl<'c> Work<'_, 'c> {
             self.context.changes.session(self.tx(), session)?;
         }
         Ok(())
+    }
+
+    /// Whether two stored pieces hold the same bytes, data included.
+    fn same_bytes(&mut self, a: crate::content::Piece, b: crate::content::Piece) -> Result<bool> {
+        if (a.length, a.data_length) != (b.length, b.data_length) {
+            return Ok(false);
+        }
+        let whole = |p: crate::content::Piece| crate::content::Stretch {
+            group: p.group,
+            start: p.start,
+            length: p.length + p.data_length.unwrap_or(0),
+        };
+        let first = self.reader.bytes(self.tx(), whole(a))?.to_vec();
+        Ok(first == self.reader.bytes(self.tx(), whole(b))?)
     }
 
     /// The place in its input of the reading a shown message shows.

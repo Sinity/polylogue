@@ -729,8 +729,8 @@ pub(crate) fn tool_call_text(
 pub(crate) fn input(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let p = c.text_param(&x.value()?);
     Ok(format!(
-        "instr(pl_key(json_extract(pl_block({}.body), '$.input')), pl_key({p})) > 0",
-        x.scope.a.cb
+        "instr(pl_key(json_extract({}, '$.input')), pl_key({p})) > 0",
+        crate::content::sql_for(crate::content::BODY_SQL, &x.scope.a.cb)
     ))
 }
 
@@ -864,7 +864,7 @@ pub(crate) fn selection(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<St
 pub(crate) fn event_text(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
     let parts = x.values().into_iter().map(|value| {
         let parameter = c.text_param(&value);
-        format!("EXISTS(SELECT 1 FROM json_tree(pl_block({}.data)) event_text_value WHERE event_text_value.type='text' AND instr(pl_key(event_text_value.atom),pl_key({parameter}))>0)",x.row())
+        format!("EXISTS(SELECT 1 FROM json_tree({}) event_text_value WHERE event_text_value.type='text' AND instr(pl_key(event_text_value.atom),pl_key({parameter}))>0)",crate::content::sql_for(crate::content::DATA_SQL, x.row()))
     }).collect();
     any_of(x, parts)
 }

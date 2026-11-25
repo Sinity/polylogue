@@ -81,7 +81,7 @@ impl Reader<'_> {
         let columns = format!(
             "s.pk,s.id,s.native_id,coalesce({},''),s.origin,s.repo,s.last_activity_at,s.cwd,s.branch,s.harness,
              (SELECT pl_text_at(g.body,t.start,t.length) FROM session_first_prompt f JOIN block b ON b.message_pk=f.message_pk AND b.kind='text'
-              JOIN text t ON t.id=b.text_id JOIN text_group g ON g.id=t.group_id WHERE f.session_pk=s.pk ORDER BY b.idx LIMIT 1),
+              JOIN text t ON t.id=b.text_id JOIN content_group g ON g.id=t.group_id WHERE f.session_pk=s.pk ORDER BY b.idx LIMIT 1),
              ?1>=0 AND EXISTS(SELECT 1 FROM removed_session r WHERE r.session_id=s.id AND r.changed>?1)",
             crate::session_sql::display_title("s")
         );

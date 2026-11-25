@@ -610,7 +610,7 @@ impl Reader<'_> {
     ) -> Result<Vec<ProseText>> {
         let conn = self.conn()?;
         let mut statement = conn.prepare_cached(
-            "SELECT t.id,t.hash,g.body,t.start,t.length FROM text t JOIN text_group g ON g.id=t.group_id WHERE t.normalized_hash=?1 AND t.id>?2 AND t.indexed & 1
+            "SELECT t.id,t.hash,g.body,t.start,t.length FROM text t JOIN content_group g ON g.id=t.group_id WHERE t.normalized_hash=?1 AND t.id>?2 AND t.indexed & 1
              AND EXISTS(SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
              ORDER BY t.id LIMIT ?3")?;
         let mut rows = statement.query(params![hash.as_slice(), after, limit as i64])?;
@@ -670,7 +670,7 @@ impl Reader<'_> {
         let (mut statement, params): (_, Vec<&dyn rusqlite::ToSql>) = match sessions {
             None => (
                 conn.prepare_cached(
-                    "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN text_group g ON g.id=t.group_id
+                    "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN content_group g ON g.id=t.group_id
                      WHERE t.indexed & 1 AND t.id > ?1
                      AND EXISTS (SELECT 1 FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.text_id=t.id)
                      ORDER BY t.id LIMIT ?2",
@@ -681,7 +681,7 @@ impl Reader<'_> {
                 list = serde_json::to_string(ids)?;
                 (
                     conn.prepare_cached(
-                        "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN text_group g ON g.id=t.group_id
+                        "SELECT t.id, t.hash, g.body, t.start, t.length FROM text t JOIN content_group g ON g.id=t.group_id
                          WHERE t.indexed & 1 AND t.id > ?1
                          AND t.id IN (SELECT b.text_id FROM block b JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk = b.session_pk
                                       WHERE s.id IN (SELECT value FROM json_each(?3)))

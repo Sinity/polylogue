@@ -30,6 +30,10 @@ pub(crate) struct Touched {
     /// Text rows a deleted reading row held; those no reading holds any
     /// more leave before the commit.
     pub released_texts: BTreeSet<i64>,
+    /// Content groups a deleted or replaced reading row named; those nothing
+    /// names any more leave before the commit, once the shown rows name the
+    /// readings present.
+    pub released_groups: BTreeSet<i64>,
     /// Live events to apply once their sessions' rows exist.
     pub live: Vec<Event>,
 }
@@ -94,13 +98,6 @@ pub(super) fn event_id(
     Ok(hash.finalize().to_hex().to_string())
 }
 
-/// The hash a value is chosen by between readings: of its canonical JSON.
-pub(super) fn value_hash(value: &impl serde::Serialize) -> Result<[u8; 32]> {
-    let canonical =
-        canonical_json::canonical_json(value).map_err(crate::encoding::identity_encoding)?;
-    Ok(*blake3::hash(&canonical).as_bytes())
-}
-
 fn position(value: u64) -> Result<i64> {
     i64::try_from(value)
         .map_err(|_| StoreError::Invalid("a source position exceeds SQLite's integer range".into()))
@@ -111,7 +108,6 @@ const READING_TABLES: &[&str] = &[
     "session_record",
     "session_alias",
     "message_parse",
-    "message_parse_body",
     "parse_text",
     "message_alias",
     "event_parse",
@@ -192,6 +188,15 @@ pub(super) fn delete(
     {
         touched.released_texts.insert(id?);
     }
+    for group in tx
+        .prepare_cached(
+            "SELECT content_group FROM message_parse WHERE input_pk=?1 AND chain=?2
+             UNION SELECT content_group FROM event_parse WHERE input_pk=?1 AND chain=?2",
+        )?
+        .query_map(key, |row| row.get::<_, i64>(0))?
+    {
+        touched.released_groups.insert(group?);
+    }
     // Copied-prefix facts name both sessions; either may read differently.
     for session in strings(
         "SELECT parent_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2
@@ -231,6 +236,7 @@ struct Stored {
     start: i64,
     hash: Vec<u8>,
     layout: Vec<u8>,
+    group: i64,
 }
 
 /// Writes the rows one parse step states into its chain's reading.
@@ -243,10 +249,11 @@ pub(super) fn write(
     touched: &mut Touched,
 ) -> Result<()> {
     let key = params![chain.input_pk, chain.chain];
+    let mut groups = crate::content::Stored::new(&step.prepared.content);
     write_sessions(tx, chain, step, touched)?;
-    write_messages(tx, chain, step, hidden, touched)?;
+    write_messages(tx, chain, step, &mut groups, hidden, touched)?;
     write_documents(tx, chain, step, touched)?;
-    write_events(tx, chain, step, touched)?;
+    write_events(tx, chain, step, &mut groups, touched)?;
     for alias in &step.output.aliases {
         tx.prepare_cached(
             "INSERT INTO message_alias(input_pk,chain,name,target,source_start,source_end) VALUES (?1,?2,?3,?4,?5,?6)
@@ -477,6 +484,7 @@ fn write_messages(
     tx: &Connection,
     chain: &Chain<'_>,
     step: &ParseStep,
+    groups: &mut crate::content::Stored<'_>,
     hidden: &BTreeSet<usize>,
     touched: &mut Touched,
 ) -> Result<()> {
@@ -507,13 +515,14 @@ fn write_messages(
         };
         let stored: Option<Stored> = tx
             .prepare_cached(
-                "SELECT source_start,hash,layout FROM message_parse WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
+                "SELECT source_start,hash,layout,content_group FROM message_parse WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
             )?
             .query_row(params![chain.input_pk, chain.chain, id], |r| {
                 Ok(Stored {
                     start: r.get(0)?,
                     hash: r.get(1)?,
                     layout: r.get(2)?,
+                    group: r.get(3)?,
                 })
             })
             .optional()?;
@@ -532,36 +541,37 @@ fn write_messages(
         let merged = match &stored {
             Some(stored)
                 if stored.hash == prepared.hash
-                    && (prepared.block_selection.block_count != prepared.blocks.len() as u64
+                    && (prepared.block_selection.block_count != prepared.texts.len() as u64
                         || stored.layout
                             != crate::encoding::message_layout(&prepared.block_selection)?) =>
             {
                 let previous = read_message(tx, chain.input_pk, chain.chain, &id)?
                     .ok_or_else(|| StoreError::Invalid("a stored reading has no body".into()))?;
-                let mut incoming = (row.message.clone(), prepared.clone());
-                crate::writer::attachments::restore_values(&mut incoming.0.blocks, &incoming.1)?;
-                let mut previous_message = previous.0;
-                let previous_prepared = PreparedMessage::projected(&previous_message, &previous.1)?;
+                let mut incoming = row.message.clone();
+                let stored_value = step.prepared.message_value(i)?;
                 crate::writer::attachments::restore_values(
-                    &mut previous_message.blocks,
-                    &previous_prepared,
+                    &mut incoming.blocks,
+                    &stored_value.blocks,
                 )?;
-                let (message, selection) = previous_prepared
-                    .block_selection
-                    .merge(&previous_message, &incoming.1.block_selection, &incoming.0)?
+                let (message, selection) = previous
+                    .1
+                    .merge(&previous.0, &prepared.block_selection, &incoming)?
                     .ok_or(polylogue_model::bundle::BundleError::SourceVersionMismatch)?;
-                let prepared = PreparedMessage::projected(&message, &selection)?;
-                Some((message, prepared))
+                Some((message, selection))
             }
             _ => None,
         };
         if !keep && merged.is_none() {
             continue;
         }
-        // A merge can hold a block an earlier step packed the text of.
+        // A merge is a new value: its content and texts are prepared here.
         let with_merged;
-        let (message, prepared, packed) = match &merged {
-            Some((message, prepared)) => {
+        let (prepared, packed, content) = match merged {
+            Some((mut message, selection)) => {
+                let mut packer = crate::content::Packer::default();
+                let prepared = PreparedMessage::projected(&mut message, &selection, &mut packer)?;
+                let groups = packer.finish()?;
+                let content = crate::content::Stored::new(&groups).place(tx, prepared.content)?;
                 let mut packed = step.prepared.texts.clone();
                 packed.add(
                     message
@@ -569,25 +579,37 @@ fn write_messages(
                         .iter()
                         .filter_map(crate::encoding::block_text),
                 )?;
-                with_merged = packed;
-                (message, prepared, &with_merged)
+                with_merged = (prepared, packed);
+                (&with_merged.0, &with_merged.1, content)
             }
-            None => (&row.message, prepared, &step.prepared.texts),
+            None => (
+                prepared,
+                &step.prepared.texts,
+                groups.place(tx, prepared.content)?,
+            ),
         };
         write_texts(tx, chain, false, &id, &prepared.texts, packed, touched)?;
         let layout = crate::encoding::message_layout(&prepared.block_selection)?;
+        if let Some(stored) = &stored
+            && stored.group != content.group
+        {
+            touched.released_groups.insert(stored.group);
+        }
         if keep {
             let route = row.route(chain.route);
+            let message = &row.message;
             tx.prepare_cached(
                 "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_end,seq,record_position,
-                     at,route,completion,id_kind,hash,layout,response_key,content_name,committed)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
+                     at,route,completion,id_kind,hash,layout,response_key,content_name,committed,
+                     content_group,content_start,content_length)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
                  ON CONFLICT(input_pk,chain,message_id) DO UPDATE SET session_id=excluded.session_id,
                      source_start=excluded.source_start,source_end=excluded.source_end,seq=excluded.seq,
                      record_position=excluded.record_position,at=excluded.at,route=excluded.route,
                      completion=excluded.completion,id_kind=excluded.id_kind,hash=excluded.hash,
                      layout=excluded.layout,response_key=excluded.response_key,content_name=excluded.content_name,
-                     committed=excluded.committed",
+                     committed=excluded.committed,content_group=excluded.content_group,
+                     content_start=excluded.content_start,content_length=excluded.content_length",
             )?
             .execute(params![
                 chain.input_pk,
@@ -607,19 +629,18 @@ fn write_messages(
                 row.response,
                 crate::chain_names::content_name(row),
                 chain.committed,
+                content.group,
+                content.start,
+                content.length,
             ])?;
             kept.entry(session.clone()).or_default().push(place);
         } else {
             tx.prepare_cached(
-                "UPDATE message_parse SET layout=?4 WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
+                "UPDATE message_parse SET layout=?4,content_group=?5,content_start=?6,content_length=?7
+                 WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
             )?
-            .execute(params![chain.input_pk, chain.chain, id, layout])?;
+            .execute(params![chain.input_pk, chain.chain, id, layout, content.group, content.start, content.length])?;
         }
-        tx.prepare_cached(
-            "INSERT INTO message_parse_body(input_pk,chain,message_id,body) VALUES (?1,?2,?3,?4)
-             ON CONFLICT(input_pk,chain,message_id) DO UPDATE SET body=excluded.body",
-        )?
-        .execute(params![chain.input_pk, chain.chain, id, prepared.body])?;
         write_injection_fields(tx, chain, step, i, &id)?;
         touched.messages.insert((session, id));
     }
@@ -810,14 +831,15 @@ fn write_events(
     tx: &Connection,
     chain: &Chain<'_>,
     step: &ParseStep,
+    groups: &mut crate::content::Stored<'_>,
     touched: &mut Touched,
 ) -> Result<()> {
     if step.output.events.is_empty() {
         return Ok(());
     }
     let ids = step.event_identities(chain.input, chain.chain)?;
-    let mut packer = crate::encoding::RowPacker::new()?;
-    for (i, (event, (_, packed))) in step
+    let mut reader = crate::content::Reader::default();
+    for (i, (event, prepared)) in step
         .output
         .events
         .iter()
@@ -826,8 +848,6 @@ fn write_events(
     {
         let id = &ids[i];
         let imported = step.output.imported_events.get(&i);
-        let data: Json = crate::encoding::unpack_json(packed)?;
-        let hash = value_hash(&data)?;
         let seq = step
             .order_from
             .map(|n| n as i64)
@@ -839,27 +859,44 @@ fn write_events(
             .or(step
                 .repeats_whole_conversations
                 .then_some(step.start as i64));
-        let mut fields = event.clone();
-        fields.data = Json::Null;
-        let fields = packer.pack_json(&fields)?;
+        let content = groups.place(tx, prepared.content)?;
+        let fields = crate::content::Stretch {
+            length: prepared.fields_length as i64,
+            ..content
+        };
         let mut original = imported
             .map(|identity| identity.sources.clone())
             .unwrap_or_default();
         // A chain stating the same event again with the same value keeps
         // the sources both statements imported.
-        let stored: Option<(Vec<u8>, Vec<u8>, String)> = tx
+        let stored: Option<(Vec<u8>, crate::content::Stretch, String)> = tx
             .prepare_cached(
-                "SELECT hash,fields,imported_sources FROM event_parse WHERE input_pk=?1 AND chain=?2 AND event_id=?3",
+                "SELECT hash,content_group,content_start,content_length,imported_sources FROM event_parse
+                 WHERE input_pk=?1 AND chain=?2 AND event_id=?3",
             )?
-            .query_row(params![chain.input_pk, chain.chain, id], |r| <(_, _, _)>::try_from(r))
+            .query_row(params![chain.input_pk, chain.chain, id], |r| {
+                Ok((
+                    r.get(0)?,
+                    crate::content::Stretch {
+                        group: r.get(1)?,
+                        start: r.get(2)?,
+                        length: r.get(3)?,
+                    },
+                    r.get(4)?,
+                ))
+            })
             .optional()?;
-        if let Some((stored_hash, stored_fields, stored_imported)) = stored
-            && stored_hash == hash
-            && stored_fields == fields
-        {
-            original.extend(serde_json::from_str::<
-                Vec<polylogue_model::bundle::StatedSource>,
-            >(&stored_imported)?);
+        if let Some((stored_hash, stored_fields, stored_imported)) = stored {
+            if stored_fields.group != content.group {
+                touched.released_groups.insert(stored_fields.group);
+            }
+            if stored_hash == prepared.hash
+                && reader.bytes(tx, stored_fields)?.to_vec() == reader.bytes(tx, fields)?
+            {
+                original.extend(serde_json::from_str::<
+                    Vec<polylogue_model::bundle::StatedSource>,
+                >(&stored_imported)?);
+            }
         }
         original.sort();
         original.dedup();
@@ -871,13 +908,15 @@ fn write_events(
         let session = event.session.as_ref().map(ToString::to_string);
         tx.prepare_cached(
             "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,source_start,source_end,
-                 after_message_id,kind,at,hash,fields,data,imported_sources,committed)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                 after_message_id,kind,at,hash,imported_sources,committed,
+                 content_group,content_start,content_length,data_length)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
              ON CONFLICT(input_pk,chain,event_id) DO UPDATE SET session_id=excluded.session_id,route=excluded.route,
                  seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,
                  after_message_id=excluded.after_message_id,kind=excluded.kind,at=excluded.at,hash=excluded.hash,
-                 fields=excluded.fields,data=excluded.data,imported_sources=excluded.imported_sources,
-                 committed=excluded.committed",
+                 imported_sources=excluded.imported_sources,committed=excluded.committed,
+                 content_group=excluded.content_group,content_start=excluded.content_start,
+                 content_length=excluded.content_length,data_length=excluded.data_length",
         )?
         .execute(params![
             chain.input_pk,
@@ -891,16 +930,18 @@ fn write_events(
             event.after.as_ref().map(ToString::to_string),
             event.kind,
             event.at.map(Timestamp::unix_ms),
-            hash.as_slice(),
-            fields,
-            packed,
+            prepared.hash.as_slice(),
             serde_json::to_string(&original)?,
             chain.committed,
+            content.group,
+            content.start,
+            prepared.fields_length as i64,
+            prepared.data_length() as i64,
         ])?;
         touched.events.insert((session, id.clone()));
         if event.session.is_some() && polylogue_model::live::is_live_event(&event.kind) {
             touched.live.push(Event {
-                data,
+                data: step.prepared.event_data(i)?,
                 ..event.clone()
             });
         }
@@ -940,7 +981,7 @@ fn write_links(
             link.kind.as_str(),
             link.how.map(|how| how.as_str()),
             chain.route.as_str(),
-            value_hash(&merged)?.as_slice(),
+            crate::encoding::value_hash(&merged)?.as_slice(),
             serde_json::to_vec(&merged)?,
             chain.committed,
         ])?;
@@ -957,32 +998,87 @@ pub(super) fn merge_link(mut link: Link, other: Link) -> Link {
     link
 }
 
-/// A message reading's body and block layout, with its texts restored.
+/// A message reading as stored: its value with texts and structured values
+/// restored, its block layout, and where each block's piece lies.
+pub(crate) struct StoredReading {
+    pub message: Message,
+    pub selection: polylogue_model::bundle::ShownBlocks,
+    pub pieces: Vec<crate::content::Piece>,
+}
+
+/// A message reading's value and block layout, with its texts restored.
 pub(crate) fn read_message(
     conn: &Connection,
     input_pk: i64,
     chain: i64,
     message: &str,
 ) -> Result<Option<(Message, polylogue_model::bundle::ShownBlocks)>> {
-    let stored: Option<(Vec<u8>, Vec<u8>, Vec<u8>)> = conn
+    Ok(read_reading(
+        conn,
+        &mut crate::content::Reader::default(),
+        input_pk,
+        chain,
+        message,
+    )?
+    .map(|stored| (stored.message, stored.selection)))
+}
+
+/// A message reading as stored ([`StoredReading`]).
+pub(crate) fn read_reading(
+    conn: &Connection,
+    reader: &mut crate::content::Reader,
+    input_pk: i64,
+    chain: i64,
+    message: &str,
+) -> Result<Option<StoredReading>> {
+    let stored: Option<(Vec<u8>, Vec<u8>, crate::content::Stretch)> = conn
         .prepare_cached(
-            "SELECT b.body,r.layout,r.hash FROM message_parse r JOIN message_parse_body b
-                 ON b.input_pk=r.input_pk AND b.chain=r.chain AND b.message_id=r.message_id
-             WHERE r.input_pk=?1 AND r.chain=?2 AND r.message_id=?3",
+            "SELECT layout,hash,content_group,content_start,content_length FROM message_parse
+             WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
         )?
         .query_row(params![input_pk, chain, message], |r| {
-            <(_, _, _)>::try_from(r)
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                crate::content::Stretch {
+                    group: r.get(2)?,
+                    start: r.get(3)?,
+                    length: r.get(4)?,
+                },
+            ))
         })
         .optional()?;
-    let Some((body, layout, hash)) = stored else {
+    let Some((layout, hash, content)) = stored else {
         return Ok(None);
     };
-    let value = restore_texts(conn, input_pk, chain, false, message, &body)?;
-    let message: Message = serde_json::from_value(value)?;
+    let id = message;
+    let (mut message, pieces) =
+        crate::encoding::read_message_content(reader.bytes(conn, content)?, true)?;
+    restore_texts(conn, input_pk, chain, false, id, &mut message.blocks)?;
     let selection =
         crate::encoding::message_block_selection(&hash, Some(&layout), message.blocks.len())?;
     selection.validate(message.blocks.len())?;
-    Ok(Some((message, selection)))
+    Ok(Some(StoredReading {
+        message,
+        selection,
+        pieces: placed(content, &pieces),
+    }))
+}
+
+/// Where each block's piece lies in the content group of `content`.
+pub(crate) fn placed(
+    content: crate::content::Stretch,
+    pieces: &[crate::encoding::BlockPiece],
+) -> Vec<crate::content::Piece> {
+    pieces
+        .iter()
+        .map(|piece| crate::content::Piece {
+            group: content.group,
+            start: content.start + piece.start as i64,
+            length: piece.length as i64,
+            data_length: piece.data_length.map(|n| n as i64),
+        })
+        .collect()
 }
 
 /// A document reading's body, with its texts restored.
@@ -997,9 +1093,9 @@ pub(crate) fn read_document(
         params![input_pk, chain, document],
     )?;
     body.map(|body| {
-        Ok(serde_json::from_value(restore_texts(
-            conn, input_pk, chain, true, document, &body,
-        )?)?)
+        let mut read: polylogue_model::Document = crate::encoding::unpack_json(&body)?;
+        restore_texts(conn, input_pk, chain, true, document, &mut read.blocks)?;
+        Ok(read)
     })
     .transpose()
 }
@@ -1028,32 +1124,32 @@ fn restore_texts(
     chain: i64,
     document: bool,
     item: &str,
-    body: &[u8],
-) -> Result<serde_json::Value> {
-    let mut value: serde_json::Value = crate::encoding::unpack_json(body)?;
+    blocks: &mut [Block],
+) -> Result<()> {
     let mut statement = conn.prepare_cached(
         "SELECT r.idx,g.body,t.start,t.length FROM parse_text r JOIN text t ON t.id=r.text_id
-         JOIN text_group g ON g.id=t.group_id
+         JOIN content_group g ON g.id=t.group_id
          WHERE r.input_pk=?1 AND r.chain=?2 AND r.document=?3 AND r.item=?4 ORDER BY r.idx",
     )?;
     let mut rows = statement.query(params![input_pk, chain, document, item])?;
     while let Some(row) = rows.next()? {
         let idx: i64 = row.get(0)?;
         let text = crate::text_rows::joined(row, 1)?;
-        let block = value
-            .get_mut("blocks")
-            .and_then(|blocks| blocks.get_mut(idx as usize))
+        let block = usize::try_from(idx)
+            .ok()
+            .and_then(|idx| blocks.get_mut(idx))
             .ok_or_else(|| StoreError::stored(0, "a stored text names a block the body lacks"))?;
-        let field = if block.get("output").is_some() {
-            "output"
-        } else if block.get("written_text").is_some() {
-            "written_text"
-        } else {
-            "text"
-        };
-        block[field] = text.into();
+        crate::encoding::restore_text(block, text);
     }
-    Ok(value)
+    Ok(())
+}
+
+/// Removes the released content groups nothing names any more.
+pub(super) fn remove_released_groups(tx: &Connection, released: &BTreeSet<i64>) -> Result<()> {
+    for &group in released {
+        crate::content::release(tx, group)?;
+    }
+    Ok(())
 }
 
 /// Removes the released texts no reading holds any more, with their search
@@ -1122,6 +1218,20 @@ pub(crate) fn read_version(
     ids: &[String],
     hash: &[u8],
 ) -> Result<Option<(Message, polylogue_model::bundle::ShownBlocks)>> {
+    Ok(
+        read_version_reading(conn, &mut crate::content::Reader::default(), ids, hash)?
+            .map(|stored| (stored.message, stored.selection)),
+    )
+}
+
+/// [`read_version`], with where each block's piece lies: each block is named
+/// in the content of a reading that holds it.
+pub(crate) fn read_version_reading(
+    conn: &Connection,
+    reader: &mut crate::content::Reader,
+    ids: &[String],
+    hash: &[u8],
+) -> Result<Option<StoredReading>> {
     let mut found = Vec::new();
     for id in ids {
         let rows = conn
@@ -1138,10 +1248,15 @@ pub(crate) fn read_version(
     }
     found.sort();
     let mut merged: Option<(Message, polylogue_model::bundle::ShownBlocks)> = None;
+    let mut pieces = HashMap::<u64, crate::content::Piece>::new();
     for (_, chain, input_pk, id) in found {
-        let Some((message, selection)) = read_message(conn, input_pk, chain, &id)? else {
+        let Some(stored) = read_reading(conn, reader, input_pk, chain, &id)? else {
             continue;
         };
+        for (ordinal, piece) in stored.selection.block_ordinals.iter().zip(&stored.pieces) {
+            pieces.entry(*ordinal).or_insert(*piece);
+        }
+        let (message, selection) = (stored.message, stored.selection);
         let complete = selection.block_count == message.blocks.len() as u64;
         merged = Some(match merged {
             None => (message, selection),
@@ -1162,7 +1277,37 @@ pub(crate) fn read_version(
             break;
         }
     }
-    Ok(merged)
+    merged
+        .map(|(message, selection)| {
+            let pieces = selection
+                .block_ordinals
+                .iter()
+                .map(|ordinal| {
+                    pieces.get(ordinal).copied().ok_or_else(|| {
+                        StoreError::Invalid("a merged block has no stored piece".into())
+                    })
+                })
+                .collect::<Result<_>>()?;
+            Ok(StoredReading {
+                message,
+                selection,
+                pieces,
+            })
+        })
+        .transpose()
+}
+
+/// An event as a stored piece holds it: its fields, then its data.
+pub(crate) fn read_event(
+    conn: &Connection,
+    reader: &mut crate::content::Reader,
+    piece: crate::content::Piece,
+) -> Result<Event> {
+    let mut event: Event = reader.json(conn, piece.body())?;
+    if let Some(data) = piece.data() {
+        event.data = reader.json(conn, data)?;
+    }
+    Ok(event)
 }
 
 /// One reading of a shown event, with its fields as shown.
@@ -1194,44 +1339,52 @@ pub(crate) fn event_readings(conn: &Connection, event_pk: i64) -> Result<Vec<Eve
         }
     }
     let mut found = Vec::new();
+    let mut reader = crate::content::Reader::default();
     for (event_id, copy) in stated {
         let mut statement = conn.prepare_cached(
             "SELECT i.id,i.format,r.chain,r.source_start,r.source_end,r.imported_sources,r.hash,
-                 r.fields,r.data,r.committed,r.event_id
+                 r.committed,r.event_id,r.content_group,r.content_start,r.content_length,r.data_length
              FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk
              WHERE (?1 IS NOT NULL AND r.event_id=?1) OR (?2 IS NOT NULL AND r.session_id=?2)",
         )?;
         let rows = statement
             .query_map(params![event_id, copy], |r| {
                 Ok((
-                    EventReading {
-                        input: r.get(0)?,
-                        format: r.get(1)?,
-                        chain: r.get(2)?,
-                        start: r.get(3)?,
-                        end: r.get(4)?,
-                        imported: r.get(5)?,
-                        hash: r.get(6)?,
-                        fields: r.get(7)?,
-                        committed: r.get(9)?,
-                    },
-                    r.get::<_, Vec<u8>>(8)?,
-                    r.get::<_, String>(10)?,
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, Option<u64>>(3)?,
+                    r.get::<_, Option<u64>>(4)?,
+                    r.get::<_, String>(5)?,
+                    r.get::<_, Vec<u8>>(6)?,
+                    r.get::<_, Option<i64>>(7)?,
+                    r.get::<_, String>(8)?,
+                    crate::content::Piece::of(r, 9)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (mut reading, data, stated_id) in rows {
-            let mut event: Event = crate::encoding::unpack_json(&reading.fields)?;
-            event.data = crate::encoding::unpack_json(&data)?;
+        for (input, format, chain, start, end, imported, hash, committed, stated_id, piece) in rows
+        {
+            let mut event = read_event(conn, &mut reader, piece)?;
             let (moved, shown) = ids.event(&event, &stated_id)?;
             if shown != id {
                 continue;
             }
-            if let Some(mut moved) = moved {
-                moved.data = Json::Null;
-                reading.fields = crate::encoding::pack_json(&moved)?;
+            if let Some(moved) = moved {
+                event = moved;
             }
-            found.push(reading);
+            event.data = Json::Null;
+            found.push(EventReading {
+                input,
+                format,
+                chain,
+                start,
+                end,
+                imported,
+                hash,
+                fields: serde_json::to_vec(&event)?,
+                committed,
+            });
         }
     }
     Ok(found)

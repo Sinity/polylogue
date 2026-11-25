@@ -137,7 +137,7 @@ fn decoded_block(row: &rusqlite::Row<'_>) -> Result<Block> {
         restore_text(&mut block, text);
     }
     if let Some(data) = row.get::<_, Option<Vec<u8>>>(4)? {
-        crate::encoding::restore_data(&mut block, &data)?;
+        crate::encoding::set_data(&mut block, unpack_json(&data)?);
     }
     Ok(block)
 }
@@ -201,7 +201,7 @@ fn visit_blocks_selected_from(
     let data = if text_only { "NULL" } else { "b.data" };
     let order = if backwards { "DESC" } else { "ASC" };
     let sql = format!(
-        "SELECT b.body,g.body,t.start,t.length,{data},b.idx FROM document_block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN text_group g ON g.id=t.group_id WHERE b.document_pk=?1 AND b.idx>=?2 {bound} {kinds} ORDER BY b.idx {order}"
+        "SELECT b.body,g.body,t.start,t.length,{data},b.idx FROM document_block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN content_group g ON g.id=t.group_id WHERE b.document_pk=?1 AND b.idx>=?2 {bound} {kinds} ORDER BY b.idx {order}"
     );
     let mut statement = conn.prepare_cached(&sql)?;
     let mut rows = if let Some(end) = end {

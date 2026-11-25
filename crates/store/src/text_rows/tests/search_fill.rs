@@ -43,7 +43,8 @@ fn ranked(conn: &Connection, index: SnippetIndex, expression: &str) -> Vec<(i64,
 /// A block holding `text`, as composition writes it.
 fn block(conn: &Connection, pk: i64, kind: &str, text: i64) {
     conn.execute(
-        "INSERT INTO block(pk,message_pk,session_pk,idx,kind,text_id,body) VALUES (?1,1,1,?1,?2,?3,x'00')",
+        "INSERT INTO block(pk,message_pk,session_pk,idx,kind,text_id,content_group,content_start,content_length)
+         VALUES (?1,1,1,?1,?2,?3,0,0,0)",
         params![pk, kind, text],
     )
     .unwrap();
@@ -94,7 +95,7 @@ fn a_build_fills_the_files_upkeep_would_write_while_it_composes() {
     }
     built
         .execute(
-            "UPDATE text_group SET body=?1 WHERE id=?2",
+            "UPDATE content_group SET body=?1 WHERE id=?2",
             params![crate::encoding::pack_bytes(body.as_bytes()).unwrap(), group],
         )
         .unwrap();

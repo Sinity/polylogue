@@ -21,8 +21,6 @@
 use crate::ConnExt as _;
 use crate::change_summary::{ChangeSummary, SessionChange};
 use crate::encoding::Columns;
-#[cfg(any(test, feature = "fixture"))]
-use crate::encoding::{restore_text, unpack_block};
 use crate::{Reader, Result, StoreError};
 use entry_bytes::{EntryOf, decode, encode};
 #[cfg(any(test, feature = "fixture"))]
@@ -231,6 +229,8 @@ enum EventBody {
         kind: String,
         data_bytes: u64,
         data: Option<Vec<u8>>,
+        /// Where `data` is stored, until it is read.
+        data_at: Option<crate::content::Stretch>,
     },
     /// An unchanged event: its stored identity and entry stand for its row.
     Kept {
@@ -247,6 +247,7 @@ impl EventRow {
                 kind,
                 data_bytes,
                 data,
+                ..
             } => Unit::Event {
                 pk: self.pk,
                 id: self.id,
@@ -276,9 +277,12 @@ const MESSAGE_COLUMNS: &str = "m.pk, m.id,
     m.on_active_path, m.at,
     EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
            AND c.duplicate_of IS NULL LIMIT 1 OFFSET 1)";
-const EVENT_COLUMNS: &str = "e.pk, e.id, e.kind, e.at, length(e.data),
+/// The data an entry needs is read only for the kinds whose entry holds it
+/// (see [`read_data`]).
+const EVENT_COLUMNS: &str = "e.pk, e.id, e.kind, e.at, e.data_length,
     (SELECT m.pk FROM message m WHERE m.id = e.after_message_id), e.seq,
-    CASE WHEN e.kind IN ('compaction','microcompaction') THEN e.data END";
+    CASE WHEN e.kind IN ('compaction','microcompaction') THEN e.content_group END,
+    e.content_start + e.content_length, e.data_length";
 
 fn message_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MessageRow> {
     Ok(MessageRow {
@@ -303,9 +307,33 @@ fn event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EventRow> {
         body: EventBody::Read {
             kind: row.get(2)?,
             data_bytes: row.get::<_, i64>(4)?.max(0) as u64,
-            data: row.get(7)?,
+            data: None,
+            data_at: match row.get::<_, Option<i64>>(7)? {
+                Some(group) => Some(crate::content::Stretch {
+                    group,
+                    start: row.get(8)?,
+                    length: row.get(9)?,
+                }),
+                None => None,
+            },
         },
     })
+}
+
+/// Reads the data of the events whose entry holds it.
+fn read_data<'e>(
+    conn: &Connection,
+    events: impl IntoIterator<Item = &'e mut EventRow>,
+) -> Result<()> {
+    let mut reader = crate::content::Reader::default();
+    for event in events {
+        if let EventBody::Read { data, data_at, .. } = &mut event.body
+            && let Some(at) = data_at.take()
+        {
+            *data = Some(reader.bytes(conn, at)?.to_vec());
+        }
+    }
+    Ok(())
 }
 
 /// The session's units in reading order from `start_point` (from the first
@@ -446,12 +474,14 @@ fn events_from(
     extra: &BTreeSet<i64>,
 ) -> Result<Vec<EventRow>> {
     let Some(start_point) = start_point else {
-        return Ok(conn
+        let mut events: Vec<EventRow> = conn
             .prepare_cached(&format!(
                 "SELECT {EVENT_COLUMNS} FROM event e WHERE e.session_pk = ?1 ORDER BY e.seq, e.id"
             ))?
             .query_map([session_pk], event_row)?
-            .collect::<rusqlite::Result<_>>()?);
+            .collect::<rusqlite::Result<_>>()?;
+        read_data(conn, &mut events)?;
+        return Ok(events);
     };
     let mut found: HashMap<i64, EventRow> = HashMap::new();
     let mut following = conn.prepare_cached(&format!(
@@ -526,6 +556,7 @@ fn events_from(
     }
     let mut events: Vec<EventRow> = found.into_values().collect();
     events.sort_by(|a, b| (a.seq, &a.id).cmp(&(b.seq, &b.id)));
+    read_data(conn, &mut events)?;
     Ok(events)
 }
 
@@ -1155,7 +1186,7 @@ fn event_item(
     data: Option<&[u8]>,
 ) -> Result<IndexEntry> {
     let cleared = if kind == "microcompaction" {
-        data.map(crate::encoding::unpack_json::<polylogue_model::MicrocompactionBoundary>)
+        data.map(crate::encoding::read_json::<polylogue_model::MicrocompactionBoundary>)
             .transpose()?
             .map(|boundary| boundary.removed_calls)
             .unwrap_or_default()
@@ -1165,7 +1196,7 @@ fn event_item(
     let mut entry = event_entry(id, kind, at, data_bytes, cleared);
     if kind == "compaction" {
         entry.compaction = data
-            .map(crate::encoding::unpack_json::<polylogue_model::CompactionBoundary>)
+            .map(crate::encoding::read_json::<polylogue_model::CompactionBoundary>)
             .transpose()?;
     }
     Ok(entry)
@@ -1258,18 +1289,22 @@ fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
         })?;
     let mut blocks = Vec::new();
     let mut ordinals = Vec::new();
-    let mut statement = conn.prepare_cached(
-        "SELECT b.body, coalesce(CAST(b.ordinal AS INTEGER), b.idx), g.body, t.start, t.length
-         FROM block b LEFT JOIN text t ON t.id = b.text_id LEFT JOIN text_group g ON g.id = t.group_id
-         WHERE b.message_pk = ?1 ORDER BY b.idx",
-    )?;
+    let mut statement = conn.prepare_cached(&format!(
+        "SELECT b.pk, coalesce(CAST(b.ordinal AS INTEGER), b.idx), {}
+         FROM block b {} WHERE b.message_pk = ?1 ORDER BY b.idx",
+        crate::ordered_blocks::COLUMNS,
+        crate::ordered_blocks::TEXT_JOIN
+    ))?;
     let mut rows = statement.query([pk])?;
+    let mut reader = crate::content::Reader::default();
     while let Some(row) = rows.next()? {
-        let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-        if let Some(text) = crate::text_rows::column(row, 2)? {
-            restore_text(&mut block, text);
-        }
-        blocks.push(block);
+        blocks.push(crate::ordered_blocks::decode(
+            conn,
+            &mut reader,
+            row,
+            2,
+            false,
+        )?);
         ordinals.push(row.get::<_, u64>(1)?);
     }
     let message = Message {

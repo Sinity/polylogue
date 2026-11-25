@@ -60,11 +60,7 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     let write =
         crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    write
-        .execute(
-            "UPDATE block SET body=X'00' WHERE message_pk IN (?1,?2)",
-            [late, unrelated],
-        )
+    crate::content::poison_bodies(&write, "block", "message_pk IN (?1,?2)", [late, unrelated])
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
@@ -112,15 +108,11 @@ fn chosen_hit_batches_preserve_source_text_and_ignore_unselected_corruption() {
     assert_eq!(changed, snippets);
     drop(fresh);
     assert_eq!(reader.snippets(&queries, &scopes).unwrap(), snippets);
-    write
-        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [header])
-        .unwrap();
+    crate::content::poison_bodies(&write, "block", "message_pk=?1", [header]).unwrap();
     let fresh = pool.reader().unwrap();
     assert_eq!(fresh.snippets(&queries, &scopes).unwrap(), snippets);
     drop(fresh);
-    write
-        .execute("UPDATE block SET body=X'00' WHERE message_pk=?1", [message])
-        .unwrap();
+    crate::content::poison_bodies(&write, "block", "message_pk=?1", [message]).unwrap();
     let fresh = pool.reader().unwrap();
     assert!(
         fresh.snippets(&queries, &scopes).is_err(),

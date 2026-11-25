@@ -75,12 +75,15 @@ fn normalize_using(
             let Some(mut blocks) = stored_blocks(&row.message.blocks, &mut available)? else {
                 continue;
             };
-            if let Some(prepared) = step.prepared.messages.get(message_index) {
-                restore_values(&mut blocks, prepared)?;
+            let prepared = message_index < step.prepared.messages.len();
+            if prepared {
+                let stored = step.prepared.message_value(message_index)?;
+                restore_values(&mut blocks, &stored.blocks)?;
             }
             row.message.blocks = blocks;
-            if let Some(prepared) = step.prepared.messages.get_mut(message_index) {
-                *prepared = PreparedMessage::new(&row.message)?;
+            if prepared {
+                step.prepared
+                    .repack_message(message_index, &mut row.message)?;
             }
         }
         for (document_index, row) in step.output.documents.iter_mut().enumerate() {
@@ -88,7 +91,7 @@ fn normalize_using(
                 continue;
             };
             if let Some(prepared) = step.prepared.documents.get(document_index) {
-                restore_values(&mut blocks, prepared)?;
+                restore_packed(&mut blocks, prepared)?;
             }
             if let Some(prepared) = step.prepared.documents.get_mut(document_index) {
                 row.document = crate::encoding::unpack_json(&prepared.fields)?;
@@ -132,9 +135,44 @@ fn stored_blocks(
     Ok(changed.then_some(normalized))
 }
 
-pub(super) fn restore_values(
+/// Puts back the values preparing released from parsed blocks (a call's
+/// input, an unknown block, a result's data), from the same blocks as stored.
+pub(super) fn restore_values(blocks: &mut [Block], stored: &[Block]) -> Result<()> {
+    for (block, stored) in blocks.iter_mut().zip(stored) {
+        match block {
+            Block::ToolCall { input, .. } => {
+                let Block::ToolCall {
+                    input: restored, ..
+                } = stored
+                else {
+                    return Err(StoreError::invalid(
+                        "prepared tool call has a different block kind",
+                    ));
+                };
+                // The stored block holds the released input. Written text is
+                // still on the parsed block and is empty in the stored one.
+                *input = restored.clone();
+            }
+            Block::Other { .. } => *block = stored.clone(),
+            Block::ToolResult { data, .. } => {
+                if let Block::ToolResult {
+                    data: Some(restored),
+                    ..
+                } = stored
+                {
+                    *data = Some(restored.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+/// [`restore_values`] from a document's packed block rows.
+pub(super) fn restore_packed(
     blocks: &mut [Block],
-    prepared: &crate::encoding::PreparedContent,
+    prepared: &crate::encoding::PackedBlocks,
 ) -> Result<()> {
     for (index, block) in blocks.iter_mut().enumerate() {
         match block {
@@ -147,8 +185,6 @@ pub(super) fn restore_values(
                         "prepared tool call has a different block kind",
                     ));
                 };
-                // The packed block holds the released input. Written text is
-                // still on the parsed block and is empty in the packed body.
                 *input = restored;
             }
             Block::Other { .. } => {
@@ -156,7 +192,7 @@ pub(super) fn restore_values(
             }
             Block::ToolResult { .. } => {
                 if let Some(data) = &prepared.data[index] {
-                    crate::encoding::restore_data(block, data)?;
+                    crate::encoding::set_data(block, crate::encoding::unpack_json(data)?);
                 }
             }
             _ => {}

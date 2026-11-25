@@ -70,9 +70,15 @@ fn absent_and_present_blobs_keep_other_prepared_values() {
         assert_eq!(actual, &message);
         assert_eq!(actual.session, sid("s"));
         if prepared {
+            let mut packer = crate::content::Packer::default();
+            let expected = PreparedMessage::new(&mut message.clone(), &mut packer).unwrap();
+            let groups = packer.finish().unwrap();
+            let actual = &indexed.parse[0].prepared;
+            assert_eq!(actual.messages[0].hash, expected.hash);
+            assert_eq!(actual.messages[0].items, expected.items);
             assert_eq!(
-                indexed.parse[0].prepared.messages[0],
-                PreparedMessage::new(&message).unwrap()
+                actual.content.read(actual.messages[0].content).unwrap(),
+                groups.read(expected.content).unwrap()
             );
         }
     }

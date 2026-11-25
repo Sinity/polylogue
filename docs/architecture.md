@@ -330,11 +330,13 @@ The daemon reaches the index two ways, which must agree.
   beside them at the same time ([search](search.md#index-maintenance)). A
   build looks nothing up in what it is writing.
 - **A build composes each session from its readings as a group.** Preparing
-  carries each message reading's value (its message, packed blocks, items
-  and word count) into a stream sorted by the session that states it, and
-  the merge gives each reading its text keys. Each session is composed once
-  from its group, by the composition upkeep uses, with nothing stored to
-  compare against. A session whose shown rows depend on readings stated
+  stores each reading's content once, in content groups written in the order
+  it was read ([archive](archive.md#content)), and carries each message
+  reading's keys, place, items, word count and a reference to its content
+  into a stream sorted by the session that states it; no body travels in the
+  stream. The merge gives each reading its text keys and each content group
+  its key. Each session is composed once from its readings, by the
+  composition upkeep uses, with nothing stored to compare against. A session whose shown rows depend on readings stated
   under other sessions is composed from the loaded readings instead, as
   upkeep composes it: a copy named through another session, a message stated
   under several sessions, a reading holding part of a version other readings

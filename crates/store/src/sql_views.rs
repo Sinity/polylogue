@@ -23,7 +23,7 @@ pub const VIEWS: &[(&str, &str)] = &[
         "SELECT m.id, s.id AS session, m.role, m.written_by, m.model, m.at, \
          (SELECT group_concat(pl_text_at(g.body, t.start, t.length), char(10)) FROM \
             (SELECT b.text_id FROM main.block b WHERE b.message_pk = m.pk AND b.kind = 'text' ORDER BY b.idx) bt \
-            JOIN main.text t ON t.id = bt.text_id JOIN main.text_group g ON g.id = t.group_id) AS text, \
+            JOIN main.text t ON t.id = bt.text_id JOIN main.content_group g ON g.id = t.group_id) AS text, \
          m.input_tokens, m.output_tokens, m.cache_read_tokens, m.cache_write_tokens, \
          m.cost_nusd, m.duplicate_of, m.on_active_path \
          FROM main.message m JOIN main.session s ON s.pk = m.session_pk",

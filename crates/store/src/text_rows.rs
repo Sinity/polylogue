@@ -328,7 +328,7 @@ pub(crate) fn clear_entries(conn: &Connection) -> Result<()> {
 }
 
 /// Removes a text row and queues the removal of its search entries; its
-/// group leaves with its last text.
+/// group leaves once nothing names it.
 pub(crate) fn remove(i: &Connection, id: i64) -> Result<()> {
     i.execute(
         "INSERT OR IGNORE INTO search_pending(text_id, fts_table)
@@ -351,12 +351,12 @@ fn alone_group(conn: &Connection, text: &str) -> i64 {
     let body = alone(text);
     let hash = blake3::hash(&body);
     conn.execute(
-        "INSERT INTO text_group(hash,body) VALUES (?1,?2) ON CONFLICT(hash) DO NOTHING",
+        "INSERT INTO content_group(hash,body) VALUES (?1,?2) ON CONFLICT(hash) DO NOTHING",
         params![hash.as_bytes().as_slice(), body],
     )
     .unwrap();
     conn.query_row(
-        "SELECT id FROM text_group WHERE hash=?1",
+        "SELECT id FROM content_group WHERE hash=?1",
         [hash.as_bytes().as_slice()],
         |r| r.get(0),
     )
@@ -402,7 +402,7 @@ pub(crate) fn replace_text(conn: &Connection, id: i64, text: &str) {
 pub(crate) fn replace_group_body(conn: &Connection, id: i64, body: &[u8]) {
     let changed = conn
         .execute(
-            "UPDATE text_group SET body=?2 WHERE id=(SELECT group_id FROM text WHERE id=?1)",
+            "UPDATE content_group SET body=?2 WHERE id=(SELECT group_id FROM text WHERE id=?1)",
             params![id, body],
         )
         .unwrap();

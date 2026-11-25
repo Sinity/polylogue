@@ -362,8 +362,45 @@ fn stored_step(
     }
 }
 
+/// Each content is stored once and named by what shows it: every content
+/// group is named by a text or a reading, every shown block names a piece of
+/// a message reading's content, and every shown event names an event
+/// reading's piece (docs/archive.md, content).
+fn assert_content_named_once(w: &TestArchive) {
+    let conn = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let count = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM content_group g WHERE NOT EXISTS(SELECT 1 FROM text WHERE group_id=g.id)
+             AND NOT EXISTS(SELECT 1 FROM message_parse WHERE content_group=g.id)
+             AND NOT EXISTS(SELECT 1 FROM event_parse WHERE content_group=g.id)"
+        ),
+        0,
+        "content groups nothing names"
+    );
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM block b WHERE NOT EXISTS(SELECT 1 FROM message_parse r
+             WHERE r.content_group=b.content_group AND b.content_start>=r.content_start
+             AND b.content_start+b.content_length+coalesce(b.data_length,0)<=r.content_start+r.content_length)"
+        ),
+        0,
+        "shown blocks outside every message reading's content"
+    );
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM event e WHERE NOT EXISTS(SELECT 1 FROM event_parse r
+             WHERE r.content_group=e.content_group AND r.content_start=e.content_start
+             AND r.content_length=e.content_length AND r.data_length=e.data_length)"
+        ),
+        0,
+        "shown events naming no event reading's content"
+    );
+}
+
 /// Everything the reader answers about every session, by natural keys.
 fn replies(w: &TestArchive) -> Vec<String> {
+    assert_content_named_once(w);
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let mut out = Vec::new();
@@ -826,4 +863,10 @@ fn a_text_leaves_with_its_last_row_and_its_search_entries() {
     w.writer.flush().unwrap();
     assert_eq!(held(&conn), (0, 0));
     assert!(texts(&w, "s0").is_empty());
+    // The message's content leaves with its reading, and its text's group
+    // with the text.
+    let groups: i64 = conn
+        .query_row("SELECT count(*) FROM content_group", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(groups, 0);
 }

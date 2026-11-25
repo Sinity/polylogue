@@ -249,41 +249,203 @@ pub(crate) fn read_time(
     })
 }
 
-/// One message's identity and packed rows, prepared together before its parsed
-/// payloads are released. The writer borrows these bytes without repacking.
+/// One message's identity and content, prepared together before its parsed
+/// payloads are released. Its content lies in the content groups prepared
+/// with it ([`message_content`]); the writer stores those groups and names
+/// the piece, without encoding anything again.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedMessage {
     pub(crate) id: MessageId,
     pub(crate) block_selection: ShownBlocks,
     pub(crate) time: Vec<u8>,
-    pub(crate) body: Vec<u8>,
+    /// The message's content hash: its version.
+    pub(crate) hash: [u8; 32],
     /// Item estimates from the typed content, before payloads are released.
     pub(crate) items: Vec<polylogue_model::read::IndexEntry>,
-    content: PreparedContent,
+    /// Each block's text hash, for a block that keeps its text in `text`.
+    pub(crate) texts: Vec<Option<[u8; 32]>>,
+    pub(crate) content: crate::content::Placed,
 }
 
-/// Encoded content rows shared by role-bearing messages and textual documents.
+impl PreparedMessage {
+    /// Prepares a message holding every block of its version, laying its
+    /// content into `packer`.
+    pub(crate) fn new(message: &mut Message, packer: &mut crate::content::Packer) -> Result<Self> {
+        let block_selection = ShownBlocks {
+            source_version: message.content_hash()?,
+            block_count: message.blocks.len() as u64,
+            block_ordinals: (0..message.blocks.len() as u64).collect(),
+        };
+        Self::of(message, block_selection, packer)
+    }
+
+    /// Prepares a message holding the blocks `block_selection` names of its
+    /// version.
+    pub(crate) fn projected(
+        message: &mut Message,
+        block_selection: &ShownBlocks,
+        packer: &mut crate::content::Packer,
+    ) -> Result<Self> {
+        block_selection.validate(message.blocks.len())?;
+        if block_selection.block_count == message.blocks.len() as u64
+            && message.content_hash()? != block_selection.source_version
+        {
+            return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
+        }
+        Self::of(message, block_selection.clone(), packer)
+    }
+
+    fn of(
+        message: &mut Message,
+        block_selection: ShownBlocks,
+        packer: &mut crate::content::Packer,
+    ) -> Result<Self> {
+        let content = packer.add(&message_content(message)?)?;
+        Ok(Self {
+            id: message.id.clone(),
+            time: time_bytes(message.at, message.time_accuracy())?,
+            hash: block_selection.source_version.0,
+            items: polylogue_model::read::message_entries(
+                message,
+                &block_selection.block_ordinals,
+                polylogue_model::read::MessagePlace::default(),
+            ),
+            texts: text_hashes(&message.blocks),
+            block_selection,
+            content,
+        })
+    }
+}
+
+/// Each block's text hash, for a block that keeps its text in `text`.
+pub(crate) fn text_hashes(blocks: &[Block]) -> Vec<Option<[u8; 32]>> {
+    blocks
+        .iter()
+        .map(|block| block_text(block).map(|text| *blake3::hash(text.as_bytes()).as_bytes()))
+        .collect()
+}
+
+/// A message's content as stored once (docs/archive.md, content): its fields
+/// without blocks, then each block with its text moved out and the block's
+/// structured value apart from it (empty when it has none), as the parts of
+/// one piece ([`crate::content::join_parts`]). The message is given back as
+/// it was.
+pub(crate) fn message_content(message: &mut Message) -> Result<Vec<u8>> {
+    let blocks = std::mem::take(&mut message.blocks);
+    let header = serde_json::to_vec(&*message);
+    message.blocks = blocks;
+    let mut parts = vec![header?];
+    for block in &message.blocks {
+        parts.push(block_bytes(block)?);
+        parts.push(
+            block_data(block)
+                .map(serde_json::to_vec)
+                .transpose()?
+                .unwrap_or_default(),
+        );
+    }
+    let parts: Vec<&[u8]> = parts.iter().map(Vec::as_slice).collect();
+    Ok(crate::content::join_parts(&parts))
+}
+
+/// Where one block's piece lies in its message's content: its body, then
+/// its structured value when it has one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BlockPiece {
+    pub(crate) start: usize,
+    pub(crate) length: usize,
+    pub(crate) data_length: Option<usize>,
+}
+
+/// A message's content read back ([`message_content`]): the message with its
+/// texts still moved out, its blocks' structured values restored when `data`,
+/// and where each block's piece lies in the content.
+pub(crate) fn read_message_content(
+    content: &[u8],
+    data: bool,
+) -> Result<(Message, Vec<BlockPiece>)> {
+    let parts = crate::content::parts(content)?;
+    if parts.len() % 2 != 1 {
+        return Err(StoreError::stored(0, "a message's content has no fields"));
+    }
+    let mut message: Message = read_json(&content[parts[0].clone()])?;
+    let mut pieces = Vec::with_capacity(parts.len() / 2);
+    message.blocks = Vec::with_capacity(parts.len() / 2);
+    for pair in parts[1..].chunks(2) {
+        let (body, value) = (pair[0].clone(), pair[1].clone());
+        let mut block: Block = read_json(&content[body.clone()])?;
+        if data && !value.is_empty() {
+            set_data(&mut block, read_json(&content[value.clone()])?);
+        }
+        message.blocks.push(block);
+        pieces.push(BlockPiece {
+            start: body.start,
+            length: body.len(),
+            data_length: (!value.is_empty()).then_some(value.len()),
+        });
+    }
+    Ok((message, pieces))
+}
+
+/// One event's content and value hash, prepared before its parsed payload is
+/// released ([`event_content`]).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct PreparedContent {
+pub(crate) struct PreparedEvent {
+    /// The ID a session's event is named by when its source gives none.
+    pub(crate) content_id: String,
+    /// The hash of its data, by which composition chooses between readings.
+    pub(crate) hash: [u8; 32],
+    /// Its fields then its data.
+    pub(crate) content: crate::content::Placed,
+    pub(crate) fields_length: u64,
+}
+
+impl PreparedEvent {
+    pub(crate) fn new(event: &mut Event, packer: &mut crate::content::Packer) -> Result<Self> {
+        let (content_id, data) = event_bytes(event)?;
+        let hash = value_hash(&event.data)?;
+        let fields = event_fields(event)?;
+        let mut piece = fields;
+        let fields_length = piece.len() as u64;
+        piece.extend_from_slice(&data);
+        Ok(Self {
+            content_id,
+            hash,
+            content: packer.add(&piece)?,
+            fields_length,
+        })
+    }
+
+    /// The length of its data, which follows its fields.
+    pub(crate) fn data_length(&self) -> u64 {
+        self.content.length - self.fields_length
+    }
+}
+
+/// An event's fields as stored: the encoded Event without its data. The
+/// event is given back as it was.
+pub(crate) fn event_fields(event: &mut Event) -> Result<Vec<u8>> {
+    let data = std::mem::take(&mut event.data);
+    let fields = serde_json::to_vec(&*event);
+    event.data = data;
+    Ok(fields?)
+}
+
+/// The hash a value is chosen by between readings: of its canonical JSON.
+pub(crate) fn value_hash(value: &impl serde::Serialize) -> Result<[u8; 32]> {
+    let canonical = canonical_json::canonical_json(value).map_err(identity_encoding)?;
+    Ok(*blake3::hash(&canonical).as_bytes())
+}
+
+/// A document's block rows, packed: each block's body, its text's hash and
+/// its structured value.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PackedBlocks {
     pub(crate) hash: [u8; 32],
     pub(crate) blocks: Vec<Vec<u8>>,
     pub(crate) texts: Vec<Option<[u8; 32]>>,
-    /// Each block's structured value, packed for `block.data` ([`block_data`]).
+    /// Each block's structured value, packed for `document_block.data`.
     pub(crate) data: Vec<Option<Vec<u8>>>,
-}
-
-impl std::ops::Deref for PreparedMessage {
-    type Target = PreparedContent;
-    fn deref(&self) -> &Self::Target {
-        &self.content
-    }
-}
-
-#[cfg(test)]
-impl std::ops::DerefMut for PreparedMessage {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.content
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -293,11 +455,11 @@ pub(crate) struct PreparedDocument {
     /// The document without its blocks, packed JSON.
     pub(crate) fields: Vec<u8>,
     pub(crate) body: Vec<u8>,
-    content: PreparedContent,
+    content: PackedBlocks,
 }
 
 impl std::ops::Deref for PreparedDocument {
-    type Target = PreparedContent;
+    type Target = PackedBlocks;
     fn deref(&self) -> &Self::Target {
         &self.content
     }
@@ -306,36 +468,6 @@ impl std::ops::Deref for PreparedDocument {
 impl PreparedDocument {
     pub(crate) fn new(document: &Document) -> Result<Self> {
         RowPacker::new()?.pack_document(document)
-    }
-}
-
-impl PreparedMessage {
-    pub(crate) fn new(message: &Message) -> Result<Self> {
-        RowPacker::new()?.pack_message(message)
-    }
-
-    pub(crate) fn projected(message: &Message, block_selection: &ShownBlocks) -> Result<Self> {
-        RowPacker::new()?.pack_projected_message(message, block_selection)
-    }
-
-    /// Takes the item entries and packed content out, once the message is
-    /// written.
-    pub(crate) fn take_value(
-        &mut self,
-    ) -> (Vec<polylogue_model::read::IndexEntry>, PreparedContent) {
-        let hash = self.content.hash;
-        (
-            std::mem::take(&mut self.items),
-            std::mem::replace(
-                &mut self.content,
-                PreparedContent {
-                    hash,
-                    blocks: Vec::new(),
-                    texts: Vec::new(),
-                    data: Vec::new(),
-                },
-            ),
-        )
     }
 }
 
@@ -381,53 +513,6 @@ impl RowPacker {
         Ok(self.pack_row(&serde_json::to_vec(value)?)?)
     }
 
-    pub(crate) fn pack_event(&mut self, event: &Event) -> Result<(String, Vec<u8>)> {
-        let (id, data) = event_bytes(event)?;
-        Ok((id, self.pack_row(&data)?))
-    }
-
-    pub(crate) fn pack_message(&mut self, message: &Message) -> Result<PreparedMessage> {
-        let block_selection = ShownBlocks {
-            source_version: message.content_hash()?,
-            block_count: message.blocks.len() as u64,
-            block_ordinals: (0..message.blocks.len() as u64).collect(),
-        };
-        self.pack_message_value(message, &block_selection)
-    }
-
-    pub(crate) fn pack_projected_message(
-        &mut self,
-        message: &Message,
-        block_selection: &ShownBlocks,
-    ) -> Result<PreparedMessage> {
-        block_selection.validate(message.blocks.len())?;
-        if block_selection.block_count == message.blocks.len() as u64
-            && message.content_hash()? != block_selection.source_version
-        {
-            return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
-        }
-        self.pack_message_value(message, block_selection)
-    }
-
-    fn pack_message_value(
-        &mut self,
-        message: &Message,
-        block_selection: &ShownBlocks,
-    ) -> Result<PreparedMessage> {
-        Ok(PreparedMessage {
-            id: message.id.clone(),
-            block_selection: block_selection.clone(),
-            time: time_bytes(message.at, message.time_accuracy())?,
-            body: self.pack_version(message, &message.blocks)?,
-            items: polylogue_model::read::message_entries(
-                message,
-                &block_selection.block_ordinals,
-                polylogue_model::read::MessagePlace::default(),
-            ),
-            content: self.pack_content(&message.blocks, block_selection.source_version.0)?,
-        })
-    }
-
     pub(crate) fn pack_document(&mut self, document: &Document) -> Result<PreparedDocument> {
         let fields = Document {
             id: document.id.clone(),
@@ -449,7 +534,7 @@ impl RowPacker {
             time: time_bytes(document.source_time, document.time_accuracy())?,
             body: self.pack_version(document, &document.blocks)?,
             fields: self.pack_json(&fields)?,
-            content: self.pack_content(&document.blocks, hash)?,
+            content: self.pack_blocks(&document.blocks, hash)?,
         })
     }
 
@@ -487,11 +572,7 @@ impl RowPacker {
         Ok(self.pack_row(&block_bytes(block)?)?)
     }
 
-    pub(crate) fn pack_content(
-        &mut self,
-        blocks: &[Block],
-        hash: [u8; 32],
-    ) -> Result<PreparedContent> {
+    fn pack_blocks(&mut self, blocks: &[Block], hash: [u8; 32]) -> Result<PackedBlocks> {
         let mut packed = Vec::with_capacity(blocks.len());
         let mut data = Vec::with_capacity(blocks.len());
         for block in blocks {
@@ -502,14 +583,9 @@ impl RowPacker {
                     .transpose()?,
             );
         }
-        Ok(PreparedContent {
+        Ok(PackedBlocks {
             hash,
-            texts: blocks
-                .iter()
-                .map(|block| {
-                    block_text(block).map(|text| *blake3::hash(text.as_bytes()).as_bytes())
-                })
-                .collect(),
+            texts: text_hashes(blocks),
             blocks: packed,
             data,
         })
@@ -567,20 +643,14 @@ fn block_bytes(block: &Block) -> Result<Vec<u8>> {
     Ok(serde_json::to_vec(&body)?)
 }
 
-/// An event's id is its session, kind, time, data and the message it follows:
-/// identical state recorded after different messages is distinct. Byte
-/// ranges do not change the event's identity when another input supplies it.
-#[cfg(test)]
-pub(crate) fn pack_event(e: &Event) -> Result<(String, Vec<u8>)> {
-    let (id, data) = event_bytes(e)?;
-    Ok((id, pack_bytes(&data)?))
-}
-
 pub(crate) fn identity_encoding(error: canonical_json::Error) -> StoreError {
     StoreError::Invalid(error.to_string())
 }
 
-/// The ID an event of a session is named by when its source gives none.
+/// The ID an event of a session is named by when its source gives none: its
+/// session, kind, time, data and the message it follows, so identical state
+/// recorded after different messages is distinct. Byte ranges do not change
+/// the event's identity when another input supplies it.
 pub(crate) fn event_content_id(e: &Event) -> Result<String> {
     Ok(event_bytes(e)?.0)
 }
@@ -630,7 +700,7 @@ fn reading_id(e: &Event) -> Option<String> {
     Some(h.finalize().to_hex().to_string())
 }
 
-/// Reads a block back from `block.body`.
+/// Reads a block back from a packed `document_block.body`.
 pub(crate) fn unpack_block(packed: &[u8]) -> Result<Block> {
     unpack_json(packed)
 }
@@ -651,9 +721,9 @@ pub(crate) fn block_text(block: &Block) -> Option<&str> {
     }
 }
 
-/// The structured value a block keeps in `block.data` rather than its packed
-/// body: a tool result's data. No text view shows it, and it can be most of
-/// a large message, so a text read never decodes it.
+/// The structured value a block keeps apart from its body: a tool result's
+/// data. No text view shows it, and it can be most of a large message, so a
+/// text read never decodes it.
 pub(crate) fn block_data(block: &Block) -> Option<&serde_json::Value> {
     match block {
         Block::ToolResult {
@@ -663,12 +733,11 @@ pub(crate) fn block_data(block: &Block) -> Option<&serde_json::Value> {
     }
 }
 
-/// Puts a block's structured value back from `block.data`.
-pub(crate) fn restore_data(block: &mut Block, packed: &[u8]) -> Result<()> {
+/// Puts a block's structured value back.
+pub(crate) fn set_data(block: &mut Block, value: serde_json::Value) {
     if let Block::ToolResult { data, .. } = block {
-        *data = Some(unpack_json(packed)?);
+        *data = Some(value);
     }
-    Ok(())
 }
 
 /// Puts a block's text back from its `text` row.

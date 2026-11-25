@@ -8,8 +8,46 @@ pub(crate) struct PreparedRows {
     pub(in crate::writer) documents: Vec<PreparedDocument>,
     pub(in crate::writer) fragments: crate::fragment::PreparedFragments,
     pub(in crate::writer) texts: crate::text_rows::PreparedTexts,
-    pub(in crate::writer) events: Vec<(String, Vec<u8>)>,
+    pub(in crate::writer) events: Vec<crate::encoding::PreparedEvent>,
+    /// The groups holding the messages' and events' content.
+    pub(in crate::writer) content: crate::content::Groups,
     pub(in crate::writer) released: bool,
+}
+
+impl PreparedRows {
+    /// Prepares message `index` again from `message`, in a group after the
+    /// step's others.
+    pub(in crate::writer) fn repack_message(
+        &mut self,
+        index: usize,
+        message: &mut Message,
+    ) -> Result<()> {
+        let mut packer = crate::content::Packer::continuing(std::mem::take(&mut self.content));
+        let prepared = PreparedMessage::new(message, &mut packer);
+        self.content = packer.finish()?;
+        self.messages[index] = prepared?;
+        Ok(())
+    }
+
+    /// A prepared message's content read back, its texts still moved out.
+    pub(in crate::writer) fn message_value(&self, index: usize) -> Result<Message> {
+        let prepared = self
+            .messages
+            .get(index)
+            .ok_or_else(|| StoreError::Invalid("no such prepared message".into()))?;
+        let bytes = self.content.read(prepared.content)?;
+        Ok(crate::encoding::read_message_content(&bytes, true)?.0)
+    }
+
+    /// A prepared event's data.
+    pub(in crate::writer) fn event_data(&self, index: usize) -> Result<Json> {
+        let prepared = self
+            .events
+            .get(index)
+            .ok_or_else(|| StoreError::Invalid("no such prepared event".into()))?;
+        let bytes = self.content.read(prepared.content)?;
+        crate::encoding::read_json(&bytes[prepared.fields_length as usize..])
+    }
 }
 
 impl PreparedRows {
@@ -75,14 +113,14 @@ impl PreparedRows {
                 .messages
                 .iter()
                 .zip(&output.messages)
-                .any(|(p, r)| p.id != r.message.id || p.blocks.len() != r.message.blocks.len())
+                .any(|(p, r)| p.id != r.message.id || p.texts.len() != r.message.blocks.len())
         {
             return Err(StoreError::Invalid(
                 "prepared rows no longer match their parsed records".into(),
             ));
         }
         for (index, prepared) in self.messages.iter().enumerate() {
-            prepared.block_selection.validate(prepared.blocks.len())?;
+            prepared.block_selection.validate(prepared.texts.len())?;
             if prepared.block_selection.source_version.0 != prepared.hash {
                 return Err(polylogue_model::bundle::BundleError::SourceVersionMismatch.into());
             }
@@ -90,13 +128,13 @@ impl PreparedRows {
                 Some(block_selection) if block_selection != &prepared.block_selection => {
                     return Err(polylogue_model::bundle::BundleError::BlockSelectionConflict.into());
                 }
-                None if prepared.block_selection.block_count != prepared.blocks.len() as u64
+                None if prepared.block_selection.block_count != prepared.texts.len() as u64
                     || prepared
                         .block_selection
                         .block_ordinals
                         .iter()
                         .copied()
-                        .ne(0..prepared.blocks.len() as u64) =>
+                        .ne(0..prepared.texts.len() as u64) =>
                 {
                     return Err(polylogue_model::bundle::BundleError::InvalidBlockSelection.into());
                 }
@@ -118,19 +156,21 @@ impl ParseStep {
         let Ok(mut packer) = crate::encoding::RowPacker::new() else {
             return;
         };
+        // Messages and events lay their content into the step's groups in
+        // the order the step states them.
+        let mut content = crate::content::Packer::default();
+        let block_selections = &self.output.block_selections;
         let Ok(messages) = self
             .output
             .messages
-            .iter()
+            .iter_mut()
             .enumerate()
-            .map(
-                |(index, r)| match self.output.block_selections.get(&index) {
-                    Some(block_selection) => {
-                        packer.pack_projected_message(&r.message, block_selection)
-                    }
-                    None => packer.pack_message(&r.message),
-                },
-            )
+            .map(|(index, r)| match block_selections.get(&index) {
+                Some(block_selection) => {
+                    PreparedMessage::projected(&mut r.message, block_selection, &mut content)
+                }
+                None => PreparedMessage::new(&mut r.message, &mut content),
+            })
             .collect::<Result<Vec<_>>>()
         else {
             return;
@@ -147,10 +187,13 @@ impl ParseStep {
         let Ok(events) = self
             .output
             .events
-            .iter()
-            .map(|event| packer.pack_event(event))
+            .iter_mut()
+            .map(|event| crate::encoding::PreparedEvent::new(event, &mut content))
             .collect::<Result<Vec<_>>>()
         else {
+            return;
+        };
+        let Ok(content) = content.finish() else {
             return;
         };
         let Ok(fragments) = crate::fragment::PreparedFragments::prepare(&self.output) else {
@@ -178,6 +221,7 @@ impl ParseStep {
             fragments,
             texts,
             events,
+            content,
             released: true,
         };
         for blocks in self
@@ -238,17 +282,18 @@ impl ParseStep {
     pub fn complete_output(&self) -> Result<Output> {
         self.prepared.validate(&self.output)?;
         let mut output = self.output.clone();
-        for (row, prepared) in output.messages.iter_mut().zip(&self.prepared.messages) {
-            crate::writer::attachments::restore_values(&mut row.message.blocks, prepared)?;
+        for (index, row) in output.messages.iter_mut().enumerate() {
+            let stored = self.prepared.message_value(index)?;
+            crate::writer::attachments::restore_values(&mut row.message.blocks, &stored.blocks)?;
         }
         for (row, prepared) in output.documents.iter_mut().zip(&self.prepared.documents) {
             let mut blocks = std::mem::take(&mut row.document.blocks);
-            crate::writer::attachments::restore_values(&mut blocks, prepared)?;
+            crate::writer::attachments::restore_packed(&mut blocks, prepared)?;
             row.document = crate::encoding::unpack_json(&prepared.fields)?;
             row.document.blocks = blocks;
         }
-        for (event, (_, data)) in output.events.iter_mut().zip(&self.prepared.events) {
-            event.data = crate::encoding::unpack_json(data)?;
+        for (index, event) in output.events.iter_mut().enumerate() {
+            event.data = self.prepared.event_data(index)?;
         }
         Ok(output)
     }
@@ -334,7 +379,13 @@ impl ParseStep {
                 if let Some(identity) = self.output.imported_events.get(&index) {
                     return Ok(identity.id.clone());
                 }
-                super::super::readings::event_id(input, chain, event, &packed.0, occurrence)
+                super::super::readings::event_id(
+                    input,
+                    chain,
+                    event,
+                    &packed.content_id,
+                    occurrence,
+                )
             })
             .collect()
     }

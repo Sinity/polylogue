@@ -5,7 +5,7 @@ fn events(w: &ClaudeHome) -> Vec<serde_json::Value> {
         .reader()
         .unwrap()
         .query(
-            "SELECT e.id,e.kind,e.source_start,e.source_end,pl_block(e.data) AS data,i.id AS input
+            "SELECT e.id,e.kind,e.source_start,e.source_end,(SELECT pl_text_at(g.body,e.content_start+e.content_length,e.data_length) FROM content_group g WHERE g.id=e.content_group) AS data,i.id AS input
          FROM event e JOIN input_ref i ON i.pk=e.input_pk ORDER BY e.source_start,e.kind,e.id",
             &[],
         )

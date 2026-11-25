@@ -48,7 +48,7 @@ fn rows(archive: &Archive) -> Vec<Json> {
         .reader()
         .unwrap()
         .query(
-            "SELECT e.id,r.id AS input,s.id AS session,pl_block(e.data) AS data
+            "SELECT e.id,r.id AS input,s.id AS session,(SELECT pl_text_at(g.body,e.content_start+e.content_length,e.data_length) FROM content_group g WHERE g.id=e.content_group) AS data
          FROM event e JOIN input_ref r ON r.pk=e.input_pk
          LEFT JOIN session s ON s.pk=e.session_pk ORDER BY r.id,e.id",
             &[],

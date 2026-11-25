@@ -119,7 +119,7 @@ fn gemini_cli_and_hermes_files_are_read_and_so_are_their_changes_found_during_a_
             .reader()
             .unwrap()
             .query(
-                "SELECT json_extract(pl_block(data),'$.name') AS name FROM event \
+                "SELECT json_extract((SELECT pl_text_at(g.body,e.content_start+e.content_length,e.data_length) FROM content_group g WHERE g.id=e.content_group),'$.name') AS name FROM event e \
                  WHERE kind='hermes_observer_mark' ORDER BY source_start",
                 &[],
             )

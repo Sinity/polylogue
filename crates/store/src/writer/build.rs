@@ -36,7 +36,13 @@ const STEP_TIME: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// The streams of a build, by the first byte of a record's key.
 const INPUTS: u8 = 0;
+/// Content groups, by worker and the worker's number for the group; a
+/// group's record is its kind ([`TEXT_GROUP`] or [`READING_GROUP`]), hash and
+/// body. Until the load gives it its key, a row names a group by
+/// [`provisional`].
 const GROUPS: u8 = 1;
+const TEXT_GROUP: u8 = 0;
+const READING_GROUP: u8 = 1;
 /// Texts and the reading text rows that hold them, by hash: a text's own
 /// record (`TEXT`) comes before the rows that name it (`TEXT_HOLDER`).
 const TEXTS: u8 = 2;
@@ -107,11 +113,42 @@ fn kept_while_loading(sql: &str) -> bool {
 }
 
 /// The indexes a build's load concerns, as (name, statement, table): every
-/// one on a stored table but the one that makes an equal text group one row.
+/// one on a stored table but the one that makes an equal content group one
+/// row.
 const LOAD_INDEXES: &str =
     "SELECT name,sql,tbl_name FROM sqlite_schema WHERE type='index' AND sql IS NOT NULL
-     AND name <> 'text_group_hash'
+     AND name <> 'content_group_hash'
      AND tbl_name NOT IN (SELECT name FROM sqlite_schema WHERE sql LIKE 'CREATE VIRTUAL TABLE%')";
+
+/// How a worker's run names a content group before the load gives it its
+/// key: the worker's number and its number for the group.
+fn provisional(worker: u32, seq: u64) -> i64 {
+    (i64::from(worker) << 40) | seq as i64
+}
+
+/// The keys the load gave the workers' content groups.
+#[derive(Default)]
+pub(super) struct GroupKeys {
+    /// Each worker's first group's key, less its number for that group.
+    bases: std::collections::HashMap<u32, i64>,
+    /// Groups not stored because one with the same bytes already was (by
+    /// another worker, another chain or upkeep), by the key they would have
+    /// had: the stored group's key.
+    shared: std::collections::HashMap<i64, i64>,
+}
+
+impl GroupKeys {
+    /// The key of the group a run names `provisional`.
+    fn key(&self, provisional: i64) -> Result<i64> {
+        let worker = (provisional >> 40) as u32;
+        let base = self
+            .bases
+            .get(&worker)
+            .ok_or_else(|| StoreError::Invalid("a run names a group the build lacks".into()))?;
+        let key = base + (provisional & ((1 << 40) - 1));
+        Ok(self.shared.get(&key).copied().unwrap_or(key))
+    }
+}
 
 fn load_indexes(conn: &Connection) -> Result<Vec<(String, String, String)>> {
     Ok(conn
@@ -261,6 +298,8 @@ struct Table {
     name: String,
     columns: Vec<String>,
     input: Option<usize>,
+    /// The column naming a content group, which a run gives provisionally.
+    group: Option<usize>,
     /// The statement that inserts one row into the build file.
     insert: String,
 }
@@ -279,6 +318,7 @@ impl Table {
             .join(",");
         let insert = format!("INSERT {conflict} INTO main.\"{name}\"({names}) VALUES ({marks})");
         Self {
+            group: columns.iter().position(|c| c == "content_group"),
             name,
             columns,
             input,
@@ -309,7 +349,7 @@ fn tables(conn: &Connection) -> Result<Vec<Table>> {
             .collect::<rusqlite::Result<_>>()?;
         let input = columns.iter().position(|c| c == "input_pk");
         let conflict = match name.as_str() {
-            "input_ref" | "text" | "text_group" | "parse_text" => continue,
+            "input_ref" | "text" | "content_group" | "parse_text" => continue,
             "text_fragment" | "wire_declaration" => "OR IGNORE",
             "repo_lookup" => "OR REPLACE",
             _ if input.is_some() => "",
@@ -465,7 +505,6 @@ pub struct BuildWorker {
     number: u32,
     groups: u64,
     scratch: PathBuf,
-    packer: crate::encoding::RowPacker,
     /// How many bytes of prepared values a chain keeps (see
     /// [`OpenChain::values`]).
     value_memory: usize,
@@ -509,7 +548,6 @@ impl BuildWorker {
             number,
             groups: 0,
             scratch,
-            packer: crate::encoding::RowPacker::new()?,
             value_memory: memory / 4,
         })
     }
@@ -544,7 +582,6 @@ impl BuildWorker {
                 tables: &self.tables,
                 number: self.number,
                 groups: &mut self.groups,
-                packer: &mut self.packer,
             },
         })
     }
@@ -605,29 +642,26 @@ impl super::chain::ChainSink for OpenChain<'_> {
         };
         self.steps
             .write(&self.tx, &w, step, &mut super::readings::Touched::default())?;
-        // The values composition takes, kept from what the step prepared
-        // rather than read back from the scratch index.
+        // What composition takes besides the stored content, kept from
+        // what the step prepared rather than read back from the scratch
+        // index.
         for (row, prepared) in step.output.messages.iter().zip(&mut step.prepared.messages) {
-            let layout = crate::encoding::message_layout(&prepared.block_selection)?;
-            let block_count = prepared.block_selection.block_count;
-            let size = prepared.blocks.iter().map(Vec::len).sum::<usize>()
-                + prepared.data.iter().flatten().map(Vec::len).sum::<usize>()
-                + prepared.items.len() * std::mem::size_of::<polylogue_model::read::IndexEntry>();
-            let id = row.message.id.to_string();
+            let size =
+                prepared.items.len() * std::mem::size_of::<polylogue_model::read::IndexEntry>();
             if size > self.value_room {
                 continue;
             }
             self.value_room -= size;
-            let (items, content) = prepared.take_value();
             self.values.insert(
-                id,
+                row.message.id.to_string(),
                 (
-                    layout,
+                    crate::encoding::message_layout(&prepared.block_selection)?,
                     Prepared {
-                        block_count,
-                        items,
+                        hash: prepared.hash,
+                        block_count: prepared.block_selection.block_count,
+                        items: std::mem::take(&mut prepared.items),
                         words: super::shown::text_words(&row.message),
-                        content,
+                        texts: prepared.texts.clone(),
                     },
                 ),
             );
@@ -671,7 +705,6 @@ struct Out<'a> {
     tables: &'a [Table],
     number: u32,
     groups: &'a mut u64,
-    packer: &'a mut crate::encoding::RowPacker,
 }
 
 /// Moves the chain's rows from the scratch index into the stream and
@@ -700,47 +733,61 @@ fn move_out(
         &mut value,
     );
     out.sorter.push(&key, &value)?;
-    // Text groups take the worker's next numbers; a group's record is its
-    // hash followed by its body.
+    // The groups the chain's rows name take the worker's next numbers.
     let mut groups = std::collections::HashMap::new();
     {
-        let mut statement = tx.prepare_cached("SELECT id,hash,body FROM text_group ORDER BY id")?;
+        let mut statement = tx.prepare_cached(
+            "SELECT g.id,g.hash,g.body,g.id IN (SELECT t.group_id FROM text t
+                 WHERE t.id IN (SELECT text_id FROM parse_text))
+             FROM content_group g WHERE g.id IN (
+                 SELECT t.group_id FROM text t WHERE t.id IN (SELECT text_id FROM parse_text)
+                 UNION SELECT content_group FROM message_parse
+                 UNION SELECT content_group FROM event_parse)
+             ORDER BY g.id",
+        )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let local: i64 = row.get(0)?;
             let seq = *out.groups;
             *out.groups += 1;
-            groups.insert(local, seq);
+            groups.insert(local, provisional(out.number, seq));
             let mut key = vec![GROUPS];
             key.extend_from_slice(&out.number.to_be_bytes());
             key.extend_from_slice(&seq.to_be_bytes());
             value.clear();
+            value.push(if row.get::<_, bool>(3)? {
+                TEXT_GROUP
+            } else {
+                READING_GROUP
+            });
             value.extend_from_slice(row.get_ref(1)?.as_blob().map_err(rusqlite::Error::from)?);
             value.extend_from_slice(row.get_ref(2)?.as_blob().map_err(rusqlite::Error::from)?);
             out.sorter.push(&key, &value)?;
         }
     }
+    let group = |local: i64| {
+        groups
+            .get(&local)
+            .copied()
+            .ok_or_else(|| StoreError::Invalid("a scratch row names a group not moved out".into()))
+    };
     {
         let mut statement = tx.prepare_cached(
-            "SELECT t.hash,t.normalized_hash,t.group_id,t.start,t.length,g.hash FROM text t
-             JOIN text_group g ON g.id=t.group_id
+            "SELECT t.hash,t.normalized_hash,t.group_id,t.start,t.length FROM text t
              WHERE t.id IN (SELECT text_id FROM parse_text)",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
-            let group = groups[&row.get::<_, i64>(2)?];
             let mut key = vec![TEXTS];
             key.extend_from_slice(&row.get::<_, Vec<u8>>(0)?);
             key.push(TEXT);
             value.clear();
             encode_row(
                 &[
-                    ValueRef::Integer(i64::from(out.number)),
-                    ValueRef::Integer(group as i64),
+                    ValueRef::Integer(group(row.get(2)?)?),
                     row.get_ref(3)?,
                     row.get_ref(4)?,
                     row.get_ref(1)?,
-                    row.get_ref(5)?,
                 ],
                 &mut value,
             );
@@ -793,17 +840,20 @@ fn move_out(
             out.sorter.push(&key, &value)?;
         }
     }
-    compose_records(tx, out, input, &route, chain, values)?;
+    compose_records(tx, out, input, &route, chain, values, &group)?;
     for (n, table) in out.tables.iter().enumerate() {
         let stream = TABLES + n as u8;
         let mut statement = tx.prepare_cached(&format!("SELECT * FROM \"{}\"", table.name))?;
         let mut rows = statement.query([])?;
         let mut seq = 0u32;
         while let Some(row) = rows.next()? {
+            let named = table.group.map(|at| group(row.get(at)?)).transpose()?;
             let values = (0..table.columns.len())
                 .map(|i| {
                     if Some(i) == table.input {
                         Ok(ValueRef::Null)
+                    } else if Some(i) == table.group {
+                        Ok(ValueRef::Integer(named.expect("a group column")))
                     } else {
                         row.get_ref(i)
                     }
@@ -819,7 +869,7 @@ fn move_out(
     for table in out.tables.iter().map(|table| table.name.as_str()).chain([
         "parse_text",
         "text",
-        "text_group",
+        "content_group",
     ]) {
         tx.execute(&format!("DELETE FROM \"{table}\""), [])?;
     }
@@ -827,8 +877,8 @@ fn move_out(
 }
 
 /// Moves the chain's readings out into the composition stream, grouped
-/// by the session stating them, each message reading with its value
-/// (docs/architecture.md, one path).
+/// by the session stating them, each message reading with what composition
+/// takes besides its stored content (docs/architecture.md, one path).
 fn compose_records(
     tx: &Transaction<'_>,
     out: &mut Out<'_>,
@@ -836,6 +886,7 @@ fn compose_records(
     route: &str,
     chain: i64,
     values: &mut std::collections::HashMap<String, (Vec<u8>, Prepared)>,
+    group: &impl Fn(i64) -> Result<i64>,
 ) -> Result<()> {
     let mut value = Vec::new();
     let input_pk: i64 = tx.query_row("SELECT pk FROM input_ref WHERE id=?1", [input], |r| {
@@ -856,13 +907,13 @@ fn compose_records(
         }
     }
     {
+        let mut reader = crate::content::Reader::default();
         // In each chain's order, so that its texts are read group by group.
         let mut statement = tx.prepare_cached(
             "SELECT r.message_id,r.session_id,r.source_start,r.source_end,r.seq,r.record_position,
-                 r.order_time,r.route,r.completion,r.id_kind='content',r.hash,b.body,r.layout
-             FROM message_parse r JOIN message_parse_body b
-                 ON b.input_pk=r.input_pk AND b.chain=r.chain AND b.message_id=r.message_id
-             ORDER BY r.seq,r.record_position",
+                 r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
+                 r.content_group,r.content_start,r.content_length,r.layout
+             FROM message_parse r ORDER BY r.seq,r.record_position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -870,25 +921,25 @@ fn compose_records(
             let session: String = row.get(1)?;
             out.sorter
                 .push(&mark_key(MESSAGE_ID, &[&message, &session]), &[])?;
-            // The value a step prepared is the reading's when the reading is
-            // that step's statement: the same version and blocks. A reading
+            // What a step prepared is the reading's when the reading is that
+            // step's statement: the same version and blocks. A reading
             // joined from several statements is read back.
             let prepared = values.remove(&message).filter(|(layout, prepared)| {
-                row.get_ref(10).is_ok_and(|hash| {
-                    hash.as_blob()
-                        .is_ok_and(|hash| hash == prepared.content.hash)
-                }) && row
-                    .get_ref(12)
-                    .is_ok_and(|stored| stored.as_blob().is_ok_and(|stored| stored == layout))
+                row.get_ref(10)
+                    .is_ok_and(|hash| hash.as_blob().is_ok_and(|hash| hash == prepared.hash))
+                    && row
+                        .get_ref(14)
+                        .is_ok_and(|stored| stored.as_blob().is_ok_and(|stored| stored == layout))
             });
             let reading = match prepared {
                 Some((_, prepared)) => prepared,
                 None => {
-                    let (read, selection) = super::readings::read_message(
-                        tx, input_pk, chain, &message,
-                    )?
-                    .ok_or_else(|| StoreError::Invalid("a message reading has no body".into()))?;
-                    Prepared::of(super::shown::ReadingValue::of(read, selection, out.packer)?)
+                    let stored =
+                        super::readings::read_reading(tx, &mut reader, input_pk, chain, &message)?
+                            .ok_or_else(|| {
+                                StoreError::Invalid("a message reading has no body".into())
+                            })?;
+                    Prepared::of(super::shown::ReadingValue::of(stored)?)
                 }
             };
             if reading.partial() {
@@ -898,24 +949,15 @@ fn compose_records(
                 continue;
             }
             let items = crate::items::entry_bytes::encode_message(&reading.items)?;
-            // The body's blocks are the packed blocks and data the record
-            // carries after it: the record holds the rest of the message.
-            let head = message_head(row.get_ref(11)?.as_blob().map_err(rusqlite::Error::from)?)?;
-            let mut values: Vec<ValueRef<'_>> = (2..13)
+            let mut values: Vec<ValueRef<'_>> = (2..11)
                 .map(|n| row.get_ref(n))
                 .collect::<rusqlite::Result<_>>()?;
-            values[9] = ValueRef::Blob(&head);
+            values.push(ValueRef::Integer(group(row.get(11)?)?));
+            values.push(row.get_ref(12)?);
+            values.push(row.get_ref(13)?);
             values.push(ValueRef::Integer(reading.words));
             values.push(ValueRef::Blob(&items));
-            for ((block, data), text) in reading
-                .content
-                .blocks
-                .iter()
-                .zip(&reading.content.data)
-                .zip(&reading.content.texts)
-            {
-                values.push(ValueRef::Blob(block));
-                values.push(data.as_deref().map_or(ValueRef::Null, ValueRef::Blob));
+            for text in &reading.texts {
                 values.push(
                     text.as_ref()
                         .map_or(ValueRef::Null, |hash| ValueRef::Blob(hash)),
@@ -931,21 +973,23 @@ fn compose_records(
     }
     {
         let mut statement = tx.prepare_cached(
-            "SELECT event_id,session_id,route,hash,fields,data,seq,source_start,source_end,after_message_id
+            "SELECT event_id,session_id,route,hash,content_group,content_start,content_length,data_length,
+                 seq,source_start,source_end,after_message_id
              FROM event_parse WHERE session_id IS NOT NULL",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let (event, session): (String, String) = (row.get(0)?, row.get(1)?);
-            if let Some(after) = row.get::<_, Option<String>>(9)? {
+            if let Some(after) = row.get::<_, Option<String>>(11)? {
                 out.sorter
                     .push(&mark_key(FOLLOWED, &[&after, &session]), &[])?;
             }
             out.sorter
                 .push(&mark_key(EVENT_ID, &[&event, &session]), &[])?;
-            let values: Vec<ValueRef<'_>> = (2..9)
+            let mut values: Vec<ValueRef<'_>> = (2..11)
                 .map(|n| row.get_ref(n))
                 .collect::<rusqlite::Result<_>>()?;
+            values[2] = ValueRef::Integer(group(row.get(4)?)?);
             value.clear();
             encode_row(&values, &mut value);
             out.sorter
@@ -970,39 +1014,31 @@ fn compose_records(
     Ok(())
 }
 
-/// A packed message body as JSON without its blocks.
-fn message_head(body: &[u8]) -> Result<Vec<u8>> {
-    let mut message: serde_json::Value = crate::encoding::unpack_json(body)?;
-    let blocks = message
-        .get_mut("blocks")
-        .ok_or_else(|| StoreError::Invalid("a message body has no blocks".into()))?;
-    *blocks = serde_json::Value::Array(Vec::new());
-    Ok(serde_json::to_vec(&message)?)
-}
-
-/// What composing a message reading takes from its value: whether it holds
-/// every block of its version, its index entries, its words and its packed
-/// content (see [`super::shown::ReadingValue`]).
+/// What composing a message reading takes besides its stored content:
+/// whether it holds every block of its version, its index entries, its
+/// words and its blocks' text hashes (see [`super::shown::ReadingValue`]).
 struct Prepared {
+    hash: [u8; 32],
     block_count: u64,
     items: Vec<polylogue_model::read::IndexEntry>,
     words: i64,
-    content: crate::encoding::PreparedContent,
+    texts: Vec<Option<[u8; 32]>>,
 }
 
 impl Prepared {
     fn of(value: super::shown::ReadingValue) -> Self {
         Self {
+            hash: value.selection.source_version.0,
             block_count: value.selection.block_count,
             items: value.items,
             words: value.words,
-            content: value.content,
+            texts: value.texts,
         }
     }
 
     /// Whether the reading holds only some of its version's blocks.
     fn partial(&self) -> bool {
-        self.block_count != self.content.blocks.len() as u64
+        self.block_count != self.texts.len() as u64
     }
 }
 
@@ -1051,6 +1087,7 @@ pub(super) struct Loaded {
     texts: Merger,
     fallback: BTreeSet<String>,
     shared_events: HashSet<String>,
+    groups: Arc<GroupKeys>,
 }
 
 /// Where a build's composition stands between its steps
@@ -1101,6 +1138,7 @@ impl ComposeState {
             texts,
             mut fallback,
             shared_events,
+            groups,
         } = loaded;
         let aliases = Arc::new(super::identity::Aliases::load(index)?);
         // Composing runs no trigger per row: each counted table is counted
@@ -1141,7 +1179,13 @@ impl ComposeState {
             step: Step::Links,
             indexes,
             counting: counting.into_iter().map(|(_, sql)| sql).collect(),
-            pieces: read_stream(merged, texts, fallback.clone(), Arc::clone(&aliases)),
+            pieces: read_stream(
+                merged,
+                texts,
+                fallback.clone(),
+                Arc::clone(&aliases),
+                groups,
+            ),
             stream_done: false,
             fallback: fallback.into_iter().collect(),
             aliases,
@@ -1196,14 +1240,9 @@ struct Load {
     tables: Vec<Table>,
     held: std::iter::Peekable<std::vec::IntoIter<(Vec<u8>, i64)>>,
     next_group: i64,
-    /// The key the load's first group takes.
-    first_group: i64,
-    /// One bit for each group the load read, from `first_group` on, set for
-    /// a group not stored because a group with the same body already was (by
-    /// another worker, another chain or upkeep): its texts are placed at the
-    /// same bytes of the stored one, found by the group hash they carry.
-    shared_groups: Vec<u64>,
-    bases: std::collections::HashMap<u32, i64>,
+    /// The keys given to the workers' groups; a group stored before with the
+    /// same bytes keeps its key, and what names the new one names it.
+    groups: GroupKeys,
     holders: Option<Sorter>,
     input: Option<(String, i64)>,
     current_text: Option<(Vec<u8>, i64)>,
@@ -1310,7 +1349,7 @@ impl Inner {
                 let upkept = Fallback::upkept(&self.index)?;
                 let present = load_indexes(&self.index)?;
                 // A load drops every index but the one that makes an equal
-                // group one row (see `Load::shared_groups`) and those it fills
+                // group one row (see `Load::groups`) and those it fills
                 // in key order; the build makes the declared indexes the file
                 // lacks, those the load fills before it.
                 if !runs.is_empty() {
@@ -1355,6 +1394,7 @@ impl Inner {
                             texts: Merger::open(Vec::new(), &runs_dir, 0)?,
                             fallback: upkept.sessions,
                             shared_events: HashSet::new(),
+                            groups: Arc::default(),
                         }),
                     )
                 } else {
@@ -1382,6 +1422,7 @@ impl Inner {
                         merged: load.merged,
                         fallback: load.fallback,
                         shared_events: load.shared_events,
+                        groups: Arc::new(load.groups),
                     });
                     Stage::TextHolders(Box::new(TextHolders {
                         merged: Merger::open(
@@ -1525,9 +1566,18 @@ impl Inner {
             .prepare("SELECT hash,id FROM text ORDER BY hash")?
             .query_map([], |r| <(Vec<u8>, i64)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?;
-        let next_group: i64 = self
-            .index
-            .scalar("SELECT coalesce(max(id),0)+1 FROM text_group", [])?;
+        // A group's key is never given to another group.
+        let next_group: i64 = self.index.scalar(
+            "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name='content_group'),0),
+                 coalesce((SELECT max(id) FROM content_group),0))+1",
+            [],
+        )?;
+        // Text groups whose every text another worker or chain also held
+        // are named by nothing once the texts are made one.
+        self.index.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS build_text_group(id INTEGER PRIMARY KEY);
+             DELETE FROM temp.build_text_group;",
+        )?;
         // References are checked by the indexes and composition after the
         // load; tables arrive in name order, not in reference order.
         self.index.pragma_update(None, "foreign_keys", false)?;
@@ -1539,10 +1589,8 @@ impl Inner {
             )?,
             tables: tables(&self.index)?,
             held: held.into_iter().peekable(),
-            shared_groups: Vec::new(),
             next_group,
-            first_group: next_group,
-            bases: std::collections::HashMap::new(),
+            groups: GroupKeys::default(),
             holders: Some(Sorter::new(
                 &paths.runs,
                 "text-holders".into(),
@@ -1613,23 +1661,30 @@ impl Inner {
                 GROUPS => {
                     let worker = u32::from_be_bytes(rest[..4].try_into().expect("four bytes"));
                     let seq = i64::from_be_bytes(rest[4..12].try_into().expect("eight bytes"));
-                    load.bases.entry(worker).or_insert(load.next_group - seq);
-                    if value.len() < 32 {
-                        return Err(StoreError::Invalid("a text group has no hash".into()));
-                    }
-                    let (hash, body) = value.split_at(32);
+                    load.groups
+                        .bases
+                        .entry(worker)
+                        .or_insert(load.next_group - seq);
+                    let Some((&kind, rest)) =
+                        value.split_first().filter(|(_, rest)| rest.len() >= 32)
+                    else {
+                        return Err(StoreError::Invalid("a content group has no hash".into()));
+                    };
+                    let (hash, body) = rest.split_at(32);
                     let stored = t
                         .prepare_cached(
-                            "INSERT INTO text_group(id,hash,body) VALUES (?1,?2,?3)
+                            "INSERT INTO content_group(id,hash,body) VALUES (?1,?2,?3)
                              ON CONFLICT(hash) DO NOTHING",
                         )?
                         .execute(params![load.next_group, hash, body])?;
                     if stored == 0 {
-                        let at = (load.next_group - load.first_group) as usize;
-                        if load.shared_groups.len() <= at / 64 {
-                            load.shared_groups.resize(at / 64 + 1, 0);
-                        }
-                        load.shared_groups[at / 64] |= 1 << (at % 64);
+                        let held: i64 = t
+                            .prepare_cached("SELECT id FROM content_group WHERE hash=?1")?
+                            .query_row([hash], |r| r.get(0))?;
+                        load.groups.shared.insert(load.next_group, held);
+                    } else if kind == TEXT_GROUP {
+                        t.prepare_cached("INSERT INTO temp.build_text_group(id) VALUES (?1)")?
+                            .execute([load.next_group])?;
                     }
                     load.next_group += 1;
                 }
@@ -1654,32 +1709,17 @@ impl Inner {
                         Some(&TEXT) => {
                             if load.current_text.is_none() {
                                 let row = decode_row(value)?;
-                                let (Value::Integer(worker), Value::Integer(seq)) =
-                                    (&row[0], &row[1])
-                                else {
+                                let Value::Integer(named) = row[0] else {
                                     return Err(StoreError::Invalid(
                                         "a text names no group".into(),
                                     ));
                                 };
-                                let base = load.bases.get(&(*worker as u32)).ok_or_else(|| {
-                                    StoreError::Invalid("a text's group is not in the build".into())
-                                })?;
-                                let mut group = base + seq;
-                                let at = (group - load.first_group) as usize;
-                                if load
-                                    .shared_groups
-                                    .get(at / 64)
-                                    .is_some_and(|bits| bits & (1 << (at % 64)) != 0)
-                                {
-                                    group = t
-                                        .prepare_cached("SELECT id FROM text_group WHERE hash=?1")?
-                                        .query_row([&row[5]], |r| r.get(0))?;
-                                }
+                                let group = load.groups.key(named)?;
                                 t.prepare_cached(
                                     "INSERT INTO text(hash,normalized_hash,group_id,start,length)
                                      VALUES (?1,?2,?3,?4,?5)",
                                 )?
-                                .execute(params![hash, row[4], group, row[2], row[3]])?;
+                                .execute(params![hash, row[3], group, row[1], row[2]])?;
                                 load.current_text = Some((hash.to_vec(), t.last_insert_rowid()));
                             }
                         }
@@ -1782,17 +1822,25 @@ impl Inner {
                     if let Some(at) = table.input {
                         row[at] = Value::Integer(input_pk(&t, &mut load.input, key_input(rest)?)?);
                     }
+                    if let Some(at) = table.group {
+                        let Value::Integer(named) = row[at] else {
+                            return Err(StoreError::Invalid("a reading row names no group".into()));
+                        };
+                        row[at] = Value::Integer(load.groups.key(named)?);
+                    }
                     insert(&t, table, &row)?;
                 }
             }
             written += 1;
         };
         if !more {
-            // Groups whose every text another worker also held.
+            // Text groups whose every text another worker also held.
             t.execute(
-                "DELETE FROM text_group WHERE id NOT IN (SELECT group_id FROM text)",
+                "DELETE FROM content_group WHERE id IN (SELECT id FROM temp.build_text_group)
+                 AND id NOT IN (SELECT group_id FROM text)",
                 [],
             )?;
+            t.execute("DELETE FROM temp.build_text_group", [])?;
         }
         t.commit()?;
         job.count(written);
@@ -1881,19 +1929,24 @@ impl Inner {
                     {
                         touched.calls.insert(row?);
                     }
-                    for row in self
+                    let live = self
                         .index
                         .prepare_cached(
-                            "SELECT fields,data,kind FROM event_parse WHERE session_id=?1
-                             ORDER BY at,input_pk,chain,seq",
+                            "SELECT content_group,content_start,content_length,data_length,kind
+                             FROM event_parse WHERE session_id=?1 ORDER BY at,input_pk,chain,seq",
                         )?
-                        .query_map([session], |r| <(Vec<u8>, Vec<u8>, String)>::try_from(r))?
-                    {
-                        let (fields, data, kind) = row?;
+                        .query_map([session], |r| {
+                            Ok((crate::content::Piece::of(r, 0)?, r.get::<_, String>(4)?))
+                        })?
+                        .collect::<rusqlite::Result<Vec<_>>>()?;
+                    let mut reader = crate::content::Reader::default();
+                    for (piece, kind) in live {
                         if polylogue_model::live::is_live_event(&kind) {
-                            let mut event: Event = crate::encoding::unpack_json(&fields)?;
-                            event.data = crate::encoding::unpack_json(&data)?;
-                            touched.live.push(event);
+                            touched.live.push(super::readings::read_event(
+                                &self.index,
+                                &mut reader,
+                                piece,
+                            )?);
                         }
                     }
                 }
@@ -2119,6 +2172,7 @@ fn read_stream(
     mut texts: Merger,
     skipped: BTreeSet<String>,
     aliases: Arc<super::identity::Aliases>,
+    groups: Arc<GroupKeys>,
 ) -> std::sync::mpsc::Receiver<Result<Piece>> {
     let (sender, receiver) = std::sync::mpsc::sync_channel(PIECES_AHEAD);
     let spawned = std::thread::Builder::new()
@@ -2143,7 +2197,7 @@ fn read_stream(
                         continue;
                     }
                     if !send(Piece::Begin)
-                        || !read_session(&mut merged, &mut texts, &session, &mut send)?
+                        || !read_session(&mut merged, &mut texts, &groups, &session, &mut send)?
                     {
                         return Ok(());
                     }
@@ -2178,10 +2232,11 @@ fn of_session(key: &[u8], session: &str) -> bool {
 fn read_session(
     merged: &mut Merger,
     texts: &mut Merger,
+    groups: &GroupKeys,
     session: &str,
     send: &mut impl FnMut(Piece) -> bool,
 ) -> Result<bool> {
-    use super::shown::{EventRow, Given, MessageReading, OutcomeRow, ReadingValue};
+    use super::shown::{EventRow, Given, MessageReading, OutcomeRow};
     let bad = || StoreError::Invalid("a composition record is malformed".into());
     let mut pending: Option<(String, Vec<MessageReading>)> = None;
     let prefix = session.len() + 2;
@@ -2252,41 +2307,23 @@ fn read_session(
                     return Ok(false);
                 }
                 // Columns: start, end, seq, position, order time, route,
-                // completion, content-named, hash, the message without its
-                // blocks, layout, words, items; then each block's packed
-                // body, data and text hash. The message's blocks are read
-                // back from their packed bodies as a block row is, without
-                // their data: composition writes each block's data from the
-                // record and reads none from the message.
+                // completion, content-named, hash, the content's group, start
+                // and length, words, items; then each block's text hash.
                 let hash = blob(8)?.to_vec();
-                if row.len() < 13 || (row.len() - 13) % 3 != 0 {
+                if row.len() < 14 {
                     return Err(bad());
                 }
-                let blocks = (row.len() - 13) / 3;
-                let mut message: Message = crate::encoding::read_json(blob(9)?)?;
-                message.blocks = (0..blocks)
-                    .map(|n| crate::encoding::unpack_block(blob(13 + 3 * n)?))
-                    .collect::<Result<_>>()?;
-                let selection =
-                    crate::encoding::message_block_selection(&hash, Some(blob(10)?), blocks)?;
-                let mut content = crate::encoding::PreparedContent {
-                    hash: selection.source_version.0,
-                    blocks: Vec::with_capacity(blocks),
-                    texts: Vec::with_capacity(blocks),
-                    data: Vec::with_capacity(blocks),
-                };
-                for n in 0..blocks {
-                    let at = 13 + 3 * n;
-                    content.blocks.push(blob(at)?.to_vec());
-                    content.data.push(match &row[at + 1] {
-                        Value::Blob(data) => Some(data.clone()),
-                        _ => None,
-                    });
-                    content.texts.push(match &row[at + 2] {
-                        Value::Blob(hash) => Some(hash.as_slice().try_into().map_err(|_| bad())?),
-                        _ => None,
-                    });
-                }
+                let texts_of = row[14..]
+                    .iter()
+                    .map(|text| match text {
+                        Value::Blob(hash) => Ok(Some(
+                            <[u8; 32]>::try_from(hash.as_slice()).map_err(|_| bad())?,
+                        )),
+                        Value::Null => Ok(None),
+                        _ => Err(bad()),
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let blocks = texts_of.len();
                 // The text keys the load gave this reading's text rows.
                 // Both streams are in key order; the text rows of readings
                 // composed from the index are passed over.
@@ -2304,24 +2341,9 @@ fn read_session(
                     }
                     texts.next()?;
                 }
-                if ids
-                    .iter()
-                    .zip(&content.texts)
-                    .any(|(id, text)| id.is_some() != text.is_some())
-                {
-                    return Err(StoreError::Invalid(
-                        "a message reading's text rows differ from its blocks".into(),
-                    ));
-                }
-                let items = crate::items::entry_bytes::decode_message(blob(12)?, &message.id)?;
-                let value = ReadingValue {
-                    message,
-                    words: int(11)?,
-                    selection,
-                    items,
-                    content,
-                    text_ids: Some(ids),
-                };
+                let message_id =
+                    polylogue_model::MessageId::parse(&item).map_err(StoreError::invalid)?;
+                let items = crate::items::entry_bytes::decode_message(blob(13)?, &message_id)?;
                 let reading = MessageReading {
                     input_pk: 0,
                     input,
@@ -2338,10 +2360,18 @@ fn read_session(
                         .ok_or_else(|| StoreError::stored(0, "unknown stored completion"))?,
                     content: int(7)? != 0,
                     hash,
+                    stored: crate::content::Stretch {
+                        group: groups.key(int(9)?)?,
+                        start: int(10)?,
+                        length: int(11)?,
+                    },
                     given: Some(Given {
                         kind: None,
                         superseded: false,
-                        value,
+                        words: int(12)?,
+                        items,
+                        texts: texts_of,
+                        text_ids: ids,
                     }),
                 };
                 pending
@@ -2357,11 +2387,15 @@ fn read_session(
                     event_id: item,
                     route: route(0)?,
                     hash: blob(1)?.to_vec(),
-                    fields: blob(2)?.to_vec(),
-                    data: blob(3)?.to_vec(),
-                    seq: int(4)?,
-                    start: int_or_null(5)?,
-                    end: int_or_null(6)?,
+                    piece: crate::content::Piece {
+                        group: groups.key(int(2)?)?,
+                        start: int(3)?,
+                        length: int(4)?,
+                        data_length: Some(int(5)?),
+                    },
+                    seq: int(6)?,
+                    start: int_or_null(7)?,
+                    end: int_or_null(8)?,
                 })) {
                     return Ok(false);
                 }

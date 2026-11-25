@@ -23,6 +23,7 @@ pub mod chat_actions;
 mod commit_positions;
 pub mod completion;
 mod container_members;
+mod content;
 pub mod context;
 pub mod coverage;
 pub mod derive;

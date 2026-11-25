@@ -6,7 +6,7 @@ use crate::ConnExt as _;
 use crate::archive::Archive;
 use crate::archive::index_build::Reads;
 use crate::blobs::FileFacts;
-use crate::encoding::{Columns, restore_text, unpack_block};
+use crate::encoding::Columns;
 use crate::{Result, StoreError};
 use polylogue_model::LockExt;
 use polylogue_model::{
@@ -1102,28 +1102,7 @@ impl Reader<'_> {
     /// A message's blocks; without `structured`, tool results lack their
     /// structured data (`block.data`), which is then neither read nor decoded.
     fn message_blocks(&self, message_pk: i64, structured: bool) -> Result<Vec<Block>> {
-        let mut stmt = self.conn()?.prepare_cached(if structured {
-            "SELECT b.body, g.body, t.start, t.length, b.data FROM block b
-             LEFT JOIN text t ON t.id=b.text_id LEFT JOIN text_group g ON g.id=t.group_id
-             WHERE b.message_pk=?1 ORDER BY b.idx"
-        } else {
-            "SELECT b.body, g.body, t.start, t.length, NULL FROM block b
-             LEFT JOIN text t ON t.id=b.text_id LEFT JOIN text_group g ON g.id=t.group_id
-             WHERE b.message_pk=?1 ORDER BY b.idx"
-        })?;
-        let mut rows = stmt.query([message_pk])?;
-        let mut blocks = Vec::new();
-        while let Some(row) = rows.next()? {
-            let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-            if let Some(text) = crate::text_rows::column(row, 1)? {
-                restore_text(&mut block, text);
-            }
-            if let Some(data) = row.get::<_, Option<Vec<u8>>>(4)? {
-                crate::encoding::restore_data(&mut block, &data)?;
-            }
-            blocks.push(block);
-        }
-        Ok(blocks)
+        crate::ordered_blocks::of_message(self.conn()?, message_pk, structured)
     }
 
     /// Visits the session's messages in order, from message `from` (a key)

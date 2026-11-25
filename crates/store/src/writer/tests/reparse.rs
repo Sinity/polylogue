@@ -289,7 +289,7 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "events",
-            "SELECT e.id,s.id AS session,e.kind,e.at,i.id AS input,e.source_chain,e.source_start,e.source_end,hex(e.data) AS data FROM event e LEFT JOIN session s ON s.pk=e.session_pk JOIN input_ref i ON i.pk=e.input_pk ORDER BY e.id",
+            "SELECT e.id,s.id AS session,e.kind,e.at,i.id AS input,e.source_chain,e.source_start,e.source_end,(SELECT pl_text_at(g.body,e.content_start+e.content_length,e.data_length) FROM content_group g WHERE g.id=e.content_group) AS data FROM event e LEFT JOIN session s ON s.pk=e.session_pk JOIN input_ref i ON i.pk=e.input_pk ORDER BY e.id",
         ),
         (
             "links",

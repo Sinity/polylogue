@@ -129,7 +129,7 @@ pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<Stored
             "(SELECT pl_time_latest({s}_activity.at_time) FROM message {s}_activity WHERE {s}_activity.session_pk={s}.pk AND {s}_activity.at IS NOT NULL)",
             TimeStorage::Latest,
         ),
-        (Events, "at") => ("{r}.at", "{r}.fields", TimeStorage::Event),
+        (Events, "at") => ("{r}.at", crate::content::BODY_BYTES_SQL, TimeStorage::Event),
         (Documents, "source_time") => (
             "{r}.source_time",
             "(SELECT {r}_time.time FROM document_parse {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)",
@@ -265,7 +265,7 @@ pub const MESSAGE_HAS: [Has; 4] = [
         sql: |m| {
             format!(
                 "EXISTS (SELECT 1 FROM block xb JOIN text tx ON tx.id = xb.text_id \
-                 JOIN text_group xg ON xg.id = tx.group_id WHERE xb.message_pk = {m}.pk \
+                 JOIN content_group xg ON xg.id = tx.group_id WHERE xb.message_pk = {m}.pk \
                  AND xb.kind = 'text' AND instr(pl_text_at(xg.body, tx.start, tx.length), char(96, 96, 96)) > 0)"
             )
         },
@@ -543,7 +543,7 @@ pub fn rule(id: FieldId) -> Rule {
         EventsInput => Rule::NONE.sql("{r}i.id"),
         EventsSource => Rule::NONE.sql("{r}i.format"),
         EventsOrigin => Rule::NONE.sql("COALESCE({s}.origin,{r}i.format)"),
-        EventsData => Rule::NONE.sql("pl_block({r}.data)"),
+        EventsData => Rule::NONE.sql(crate::content::DATA_SQL),
         EventsSourceChain => Rule::NONE.sql("{r}.source_chain"),
         EventsSourceStart => Rule::NONE.sql("{r}.source_start"),
         EventsSourceEnd => Rule::NONE.sql("{r}.source_end"),

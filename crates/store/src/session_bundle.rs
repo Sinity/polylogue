@@ -82,15 +82,18 @@ impl Reader<'_> {
         let Some(pk) = pk else {
             return Ok(Vec::new());
         };
-        let mut statement = self
-            .conn()?
-            .prepare_cached("SELECT fields,data FROM event WHERE session_pk=?1 ORDER BY seq,id")?;
-        let rows = statement.query_map([pk], |row| <(Vec<u8>, Vec<u8>)>::try_from(row))?;
-        rows.map(|row| {
-            let (fields, data) = row?;
-            crate::events::decode_event(&fields, &data)
-        })
-        .collect()
+        let conn = self.conn()?;
+        let mut reader = crate::content::Reader::default();
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT {} FROM event e LEFT JOIN session s ON s.pk=e.session_pk
+             WHERE e.session_pk=?1 ORDER BY e.seq,e.id",
+            crate::events::SHOWN_EVENT_COLUMNS
+        ))?;
+        statement
+            .query_and_then([pk], |row| {
+                crate::events::shown_event(conn, &mut reader, row, 0)
+            })?
+            .collect()
     }
 
     /// The directory a session resumes in: where it was launched, or where
@@ -106,19 +109,23 @@ impl Reader<'_> {
         let Some((pk, cwd_json)) = found else {
             return Ok(None);
         };
-        let relocated: Option<(Vec<u8>, Vec<u8>)> = self
-            .conn()?
-            .prepare_cached(
-                "SELECT fields,data FROM event WHERE session_pk=?1 AND kind='relocated'
-                 ORDER BY seq DESC, id DESC LIMIT 1",
-            )?
-            .query_row([pk], |r| <(_, _)>::try_from(r))
-            .optional()?;
-        if let Some((fields, data)) = relocated {
-            let event = crate::events::decode_event(&fields, &data)?;
-            if let Some(dir) = event.data.str("relocatedCwd").filter(|dir| !dir.is_empty()) {
-                return Ok(Some(dir.to_owned()));
-            }
+        let conn = self.conn()?;
+        let mut reader = crate::content::Reader::default();
+        let relocated: Option<Event> = conn
+            .prepare_cached(&format!(
+                "SELECT {} FROM event e LEFT JOIN session s ON s.pk=e.session_pk
+                 WHERE e.session_pk=?1 AND e.kind='relocated' ORDER BY e.seq DESC, e.id DESC LIMIT 1",
+                crate::events::SHOWN_EVENT_COLUMNS
+            ))?
+            .query_and_then([pk], |row| {
+                crate::events::shown_event(conn, &mut reader, row, 0)
+            })?
+            .next()
+            .transpose()?;
+        if let Some(event) = relocated
+            && let Some(dir) = event.data.str("relocatedCwd").filter(|dir| !dir.is_empty())
+        {
+            return Ok(Some(dir.to_owned()));
         }
         let cwd: Vec<String> = cwd_json
             .map(|json| serde_json::from_str(&json))

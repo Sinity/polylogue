@@ -1,7 +1,6 @@
 //! One selected call and its recorded counterpart, inside the Reader snapshot.
 //! The indexed foreign-key relation decides pairing; neither arrival order nor
 //! a matching name elsewhere in the archive supplies a result.
-use crate::ConnExt as _;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Block, ErrorReason, MessageId, SessionId, ToolOutcome,
@@ -134,16 +133,19 @@ impl Reader<'_> {
             return Ok(None);
         };
         self.check()?;
-        let (body, data): (Vec<u8>, bool) = self.conn()?.query_row(
-            "SELECT body,data IS NOT NULL FROM block WHERE pk=?1",
-            [result.pk],
-            |row| <(_, _)>::try_from(row),
-        )?;
+        let conn = self.conn()?;
+        let piece = block_piece(conn, result.pk)?;
+        let data = piece.data_length.is_some();
         let Block::ToolResult {
             call_id,
             attachments,
             ..
-        } = crate::encoding::unpack_block(&body)?
+        } = crate::ordered_blocks::body(
+            conn,
+            &mut crate::content::Reader::default(),
+            piece,
+            false,
+        )?
         else {
             return Err(crate::StoreError::stored(
                 0,
@@ -356,19 +358,11 @@ impl Reader<'_> {
         self.check()?;
         let conn = self.conn()?;
         let mut block = if full {
-            crate::ordered_blocks::one(conn, fact.pk)?
+            crate::ordered_blocks::one_with(conn, fact.pk, true)?
         } else {
-            let body: Vec<u8> = conn.scalar("SELECT body FROM block WHERE pk=?1", [fact.pk])?;
-            crate::encoding::unpack_block(&body)?
+            let piece = block_piece(conn, fact.pk)?;
+            crate::ordered_blocks::body(conn, &mut crate::content::Reader::default(), piece, false)?
         };
-        if full && matches!(block, Block::ToolResult { .. }) {
-            self.check()?;
-            let data: Option<Vec<u8>> =
-                conn.scalar("SELECT data FROM block WHERE pk=?1", [fact.pk])?;
-            if let Some(data) = data {
-                crate::encoding::restore_data(&mut block, &data)?;
-            }
-        }
         if !full {
             match &mut block {
                 Block::ToolCall { input, .. } => *input = serde_json::Value::Null,
@@ -396,3 +390,12 @@ impl Reader<'_> {
 #[cfg(test)]
 #[path = "tool_pairs/tests.rs"]
 mod tests;
+
+/// Where a block's piece is stored.
+fn block_piece(conn: &rusqlite::Connection, block: i64) -> Result<crate::content::Piece> {
+    Ok(conn.query_row(
+        "SELECT content_group,content_start,content_length,data_length FROM block WHERE pk=?1",
+        [block],
+        |row| crate::content::Piece::of(row, 0),
+    )?)
+}

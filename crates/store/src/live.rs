@@ -178,15 +178,27 @@ pub(crate) fn recompute_live(
 ) -> Result<RecomputedLive> {
     let mut facts = LiveFacts::default();
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT e.kind, e.at, e.data FROM event e JOIN input_ref i ON i.pk = e.input_pk
+        "SELECT e.kind, e.at, e.content_group, e.content_start + e.content_length, e.data_length
+         FROM event e JOIN input_ref i ON i.pk = e.input_pk
          WHERE e.session_pk = ?1 AND e.at IS NOT NULL AND {LIVE_EVENT_KINDS}
          ORDER BY e.at, i.id, e.source_start, e.id"
     ))?;
-    let rows = statement.query_map([session_pk], |r| <(String, i64, Vec<u8>)>::try_from(r))?;
+    let rows = statement.query_map([session_pk], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            crate::content::Stretch {
+                group: r.get(2)?,
+                start: r.get(3)?,
+                length: r.get(4)?,
+            },
+        ))
+    })?;
     let mut events = Vec::new();
+    let mut reader = crate::content::Reader::default();
     for row in rows {
         let (kind, at, data) = row?;
-        let data: Json = crate::encoding::unpack_json(&data)?;
+        let data: Json = reader.json(conn, data)?;
         let closed = live::apply_live_event(&mut facts, &kind, at, &data);
         events.push((closed, kind, at, data));
     }

@@ -293,7 +293,13 @@ fn replay_seeks_by_field_past_a_bad_earlier_body() {
     let conn =
         crate::archive::open_write(&archive.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    conn.execute("UPDATE block SET body=?1 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:s-resume') AND idx=0", [vec![255u8]]).unwrap();
+    crate::content::poison_bodies(
+        &conn,
+        "block",
+        "message_pk=(SELECT pk FROM message WHERE id='claude-code:s-resume') AND idx=0",
+        [],
+    )
+    .unwrap();
     drop(conn);
     let reader = pool.reader().unwrap();
     assert!(reader.select_span_source(&original).is_err());
@@ -365,7 +371,13 @@ fn a_recorded_separator_can_resume_without_decoding_either_unselected_body() {
     let conn =
         crate::archive::open_write(&archive.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
-    conn.execute("UPDATE block SET body=?1 WHERE message_pk=(SELECT pk FROM message WHERE id='claude-code:s-separator')", [vec![255u8]]).unwrap();
+    crate::content::poison_bodies(
+        &conn,
+        "block",
+        "message_pk=(SELECT pk FROM message WHERE id='claude-code:s-separator')",
+        [],
+    )
+    .unwrap();
     drop(conn);
     let reader = pool.reader().unwrap();
     let source = reader.resume_span_source(&origin, &version, seek).unwrap();

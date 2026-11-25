@@ -173,9 +173,14 @@ fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
         })
         .unwrap();
     let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
-    let body = crate::encoding::pack_block(&polylogue_model::Block::Text {
-        text: String::new(),
-    })
+    let body = crate::content::store_piece(
+        &write,
+        &serde_json::to_vec(&polylogue_model::Block::Text {
+            text: String::new(),
+        })
+        .unwrap(),
+        None,
+    )
     .unwrap();
     let text: i64 = write
         .query_row(
@@ -184,15 +189,25 @@ fn shared_text_reference_fanout_and_rare_text_choose_different_plans() {
             |r| r.get(0),
         )
         .unwrap();
-    let insert = "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,body) SELECT m.pk,m.session_pk,0,'text',?1,?2 FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id LIKE 'test:many-%' AND NOT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk) ORDER BY m.pk LIMIT ?3";
-    write.execute(insert, params![text, body, 1000]).unwrap();
+    let insert = "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,content_group,content_start,content_length) SELECT m.pk,m.session_pk,0,'text',?1,?2,?3,?4 FROM message m JOIN session s ON s.pk=m.session_pk WHERE s.id LIKE 'test:many-%' AND NOT EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk) ORDER BY m.pk LIMIT ?5";
+    write
+        .execute(
+            insert,
+            params![text, body.group, body.start, body.length, 1000],
+        )
+        .unwrap();
     let wanted = serde_json::to_string(&[(0, root, true)]).unwrap();
     {
         let pool = fixture.reads().unwrap();
         let reader = pool.reader().unwrap();
         assert!(!scope_drives(&reader, "needle", &wanted));
     }
-    write.execute(insert, params![text, body, 19_000]).unwrap();
+    write
+        .execute(
+            insert,
+            params![text, body.group, body.start, body.length, 19_000],
+        )
+        .unwrap();
     for analyzed in [false, true] {
         if analyzed {
             write.execute_batch("ANALYZE").unwrap();
