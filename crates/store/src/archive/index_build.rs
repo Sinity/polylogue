@@ -484,7 +484,7 @@ pub(crate) fn open_writer(archive: &Archive) -> Result<Connection> {
     conn.pragma_update(Some("main"), "synchronous", "off")?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.busy_timeout(crate::archive::BUSY_TIMEOUT)?;
-    crate::archive::writer_settings(&conn, archive.memory_budget().writer_cache_mib())?;
+    crate::archive::writer_settings(&conn, archive.memory_budget().build_cache_mib())?;
     Ok(conn)
 }
 
