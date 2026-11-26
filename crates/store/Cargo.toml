@@ -29,6 +29,7 @@ thiserror.workspace = true
 jiff.workspace = true
 tempfile.workspace = true
 authored.workspace = true
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
 polylogue-model = { workspace = true, features = ["fixture"] }
@@ -42,7 +43,7 @@ workspace = true
 
 [features]
 # Test support: archives written row by row or through the writer
-# (`fixture`).
-fixture = []
+# (`fixture`), with the model's and the query catalog's test support.
+fixture = ["polylogue-model/fixture", "polylogue-query/fixture"]
 # Test support: arm fault points (crate::fault); never enabled by a shipped build.
 faults = []

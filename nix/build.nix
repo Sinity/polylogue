@@ -14,6 +14,21 @@ let
     fi
   '';
   craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+  # sccache hashes every CARGO_* variable, so a target directory chosen per
+  # checkout through CARGO_TARGET_DIR would make every checkout miss the
+  # others' entries; the compiler never reads it. A server's start creates a
+  # socket in TMPDIR, which fails past the socket path limit, so a long TMPDIR
+  # is reached through a short link to it under the runtime directory.
+  sccacheRustc = pkgs.writeShellScript "sccache-rustc" ''
+    unset CARGO_TARGET_DIR
+    if [ "''${#TMPDIR}" -gt 60 ] && [ -n "''${XDG_RUNTIME_DIR:-}" ]; then
+      short="$XDG_RUNTIME_DIR/sccache-tmp-$(printf %s "$TMPDIR" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -c1-16)"
+      [ -L "$short" ] || ${pkgs.coreutils}/bin/ln -sfn "$TMPDIR" "$short" 2>/dev/null || true
+      [ ! -L "$short" ] || export TMPDIR="$short"
+    fi
+    exec ${pkgs.sccache}/bin/sccache "$@"
+  '';
+
   workspace = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).workspace.package;
   common = {
     src = source;
@@ -170,6 +185,8 @@ in
       toolchain
       pkgs.git
       pkgs.cargo-nextest
+      pkgs.cargo-hakari
+      pkgs.sccache
       pkgs.cargo-llvm-cov
       pkgs.cargo-fuzz
       pkgs.cargo-deny
@@ -198,7 +215,24 @@ in
       if [ -z "''${CARGO_TARGET_DIR:-}" ] && command -v sinnix-cargo-target >/dev/null 2>&1; then
         if cargo_target="$(sinnix-cargo-target)"; then
           export CARGO_TARGET_DIR="$cargo_target"
+          # One compiler cache for every checkout's target, beside them.
+          : "''${SCCACHE_DIR:=$(dirname "$(dirname "$cargo_target")")/sccache}"
+          export SCCACHE_DIR
         fi
+      fi
+      # Where the host names a compiler cache, compilations go through
+      # sccache, with one server per checkout on a socket under the runtime
+      # directory. A job lasts until its last process exits, so a server
+      # started by a compilation stops 10 s after its last one; xtask starts
+      # and stops its own around a run. A server that is gone costs the next
+      # compilation a cache lookup, not a failure.
+      if [ -n "''${SCCACHE_DIR:-}" ] && [ -z "''${RUSTC_WRAPPER:-}" ] && [ -n "''${XDG_RUNTIME_DIR:-}" ]; then
+        export RUSTC_WRAPPER=${sccacheRustc}
+        export SCCACHE_IGNORE_SERVER_IO_ERROR=1
+        export SCCACHE_IDLE_TIMEOUT=10
+        export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-4G}"
+        SCCACHE_SERVER_UDS="$XDG_RUNTIME_DIR/sccache-$(printf %s "$PWD" | sha256sum | cut -c1-16).sock"
+        export SCCACHE_SERVER_UDS
       fi
     ''
     + installGitHooks;

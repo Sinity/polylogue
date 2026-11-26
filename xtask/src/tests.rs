@@ -2,84 +2,228 @@ use super::*;
 use std::path::Path;
 use std::{fs, io::Write};
 
-fn arguments(args: &[&str], required: Option<&str>) -> Result<Vec<String>, String> {
-    test_arguments(
-        &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
-        required.map(str::to_owned),
-    )
-}
-
-const BUILD: [&str; 4] = ["--locked", "--workspace", "--features", FEATURES];
-
-fn built_with(tail: &[&str]) -> Vec<String> {
-    BUILD
+fn parse(args: &[&str]) -> Result<(Base, Selection), String> {
+    let args = ["xtask", "test"]
         .iter()
-        .chain(tail)
-        .map(|arg| (*arg).to_owned())
-        .collect()
+        .chain(args)
+        .map(|arg| (*arg).to_owned());
+    match crate::parse(args.collect()) {
+        Ok(Cli::Test {
+            base, selection, ..
+        }) => Ok((base, selection)),
+        Ok(_) => unreachable!("the test command parses as itself"),
+        Err(error) => Err(error.to_string()),
+    }
 }
+
+/// The packages and direct workspace dependencies of the real workspace.
+fn workspace() -> selection::Workspace {
+    selection::Workspace::of(&[
+        ("polylogue-model", &[]),
+        ("polylogue-query", &["polylogue-model"]),
+        ("polylogue-sources", &["polylogue-model"]),
+        ("polylogue-render", &["polylogue-model"]),
+        ("polylogue-store", &["polylogue-model", "polylogue-query"]),
+        (
+            "polylogue-engine",
+            &[
+                "polylogue-model",
+                "polylogue-sources",
+                "polylogue-store",
+                "polylogue-testkit",
+            ],
+        ),
+        (
+            "polylogue-testkit",
+            &[
+                "polylogue-engine",
+                "polylogue-model",
+                "polylogue-sources",
+                "polylogue-store",
+            ],
+        ),
+        (
+            "polylogue-sinex",
+            &["polylogue-store", "polylogue-model", "polylogue-engine"],
+        ),
+        (
+            "polylogue",
+            &[
+                "polylogue-sinex",
+                "polylogue-model",
+                "polylogue-sources",
+                "polylogue-store",
+                "polylogue-engine",
+                "polylogue-query",
+                "polylogue-render",
+            ],
+        ),
+        ("xtask", &[]),
+    ])
+}
+
+fn arguments(args: &[&str]) -> Result<Option<Vec<String>>, String> {
+    let (base, selection) = parse(args)?;
+    selection.nextest_arguments(&workspace(), base.reference(), None)
+}
+
+fn owned(args: &[&str]) -> Vec<String> {
+    args.iter().map(|arg| (*arg).to_owned()).collect()
+}
+
+const STORE_FEATURES: &str = "polylogue-model/fixture,polylogue-query/fixture,polylogue-store/faults,polylogue-store/fixture";
 
 #[test]
-fn package_filters_keep_the_workspace_feature_graph() {
-    assert_eq!(arguments(&[], None).unwrap(), built_with(&["--tests"]));
+fn a_package_selection_builds_that_package_with_the_test_features_it_reaches() {
+    assert_eq!(
+        arguments(&[]).unwrap().unwrap(),
+        owned(&["--locked", "--workspace", "--features", FEATURES, "--tests"])
+    );
     for args in [
         &["-p", "polylogue-store"][..],
         &["-ppolylogue-store"],
         &["-p=polylogue-store"],
         &["--package=polylogue-store"],
-        &["--package", "polylogue-store"],
+        &["--package", "polylogue-store", "--workspace"],
     ] {
         assert_eq!(
-            arguments(args, None).unwrap(),
-            built_with(&["-E", "((package(=polylogue-store)))", "--tests"]),
+            arguments(args).unwrap().unwrap(),
+            owned(&[
+                "--locked",
+                "-p",
+                "polylogue-store",
+                "--features",
+                STORE_FEATURES,
+                "--tests"
+            ]),
             "{args:?}"
         );
     }
+    // Direct dependencies' features only: Cargo refuses the others, and the
+    // store's own `fixture` forwards the query catalog's.
     assert_eq!(
-        arguments(&["-p", "polylogue*", "--workspace"], None).unwrap(),
-        built_with(&["-E", "((package(polylogue*)))", "--tests"])
+        arguments(&["-p", "polylogue-render", "--lib"])
+            .unwrap()
+            .unwrap(),
+        owned(&[
+            "--locked",
+            "-p",
+            "polylogue-render",
+            "--features",
+            "polylogue-model/fixture",
+            "--lib"
+        ])
     );
     assert_eq!(
-        arguments(&["--exclude", "polylogue-engine", "rows"], None).unwrap(),
-        built_with(&[
-            "-E",
-            "(not ((package(=polylogue-engine))))",
+        arguments(&["-p", "polylogue-s*", "--exclude", "polylogue-sinex", "rows"])
+            .unwrap()
+            .unwrap(),
+        owned(&[
+            "--locked",
+            "-p",
+            "polylogue-sources",
+            "-p",
+            "polylogue-store",
+            "--features",
+            "polylogue-model/fixture,polylogue-query/fixture,polylogue-sources/fixture,polylogue-store/faults,polylogue-store/fixture",
             "--tests",
             "rows"
         ])
     );
+    let excluded = arguments(&["--exclude", "polylogue-engine"])
+        .unwrap()
+        .unwrap();
+    assert!(!excluded.contains(&"polylogue-engine".to_owned()));
+    assert!(excluded.contains(&"polylogue-testkit".to_owned()));
+    assert!(
+        arguments(&["-p", "polylogue-nothing"])
+            .unwrap_err()
+            .contains("no workspace package matches")
+    );
 }
 
 #[test]
-fn packages_exclusions_filtersets_and_a_required_selection_intersect() {
+fn a_changed_selection_intersects_the_named_packages() {
+    let (base, selection) = parse(&["-p", "polylogue-*", "--base", "HEAD^1"]).unwrap();
+    let changed: std::collections::BTreeSet<String> =
+        ["polylogue-store", "xtask"].map(String::from).into();
     assert_eq!(
-        arguments(
-            &[
-                "-p",
-                "polylogue-store",
-                "-p",
-                "polylogue-engine",
-                "--exclude=polylogue-sinex",
-                "-E",
-                "test(a)",
-                "-Etest(b)",
-                "--no-capture",
-            ],
-            Some("rdeps(=polylogue-model)"),
-        )
-        .unwrap(),
-        built_with(&[
-            "-E",
-            "(rdeps(=polylogue-model)) & ((package(=polylogue-store)) | (package(=polylogue-engine))) \
-             & (not ((package(=polylogue-sinex)))) & ((test(a)) | (test(b)))",
+        selection
+            .nextest_arguments(&workspace(), base.reference(), Some(&changed))
+            .unwrap()
+            .unwrap(),
+        owned(&[
+            "--locked",
+            "-p",
+            "polylogue-store",
+            "--features",
+            STORE_FEATURES,
             "--tests",
+            "--changed-base=HEAD^1"
+        ])
+    );
+    let nothing = std::collections::BTreeSet::new();
+    assert_eq!(
+        selection
+            .nextest_arguments(&workspace(), base.reference(), Some(&nothing))
+            .unwrap(),
+        None
+    );
+}
+
+#[test]
+fn filtersets_partition_and_pass_through_arguments_reach_nextest() {
+    assert_eq!(
+        arguments(&[
+            "-p",
+            "polylogue-store",
+            "-E",
+            "test(a)",
+            "-Etest(b)",
+            "--changed",
+            "--partition",
+            "hash:2/4",
             "--no-capture",
+            "-E",
+            "test(c)",
+        ])
+        .unwrap()
+        .unwrap(),
+        owned(&[
+            "--locked",
+            "-p",
+            "polylogue-store",
+            "--features",
+            STORE_FEATURES,
+            "-E",
+            "(test(a)) | (test(b))",
+            "--tests",
+            "--changed-base=origin/master",
+            "--partition",
+            "hash:2/4",
+            "--no-capture",
+            "-E",
+            "test(c)",
         ])
     );
     assert_eq!(
-        arguments(&["-E=test(rows)", "--", "-p", "--features"], None).unwrap(),
-        built_with(&["-E", "((test(rows)))", "--tests", "--", "-p", "--features"])
+        arguments(&["--filterset=test(rows)", "--", "-p", "--features"])
+            .unwrap()
+            .unwrap(),
+        owned(&[
+            "--locked",
+            "--workspace",
+            "--features",
+            FEATURES,
+            "-E",
+            "(test(rows))",
+            "--tests",
+            "--",
+            "-p",
+            "--features"
+        ])
     );
+    assert!(parse(&["--changed", "--base", "HEAD"]).is_err());
 }
 
 #[test]
@@ -92,48 +236,35 @@ fn explicit_target_selection_is_preserved_without_adding_the_default_tests() {
         vec!["--test", "e2e"],
         vec!["--test=e2e"],
         vec!["--example", "first_build"],
-        vec!["--example=first_build"],
         vec!["--examples"],
         vec!["--bench", "index"],
-        vec!["--bench=index"],
         vec!["--benches"],
         vec!["--all-targets"],
-        vec!["--doc"],
     ] {
-        let selected = arguments(&flags, None).unwrap();
+        let selected = arguments(&flags).unwrap().unwrap();
         assert!(!selected.iter().any(|arg| arg == "--tests"), "{flags:?}");
-        assert!(
-            selected.ends_with(
-                &flags
-                    .iter()
-                    .map(|arg| (*arg).to_owned())
-                    .collect::<Vec<_>>()
-            )
-        );
-    }
-    assert_eq!(
-        arguments(&["--tests"], None)
-            .unwrap()
+        let expected: Vec<String> = flags
             .iter()
-            .filter(|arg| *arg == "--tests")
-            .count(),
-        1
-    );
-    let selected = arguments(&["--test-threads", "2", "--", "--lib"], None).unwrap();
+            .flat_map(|flag| {
+                flag.split_once('=')
+                    .map_or(vec![*flag], |(a, b)| vec![a, b])
+            })
+            .map(str::to_owned)
+            .collect();
+        assert!(selected.ends_with(&expected), "{selected:?}");
+    }
+    let selected = arguments(&["--test-threads", "2", "--", "--lib"])
+        .unwrap()
+        .unwrap();
     assert!(selected.iter().any(|arg| arg == "--tests"));
-    assert!(selected.ends_with(&[
-        "--test-threads".into(),
-        "2".into(),
-        "--".into(),
-        "--lib".into()
-    ]));
+    assert!(selected.ends_with(&owned(&["--test-threads", "2", "--", "--lib"])));
 }
 
 #[test]
-fn selections_share_features_and_targets_in_the_runner() {
+fn selections_build_their_packages_with_their_test_features() {
     let fixture = tempfile::tempdir().unwrap();
     let root = fixture.path();
-    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-model','polylogue-query','polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
+    fs::write(root.join("Cargo.toml"), "[workspace]\nmembers=['polylogue-model','polylogue-query','polylogue-sources','polylogue-store','polylogue-engine','polylogue-sinex','polylogue','helper']\nresolver='3'\n").unwrap();
     for (name, manifest, source) in [
         (
             "polylogue-model",
@@ -146,19 +277,24 @@ fn selections_share_features_and_targets_in_the_runner() {
             "pub fn assert_fixture() { assert!(cfg!(feature=\"fixture\")); }\n",
         ),
         (
+            "polylogue-sources",
+            "[features]\nfixture=[]\n",
+            "#[test] fn sources_fixture() { assert!(cfg!(feature=\"fixture\")); }\n",
+        ),
+        (
             "polylogue-store",
             "[features]\nfaults=[]\nfixture=[]\n[dependencies]\nhelper={path='../helper'}\npolylogue-model={path='../polylogue-model'}\npolylogue-query={path='../polylogue-query'}\n",
             "#[test] fn selected_read() { assert!(cfg!(feature=\"faults\")); assert_eq!(helper::value(),42); }\n#[test] fn selected_write() { assert!(cfg!(feature=\"fixture\")); polylogue_model::assert_fixture(); polylogue_query::assert_fixture(); }\n#[test] #[ignore] fn selected_ignored() {}\n",
         ),
         (
             "polylogue-engine",
-            "[features]\nfaults=[]\n[dev-dependencies]\nhelper={path='../helper',features=['shared-test']}\n",
+            "[features]\nfaults=[]\n[dev-dependencies]\nhelper={path='../helper'}\n",
             "#[test] fn engine_test() { assert!(cfg!(feature=\"faults\")); }\n",
         ),
         (
             "polylogue-sinex",
             "[dependencies]\npolylogue-store={path='../polylogue-store'}\npolylogue-engine={path='../polylogue-engine'}\n",
-            "#[test] fn sinex_kinds_test() {}\n",
+            "#[test] fn sinex_kinds() {}\n",
         ),
         (
             "polylogue",
@@ -167,8 +303,8 @@ fn selections_share_features_and_targets_in_the_runner() {
         ),
         (
             "helper",
-            "[features]\nshared-test=[]\n",
-            "pub fn value() -> u32 { if cfg!(feature=\"shared-test\") { 42 } else { 0 } }\n#[test] fn helper_test() {}\n",
+            "",
+            "pub fn value() -> u32 { 42 }\n#[test] fn helper_test() {}\n",
         ),
     ] {
         fs::create_dir_all(root.join(name).join("src")).unwrap();
@@ -207,10 +343,13 @@ fn selections_share_features_and_targets_in_the_runner() {
         "{}",
         String::from_utf8_lossy(&lockfile.stderr)
     );
-    let execute = |args: &[&str], required: Option<&str>| {
+    let execute = |args: &[&str]| {
         let mut run = Run::unrecorded("selection-fixture", "test", &[]);
         run.root = root.into();
-        let mut options = nextest(arguments(args, required).unwrap());
+        let (base, selection) = parse(args).unwrap();
+        let mut options = test_options(root, base.reference(), &selection)
+            .unwrap()
+            .expect("the selection holds packages");
         options.env.push((
             "CARGO_TARGET_DIR".into(),
             root.join("build").display().to_string(),
@@ -241,37 +380,38 @@ fn selections_share_features_and_targets_in_the_runner() {
         ("selected_write", "passed"),
     ];
     // Every package's tests run with the fault, fixture and Sinex features.
-    let (run, result) = execute(&[], None);
+    let (run, result) = execute(&[]);
     result.unwrap();
     let mut all = expected(&store);
     all.extend(expected(&[
         ("application_runs_in_primary_mode", "passed"),
         ("engine_test", "passed"),
         ("helper_test", "passed"),
-        ("sinex_kinds_test", "passed"),
+        ("sinex_kinds", "passed"),
+        ("sources_fixture", "passed"),
     ]));
     all.sort();
     assert_eq!(unfiltered(&run), all);
 
-    let (run, result) = execute(&["-p", "polylogue-store"], None);
+    let (run, result) = execute(&["-p", "polylogue-store"]);
     result.unwrap();
     assert_eq!(unfiltered(&run), expected(&store));
 
-    let (run, result) = execute(&["-p", "polylogue"], None);
+    let (run, result) = execute(&["-p", "polylogue"]);
     result.unwrap();
     assert_eq!(
         unfiltered(&run),
         expected(&[("application_runs_in_primary_mode", "passed")])
     );
 
-    let (run, result) = execute(&["-p", "polylogue-store", "-p", "polylogue-engine"], None);
+    let (run, result) = execute(&["-p", "polylogue-store", "-p", "polylogue-engine"]);
     result.unwrap();
     let mut selected = expected(&store);
     selected.extend(expected(&[("engine_test", "passed")]));
     selected.sort();
     assert_eq!(unfiltered(&run), selected);
 
-    let (run, result) = execute(&["-p", "polylogue-store", "--example", "unselected"], None);
+    let (run, result) = execute(&["-p", "polylogue-store", "--example", "unselected"]);
     assert!(result.is_err());
     assert!(run.diagnostics.iter().any(|diagnostic| {
         diagnostic
@@ -279,7 +419,7 @@ fn selections_share_features_and_targets_in_the_runner() {
             .contains("a non-test example must not be compiled by default")
     }));
 
-    let (run, result) = execute(&["--exclude", "polylogue-engine"], None);
+    let (run, result) = execute(&["--exclude", "polylogue-engine"]);
     result.unwrap();
     assert!(
         !unfiltered(&run)
@@ -288,34 +428,74 @@ fn selections_share_features_and_targets_in_the_runner() {
     );
     assert_eq!(unfiltered(&run).len(), all.len() - 1);
 
+    // Partitions divide the selection; each part runs, even an empty one.
+    let passed = |run: &Run| {
+        run.tests
+            .iter()
+            .filter(|test| test.status == devkit::TestStatus::Passed)
+            .map(|test| test.name.clone())
+            .collect::<Vec<_>>()
+    };
+    let mut parts = Vec::new();
+    for part in ["hash:1/2", "hash:2/2", "count:20/20"] {
+        let (run, result) = execute(&["--partition", part]);
+        result.unwrap();
+        parts.push(passed(&run));
+    }
+    let mut divided: Vec<_> = parts[..2].concat();
+    divided.sort();
+    let mut every: Vec<_> = all
+        .iter()
+        .filter(|(_, status)| status == "passed")
+        .map(|(name, _)| name.clone())
+        .collect();
+    every.sort();
+    assert_eq!(divided, every);
+    assert!(parts[2].is_empty(), "{:?}", parts[2]);
+
     fs::write(root.join(".gitignore"), "/build/\n/target/\n").unwrap();
     git(root, &["init", "-q"]);
     git(root, &["add", "."]);
     git(root, &["commit", "-qm", "baseline"]);
     fs::write(
         root.join("helper/src/lib.rs"),
-        "pub fn value() -> u32 { if cfg!(feature=\"shared-test\") { 40 + 2 } else { 0 } }\n#[test] fn helper_test() {}\n",
+        "pub fn value() -> u32 { 40 + 2 }\n#[test] fn helper_test() {}\n",
     )
     .unwrap();
     // devkit's selection reaches the store through its dependency on the
     // changed helper, intersected with the explicit package and filterset.
-    let (run, result) = execute(
-        &[
-            "-ppolylogue-store",
-            "-E",
-            "test(selected_read)",
-            "--changed-base=HEAD",
-        ],
-        None,
-    );
+    let (run, result) = execute(&[
+        "-ppolylogue-store",
+        "-E",
+        "test(selected_read)",
+        "--base",
+        "HEAD",
+    ]);
     result.unwrap();
     assert_eq!(
         unfiltered(&run),
         expected(&[("selected_ignored", "ignored"), ("selected_read", "passed")])
     );
+    // The packages the change selects: the helper and everything that
+    // depends on it, through normal and test-only dependencies.
+    let workspace = selection::Workspace::load(root).unwrap();
+    assert_eq!(
+        selection::changed_packages(root, &workspace, "HEAD")
+            .unwrap()
+            .unwrap()
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [
+            "helper",
+            "polylogue",
+            "polylogue-engine",
+            "polylogue-sinex",
+            "polylogue-store"
+        ]
+    );
 
-    // Selecting `--lib` excludes integration binaries without dropping
-    // another workspace member's test-only feature contribution.
+    // A selection builds its own packages' targets only: a broken
+    // integration target of another package does not stop it.
     fs::create_dir(root.join("polylogue/tests")).unwrap();
     fs::write(
         root.join("polylogue/tests/unrelated.rs"),
@@ -327,13 +507,13 @@ fn selections_share_features_and_targets_in_the_runner() {
         "fn main() {}\n#[test] fn named_application_target() { assert!(cfg!(feature=\"sinex\")); }\n",
     )
     .unwrap();
-    let (run, result) = execute(&["-p", "polylogue", "--bin", "polylogue"], None);
+    let (run, result) = execute(&["-p", "polylogue", "--bin", "polylogue"]);
     result.unwrap();
     assert_eq!(
         unfiltered(&run),
         expected(&[("named_application_target", "passed")])
     );
-    let (run, result) = execute(&["-p", "polylogue-store", "--lib"], None);
+    let (run, result) = execute(&["-p", "polylogue-store", "--lib"]);
     result.unwrap();
     assert_eq!(
         unfiltered(&run),
@@ -343,7 +523,10 @@ fn selections_share_features_and_targets_in_the_runner() {
             ("selected_write", "passed"),
         ])
     );
-    let (run, result) = execute(&["-p", "polylogue-store"], None);
+    let (run, result) = execute(&["-p", "polylogue-store"]);
+    result.unwrap();
+    assert_eq!(unfiltered(&run), expected(&store));
+    let (run, result) = execute(&["-p", "polylogue"]);
     assert!(result.is_err());
     assert!(run.diagnostics.iter().any(|diagnostic| {
         diagnostic
@@ -360,14 +543,10 @@ fn feature_flags_are_refused_rather_than_building_a_second_feature_set() {
         &["--all-features"],
         &["--no-default-features"],
     ] {
-        assert!(arguments(flag, None).unwrap_err().contains(FEATURES));
+        assert!(arguments(flag).unwrap_err().contains(FEATURES));
     }
-    for flag in ["-p", "--exclude", "-E"] {
-        assert!(
-            arguments(&[flag], None)
-                .unwrap_err()
-                .contains("needs a value")
-        );
+    for flag in ["-p", "--exclude", "-E", "--base", "--partition"] {
+        assert!(parse(&[flag]).is_err(), "{flag}");
     }
 }
 

@@ -19,6 +19,7 @@ base64.workspace = true
 ureq.workspace = true
 blake3.workspace = true
 tempfile.workspace = true
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [features]
 # Test support: a fake Drive API for the AI Studio collector.
