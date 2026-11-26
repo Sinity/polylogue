@@ -170,8 +170,9 @@ impl Reader<'_> {
             return Ok(());
         };
         let mut stmt = self.conn()?.prepare_cached(
-            "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence, copies_prefix
-             FROM session_link WHERE parent_id = ?1 OR child_id = ?1
+            "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence,
+                 copies_prefix OR EXISTS(SELECT 1 FROM prefix_copy x WHERE x.parent_id = l.parent_id AND x.child_id = l.child_id)
+             FROM session_link l WHERE parent_id = ?1 OR child_id = ?1
              ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call LIMIT -1 OFFSET ?2",
         )?;
         let rows = stmt.query_map(rusqlite::params![id.to_string(), ordinal], |r| {

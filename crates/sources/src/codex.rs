@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 12;
+pub const VERSION: u32 = 13;
 
 pub mod database;
 mod fields;
@@ -38,7 +38,7 @@ use polylogue_model::{
 };
 use serde::{Deserialize, Serialize};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 pub const ROOT: Root = Root {
@@ -201,6 +201,11 @@ pub struct ParserState {
     copied_history_complete: bool,
     /// The last copied item, where the child branched.
     branch_point: Option<MessageId>,
+    /// The subagent threads a `SubAgentActivity` item already stated a
+    /// spawn of: an agent reports many activity items, and the relation is
+    /// stated once per child.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    spawned: BTreeSet<String>,
     model: Option<String>,
     #[serde(default)]
     usage: usage::Observer,
@@ -1006,16 +1011,18 @@ impl Rollout {
                         .filter(|s| !s.is_empty())
                         .and_then(session_id),
                 ) {
-                    let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
-                    link(
-                        out,
-                        LinkKind::Spawn,
-                        parent,
-                        child,
-                        None,
-                        call,
-                        "SubAgentActivity",
-                    );
+                    if parser_state.spawned.insert(child.to_string()) {
+                        let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
+                        link(
+                            out,
+                            LinkKind::Spawn,
+                            parent,
+                            child,
+                            None,
+                            call,
+                            "SubAgentActivity",
+                        );
+                    }
                 }
                 self.event(parser_state, p, "subagent_activity", at, out)
             }

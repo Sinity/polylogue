@@ -129,7 +129,7 @@ CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_o
 -- records, and holds what they say about one thing, taken together in byte
 -- order. Replacing a reading deletes its rows and inserts the new ones; no
 -- row is shared between chains, so nothing counts who else refers to it.
--- The shown rows (session, message, block, tool_call, event, link,
+-- The shown rows (session, message, block, tool_call, event, session_link,
 -- document) are computed from the readings present (writer/compose.rs).
 
 -- What a chain states about a session (model Session, as JSON), merged in
@@ -454,13 +454,17 @@ INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('automerge', 16);
 INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('hashsize', 67108864);
 
 
-CREATE TABLE link (
+-- Each shown statement of a link: one row per distinct statement the
+-- readings make, with its winning reading's evidence and input. Assembly
+-- resolves the statements of each (parent, child, kind, how) into
+-- `session_link`; only assembly reads these rows.
+CREATE TABLE link_statement (
   pk                INTEGER PRIMARY KEY,
   parent_id         TEXT NOT NULL,          -- natural session id (may not be ingested yet)
   child_id          TEXT NOT NULL,          -- natural session id of the child (may not be ingested yet: a parent's
                                             --   thread_spawn_edges, continued-in or job children name it first)
-  kind              TEXT NOT NULL,          -- spawn | fork | continuation | resume | reference
-  how               TEXT,                   -- reference: briefing | ping | mention
+  kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
+  how               TEXT CHECK (how IN (@names(ReferenceReason))),  -- a reference's reason
   copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),
   branch_point      TEXT,                   -- natural message id where the child branches off
   spawning_call     TEXT,                   -- the spawning call's ID as the source record names it (a tool-use ID)
@@ -468,10 +472,31 @@ CREATE TABLE link (
   source_chain      INTEGER NOT NULL DEFAULT 0,
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)  -- the input holding that field
 ) STRICT;
-CREATE UNIQUE INDEX link_statement ON link(parent_id, child_id, kind, how IS NULL, coalesce(how,''), branch_point IS NULL, coalesce(branch_point,''), spawning_call IS NULL, coalesce(spawning_call,''));
-CREATE INDEX link_child_id ON link(child_id);   -- parents by id; late children
-CREATE INDEX link_branch_point ON link(branch_point) WHERE branch_point IS NOT NULL;
-CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late parents
+CREATE UNIQUE INDEX link_statement_key ON link_statement(parent_id, child_id, kind, how IS NULL, coalesce(how,''), branch_point IS NULL, coalesce(branch_point,''), spawning_call IS NULL, coalesce(spawning_call,''));
+CREATE INDEX link_statement_child ON link_statement(child_id);   -- a whole session's statements
+
+-- One relation between two sessions, as every reader sees it. Assembly
+-- writes the relations of a (parent, child, kind, how) from all its
+-- statements at once (writer/shown.rs, resolve_links): coordinates that
+-- agree are one relation; a branch point or spawning call recorded with
+-- several values gives one relation for each; when both differ, every
+-- statement stands except one another statement completes.
+CREATE TABLE session_link (
+  pk                INTEGER PRIMARY KEY,
+  parent_id         TEXT NOT NULL,
+  child_id          TEXT NOT NULL,
+  kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
+  how               TEXT CHECK (how IN (@names(ReferenceReason))),
+  copies_prefix     INTEGER NOT NULL CHECK(copies_prefix IN (0,1)),  -- some statement says the child's file copies
+                                            --   the parent's prefix; a recorded copy (prefix_copy) says it too
+  branch_point      TEXT,
+  spawning_call     TEXT,
+  evidence          TEXT NOT NULL,          -- the least of its statements' evidence
+  source_chain      INTEGER NOT NULL,       -- the first statement's input and chain
+  input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)
+) STRICT;
+CREATE INDEX session_link_parent ON session_link(parent_id, kind);   -- children; late parents
+CREATE INDEX session_link_child ON session_link(child_id, kind);     -- parents; late children
 
 -- Copied-prefix facts an input states never create a relationship on their own.
 CREATE TABLE prefix_copy (
@@ -506,73 +531,25 @@ CREATE INDEX prefix_member_child ON prefix_member(child_id,parent_id,message_id)
 CREATE INDEX prefix_member_message ON prefix_member(message_id,parent_id);
 
 
--- Every consumer sees one relation when recorded coordinates agree. Distinct
--- known coordinates remain alternatives; partial markers still contribute
--- evidence and copied-prefix observations. All correlated lookups use the
--- affected edge's link_statement index, so a session read does not walk the whole graph.
-CREATE VIEW session_link_identity AS
-WITH statements AS NOT MATERIALIZED (
-  SELECT l.pk,l.parent_id,l.child_id,l.kind,l.how,l.copies_prefix,
-    l.branch_point,l.spawning_call,l.source_chain,l.input_pk,
-    (SELECT count(DISTINCT x.branch_point) FROM link x
-     WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS branch_points,
-    (SELECT count(DISTINCT x.spawning_call) FROM link x
-     WHERE x.parent_id=l.parent_id AND x.child_id=l.child_id AND x.kind=l.kind AND x.how IS l.how) AS calls
-  FROM link l
-)
-SELECT s.pk,s.parent_id,s.child_id,s.kind,s.how,
-  ((SELECT max(x.copies_prefix) FROM link x
-    WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
-    OR EXISTS(SELECT 1 FROM prefix_copy p WHERE p.parent_id=s.parent_id AND p.child_id=s.child_id)) AS copies_prefix,
-  CASE WHEN s.branch_points <= 1 THEN
-    (SELECT min(x.branch_point) FROM link x
-     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
-    ELSE s.branch_point END AS branch_point,
-  CASE WHEN s.calls <= 1 THEN
-    (SELECT min(x.spawning_call) FROM link x
-     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how)
-    ELSE s.spawning_call END AS spawning_call,
-  s.source_chain,s.input_pk
-FROM statements s
-WHERE
-  (s.branch_points <= 1 AND s.calls <= 1 AND s.pk =
-    (SELECT min(x.pk) FROM link x
-     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how))
-  OR (s.branch_points > 1 AND s.calls <= 1 AND s.branch_point IS NOT NULL AND s.pk =
-    (SELECT min(x.pk) FROM link x
-     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
-       AND x.branch_point=s.branch_point))
-  OR (s.branch_points <= 1 AND s.calls > 1 AND s.spawning_call IS NOT NULL AND s.pk =
-    (SELECT min(x.pk) FROM link x
-     WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
-       AND x.spawning_call=s.spawning_call))
-  OR (s.branch_points > 1 AND s.calls > 1 AND NOT EXISTS (
-    SELECT 1 FROM link x
-    WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how
-      AND (s.branch_point IS NULL OR x.branch_point=s.branch_point)
-      AND (s.spawning_call IS NULL OR x.spawning_call=s.spawning_call)
-      AND ((s.branch_point IS NULL AND x.branch_point IS NOT NULL)
-        OR (s.spawning_call IS NULL AND x.spawning_call IS NOT NULL))));
-
--- Evidence is loaded only by record readers, not membership/count queries.
-CREATE VIEW session_link AS
-SELECT s.*,(SELECT min(x.evidence) FROM link x
-  WHERE x.parent_id=s.parent_id AND x.child_id=s.child_id AND x.kind=s.kind AND x.how IS s.how) AS evidence
-FROM session_link_identity s;
-
 -- Inherited history also exists in copied files with no provider
 -- relationship. It never creates a logical-session edge.
 CREATE VIEW session_prefix AS
-SELECT DISTINCT parent_id,child_id,branch_point,copies_prefix
-FROM session_link
-WHERE kind <> 'reference' AND (kind IN ('fork','continuation','resume') OR copies_prefix=1)
+SELECT DISTINCT l.parent_id,l.child_id,l.branch_point,1 AS copies_prefix
+FROM session_link l
+WHERE l.kind <> 'reference' AND (l.copies_prefix=1
+  OR EXISTS(SELECT 1 FROM prefix_copy p WHERE p.parent_id=l.parent_id AND p.child_id=l.child_id))
+UNION
+SELECT DISTINCT l.parent_id,l.child_id,l.branch_point,0
+FROM session_link l
+WHERE l.kind IN ('fork','continuation','resume') AND l.copies_prefix=0
+  AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.parent_id=l.parent_id AND p.child_id=l.child_id)
 UNION
 SELECT DISTINCT p.parent_id,p.child_id,NULL,1
 FROM prefix_copy p
 WHERE NOT EXISTS (
   SELECT 1 FROM session_link l
   WHERE l.parent_id=p.parent_id AND l.child_id=p.child_id
-    AND l.kind <> 'reference' AND (l.kind IN ('fork','continuation','resume') OR l.copies_prefix=1));
+    AND l.kind <> 'reference');
 
 CREATE TABLE event (
   pk                INTEGER PRIMARY KEY,

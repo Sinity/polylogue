@@ -133,7 +133,7 @@ impl<'a> Compiler<'a> {
                     "tree_cost" => {
                         let tree = fields::descendants(s);
                         Some(format!(
-                            "({} OR EXISTS (SELECT 1 FROM link xl JOIN session xs ON xs.id = xl.parent_id \
+                            "({} OR EXISTS (SELECT 1 FROM session_link xl JOIN session xs ON xs.id = xl.parent_id \
                          WHERE xl.kind IN ({}) AND NOT EXISTS (SELECT 1 FROM session xc WHERE xc.id = xl.child_id) AND xs.pk IN ({tree})))",
                             unpriced(&tree),
                             fields::STRUCTURAL_KINDS

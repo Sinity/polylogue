@@ -12,7 +12,7 @@ use rusqlite::Connection;
 pub(crate) fn relation_identity(conn: &Connection, child: &str) -> Result<String> {
     conn.value(
         "SELECT json_group_array(json_array(pk,parent_id,child_id,kind,how,branch_point,spawning_call,copies_prefix))
-         FROM (SELECT * FROM session_link_identity WHERE child_id=?1 ORDER BY pk)",
+         FROM (SELECT * FROM session_link WHERE child_id=?1 ORDER BY pk)",
         [child],
     )?
     .ok_or_else(|| crate::StoreError::internal("an aggregate read no row"))
@@ -61,8 +61,8 @@ row! {
 }
 
 row! {
-    /// One statement of a link between two sessions.
-    struct LinkStatement {
+    /// One relation between two sessions, as stored.
+    struct LinkRow {
         parent_id: String,
         child_id: String,
         kind: String,
@@ -73,9 +73,9 @@ row! {
     }
     statements {
         const OF_PARENT = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
-            FROM link WHERE parent_id = ?1";
+            FROM session_link INDEXED BY session_link_parent WHERE parent_id = ?1 ORDER BY pk";
         const OF_CHILD = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
-            FROM link WHERE child_id = ?1";
+            FROM session_link INDEXED BY session_link_child WHERE child_id = ?1 ORDER BY pk";
     }
 }
 
@@ -86,104 +86,136 @@ enum End {
     Child,
 }
 
-/// The links whose `end` (the parent or the child) is `session`, as
-/// the `session_link_identity` view states them. The view decides each
-/// statement with subqueries over all the statements of its parent and
-/// child, which for one session with thousands of statements is their
-/// square; this reads the statements once and decides each pair in one
-/// pass, with the view as its oracle.
+/// The links whose `end` (the parent or the child) is `session`, one row
+/// each; a recorded prefix copy of a pair also says its prefix is copied.
 fn links_where(conn: &Connection, end: End, session: &str) -> Result<Vec<SessionLink>> {
     #[cfg(any(test, feature = "fixture"))]
     LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let (copies, stated) = match end {
-        End::Parent => (&CopiedPair::OF_PARENT, &LinkStatement::OF_PARENT),
-        End::Child => (&CopiedPair::OF_CHILD, &LinkStatement::OF_CHILD),
+    let (copies, stored) = match end {
+        End::Parent => (&CopiedPair::OF_PARENT, &LinkRow::OF_PARENT),
+        End::Child => (&CopiedPair::OF_CHILD, &LinkRow::OF_CHILD),
     };
     let copied: std::collections::HashSet<(String, String)> = conn
         .all(copies, [session])?
         .into_iter()
         .map(|pair| (pair.parent_id, pair.child_id))
         .collect();
-    // The statements of each relation: a parent, a child, a kind and
-    // how, in that order.
-    type Relation = (String, String, String, Option<String>);
-    type Stated = (Option<String>, Option<String>, bool);
-    let mut relations: std::collections::BTreeMap<Relation, Vec<Stated>> = Default::default();
-    for link in conn.all(stated, [session])? {
-        relations
-            .entry((link.parent_id, link.child_id, link.kind, link.how))
-            .or_default()
-            .push((link.branch_point, link.spawning_call, link.copies_prefix));
-    }
-    let mut links = Vec::new();
-    for ((parent, child, kind, how), statements) in relations {
-        let copies_prefix = statements.iter().any(|(_, _, copies)| *copies)
-            || copied.contains(&(parent.clone(), child.clone()));
-        let known = |of: fn(&Stated) -> &Option<String>| {
-            statements
+    Ok(conn
+        .all(stored, [session])?
+        .into_iter()
+        .map(|link| SessionLink {
+            copies_prefix: link.copies_prefix
+                || copied.contains(&(link.parent_id.clone(), link.child_id.clone())),
+            parent: link.parent_id,
+            child: link.child_id,
+            kind: link.kind,
+            how: link.how,
+            branch_point: link.branch_point,
+            spawning_call: link.spawning_call,
+        })
+        .collect())
+}
+
+/// One shown statement of a link, as assembly resolves it.
+pub(crate) struct Statement {
+    pub branch_point: Option<String>,
+    pub spawning_call: Option<String>,
+    pub copies_prefix: bool,
+    pub evidence: String,
+    pub source_chain: i64,
+    pub input_pk: i64,
+}
+
+/// One relation the statements of a (parent, child, kind, how) give.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct Relation {
+    pub branch_point: Option<String>,
+    pub spawning_call: Option<String>,
+    pub copies_prefix: bool,
+    pub evidence: String,
+    pub source_chain: i64,
+    pub input_pk: i64,
+}
+
+/// The relations of one (parent, child, kind, how) from all its
+/// statements, in `pk` order: coordinates that agree are one relation; a
+/// coordinate recorded with several values gives one relation for each;
+/// when both differ, every statement stands except one that another
+/// statement completes. Each relation takes its input from the first
+/// statement it agrees with, its evidence from the least of them all, and
+/// copies the prefix when any statement says so.
+pub(crate) fn relations(statements: &[Statement]) -> Vec<Relation> {
+    use std::collections::{BTreeSet, HashSet};
+    let Some(evidence) = statements.iter().map(|s| s.evidence.as_str()).min() else {
+        return Vec::new();
+    };
+    let copies_prefix = statements.iter().any(|s| s.copies_prefix);
+    let known = |of: fn(&Statement) -> &Option<String>| {
+        statements
+            .iter()
+            .filter_map(|statement| of(statement).clone())
+            .collect::<BTreeSet<String>>()
+    };
+    let branch_points = known(|statement| &statement.branch_point);
+    let calls = known(|statement| &statement.spawning_call);
+    let coordinates: Vec<(Option<String>, Option<String>)> =
+        match (branch_points.len() > 1, calls.len() > 1) {
+            (false, false) => vec![(branch_points.first().cloned(), calls.first().cloned())],
+            (true, false) => branch_points
                 .iter()
-                .filter_map(|statement| of(statement).clone())
-                .collect::<std::collections::BTreeSet<String>>()
+                .map(|point| (Some(point.clone()), calls.first().cloned()))
+                .collect(),
+            (false, true) => calls
+                .iter()
+                .map(|call| (branch_points.first().cloned(), Some(call.clone())))
+                .collect(),
+            (true, true) => {
+                let with_call: HashSet<&str> = statements
+                    .iter()
+                    .filter(|s| s.spawning_call.is_some())
+                    .filter_map(|s| s.branch_point.as_deref())
+                    .collect();
+                let with_point: HashSet<&str> = statements
+                    .iter()
+                    .filter(|s| s.branch_point.is_some())
+                    .filter_map(|s| s.spawning_call.as_deref())
+                    .collect();
+                let kept: BTreeSet<(Option<String>, Option<String>)> = statements
+                    .iter()
+                    .filter(|s| match (&s.branch_point, &s.spawning_call) {
+                        (Some(_), Some(_)) => true,
+                        (Some(point), None) => !with_call.contains(point.as_str()),
+                        (None, Some(call)) => !with_point.contains(call.as_str()),
+                        (None, None) => false,
+                    })
+                    .map(|s| (s.branch_point.clone(), s.spawning_call.clone()))
+                    .collect();
+                kept.into_iter().collect()
+            }
         };
-        let branch_points = known(|statement| &statement.0);
-        let calls = known(|statement| &statement.1);
-        // Coordinates that agree are one link; a coordinate recorded
-        // with several values gives one link for each.
-        let coordinates: Vec<(Option<String>, Option<String>)> =
-            match (branch_points.len() > 1, calls.len() > 1) {
-                (false, false) => {
-                    vec![(branch_points.first().cloned(), calls.first().cloned())]
-                }
-                (true, false) => branch_points
-                    .iter()
-                    .map(|point| (Some(point.clone()), calls.first().cloned()))
-                    .collect(),
-                (false, true) => calls
-                    .iter()
-                    .map(|call| (branch_points.first().cloned(), Some(call.clone())))
-                    .collect(),
-                // Both differ: every statement stands, except one that
-                // another statement completes.
-                (true, true) => {
-                    let with_call: std::collections::HashSet<&str> = statements
-                        .iter()
-                        .filter(|(_, call, _)| call.is_some())
-                        .filter_map(|(point, _, _)| point.as_deref())
-                        .collect();
-                    let with_point: std::collections::HashSet<&str> = statements
-                        .iter()
-                        .filter(|(point, _, _)| point.is_some())
-                        .filter_map(|(_, call, _)| call.as_deref())
-                        .collect();
-                    let mut kept: Vec<_> = statements
-                        .iter()
-                        .filter(|(point, call, _)| match (point, call) {
-                            (Some(_), Some(_)) => true,
-                            (Some(point), None) => !with_call.contains(point.as_str()),
-                            (None, Some(call)) => !with_point.contains(call.as_str()),
-                            (None, None) => false,
-                        })
-                        .map(|(point, call, _)| (point.clone(), call.clone()))
-                        .collect();
-                    kept.sort();
-                    kept
-                }
+    coordinates
+        .into_iter()
+        .map(|(branch_point, spawning_call)| {
+            let agrees = |value: &Option<String>, coordinate: &Option<String>| {
+                value.is_none() || value == coordinate
             };
-        links.extend(
-            coordinates
-                .into_iter()
-                .map(|(branch_point, spawning_call)| SessionLink {
-                    parent: parent.clone(),
-                    child: child.clone(),
-                    kind: kind.clone(),
-                    how: how.clone(),
-                    copies_prefix,
-                    branch_point,
-                    spawning_call,
-                }),
-        );
-    }
-    Ok(links)
+            let first = statements
+                .iter()
+                .find(|s| {
+                    agrees(&s.branch_point, &branch_point)
+                        && agrees(&s.spawning_call, &spawning_call)
+                })
+                .unwrap_or(&statements[0]);
+            Relation {
+                branch_point,
+                spawning_call,
+                copies_prefix,
+                evidence: evidence.to_owned(),
+                source_chain: first.source_chain,
+                input_pk: first.input_pk,
+            }
+        })
+        .collect()
 }
 
 /// The prefixes a session inherits, as the `session_prefix` view states
@@ -230,13 +262,13 @@ fn walk(session: &str) -> String {
       SELECT p.pk,p.id,a.depth+1,a.path||printf('%d/',p.pk),
         instr(a.path,printf('/%d/',p.pk))>0
       FROM ancestry a JOIN session p ON p.id=(
-        SELECT min(l.parent_id) FROM link l
+        SELECT min(l.parent_id) FROM session_link l
         WHERE l.child_id=a.id AND l.kind IN ({STRUCTURAL_KINDS})
         HAVING count(DISTINCT l.parent_id)=1)
       WHERE a.cycle=0 AND p.stub=0
     ), terminal AS (SELECT * FROM ancestry ORDER BY depth DESC LIMIT 1),
     observed AS (SELECT t.*, (SELECT json_group_array(parent_id) FROM (
-      SELECT DISTINCT l.parent_id FROM link l
+      SELECT DISTINCT l.parent_id FROM session_link l
       WHERE l.child_id=t.id AND l.kind IN ({STRUCTURAL_KINDS})
       ORDER BY l.parent_id)) AS parents FROM terminal t)"
     )

@@ -187,7 +187,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
                SELECT hit_session,block,at,message,rank FROM owned UNION \
                SELECT parent.pk,child.block,child.at,child.message,child.rank FROM ancestors child \
                CROSS JOIN session cs ON cs.pk=child.hit_session \
-               CROSS JOIN link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
+               CROSS JOIN session_link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
                CROSS JOIN session parent ON parent.id=l.parent_id) \
              SELECT hit_session AS session_pk,block,at,rank FROM ({inherited}))",
             h.block_kind("xb"),
@@ -206,7 +206,7 @@ fn sessions_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
            SELECT session_pk, rank FROM matched UNION \
            SELECT parent.pk, child.rank FROM ancestors child \
            CROSS JOIN session cs ON cs.pk=child.session_pk \
-           CROSS JOIN link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
+           CROSS JOIN session_link l ON l.child_id=cs.id AND l.kind IN ({STRUCTURAL_KINDS}) \
            CROSS JOIN session parent ON parent.id=l.parent_id) \
          SELECT session_pk, min(rank) AS rank FROM ancestors GROUP BY session_pk)",
             h.block_kind("xb"),
@@ -638,7 +638,7 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
             "child",
             Unit::Sessions,
             Via::Exists {
-                cond: "EXISTS (SELECT 1 FROM link lc JOIN {from} ON {ns}.id = lc.child_id \
+                cond: "EXISTS (SELECT 1 FROM session_link lc JOIN {from} ON {ns}.id = lc.child_id \
                        WHERE lc.kind = 'spawn' AND lc.parent_id = {s}.id \
                        AND lc.spawning_call = {t}.call_id AND {cond})",
                 value: None,
@@ -789,7 +789,13 @@ static LINKS: UnitSpec = UnitSpec {
         ("child", Expr::Template("{r}.child_id"), Text),
         ("kind", T("{r}.kind"), Text),
         ("how", T("{r}.how"), Text),
-        ("copies_prefix", T("{r}.copies_prefix"), Bool),
+        (
+            "copies_prefix",
+            T(
+                "({r}.copies_prefix OR EXISTS(SELECT 1 FROM prefix_copy {r}x WHERE {r}x.parent_id = {r}.parent_id AND {r}x.child_id = {r}.child_id))",
+            ),
+            Bool,
+        ),
         ("evidence", T("{r}.evidence"), Text),
         ("pending", T("({r}p.pk IS NULL)"), Bool),
     ],

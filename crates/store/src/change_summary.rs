@@ -136,7 +136,7 @@ impl ChangeSummary {
     /// Records a link by its row before it changes or is deleted.
     pub(crate) fn link(&self, conn: &Connection, pk: i64) -> Result<()> {
         let child: Option<String> = conn
-            .prepare_cached("SELECT child_id FROM link WHERE pk = ?1")?
+            .prepare_cached("SELECT child_id FROM link_statement WHERE pk = ?1")?
             .query_row([pk], |row| row.get(0))
             .optional()?;
         if let Some(child) = child {
