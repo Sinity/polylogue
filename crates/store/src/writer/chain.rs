@@ -7,7 +7,7 @@ pub struct ChainParse {
     file: Option<BufWriter<std::fs::File>>,
     path: tempfile::TempPath,
     first: bool,
-    pub(super) decoded: Vec<crate::staging::PreparedBatch>,
+    pub(crate) decoded: Vec<crate::staging::PreparedBatch>,
 }
 
 impl ChainParse {
@@ -68,7 +68,7 @@ impl ChainParse {
 
     /// A replacement names a valid chain and holds a reading whose events
     /// name their records.
-    pub(super) fn check(&mut self, input: &str, chain: i64) -> Result<()> {
+    pub(crate) fn check(&mut self, input: &str, chain: i64) -> Result<()> {
         if chain < 1 {
             return Err(StoreError::Invalid(
                 "a reading must name a valid input chain".into(),
@@ -147,7 +147,7 @@ struct StoredStep(
     bool,
 );
 impl Inner {
-    pub(super) fn replace_chain(
+    pub(crate) fn replace_chain(
         &mut self,
         input: InputKey,
         chain: i64,
@@ -200,7 +200,7 @@ impl Inner {
         }
     }
 
-    pub(super) fn replace_index(
+    pub(crate) fn replace_index(
         &mut self,
         input: InputKey,
         chain: i64,
@@ -263,7 +263,7 @@ impl Inner {
 }
 
 /// What a chain's reading is written with.
-pub(super) struct ReadingWrite<'a> {
+pub(crate) struct ReadingWrite<'a> {
     /// Answers which attachment bytes the archive holds.
     pub register: &'a Connection,
     pub changes: &'a crate::change_summary::ChangeSummary,
@@ -292,7 +292,7 @@ impl ChainSink for ChainParse {
 }
 
 /// A chain's steps written in order into the reading tables of an index.
-pub(super) struct ChainSteps {
+pub(crate) struct ChainSteps {
     batch: Batch,
     chain: i64,
     /// Attachment references name only bytes the archive holds, as of the
@@ -302,7 +302,7 @@ pub(super) struct ChainSteps {
 }
 
 impl ChainSteps {
-    pub(super) fn new(input: &InputKey, chain: i64, length: u64) -> Self {
+    pub(crate) fn new(input: &InputKey, chain: i64, length: u64) -> Self {
         Self {
             batch: Batch {
                 input: input.clone(),
@@ -324,13 +324,13 @@ impl ChainSteps {
 
     /// Notes the bytes `step` names before any step is written, so every
     /// step is written against the same view of the archive.
-    pub(super) fn remember(&mut self, w: &ReadingWrite<'_>, step: &ParseStep) -> Result<()> {
+    pub(crate) fn remember(&mut self, w: &ReadingWrite<'_>, step: &ParseStep) -> Result<()> {
         attachments::remember(step, w.register, &HashMap::new(), &mut self.known)
     }
 
     /// Writes the next step, which resets the chain's reading when it is the
     /// first.
-    pub(super) fn write(
+    pub(crate) fn write(
         &mut self,
         tx: &Transaction<'_>,
         w: &ReadingWrite<'_>,
@@ -371,11 +371,11 @@ impl ChainSteps {
         )
     }
 
-    pub(super) fn is_first(&self) -> bool {
+    pub(crate) fn is_first(&self) -> bool {
         self.first
     }
 
-    pub(super) fn finish(&self) -> Result<()> {
+    pub(crate) fn finish(&self) -> Result<()> {
         if self.first {
             return Err(StoreError::Invalid(
                 "a chain replacement has no reading".into(),
@@ -387,7 +387,7 @@ impl ChainSteps {
 
 /// Writes a chain's reading, step by step from its first record, into the
 /// reading tables of `tx`'s index, recording what it states in `touched`.
-pub(super) fn write_reading(
+pub(crate) fn write_reading(
     tx: &Transaction<'_>,
     w: ReadingWrite<'_>,
     input: &InputKey,

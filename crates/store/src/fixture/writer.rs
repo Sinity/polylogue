@@ -151,7 +151,8 @@ impl WriterArchive {
         let writer = Writer::start(&archive).expect("start the writer");
         // The new archive's empty build is installed, as a daemon's first
         // pass over nothing does; the fixture's writes then go to `index.db`.
-        writer.build(Vec::new()).expect("install the empty build");
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender())
+            .expect("install the empty build");
         Self {
             _dir: dir,
             archive,

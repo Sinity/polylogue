@@ -37,7 +37,7 @@ fn prepared_at(write: UserWrite, at: Timestamp) -> PreparedRequest {
         .unwrap();
     record.unwrap()
 }
-fn alternate() -> PreparedRequest {
+pub(crate) fn alternate() -> PreparedRequest {
     prepared(UserWrite::Alternate {
         alternate: NewAlternate {
             base: None,

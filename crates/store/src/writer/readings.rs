@@ -37,7 +37,7 @@ pub(crate) struct Touched {
 }
 
 /// The chain a step's rows belong to and what they are written with.
-pub(super) struct Chain<'a> {
+pub(crate) struct Chain<'a> {
     pub input_pk: i64,
     pub input: &'a str,
     pub route: Route,
@@ -53,7 +53,7 @@ pub(super) struct Chain<'a> {
 }
 
 /// The coordinates of a link as its chain states them: its natural key.
-pub(super) fn link_statement(link: &Link) -> Result<Vec<u8>> {
+pub(crate) fn link_statement(link: &Link) -> Result<Vec<u8>> {
     link.validate().map_err(|e| StoreError::Invalid(e.into()))?;
     Ok(serde_json::to_vec(&(
         link.parent.to_string(),
@@ -67,7 +67,7 @@ pub(super) fn link_statement(link: &Link) -> Result<Vec<u8>> {
 
 /// An event's ID: its content ID when it names a session; otherwise an ID
 /// of its input record, since an event about its input is that record's.
-pub(super) fn event_id(
+pub(crate) fn event_id(
     input: &str,
     chain: i64,
     event: &Event,
@@ -126,7 +126,7 @@ const READING_TABLES: &[&str] = &[
 /// Deletes a chain's reading: its rows in every reading table. What they
 /// stated is recorded in `touched` so the shown rows are computed again, and
 /// the texts they held are released.
-pub(super) fn delete(
+pub(crate) fn delete(
     tx: &Connection,
     changes: &crate::change_summary::ChangeSummary,
     input_pk: i64,
@@ -241,7 +241,7 @@ struct Stored {
 }
 
 /// Writes the rows one parse step states into its chain's reading.
-pub(super) fn write(
+pub(crate) fn write(
     tx: &Transaction<'_>,
     chain: &Chain<'_>,
     batch: &Batch,
@@ -988,7 +988,7 @@ fn write_links(
 
 /// Observations of the same coordinates combine; disagreements have other
 /// statements and stay separate.
-pub(super) fn merge_link(mut link: Link, other: Link) -> Link {
+pub(crate) fn merge_link(mut link: Link, other: Link) -> Link {
     link.copies_prefix |= other.copies_prefix;
     link.evidence = link.evidence.min(other.evidence);
     link
@@ -1141,7 +1141,7 @@ fn restore_texts(
 }
 
 /// Removes the released content groups nothing names any more.
-pub(super) fn remove_released_groups(tx: &Connection, released: &BTreeSet<i64>) -> Result<()> {
+pub(crate) fn remove_released_groups(tx: &Connection, released: &BTreeSet<i64>) -> Result<()> {
     for &group in released {
         crate::content::release(tx, group)?;
     }
@@ -1150,7 +1150,7 @@ pub(super) fn remove_released_groups(tx: &Connection, released: &BTreeSet<i64>) 
 
 /// Removes the released texts no reading holds any more, with their search
 /// entries.
-pub(super) fn remove_released_texts(tx: &Connection, released: &BTreeSet<i64>) -> Result<()> {
+pub(crate) fn remove_released_texts(tx: &Connection, released: &BTreeSet<i64>) -> Result<()> {
     for &id in released {
         let unheld: bool = tx
             .prepare_cached(

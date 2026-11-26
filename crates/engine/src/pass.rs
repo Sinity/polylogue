@@ -697,7 +697,7 @@ impl Engine {
         // after an index rebuild it is in place before any message that
         // names an asset is parsed. The import operation refreshes its new members.
         if !continuing {
-            self.refresh_import_assets(&mut pass)?;
+            self.refresh_import_assets(&mut pass, None)?;
         }
 
         // Files no earlier pass stored are planned and stored first. Their
@@ -2010,6 +2010,19 @@ impl Engine {
         // stored chains to be read. Arrays run serially only after preceding
         // pool work has committed.
         let mut plans = plans;
+        // With no installed index there is nothing to parse into: files are
+        // stored, and the rebuild, or the incremental update after its
+        // install, parses them.
+        if !self.archive.index_files()?.serves() {
+            for plan in &mut plans {
+                if matches!(plan.source, pool::Bytes::File) {
+                    plan.storing_only = true;
+                }
+            }
+            for capture in &mut self.rollout_captures {
+                capture.storing_only = true;
+            }
+        }
         if self.archive.index_build().is_some() {
             let key = |plan: &Plan| {
                 let stores =

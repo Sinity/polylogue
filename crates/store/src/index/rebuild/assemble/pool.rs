@@ -1,19 +1,26 @@
-//! A build's sessions composed on several threads (docs/architecture.md,
+//! A rebuild's sessions assembled on several threads (docs/architecture.md,
 //! one path). The stream's reader groups whole sessions into batches; each
-//! composer composes a batch with the composition upkeep uses, into an
-//! index of its own held in memory (the sessions' summaries are computed
-//! once the build is installed), and hands the batch's rows back with keys that count from one. The writer only appends
-//! them, in stream order, adding to each key the keys its table already
-//! gave, and the composer's index is rolled back for the next batch.
-use super::super::shown::{Composer, Context};
+//! assembler composes a batch with the composition an incremental update
+//! uses, into an index of its own held in memory (the sessions' summaries
+//! are computed once the rebuild is installed), and hands the batch's rows
+//! back with keys that count from one. The rebuild only appends them, in
+//! stream order, adding to each key the keys its table already gave, and
+//! the assembler's index is rolled back for the next batch.
 use super::Piece;
 use crate::change_summary::ChangeSummary;
+use crate::writer::shown::{Composer, Context};
 use crate::{Result, StoreError};
 use rusqlite::types::Value;
 use rusqlite::{Connection, OptionalExtension as _, Transaction};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
+
+/// The newest parsed chain of input `i`, as an SQL expression: the chain
+/// that decides which content-named messages its input holds
+/// (`held_message_parse`).
+const NEWEST_READ_CHAIN: &str = "(SELECT max(p.chain) FROM parse_state p
+    WHERE p.input_pk=i.pk AND p.state='parsed')";
 
 /// Messages a batch gathers before it is handed to a composer, at session
 /// ends.
@@ -48,7 +55,7 @@ pub(super) struct Composed {
 /// write counter the batches are composed under.
 pub(super) struct Shared {
     pub inputs: HashMap<String, (i64, Option<i64>)>,
-    pub aliases: Arc<super::super::identity::Aliases>,
+    pub aliases: Arc<crate::writer::identity::Aliases>,
     pub shared_events: Arc<HashSet<String>>,
     /// The build file, whose content groups composition reads.
     pub build: std::path::PathBuf,
@@ -62,7 +69,7 @@ impl Shared {
     /// What the composers of the build file `index` start from.
     pub(super) fn read(
         index: &Connection,
-        aliases: Arc<super::super::identity::Aliases>,
+        aliases: Arc<crate::writer::identity::Aliases>,
         shared_events: Arc<HashSet<String>>,
         counter: i64,
     ) -> Result<Self> {
@@ -74,7 +81,7 @@ impl Shared {
         let inputs = index
             .prepare(&format!(
                 "SELECT i.id,i.pk,{} FROM input_ref i",
-                super::NEWEST_READ_CHAIN
+                NEWEST_READ_CHAIN
             ))?
             .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
             .collect::<rusqlite::Result<_>>()?;
@@ -359,7 +366,7 @@ impl Composing {
             }
         }
         let (_, late) = composer.finish();
-        super::super::rows::finish_summaries(&tx, &changes, shared.counter)?;
+        crate::writer::rows::finish_summaries(&tx, &changes, shared.counter)?;
         let mut rows = Vec::new();
         for (n, table) in self.tables.0.iter().enumerate() {
             let mut statement = tx.prepare_cached(&table.select)?;
@@ -437,7 +444,7 @@ impl Pool {
                 sender.clone(),
             );
             std::thread::Builder::new()
-                .name(format!("polylogue-compose-{n}"))
+                .name(format!("polylogue-assemble-{n}"))
                 .spawn(move || {
                     let mut composing = match Composing::open(shared, tables) {
                         Ok(composing) => composing,
@@ -453,7 +460,7 @@ impl Pool {
                         };
                         let Ok(batch) = batch else { return };
                         let composed = batch.and_then(|batch| {
-                            let _doing = crate::activity::doing("composing sessions");
+                            let _doing = crate::activity::doing("assembling sessions");
                             composing.compose(batch)
                         });
                         let failed = composed.is_err();

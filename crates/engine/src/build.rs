@@ -1,23 +1,22 @@
-//! A standalone build of the index (docs/architecture.md, one path): every
-//! stored chain due a reading is read from its first byte, at the length the
-//! record holds when the build starts, by as many workers as the engine
-//! parses with. Each worker writes whole chains' readings into sorted runs
-//! of its own ([`polylogue_store::writer::build::BuildWorker`]); the writer then
-//! loads the runs, composes every session once, writes the indexes and
-//! search entries and installs the file. Requests are answered while the
-//! build runs: the loop thread takes them between handing chains to the
-//! workers and while it waits on the writer, and the workers, which touch
-//! neither the writer's index nor a reader's, go on reading. Nothing a
-//! worker has read is read again. What upkeep writes meanwhile goes into the
-//! build file, and the build reads only chains not read there. Upkeep brings
-//! the installed index forward from the build's position.
+//! An index rebuild (docs/architecture.md, one path): every stored chain is
+//! read from its first byte, at the length the archive holds when it is
+//! planned, by as many workers as the engine parses with. Each worker writes
+//! whole chains' parses into sorted files of its own
+//! ([`polylogue_store::index::rebuild::RebuildWorker`]); the rebuild then
+//! runs its remaining stages on a thread of its own and installs the file
+//! ([`polylogue_store::index::rebuild::Rebuild::finish`]). Requests are
+//! answered while it runs: the loop thread takes them between handing
+//! chains to the workers and while it waits on the rebuild. The index writer
+//! never writes the rebuild's file: it writes the installed index, when there
+//! is a current one, and refuses index writes otherwise. Incremental updates
+//! bring the installed rebuild forward from the archive position it covers.
 use crate::plan::Plan;
 use crate::{Engine, EngineError, LoopMsg, Pass, has_reading, pool};
 use crossbeam_channel::{Receiver, Select, Sender, TrySendError};
 use polylogue_model::{Cause, Caused as _, LockExt as _};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
+use polylogue_store::index::rebuild::{Rebuild, RebuildStage, RebuildWorker, StageRecord};
 use polylogue_store::writer::ChainSink as _;
-use polylogue_store::writer::build::{BuildPhase, BuildWorker, PhaseClock};
 use polylogue_store::{Change, InputKey};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -143,7 +142,7 @@ impl Prepare {
         );
         self.archive.record_build_bytes(bytes, bytes_read);
         self.archive.record_build_count(
-            crate::build_log::READING_STORED_FILES,
+            RebuildStage::Parsing.name(),
             StepCount {
                 done: bytes_read,
                 total: Some(bytes),
@@ -186,7 +185,7 @@ impl Prepare {
     /// Takes chains until none is left, reading each into the worker's
     /// stream.
     fn work_until_done(&self) -> Result<(), EngineError> {
-        let mut run: Option<(u64, BuildWorker)> = None;
+        let mut run: Option<(u64, RebuildWorker)> = None;
         loop {
             let plan = self.plans.recv();
             let Ok(mut plan) = plan else { break };
@@ -207,7 +206,7 @@ impl Prepare {
                 let number = self.next_run.fetch_add(1, Ordering::Relaxed);
                 run = Some((
                     number,
-                    BuildWorker::create(&self.archive, number, self.worker_memory)?,
+                    RebuildWorker::create(&self.archive, number, self.worker_memory)?,
                 ));
             }
             let (_, worker) = run.as_mut().expect("a worker was opened");
@@ -261,18 +260,19 @@ impl Prepare {
 }
 
 impl Engine {
-    /// Builds the index from the stored record and installs it. Returns the
-    /// pass the build made, imports answered meanwhile included, and the
-    /// phases it took.
-    pub(crate) fn build_index(&mut self) -> Result<(Pass, Vec<BuildPhase>), EngineError> {
+    /// Rebuilds the index from the archive and installs it. Returns the
+    /// pass the rebuild made, imports answered meanwhile included, and its
+    /// stages' records.
+    pub(crate) fn build_index(&mut self) -> Result<(Pass, Vec<StageRecord>), EngineError> {
         let mut pass = Pass::default();
-        // Messages that name an asset find it when they are composed: the
+        let mut rebuild = Rebuild::start(&self.archive, self.config.clock.clone())?;
+        // Messages that name an asset find it when they are assembled: the
         // asset lookup comes from stored observations and sidecars.
-        self.refresh_import_assets(&mut pass)?;
+        self.refresh_import_assets(&mut pass, Some(&mut rebuild))?;
         let through = self.reads.reader()?.last_input_id()?;
         let workers = self.config.workers.max(1);
         self.log_build_step(
-            crate::build_log::READING_STORED_FILES,
+            RebuildStage::Parsing.name(),
             format_args!("{workers} parse workers"),
         );
         let (plans_tx, plans_rx) = crossbeam_channel::bounded::<Plan>(workers * 2);
@@ -298,10 +298,6 @@ impl Engine {
             failed: Mutex::new(Vec::new()),
             left_out: Mutex::new(Vec::new()),
         };
-        let clock = PhaseClock::start(
-            crate::build_log::READING_STORED_FILES,
-            Some(CountUnit::Files),
-        );
         let prepared = std::thread::scope(|scope| {
             // Each worker holds a sender it never sends on: the channel
             // disconnects when the last worker ends.
@@ -353,33 +349,41 @@ impl Engine {
         pass.errors
             .extend(polylogue_model::unpoisoned(prepare.left_out.into_inner()));
         pass.bytes_read += prepare.parsed.load(Ordering::Relaxed);
-        let mut phases = vec![clock.end(prepare.chains_read.load(Ordering::Relaxed))];
-        let (announce, announced) = crossbeam_channel::unbounded();
-        let built = self.writer.sender().start_build(
-            runs.into_iter().map(|(_, path)| path).collect(),
-            workers,
-            announce,
-        )?;
-        // The writer drops its sender when the build ends; requests are
-        // answered while it works.
-        while !self.wait_answering(&announced, &mut pass)? {
-            while let Ok(step) = announced.try_recv() {
-                self.enter_build_step(step);
+        let parsed = prepare.bytes_read.load(Ordering::Relaxed);
+        // The rebuild's later stages run on a thread of their own; requests
+        // are answered while they run.
+        let (done, finished) = crossbeam_channel::bounded(1);
+        let writer = self.writer.sender();
+        let runs = runs.into_iter().map(|(_, path)| path).collect();
+        let handle = std::thread::Builder::new()
+            .name("polylogue-rebuild".into())
+            .spawn(move || {
+                let built =
+                    polylogue_model::caught(|| rebuild.finish(runs, parsed, workers, &writer))
+                        .unwrap_or_else(|panic| Err(polylogue_store::StoreError::internal(panic)));
+                let _ = done.send(built);
+            })?;
+        let built = loop {
+            if let Ok(built) = finished.try_recv() {
+                break built;
             }
-        }
-        let built = built
-            .recv()
-            .map_err(|_| polylogue_store::StoreError::WriterGone)?;
-        // Positions read before the build named the build file's empty
+            if self.wait_answering(&finished, &mut pass)? && finished.is_empty() {
+                break Err(polylogue_store::StoreError::internal(
+                    "the rebuild ended without an answer",
+                ));
+            }
+        };
+        let _ = handle.join();
+        // Positions read before the rebuild named the build file's empty
         // index; the next pass reads them from the installed one, or, when
-        // the build failed, from the build file the writer made again.
+        // the rebuild failed, from the build file made again.
         self.discard_confirmed_state();
-        phases.extend(built?);
+        let records = built?;
         for (mut plan, failure) in failed {
             self.record_failure(&mut plan, failure, &mut pass);
         }
         pass.messages_written = self.reads.reader()?.status(&[])?.messages;
-        Ok((pass, phases))
+        Ok((pass, records))
     }
 
     /// Blocks until `work` has a message or has disconnected, answering

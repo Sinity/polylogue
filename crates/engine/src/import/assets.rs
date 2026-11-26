@@ -9,7 +9,25 @@ fn stage(items: &mut ExportItems, row: &AssetRow) -> polylogue_store::Result<()>
 }
 
 impl Engine {
-    pub(crate) fn refresh_import_assets(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
+    /// Installs the export associations not yet indexed: into `rebuild`
+    /// when one is given, otherwise into the installed index. With neither
+    /// there is nothing to install into; the rebuild installs them before it
+    /// assembles.
+    pub(crate) fn refresh_import_assets(
+        &mut self,
+        pass: &mut Pass,
+        mut rebuild: Option<&mut polylogue_store::index::rebuild::Rebuild>,
+    ) -> Result<(), EngineError> {
+        if rebuild.is_none() && !self.archive.index_files()?.serves() {
+            return Ok(());
+        }
+        let mut install = |engine: &Self, staged: ExportItems| -> Result<(), EngineError> {
+            match rebuild.as_deref_mut() {
+                Some(rebuild) => rebuild.import_assets(staged)?,
+                None => engine.writer.import_assets(staged)?,
+            }
+            Ok(())
+        };
         let (members, through) = self.reads.reader()?.unindexed_import_members()?;
         let mut staged = ExportItems::new()?;
         for source in members {
@@ -31,7 +49,7 @@ impl Engine {
         }
         if let Some(through) = through {
             stage(&mut staged, &AssetRow::Scan { through })?;
-            self.writer.import_assets(staged)?;
+            install(self, staged)?;
         }
 
         let sidecars = self.reads.reader()?.pending_asset_sidecars()?;
@@ -108,7 +126,7 @@ impl Engine {
                     error,
                 },
             )?;
-            self.writer.import_assets(staged)?;
+            install(self, staged)?;
         }
         Ok(())
     }

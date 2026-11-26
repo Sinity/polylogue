@@ -56,6 +56,7 @@ pub mod follow;
 pub mod measure;
 mod ordered_blocks;
 mod parse_state;
+pub mod peak_memory;
 pub mod python_polylogue;
 pub mod query;
 pub mod query_objects;

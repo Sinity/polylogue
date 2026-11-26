@@ -62,7 +62,7 @@ pub(in crate::writer) fn due_a_build(root: &std::path::Path, inputs: &[&str]) ->
             "a new archive's index is built"
         );
         let writer = Writer::start(&archive).unwrap();
-        writer.build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
         inputs
             .iter()
             .map(|input| store_message(&archive, &writer, input, &format!("{input} text")))
@@ -84,7 +84,7 @@ pub(in crate::writer) fn runs(
     inputs: &[&str],
     chains: &[i64],
 ) -> Vec<std::path::PathBuf> {
-    let mut run = crate::writer::build::BuildWorker::create(archive, 0, 32 << 20).unwrap();
+    let mut run = crate::index::rebuild::RebuildWorker::create(archive, 0, 32 << 20).unwrap();
     for (input, &chain) in inputs.iter().zip(chains) {
         let mut batch = one_message(input, &format!("{input}-m"), &format!("{input} text"));
         let sender = writer.sender();
@@ -109,7 +109,7 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
     let chains = due_a_build(dir.path(), &inputs);
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let mut run = crate::writer::build::BuildWorker::create(&archive, 0, 32 << 20).unwrap();
+    let mut run = crate::index::rebuild::RebuildWorker::create(&archive, 0, 32 << 20).unwrap();
     for (input, &chain) in inputs.iter().zip(&chains) {
         let mut batch = one_message(input, &format!("{input}-m"), "walrus narwhal");
         if *input == "split" {
@@ -131,7 +131,7 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
         }
         open.finish().unwrap();
     }
-    writer.build(run.finish().unwrap()).unwrap();
+    crate::fixture::rebuild_from_runs(&archive, &writer.sender(), run.finish().unwrap()).unwrap();
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
     let groups: i64 = index
         .query_row("SELECT count(DISTINCT group_id) FROM text", [], |r| {
@@ -174,7 +174,7 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
     let chains = due_a_build(dir.path(), &inputs);
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let writer = Writer::start(&archive).unwrap();
-    let mut run = crate::writer::build::BuildWorker::create(&archive, 0, 32 << 20).unwrap();
+    let mut run = crate::index::rebuild::RebuildWorker::create(&archive, 0, 32 << 20).unwrap();
     for (input, &chain) in inputs.iter().zip(&chains) {
         let mut batch = one_message(input, &format!("{input}-m"), &format!("{input} text"));
         if *input == "unstated" {
@@ -190,19 +190,17 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
         open.finish().unwrap();
     }
     let runs: Vec<_> = run.finish().unwrap().into_iter().collect();
-    // Held once composition has ended, the build's progress holds each
-    // composition step's last count; its steps are recorded as the engine
-    // records them, from the names the writer announces.
+    // Held once assembly has ended, the rebuild's progress holds the
+    // assembling stage's last count.
     crate::fault::arm("index.deferred", "", crate::fault::Action::Hold, 0, 1);
-    let (announce, announced) = crossbeam_channel::unbounded();
-    let built = writer.start_build(runs, 2, announce).unwrap();
+    let rebuilt = archive.clone();
+    let sender = writer.sender();
+    let built =
+        std::thread::spawn(move || crate::fixture::rebuild_from_runs(&rebuilt, &sender, runs));
     crate::fault::wait_held();
-    for step in announced.try_iter() {
-        archive.record_build_step(step, polylogue_model::Timestamp::from_unix_ms(1).unwrap());
-    }
     let (_, progress) = archive.build_progress().unwrap();
     crate::fault::release();
-    built.recv().unwrap().unwrap();
+    built.join().unwrap().unwrap();
     crate::fault::clear();
     let counts: Vec<(String, Option<StepCount>)> = progress
         .finished
@@ -221,17 +219,16 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
             unit: CountUnit::Sessions,
         })
     };
-    assert_eq!(
-        counts,
-        [
-            ("assembling sessions".to_owned(), sessions(2, 2)),
-            ("joining sessions across files".to_owned(), sessions(0, 0)),
-        ]
-    );
+    assert_eq!(counts, [("assembling".to_owned(), sessions(2, 2))]);
 }
 
+/// The index writer never writes the rebuild's file. With no installed
+/// index, a write during the rebuild is stored in the archive and refused
+/// for the index with `index_building`; the installed rebuild covers the
+/// archive up to the position it started at, and the chain stored after it
+/// is due (docs/architecture.md, Durability: the index file).
 #[test]
-fn a_build_is_private_until_installed_and_reads_answer_its_progress() {
+fn a_rebuild_is_private_until_installed_and_reads_answer_its_progress() {
     let dir = tempfile::tempdir().unwrap();
     let chains = due_a_build(dir.path(), &["first-build"]);
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
@@ -254,22 +251,64 @@ fn a_build_is_private_until_installed_and_reads_answer_its_progress() {
         ),
         other => panic!("expected an index build, got {:?}", other.err()),
     }
-    // A write during the build goes into the build file as upkeep writes
-    // it; the build then loads the chains it read.
-    store_message(&archive, &writer, "during-build", "stored while building");
+    let rebuild = crate::index::rebuild::Rebuild::start(
+        &archive,
+        polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+    )
+    .unwrap();
+    let started_at = rebuild.position();
+    // A write while the rebuild runs: its bytes are stored, its parse is
+    // refused for the index, which does not exist yet.
+    let (blob, file) = archive.prepare_blob(&SOURCE_RECORD).unwrap();
+    let mut reading = one_message("during-build", "during-build-m", "stored while building");
+    reading.new_blob = Some(blob);
+    let stored = writer
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch: reading,
+            files: file.into_iter().collect(),
+        }])
+        .unwrap();
+    assert!(
+        matches!(&stored[..], [Err(StoreError::IndexBuilding(build))] if build.reason == RebuildReason::NoIndex),
+        "{stored:?}"
+    );
     let pipeline = ReadPool::open(&archive).unwrap();
-    assert_eq!(messages(&pipeline), 1);
+    assert_eq!(messages(&pipeline), 0);
     assert_eq!(journal_mode(&paths.build), "delete");
     let runs = runs(&archive, &writer, &["first-build"], &chains);
-    writer.build(runs).unwrap();
+    let stages = rebuild.finish(runs, 0, 2, &writer.sender()).unwrap();
+    assert_eq!(
+        stages.iter().map(|stage| stage.stage).collect::<Vec<_>>(),
+        crate::index::rebuild::RebuildStage::ALL
+    );
     assert!(!paths.dir.exists());
     assert_eq!(journal_mode(&paths.index), "wal");
     assert_eq!(archive.index_build(), None);
-    assert_eq!(messages(&pool), 2);
-    assert_eq!(messages(&pipeline), 2);
+    // The rebuild holds what it read; the write made meanwhile is stored
+    // after the position it covers, and is due.
+    assert_eq!(messages(&pool), 1);
+    assert_eq!(messages(&pipeline), 1);
+    let index = crate::archive::open_read(&paths.index).unwrap();
+    assert_eq!(
+        crate::meta_get(&index, crate::index::file::ARCHIVE_POSITION).unwrap(),
+        Some(started_at.0.to_string())
+    );
+    let reader = pool.reader().unwrap();
+    let due: Vec<String> = reader
+        .chains_behind_index(
+            &[("claude-code".to_owned(), "synthetic=1".to_owned())],
+            crate::read::RevisionChains::All,
+            None,
+        )
+        .unwrap()
+        .into_iter()
+        .map(|chain| chain.input)
+        .collect();
+    assert_eq!(due, ["during-build"]);
+    drop(reader);
     // The installed index is the writer's from now on.
     store_message(&archive, &writer, "after-install", "ordinary write");
-    assert_eq!(messages(&pool), 3);
+    assert_eq!(messages(&pool), 2);
 }
 
 /// The planner's total and the workers' count are sampled apart, so a
@@ -305,7 +344,7 @@ fn a_stopped_build_starts_again_from_the_stored_bytes() {
     assert_eq!(messages(&ReadPool::open(&archive).unwrap()), 0);
     let writer = Writer::start(&archive).unwrap();
     let runs = runs(&archive, &writer, &["stopped"], &chains);
-    writer.build(runs).unwrap();
+    crate::fixture::rebuild_from_runs(&archive, &writer.sender(), runs).unwrap();
     assert_eq!(messages(&serving(&archive)), 1);
 }
 
@@ -324,7 +363,7 @@ fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
         let pipeline = ReadPool::open(&archive).unwrap();
         let first = runs(&archive, &writer, &["first-round"], &chains);
         crate::fault::arm(point, "", crate::fault::Action::Fail, 0, 1);
-        let failed = writer.build(first);
+        let failed = crate::fixture::rebuild_from_runs(&archive, &writer.sender(), first);
         crate::fault::clear();
         assert!(failed.is_err(), "{point}");
         let status = pipeline
@@ -335,18 +374,16 @@ fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
         assert_eq!(status.parse_states.get("done"), None, "{point}");
         assert_eq!(status.inputs, 1, "{point}");
         let again = runs(&archive, &writer, &["first-round"], &chains);
-        let phases = writer.build(again).unwrap();
+        let phases = crate::fixture::rebuild_from_runs(&archive, &writer.sender(), again).unwrap();
         assert_eq!(
-            phases.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(),
+            phases.iter().map(|p| p.stage.name()).collect::<Vec<_>>(),
             [
-                "sorting texts",
-                "writing tables",
+                "parsing",
+                "keying texts",
+                "loading parses",
+                "assembling",
                 "indexing",
-                "assembling sessions",
-                "indexing sessions",
-                "joining sessions across files",
-                "finishing indexes",
-                "search index",
+                "full text",
                 "installing"
             ],
             "{point}"
@@ -362,7 +399,7 @@ fn a_rebuild_keeps_serving_a_same_schema_index_until_it_is_installed() {
     {
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
         let writer = Writer::start(&archive).unwrap();
-        writer.build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
         store_message(&archive, &writer, "served", "served while rebuilt");
     }
     // An extra index changes the schema but not its identity: this build's
@@ -387,7 +424,7 @@ fn a_rebuild_keeps_serving_a_same_schema_index_until_it_is_installed() {
     assert_eq!(messages(&pool), 1);
     let writer = Writer::start(&archive).unwrap();
     assert_eq!(messages(&pool), 1);
-    writer.build(Vec::new()).unwrap();
+    crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
     // The rebuild replaced the index; it holds what the rebuild loaded,
     // which here is nothing.
     assert!(!paths.dir.exists());
@@ -400,7 +437,8 @@ fn a_rebuild_of_an_index_in_another_format_answers_index_building() {
     let paths = Paths::of(dir.path());
     {
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-        Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &Writer::start(&archive).unwrap().sender())
+            .unwrap();
     }
     crate::archive::open_write(&paths.index, crate::archive::cache::SETUP)
         .unwrap()
@@ -411,7 +449,8 @@ fn a_rebuild_of_an_index_in_another_format_answers_index_building() {
         serving(&archive).reader().err(),
         Some(StoreError::IndexBuilding(build)) if build.reason == RebuildReason::SchemaDiffers
     ));
-    Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+    crate::fixture::install_empty_rebuild(&archive, &Writer::start(&archive).unwrap().sender())
+        .unwrap();
     let tables: i64 = crate::archive::open_read(&paths.index)
         .unwrap()
         .query_row(
@@ -447,7 +486,7 @@ fn private_build_crash_child() {
     };
     crate::fault::arm(&point, subject, crate::fault::Action::StopProcess, 0, 1);
     let mut runs = runs(&archive, &writer, &inputs[..1], &chains[..1]);
-    let mut second = crate::writer::build::BuildWorker::create(&archive, 1, 32 << 20).unwrap();
+    let mut second = crate::index::rebuild::RebuildWorker::create(&archive, 1, 32 << 20).unwrap();
     let mut batch = one_message("second", "second-m", "second text");
     let sender = writer.sender();
     let mut open = second
@@ -458,7 +497,7 @@ fn private_build_crash_child() {
     }
     open.finish().unwrap();
     runs.extend(second.finish().unwrap());
-    writer.build(runs).unwrap();
+    crate::fixture::rebuild_from_runs(&archive, &writer.sender(), runs).unwrap();
     panic!("the configured durability boundary was not reached");
 }
 
@@ -542,7 +581,7 @@ fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
         let writer = Writer::start(&archive).unwrap();
         let chains = [1, 1];
         let runs = runs(&archive, &writer, &["crashed", "second"], &chains);
-        writer.build(runs).unwrap();
+        crate::fixture::rebuild_from_runs(&archive, &writer.sender(), runs).unwrap();
         assert_eq!(messages(&serving(&archive)), 2, "{point}");
     }
 }
@@ -590,7 +629,9 @@ fn a_pipeline_reader_opened_before_an_install_reads_the_installed_index() {
         1,
     );
     let sender = writer.sender();
-    let installer = std::thread::spawn(move || sender.build(runs));
+    let rebuilt = archive.clone();
+    let installer =
+        std::thread::spawn(move || crate::fixture::rebuild_from_runs(&rebuilt, &sender, runs));
     while !crate::fault::held() && !installer.is_finished() {
         std::thread::yield_now();
     }
@@ -636,7 +677,9 @@ fn a_request_read_that_meets_the_install_reads_the_installed_index() {
         1,
     );
     let sender = writer.sender();
-    let installer = std::thread::spawn(move || sender.build(runs));
+    let rebuilt = archive.clone();
+    let installer =
+        std::thread::spawn(move || crate::fixture::rebuild_from_runs(&rebuilt, &sender, runs));
     while !crate::fault::held() && !installer.is_finished() {
         std::thread::yield_now();
     }
@@ -679,7 +722,9 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
         1,
     );
     let sender = writer.sender();
-    let installer = std::thread::spawn(move || sender.build(runs));
+    let rebuilt = archive.clone();
+    let installer =
+        std::thread::spawn(move || crate::fixture::rebuild_from_runs(&rebuilt, &sender, runs));
     while !crate::fault::held() && !installer.is_finished() {
         std::thread::yield_now();
     }
@@ -713,7 +758,8 @@ fn index_reason_crash_child() {
     let root = std::path::Path::new(&root);
     {
         let (archive, _lock) = Archive::open_or_create(root).unwrap();
-        Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &Writer::start(&archive).unwrap().sender())
+            .unwrap();
     }
     let index =
         crate::archive::open_write(&root.join("index.db"), crate::archive::cache::SETUP).unwrap();
@@ -791,7 +837,7 @@ fn a_failed_install_is_installed_at_the_next_commit() {
     {
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
         let writer = Writer::start(&archive).unwrap();
-        writer.build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
         store_message(&archive, &writer, "served", "served while rebuilt");
     }
     crate::archive::open_write(&paths.index, crate::archive::cache::SETUP)
@@ -808,7 +854,7 @@ fn a_failed_install_is_installed_at_the_next_commit() {
         0,
         1,
     );
-    assert!(writer.build(Vec::new()).is_err());
+    assert!(crate::fixture::install_empty_rebuild(&archive, &writer.sender()).is_err());
     assert_eq!(
         crate::fault::recorded("index.build.before_rename"),
         [(
@@ -847,7 +893,7 @@ fn a_restarted_read_starts_on_the_installed_index() {
     {
         let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
         let writer = Writer::start(&archive).unwrap();
-        writer.build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
         store_message(&archive, &writer, "served", "served while rebuilt");
     }
     crate::archive::open_write(&paths.index, crate::archive::cache::SETUP)
@@ -859,7 +905,8 @@ fn a_restarted_read_starts_on_the_installed_index() {
     let reader = pool.reader().unwrap();
     assert_eq!(reader.status(&[]).unwrap().messages, 1);
     // The rebuild loads nothing, so the installed index holds no message.
-    Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+    crate::fixture::install_empty_rebuild(&archive, &Writer::start(&archive).unwrap().sender())
+        .unwrap();
     assert_eq!(reader.status(&[]).unwrap().messages, 1);
     reader.restart().unwrap();
     assert_eq!(reader.status(&[]).unwrap().messages, 0);
@@ -868,4 +915,118 @@ fn a_restarted_read_starts_on_the_installed_index() {
         let installed = std::fs::metadata(&paths.index).unwrap();
         (installed.dev(), installed.ino())
     });
+}
+
+/// Commits made while a rebuild runs (a chain that grows, a new input, and
+/// an alternate's text) are in the index after the rebuild is installed and
+/// one incremental round, whether a current index was installed meanwhile
+/// or none was (docs/architecture.md, one path: a build reads the record as
+/// it stood at one position).
+#[test]
+fn commits_during_a_rebuild_reach_the_index_after_its_install_and_one_round() {
+    for current in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::of(dir.path());
+        let chains = if current {
+            let chains = {
+                let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+                let writer = Writer::start(&archive).unwrap();
+                crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
+                vec![store_message(&archive, &writer, "grows", "grows text")]
+            };
+            // An extra index: this build reads the file, and rebuilds it.
+            crate::archive::open_write(&paths.index, crate::archive::cache::SETUP)
+                .unwrap()
+                .execute_batch("CREATE INDEX synthetic_extra ON message(pk)")
+                .unwrap();
+            chains
+        } else {
+            due_a_build(dir.path(), &["grows"])
+        };
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        assert_eq!(archive.index_files().unwrap().serves(), current);
+        let writer = Writer::start(&archive).unwrap();
+        let rebuild = crate::index::rebuild::Rebuild::start(
+            &archive,
+            polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH),
+        )
+        .unwrap();
+        let runs = runs(&archive, &writer, &["grows"], &chains);
+        // While it runs: the chain grows, a new input arrives, and an
+        // alternate is written. Their bytes and rows are committed to the
+        // archive; their parses go to the installed index when there is one.
+        let commit = |reading: Batch| -> Batch {
+            let mut bytes_only = reading.clone();
+            bytes_only.parse.clear();
+            let prepared = archive.prepare_bytes(&SOURCE_RECORD).unwrap();
+            let stored = writer.store_bytes(prepared, bytes_only).unwrap();
+            let mut reading = reading;
+            reading.change = Change::Reparse {
+                chain: stored.chain,
+            };
+            reading.observation = None;
+            reading.continues = false;
+            reading
+        };
+        let grown = commit(batch(
+            "grows",
+            Route::Live,
+            100,
+            vec![MessageRow {
+                response: None,
+                page_text: false,
+                id_kind: polylogue_model::IdKind::Native,
+                offset: 100,
+                end: 200,
+                message: text_message("grows-m2", "grows", Role::User, "grown meanwhile", None),
+            }],
+            &["grows"],
+        ));
+        let fresh = commit(one_message("fresh", "fresh-m", "a new input"));
+        writer
+            .archive()
+            .commit(crate::archive::writer::Group::RestoredRequest(
+                crate::archive::writer::tests::alternate(),
+            ))
+            .unwrap();
+        for reading in [grown.clone(), fresh.clone()] {
+            writer.send(reading).unwrap();
+        }
+        let report = writer.flush().unwrap();
+        assert_eq!(report.errors.is_empty(), current, "{:?}", report.errors);
+        rebuild.finish(runs, 0, 2, &writer.sender()).unwrap();
+        // The installed rebuild holds what the archive had when it started;
+        // what came after is due, and one round of incremental updates
+        // brings it in.
+        let pool = serving(&archive);
+        let reader = pool.reader().unwrap();
+        let mut due: Vec<String> = reader
+            .chains_behind_index(
+                &[("claude-code".to_owned(), "synthetic=1".to_owned())],
+                crate::read::RevisionChains::All,
+                None,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|chain| chain.input)
+            .collect();
+        due.sort();
+        assert_eq!(due, ["fresh", "grows"], "current: {current}");
+        drop(reader);
+        for reading in [grown, fresh] {
+            writer.send(reading).unwrap();
+        }
+        let report = writer.flush().unwrap();
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert_eq!(messages(&pool), 3, "current: {current}");
+        let mut found = 0;
+        pool.reader()
+            .unwrap()
+            .visit_alternate_search("pierwszy", Some("pl"), |_| {
+                found += 1;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(found, 1, "current: {current}");
+    }
 }

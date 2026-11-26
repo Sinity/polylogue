@@ -401,6 +401,9 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
         )
         .unwrap();
         let building = archive.index_build().is_some();
+        // An import is read once: during the rebuild, with no installed
+        // index, it is stored and read after the install.
+        imported_bytes += std::fs::metadata(&path).unwrap().len();
         let (reply, answer) = sync_channel(1);
         let sent = Instant::now();
         if tx
@@ -424,7 +427,13 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
             .expect("the import is answered")
             .unwrap();
         latencies.push(sent.elapsed());
-        imported_bytes += report.pass.bytes_read;
+        if building {
+            assert!(
+                matches!(report.readable, crate::Readable::AfterBuild { .. }),
+                "{:?}",
+                report.readable
+            );
+        }
         answered_during_build += u64::from(building && archive.index_build().is_some());
         std::thread::sleep(Duration::from_millis(100));
         if archive.index_build().is_none() {
@@ -445,9 +454,8 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
         "imports answered: {}, {answered_during_build} during the build; slowest {slowest:?}",
         latencies.len()
     );
-    // The writer serves an import between its build steps; a step is a
-    // quarter of a second of release-build work, longer in a debug build on
-    // a shared runner, and one session is composed in one step.
+    // The loop answers an import between the chains it hands the workers
+    // and while the rebuild's own thread runs its later stages.
     assert!(*slowest < Duration::from_secs(20), "{latencies:?}");
     // What the parser read, less the imports' own files: the chain once.
     // A range ends inside a record and the next range starts at that

@@ -22,7 +22,7 @@ fn open(root: &std::path::Path, start: Start) -> (Archive, crate::ArchiveLock, W
     let (archive, lock) = Archive::open_or_create(root).unwrap();
     let writer = Writer::start_with(&archive, start(&archive).unwrap()).unwrap();
     if archive.index_build.building() {
-        writer.build(Vec::new()).unwrap();
+        crate::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
     }
     (archive, lock, writer)
 }

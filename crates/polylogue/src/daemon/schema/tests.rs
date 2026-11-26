@@ -16,7 +16,7 @@ impl Stored {
         let writer = Writer::start(&archive).unwrap();
         // The new archive's empty build is installed, as a daemon's first
         // pass over nothing does.
-        writer.build(Vec::new()).unwrap();
+        polylogue_store::fixture::install_empty_rebuild(&archive, &writer.sender()).unwrap();
         Self {
             writer: Some(writer),
             archive,
