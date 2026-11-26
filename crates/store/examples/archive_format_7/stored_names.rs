@@ -39,7 +39,7 @@ INSERT INTO query_edge(query, uses, kind, edge) VALUES (printf('%064d', 1), 'sav
 INSERT INTO signal_event(request, request_position, delivery, position, at, body, commit_seq)
   VALUES ('req7', 0, 'd1', 1, 17, X'00', 1);
 INSERT INTO query_run(id, binding_hash, run_hash, query, at, read_position, run)
-  VALUES ('run1', printf('%064d', 2), printf('%064d', 3), printf('%064d', 1), '18', '{\"index\":1}', X'00');
+  VALUES ('run1', printf('%064d', 2), printf('%064d', 3), printf('%064d', 1), '18', '{\"index\":1}', pl_test_run());
 ";
 
 /// A format-6 `archive.db` in `root`: this build's tables with the names
@@ -49,6 +49,15 @@ fn earlier_archive(root: &Path) -> Connection {
     polylogue_store::schema::ensure_archive(&conn).unwrap();
     conn.execute_batch("ALTER TABLE observation ADD COLUMN path TEXT")
         .unwrap();
+    // A run body the later steps decode: packed JSON with no read in it.
+    let run = zstd::bulk::compress(b"{}", 1).unwrap();
+    conn.create_scalar_function(
+        "pl_test_run",
+        0,
+        rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+        move |_| Ok(run.clone()),
+    )
+    .unwrap();
     conn.execute_batch(ROWS).unwrap();
     for (earlier, now, columns) in RENAMED {
         // A column that takes another's earlier name is renamed after it.
