@@ -140,14 +140,10 @@ impl Reader<'_> {
         if self.pool.reads_build() {
             search_missing.push(CountedReason::new(CompletenessReason::IndexBuilding));
         }
+        // Only whether texts wait: counting them is status's, which bounds
+        // its scan; this runs for every reply.
         if conn.exists("SELECT EXISTS(SELECT 1 FROM search_pending)", [])? {
-            let pending = conn.scalar::<i64>(
-                "SELECT COALESCE((SELECT n FROM main.row_count WHERE name = 'search_pending'), 0)",
-                [],
-            )?;
-            search_missing.push(CountedReason::search_pending(
-                u64::try_from(pending).ok().filter(|n| *n > 0),
-            ));
+            search_missing.push(CountedReason::new(CompletenessReason::SearchPending));
         }
         let search = if search_missing.is_empty() {
             CompletenessDimension::Complete

@@ -184,9 +184,8 @@ enum Words {
     Index(&'static str),
 }
 
-/// One reason a reply is not up to date: how many things it covers (stored
-/// inputs, or texts for search) and, for stored inputs, their origin, and
-/// whether waiting ends it.
+/// One reason a reply is not up to date: for stored inputs, how many and
+/// of which origin; and whether waiting ends it.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, schemars::JsonSchema,
 )]
@@ -221,32 +220,18 @@ impl CountedReason {
         }
     }
 
-    /// `count` texts not yet in the search index.
-    pub fn search_pending(count: Option<u64>) -> Self {
-        Self {
-            count,
-            ..Self::new(CompletenessReason::SearchPending)
-        }
-    }
-
     /// The reason in words, as the status view says it: how many, and of
     /// which origin.
     pub fn text(&self) -> String {
-        match (self.reason.words(), self.count) {
-            (Words::Inputs((one, many)), count) => match (count, &self.origin) {
+        match self.reason.words() {
+            Words::Inputs((one, many)) => match (self.count, &self.origin) {
                 (Some(1), Some(origin)) => format!("1 {origin} input {one}"),
                 (Some(n), Some(origin)) => format!("{n} {origin} inputs {many}"),
                 (Some(1), None) => format!("1 stored input {one}"),
                 (Some(n), None) => format!("{n} stored inputs {many}"),
                 (None, _) => format!("some stored inputs {many}"),
             },
-            (Words::Index(_), Some(1)) if self.reason == CompletenessReason::SearchPending => {
-                "1 text awaits search".to_owned()
-            }
-            (Words::Index(_), Some(n)) if self.reason == CompletenessReason::SearchPending => {
-                format!("{n} texts await search")
-            }
-            (Words::Index(words), _) => words.to_owned(),
+            Words::Index(words) => words.to_owned(),
         }
     }
 

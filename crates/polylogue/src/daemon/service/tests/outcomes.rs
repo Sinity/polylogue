@@ -174,8 +174,9 @@ fn an_import_answered_during_a_build_says_the_index_is_being_built() {
 fn answer_reports_pending_search_text_and_parse_lag_with_counts_and_origins() {
     use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, CountedReason};
     let mut freshness = current();
-    freshness.local.search =
-        CompletenessDimension::Incomplete(vec![CountedReason::search_pending(Some(3))]);
+    freshness.local.search = CompletenessDimension::Incomplete(vec![CountedReason::new(
+        CompletenessReason::SearchPending,
+    )]);
     freshness.local.parsing = CompletenessDimension::Incomplete(vec![
         CountedReason::inputs(CompletenessReason::ParserBehind, "codex", 1),
         CountedReason::inputs(CompletenessReason::MissingCheckpoint, "claude-code", 12),
@@ -188,7 +189,7 @@ fn answer_reports_pending_search_text_and_parse_lag_with_counts_and_origins() {
         [
             "1 codex input has bytes not parsed yet; status counts them, and no query lists stored inputs yet",
             "12 claude-code inputs have not been parsed yet; status counts them, and no query lists stored inputs yet",
-            "3 texts await search",
+            "search text is pending",
         ]
     );
     assert_eq!(value.read_at_mut().freshness.as_ref(), Some(&freshness));

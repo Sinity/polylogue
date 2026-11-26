@@ -359,6 +359,12 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
             CompletenessDimension::NotApplicable => {}
         }
     }
+    if store.search_pending > 0 {
+        words.push(format!(
+            "{} texts awaiting search",
+            count(store.search_pending)
+        ));
+    }
     lines.push(words.join(" · "));
     // A failed or refused parse is a standing problem, never lag.
     if !local.failed_parses.is_empty() {
