@@ -17,81 +17,38 @@ env:
   NEXTEST_STATUS_LEVEL: fail
   NEXTEST_FINAL_STATUS_LEVEL: slow
   NEXTEST_FAILURE_OUTPUT: immediate-final
+  # A pull request's checkout is its merge commit; the first parent is the
+  # base branch's tip, which selects the tests the change can affect. Pushes
+  # and exact-revision dispatches run every test.
+  BASE: ${{ github.event_name == 'pull_request' && '--base HEAD^1' || '' }}
 
 concurrency:
   group: check-${{ inputs.rev || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Each job runs one xtask command that `cargo xtask check` also runs locally.
 jobs:
-  rust:
+  lint:
     runs-on: ubuntu-latest
-    timeout-minutes: 150
+    timeout-minutes: 60
     steps:
-      # A pull request's checkout is its merge commit; the first parent is the
-      # base branch's tip, the base `xtask check` selects tests against.
-      # A manual run instead checks exactly the requested source commit.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.rev || '' }}
-      - name: Verify the selected source commit
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          EXPECTED_REV: ${{ inputs.rev }}
-        run: |
-          actual=$(git rev-parse HEAD)
-          printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
-          test "$actual" = "$EXPECTED_REV"
-      - name: Free disk space for the test build
-        run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc
-          sudo nohup rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
-      - uses: actions/setup-node@v4
+          ref: ${{ inputs.rev || '' }}
+      - uses: ./.github/actions/rust
         with:
-          node-version: '22'
-      - name: Shells for completion tests
-        run: sudo apt-get install --yes zip zsh fish
-      - name: Rust toolchain from rust-toolchain.toml
-        run: rustup show active-toolchain || rustup toolchain install
-      - uses: taiki-e/install-action@nextest
-      - uses: cachix/install-nix-action@v31
-      - uses: cachix/cachix-action@v17
-        with:
-          name: sinity
-          skipPush: true
-      - name: cargo-hakari at the flake's version
-        run: echo "$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#cargo-hakari)/bin" >> "$GITHUB_PATH"
-      # Every event may reuse master's whole target directory, whose source
-      # commit is recorded alongside it. Full test selection on master is
-      # independent of compiler reuse. A fresh checkout makes source files
-      # newer than the saved build. Cargo uses file times, so sources are dated before
-      # the build and the files that differ from the saved commit are dated
-      # now: Cargo rebuilds the packages those files belong to and the ones
-      # depending on them, and reuses the rest.
-      - name: Restore master's build
-        uses: actions/cache/restore@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
-          restore-keys: check-${{ hashFiles('rust-toolchain.toml') }}-
-      - name: Date sources against the restored build
+          rev: ${{ inputs.rev || '' }}
+      - run: cargo xtask fast
+      # Only this job saves master's build, so it also builds every test
+      # binary the other jobs build; with Clippy's results that is all of it.
+      # A lint failure still leaves a valid build, which is saved too.
+      - name: Build every test binary for master's saved build
+        if: ${{ !cancelled() && github.event_name == 'push' }}
         run: |
-          built=$(cat target/source-commit 2>/dev/null) || exit 0
-          git fetch --no-tags --depth=1 origin "$built" || exit 0
-          git ls-files -z | xargs -0 touch -h -d '2000-01-01 00:00:00 UTC'
-          git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
-          echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
-      # Pull requests check their merge tree; pushes and exact-revision dispatches run all tests.
-      - name: cargo xtask check
-        run: cargo xtask check ${{ github.event_name == 'pull_request' && '--base HEAD^1' || '' }}
-      # A failed test leaves a valid build, so it is saved too.
-      - name: Save master's build
-        if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-        run: git rev-parse HEAD > target/source-commit
-      - if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          cargo xtask test --no-run
+          git rev-parse HEAD > target/source-commit
+      - if: ${{ !cancelled() && github.event_name == 'push' }}
         uses: actions/cache/save@v4
         with:
           path: |
@@ -99,13 +56,44 @@ jobs:
             ~/.cargo/git
             target
           key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          ref: ${{ inputs.rev || '' }}
+      - uses: ./.github/actions/rust
+        with:
+          rev: ${{ inputs.rev || '' }}
+      - run: cargo xtask test $BASE --partition hash:${{ matrix.shard }}/4
+
+  nix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          ref: ${{ inputs.rev || '' }}
+      - uses: ./.github/actions/rust
+        with:
+          rev: ${{ inputs.rev || '' }}
+      - run: cargo xtask nix $BASE
+
   browser:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 2
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.rev || '' }}
+          ref: ${{ inputs.rev || '' }}
       - name: Verify the selected source commit
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -125,16 +113,16 @@ jobs:
           npm --prefix extension ci
           npm --prefix extension run check
 
-  # Keep the existing required status bound to both suites, including failures.
+  # The one required status: every job above must have succeeded, so a
+  # failed, cancelled or skipped job fails it.
   check:
-    needs: [rust, browser]
+    needs: [lint, test, nix, browser]
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
-      - name: Require Rust and browser checks
+      - name: Require every job
         env:
-          RUST_RESULT: ${{ needs.rust.result }}
-          BROWSER_RESULT: ${{ needs.browser.result }}
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          test "$RUST_RESULT" = success
-          test "$BROWSER_RESULT" = success
+          echo "job results: $RESULTS"
+          for result in $RESULTS; do test "$result" = success; done

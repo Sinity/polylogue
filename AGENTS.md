@@ -169,7 +169,8 @@ that.
 **Verify scoped to the change.** Commit first, so a result belongs to a
 commit. While editing, `cargo xtask check --changed` runs formatting, clippy
 and the tests the change can affect. A pull request is verified by GitHub
-Actions, which runs `cargo xtask check` for its head (affected tests only);
+Actions, which runs the parts of `cargo xtask check` as parallel jobs for
+its head (affected tests only);
 every test runs again on master after the merge. Run a full local check only
 to reproduce a failure CI reported. Before treating a failure as yours,
 compare with the same test on current master (`gh run list -b master`).

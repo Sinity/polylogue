@@ -1,0 +1,65 @@
+name: Rust job setup
+description: >
+  The toolchain from rust-toolchain.toml, the flake's test tools, and master's
+  restored build with sources dated against it.
+
+inputs:
+  rev:
+    description: The exact commit a manual run checks; empty otherwise.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Verify the selected source commit
+      if: inputs.rev != ''
+      shell: bash
+      env:
+        EXPECTED_REV: ${{ inputs.rev }}
+      run: |
+        actual=$(git rev-parse HEAD)
+        printf 'requested commit: %s\nchecked commit: %s\n' "$EXPECTED_REV" "$actual"
+        test "$actual" = "$EXPECTED_REV"
+    - name: Free disk space for the test build
+      shell: bash
+      run: |
+        sudo rm -rf /usr/share/dotnet /opt/ghc
+        sudo nohup rm -rf /usr/local/lib/android /opt/hostedtoolcache/CodeQL >/dev/null 2>&1 &
+    - name: Rust toolchain from rust-toolchain.toml
+      shell: bash
+      run: rustup show active-toolchain || rustup toolchain install
+    - uses: cachix/install-nix-action@v31
+    - uses: cachix/cachix-action@v17
+      with:
+        name: sinity
+        skipPush: true
+    # nextest, cargo-hakari, the completion shells, zip and Node at the
+    # versions the development shell has.
+    - name: Test tools from the flake
+      shell: bash
+      run: |
+        tools=$(nix build --no-link --print-out-paths .#check-tools)
+        echo "$tools/bin" >> "$GITHUB_PATH"
+    # Every event may reuse master's whole target directory, whose source
+    # commit is recorded alongside it. A fresh checkout makes source files
+    # newer than the saved build. Cargo uses file times, so sources are dated
+    # before the build and the files that differ from the saved commit are
+    # dated now: Cargo rebuilds the packages those files belong to and the
+    # ones depending on them, and reuses the rest.
+    - name: Restore master's build
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: check-${{ hashFiles('rust-toolchain.toml') }}-${{ github.sha }}
+        restore-keys: check-${{ hashFiles('rust-toolchain.toml') }}-
+    - name: Date sources against the restored build
+      shell: bash
+      run: |
+        built=$(cat target/source-commit 2>/dev/null) || exit 0
+        git fetch --no-tags --depth=1 origin "$built" || exit 0
+        git ls-files -z | xargs -0 touch -h -d '2000-01-01 00:00:00 UTC'
+        git diff --no-renames --name-only -z "$built" HEAD | xargs -0 -r touch -h -c
+        echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
