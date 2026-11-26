@@ -206,6 +206,15 @@ impl Reader<'_> {
         session: &polylogue_model::SessionId,
     ) -> Result<Option<polylogue_model::BlobHash>> {
         let conn = self.conn()?;
+        // The join below reads every message row of the session; an archive
+        // that holds no import has nothing for it to find.
+        let imports: bool = conn
+            .prepare_cached("SELECT EXISTS(SELECT 1 FROM import_member)")?
+            .query_row([], |row| row.get(0))?;
+        if !imports {
+            self.check()?;
+            return Ok(None);
+        }
         let mut statement = conn.prepare_cached(
             "SELECT DISTINCT im.import_id, coalesce(c.changed,0)
              FROM session s JOIN message m ON m.session_pk=s.pk

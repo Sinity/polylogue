@@ -123,7 +123,7 @@ impl Selection {
             clauses.push(if self.logical {
                 format!(
                     "{column} IN (WITH RECURSIVE logical(pk) AS (SELECT value FROM json_each(?{n}) \
-                     UNION SELECT lc.pk FROM session_link l JOIN session lp ON lp.id = l.parent_id \
+                     UNION SELECT lc.pk FROM link l JOIN session lp ON lp.id = l.parent_id \
                      JOIN logical ON logical.pk = lp.pk JOIN session lc ON lc.id = l.child_id \
                      WHERE l.kind IN ({STRUCTURAL_KINDS})) SELECT pk FROM logical)"
                 )

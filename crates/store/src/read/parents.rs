@@ -82,11 +82,7 @@ impl<'a> Reader<'a> {
     ) -> Result<MessageSelection<'r, 'a>> {
         let own = self.session_pk(id)?.map(|pk| (pk, id.clone()));
         let has_parents = with_parents
-            && self.conn()?.query_row(
-                "SELECT EXISTS(SELECT 1 FROM session_prefix WHERE child_id=?1)",
-                [id.to_string()],
-                |r| r.get::<_, bool>(0),
-            )?;
+            && !crate::lineage::inherited_prefixes(self.conn()?, &id.to_string())?.is_empty();
         let (keys, issues) = match own.as_ref().filter(|_| has_parents) {
             Some((pk, _)) => parent_keys(self.conn()?, *pk, id)?,
             None => (Vec::new(), Vec::new()),
@@ -109,11 +105,15 @@ fn parent_frame(
     session: SessionId,
     via: Option<(SessionId, Option<String>)>,
 ) -> Result<Frame> {
-    let mut prefixes: VecDeque<Prefix> = conn
-        .prepare_cached("SELECT parent_id,branch_point,copies_prefix FROM session_prefix WHERE child_id=?1 ORDER BY parent_id,branch_point")?
-        .query_map([session.to_string()], |r| Ok(Prefix {
-            parent: r.get(0)?, branch_point: r.get(1)?, copies_prefix: r.get(2)?,
-        }))?.collect::<rusqlite::Result<_>>()?;
+    let mut prefixes: VecDeque<Prefix> =
+        crate::lineage::inherited_prefixes(conn, &session.to_string())?
+            .into_iter()
+            .map(|(parent, branch_point, copies_prefix)| Prefix {
+                parent,
+                branch_point,
+                copies_prefix,
+            })
+            .collect();
     let forks: std::collections::BTreeSet<_> = prefixes
         .iter()
         .filter_map(|link| {
@@ -361,11 +361,7 @@ pub(crate) fn compare_session_messages(
     if left.1 == target_pk && right.1 == target_pk {
         return Ok((&left.2, &left.0).cmp(&(&right.2, &right.0)));
     }
-    if !conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM session_prefix WHERE child_id=?1)",
-        [target.to_string()],
-        |row| row.get::<_, bool>(0),
-    )? {
+    if crate::lineage::inherited_prefixes(conn, &target.to_string())?.is_empty() {
         return Err(polylogue_model::Reason::NotInSession {
             item: "the seen items".into(),
             session: format!("session:{target}"),

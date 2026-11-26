@@ -15,7 +15,7 @@ use polylogue_model::{MessageId, Reference, SessionId, bundle::Record, read::*};
 use polylogue_store::Reader;
 use polylogue_store::items::{ItemLookup, ItemVersions};
 use polylogue_store::read::limit::ReadLimit;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 mod entries;
@@ -115,12 +115,15 @@ fn session_index(
     }))
 }
 
-/// Cards shown after one entry: a fork at its branch point, a spawned
-/// session at its call.
-struct CardsAfterEntry {
+/// A card shown after one entry: a fork at its branch point, a spawned
+/// session at its call. Composition finds where every card goes; the card
+/// itself is built for the page that shows it, since a session can have
+/// thousands of children.
+struct CardAfterEntry {
     session: SessionId,
     seq: usize,
-    cards: Vec<ReadItem>,
+    link: polylogue_store::lineage::SessionLink,
+    child: SessionId,
 }
 
 /// One composed session reading: its parts, each with the index of its
@@ -132,8 +135,8 @@ struct Composed {
     /// A copied prefix whose source session is not stored.
     unstored_copy: bool,
     /// Lines shown before an entry (a `continues` line at a continuation).
-    before: std::collections::HashMap<EntryKey, Vec<ReadItem>>,
-    after: Vec<CardsAfterEntry>,
+    before: HashMap<EntryKey, Vec<ReadItem>>,
+    after: Vec<CardAfterEntry>,
 }
 /// A part that reads a spawned session inline.
 fn spawned(part: &Part) -> bool {
@@ -227,17 +230,20 @@ impl Composed {
     }
 }
 
-/// A session's call entry with a provider call ID, and where it sits.
-fn spawning_call(
+/// Where a session's index holds the spawning call of each spawn link that
+/// names one, by call ID. A session can have thousands of spawn links, so
+/// they are looked up together.
+fn spawning_calls(
     reader: &Reader<'_>,
     index: &SessionIndex,
-    call: &str,
-) -> Result<Option<(usize, IndexEntry)>, Error> {
-    Ok(reader
-        .item_calls(index.pk, call)?
-        .into_iter()
-        .find(|stored| stored.entry.kind == EntryKind::Call)
-        .map(|stored| (stored.seq as usize, stored.entry)))
+    links: &[polylogue_store::lineage::SessionLink],
+) -> Result<HashMap<String, u64>, Error> {
+    let calls: Vec<&str> = links
+        .iter()
+        .filter(|link| link.kind == "spawn")
+        .filter_map(|link| link.spawning_call.as_deref())
+        .collect();
+    Ok(reader.item_call_places(index.pk, &calls)?)
 }
 
 /// The parent prefix of `session` through its branch point, as parts of
@@ -390,12 +396,7 @@ fn prefix(reader: &Reader<'_>, session: &SessionId, composed: &mut Composed) -> 
     Ok(())
 }
 
-fn compose(
-    services: &impl ReadServices,
-    reader: &Reader<'_>,
-    scope: &Scope,
-    options: &ReadOptions,
-) -> Result<Composed, Error> {
+fn compose(reader: &Reader<'_>, scope: &Scope, options: &ReadOptions) -> Result<Composed, Error> {
     let around = options.around.unwrap_or(0) as usize;
     let own = session_index(reader, &scope.session)?
         .ok_or_else(|| Error::not_found(format!("no session {}", scope.session)))?;
@@ -456,9 +457,9 @@ fn compose(
         joined_by: None,
     });
     composed.indexes.push(own);
-    children(services, reader, scope, &mut composed, options.view)?;
+    children(reader, scope, &mut composed)?;
     if let SpawnDisplay::Inline { depth } = options.spawns {
-        inline_spawns(services, reader, &mut composed, depth, options.view)?;
+        inline_spawns(reader, &mut composed, depth)?;
     }
     Ok(composed)
 }
@@ -467,20 +468,16 @@ fn compose(
 /// each after a `continues` line; forks and spawned sessions appear as cards
 /// at their branch point or spawning call. The walk is iterative and visits
 /// each session once.
-fn children(
-    services: &impl ReadServices,
-    reader: &Reader<'_>,
-    scope: &Scope,
-    composed: &mut Composed,
-    view: View,
-) -> Result<(), Error> {
+fn children(reader: &Reader<'_>, scope: &Scope, composed: &mut Composed) -> Result<(), Error> {
     let mut visited: HashSet<SessionId> = HashSet::from([scope.session.clone()]);
     let mut at = composed.parts.len() - 1;
     while at < composed.parts.len() {
         let session = composed.parts[at].session.clone();
         let index = Arc::clone(&composed.indexes[at]);
         at += 1;
-        for link in reader.child_links(&session)? {
+        let links = reader.child_links(&session)?;
+        let calls = spawning_calls(reader, &index, &links)?;
+        for link in links {
             still_wanted()?;
             if link.is_reference() {
                 continue;
@@ -532,14 +529,12 @@ fn children(
                 continue;
             }
             // A card at the branch point or the spawning call.
-            let (slot, call) = match link.kind.as_str() {
-                "spawn" => match link.spawning_call.as_deref() {
-                    Some(call) => match spawning_call(reader, &index, call)? {
-                        Some((seq, entry)) => (Some(seq), Some(entry)),
-                        None => (None, None),
-                    },
-                    None => (None, None),
-                },
+            let slot = match link.kind.as_str() {
+                "spawn" => link
+                    .spawning_call
+                    .as_deref()
+                    .and_then(|call| calls.get(call))
+                    .map(|seq| *seq as usize),
                 _ => {
                     let point = link
                         .branch_point
@@ -549,19 +544,16 @@ fn children(
                         Some(point) => reader.item_message_span(index.pk, &point)?,
                         None => None,
                     };
-                    (
-                        end.and_then(|(_, end)| end.checked_sub(1))
-                            .map(|seq| seq as usize),
-                        None,
-                    )
+                    end.and_then(|(_, end)| end.checked_sub(1))
+                        .map(|seq| seq as usize)
                 }
             };
             let Some(slot) = slot else { continue };
-            let card = card(services, reader, &link, &child, call.as_ref(), view)?;
-            composed.after.push(CardsAfterEntry {
+            composed.after.push(CardAfterEntry {
                 session: session.clone(),
                 seq: slot,
-                cards: vec![card],
+                link,
+                child,
             });
         }
     }
@@ -574,11 +566,9 @@ fn children(
 /// levels and are cards below it; a session already in the reading stays a
 /// card, so the walk ends.
 fn inline_spawns(
-    services: &impl ReadServices,
     reader: &Reader<'_>,
     composed: &mut Composed,
     depth: Option<u32>,
-    view: View,
 ) -> Result<(), Error> {
     let deepest = depth.unwrap_or(u32::MAX);
     let mut levels: Vec<u32> = vec![0; composed.parts.len()];
@@ -599,7 +589,9 @@ fn inline_spawns(
         let part = composed.parts[at].clone();
         let index = Arc::clone(&composed.indexes[at]);
         let mut spawned = Vec::new();
-        for link in reader.child_links(&part.session)? {
+        let links = reader.child_links(&part.session)?;
+        let calls = spawning_calls(reader, &index, &links)?;
+        for link in links {
             still_wanted()?;
             if link.kind != "spawn" {
                 continue;
@@ -607,30 +599,31 @@ fn inline_spawns(
             let Ok(child) = SessionId::parse(&link.child) else {
                 continue;
             };
-            let call = match link.spawning_call.as_deref() {
-                Some(call) => spawning_call(reader, &index, call)?,
-                None => None,
-            };
-            let Some((entry, call)) = call.filter(|(seq, _)| (part.start..part.end).contains(seq))
+            let Some(entry) = link
+                .spawning_call
+                .as_deref()
+                .and_then(|call| calls.get(call))
+                .map(|seq| *seq as usize)
+                .filter(|seq| (part.start..part.end).contains(seq))
             else {
                 continue;
             };
-            spawned.push((entry, call, child, link));
+            spawned.push((entry, child, link));
         }
-        spawned.sort_by_key(|(entry, _, _, _)| *entry);
+        spawned.sort_by_key(|(entry, _, _)| *entry);
         // (part, its index, its spawn level, whether its spawns are placed)
         let mut pieces: Vec<(Part, Arc<SessionIndex>, u32, bool)> = Vec::new();
         let mut cut = part.start;
-        for (entry, call, child, link) in spawned {
+        for (entry, child, link) in spawned {
             still_wanted()?;
             // The first level's cards come from composition; deeper levels
             // place their own.
             if level > 0 {
-                let card = card(services, reader, &link, &child, Some(&call), view)?;
-                composed.after.push(CardsAfterEntry {
+                composed.after.push(CardAfterEntry {
                     session: part.session.clone(),
                     seq: entry,
-                    cards: vec![card],
+                    link: link.clone(),
+                    child: child.clone(),
                 });
             }
             if level >= deepest || !seen.insert(child.clone()) {
@@ -1026,7 +1019,7 @@ pub(super) fn stream(
         logical: scope.logical && !options.physical,
         ..scope
     };
-    let mut composed = compose(services, reader, &scope, options)?;
+    let mut composed = compose(reader, &scope, options)?;
     let accepted = bind_seen(reader, request, operation, &composed)?;
     let request = &accepted;
     if options.view == View::Context && options.annotation_at().is_some() {
@@ -1118,6 +1111,7 @@ pub(super) fn stream(
             true,
         )?;
         decorate(
+            services,
             reader,
             &composed,
             &shown,
@@ -1388,7 +1382,7 @@ pub(super) fn page(
             ..scope
         },
     };
-    let mut composed = compose(services, reader, &scope, options)?;
+    let mut composed = compose(reader, &scope, options)?;
     let accepted = bind_seen(reader, request, operation, &composed)?;
     let request = &accepted;
     let bound = if options.view == View::Context && options.annotation_at().is_some() {
@@ -1552,7 +1546,15 @@ pub(super) fn page(
     )?
     .items;
     still_wanted()?;
-    decorate(reader, &composed, &shown, &page_entries, &mut laid, options)?;
+    decorate(
+        services,
+        reader,
+        &composed,
+        &shown,
+        &page_entries,
+        &mut laid,
+        options,
+    )?;
     still_wanted()?;
     // Whole entries up to the transfer size; an entry too large to travel
     // alone is replaced by the ready call that reads its block in pages.
@@ -2187,6 +2189,7 @@ fn lay_out(
 /// cards from composition, turn dividers, the context meter on model
 /// headers, and for the raw view each record's stored bytes.
 fn decorate(
+    services: &impl ReadServices,
     reader: &Reader<'_>,
     composed: &Composed,
     shown: &ShownEntries,
@@ -2199,7 +2202,7 @@ fn decorate(
             && entry.written_by == polylogue_model::WrittenBy::Human
             && entry.prompt_kind == Some(polylogue_model::PromptKind::Prose)
     };
-    let mut placed = place_cards(composed, shown, page, options)?;
+    let mut placed = place_cards(services, reader, composed, shown, page, options)?;
     for (offset, items) in laid.iter_mut().enumerate() {
         let PageEntry {
             part,
@@ -2430,6 +2433,8 @@ type PlacedCards = std::collections::HashMap<usize, (Vec<ReadItem>, Vec<ReadItem
 /// belongs to this page when that entry comes after the shown entry before
 /// the page and no later than the page's last entry.
 fn place_cards(
+    services: &impl ReadServices,
+    reader: &Reader<'_>,
     composed: &Composed,
     shown: &ShownEntries,
     page: &[PageEntry],
@@ -2458,16 +2463,30 @@ fn place_cards(
         if place > last.place() || previous.is_some_and(|previous| place <= previous) {
             continue;
         }
+        // A spawned session's card is a delegation.
+        if options.spawns == SpawnDisplay::Hidden && card_slot.link.kind == "spawn" {
+            continue;
+        }
         let slot = page.partition_point(|entry| entry.place() < place);
-        let cards = card_slot.cards.iter().filter(|item| {
-            options.spawns != SpawnDisplay::Hidden
-                || !matches!(&item.kind, ItemKind::Card { card } if matches!(**card, Card::Delegation { .. }))
-        });
+        // A spawned session's card shows its spawning call's objective.
+        let call = if card_slot.link.kind == "spawn" {
+            composed.entry(reader, place.0, place.1)?
+        } else {
+            None
+        };
+        let card = card(
+            services,
+            reader,
+            &card_slot.link,
+            &card_slot.child,
+            call.as_ref(),
+            options.view,
+        )?;
         let held = placed.entry(slot).or_default();
         if page[slot].place() == place {
-            held.1.extend(cards.cloned());
+            held.1.push(card);
         } else {
-            held.0.extend(cards.cloned());
+            held.0.push(card);
         }
     }
     Ok(placed)
