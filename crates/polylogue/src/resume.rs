@@ -4,7 +4,7 @@
 //! - **harness resume**: the harness's own command reopens the session with
 //!   its full history (`claude --resume <id>`, `codex resume <id>`);
 //! - **context-assisted continuation**: a new session starts with a
-//!   takeover brief Polylogue prepares (`polylogue session:<id> brief`), for
+//!   session brief Polylogue prepares (`polylogue session:<id> brief`), for
 //!   harnesses without harness resume or a session whose file is gone.
 //!
 //! Which sessions are worth resuming comes from what they left open, not
