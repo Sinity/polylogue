@@ -972,12 +972,6 @@ fn inline_images_need_hash_safe_raster_type_and_size() {
     };
     let png_line =
         "<p class=\"attachment\">▣ <a href=\"blobs/hash\">sample</a> (image/png, size unknown)</p>";
-    assert_eq!(
-        render(attachment.clone(), 100),
-        format!(
-            "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test#0\"><img src=\"data:image/png;base64,iVBORw==\" alt=\"sample\">{png_line}</section>"
-        )
-    );
     for limit in [3, 0] {
         assert_eq!(
             render(attachment.clone(), limit),
@@ -1001,6 +995,12 @@ fn inline_images_need_hash_safe_raster_type_and_size() {
         refused.media_type = Some(media_type.into());
         assert_eq!(render(refused, 100), expected, "{media_type}");
     }
+    assert_eq!(
+        render(attachment.clone(), 100),
+        format!(
+            "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test#0\"><img src=\"data:image/png;base64,iVBORw==\" alt=\"sample\">{png_line}</section>"
+        )
+    );
     let mut wrong_hash = attachment;
     wrong_hash.blob = Some(polylogue_model::BlobHash::of(b"different"));
     assert_eq!(
