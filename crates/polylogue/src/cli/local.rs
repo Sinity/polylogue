@@ -25,59 +25,114 @@ pub fn daemon(
             polylogue_engine::Lifetime::UntilStopped
         },
     };
-    match crate::daemon::server::serve(startup, run) {
-        Ok(None) => ExitCode::SUCCESS,
+    let served = crate::daemon::server::serve(startup, run);
+    let end = DaemonEnd::of(&served, polylogue_store::storage_failure::recorded());
+    match &served {
+        Ok(None) => {}
         Ok(Some(summary)) => {
             if json {
-                match serde_json::to_string(&summary) {
+                match serde_json::to_string(summary) {
                     Ok(text) => println!("{text}"),
                     Err(error) => eprintln!("polylogue: the run summary: {error}"),
                 }
             } else {
-                print!("{}", super::print::idle_summary(&summary));
-            }
-            // A run that met errors did not process everything it was given.
-            if summary.work.errors.is_empty() {
-                ExitCode::SUCCESS
-            } else {
-                ExitCode::FAILURE
+                print!("{}", super::print::idle_summary(summary));
             }
         }
-        Err(e) => {
+        Err(e) => eprint!(
+            "{}",
+            super::print::diagnostic("", &e.to_string(), None, startup.output.stderr_color())
+        ),
+    }
+    if let DaemonEnd::StorageFailed(failure) = &end {
+        // A run that ended without an error still says why its exit is 74.
+        if served.is_ok() {
             eprint!(
                 "{}",
-                super::print::diagnostic("", &e.to_string(), None, startup.output.stderr_color())
+                super::print::diagnostic(
+                    "",
+                    &failure.to_string(),
+                    None,
+                    startup.output.stderr_color()
+                )
             );
-            if let Some(failure) = polylogue_store::storage_failure::recorded() {
-                crate::daemon::storage_stop::remember(
-                    &startup.config.paths,
-                    &startup.config.archive,
-                    &failure,
-                );
-                return ExitCode::from(crate::EXIT_STORAGE_FAILED);
+        }
+        crate::daemon::storage_stop::remember(
+            &startup.config.paths,
+            &startup.config.archive,
+            failure,
+        );
+    }
+    ExitCode::from(end.exit_code())
+}
+
+/// How a daemon run ended. One value decides the exit status and whether
+/// the boot is remembered as failed, so no way of stopping can skip either.
+#[derive(Debug, PartialEq, Eq)]
+enum DaemonEnd {
+    /// This process recorded a failed sync of the register. It comes first
+    /// whatever else ended the run: a stop signal that arrives with the
+    /// failure must not let the next start write again in this boot.
+    StorageFailed(polylogue_store::storage_failure::StorageFailure),
+    /// The start was refused because an earlier process of this boot
+    /// recorded a storage failure.
+    StorageFailedEarlier,
+    /// The archive or the embeddings are in a format this build refuses.
+    ArchiveRefused,
+    Failed,
+    /// Stopped by a signal, with nothing to report.
+    Stopped,
+    /// A run until idle ended; `complete` when it met no errors, since a
+    /// run that met errors did not process everything it was given.
+    Idle {
+        complete: bool,
+    },
+}
+
+impl DaemonEnd {
+    fn of(
+        served: &std::io::Result<Option<polylogue_engine::RunSummary>>,
+        recorded: Option<polylogue_store::storage_failure::StorageFailure>,
+    ) -> Self {
+        if let Some(failure) = recorded {
+            return Self::StorageFailed(failure);
+        }
+        let error = match served {
+            Ok(None) => return Self::Stopped,
+            Ok(Some(summary)) => {
+                return Self::Idle {
+                    complete: summary.work.errors.is_empty(),
+                };
             }
-            if e.get_ref()
-                .is_some_and(|inner| inner.is::<crate::daemon::storage_stop::StorageStopped>())
-            {
-                return ExitCode::from(crate::EXIT_STORAGE_FAILED);
-            }
-            let refused = e
-                .get_ref()
-                .and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>())
-                .is_some_and(|inner| {
-                    matches!(
-                        inner,
-                        polylogue_store::StoreError::NewerSchema { .. }
-                            | polylogue_store::StoreError::OtherFormat { .. }
-                            | polylogue_store::StoreError::EmbeddingsSchemaDiffers { .. }
-                            | polylogue_store::StoreError::OlderFormat { .. }
-                    )
-                });
-            if refused {
-                ExitCode::from(crate::EXIT_SCHEMA_REFUSED)
-            } else {
-                ExitCode::FAILURE
-            }
+            Err(error) => error.get_ref(),
+        };
+        if error.is_some_and(|inner| inner.is::<crate::daemon::storage_stop::StorageStopped>()) {
+            return Self::StorageFailedEarlier;
+        }
+        let refused = error
+            .and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>())
+            .is_some_and(|inner| {
+                matches!(
+                    inner,
+                    polylogue_store::StoreError::NewerSchema { .. }
+                        | polylogue_store::StoreError::OtherFormat { .. }
+                        | polylogue_store::StoreError::EmbeddingsSchemaDiffers { .. }
+                        | polylogue_store::StoreError::OlderFormat { .. }
+                )
+            });
+        if refused {
+            Self::ArchiveRefused
+        } else {
+            Self::Failed
+        }
+    }
+
+    fn exit_code(&self) -> u8 {
+        match self {
+            Self::StorageFailed(_) | Self::StorageFailedEarlier => crate::EXIT_STORAGE_FAILED,
+            Self::ArchiveRefused => crate::EXIT_SCHEMA_REFUSED,
+            Self::Stopped | Self::Idle { complete: true } => 0,
+            Self::Failed | Self::Idle { complete: false } => 1,
         }
     }
 }

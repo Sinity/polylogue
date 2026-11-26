@@ -29,15 +29,23 @@ struct State {
     /// nothing unsent.
     spilled: u64,
     taken: u64,
-    written: bool,
-    end: Option<Ending>,
+    production: Production,
     input_gone: bool,
 }
 
-enum Ending {
-    Complete,
-    /// The producer failed before it wrote anything.
-    Failed(Failure),
+/// How far the producer has come. It moves forward only: `Unwritten` to
+/// `Written` at the first byte, and either of them to `Ended` once.
+#[derive(Default)]
+enum Production {
+    /// Nothing written yet: a failure now is the answer, in place of a
+    /// stream.
+    #[default]
+    Unwritten,
+    /// Bytes were written: a failure now is the stream's error event.
+    Written,
+    /// The producer is done. The failure is one from before the first byte,
+    /// held until the transport takes it.
+    Ended(Option<Failure>),
 }
 
 struct Shared {
@@ -93,17 +101,25 @@ impl StreamOutput {
     /// Ends the stream with the producer's result. A failure after bytes were
     /// written is sent as the stream's error event.
     pub(crate) fn finish(mut self, result: Result<(), Failure>) {
-        let failure = result.err();
-        let written = self.shared.state.locked().written;
-        let ending = match failure {
-            None => Ending::Complete,
-            Some(failure) if !written => Ending::Failed(failure),
-            Some(failure) => {
-                let _ = crate::protocol::stream::error(&mut self, failure);
-                Ending::Complete
+        self.end(result);
+    }
+
+    /// The one place production ends; a second call changes nothing.
+    fn end(&mut self, result: Result<(), Failure>) {
+        let written = match self.shared.state.locked().production {
+            Production::Unwritten => false,
+            Production::Written => true,
+            Production::Ended(_) => return,
+        };
+        let before_first_byte = match result {
+            Ok(()) => None,
+            Err(failure) if !written => Some(failure),
+            Err(failure) => {
+                let _ = crate::protocol::stream::error(self, failure);
+                None
             }
         };
-        self.shared.state.locked().end = Some(ending);
+        self.shared.state.locked().production = Production::Ended(before_first_byte);
         self.shared.wake();
     }
 }
@@ -133,7 +149,9 @@ impl Write for StreamOutput {
                 .write_all_at(bytes, at)?;
             state.spilled += bytes.len() as u64;
         }
-        state.written = true;
+        if matches!(state.production, Production::Unwritten) {
+            state.production = Production::Written;
+        }
         drop(state);
         self.shared.wake();
         Ok(bytes.len())
@@ -145,15 +163,11 @@ impl Write for StreamOutput {
 }
 
 impl Drop for StreamOutput {
-    /// A producer that ends without [`StreamOutput::finish`] ends the stream
-    /// where it stopped.
+    /// A producer dropped without [`StreamOutput::finish`] never ran to its
+    /// end: the executor let its queued job go because the daemon is
+    /// stopping. The client hears that, not a complete stream.
     fn drop(&mut self) {
-        let mut state = self.shared.state.locked();
-        if state.end.is_none() {
-            state.end = Some(Ending::Complete);
-        }
-        drop(state);
-        self.shared.wake();
+        self.end(Err(super::service::shutting_down()));
     }
 }
 
@@ -190,16 +204,12 @@ impl StreamInput {
             }
             return Ok(Some(Next::Bytes(bytes)));
         }
-        Ok(match state.end.take() {
-            Some(Ending::Complete) => {
-                state.end = Some(Ending::Complete);
-                Some(Next::End)
-            }
-            Some(Ending::Failed(failure)) => {
-                state.end = Some(Ending::Complete);
-                Some(Next::Failed(failure))
-            }
-            None => None,
+        Ok(match &mut state.production {
+            Production::Unwritten | Production::Written => None,
+            Production::Ended(before_first_byte) => Some(match before_first_byte.take() {
+                Some(failure) => Next::Failed(failure),
+                None => Next::End,
+            }),
         })
     }
 
@@ -210,7 +220,10 @@ impl StreamInput {
                 return Ok(next);
             }
             let state = self.shared.state.locked();
-            if state.memory.is_empty() && state.spilled == state.taken && state.end.is_none() {
+            if state.memory.is_empty()
+                && state.spilled == state.taken
+                && !matches!(state.production, Production::Ended(_))
+            {
                 drop(polylogue_model::unpoisoned(self.shared.ready.wait(state)));
             }
         }

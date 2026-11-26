@@ -64,3 +64,78 @@ fn a_gone_transport_stops_the_producer() {
     let error = output.write_all(b"x").unwrap_err();
     assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
 }
+
+fn drain(input: &StreamInput) -> (Vec<u8>, Option<Failure>) {
+    let mut bytes = Vec::new();
+    loop {
+        match input.next_blocking().unwrap() {
+            Next::Bytes(more) => bytes.extend(more),
+            Next::End => return (bytes, None),
+            Next::Failed(failure) => return (bytes, Some(failure)),
+        }
+    }
+}
+
+#[test]
+fn a_producer_dropped_before_it_ran_answers_that_the_daemon_is_stopping() {
+    let directory = tempfile::tempdir().unwrap();
+    let (output, input) = buffer(directory.path().to_owned());
+    drop(output);
+    let (bytes, failure) = drain(&input);
+    assert_eq!(bytes, b"");
+    assert_eq!(failure.unwrap().code(), "shutting_down");
+    // The failure is taken once; after it the stream has simply ended.
+    assert!(matches!(input.next_blocking().unwrap(), Next::End));
+}
+
+#[test]
+fn a_producer_dropped_after_its_first_byte_ends_with_a_stopping_error_event() {
+    let directory = tempfile::tempdir().unwrap();
+    let (mut output, input) = buffer(directory.path().to_owned());
+    output.write_all(b"event: record\ndata: {}\n\n").unwrap();
+    drop(output);
+    let (bytes, failure) = drain(&input);
+    assert!(failure.is_none());
+    let text = String::from_utf8(bytes).unwrap();
+    let (record, error) = text.split_once("event: error\n").unwrap();
+    assert_eq!(record, "event: record\ndata: {}\n\n");
+    assert!(error.contains("\"shutting_down\""), "{error}");
+}
+
+/// Production moves forward only: nothing written, bytes written, ended. The
+/// first ending stands, whatever is reported after it.
+#[test]
+fn production_ends_once() {
+    let directory = tempfile::tempdir().unwrap();
+    let state = |output: &StreamOutput| match output.shared.state.locked().production {
+        Production::Unwritten => "unwritten",
+        Production::Written => "written",
+        Production::Ended(None) => "ended",
+        Production::Ended(Some(_)) => "ended with a failure",
+    };
+
+    let (mut output, input) = buffer(directory.path().to_owned());
+    assert_eq!(state(&output), "unwritten");
+    output.write_all(b"").unwrap();
+    assert_eq!(state(&output), "unwritten");
+    output.write_all(b"x").unwrap();
+    assert_eq!(state(&output), "written");
+    output.write_all(b"y").unwrap();
+    assert_eq!(state(&output), "written");
+    output.end(Ok(()));
+    assert_eq!(state(&output), "ended");
+    output.end(Err(Failure::io("reported after the end")));
+    assert_eq!(state(&output), "ended");
+    drop(output);
+    let (bytes, failure) = drain(&input);
+    assert_eq!(bytes, b"xy");
+    assert!(failure.is_none());
+
+    let (mut output, input) = buffer(directory.path().to_owned());
+    output.end(Err(Failure::bad_request("synthetic refusal")));
+    assert_eq!(state(&output), "ended with a failure");
+    output.end(Ok(()));
+    assert_eq!(state(&output), "ended with a failure");
+    drop(output);
+    assert_eq!(drain(&input).1.unwrap().code(), "bad_request");
+}
