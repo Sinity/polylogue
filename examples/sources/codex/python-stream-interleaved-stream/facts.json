@@ -1,0 +1,93 @@
+{
+  "sessions": [
+    {
+      "id": "codex:interleaved-session-1",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "codex:msg-user-1",
+          "role": "user",
+          "at": "2025-01-15T12:00:03Z",
+          "parent": null,
+          "text": "Check git status, then read README."
+        },
+        {
+          "id": "codex:fc_1",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec_command",
+              "command": "git status",
+              "result": {
+                "outcome": "unknown",
+                "text": "clean"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:msg-asst-1",
+          "role": "assistant",
+          "at": "2025-01-15T12:00:08Z",
+          "parent": null,
+          "text": "Working tree is clean."
+        },
+        {
+          "id": "codex:fc_2",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "read_file",
+              "path": "README.md",
+              "result": {
+                "outcome": "ok",
+                "text": "# Polylogue\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:msg-asst-2",
+          "role": "assistant",
+          "at": "2025-01-15T12:00:14Z",
+          "parent": null,
+          "text": "README starts with the Polylogue heading."
+        },
+        {
+          "id": "codex:msg-user-2",
+          "role": "user",
+          "at": "2025-01-15T12:01:00Z",
+          "parent": null,
+          "text": "Thanks."
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2025-01-15T12:05:00Z",
+          "parent": null,
+          "text": "Conversation compacted"
+        }
+      ]
+    }
+  ]
+}

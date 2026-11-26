@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "antigravity:synthetic-child",
+      "kind": "subagent",
+      "title": "Inspect the example",
+      "messages": []
+    }
+  ],
+  "links": [
+    {
+      "kind": "spawn",
+      "parent": "antigravity:synthetic-parent",
+      "child": "antigravity:synthetic-child"
+    }
+  ],
+  "events": [
+    {
+      "session": "antigravity:synthetic-child",
+      "kind": "antigravity_summary",
+      "at": "2026-03-05T04:21:34Z"
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "sessions": [
+    {
+      "id": "codex:019a0000-0000-7000-8000-000000000001",
+      "kind": "subagent",
+      "title": "Volta",
+      "messages": [
+        {
+          "id": "codex:amsg_1",
+          "role": "user",
+          "at": "2026-03-01T10:00:07Z",
+          "parent": null,
+          "text": "Check the changelog."
+        },
+        {
+          "id": "codex:msg_c1",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:08Z",
+          "parent": null,
+          "text": "The changelog is complete."
+        }
+      ]
+    },
+    {
+      "id": "codex:019a0000-0000-7000-8000-0000000000aa",
+      "kind": null,
+      "messages": [
+        {
+          "id": "codex:msg_p2",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:04Z",
+          "parent": null,
+          "text": "I will split the work."
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-03-01T10:00:05.000Z",
+          "parent": null,
+          "text": "copied text that carries no ID"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "kind": "spawn",
+      "parent": "codex:019a0000-0000-7000-8000-0000000000aa",
+      "child": "codex:019a0000-0000-7000-8000-000000000001"
+    }
+  ]
+}

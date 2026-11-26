@@ -1,0 +1,10 @@
+{
+  "sessions": [],
+  "events": [
+    {
+      "session": "claude-code:synthetic",
+      "kind": "prompt_history",
+      "at": "2023-11-14T22:13:20Z"
+    }
+  ]
+}

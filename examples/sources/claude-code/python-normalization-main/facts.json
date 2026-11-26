@@ -1,0 +1,132 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:claude-normalization-main",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-code:main-u1",
+          "role": "user",
+          "at": "2026-07-01T10:00:00Z",
+          "parent": null,
+          "text": "Review the parser."
+        },
+        {
+          "id": "claude-code:main-a1",
+          "role": "assistant",
+          "at": "2026-07-01T10:00:01Z",
+          "parent": "claude-code:main-u1",
+          "text": "Running the focused checks.",
+          "thinking": "I should inspect the production route before editing.",
+          "calls": [
+            {
+              "name": "Bash",
+              "command": "python -m pytest -q tests/unit/sources",
+              "result": {
+                "outcome": "error",
+                "text": "Command running in background with ID: task-bg."
+              }
+            },
+            {
+              "name": "Read",
+              "path": "/workspace/polylogue/missing.py",
+              "result": null
+            }
+          ]
+        },
+        {
+          "id": "claude-code:main-bg-start",
+          "role": "user",
+          "at": "2026-07-01T10:00:02Z",
+          "parent": "claude-code:main-a1",
+          "text": ""
+        },
+        {
+          "id": "claude-code:main-command",
+          "role": "user",
+          "at": "2026-07-01T10:00:03Z",
+          "parent": "claude-code:main-bg-start",
+          "text": "<command-name>/status</command-name>\n<command-message>status</command-message>\n<command-args></command-args>"
+        },
+        {
+          "id": "claude-code:main-context",
+          "role": "user",
+          "at": "2026-07-01T10:00:05Z",
+          "parent": "claude-code:main-command",
+          "text": "<environment_context>runtime-only workspace facts</environment_context>"
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-07-01T10:00:06Z",
+          "parent": "claude-code:main-context",
+          "text": "[Request interrupted by user]"
+        },
+        {
+          "id": "claude-code:main-a2",
+          "role": "assistant",
+          "at": "2026-07-01T10:00:07Z",
+          "parent": "claude-code:main-context",
+          "text": "Checking a foreground failure.",
+          "calls": [
+            {
+              "name": "Bash",
+              "command": "false",
+              "result": {
+                "outcome": "error",
+                "text": "command failed"
+              }
+            }
+          ]
+        },
+        {
+          "id": "claude-code:main-fg-result",
+          "role": "user",
+          "at": "2026-07-01T10:00:08Z",
+          "parent": "claude-code:main-a2",
+          "text": ""
+        }
+      ]
+    },
+    {
+      "id": "claude-code:claude-normalization-main/sidechain",
+      "kind": "sidechain",
+      "messages": [
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-07-01T10:00:10Z",
+          "parent": "claude-code:main-fg-result",
+          "text": "Normalization complete."
+        }
+      ]
+    },
+    {
+      "id": "claude-code:claude-normalization-other",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-code:other-u1",
+          "role": "user",
+          "at": "2026-07-01T10:00:03.5Z",
+          "parent": null,
+          "text": "An independent session."
+        },
+        {
+          "id": "claude-code:other-a1",
+          "role": "assistant",
+          "at": "2026-07-01T10:00:09.5Z",
+          "parent": "claude-code:other-u1",
+          "text": "Other reply."
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "kind": "spawn",
+      "parent": "claude-code:claude-normalization-main",
+      "child": "claude-code:claude-normalization-main/sidechain"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:origin-matrix-claude-code",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-code:matrix-user",
+          "role": "user",
+          "at": "2026-08-01T10:00:00Z",
+          "parent": null,
+          "text": "Prove the parser claim."
+        },
+        {
+          "id": "claude-code:matrix-assistant",
+          "role": "assistant",
+          "at": "2026-08-01T10:00:01Z",
+          "parent": "claude-code:matrix-user",
+          "text": "The production route parsed this example."
+        }
+      ]
+    }
+  ]
+}

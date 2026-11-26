@@ -1,0 +1,55 @@
+{
+  "sessions": [
+    {
+      "id": "claude-ai:native-rich-blocks",
+      "kind": "main",
+      "title": "Synthetic rich blocks",
+      "messages": [
+        {
+          "id": "claude-ai:assistant-1",
+          "role": "assistant",
+          "at": "2026-01-01T00:00:01Z",
+          "parent": null,
+          "text": "Let me search.",
+          "thinking": "considering options",
+          "calls": [
+            {
+              "name": "web_search",
+              "result": {
+                "outcome": "error",
+                "text": "first line\nsecond line"
+              }
+            }
+          ]
+        },
+        {
+          "id": "claude-ai:result-1",
+          "role": "user",
+          "at": "2026-01-01T00:00:02Z",
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "claude-ai:result-2",
+          "role": "user",
+          "at": "2026-01-01T00:00:03Z",
+          "parent": null,
+          "text": "",
+          "results": [
+            {
+              "outcome": "ok",
+              "text": null
+            }
+          ]
+        },
+        {
+          "id": "claude-ai:assistant-2",
+          "role": "assistant",
+          "at": "2026-01-01T00:00:04Z",
+          "parent": null,
+          "text": "Complete."
+        }
+      ]
+    }
+  ]
+}

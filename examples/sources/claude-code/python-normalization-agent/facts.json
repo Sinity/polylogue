@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:agent-norm",
+      "kind": "subagent",
+      "messages": [
+        {
+          "id": "claude-code:agent-task",
+          "role": "user",
+          "at": "2026-07-01T11:00:00Z",
+          "parent": null,
+          "text": "Inspect the normalization shard and report only evidence."
+        },
+        {
+          "id": "claude-code:agent-answer",
+          "role": "assistant",
+          "at": "2026-07-01T11:00:01Z",
+          "parent": "claude-code:agent-task",
+          "text": "The shard is coherent."
+        }
+      ]
+    }
+  ]
+}

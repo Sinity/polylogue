@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:text_only_session",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "ai-studio:17:text_only_session#id:12:chunk-user-1",
+          "role": "user",
+          "at": "2025-02-01T10:00:05Z",
+          "parent": null,
+          "text": "What is the capital of France?"
+        },
+        {
+          "id": "ai-studio:17:text_only_session#id:13:chunk-model-1",
+          "role": "assistant",
+          "at": "2025-02-01T10:00:08Z",
+          "parent": "ai-studio:17:text_only_session#id:12:chunk-user-1",
+          "text": "The capital of France is Paris."
+        }
+      ]
+    }
+  ]
+}

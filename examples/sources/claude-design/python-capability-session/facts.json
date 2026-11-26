@@ -1,0 +1,17 @@
+{
+  "sessions": [
+    {
+      "id": "claude-design:origin-matrix-claude-design",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-design:message-1",
+          "role": "user",
+          "at": "2026-08-01T10:00:01.000Z",
+          "parent": null,
+          "text": "Prove the parser claim."
+        }
+      ]
+    }
+  ]
+}

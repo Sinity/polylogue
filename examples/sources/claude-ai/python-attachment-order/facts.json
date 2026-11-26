@@ -1,0 +1,39 @@
+{
+  "sessions": [
+    {
+      "id": "claude-ai:claude-order-fixture",
+      "kind": "main",
+      "title": "Synthetic native attachment order",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-01-01T00:02:00Z",
+          "parent": null,
+          "text": "Later synthetic message"
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-01-01T00:01:00Z",
+          "parent": null,
+          "text": "Earlier synthetic message"
+        }
+      ]
+    }
+  ],
+  "documents": [
+    {
+      "title": "duplicate.txt",
+      "text": "first"
+    },
+    {
+      "title": "duplicate.txt",
+      "text": "second"
+    },
+    {
+      "title": "earlier.txt",
+      "text": "earlier"
+    }
+  ]
+}

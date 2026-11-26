@@ -1,0 +1,84 @@
+{
+  "sessions": [
+    {
+      "id": "codex:019a0000-0000-7000-8000-000000000001",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "codex:ctc_1",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:02Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec",
+              "command": "const r = await tools.exec_command({cmd: 'git status --short'}); text(r.output);",
+              "result": {
+                "outcome": "ok",
+                "text": "Script completed\nWall time 0.2 seconds\nOutput:\n M src/main.rs"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:call_inner",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:03Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec_command",
+              "command": "git status --short",
+              "result": {
+                "outcome": "ok",
+                "text": " M src/main.rs"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:call_patch",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:04Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "file_change",
+              "path": "/work/repo/src/main.rs",
+              "result": {
+                "outcome": "ok",
+                "text": "Success. Updated the following files:\nM src/main.rs"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:ctco_1",
+          "role": "user",
+          "at": "2026-03-01T10:00:05Z",
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:ws_1",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:06Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "web_search",
+              "result": {
+                "outcome": "unknown",
+                "text": null
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

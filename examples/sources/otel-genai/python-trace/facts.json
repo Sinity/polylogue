@@ -1,0 +1,56 @@
+{
+  "sessions": [
+    {
+      "id": "otel-genai:conversation-demo-7",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-01-01T00:00:02Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "search",
+              "result": {
+                "outcome": "unknown",
+                "text": "Rain expected tomorrow."
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": "Find tomorrow's weather."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-01-01T00:00:01Z",
+          "parent": 2,
+          "text": "I'll check the forecast."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-01-01T00:00:04Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "failing-tool",
+              "result": {
+                "outcome": "error",
+                "text": "Permission denied."
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

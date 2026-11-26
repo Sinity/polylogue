@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "chatgpt:field-census-v1",
+      "kind": "main",
+      "title": "Field census",
+      "messages": [
+        {
+          "id": "chatgpt:node-1",
+          "role": "assistant",
+          "at": 1.0,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "synthetic-recipient",
+              "result": null
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

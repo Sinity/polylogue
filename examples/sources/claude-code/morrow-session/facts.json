@@ -1,0 +1,150 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:7f3a2c10-0001-4000-8000-000000000001",
+      "kind": "main",
+      "title": "Project skeleton",
+      "messages": [
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000001",
+          "role": "user",
+          "at": "2026-10-01T07:00:00.000Z",
+          "parent": null,
+          "text": "Set up a new Rust library crate called morrow for parsing human-written dates."
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000002",
+          "role": "assistant",
+          "at": "2026-10-01T07:03:49.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000001",
+          "text": "",
+          "thinking": "Initialize the crate, then add a minimal lib.rs and manifest.",
+          "calls": [
+            {
+              "name": "Bash",
+              "command": "cargo init --lib",
+              "result": {
+                "outcome": "ok",
+                "text": "    Creating library `morrow` package"
+              }
+            },
+            {
+              "name": "Write",
+              "path": "/home/op/morrow/Cargo.toml",
+              "result": {
+                "outcome": "ok",
+                "text": "File created successfully at: /home/op/morrow/Cargo.toml"
+              }
+            },
+            {
+              "name": "Write",
+              "path": "/home/op/morrow/src/lib.rs",
+              "result": {
+                "outcome": "ok",
+                "text": "File created successfully at: /home/op/morrow/src/lib.rs"
+              }
+            }
+          ]
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000003",
+          "role": "user",
+          "at": "2026-10-01T07:07:38.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000002",
+          "text": ""
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000004",
+          "role": "assistant",
+          "at": "2026-10-01T07:11:27.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000003",
+          "text": "",
+          "calls": [
+            {
+              "name": "Bash",
+              "command": "cargo build",
+              "result": {
+                "outcome": "ok",
+                "text": "   Compiling morrow v0.1.0\n    Finished `dev` profile in 1.84s"
+              }
+            }
+          ]
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000005",
+          "role": "user",
+          "at": "2026-10-01T07:15:16.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000004",
+          "text": ""
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000006",
+          "role": "assistant",
+          "at": "2026-10-01T07:19:05.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000005",
+          "text": "The crate builds. lib.rs declares a parse module that we will fill in next."
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000007",
+          "role": "user",
+          "at": "2026-10-01T07:22:55.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000006",
+          "text": "Show me what lib.rs looks like and list the files."
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000008",
+          "role": "assistant",
+          "at": "2026-10-01T07:26:44.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000007",
+          "text": "",
+          "calls": [
+            {
+              "name": "Read",
+              "path": "/home/op/morrow/src/lib.rs",
+              "result": {
+                "outcome": "ok",
+                "text": "1\t//! Parse human-written dates.\n2\t\n3\tpub mod parse;"
+              }
+            },
+            {
+              "name": "Bash",
+              "command": "ls -R src",
+              "result": {
+                "outcome": "ok",
+                "text": "src:\nlib.rs\nparse.rs"
+              }
+            }
+          ]
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000009",
+          "role": "user",
+          "at": "2026-10-01T07:30:33.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000008",
+          "text": ""
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000010",
+          "role": "assistant",
+          "at": "2026-10-01T07:34:22.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000009",
+          "text": "lib.rs has a doc comment and declares `parse`; src/ holds lib.rs and an empty parse.rs."
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000011",
+          "role": "user",
+          "at": "2026-10-01T07:38:11.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000010",
+          "text": "Good, that's enough for today."
+        },
+        {
+          "id": "claude-code:c1000000-0000-4000-8000-000000000012",
+          "role": "assistant",
+          "at": "2026-10-01T07:42:00.000Z",
+          "parent": "claude-code:c1000000-0000-4000-8000-000000000011",
+          "text": "Done. Next step: implement relative dates in parse.rs."
+        }
+      ]
+    }
+  ]
+}

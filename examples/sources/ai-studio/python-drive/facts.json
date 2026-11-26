@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:1abc",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "ai-studio:4:1abc#id:11:matrix-user",
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": "Prove the parser claim."
+        },
+        {
+          "id": "ai-studio:4:1abc#id:16:matrix-assistant",
+          "role": "assistant",
+          "at": null,
+          "parent": "ai-studio:4:1abc#id:11:matrix-user",
+          "text": "The production route parsed this example."
+        }
+      ]
+    }
+  ]
+}

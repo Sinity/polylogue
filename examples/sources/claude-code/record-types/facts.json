@@ -1,0 +1,25 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:s1",
+      "kind": "main",
+      "title": "Build fix",
+      "messages": [
+        {
+          "id": "claude-code:cs",
+          "role": "user",
+          "at": "2026-03-01T12:00:01Z",
+          "parent": null,
+          "text": "Summary of the earlier conversation."
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "kind": "spawn",
+      "parent": "claude-code:s1",
+      "child": "claude-code:agent-ab12"
+    }
+  ]
+}

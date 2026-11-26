@@ -1,0 +1,17 @@
+{
+  "sessions": [
+    {
+      "id": "antigravity:synthetic-clock",
+      "kind": "main",
+      "title": "Native clock",
+      "messages": []
+    }
+  ],
+  "events": [
+    {
+      "session": "antigravity:synthetic-clock",
+      "kind": "antigravity_session",
+      "at": "2026-03-05T04:21:34Z"
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  "sessions": [
+    {
+      "id": "codex:older-response-session",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": "List the sample directory."
+        },
+        {
+          "id": "codex:rs_sample_1",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "thinking": "Listing the directory first."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "shell",
+              "command": "ls sample",
+              "result": {
+                "outcome": "ok",
+                "text": "{\"output\":\"alpha.txt\\nbeta.txt\\n\",\"metadata\":{\"exit_code\":0,\"duration_seconds\":0.1}}"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "shell",
+              "command": "cat sample/missing.txt",
+              "result": {
+                "outcome": "error",
+                "text": "{\"output\":\"cat: sample/missing.txt: No such file or directory\\n\",\"metadata\":{\"exit_code\":1,\"duration_seconds\":0.1}}"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "The directory holds alpha.txt and beta.txt."
+        }
+      ]
+    }
+  ]
+}

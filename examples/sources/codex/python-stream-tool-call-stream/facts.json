@@ -1,0 +1,48 @@
+{
+  "sessions": [
+    {
+      "id": "codex:tool-call-session-1",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "codex:msg-user-1",
+          "role": "user",
+          "at": "2025-01-15T11:00:02Z",
+          "parent": null,
+          "text": "List the files in /tmp."
+        },
+        {
+          "id": "codex:fc_1",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec_command",
+              "command": "ls /tmp",
+              "result": {
+                "outcome": "unknown",
+                "text": "file1.txt\nfile2.txt"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:msg-asst-1",
+          "role": "assistant",
+          "at": "2025-01-15T11:00:09Z",
+          "parent": null,
+          "text": "There are two files: file1.txt and file2.txt."
+        }
+      ]
+    }
+  ]
+}

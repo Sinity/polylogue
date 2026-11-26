@@ -1,0 +1,10 @@
+{
+  "sessions": [],
+  "events": [
+    {
+      "session": "claude-code:synthetic",
+      "kind": "todo_list",
+      "at": null
+    }
+  ]
+}

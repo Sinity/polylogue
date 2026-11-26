@@ -1,0 +1,25 @@
+{
+  "sessions": [
+    {
+      "id": "chatgpt:native-occurrences",
+      "kind": "main",
+      "title": "Synthetic attachment occurrences",
+      "messages": [
+        {
+          "id": "chatgpt:duplicate",
+          "role": "user",
+          "at": 1,
+          "parent": null,
+          "text": "User image"
+        },
+        {
+          "id": "chatgpt:duplicate",
+          "role": "assistant",
+          "at": 2,
+          "parent": "chatgpt:duplicate",
+          "text": "Assistant image"
+        }
+      ]
+    }
+  ]
+}

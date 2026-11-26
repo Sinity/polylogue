@@ -1,0 +1,25 @@
+{
+  "sessions": [
+    {
+      "id": "gemini-cli:origin-matrix-gemini-cli",
+      "kind": "main",
+      "title": "Origin capability matrix",
+      "messages": [
+        {
+          "id": "gemini-cli:user-1",
+          "role": "user",
+          "at": "2026-08-01T10:00:01Z",
+          "parent": null,
+          "text": "Prove the parser claim."
+        },
+        {
+          "id": "gemini-cli:assistant-1",
+          "role": "assistant",
+          "at": "2026-08-01T10:00:02Z",
+          "parent": "gemini-cli:user-1",
+          "text": "The production route parsed this example."
+        }
+      ]
+    }
+  ]
+}

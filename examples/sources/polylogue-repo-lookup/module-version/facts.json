@@ -1,0 +1,13 @@
+{
+  "sessions": [],
+  "repo_lookups": [
+    {
+      "path": "/work/project",
+      "remote": "https://example.invalid/repo.git",
+      "root_commits": [
+        "abc",
+        "def"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "sessions": [],
+  "events": [
+    {
+      "session": null,
+      "kind": "hermes_tool_start",
+      "at": "2026-01-02T03:04:05Z"
+    },
+    {
+      "session": null,
+      "kind": "hermes_tool_end",
+      "at": "2026-01-02T03:04:06Z"
+    },
+    {
+      "session": null,
+      "kind": "hermes_import_diagnostic",
+      "at": null
+    },
+    {
+      "session": null,
+      "kind": "hermes_approval_response",
+      "at": null
+    }
+  ]
+}

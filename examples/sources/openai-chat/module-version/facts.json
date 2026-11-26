@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "openai-chat:chat",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": "Read the module"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": 1,
+          "text": "Here is the module."
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:strict-replay",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-code:user-1",
+          "role": "user",
+          "at": "2025-01-01T00:00:00Z",
+          "parent": null,
+          "text": "kept"
+        },
+        {
+          "id": "claude-code:assistant-1",
+          "role": "assistant",
+          "at": "2025-01-01T00:00:01Z",
+          "parent": "claude-code:user-1",
+          "text": "reply"
+        }
+      ]
+    }
+  ]
+}

@@ -18,10 +18,14 @@ fn each_case_matches_its_hand_written_facts() {
     let mut compared = 0;
     for (origin, case) in cases() {
         let facts_path = case.join("facts.json");
-        let Ok(text) = fs::read_to_string(&facts_path) else {
-            continue;
-        };
         compared += 1;
+        let text = match fs::read_to_string(&facts_path) {
+            Ok(text) => text,
+            Err(error) => {
+                failures.push(format!("{}: {error}", facts_path.display()));
+                continue;
+            }
+        };
         let facts: Value = match serde_json::from_str(&text) {
             Ok(facts) => facts,
             Err(error) => {
@@ -54,7 +58,7 @@ fn each_case_matches_its_hand_written_facts() {
             ));
         }
     }
-    assert!(compared > 0, "no case has a facts.json");
+    assert!(compared > 0, "no golden cases found");
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
@@ -104,7 +108,16 @@ fn projection(output: &Output, with_events: bool) -> Value {
             value.insert("title".into(), json!(title.text));
         }
         let rows = messages.get(&id).map(Vec::as_slice).unwrap_or_default();
-        value.insert("messages".into(), Value::Array(session_messages(rows)));
+        let ended: BTreeMap<&str, &polylogue_model::ToolOutcome> = output
+            .background
+            .iter()
+            .filter(|update| update.session.to_string() == id)
+            .filter_map(|update| Some((update.call_id.as_deref()?, &update.outcome)))
+            .collect();
+        value.insert(
+            "messages".into(),
+            Value::Array(session_messages(rows, &ended)),
+        );
         session_values.push(Value::Object(value));
     }
 
@@ -175,8 +188,12 @@ fn projection(output: &Output, with_events: bool) -> Value {
 }
 
 /// One session's messages, with each call's result found by its call ID
-/// among all the session's results.
-fn session_messages(rows: &[(&polylogue_model::MessageRow, bool)]) -> Vec<Value> {
+/// among all the session's results. A call that ran on after its result was
+/// written (a background task) shows the outcome it ended with.
+fn session_messages(
+    rows: &[(&polylogue_model::MessageRow, bool)],
+    ended: &BTreeMap<&str, &polylogue_model::ToolOutcome>,
+) -> Vec<Value> {
     let mut results: BTreeMap<&str, Vec<Value>> = BTreeMap::new();
     let mut call_ids = Vec::new();
     for (row, _) in rows {
@@ -187,10 +204,10 @@ fn session_messages(rows: &[(&polylogue_model::MessageRow, bool)]) -> Vec<Value>
                     outcome,
                     output,
                     ..
-                } => results
-                    .entry(call_id)
-                    .or_default()
-                    .push(result_value(outcome, output.as_deref())),
+                } => results.entry(call_id).or_default().push(result_value(
+                    ended.get(call_id.as_str()).copied().unwrap_or(outcome),
+                    output.as_deref(),
+                )),
                 Block::ToolCall {
                     call_id: Some(call_id),
                     ..
@@ -294,6 +311,10 @@ fn session_messages(rows: &[(&polylogue_model::MessageRow, bool)]) -> Vec<Value>
                         output,
                         ..
                     } if call_id.as_deref().is_none_or(|id| !call_ids.contains(&id)) => {
+                        let outcome = call_id
+                            .as_deref()
+                            .and_then(|id| ended.get(id).copied())
+                            .unwrap_or(outcome);
                         Some(result_value(outcome, output.as_deref()))
                     }
                     _ => None,
@@ -369,14 +390,12 @@ fn normalize_time(holder: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
-/// A time as the input writes it: RFC 3339 text (read as UTC when it has
-/// no offset), or a number of seconds since 1970, or of milliseconds when it
-/// is 10^11 or more. Decimal digits are read exactly, not through a float.
+/// A time as the facts write it: RFC 3339 text with an offset, or a number
+/// of seconds since 1970, or of milliseconds when it is 10^11 or more.
+/// Decimal digits are read exactly, not through a float.
 fn written_time(at: &Value) -> Option<Timestamp> {
     match at {
-        Value::String(text) => {
-            Timestamp::parse_rfc3339(text).or_else(|| Timestamp::parse_rfc3339(&format!("{text}Z")))
-        }
+        Value::String(text) => Timestamp::parse_rfc3339(text),
         Value::Number(number) => {
             let text = number.to_string();
             let (whole, fraction) = text.split_once('.').unwrap_or((&text, ""));

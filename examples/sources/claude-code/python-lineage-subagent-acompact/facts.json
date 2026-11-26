@@ -1,0 +1,31 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:agent-task-agent-12-change-check",
+      "kind": "subagent",
+      "messages": [
+        {
+          "id": "claude-code:task-compact-u",
+          "role": "user",
+          "at": "2026-07-01T12:10:00Z",
+          "parent": null,
+          "text": "Validate the synthetic twelve-change overhaul and report only task-local evidence."
+        },
+        {
+          "id": "claude-code:task-compact-a",
+          "role": "assistant",
+          "at": "2026-07-01T12:10:01Z",
+          "parent": "claude-code:task-compact-u",
+          "text": "The task-local verification matrix is complete."
+        },
+        {
+          "id": "claude-code:task-compact-summary",
+          "role": "user",
+          "at": "2026-07-01T12:10:02Z",
+          "parent": "claude-code:task-compact-a",
+          "text": "Compressed task-local verification context."
+        }
+      ]
+    }
+  ]
+}

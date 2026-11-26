@@ -1,0 +1,9 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:synthetic",
+      "kind": "main",
+      "messages": []
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:agent-acompact-1a",
+      "kind": "compaction",
+      "messages": [
+        {
+          "id": "claude-code:compact-u",
+          "role": "user",
+          "at": "2026-07-01T12:05:00Z",
+          "parent": null,
+          "text": "Plan the release."
+        },
+        {
+          "id": "claude-code:compact-a",
+          "role": "assistant",
+          "at": "2026-07-01T12:05:01Z",
+          "parent": "claude-code:compact-u",
+          "text": "I will inspect the checks."
+        },
+        {
+          "id": "claude-code:compact-summary",
+          "role": "user",
+          "at": "2026-07-01T12:05:02Z",
+          "parent": "claude-code:compact-a",
+          "text": "Compressed release context."
+        }
+      ]
+    }
+  ]
+}

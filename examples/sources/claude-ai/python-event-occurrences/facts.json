@@ -1,0 +1,32 @@
+{
+  "sessions": [
+    {
+      "id": "claude-ai:event-occurrences",
+      "kind": "main",
+      "title": "Synthetic repeated occurrences",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-01-01T00:00:00Z",
+          "parent": null,
+          "text": "first summary"
+        },
+        {
+          "id": "claude-ai:repeated",
+          "role": "assistant",
+          "at": "2026-01-01T00:00:00Z",
+          "parent": null,
+          "text": "first occurrence"
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-01-01T00:02:00Z",
+          "parent": null,
+          "text": "second summary"
+        }
+      ]
+    }
+  ]
+}

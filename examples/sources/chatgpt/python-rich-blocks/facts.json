@@ -1,0 +1,70 @@
+{
+  "sessions": [
+    {
+      "id": "chatgpt:native-rich-chatgpt",
+      "kind": "main",
+      "title": "Synthetic rich blocks",
+      "messages": [
+        {
+          "id": "chatgpt:user",
+          "role": "user",
+          "at": "1970-01-01T00:00:01Z",
+          "parent": null,
+          "text": "compute 6 * 7"
+        },
+        {
+          "id": "chatgpt:call",
+          "role": "assistant",
+          "at": "1970-01-01T00:00:02Z",
+          "parent": "chatgpt:user",
+          "text": "",
+          "calls": [
+            {
+              "name": "python",
+              "command": "6 * 7",
+              "result": {
+                "outcome": "ok",
+                "text": "42"
+              }
+            }
+          ]
+        },
+        {
+          "id": "chatgpt:result",
+          "role": "user",
+          "at": "1970-01-01T00:00:03Z",
+          "parent": "chatgpt:call",
+          "text": ""
+        },
+        {
+          "id": "chatgpt:reasoning",
+          "role": "assistant",
+          "at": "1970-01-01T00:00:04Z",
+          "parent": "chatgpt:result",
+          "text": "",
+          "thinking": "Weighing options\n\nFirst I considered X, then Y."
+        },
+        {
+          "id": "chatgpt:search",
+          "role": "assistant",
+          "at": "1970-01-01T00:00:05Z",
+          "parent": "chatgpt:reasoning",
+          "text": "",
+          "calls": [
+            {
+              "name": "web",
+              "result": null
+            }
+          ]
+        },
+        {
+          "id": "chatgpt:files",
+          "role": "assistant",
+          "at": "1970-01-01T00:00:06Z",
+          "parent": "chatgpt:search",
+          "text": "Files sandbox:/mnt/data/a.md. and sandbox:/mnt/data/a.md,"
+        }
+      ]
+    }
+  ]
+}

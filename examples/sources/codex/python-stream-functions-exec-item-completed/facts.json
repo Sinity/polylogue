@@ -1,0 +1,191 @@
+{
+  "sessions": [
+    {
+      "id": "codex:codex-item-completed",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "codex:ctc-a",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec",
+              "command": "const r = await tools.exec_command({\"cmd\":\"pytest -q\",\"workdir\":\"/repo\"});\ntext(r.output);",
+              "result": {
+                "outcome": "ok",
+                "text": "Script completed\nWall time 4.0 seconds\nOutput:\n\n2 failed, 3 passed\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:exec-aaaa1111",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec_command",
+              "command": "pytest -q",
+              "result": {
+                "outcome": "error",
+                "text": "FAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\nFAILED tests/unit/test_widget.py::test_shape - AssertionError\n2 failed, 3 passed\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:ctco-a",
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:ctc-b",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec",
+              "command": "const r = await tools.exec_command({\"cmd\":\"build.sh\",\"workdir\":\"/repo\",\"yield_time_ms\":1000});\ntext(r.output);",
+              "result": {
+                "outcome": "unknown",
+                "text": "Script running with cell ID 3\nWall time 1.0 seconds\nOutput:\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:ctco-b",
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:exec-bbbb2222",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec_command",
+              "command": "build.sh",
+              "result": {
+                "outcome": "ok",
+                "text": "built 2 targets\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:ctc-c",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec",
+              "command": "for (const p of paths) {\n  await tools.exec_command({cmd: \"wc -l \" + p});\n}",
+              "result": {
+                "outcome": "ok",
+                "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:exec-cccc3333",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec_command",
+              "command": "wc -l alpha.py",
+              "result": {
+                "outcome": "ok",
+                "text": "12 alpha.py\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:exec-dddd4444",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec_command",
+              "command": "wc -l beta.py",
+              "result": {
+                "outcome": "error",
+                "text": "wc: beta.py: No such file or directory\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:ctco-c",
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:ctc-d",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec",
+              "command": "await tools.apply_patch({input: \"*** Begin Patch\\n*** Update File: alpha.py\\n*** End Patch\"});",
+              "result": {
+                "outcome": "ok",
+                "text": "Script completed\nWall time 0.1 seconds\nOutput:\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:exec-eeee5555",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "file_change",
+              "path": "/repo/alpha.py",
+              "result": {
+                "outcome": "ok",
+                "text": "Success. Updated the following files:\nM /repo/alpha.py\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:ctco-d",
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:s1",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-code:old-1",
+          "role": "user",
+          "at": "2026-03-01T09:00:00Z",
+          "parent": null,
+          "text": "First question"
+        },
+        {
+          "id": "claude-code:old-2",
+          "role": "assistant",
+          "at": "2026-03-01T09:00:02Z",
+          "parent": "claude-code:old-1",
+          "text": "First answer"
+        }
+      ]
+    },
+    {
+      "id": "claude-code:s2",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-code:new-1",
+          "role": "user",
+          "at": "2026-03-02T09:00:00Z",
+          "parent": "claude-code:old-2",
+          "text": "Continue from there"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "kind": "continuation",
+      "parent": "claude-code:s2",
+      "child": "claude-code:s3"
+    }
+  ]
+}

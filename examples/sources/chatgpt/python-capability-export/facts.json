@@ -1,0 +1,18 @@
+{
+  "sessions": [
+    {
+      "id": "chatgpt:origin-matrix-chatgpt",
+      "kind": "main",
+      "title": "Origin capability matrix",
+      "messages": [
+        {
+          "id": "chatgpt:matrix-message",
+          "role": "user",
+          "at": 1785578400.0,
+          "parent": null,
+          "text": "Prove the parser claim."
+        }
+      ]
+    }
+  ]
+}

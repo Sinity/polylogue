@@ -1,0 +1,39 @@
+{
+  "sessions": [
+    {
+      "id": "codex:neutral-occurrences",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "codex:prompt-one",
+          "role": "user",
+          "at": "2026-01-01T00:00:01Z",
+          "parent": null,
+          "text": "continue"
+        },
+        {
+          "id": "codex:prompt-two",
+          "role": "user",
+          "at": "2026-01-01T01:00:00Z",
+          "parent": null,
+          "text": "continue"
+        },
+        {
+          "id": "codex:reasoning-one",
+          "role": "assistant",
+          "at": "2026-01-01T01:00:01Z",
+          "parent": null,
+          "text": "",
+          "thinking": "Inspect the sample."
+        },
+        {
+          "id": "codex:code-one",
+          "role": "assistant",
+          "at": "2026-01-01T01:00:02Z",
+          "parent": null,
+          "text": "print(1)"
+        }
+      ]
+    }
+  ]
+}

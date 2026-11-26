@@ -1,0 +1,18 @@
+{
+  "sessions": [
+    {
+      "id": "claude-ai:origin-matrix-claude-ai",
+      "kind": "main",
+      "title": "Origin capability matrix",
+      "messages": [
+        {
+          "id": "claude-ai:message-1",
+          "role": "user",
+          "at": "2026-08-01T10:00:01Z",
+          "parent": null,
+          "text": "Prove the parser claim."
+        }
+      ]
+    }
+  ]
+}

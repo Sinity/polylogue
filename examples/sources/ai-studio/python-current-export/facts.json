@@ -1,0 +1,133 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:current_export",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "ai-studio:14:current_export#system:0:",
+          "role": "system",
+          "at": null,
+          "parent": null,
+          "text": "synthetic system instruction"
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-01-05T09:00:00Z",
+          "parent": "ai-studio:14:current_export#system:0:",
+          "text": "synthetic opening turn"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": 2,
+          "text": "",
+          "thinking": "synthetic thought"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": 3,
+          "text": "synthetic answer"
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": 4,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": 5,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": 6,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": 7,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": 8,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": 9,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": 10,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": 11,
+          "text": "",
+          "calls": [
+            {
+              "name": "code_execution",
+              "command": "print(0)",
+              "result": {
+                "outcome": "ok",
+                "text": "0"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": 12,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": 13,
+          "text": "synthetic grounded answer"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": null,
+          "parent": 14,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": "ai-studio:14:current_export#id:23:synthetic-branch-parent",
+          "text": "synthetic edited turn"
+        }
+      ]
+    }
+  ]
+}

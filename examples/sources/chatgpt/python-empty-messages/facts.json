@@ -1,0 +1,45 @@
+{
+  "sessions": [
+    {
+      "id": "chatgpt:neutral-empty-native",
+      "kind": "main",
+      "title": "Neutral empty native messages",
+      "messages": [
+        {
+          "id": "chatgpt:user-message",
+          "role": "user",
+          "at": "2023-11-14T22:13:20Z",
+          "parent": null,
+          "text": "Neutral question"
+        },
+        {
+          "id": "chatgpt:assistant-message",
+          "role": "assistant",
+          "at": "2023-11-14T22:13:21Z",
+          "parent": "chatgpt:user-message",
+          "text": ""
+        },
+        {
+          "id": "chatgpt:tool-message",
+          "role": "user",
+          "at": null,
+          "parent": "chatgpt:assistant-message",
+          "text": "",
+          "results": [
+            {
+              "outcome": "unknown",
+              "text": null
+            }
+          ]
+        },
+        {
+          "id": "chatgpt:branch-message",
+          "role": "assistant",
+          "at": "2023-11-14T22:13:22Z",
+          "parent": "chatgpt:user-message",
+          "text": ""
+        }
+      ]
+    }
+  ]
+}

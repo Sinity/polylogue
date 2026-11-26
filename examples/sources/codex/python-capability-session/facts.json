@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "codex:origin-matrix-codex",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "codex:matrix-user",
+          "role": "user",
+          "at": "2026-08-01T10:00:01Z",
+          "parent": null,
+          "text": "Prove the parser claim."
+        },
+        {
+          "id": "codex:matrix-assistant",
+          "role": "assistant",
+          "at": "2026-08-01T10:00:02Z",
+          "parent": null,
+          "text": "The production route parsed this example."
+        }
+      ]
+    }
+  ]
+}

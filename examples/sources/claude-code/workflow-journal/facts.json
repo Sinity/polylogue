@@ -1,0 +1,60 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:agent-w1",
+      "kind": "subagent",
+      "title": "review a.rs",
+      "messages": []
+    },
+    {
+      "id": "claude-code:agent-w2",
+      "kind": "subagent",
+      "title": "review b.rs",
+      "messages": []
+    },
+    {
+      "id": "claude-code:s1",
+      "kind": "main",
+      "messages": []
+    }
+  ],
+  "links": [
+    {
+      "kind": "spawn",
+      "parent": "claude-code:s1",
+      "child": "claude-code:agent-w1"
+    },
+    {
+      "kind": "spawn",
+      "parent": "claude-code:s1",
+      "child": "claude-code:agent-w2"
+    }
+  ],
+  "events": [
+    {
+      "session": "claude-code:s1",
+      "kind": "workflow_launched",
+      "at": null
+    },
+    {
+      "session": "claude-code:s1",
+      "kind": "workflow_agent_started",
+      "at": null
+    },
+    {
+      "session": "claude-code:s1",
+      "kind": "workflow_agent_started",
+      "at": null
+    },
+    {
+      "session": "claude-code:s1",
+      "kind": "workflow_agent_result",
+      "at": null
+    },
+    {
+      "session": "claude-code:s1",
+      "kind": "workflow_agent_result",
+      "at": null
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:1abd",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "ai-studio:4:1abd#id:10:drive-user",
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": "Prove the Drive-hinted parser claim."
+        },
+        {
+          "id": "ai-studio:4:1abd#id:15:drive-assistant",
+          "role": "assistant",
+          "at": null,
+          "parent": "ai-studio:4:1abd#id:10:drive-user",
+          "text": "The Drive-hinted production route parsed this example."
+        }
+      ]
+    }
+  ]
+}

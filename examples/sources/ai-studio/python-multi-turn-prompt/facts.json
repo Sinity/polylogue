@@ -1,0 +1,46 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:multi_turn_prompt",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": "2025-02-03T10:00:00Z",
+          "parent": null,
+          "text": "Summarize this doc."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-03T10:00:30Z",
+          "parent": 1,
+          "text": "",
+          "thinking": "Reading the document..."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-03T10:01:00Z",
+          "parent": 2,
+          "text": "The document covers Q1 results."
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2025-02-03T10:01:30Z",
+          "parent": 3,
+          "text": "And the risks?"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-03T10:02:00Z",
+          "parent": 4,
+          "text": "Main risk is supply chain volatility."
+        }
+      ]
+    }
+  ]
+}

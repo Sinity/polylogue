@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:agent-c7",
+      "kind": "subagent",
+      "messages": [
+        {
+          "id": "claude-code:o1",
+          "role": "user",
+          "at": "2025-08-01T09:00:00Z",
+          "parent": null,
+          "text": "Summarize the diff."
+        },
+        {
+          "id": "claude-code:o2",
+          "role": "assistant",
+          "at": "2025-08-01T09:00:04Z",
+          "parent": "claude-code:o1",
+          "text": "Two files changed."
+        }
+      ]
+    }
+  ]
+}

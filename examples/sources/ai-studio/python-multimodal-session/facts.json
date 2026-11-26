@@ -1,0 +1,38 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:multimodal_session",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "ai-studio:18:multimodal_session#id:12:chunk-user-1",
+          "role": "user",
+          "at": "2025-02-01T12:00:02Z",
+          "parent": null,
+          "text": "Describe this document."
+        },
+        {
+          "id": "ai-studio:18:multimodal_session#id:12:chunk-user-2",
+          "role": "user",
+          "at": "2025-02-01T12:00:05Z",
+          "parent": "ai-studio:18:multimodal_session#id:12:chunk-user-1",
+          "text": ""
+        },
+        {
+          "id": "ai-studio:18:multimodal_session#id:12:chunk-user-3",
+          "role": "user",
+          "at": "2025-02-01T12:00:07Z",
+          "parent": "ai-studio:18:multimodal_session#id:12:chunk-user-2",
+          "text": ""
+        },
+        {
+          "id": "ai-studio:18:multimodal_session#id:13:chunk-model-1",
+          "role": "assistant",
+          "at": "2025-02-01T12:00:25Z",
+          "parent": "ai-studio:18:multimodal_session#id:12:chunk-user-3",
+          "text": "Document, image, and video summarized."
+        }
+      ]
+    }
+  ]
+}

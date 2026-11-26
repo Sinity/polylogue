@@ -1,0 +1,17 @@
+{
+  "sessions": [
+    {
+      "id": "grok-cli:synthetic",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": "Read the module"
+        }
+      ]
+    }
+  ]
+}

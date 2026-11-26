@@ -1,0 +1,25 @@
+{
+  "sessions": [
+    {
+      "id": "grok:synthetic-account",
+      "kind": "main",
+      "title": "Synthetic conversation",
+      "messages": [
+        {
+          "id": "grok:synthetic-question",
+          "role": "user",
+          "at": 1712000001,
+          "parent": null,
+          "text": "Explain a synthetic example."
+        },
+        {
+          "id": "grok:synthetic-answer",
+          "role": "assistant",
+          "at": "2024-04-01T19:33:22Z",
+          "parent": "grok:synthetic-question",
+          "text": "A synthetic answer λ🙂."
+        }
+      ]
+    }
+  ]
+}

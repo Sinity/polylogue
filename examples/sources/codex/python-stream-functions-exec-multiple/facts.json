@@ -1,0 +1,33 @@
+{
+  "sessions": [
+    {
+      "id": "codex:codex-functions-exec-multiple",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "codex:fc-multiple",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "functions.exec",
+              "result": {
+                "outcome": "ok",
+                "text": "Script completed\nWall time 0.3 seconds\nOutput:\n\n{\"exit_code\":2,\"output\":\"command failed\"}\n{\"path\":\"src/renamed.py\",\"bytes_written\":42}\n{\"bytes\":4}\n{}\n{\"status\":\"completed\"}\n{\"url\":\"https://example.test/polylogue\"}\n{\"file_path\":\"artifacts/preview.png\",\"size_bytes\":100}\n{\"result\":{\"path\":\"docs/delegation.md\",\"exit_code\":0}}\n{\"status\":\"opaque\",\"message\":\"exit_code=7 is prose only\"}\n{\"status\":\"malformed\",\"message\":\"exit_code=9 is prose only\"}"
+              }
+            }
+          ]
+        },
+        {
+          "id": "codex:fco-multiple",
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        }
+      ]
+    }
+  ]
+}

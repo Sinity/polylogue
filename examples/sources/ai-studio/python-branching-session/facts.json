@@ -1,0 +1,38 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:branching_session",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "ai-studio:17:branching_session#id:12:chunk-user-1",
+          "role": "user",
+          "at": "2025-02-01T13:00:02Z",
+          "parent": null,
+          "text": "Initial question."
+        },
+        {
+          "id": "ai-studio:17:branching_session#id:18:chunk-model-edit-1",
+          "role": "assistant",
+          "at": "2025-02-01T13:00:08Z",
+          "parent": "ai-studio:17:branching_session#id:12:chunk-user-1",
+          "text": "First (edited) answer."
+        },
+        {
+          "id": "ai-studio:17:branching_session#id:18:chunk-model-edit-2",
+          "role": "assistant",
+          "at": "2025-02-01T13:00:12Z",
+          "parent": "ai-studio:17:branching_session#id:12:chunk-user-1",
+          "text": "Second answer with grounding."
+        },
+        {
+          "id": "ai-studio:17:branching_session#id:13:chunk-error-1",
+          "role": "assistant",
+          "at": "2025-02-01T13:00:30Z",
+          "parent": "ai-studio:17:branching_session#id:18:chunk-model-edit-2",
+          "text": "Partial response cut off."
+        }
+      ]
+    }
+  ]
+}

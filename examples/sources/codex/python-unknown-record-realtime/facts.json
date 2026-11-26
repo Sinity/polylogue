@@ -1,0 +1,47 @@
+{
+  "sessions": [
+    {
+      "id": "codex:unknown-context-session",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-09-01T10:00:01Z",
+          "parent": null,
+          "text": "Pick a colour for the sample banner."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-09-01T10:00:02Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "request_user_input",
+              "result": {
+                "outcome": "ok",
+                "text": "{\"answers\":{\"q1\":{\"answers\":[\"Green\"]}}}"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-09-01T10:00:05.1Z",
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-09-01T10:00:10Z",
+          "parent": null,
+          "text": "The banner will be green."
+        }
+      ]
+    }
+  ]
+}

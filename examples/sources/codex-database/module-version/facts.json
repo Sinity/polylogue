@@ -1,0 +1,10 @@
+{
+  "sessions": [
+    {
+      "id": "codex:synthetic",
+      "kind": "main",
+      "title": "Read the module",
+      "messages": []
+    }
+  ]
+}

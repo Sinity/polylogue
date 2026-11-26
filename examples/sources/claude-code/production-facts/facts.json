@@ -1,0 +1,55 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:s4",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-code:p1",
+          "role": "user",
+          "at": "2026-09-01T08:00:00Z",
+          "parent": null,
+          "text": "Run the checks."
+        },
+        {
+          "id": "claude-code:p2",
+          "role": "assistant",
+          "at": "2026-09-01T08:00:05Z",
+          "parent": "claude-code:p1",
+          "text": "",
+          "calls": [
+            {
+              "name": "Bash",
+              "command": "make check",
+              "result": {
+                "outcome": "ok",
+                "text": "ok"
+              }
+            }
+          ]
+        },
+        {
+          "id": "claude-code:p3",
+          "role": "user",
+          "at": "2026-09-01T08:00:09Z",
+          "parent": "claude-code:p2",
+          "text": ""
+        },
+        {
+          "id": "claude-code:p4",
+          "role": "assistant",
+          "at": "2026-09-01T08:00:10Z",
+          "parent": "claude-code:p3",
+          "text": "API Error: rate limited"
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "kind": "fork",
+      "parent": "claude-code:s0",
+      "child": "claude-code:s4"
+    }
+  ]
+}

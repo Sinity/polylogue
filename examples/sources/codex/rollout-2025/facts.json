@@ -1,0 +1,55 @@
+{
+  "sessions": [
+    {
+      "id": "codex:019a0000-0000-7000-8000-000000000002",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": "list the files"
+        },
+        {
+          "id": "codex:rs_1",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:fc_1",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "shell",
+              "command": "ls",
+              "result": {
+                "outcome": "ok",
+                "text": "{\"output\": \"Cargo.toml\\nsrc\\n\", \"metadata\": {\"exit_code\": 0, \"duration_seconds\": 0.1}}"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": "codex:msg_1",
+          "role": "assistant",
+          "at": null,
+          "parent": null,
+          "text": "Two entries."
+        }
+      ]
+    }
+  ]
+}

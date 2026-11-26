@@ -1,0 +1,49 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:code_execution_session",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "ai-studio:22:code_execution_session#id:12:chunk-user-1",
+          "role": "user",
+          "at": "2025-02-01T11:00:02Z",
+          "parent": null,
+          "text": "Compute the sum of the first 10 integers."
+        },
+        {
+          "id": "ai-studio:22:code_execution_session#id:15:chunk-thought-1",
+          "role": "assistant",
+          "at": "2025-02-01T11:00:05Z",
+          "parent": "ai-studio:22:code_execution_session#id:12:chunk-user-1",
+          "text": "",
+          "thinking": "I should call code execution and sum 1..10."
+        },
+        {
+          "id": "ai-studio:22:code_execution_session#id:12:chunk-code-1",
+          "role": "assistant",
+          "at": "2025-02-01T11:00:08Z",
+          "parent": "ai-studio:22:code_execution_session#id:15:chunk-thought-1",
+          "text": "Here is the computation:",
+          "calls": [
+            {
+              "name": "code_execution",
+              "command": "print(sum(range(1, 11)))",
+              "result": {
+                "outcome": "ok",
+                "text": "55"
+              }
+            }
+          ]
+        },
+        {
+          "id": "ai-studio:22:code_execution_session#id:17:chunk-model-final",
+          "role": "assistant",
+          "at": "2025-02-01T11:00:18Z",
+          "parent": "ai-studio:22:code_execution_session#id:12:chunk-code-1",
+          "text": "The sum of 1..10 is 55."
+        }
+      ]
+    }
+  ]
+}

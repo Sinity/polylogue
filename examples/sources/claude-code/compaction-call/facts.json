@@ -1,0 +1,31 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:agent-acompact-5e",
+      "kind": "compaction",
+      "messages": [
+        {
+          "id": "claude-code:h1",
+          "role": "user",
+          "at": "2026-04-01T10:00:00Z",
+          "parent": null,
+          "text": "Earlier request."
+        },
+        {
+          "id": "claude-code:c1",
+          "role": "user",
+          "at": "2026-04-01T10:05:00Z",
+          "parent": "claude-code:h1",
+          "text": "Summarize the conversation so far."
+        },
+        {
+          "id": "claude-code:c2",
+          "role": "assistant",
+          "at": "2026-04-01T10:05:09Z",
+          "parent": "claude-code:c1",
+          "text": "The work so far: one request."
+        }
+      ]
+    }
+  ]
+}

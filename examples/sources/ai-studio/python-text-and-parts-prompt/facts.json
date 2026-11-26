@@ -1,0 +1,32 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:text_and_parts_prompt",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-01-05T10:00:00Z",
+          "parent": null,
+          "text": "Name the two changes in the release notes."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-01-05T10:00:02Z",
+          "parent": 1,
+          "text": "",
+          "thinking": "The notes list two changes. I will name both."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-01-05T10:00:04Z",
+          "parent": 2,
+          "text": "Two changes shipped: a faster parser and a smaller cache."
+        }
+      ]
+    }
+  ]
+}

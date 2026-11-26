@@ -1,0 +1,56 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:code_execution_prompt",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": "2025-02-02T09:00:00Z",
+          "parent": null,
+          "text": "Compute 2+2 in python."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-02T09:00:05Z",
+          "parent": 1,
+          "text": "",
+          "thinking": "I should use code execution."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-02T09:00:10Z",
+          "parent": 2,
+          "text": "",
+          "calls": [
+            {
+              "name": "code_execution",
+              "command": "print(2+2)",
+              "result": {
+                "outcome": "ok",
+                "text": "4\n"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-02T09:00:20Z",
+          "parent": 3,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-02T09:00:45Z",
+          "parent": 4,
+          "text": "The answer is 4."
+        }
+      ]
+    }
+  ]
+}

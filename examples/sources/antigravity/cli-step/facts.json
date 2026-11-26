@@ -1,0 +1,17 @@
+{
+  "sessions": [
+    {
+      "id": "antigravity:synthetic-cli",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "antigravity:synthetic-cli:step-0",
+          "role": "user",
+          "at": "2026-03-05T04:21:34Z",
+          "parent": null,
+          "text": "Read the example"
+        }
+      ]
+    }
+  ]
+}

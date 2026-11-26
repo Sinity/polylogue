@@ -1,0 +1,31 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:agent-ab12",
+      "kind": "subagent",
+      "messages": [
+        {
+          "id": "claude-code:t1",
+          "role": "user",
+          "at": "2026-03-01T11:00:00Z",
+          "parent": null,
+          "text": "Find every caller of parse()."
+        },
+        {
+          "id": "claude-code:t2",
+          "role": "assistant",
+          "at": "2026-03-01T11:00:03Z",
+          "parent": "claude-code:t1",
+          "text": "Three callers."
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "kind": "spawn",
+      "parent": "claude-code:s1",
+      "child": "claude-code:agent-ab12"
+    }
+  ]
+}

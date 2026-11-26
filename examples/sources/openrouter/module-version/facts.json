@@ -1,0 +1,17 @@
+{
+  "sessions": [
+    {
+      "id": "openrouter:prompt",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "openrouter:prompt",
+          "role": "user",
+          "at": null,
+          "parent": null,
+          "text": "Read the module"
+        }
+      ]
+    }
+  ]
+}

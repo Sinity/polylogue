@@ -1,0 +1,38 @@
+{
+  "sessions": [
+    {
+      "id": "ai-studio:text_only_prompt",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": "2025-02-01T08:00:00Z",
+          "parent": null,
+          "text": "What is the capital of France?"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-01T08:00:05Z",
+          "parent": 1,
+          "text": "The capital of France is Paris."
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2025-02-01T08:00:20Z",
+          "parent": 2,
+          "text": "And of Germany?"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2025-02-01T08:00:30Z",
+          "parent": 3,
+          "text": "Berlin."
+        }
+      ]
+    }
+  ]
+}

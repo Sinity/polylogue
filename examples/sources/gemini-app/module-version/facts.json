@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "gemini-app:synthetic",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-07-27T20:59:30Z",
+          "parent": null,
+          "text": "Explain this"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-07-27T20:59:30Z",
+          "parent": 1,
+          "text": "An answer."
+        }
+      ]
+    }
+  ]
+}
