@@ -144,25 +144,30 @@ macro_rules! modules {
             version: { use $module as parser; parser::VERSION },
         }
     };
+    (@children source $module:path) => {{ use $module as parser; parser::MODULES }};
+    (@children external $module:path) => { &[] };
+    (@list $($kind:ident $name:expr => $module:path),* $(,)?) => {
+        parser_modules!(@join
+            &[$(modules!(@entry $name, $module)),*],
+            $(modules!(@children $kind $module)),*
+        )
+    };
     ($($module:path),* $(,)?) => { modules!($($module),*;) };
-    ($($module:path),*; $($external:path),* $(,)?) => { parser_modules!(@join
-        &[
-            modules!(@entry "parse", crate::parse),
-            modules!(@entry "lines", crate::lines),
-            modules!(@entry "records", crate::records),
-            modules!(@entry "fields", crate::fields),
-            modules!(@entry "document", crate::document),
-            modules!(@entry "time", crate::time),
-            modules!(@entry "command", polylogue_model::command),
-            modules!(@entry "content_ids", crate::content_ids),
-            modules!(@entry "chain_names", crate::chain_names),
-            modules!(@entry "export", crate::export),
-            $(modules!(@entry concat!(stringify!($module), "::VERSION"), $module),)*
-            $(modules!(@entry concat!(stringify!($external), "::VERSION"), $external)),*
-        ],
-        crate::export::MODULES,
-        $({ use $module as parser; parser::MODULES }),*
+    ($($module:path),*; $($external:path),* $(,)?) => { modules!(@list
+        source "parse" => crate::parse,
+        source "lines" => crate::lines,
+        source "records" => crate::records,
+        source "fields" => crate::fields,
+        source "document" => crate::document,
+        source "time" => crate::time,
+        external "command" => polylogue_model::command,
+        source "content_ids" => crate::content_ids,
+        source "chain_names" => crate::chain_names,
+        source "export" => crate::export,
+        $(source concat!(stringify!($module), "::VERSION") => $module,)*
+        $(external concat!(stringify!($external), "::VERSION") => $external),*
     ) };
+
 }
 
 /// One origin's whole declaration: where its files live, how they are
