@@ -972,7 +972,7 @@ pub(super) fn context_stream(
 ) -> (
     Vec<ReadItem>,
     Vec<polylogue_model::bundle::Record>,
-    ReadComplete,
+    ReadFooter,
 ) {
     let request = polylogue_reading::ReadRequest {
         start: Default::default(),
@@ -1021,9 +1021,9 @@ pub(super) fn context_stream(
             }
         }
     }
-    assert_eq!(complete.footer.shown, items.len() as u64);
+    assert_eq!(complete.shown, items.len() as u64);
     assert_eq!(
-        serde_json::from_str::<ReadComplete>(&frames.last().unwrap().data).unwrap(),
+        serde_json::from_str::<ReadFooter>(&frames.last().unwrap().data).unwrap(),
         complete
     );
     let refs: std::collections::HashSet<_> =

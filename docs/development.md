@@ -317,11 +317,13 @@ it exits 0 only when it would merge now.
 The `package` workflow builds `.#default` for every master commit and pushes
 its runtime closure and production compiler artifacts to `sinity.cachix.org`.
 The next source-only package build reuses those compiler artifacts.
-The release profile (`[profile.release]` in `Cargo.toml`) builds with whole-program
-optimisation, one code generation unit and stripped symbols: the binary is 73 MB
-instead of 115 MB, and a hosted release build takes about 15 to 25 minutes
-instead of 10. Panics stay unwinding because the build and the engine catch a
-failed worker. Sinnix deploys a revision only
+The release profile (`[profile.release]` in `Cargo.toml`) strips symbols and
+changes nothing else: the binary is 87.5 MB instead of 115.3 MB at no build
+cost. The measured alternative is fat link-time optimisation with one code
+generation unit: 73.2 MB at about 2.6 times the build time (hosted runs of the
+package's build, no run-time gain measured), so anyone who measures a run-time
+gain can make that trade with these figures. Panics stay unwinding because the
+build and the engine catch a failed worker. Sinnix deploys a revision only
 after fetching that package, so its switches never compile Polylogue. To
 deploy a revision master does not contain, such as a deployment branch's head,
 qualify that tree with `gh workflow run check -f rev=<full-commit-sha>`,
