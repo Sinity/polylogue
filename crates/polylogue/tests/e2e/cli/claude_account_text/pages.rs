@@ -149,10 +149,10 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
 
 fn write_documents(path: &Path, documents: &[Document]) {
     let manifest = json!({"record":"manifest","data":{
-        "format":"polylogue-bundle","version":4,"query":format!("query:{}", "0".repeat(64)),"query_text":"synthetic documents",
+        "format":"polylogue-bundle","version":5,"query":format!("query:{}", "0".repeat(64)),"query_text":"synthetic documents",
         "ran_at":"2026-01-01T00:00:00Z","read_at":{"generation":"synthetic","index":10,"archive":10},"freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}},
         "counts":{"sessions":0,"messages":0,"documents":documents.len(),"events":0,"links":0,"authored":0,"annotations":0,"alternates":0,"alternate_parts":0,"text_fragments":0,"blobs":0},
-        "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript","inherited":false,"annotations":true}},"enabled_alternates":[],"author":"operator"}});
+        "flags":{"format":"jsonl","with_blobs":false,"read":{"view":"transcript"}},"enabled_alternates":[],"author":"operator"}});
     let mut records = vec![serde_json::from_value::<Record>(manifest).unwrap()];
     for (ordinal, document) in documents.iter().enumerate() {
         records.push(Record::Document(polylogue_model::bundle::DocumentRecord {

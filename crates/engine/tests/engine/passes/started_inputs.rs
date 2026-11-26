@@ -25,7 +25,7 @@ fn a_pass_finishes_started_inputs_before_starting_more() {
     let mut config = w.config(CHUNK);
     config.workers = 4;
     config.bytes_in_flight = CHUNK;
-    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    let mut engine = Engine::new(config, archive).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
 

@@ -16,54 +16,10 @@ fn deployment_flags_preserve_daemon_signal_policy() {
         ])
         .unwrap();
     assert!(super::keeps_sigpipe_ignored(&daemon));
-    assert!(super::cli::needs_engine(
-        &daemon,
-        &super::daemon::service::ArchiveMode::Standalone
-    ));
     let tour = super::cli::command()
         .try_get_matches_from(["polylogue", "demo", "/synthetic/tour"])
         .unwrap();
-    assert!(super::cli::needs_engine(
-        &tour,
-        &super::daemon::service::ArchiveMode::Standalone
-    ));
     assert!(!super::keeps_sigpipe_ignored(&tour));
-    #[cfg(feature = "sinex")]
-    {
-        let blocked = super::daemon::service::ArchiveMode::Blocked {
-            configured: Some("primary"),
-            path: "/synthetic/sinex.toml".into(),
-            error: "invalid configuration".into(),
-        };
-        assert!(!super::cli::needs_engine(&daemon, &blocked));
-        assert!(super::cli::needs_engine(&tour, &blocked));
-    }
-}
-
-#[test]
-fn stopped_attempts_hash_executable_bytes_instead_of_paths() {
-    let dir = tempfile::tempdir().unwrap();
-    let first = dir.path().join("first-image");
-    let second = dir.path().join("second-image");
-    std::fs::write(&first, b"synthetic executable one").unwrap();
-    std::fs::copy(&first, &second).unwrap();
-    let before = super::attempt_from_executable(std::fs::File::open(&first).unwrap()).unwrap();
-    assert_eq!(
-        before,
-        super::attempt_from_executable(std::fs::File::open(&second).unwrap()).unwrap()
-    );
-    assert_eq!(
-        before.executable,
-        polylogue_model::BlobHash::of(b"synthetic executable one")
-    );
-    assert_eq!(before.parser_settings, None);
-    std::fs::write(&first, b"synthetic executable two").unwrap();
-    let after = super::attempt_from_executable(std::fs::File::open(&first).unwrap()).unwrap();
-    assert_ne!(before, after);
-    assert_eq!(
-        after.executable,
-        polylogue_model::BlobHash::of(b"synthetic executable two")
-    );
 }
 
 /// Each catalog key, set to a value other than its default, changes what its

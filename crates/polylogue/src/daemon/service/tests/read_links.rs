@@ -55,9 +55,9 @@ fn read_target(
                 ..ReadOptions::default()
             },
             delivery: ReadDelivery::Page,
-            format: "json".into(),
+            format: polylogue_model::read::Format::Json,
             budget: polylogue_model::read::ReadBudget::Tokens(budget as u64),
-            with_blobs: false,
+            alternates: Vec::new(),
             cursor: None,
         }),
     };

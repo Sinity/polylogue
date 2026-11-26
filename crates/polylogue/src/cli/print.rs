@@ -158,9 +158,11 @@ pub fn step_reply(reply: &protocol::line::StepAnswer, verb: &str, style: TextSty
     match reply {
         StepAnswer::Read(page) => read(page, style),
         StepAnswer::Streamed(_) | StepAnswer::Followed(_) => String::new(),
-        StepAnswer::Brief(prepared) => context(prepared, style),
+        StepAnswer::Brief(prepared) => brief(prepared, style),
         StepAnswer::Resume(found) => resume(found, style),
         StepAnswer::Saved(report) => saved(report, style),
+        StepAnswer::Sent(report) => sent(report, style),
+        StepAnswer::Acted(acted) => acted.iter().map(|one| act(one, style)).collect(),
         StepAnswer::WroteEach(report) => wrote_each(report, verb),
         other => json(other, style),
     }
@@ -235,9 +237,175 @@ pub fn saved(report: &protocol::line::SaveReport, _style: TextStyle) -> String {
     polylogue_render::terminal::escape(&text)
 }
 
-/// A prepared brief, takeover or recall.
-pub fn context(answer: &protocol::context::Answer, _style: TextStyle) -> String {
+/// A prepared brief, of a directory, a session or search words.
+pub fn brief(answer: &crate::brief::BriefReply, _style: TextStyle) -> String {
     polylogue_render::terminal::escape(&answer.prepared.text)
+}
+
+/// One session's delivery of an act: where it went and what came of it.
+fn delivered(out: &mut String, act: &str, delivered: &protocol::acts::Delivered) {
+    let _ = write!(out, "{act} {}", delivered.session);
+    if let Some(delivery) = &delivered.delivery {
+        let _ = write!(out, " (delivery:{delivery})");
+    }
+    let _ = write!(out, ": {}", name_of(&delivered.outcome));
+    if let Some(channel) = &delivered.channel {
+        let _ = write!(out, " through {}", name_of(channel));
+    }
+    if let Some(role) = &delivered.started {
+        let _ = write!(out, ", a new instance of the role {role}");
+    }
+    for part in [&delivered.reason, &delivered.detail, &delivered.note]
+        .into_iter()
+        .flatten()
+    {
+        let _ = write!(out, "; {part}");
+    }
+    out.push('\n');
+}
+
+/// A web chat's turn, held as a chat action.
+fn chat_turn(out: &mut String, act: &str, answer: &protocol::browser::ChatAnswer) {
+    let _ = writeln!(
+        out,
+        "{act} a web chat turn: {}",
+        polylogue_render::terminal::json(
+            &serde_json::to_value(answer).expect("typed answer serializes"),
+            false
+        )
+    );
+}
+
+/// `send`: each session reached and each skipped, with its line.
+pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
+    use protocol::acts::Reached;
+    let mut out = String::new();
+    for reached in &report.reached {
+        match reached {
+            Reached::Session(sent) => {
+                for one in &sent.deliveries {
+                    delivered(&mut out, "sent to", one);
+                }
+                if let Some(message) = &sent.message {
+                    let _ = writeln!(out, "message annotation:{message}");
+                }
+                let _ = writeln!(out, "undo: {}", sent.undo);
+            }
+            Reached::WebChat(answer) => chat_turn(&mut out, "sent", answer),
+        }
+    }
+    for skipped in &report.skipped {
+        let _ = writeln!(out, "skipped {}: {}", skipped.session, skipped.line);
+    }
+    polylogue_render::terminal::escape(&out)
+}
+
+/// What `answer`, `interrupt` or `resume --in` did to one session.
+pub fn act(acted: &protocol::acts::Acted, _style: TextStyle) -> String {
+    use protocol::acts::Acted;
+    let mut out = String::new();
+    match acted {
+        Acted::Answered(answered) => {
+            let _ = write!(
+                out,
+                "answered {} (delivery:{}): {} through {}",
+                answered.request,
+                answered.delivery,
+                name_of(&answered.outcome),
+                name_of(&answered.channel)
+            );
+            if let Some(note) = &answered.note {
+                let _ = write!(out, "; {note}");
+            }
+            let _ = writeln!(out, "\nundo: {}", answered.undo);
+        }
+        Acted::Interrupted(interrupted) => {
+            let _ = writeln!(
+                out,
+                "interrupted {} (delivery:{}): {} through {}\nundo: {}",
+                interrupted.session,
+                interrupted.delivery,
+                name_of(&interrupted.outcome),
+                name_of(&interrupted.channel),
+                interrupted.undo
+            );
+        }
+        Acted::Continued(continued) => {
+            let _ = write!(
+                out,
+                "continued {} in {} (delivery:{}), hosted",
+                continued.briefed_from, continued.session, continued.delivery
+            );
+            if let Some(at) = &continued.at {
+                let _ = write!(out, ", from {at}");
+            }
+            out.push('\n');
+            match continued.stop_source.as_ref().map(|answer| &answer.outcome) {
+                Some(command_surface::Outcome::Ok(interrupted)) => {
+                    let _ = writeln!(out, "interrupted {}", interrupted.session);
+                }
+                Some(command_surface::Outcome::Error(error)) => {
+                    let _ = writeln!(
+                        out,
+                        "interrupting {} failed: {}",
+                        continued.briefed_from, error.message
+                    );
+                }
+                _ => {}
+            }
+            let _ = writeln!(out, "undo: {}", continued.undo);
+        }
+        Acted::WebChat(answer) => chat_turn(&mut out, "answered", answer),
+    }
+    polylogue_render::terminal::escape(&out)
+}
+
+/// `start`: the session started, or the web chat's new conversation.
+pub fn start(reply: &protocol::acts::StartReply, _style: TextStyle) -> String {
+    use protocol::acts::StartReply;
+    let mut out = String::new();
+    match reply {
+        StartReply::Hosted(started) => {
+            let _ = write!(
+                out,
+                "started {} (delivery:{}), hosted through {}",
+                started.session,
+                started.delivery,
+                name_of(&started.channel)
+            );
+            if let Some(role) = &started.role {
+                let _ = write!(out, " as the role {role}");
+            }
+            let _ = writeln!(out, "\nundo: {}", started.undo);
+        }
+        StartReply::WebChat(answer) => chat_turn(&mut out, "started", answer),
+    }
+    polylogue_render::terminal::escape(&out)
+}
+
+/// `internal mail-claim`: the deliveries a hook took.
+pub fn claimed(claimed: &protocol::acts::Claimed, _style: TextStyle) -> String {
+    let mut out = String::new();
+    for delivery in &claimed.deliveries {
+        let _ = writeln!(out, "delivery:{}\n{}", delivery.id, delivery.text);
+    }
+    polylogue_render::terminal::escape(&out)
+}
+
+/// `internal permission`: the decision given ahead, if any applies.
+pub fn decided(decided: &protocol::acts::Decided, _style: TextStyle) -> String {
+    let mut out = match &decided.decision {
+        Some(decision) => decision.clone(),
+        None => "no decision given ahead".to_owned(),
+    };
+    if let Some(text) = &decided.text {
+        let _ = write!(out, ": {text}");
+    }
+    if let Some(delivery) = &decided.delivery {
+        let _ = write!(out, " (delivery:{delivery})");
+    }
+    out.push('\n');
+    polylogue_render::terminal::escape(&out)
 }
 
 /// `continue`: the sessions worth resuming here, or one session's plan.

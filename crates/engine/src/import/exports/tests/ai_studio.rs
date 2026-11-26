@@ -63,11 +63,14 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         assert!(
             matches!(&messages[3].blocks[1],polylogue_model::Block::Image(a) if a.blob.is_some())
         );
-        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 4);
+        assert_eq!(
+            w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+            4
+        );
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         let source_rows = r
             .query(
-                "SELECT source_start,source_end FROM message_parse WHERE source_start>0 \
+                "SELECT source_start,source_start+source_length AS source_end FROM message_parse WHERE source_start>0 \
                  ORDER BY source_start",
                 &[],
             )
@@ -184,7 +187,10 @@ fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes
         w.count("SELECT SUM(length) AS n FROM a.extent"),
         full.len() as i64
     );
-    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
+    assert_eq!(
+        w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+        2
+    );
 }
 
 fn watched_input(engine: &Engine, path: &Path) -> (String, i64, u64) {

@@ -7,7 +7,7 @@
 pub(crate) fn withdrawn_sql(alternate: &str) -> String {
     format!(
         "EXISTS(SELECT 1 FROM source_annotation_link alternate_withdrawal \
-         JOIN source_revision_state alternate_withdrawal_state ON alternate_withdrawal_state.id=alternate_withdrawal.record AND alternate_withdrawal_state.withdrawn=0 \
+         JOIN source_revision_state alternate_withdrawal_state ON alternate_withdrawal_state.id=alternate_withdrawal.annotation AND alternate_withdrawal_state.withdrawn=0 \
          WHERE alternate_withdrawal.role='withdraws' AND \
          (alternate_withdrawal.ref='alternate:'||{alternate}.root OR alternate_withdrawal.ref='alternate:'||{alternate}.root||'@'||{alternate}.id))"
     )

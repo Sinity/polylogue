@@ -7,48 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub mod export;
-mod progress;
 pub use export::{
     ExportCursor, ExportDelivery, ExportDeliveryError, ExportDeliverySource, ReadRange,
 };
-pub use progress::{ParseProgress, ParseStatus, StepProgress};
-
-/// The actual program and parser settings that made one stopped attempt.
-/// Source, chain, parse version and observed length belong to its reading.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct StoppedAttempt {
-    pub executable: BlobHash,
-    pub parser_settings: Option<BlobHash>,
-}
-
-/// Native parser continuation at one exact admitted cursor. This is not source,
-/// revision or receipt evidence; the containing reading supplies that identity.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ParserCheckpoint {
-    pub version: u32,
-    pub parse_version: String,
-    pub parsed_upto: u64,
-    /// None is an explicitly stateless parser; an absent envelope is unknown.
-    pub parser_state: Option<crate::Json>,
-}
-impl ParserCheckpoint {
-    pub const VERSION: u32 = 1;
-    pub fn new(parse_version: String, parsed_upto: u64, parser_state: Option<crate::Json>) -> Self {
-        Self {
-            version: Self::VERSION,
-            parse_version,
-            parsed_upto,
-            parser_state,
-        }
-    }
-    pub fn matches(&self, parse_version: &str, parsed_upto: u64) -> bool {
-        self.version == Self::VERSION
-            && self.parse_version == parse_version
-            && self.parsed_upto == parsed_upto
-    }
-}
 
 /// Rows one parse step produced. Sessions and messages are upserts keyed by
 /// their IDs: a later step may send a longer version of the same message

@@ -29,18 +29,18 @@ fn recorded_directory_captures_original_assets_and_reports_missing_and_unresolve
     assert!(p.errors.is_empty(), "{p:?}");
     let id = blake3::hash(b"original image").to_hex().to_string();
     let r = e.reads.reader().unwrap();
-    let progress = r.input_progress(&id).unwrap().unwrap();
+    let progress = r.latest_chain(&id).unwrap().unwrap();
     assert_eq!(
-        r.stored_range(&id, progress.chain, 0, progress.length, &e.blobs)
+        r.stored_range(&id, progress.chain, 0, progress.stored, &e.blobs)
             .unwrap(),
         b"original image"
     );
-    let rows=r.query("SELECT DISTINCT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.format='tool-context' AND CAST(o.path_bytes AS TEXT) LIKE 'codex-local-references/%'",&[]).unwrap();
+    let rows=r.query("SELECT DISTINCT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.origin='tool-context' AND CAST(o.path_bytes AS TEXT) LIKE 'codex-local-references/%'",&[]).unwrap();
     let mut statuses = Vec::new();
     for row in rows {
         let id = row["input"].as_str().unwrap();
-        let p = r.input_progress(id).unwrap().unwrap();
-        let bytes = r.stored_range(id, p.chain, 0, p.length, &e.blobs).unwrap();
+        let p = r.latest_chain(id).unwrap().unwrap();
+        let bytes = r.stored_range(id, p.chain, 0, p.stored, &e.blobs).unwrap();
         for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
             let value: Json = serde_json::from_slice(line).unwrap();
             statuses.push(value["status"].as_str().unwrap().to_owned());
@@ -68,12 +68,12 @@ fn every_reference_after_four_thousand_is_still_reported() {
     let p = e.run_pass().unwrap();
     assert!(p.errors.is_empty(), "{p:?}");
     let reader = e.reads.reader().unwrap();
-    let rows=reader.query("SELECT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.format='tool-context' AND CAST(o.path_bytes AS TEXT)='codex-local-references/codex:rollout:many-native@test-machine.jsonl'",&[]).unwrap();
+    let rows=reader.query("SELECT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.origin='tool-context' AND CAST(o.path_bytes AS TEXT)='codex-local-references/codex:rollout:many-native@test-machine.jsonl'",&[]).unwrap();
     assert_eq!(rows.len(), 1);
     let input = rows[0]["input"].as_str().unwrap();
-    let progress = reader.input_progress(input).unwrap().unwrap();
+    let progress = reader.latest_chain(input).unwrap().unwrap();
     let bytes = reader
-        .stored_range(input, progress.chain, 0, progress.length, &e.blobs)
+        .stored_range(input, progress.chain, 0, progress.stored, &e.blobs)
         .unwrap();
     // Without a recorded cwd every reference is unresolved, in order.
     let records: Vec<Json> = bytes
@@ -118,7 +118,7 @@ fn reopen_observes_local_references_after_raw_commit_before_parse() {
                 "codex:rollout:interrupted-native@test-machine"
             );
             assert_eq!(
-                w.count("SELECT count(*) AS n FROM a.input WHERE format='codex-local-file'"),
+                w.count("SELECT count(*) AS n FROM a.input WHERE origin='codex-local-file'"),
                 0
             );
         }
@@ -132,9 +132,9 @@ fn reopen_observes_local_references_after_raw_commit_before_parse() {
             .to_hex()
             .to_string();
         let r = e.reads.reader().unwrap();
-        let progress = r.input_progress(&id).unwrap().unwrap();
+        let progress = r.latest_chain(&id).unwrap().unwrap();
         assert_eq!(
-            r.stored_range(&id, progress.chain, 0, progress.length, &e.blobs)
+            r.stored_range(&id, progress.chain, 0, progress.stored, &e.blobs)
                 .unwrap(),
             b"image after commit boundary"
         );
@@ -181,7 +181,7 @@ fn a_loop_without_sources_reads_no_referenced_file() {
     );
     assert_eq!(
         w.count(
-            "SELECT count(*) AS n FROM a.input WHERE format IN ('codex-local-file','tool-context')"
+            "SELECT count(*) AS n FROM a.input WHERE origin IN ('codex-local-file','tool-context')"
         ),
         0
     );
@@ -209,10 +209,10 @@ fn regular_local_files_keep_binary_bytes_empty_files_and_descriptor_facts() {
             assert_eq!(id, polylogue_model::BlobHash::of(bytes).to_string());
             assert_eq!(pass.bytes_read, bytes.len() as u64);
             let reader = engine.reads.reader().unwrap();
-            let progress = reader.input_progress(&id).unwrap().unwrap();
+            let progress = reader.latest_chain(&id).unwrap().unwrap();
             assert_eq!(
                 reader
-                    .stored_range(&id, progress.chain, 0, progress.length, &engine.blobs)
+                    .stored_range(&id, progress.chain, 0, progress.stored, &engine.blobs)
                     .unwrap(),
                 bytes
             );
@@ -251,20 +251,20 @@ fn fifo_local_reference_child() {
     assert_eq!(
         reader
             .query(
-                "SELECT count(*) AS n FROM a.input WHERE format='codex-local-file'",
+                "SELECT count(*) AS n FROM a.input WHERE origin='codex-local-file'",
                 &[]
             )
             .unwrap()[0]["n"],
         0
     );
     let manifests = reader
-        .query("SELECT id FROM a.input WHERE format='tool-context'", &[])
+        .query("SELECT id FROM a.input WHERE origin='tool-context'", &[])
         .unwrap();
     assert_eq!(manifests.len(), 1);
     let id = manifests[0]["id"].as_str().unwrap();
-    let progress = reader.input_progress(id).unwrap().unwrap();
+    let progress = reader.latest_chain(id).unwrap().unwrap();
     let bytes = reader
-        .stored_range(id, progress.chain, 0, progress.length, &engine.blobs)
+        .stored_range(id, progress.chain, 0, progress.stored, &engine.blobs)
         .unwrap();
     let observation: Json = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(observation["status"], "unreadable");
@@ -416,9 +416,9 @@ fn recorded_directory_follows_turn_context_and_ignores_relative_cwd() {
         .unwrap();
     assert_eq!(rows.len(), 1);
     let input = rows[0]["input"].as_str().unwrap();
-    let p = r.input_progress(input).unwrap().unwrap();
+    let p = r.latest_chain(input).unwrap().unwrap();
     let bytes = r
-        .stored_range(input, p.chain, 0, p.length, &e.blobs)
+        .stored_range(input, p.chain, 0, p.stored, &e.blobs)
         .unwrap();
     let records: Vec<Json> = bytes
         .split(|b| *b == b'\n')
@@ -486,8 +486,8 @@ fn an_appended_rollout_reports_the_local_files_of_its_new_records() {
     let mut records = Vec::new();
     for row in rows {
         let id = row["input"].as_str().unwrap();
-        let p = r.input_progress(id).unwrap().unwrap();
-        let bytes = r.stored_range(id, p.chain, 0, p.length, &e.blobs).unwrap();
+        let p = r.latest_chain(id).unwrap().unwrap();
+        let bytes = r.stored_range(id, p.chain, 0, p.stored, &e.blobs).unwrap();
         for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
             records.push(serde_json::from_slice::<Json>(line).unwrap());
         }

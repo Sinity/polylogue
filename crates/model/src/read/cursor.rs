@@ -173,6 +173,10 @@ pub enum CursorError {
     Invalid,
     #[error("the read cursor belongs to another reading: {0}")]
     OtherReading(&'static str),
+    /// Issued by a build that read its options another way: refused as
+    /// stale, so the caller starts the reading again.
+    #[error("the read cursor was issued by an earlier build of Polylogue; read again without it")]
+    EarlierBuild,
     /// Issued before the index was rebuilt: refused as stale, never
     /// restarted and never confused with a broken cursor.
     #[error("the index was rebuilt since this cursor was issued")]
@@ -376,6 +380,9 @@ impl PageCursor {
         if self.target != target {
             return Err(CursorError::OtherReading("the target differs"));
         }
+        if !self.digest.starts_with(OPTIONS_DOMAIN) {
+            return Err(CursorError::EarlierBuild);
+        }
         if self.digest != digest {
             return Err(CursorError::OtherReading("the reading options differ"));
         }
@@ -392,10 +399,15 @@ impl PageCursor {
     }
 }
 
+/// The domain of the options digest, written before it. A cursor whose
+/// digest names no domain, or another, was issued by a build that read its
+/// options another way.
+const OPTIONS_DOMAIN: &str = "read-options-2:";
+
 /// The digest a cursor binds its reading options with.
 pub fn options_digest(parts: &impl Serialize) -> String {
     let bytes = serde_json::to_vec(parts).expect("reading options always encode");
-    blake3::hash(&bytes).to_hex().to_string()
+    format!("{OPTIONS_DOMAIN}{}", blake3::hash(&bytes).to_hex())
 }
 
 fn unhex(text: &str) -> Option<Vec<u8>> {

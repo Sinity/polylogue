@@ -227,7 +227,7 @@ pub(crate) fn write_bytes(
     seq: i64,
     agreement: Option<super::agreement::Agreement>,
 ) -> Result<(Option<i64>, Option<InputRows>)> {
-    tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
+    tx.prepare_cached("INSERT OR IGNORE INTO input(id, origin) VALUES (?1, ?2)")?
         .execute(params![b.input.id, b.input.format])?;
     for part in b.blobs.iter().flat_map(NewBlob::parts) {
         check_blob_size(tx, part)?;
@@ -596,7 +596,7 @@ pub(crate) fn check_import_format(
     else {
         return Ok(());
     };
-    let competing: bool = tx.scalar(&crate::source::Source::of(tx)?.sql("SELECT EXISTS(SELECT 1 FROM @source.input WHERE id=?1 AND format NOT IN ('export-file',?2))
+    let competing: bool = tx.scalar(&crate::source::Source::of(tx)?.sql("SELECT EXISTS(SELECT 1 FROM @source.input WHERE id=?1 AND origin NOT IN ('export-file',?2))
         OR EXISTS(SELECT 1 FROM @source.observation WHERE input=?1 AND class='imported' AND json_valid(details_json)
             AND json_type(details_json,'$.import_format')='text' AND json_extract(details_json,'$.import_format') NOT IN ('export-file',?2))"),
         params![input,format])?;

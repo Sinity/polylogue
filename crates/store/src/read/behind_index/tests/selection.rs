@@ -99,11 +99,14 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
     tx.execute("INSERT INTO input_ref(id) VALUES ('a')", [])
         .unwrap();
     for chain in 1..=chains {
-        tx.execute("INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,parse_version,checkpoint,reason)
-            SELECT pk,?1,?2,?3,?4,'old',zeroblob(16384),?5 FROM input_ref WHERE id='a'",
-            params![chain, match chain%4 {0=>"waiting",1=>"parsing",2=>"refused",_=>"done"},
-                if chain%4==3 {100+appends} else {0},
-                matches!(chain%4,0|2).then_some(100+appends),
+        let length = (100 + appends) as i64;
+        tx.execute("INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,resume,failure_kind,failure_detail)
+            SELECT pk,?1,?2,'old',?3,?4,?5,?6,?7 FROM input_ref WHERE id='a'",
+            params![chain, if chain%4==2 {"failed"} else {"parsed"},
+                if chain%4==3 {length} else {0},
+                match chain%4 {0|2 => length, _ => 0},
+                (chain%4!=2).then(|| vec![0u8; 16384]),
+                (chain%4==2).then_some("refused"),
                 (chain%4==2).then_some("synthetic refusal")]).unwrap();
     }
     tx.commit().unwrap();
@@ -117,44 +120,36 @@ fn newest_and_older_match_the_query_for_stored_histories() {
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let selected = vec!["a".into(), "a".into(), "zero".into(), "missing".into()];
-    for versions in ["[]", "[[\"native\",\"new\"]]"] {
-        for stopped in [0, 1] {
-            let old = query(
+    let old = query(&reader, ALL_CHAINS, &[]);
+    for chains in [
+        RevisionChains::All,
+        RevisionChains::Newest,
+        RevisionChains::Older,
+    ] {
+        for selection in [None, Some(selected.as_slice()), Some(&[][..])] {
+            let actual = query(
                 &reader,
-                ALL_CHAINS,
-                &[Value::Text(versions.into()), Value::Integer(stopped)],
+                &planning_sql(selection.is_some(), chains),
+                &[selection
+                    .map(|ids| Value::Text(serde_json::to_string(ids).unwrap()))
+                    .unwrap_or(Value::Null)],
             );
-            for chains in [
-                RevisionChains::All,
-                RevisionChains::Newest,
-                RevisionChains::Older,
-            ] {
-                for selection in [None, Some(selected.as_slice()), Some(&[][..])] {
-                    let actual = query(
-                        &reader,
-                        &planning_sql(selection.is_some(), chains),
-                        &[
-                            Value::Text(versions.into()),
-                            Value::Integer(stopped),
-                            selection
-                                .map(|ids| Value::Text(serde_json::to_string(ids).unwrap()))
-                                .unwrap_or(Value::Null),
-                        ],
-                    );
-                    assert_eq!(
-                        actual.rows,
-                        retain(&old.rows, chains, selection),
-                        "{chains:?} {selection:?} {versions} stopped={stopped}"
-                    );
-                }
-            }
+            assert_eq!(
+                actual.rows,
+                retain(&old.rows, chains, selection),
+                "{chains:?} {selection:?}"
+            );
         }
     }
     let newest = reader
-        .chains_behind_index(&[], StoppedChains::Finished, RevisionChains::Newest, None)
+        .chains_behind_index(
+            &[("native".into(), "new".into())],
+            RevisionChains::Newest,
+            None,
+        )
         .unwrap();
     let a = newest.iter().find(|c| c.input == "a").unwrap();
-    assert_eq!((a.progress.chain, a.progress.length), (1, 107));
+    assert_eq!((a.chain, a.stored), (1, 107));
     assert_eq!(a.source.path.as_deref(), Some("/home/op/chosen"));
     assert_eq!(
         a.source.path_bytes.as_deref(),
@@ -168,13 +163,9 @@ fn compare_work(chains: usize, appends: usize) -> (usize, usize) {
     history(&fixture, chains, appends);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let values = [
-        Value::Text("[[\"native\",\"new\"]]".into()),
-        Value::Integer(1),
-    ];
-    let old_newest = query(&reader, ALL_CHAINS, &values);
-    let old_older = query(&reader, ALL_CHAINS, &values);
-    let values = [values[0].clone(), values[1].clone(), Value::Null];
+    let old_newest = query(&reader, ALL_CHAINS, &[]);
+    let old_older = query(&reader, ALL_CHAINS, &[]);
+    let values = [Value::Null];
     let newest = query(
         &reader,
         &planning_sql(false, RevisionChains::Newest),

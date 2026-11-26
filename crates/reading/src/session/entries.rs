@@ -277,16 +277,11 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         Ok(out)
     }
 
-    /// Where the reading starts and where it ends.
+    /// Where the reading starts.
     pub(super) fn start(&self) -> (usize, usize) {
         self.spans
             .first()
             .map_or((0, 0), |span| (span.part, span.start))
-    }
-    pub(super) fn end(&self) -> (usize, usize) {
-        self.spans
-            .last()
-            .map_or((0, 0), |span| (span.part, span.end))
     }
 }
 

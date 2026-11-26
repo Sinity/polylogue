@@ -58,7 +58,6 @@ pub struct Job {
     /// The input's stored length once this job is written.
     pub length: u64,
     pub parser_state: Option<Json>,
-    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub parser_chain: Option<i64>,
     /// The bytes are stored and not parsed: parsing waits ([`Plan`]'s
     /// `storing_only`).
@@ -127,7 +126,6 @@ pub struct Done {
     /// The chain's committed reading does not stand at this job's start,
     /// or its carried parser state is gone: it is read from its first byte.
     pub restart: bool,
-    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
 }
 
 pub(crate) enum Task {
@@ -154,7 +152,6 @@ pub(crate) struct ChainDone {
 }
 
 pub(crate) struct ChainSettings {
-    pub stopped_attempt: polylogue_model::batch::StoppedAttempt,
     pub read_memory: u64,
     pub yielding: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -841,7 +838,6 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
 ) -> Result<bool, EngineError> {
     let stop = archive.stop();
     let yielding = &settings.yielding;
-    let stopped_attempt = &settings.stopped_attempt;
     if yielding.load(std::sync::atomic::Ordering::Acquire) {
         return Ok(false);
     }
@@ -882,7 +878,7 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
                 decoded.push(new);
                 files.extend(file);
             }
-            let (mut step, cursor) = item.into_parse(plan, blobs, stopped_attempt)?;
+            let (mut step, cursor) = item.into_parse(plan, blobs)?;
             keep(
                 sink,
                 PreparedBatch {
@@ -928,7 +924,7 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
                 return Ok(false);
             }
             stop.check()?;
-            let job = plan.next_job(stopped_attempt);
+            let job = plan.next_job();
             if names.is_none() {
                 names = crate::chain_names::open(
                     archive,
@@ -1000,7 +996,7 @@ fn failed(
     prepare: bool,
     failure: polylogue_model::ChainFailure,
 ) -> Vec<ParseStep> {
-    let step = failed_step(job, failure.to_string(), prepare);
+    let step = failed_step(job, failure.clone(), prepare);
     out.error = Some(failure.into());
     out.failure_recorded = true;
     vec![step]
@@ -1008,17 +1004,10 @@ fn failed(
 
 /// The record of a parse that failed: no rows, and the chain's cursor stays
 /// where this parse began.
-fn failed_step(job: &Job, error: String, prepare: bool) -> ParseStep {
-    let mut failed = ParseStep::new(
-        Default::default(),
-        Default::default(),
-        job.start..job.start,
-        false,
-    );
+fn failed_step(job: &Job, failure: polylogue_model::ChainFailure, prepare: bool) -> ParseStep {
+    let mut failed = ParseStep::failed(job.start..job.start, failure);
     failed.reset = false;
-    failed.progress = polylogue_model::batch::StepProgress::Failed { error };
     failed.parse_version = job.origin.parse_version();
-    failed.stopped_attempt = job.stopped_attempt;
     if prepare {
         failed.prepare();
     }
@@ -1054,7 +1043,6 @@ pub(crate) fn run(
         content_refused: false,
         failure_recorded: false,
         restart: false,
-        checkpoint: None,
     };
     if stop.is_cancelled() {
         out.cancelled = true;
@@ -1313,19 +1301,7 @@ pub(crate) fn run(
                             job.at_end,
                         );
                         p.order_from = parser.is_document().then_some(0);
-                        if job.origin.support == polylogue_sources::Support::NoParser {
-                            p.progress = polylogue_model::batch::StepProgress::NoParserYet {
-                                at_end: job.at_end,
-                            };
-                        }
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
-                        if matches!(
-                            p.progress,
-                            polylogue_model::batch::StepProgress::Failed { .. }
-                                | polylogue_model::batch::StepProgress::Refused { .. }
-                        ) {
-                            p.stopped_attempt = job.stopped_attempt;
-                        }
                         if job.origin.is_row_dump(&job.path) {
                             let start = step.start as usize;
                             let end = step.consumed as usize;
@@ -1347,17 +1323,10 @@ pub(crate) fn run(
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
                     }
-                    if let Some(last) = parsed.last_mut()
-                        && !matches!(
-                            last.progress,
-                            polylogue_model::batch::StepProgress::NoParserYet { .. }
-                        )
-                    {
+                    if let Some(last) = parsed.last_mut() {
                         // A finished input never grows, so nothing continues it.
                         if !job.finished {
-                            last.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
-                                last.parse_version.clone(),
-                                last.parsed_upto,
+                            last.resume = Some(polylogue_model::chain::ParserState(
                                 out.parser_state.clone().filter(|state| !state.is_null()),
                             ));
                         }
@@ -1375,11 +1344,15 @@ pub(crate) fn run(
             {
                 return Vec::new();
             }
-            let mut step = ParseStep::without_parser(
+            // A row-dump origin's file that is not a row dump: its bytes
+            // are kept, and its parse holds no records.
+            let mut step = ParseStep::new(
+                Default::default(),
+                Default::default(),
                 job.start..job.end,
                 job.at_end,
-                job.origin.parse_version(),
             );
+            step.parse_version = job.origin.parse_version();
             if prepare {
                 step.prepare();
             }
@@ -1405,7 +1378,6 @@ pub(crate) fn run(
             return (None, out);
         }
     }
-    out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
     let batch = Batch {
         input: job.input,
         change: job.change,

@@ -310,7 +310,7 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
             .self_session =
             Some(SessionId::parse(&format!("codex:{}", "synthetic-session".repeat(3000))).unwrap());
         binding.binding.original_mut().unwrap().presentation = ExecutionPresentation::Read {
-            options: polylogue_model::read::ReadOptions::default(),
+            options: Default::default(),
             delivery: polylogue_model::read::ReadDelivery::Page,
             format: polylogue_model::read::Format::Json,
             page_budget: Some(Default::default()),
