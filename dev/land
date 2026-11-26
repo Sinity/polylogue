@@ -307,16 +307,18 @@ query($owner: String!, $name: String!) {
         fi
     done
 
-    # Updates: at most one in flight among pull requests whose packages overlap.
+    # Updates: a stale pull request waits only for an older (lower-numbered)
+    # one in flight whose packages overlap, so the oldest always moves.
     for line in "${stale_rows[@]}"; do
         parse_row "$line"
         tested=${tested_of[$number]-}
         decide
         blocker=
         for flight in "${in_flight[@]}"; do
+            [ "${flight%% *}" -lt "$number" ] || continue
             overlap "$pr_units" "$(tr ' ' '\n' <<<"${flight#* }")" && { blocker=${flight%% *}; break; }
         done
-        if [ -n "$blocker" ]; then entry waiting "stale: $reason; waits for #$blocker, in flight with overlapping packages"; continue; fi
+        if [ -n "$blocker" ]; then entry waiting "stale: $reason; waits for older #$blocker, in flight with overlapping packages"; continue; fi
         if $dry_run || result=$(gh pr update-branch "$number" -R "$owner/$name" 2>&1); then
             entry "${would}update" "$reason"
             changed=true

@@ -289,9 +289,11 @@ comment, parks a finished pull request.
 minute apart. Each pass reads every open pull request with two GraphQL calls,
 merges the ready ones that are current, oldest first, deciding each against
 master's tip after the merge before it, and then updates the stale ones
-without waiting for their checks. Of the pull requests whose package sets
-overlap, at most one is in flight at a time, since each merge makes its
-overlapping siblings stale again. In flight means updated in this pass, or
+without waiting for their checks. A stale pull request waits while an older
+(lower-numbered) pull request whose package set overlaps is in flight, since
+merging that one would make it stale again; younger ones in flight do not hold
+it back, so the oldest ready pull request always moves, at the cost of an
+occasional wasted run for a younger sibling. In flight means updated in this pass, or
 with jobs of its check queued or running on its head, whoever pushed it; each
 pass reads this afresh, so when that check goes red or the pull request
 becomes a draft, held or conflicting, the next pass updates the next stale
