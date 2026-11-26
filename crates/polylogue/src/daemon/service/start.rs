@@ -397,8 +397,6 @@ pub fn start(
         status: Arc::clone(&status),
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
-        #[cfg(test)]
-        signal_trace: Mutex::new(None),
         idle_gate: crate::daemon::schema::IdleGate::default(),
     });
     let acts_worker = {

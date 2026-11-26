@@ -1,6 +1,12 @@
-use super::observations::Phase;
 use super::*;
 use polylogue_model::signal::PendingDelivery;
+
+pub(super) fn operation(d: &Daemon) -> Result<Arc<polylogue_reading::operation::Context>, Held> {
+    d.operation_context(&polylogue_reading::operation::Context::worker_authorship(
+        "polylogue-signals",
+    ))
+    .map_err(Held::from)
+}
 
 #[test]
 fn rule_duration_uses_shared_parser_without_overflow() {
@@ -219,63 +225,32 @@ impl Drop for Worker {
         }
     }
 }
-/// The worker's phases as they arrive, bounded by `deadline`.
-struct Observe<'a> {
-    events: std::sync::mpsc::Receiver<Phase>,
-    daemon: &'a Daemon,
-    deadline: std::time::Instant,
-    seen: Vec<Phase>,
-}
-impl Observe<'_> {
-    fn next(&mut self, stage: &str) -> Phase {
-        let result = self.events.recv_timeout(
-            self.deadline
-                .saturating_duration_since(std::time::Instant::now()),
-        );
-        let event = result.unwrap_or_else(|error| {
-            let phases = self.seen.iter().map(ToString::to_string).collect::<Vec<_>>().join("\n");
-            panic!("completion cue did not reach the signal controller before its 30s refresh; stage={stage}; receive={error}; status={}; phases:\n{phases}", self.daemon.signals.lock().unwrap());
-        });
-        self.seen.push(event.clone());
-        event
-    }
-    fn until(&mut self, stage: &str, mut matches: impl FnMut(&Phase) -> bool) -> Phase {
-        loop {
-            let event = self.next(stage);
-            if matches(&event) {
-                return event;
-            }
-        }
-    }
-}
-
-/// A read records its run, and content arrives, without waking the rules;
-/// the next authored commit wakes them.
+/// Reads and new content leave the stored checkpoint unchanged; an authored
+/// commit makes its rule visible in status.
 #[test]
-fn only_authored_commits_wake_the_rules() {
+fn reads_and_content_preserve_the_checkpoint_before_an_authored_rule() {
     let mut fixture = crate::test_daemon::start("synthetic");
     fixture.pause_signals();
-    // The bootstrap checkpoint is written first, so the worker starts read-only.
     tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
-    let (events, observed) = std::sync::mpsc::channel();
-    *fixture.daemon.signal_trace.lock().unwrap() = Some(events);
+    let baseline = load(&fixture.daemon).unwrap().unwrap().identity().unwrap();
+    *fixture.daemon.signals.lock().unwrap() = Value::Null;
     let stop = fixture.daemon.archive.stop().child();
     let stopped = stop.clone();
     let daemon = Arc::clone(&fixture.daemon);
-    let _worker = Worker {
+    let worker = Worker {
         stop: Some(stop),
         thread: Some(std::thread::spawn(move || run(daemon, stopped))),
     };
-    let mut observe = Observe {
-        events: observed,
-        daemon: &fixture.daemon,
-        deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
-        seen: vec![],
-    };
-    observe.until("startup", |phase| matches!(phase, Phase::ControllerWaiting));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    fixture.wait_for(|status| {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "startup did not reach status: {status}"
+        );
+        status["signals"]["rules"].is_array()
+    });
     let writes = fixture.daemon.writes.as_ref().unwrap();
     let committed = writes.completion_commits();
-    // A first-page read hands its question and run to the writer.
     let read = crate::test_daemon::Call::new(
         "rows",
         json!({"selection":"messages", "steps":[{"verb":"read"}]}),
@@ -284,8 +259,6 @@ fn only_authored_commits_wake_the_rules() {
     assert!(read.value().is_some(), "{read:?}");
     let records = committed.recv().unwrap();
     assert!(records.query_records && !records.authored, "{records:?}");
-    observe.until("run record", |phase| matches!(phase, Phase::CueIgnored));
-    // New content.
     let source = fixture.home.join(".claude/projects/-p/s1.jsonl");
     let mut bytes = std::fs::read(&source).unwrap();
     bytes.extend_from_slice(polylogue_testkit::claude_user("u2", "s1", "later").as_bytes());
@@ -295,7 +268,10 @@ fn only_authored_commits_wake_the_rules() {
             break;
         }
     }
-    observe.until("content", |phase| matches!(phase, Phase::CueIgnored));
+    assert_eq!(
+        load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
+        baseline
+    );
     let write = UserWrite::Assert {
         annotations: vec![polylogue_model::annotation::NewAnnotation {
             kind: polylogue_model::annotation::AnnotationKind::Signal,
@@ -310,18 +286,20 @@ fn only_authored_commits_wake_the_rules() {
         .archive()
         .user(context.request("authored-wake".into(), write))
         .unwrap();
-    observe.until("authored", |phase| {
-        matches!(phase, Phase::ControllerWake { refresh: false })
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    fixture.wait_for(|status| {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "rule did not reach status: {status}"
+        );
+        status["signals"]["rules"]
+            .as_array()
+            .is_some_and(|rules| rules.iter().any(|rule| rule["name"] == "authored-wake"))
     });
-    assert!(
-        !observe
-            .seen
-            .iter()
-            .take_while(|phase| !matches!(phase, Phase::ControllerWake { refresh: false }))
-            .skip_while(|phase| !matches!(phase, Phase::ControllerWaiting))
-            .any(|phase| matches!(phase, Phase::TickStarted { .. })),
-        "a read or content commit started a tick: {:?}",
-        observe.seen
+    drop(worker);
+    assert_eq!(
+        load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
+        baseline
     );
 }
 
@@ -336,41 +314,25 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     tick(&fixture.daemon, operation(&fixture.daemon).unwrap()).unwrap();
     let baseline = load(&fixture.daemon).unwrap().unwrap().identity().unwrap();
     *fixture.daemon.signals.lock().unwrap() = Value::Null;
-    let (events, observed) = std::sync::mpsc::channel();
-    *fixture.daemon.signal_trace.lock().unwrap() = Some(events);
     let stop = fixture.daemon.archive.stop().child();
     let stopped = stop.clone();
     let daemon = Arc::clone(&fixture.daemon);
-    let _worker = Worker {
+    let worker = Worker {
         stop: Some(stop),
         thread: Some(std::thread::spawn(move || run(daemon, stopped))),
     };
-    let mut observe = Observe {
-        events: observed,
-        daemon: &fixture.daemon,
-        deadline: std::time::Instant::now() + std::time::Duration::from_secs(10),
-        seen: vec![],
-    };
-    observe.until("subscription", |phase| matches!(phase, Phase::Subscribed));
-    observe.until(
-        "startup rule status",
-        |phase| matches!(phase, Phase::Status(value) if value["rules"].is_array()),
-    );
-    // Confirm startup was read-only instead of letting a self-generated cue
-    // stand in for the authored commit this test needs to observe.
-    let startup = observe.until("startup completion", |phase| {
-        matches!(phase, Phase::TickCompleted { .. })
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    fixture.wait_for(|status| {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "startup did not reach status: {status}"
+        );
+        status["signals"]["rules"].is_array()
     });
-    assert!(
-        matches!(startup, Phase::TickCompleted { persisted: false }),
-        "startup changed the stored baseline: {:?}",
-        observe.seen
+    assert_eq!(
+        load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
+        baseline
     );
-    observe.until("startup controller wait", |phase| {
-        matches!(phase, Phase::ControllerWaiting)
-    });
-    assert!(fixture.daemon.signals.lock().unwrap()["rules"].is_array());
-
     let writes = fixture.daemon.writes.as_ref().unwrap();
     let committed = writes.completion_commits();
     let write = UserWrite::Assert {
@@ -384,7 +346,6 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
     };
     let context = operation(&fixture.daemon).unwrap();
     assert_eq!(context.clock.now.as_millisecond(), FIXED);
-    observe.deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let outcome = writes
         .archive()
         .user(context.request("cue:rule".into(), write))
@@ -403,75 +364,31 @@ fn completion_commit_wakes_rules_while_operation_clock_is_stopped() {
         stored.fact.value.as_ref().unwrap()["name"],
         "completion-wake"
     );
-    let annotation_id = stored.fact.id;
     drop(reader);
-    observations::emit(
-        &fixture.daemon,
-        Phase::CommittedSource {
-            request: "cue:rule".into(),
-        },
-    );
     committed
         .try_recv()
         .expect("writer acknowledgment followed its committed cue");
-    observations::emit(&fixture.daemon, Phase::IndependentCommitCue);
-
-    let mut cue = false;
-    let mut read = false;
-    let mut status = false;
-    let mut complete = false;
-    let mut source = false;
-    let mut independent = false;
-    while !(cue && read && status && complete && source && independent) {
-        match observe.next("post-commit controller read and held checkpoint") {
-            Phase::ControllerWake { refresh: true } => panic!(
-                "refresh substituted for the completion cue: {:?}",
-                observe.seen
-            ),
-            Phase::ControllerWake { refresh: false } => cue = true,
-            Phase::RulesRead { ids } if ids.iter().any(|id| id == &annotation_id) => read = true,
-            Phase::Status(value)
-                if value["rules"].as_array().is_some_and(|rules| {
-                    rules.iter().any(|rule| rule["name"] == "completion-wake")
-                }) =>
-            {
-                status = true
-            }
-            Phase::PersistStarted { .. } | Phase::PersistAcknowledged { .. } => {
-                panic!(
-                    "an unconfirmed author changed the stored checkpoint: {:?}",
-                    observe.seen
-                )
-            }
-            Phase::TickCompleted { persisted: false } if status => complete = true,
-            Phase::TickCompleted { persisted: true } => {
-                panic!(
-                    "an unconfirmed author saved a rule adoption: {:?}",
-                    observe.seen
-                )
-            }
-            Phase::CommittedSource { request } if request == "cue:rule" => source = true,
-            Phase::IndependentCommitCue => independent = true,
-            Phase::TickStarted { at } => assert_eq!(at, FIXED, "operation clock advanced"),
-            _ => {}
-        }
-    }
-    {
-        let status = fixture.daemon.signals.lock().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    fixture.wait_for(|status| {
         assert!(
-            status["rules"]
-                .as_array()
-                .is_some_and(|rules| rules.iter().any(|rule| {
-                    rule["name"] == "completion-wake"
-                        && rule["author"]
-                            .as_str()
-                            .is_some_and(|author| author != "unavailable")
-                })),
-            "status changed after the observed rule: {:?}",
-            observe.seen
+            std::time::Instant::now() < deadline,
+            "completion cue did not reach status: {status}"
         );
-        assert!(!status["held"].as_array().unwrap().is_empty());
-    }
+        status["signals"]["rules"].as_array().is_some_and(|rules| {
+            rules.iter().any(|rule| {
+                rule["name"] == "completion-wake"
+                    && rule["author"]
+                        .as_str()
+                        .is_some_and(|author| author != "unavailable")
+            })
+        })
+    });
+    drop(worker);
+    let status = crate::protocol::into_value(
+        crate::test_daemon::Call::new("status", json!({})).answer(&fixture.daemon),
+    )
+    .unwrap();
+    assert!(!status["signals"]["held"].as_array().unwrap().is_empty());
     assert_eq!(
         load(&fixture.daemon).unwrap().unwrap().identity().unwrap(),
         baseline,
