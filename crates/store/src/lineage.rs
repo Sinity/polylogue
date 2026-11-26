@@ -34,7 +34,7 @@ pub(crate) fn is_lineage(kind: &str) -> bool {
 /// Only the affected child's indexed edge set is read while writing.
 pub(crate) fn relation_identity(conn: &Connection, child: &str) -> Result<String> {
     conn.value(
-        "SELECT json_group_array(json_array(pk,parent_id,child_id,kind,how,branch_point,spawning_call,copies_prefix))
+        "SELECT json_group_array(json_array(pk,parent_id,child_id,kind,reason,branch_point,spawning_call,copies_prefix))
          FROM (SELECT * FROM session_link WHERE child_id=?1 ORDER BY pk)",
         [child],
     )?
@@ -89,15 +89,15 @@ row! {
         parent_id: String,
         child_id: String,
         kind: String,
-        how: Option<String>,
+        reason: Option<String>,
         branch_point: Option<String>,
         spawning_call: Option<String>,
         copies_prefix: bool,
     }
     statements {
-        const OF_PARENT = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
+        const OF_PARENT = "SELECT parent_id, child_id, kind, reason, branch_point, spawning_call, copies_prefix
             FROM session_link INDEXED BY session_link_parent WHERE parent_id = ?1 ORDER BY pk";
-        const OF_CHILD = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
+        const OF_CHILD = "SELECT parent_id, child_id, kind, reason, branch_point, spawning_call, copies_prefix
             FROM session_link INDEXED BY session_link_child WHERE child_id = ?1 ORDER BY pk";
     }
 }
@@ -132,7 +132,7 @@ fn links_where(conn: &Connection, end: End, session: &str) -> Result<Vec<Session
             parent: link.parent_id,
             child: link.child_id,
             kind: link.kind,
-            how: link.how,
+            how: link.reason,
             branch_point: link.branch_point,
             spawning_call: link.spawning_call,
         })

@@ -683,13 +683,13 @@ impl Fixture {
 
     pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: Option<&str>) -> Result<()> {
         self.index.execute(
-            "INSERT INTO link_statement(parent_id, child_id, kind, how, copies_prefix, evidence, input_pk)
+            "INSERT INTO link_statement(parent_id, child_id, kind, reason, copies_prefix, evidence, input_pk)
              VALUES (?1, ?2, ?3, ?4, 0, 'fixture', ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
         // As assembly resolves a relation with one statement.
         self.index.execute(
-            "INSERT INTO session_link(parent_id, child_id, kind, how, copies_prefix, evidence, source_chain, input_pk)
+            "INSERT INTO session_link(parent_id, child_id, kind, reason, copies_prefix, evidence, source_chain, input_pk)
              VALUES (?1, ?2, ?3, ?4, 0, 'fixture', 0, ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
@@ -707,13 +707,13 @@ impl Fixture {
     /// A link whose child repeats its parent's prefix.
     pub fn copying_link(&mut self, parent: &str, child: &str, kind: &str) -> Result<()> {
         self.index.execute(
-            "INSERT INTO link_statement(parent_id, child_id, kind, how, copies_prefix, evidence, input_pk)
+            "INSERT INTO link_statement(parent_id, child_id, kind, reason, copies_prefix, evidence, input_pk)
              VALUES (?1, ?2, ?3, ?4, 1, 'fixture', ?5)",
             params![parent, child, kind, None::<&str>, self.input_pk],
         )?;
         // As assembly resolves a relation with one statement.
         self.index.execute(
-            "INSERT INTO session_link(parent_id, child_id, kind, how, copies_prefix, evidence, source_chain, input_pk)
+            "INSERT INTO session_link(parent_id, child_id, kind, reason, copies_prefix, evidence, source_chain, input_pk)
              VALUES (?1, ?2, ?3, ?4, 1, 'fixture', 0, ?5)",
             params![parent, child, kind, None::<&str>, self.input_pk],
         )?;

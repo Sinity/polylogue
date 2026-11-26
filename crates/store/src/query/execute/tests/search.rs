@@ -118,7 +118,7 @@ fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
     if cycle {
         // Search reachability is bounded even when stored source links cycle.
         // This test reads query rows, independently of transcript layout indexes.
-        conn.execute("INSERT INTO session_link(parent_id,child_id,kind,how,evidence,input_pk)
+        conn.execute("INSERT INTO session_link(parent_id,child_id,kind,reason,evidence,input_pk)
           VALUES('test:deep','test:leaf','spawn',NULL,'fixture',(SELECT pk FROM input_ref LIMIT 1))", []).unwrap();
     }
     drop(conn);

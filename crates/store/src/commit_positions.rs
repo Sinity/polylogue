@@ -68,7 +68,7 @@ impl Reader<'_> {
     pub fn link_commit(&self, link: &Link) -> Result<Option<u64>> {
         let kind = link.kind.as_str();
         let how = link.how.map(|how| how.as_str());
-        self.greatest_commit("SELECT s.committed FROM link_parse s WHERE s.parent_id=?1 AND s.child_id=?2 AND s.kind=?3 AND s.how IS ?4 UNION ALL SELECT committed FROM shared_prefix WHERE parent_id=?1 AND child_id=?2", params![link.parent.to_string(),link.child.to_string(),kind,how])
+        self.greatest_commit("SELECT s.committed FROM link_parse s WHERE s.parent_id=?1 AND s.child_id=?2 AND s.kind=?3 AND s.reason IS ?4 UNION ALL SELECT committed FROM shared_prefix WHERE parent_id=?1 AND child_id=?2", params![link.parent.to_string(),link.child.to_string(),kind,reason])
     }
 }
 

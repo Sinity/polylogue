@@ -439,7 +439,7 @@ fn link_statements_resolve_to_relations() {
             assert_eq!(relation.evidence, "field.0");
             assert_eq!(relation.copies_prefix, copies);
             conn.execute(
-                "INSERT INTO session_link(parent_id, child_id, kind, how, copies_prefix, branch_point,
+                "INSERT INTO session_link(parent_id, child_id, kind, reason, copies_prefix, branch_point,
                      spawning_call, evidence, source_chain, input_pk)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, (SELECT min(pk) FROM input_ref))",
                 params![

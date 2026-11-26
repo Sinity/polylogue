@@ -1288,9 +1288,9 @@ fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
 fn links_identity(conn: &Connection, session_pk: i64) -> Result<Vec<u8>> {
     let mut digest = blake3::Hasher::new();
     let mut statement = conn.prepare_cached(
-        "SELECT l.parent_id, l.kind, l.how, coalesce(l.branch_point, ''), coalesce(l.spawning_call, ''), CAST(l.copies_prefix AS TEXT)
+        "SELECT l.parent_id, l.kind, l.reason, coalesce(l.branch_point, ''), coalesce(l.spawning_call, ''), CAST(l.copies_prefix AS TEXT)
          FROM session_link l JOIN session s ON s.id = l.child_id
-         WHERE s.pk = ?1 ORDER BY l.parent_id,l.kind,l.how,l.branch_point,l.spawning_call",
+         WHERE s.pk = ?1 ORDER BY l.parent_id,l.kind,l.reason,l.branch_point,l.spawning_call",
     )?;
     let mut rows = statement.query([session_pk])?;
     while let Some(row) = rows.next()? {

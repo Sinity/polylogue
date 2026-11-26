@@ -292,7 +292,7 @@ impl<'a> Compiler<'a> {
             .flatten();
         let alternate = if let Some(languages) = alternate_languages {
             let alternates = format!("{cte}_alternates");
-            self.ctes.push(format!("{alternates} AS MATERIALIZED (SELECT vt.alternate,vt.n,bm25(alternate_fts) AS rank FROM alternate_fts JOIN alternate_text vt ON vt.rowid=alternate_fts.rowid WHERE alternate_fts MATCH {param})"));
+            self.ctes.push(format!("{alternates} AS MATERIALIZED (SELECT vt.alternate,vt.position,bm25(alternate_fts) AS rank FROM alternate_fts JOIN alternate_text vt ON vt.rowid=alternate_fts.rowid WHERE alternate_fts MATCH {param})"));
             let mut language = Vec::new();
             for lang in languages {
                 language.push(self.text_param(lang));
@@ -303,7 +303,7 @@ impl<'a> Compiler<'a> {
                 format!(" AND av.to_lang IN ({})", language.join(","))
             };
             let from = format!(
-                "FROM {alternates} ah JOIN source_alternate_part ap ON ap.alternate=ah.alternate AND ap.position=ah.n JOIN source_alternate av ON av.id=ap.alternate WHERE {} AND {}{language}",
+                "FROM {alternates} ah JOIN source_alternate_part ap ON ap.alternate=ah.alternate AND ap.position=ah.position JOIN source_alternate av ON av.id=ap.alternate WHERE {} AND {}{language}",
                 crate::alternates::current_sql("av"),
                 fields::message_alternate_match("av", "ap", &a.m)
             );

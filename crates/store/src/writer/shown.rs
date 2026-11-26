@@ -484,8 +484,8 @@ impl<'c> Work<'_, 'c> {
             for row in self
                 .tx()
                 .prepare_cached(
-                    "SELECT parent_id,child_id,kind,how,branch_point,spawning_call FROM link_statement WHERE parent_id=?1
-                     UNION SELECT parent_id,child_id,kind,how,branch_point,spawning_call FROM link_statement WHERE child_id=?1",
+                    "SELECT parent_id,child_id,kind,reason,branch_point,spawning_call FROM link_statement WHERE parent_id=?1
+                     UNION SELECT parent_id,child_id,kind,reason,branch_point,spawning_call FROM link_statement WHERE child_id=?1",
                 )?
                 .query_map([session], |row| {
                     <(String, String, String, Option<String>, Option<String>, Option<String>)>::try_from(row)
@@ -640,7 +640,7 @@ impl<'c> Work<'_, 'c> {
                 .tx()
                 .prepare_cached(
                     "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.position,
-                         r.record_position,r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
+                         r.record_position,r.order_time,r.route,r.state,r.id_kind='content',r.hash,
                          r.content_group,r.content_start,r.content_length
                      FROM message_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.message_id=?1",
                 )?
@@ -1790,7 +1790,7 @@ impl<'c> Work<'_, 'c> {
             Option<String>,
         ) = serde_json::from_slice(shown)?;
         let stored: Option<i64> = self.tx().scalar_optional(
-            "SELECT pk FROM link_statement WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
+            "SELECT pk FROM link_statement WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
             params![parent, child, kind, how, at, call],
         )?;
         let winner = compose::value(
@@ -1833,7 +1833,7 @@ impl<'c> Work<'_, 'c> {
             None => {
                 self.context.changes.link_child(self.tx(), &child)?;
                 self.tx().prepare_cached(
-                    "INSERT INTO link_statement(parent_id,child_id,kind,how,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix)
+                    "INSERT INTO link_statement(parent_id,child_id,kind,reason,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix)
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 )?
                 .execute(params![parent, child, kind, how, link.evidence, input_pk, chain, at, call, link.copies_prefix])?;
@@ -1856,7 +1856,7 @@ impl<'c> Work<'_, 'c> {
             .tx()
             .prepare_cached(
                 "SELECT pk, branch_point, spawning_call, copies_prefix, evidence, source_chain, input_pk
-                 FROM link_statement WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4
+                 FROM link_statement WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4
                  ORDER BY pk",
             )?
             .query_map(params![parent, child, kind, how], |r| {
@@ -1875,7 +1875,7 @@ impl<'c> Work<'_, 'c> {
             .tx()
             .prepare_cached(
                 "SELECT branch_point, spawning_call, copies_prefix, evidence, source_chain, input_pk
-                 FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4
+                 FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4
                  ORDER BY pk",
             )?
             .query_map(params![parent, child, kind, how], |r| {
@@ -1895,13 +1895,13 @@ impl<'c> Work<'_, 'c> {
         self.context.changes.link_child(self.tx(), &child)?;
         self.tx()
             .prepare_cached(
-                "DELETE FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4",
+                "DELETE FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND reason IS ?4",
             )?
             .execute(params![parent, child, kind, how])?;
         for relation in &resolved {
             self.tx()
                 .prepare_cached(
-                    "INSERT INTO session_link(parent_id,child_id,kind,how,copies_prefix,branch_point,
+                    "INSERT INTO session_link(parent_id,child_id,kind,reason,copies_prefix,branch_point,
                          spawning_call,evidence,source_chain,input_pk)
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 )?

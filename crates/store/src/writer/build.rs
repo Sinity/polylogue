@@ -1038,7 +1038,7 @@ fn compose_records(
         // In each chain's order, so that its texts are read group by group.
         let mut statement = tx.prepare_cached(
             "SELECT r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.position,r.record_position,
-                 r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
+                 r.order_time,r.route,r.state,r.id_kind='content',r.hash,
                  r.content_group,r.content_start,r.content_length,r.layout
              FROM message_parse r ORDER BY r.position,r.record_position",
         )?;

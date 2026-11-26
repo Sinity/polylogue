@@ -40,7 +40,7 @@ fn batched_hits_keep_priority_scope_and_cyclic_ancestry() {
         .link("test:snippet-root", "test:snippet-leaf", "spawn", None)
         .unwrap();
     let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
-    write.execute("INSERT INTO session_link(parent_id,child_id,kind,how,evidence,input_pk) VALUES('test:snippet-leaf','test:snippet-root','spawn',NULL,'fixture',(SELECT pk FROM input_ref LIMIT 1))",[]).unwrap();
+    write.execute("INSERT INTO session_link(parent_id,child_id,kind,reason,evidence,input_pk) VALUES('test:snippet-leaf','test:snippet-root','spawn',NULL,'fixture',(SELECT pk FROM input_ref LIMIT 1))",[]).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let terms = [

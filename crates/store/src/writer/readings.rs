@@ -602,13 +602,13 @@ fn write_messages(
             let message = &row.message;
             tx.prepare_cached(
                 "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_length,position,record_position,
-                     at,route,completion,id_kind,hash,layout,response_key,content_name,
+                     at,route,state,id_kind,hash,layout,response_key,content_name,
                      content_group,content_start,content_length)
                  VALUES (?1,?2,?3,?4,?5,?6-?5,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
                  ON CONFLICT(input_pk,chain,message_id) DO UPDATE SET session_id=excluded.session_id,
                      source_start=excluded.source_start,source_length=excluded.source_length,seq=excluded.seq,
                      record_position=excluded.record_position,at=excluded.at,route=excluded.route,
-                     completion=excluded.completion,id_kind=excluded.id_kind,hash=excluded.hash,
+                     state=excluded.state,id_kind=excluded.id_kind,hash=excluded.hash,
                      layout=excluded.layout,response_key=excluded.response_key,content_name=excluded.content_name,
                      content_group=excluded.content_group,
                      content_start=excluded.content_start,content_length=excluded.content_length",
@@ -722,7 +722,7 @@ fn write_injection_fields(
     let insert = |block: u64, field: StatedHookField| -> Result<()> {
         field.validate()?;
         tx.prepare_cached(
-            "INSERT OR IGNORE INTO message_injection_field(input_pk,chain,message_id,block_ordinal,field) VALUES (?1,?2,?3,?4,?5)",
+            "INSERT OR IGNORE INTO message_injection_field(input_pk,chain,message_id,source_block_position,field) VALUES (?1,?2,?3,?4,?5)",
         )?
         .execute(params![chain.input_pk, chain.chain, message, block.to_string(), serde_json::to_string(&field)?])?;
         Ok(())
@@ -959,7 +959,7 @@ fn write_links(
             merged = merge_link(merged, stored);
         }
         tx.prepare_cached(
-            "INSERT INTO link_parse(input_pk,chain,statement,parent_id,child_id,kind,how,route,hash,body,committed)
+            "INSERT INTO link_parse(input_pk,chain,statement,parent_id,child_id,kind,reason,route,hash,body,committed)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
              ON CONFLICT(input_pk,chain,statement) DO UPDATE SET route=excluded.route,hash=excluded.hash,
                  body=excluded.body,committed=coalesce(max(link_parse.committed,excluded.committed),link_parse.committed,excluded.committed)",

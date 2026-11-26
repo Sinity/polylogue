@@ -196,7 +196,7 @@ CREATE TABLE message_parse (
                                             --   before it in its chain and session; NULL before any time
   at                INTEGER,                -- this reading's own source time (ms)
   route             TEXT NOT NULL CHECK (route IN (@names(Route))),
-  completion        TEXT NOT NULL CHECK (completion IN (@names(Completion))),
+  state        TEXT NOT NULL CHECK (state IN (@names(Completion))),
   id_kind           TEXT NOT NULL CHECK (id_kind IN (@names(IdKind))),
   hash              BLOB NOT NULL,          -- the message's content hash (its version)
   layout            BLOB NOT NULL,          -- original block count and selected ordinals
@@ -278,7 +278,7 @@ CREATE INDEX event_parse_session ON event_parse(session_id) WHERE session_id IS 
 CREATE INDEX event_parse_group ON event_parse(content_group);   -- whether a group is still named
 
 -- One chain's statement of a link between sessions. `statement` is the
--- link's coordinates (parent, child, kind, how, branch point, spawning
+-- link's coordinates (parent, child, kind, reason, branch point, spawning
 -- call) as the chain names them.
 CREATE TABLE link_parse (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
@@ -287,7 +287,7 @@ CREATE TABLE link_parse (
   parent_id         TEXT NOT NULL,
   child_id          TEXT NOT NULL,
   kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
-  how               TEXT CHECK (how IN (@names(ReferenceReason))),
+  reason               TEXT CHECK (reason IN (@names(ReferenceReason))),
   route             TEXT NOT NULL CHECK (route IN (@names(Route))),
   hash              BLOB NOT NULL,
   body              BLOB NOT NULL,          -- the model Link as JSON
@@ -466,7 +466,7 @@ INSERT INTO tool_call_trigram(tool_call_trigram, rank) VALUES ('hashsize', 67108
 
 -- Each shown statement of a link: one row per distinct statement the
 -- readings make, with its winning reading's evidence and input. Assembly
--- resolves the statements of each (parent, child, kind, how) into
+-- resolves the statements of each (parent, child, kind, reason) into
 -- `session_link`; only assembly reads these rows.
 CREATE TABLE link_statement (
   pk                INTEGER PRIMARY KEY,
@@ -474,7 +474,7 @@ CREATE TABLE link_statement (
   child_id          TEXT NOT NULL,          -- natural session id of the child (may not be ingested yet: a parent's
                                             --   thread_spawn_edges, continued-in or job children name it first)
   kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
-  how               TEXT CHECK (how IN (@names(ReferenceReason))),  -- a reference's reason
+  reason               TEXT CHECK (reason IN (@names(ReferenceReason))),  -- a reference's reason
   copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),
   branch_point      TEXT,                   -- natural message id where the child branches off
   spawning_call     TEXT,                   -- the spawning call's ID as the source record names it (a tool-use ID)
@@ -482,11 +482,11 @@ CREATE TABLE link_statement (
   source_chain      INTEGER NOT NULL DEFAULT 0,
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)  -- the input holding that field
 ) STRICT;
-CREATE UNIQUE INDEX link_statement_key ON link_statement(parent_id, child_id, kind, how IS NULL, coalesce(how,''), branch_point IS NULL, coalesce(branch_point,''), spawning_call IS NULL, coalesce(spawning_call,''));
+CREATE UNIQUE INDEX link_statement_key ON link_statement(parent_id, child_id, kind, reason IS NULL, coalesce(reason,''), branch_point IS NULL, coalesce(branch_point,''), spawning_call IS NULL, coalesce(spawning_call,''));
 CREATE INDEX link_statement_child ON link_statement(child_id);   -- a whole session's statements
 
 -- One relation between two sessions, as every reader sees it. Assembly
--- writes the relations of a (parent, child, kind, how) from all its
+-- writes the relations of a (parent, child, kind, reason) from all its
 -- statements at once (writer/shown.rs, resolve_links): coordinates that
 -- agree are one relation; a branch point or spawning call recorded with
 -- several values gives one relation for each; when both differ, every
@@ -496,7 +496,7 @@ CREATE TABLE session_link (
   parent_id         TEXT NOT NULL,
   child_id          TEXT NOT NULL,
   kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
-  how               TEXT CHECK (how IN (@names(ReferenceReason))),
+  reason               TEXT CHECK (reason IN (@names(ReferenceReason))),
   copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),  -- some statement says the child's file copies
                                             --   the parent's prefix; a recorded copy (shared_prefix) says it too
   branch_point      TEXT,
