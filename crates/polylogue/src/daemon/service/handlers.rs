@@ -14,6 +14,7 @@ use crate::protocol;
 use command_surface::{Answer, JsonSchema, TextStyle};
 use polylogue_model::authorship::Channel;
 use polylogue_model::user::UserWrite;
+use polylogue_store::{archive::writer::Committed, user_writes::WriteResult};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::mpsc::sync_channel;
@@ -447,7 +448,7 @@ pub(crate) fn save_selection(
     query: String,
     selection: &crate::daemon::verbs::Selection,
     call: &Call<'_>,
-) -> Result<Answer<(protocol::line::SaveReport, Vec<polylogue_model::Reference>)>, Failure> {
+) -> Result<Answer<Committed<WriteResult>>, Failure> {
     let (d, invocation) = (call.daemon, call.invocation);
     let request_id: String = call.request_id.into();
     let reader = call.reader()?;
@@ -465,15 +466,6 @@ pub(crate) fn save_selection(
         }),
     };
     let intended = UserWrite::Save(Box::new(save.clone()));
-    let present = |receipt: polylogue_store::user_writes::WriteResult| {
-        let mut report = receipt
-            .save
-            .expect("Save transaction returns its resolved outcomes");
-        let written = receipt.written;
-        report.pending = receipt.outcome.pending;
-        report.repeat |= receipt.outcome.repeat;
-        (report, written)
-    };
     match repeated_request(&reader, &request_id, &intended, invocation) {
         Ok(Some(previous)) => {
             drop(reader);
@@ -483,7 +475,6 @@ pub(crate) fn save_selection(
                 request_id,
                 previous,
                 Some(selected_scope),
-                present,
             ));
         }
         Err(failure) => return Err(failure),
@@ -529,7 +520,6 @@ pub(crate) fn save_selection(
         request_id,
         UserWrite::Save(Box::new(save)),
         Some(selected_scope),
-        present,
     ))
 }
 
