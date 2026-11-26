@@ -57,7 +57,7 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.focused]
-description = "Run selected tests on the workspace feature graph; Cargo target flags bound compilation"
+description = "Run selected tests, building only the selected packages' test targets; Cargo target flags bound it further"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
 # Test builds run beside type checks (compile pool); admission holds
@@ -88,36 +88,20 @@ scratch = "nvme"
 cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
-[operations.bench]
-description = "Run the corpus benchmark through the shared job queue"
-exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "bench"]
-arguments = "required"
-pool = "measure"
-result = "exit"
-timeout_seconds = 7200
-scratch = "nvme"
-cache = "none"
-
 [operations.measure]
-description = "Build and run a performance driver in the measure queue; for a run that compiles nothing, use measure_run"
-exec = ["nix", "develop", "--command"]
+description = "A measurement in the one-at-a-time measure queue: a benchmark (cargo run --locked --release -p xtask -- bench ...), an archive rebuild with a prebuilt binary, or a measurement driver"
+# Paid embedding calls stay off; measurements yield to interactive work.
+exec = ["nix", "develop", "--command", "env", "-u", "VOYAGE_API_KEY", "ionice", "-c", "2", "-n", "7", "nice", "-n", "10"]
 arguments = "required"
 pool = "measure"
 result = "exit"
-timeout_seconds = 7200
+timeout_seconds = 10800
 scratch = "nvme"
 cache = "none"
-
-[operations.measure_run]
-environment = { CARGO_TARGET_DIR = "target" }
-description = "Run a measurement that compiles nothing (a database restore, a benchmark of prebuilt binaries) in the measure queue"
-exec = ["nix", "develop", "--command"]
-arguments = "required"
-pool = "measure"
-result = "exit"
-timeout_seconds = 7200
-scratch = "nvme"
-cache = "none"
+# A full-archive rebuild peaks near 10 GiB; admission waits for that much
+# rather than starting a run its memory limit would kill.
+admission = { memory_mib = 10240 }
+unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=10G", "MemoryMax=14G", "MemorySwapMax=2G"]
 
 [operations.fmt]
 description = "Format the workspace"
@@ -157,34 +141,3 @@ result = "exit"
 timeout_seconds = 900
 scratch = "nvme"
 cache = "none"
-
-[operations.codex]
-description = "Run one Codex worker in this checkout: codex-worker <effort> <prompt-file> <output-schema> <output-dir> [model]"
-exec = ["codex-worker"]
-arguments = "required"
-pool = "codex"
-result = "exit"
-timeout_seconds = 28800
-cache = "none"
-
-[operations.rebuild_archive]
-description = "Rebuild an archive using explicit prebuilt binary and deployment arguments"
-exec = ["env", "-u", "VOYAGE_API_KEY", "ionice", "-c", "2", "-n", "7", "nice", "-n", "10"]
-arguments = "required"
-pool = "measure"
-result = "exit"
-timeout_seconds = 0
-cache = "none"
-admission = { memory_mib = 10240 }
-unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryHigh=10G", "MemoryMax=14G", "MemorySwapMax=2G"]
-
-[operations.import_preserved]
-description = "Import preserved sources with an explicit prebuilt command and kept reports"
-exec = ["env", "-u", "VOYAGE_API_KEY", "ionice", "-c", "3", "nice", "-n", "19"]
-arguments = "required"
-pool = "measure"
-result = "exit"
-timeout_seconds = 0
-cache = "none"
-admission = { memory_mib = 6144 }
-unit_properties = ["CPUWeight=20", "IOWeight=20", "MemoryMax=6G", "MemorySwapMax=1G"]

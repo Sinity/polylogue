@@ -72,7 +72,15 @@ jobs:
       - uses: ./.github/actions/rust
         with:
           rev: ${{ inputs.rev || '' }}
-      - run: cargo xtask test $BASE --partition hash:${{ matrix.shard }}/4
+      - run: cargo xtask test $BASE --partition hash:${{ matrix.shard }}/4 --junit "$RUNNER_TEMP/junit.xml"
+      # The report names every test's outcome and duration, so a flaky test
+      # can be traced across recorded runs.
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: junit-${{ matrix.shard }}
+          path: ${{ runner.temp }}/junit.xml
+          if-no-files-found: ignore
 
   nix:
     runs-on: ubuntu-latest
