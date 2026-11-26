@@ -80,7 +80,7 @@ polylogue_act   {"arguments": {"selection": "self", "steps": [{"verb": "resume",
 
 The envelope stays nested rather than flattening the arguments into it, so envelope names (`cursor`, `deadline`, `budget_tokens`) and argument names never share one namespace; the shared `parse_mcp_call` reads this shape for Polylogue and Sinex alike.
 
-**Replies** are the typed replies: `structuredContent` holds the reply envelope, with a short text rendering beside it; a `brief` step returns the brief as the text. Tools carry no `outputSchema`; `help --all --json` publishes every operation's reply schema once. Replies print the shortest unique prefix of each ID, and any unique prefix of at least eight characters is accepted as input. An error carries its failure kind ([interfaces.md#exit-codes](interfaces.md#exit-codes)) and one corrected call in `next`. Completion is the protocol's `completion/complete`, not an operation.
+**Replies** are the typed replies: `structuredContent` holds the reply envelope, with a short text rendering beside it; a `brief` step returns the brief as the text. Tools carry no `outputSchema`; `help capabilities` publishes every operation's reply schema once, with the arguments the tool list leaves out. Replies print the shortest unique prefix of each ID, and any unique prefix of at least eight characters is accepted as input. An error carries its failure kind ([interfaces.md#exit-codes](interfaces.md#exit-codes)) and one corrected call in `next`. Completion is the protocol's `completion/complete`, not an operation.
 
 ### The tools as they ship
 

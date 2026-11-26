@@ -437,6 +437,11 @@ generated page of the thing they belong to, or on the area page that owns them.
   target.
 - **skill file**: `help --all`, the full reference of every operation,
   installed with the hooks and carried as the brief's first section.
+- **capabilities**: `help capabilities`, every operation's argument and
+  answer schemas, with the arguments the MCP tool list leaves out.
+- **unbuilt**: `help unbuilt`, the list of options and uses that are
+  designed and not built yet, each with the page that designs it; using one
+  is refused `not_built`.
 - **live state**: whether a session is `working`, `waiting`, `idle`,
   `stale`, `ended` or `unknown`.
 - **send**: deliver text to sessions. **answer**: reply to what a session is

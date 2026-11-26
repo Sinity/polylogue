@@ -77,19 +77,18 @@ pub(crate) enum Destination {
     Pager,
     File(PathBuf),
     Dir(PathBuf),
-    Clipboard,
-    Browser,
 }
 impl Destination {
-    fn parse(text: &str) -> Self {
-        match text {
+    fn parse(text: &str) -> Result<Self, Refusal> {
+        if let Some(unbuilt) = crate::unbuilt::listed("polylogue", &format!("--to {text}")) {
+            return Err(Refusal::new(Code::NotBuilt, unbuilt.failure().message));
+        }
+        Ok(match text {
             "stdout" => Self::Stdout,
             "pager" => Self::Pager,
-            "clipboard" => Self::Clipboard,
-            "browser" => Self::Browser,
             _ if text.ends_with('/') => Self::Dir(text.into()),
             _ => Self::File(text.into()),
-        }
+        })
     }
 }
 #[derive(Debug)]
@@ -252,7 +251,7 @@ fn listing_option(
                 .collect()
         }
         "--why" => listing.why = flag_value(word, assigned)?,
-        "--to" => listing.to = Some(Destination::parse(&value(args, index, assigned)?)),
+        "--to" => listing.to = Some(Destination::parse(&value(args, index, assigned)?)?),
         "--cursor" => listing.cursor = Some(value(args, index, assigned)?),
         "--budget" => listing.budget = Some(value(args, index, assigned)?),
         _ => return Ok(false),
@@ -392,17 +391,22 @@ pub(crate) fn parse(
                 }
                 let (word, assigned) = split_option(&args[*index]);
                 if word == "--to" && matches!(verb, "read" | "brief") {
-                    to = Some(Destination::parse(&value(args, index, assigned)?));
+                    to = Some(Destination::parse(&value(args, index, assigned)?)?);
                     return Ok(true);
                 }
                 Ok(false)
             })
             .map_err(|error| match error {
                 SplitError::Local(error) => error,
-                SplitError::UnknownOption { index } => Refusal::new(
-                    Code::BadRequest,
-                    format!("{}: unknown option {}", declaration.verb(), args[index]),
-                ),
+                SplitError::UnknownOption { index } => {
+                    match crate::unbuilt::option(declaration.verb(), &args[index]) {
+                        Some(unbuilt) => Refusal::new(Code::NotBuilt, unbuilt.message),
+                        None => Refusal::new(
+                            Code::BadRequest,
+                            format!("{}: unknown option {}", declaration.verb(), args[index]),
+                        ),
+                    }
+                }
                 SplitError::MissingValue { .. } => {
                     Refusal::new(Code::BadRequest, "option needs a value")
                 }

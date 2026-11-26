@@ -21,7 +21,7 @@ vocabulary's [removed words](vocabulary.md#removed-words).
 | `ping --live` | select the running sessions: `polylogue 'sessions where running:true repo:here' send 'TEXT' --all` |
 | `compare DIMENSION` | `judge ROW --on DIMENSION` |
 | `variant` (as a verb) | `note TEXT --as translation:LANG [--parts FILE]` |
-| `explain syntax`, `explain capabilities`, `--detail full` | `help query`, `help --all --json`, `--explain --json` |
+| `explain syntax`, `explain capabilities`, `--detail full` | `help query`, `help capabilities`, `--explain --json` |
 | `analyze --by --cost --tools --time --windows --compare` (reports), `prices` | queries with `group by`, `agg` and `\| measure`; the unit `prices` |
 | the MCP `detail` argument | `show: ["tools:full"]` |
 | recall's `--keep`, `--fuzzy` and scope narrowing; the MCP brief's `task` | `polylogue 'WORDS' brief save` keeps the search's rows; `word~` is fuzzy; conditions in the selection narrow; `--for SESSION` says who the brief is for |

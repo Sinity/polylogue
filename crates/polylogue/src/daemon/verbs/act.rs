@@ -1,7 +1,7 @@
 //! The acts on live sessions: `send`, `answer` and `interrupt`. A web-chat
 //! session's turns go through [`acts::web_chat`]. Each recipient's act is
 //! its own request, `<step>-<n>` when the step has several.
-use super::{RowRule, Selection, StepCall, StepDone, Verb, not_built, not_built_use, sessions};
+use super::{RowRule, Selection, StepCall, StepDone, Verb, sessions};
 use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
@@ -136,7 +136,9 @@ fn send(
             acts::web_chat::send(one, &session, &step.text, &step.attach)?.map(Reached::WebChat)
         } else {
             if !step.attach.is_empty() {
-                return Err(not_built("send", "attach to a harness session"));
+                return Err(
+                    crate::unbuilt::refusal("send", "--attach to a harness session").into(),
+                );
             }
             if several {
                 // The same notion of running as `would`: a session just
@@ -183,14 +185,6 @@ fn send(
 
 /// Sessions or one role, preserving its send-time resolution.
 fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Failure> {
-    for (given, option) in [
-        (step.page.is_some(), "page"),
-        (step.section.is_some(), "section"),
-    ] {
-        if given {
-            return Err(not_built("send", option));
-        }
-    }
     let references = selection.references()?;
     references
         .iter()
@@ -290,7 +284,7 @@ fn approves(step: &AnswerStep) -> Result<bool, Failure> {
     match step.value.as_str() {
         "allow" => Ok(true),
         "deny" => Ok(false),
-        _ => Err(not_built_use("answer", "with text")),
+        _ => Err(crate::unbuilt::refusal("answer", "with text").into()),
     }
 }
 

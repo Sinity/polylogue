@@ -72,39 +72,50 @@ impl Tool {
         }
     }
 
-    pub fn description(self) -> &'static str {
-        match self {
-            Tool::Read => {
-                r#"Read the archive. A call is {operation, arguments}; operation defaults to rows.
-rows(selection, steps?, explain?, dry_run?): selection is one query or reference: "repo:polylogue since:7d", "rate limit", "tool_calls where outcome:error | group by tool | count", session:codex:019d..., page:NAME, a chat URL, latest, self, query:NAME, result:ID. No steps lists the rows; each step acts on the same rows, in order:
-  read(view?, show?, hide?, from?, until?, first?, last?, around?, at?, alternate?, blind?, seed?) view: transcript|dialogue|overview|context|tree|changes|live|raw|compare|contents (a page's table of contents)|trace (where it came from)
-  brief(cwd?, for?) packaged context: of a session, to take it over; of search words, what is already known; of a page, the page; with no selection, for the directory cwd
-explain: true says how a call is read and what it would do, running nothing.
-status() | help(topic?) query, fields, views, kinds, a verb | set(key?) lists settings or shows one | dev sql(statement) | dev schema(...)
-Example: {"arguments":{"selection":"tool_calls where outcome:error since:1d","steps":[{"verb":"read","around":2}]}}"#
-            }
-            Tool::Write => {
-                r#"Everything polylogue_read does, plus annotations: notes, tags, judgments and saved queries, recorded with you as author. Steps add:
-  note(text, as?) as: note|decision|finding|lesson|question|goal|problem|handoff|correction|claim|title|outcome|hidden|translation:LANG|summary|...; evidence?, replies_to?, supports?, challenges?, corrects?
-  tag(name) NAME or NAME:VALUE
-  edit(text) | withdraw(reason?) on annotation rows
-  judge(verdict, on?, seed?, reason?) accept|reject|defer on annotations; or the better of several rows (a reference, or blind label A, B) on a dimension
-  save(name?, watch?) names the question as query:NAME and keeps the rows as result:ID; name page:NAME puts the rows on that page (section?, after?, fixed?, live?, as?)
-  note(..., page?, section?) also places the note on a page; as: page creates one (template?), as: heading adds a section
-Cite in note text with footnotes: [^1]: "exact quote" <REF>; read format: citation gives them.
-set(key, value) | import(paths)
-A query matching several rows needs all: true. Each write returns the call that undoes it.
-Example: {"arguments":{"selection":"self","steps":[{"verb":"note","text":"Catalog stays SQLite","as":"decision"}]}}"#
-            }
-            Tool::Act => {
-                r#"Everything polylogue_write does, plus acts that reach live sessions, web chats and paid providers. Each act is recorded; a sent message cannot be taken back. Post into web chats only on the operator's word. Steps add:
-  send(text, about?, attach?) a running session gets it at its next tool call or prompt; one ended session is resumed with it; a web chat turn waits for the operator's approval
-  answer(value) allow|deny|"text": respond to what a session is waiting for; a held web chat turn is the operator's to answer
-  interrupt() | resume(in?, at?, cwd?, stop_source?) without in, the command that reopens it; with in: HARNESS, a new hosted session continuing its work
-start(text, in?, role?, cwd?) in: chatgpt drafts a web conversation (model?, effort?, project?, attach?, submit?) | import(provider, since?, cancel?, wait?) fetches a web chat's history | embed(query?, yes?)
-Example: {"arguments":{"selection":"session:codex:019d0f2a","steps":[{"verb":"send","text":"rebase on master first"}]}}"#
+    /// The tool's description: its fixed sentences around the lines
+    /// generated from the declarations: the signature of each verb this
+    /// tool adds, with the first sentence of the verb's help, and of each
+    /// operation whose home it is.
+    pub fn description(self, declarations: &command_surface::OperationDeclarations) -> String {
+        let (opening, closing, example) = match self {
+            Tool::Read => (
+                "Read the archive. A call is {operation, arguments}; operation defaults to rows.\n\
+                 selection is one query or reference: \"repo:polylogue since:7d\", \"rate limit\", \"tool_calls where outcome:error | group by tool | count\", session:codex:019d..., a chat URL, latest, self, query:NAME, result:ID. No steps lists the rows; each step acts on the same rows, in order. Steps:",
+                "explain: true says how a call is read and what it would do, running nothing; dry_run: true resolves the rows and says what each step would do.",
+                r#"{"arguments":{"selection":"tool_calls where outcome:error since:1d","steps":[{"verb":"read","around":2}]}}"#,
+            ),
+            Tool::Write => (
+                "Everything polylogue_read does, plus annotations: notes, tags, judgments and saved queries, recorded with you as author. Steps add:",
+                "A query matching several rows needs all: true. Each write that changes the archive returns the call that undoes it.",
+                r#"{"arguments":{"selection":"self","steps":[{"verb":"note","text":"Catalog stays SQLite","as":"decision"}]}}"#,
+            ),
+            Tool::Act => (
+                "Everything polylogue_write does, plus acts that reach live sessions, web chats and paid providers. Each act is recorded; a sent message cannot be taken back. Post into web chats only on the operator's word. Steps add:",
+                "",
+                r#"{"arguments":{"selection":"session:codex:019d0f2a","steps":[{"verb":"send","text":"rebase on master first"}]}}"#,
+            ),
+        };
+        let mut text = format!("{opening}\n");
+        let offered = crate::daemon::verbs::offered_over_mcp();
+        for verb in crate::daemon::verbs::declarations().verbs() {
+            if offered.contains(&(verb.verb(), self.access())) {
+                text.push_str(&format!("  {} {}\n", verb.signature(), verb_sentence(verb)));
             }
         }
+        let mut operations: Vec<String> = COMMANDS
+            .iter()
+            .filter(|command| command.tool == Some(self) && command.operation().is_some())
+            .map(|command| signature(declarations, command.name, None))
+            .collect();
+        if self == Tool::Read {
+            operations.push(signature(declarations, "set", Some(SETTING_READ)));
+        }
+        text.push_str(&format!("Operations: {}\n", operations.join(" | ")));
+        if !closing.is_empty() {
+            text.push_str(&format!("{closing}\n"));
+        }
+        text.push_str(&format!("Example: {example}"));
+        text
     }
 
     /// Writes with the same request ID are applied once.
@@ -115,6 +126,56 @@ Example: {"arguments":{"selection":"session:codex:019d0f2a","steps":[{"verb":"se
     /// Its operations act outside the archive (a web chat, a harness).
     pub fn open_world(self) -> bool {
         matches!(self, Tool::Act)
+    }
+}
+
+/// The arguments of `set` that list settings or show one, which the read
+/// tool offers; writing a value is the write tool's.
+pub const SETTING_READ: &[&str] = &["key", "machine"];
+
+/// `name(argument, optional?)`: the operation's arguments the tool list
+/// offers, or only `only` of them.
+fn signature(
+    declarations: &command_surface::OperationDeclarations,
+    name: &str,
+    only: Option<&[&str]>,
+) -> String {
+    let Some(description) = declarations
+        .descriptions()
+        .iter()
+        .find(|description| description.spec.name == name)
+    else {
+        return format!("{name}()");
+    };
+    let required = description.input_schema["required"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let arguments: Vec<String> = description
+        .spec
+        .arguments
+        .iter()
+        .filter(|argument| argument.listed && !argument.calling_process)
+        .filter(|argument| only.is_none_or(|only| only.contains(&argument.name.as_str())))
+        .map(|argument| {
+            let optional = !required.contains(&Value::from(argument.name.as_str()));
+            format!("{}{}", argument.name, if optional { "?" } else { "" })
+        })
+        .collect();
+    format!("{name}({})", arguments.join(", "))
+}
+
+/// The first sentence of a verb's help: its step type's doc comment after
+/// the `` `verb WORDS`: `` that names it.
+pub(crate) fn verb_sentence(verb: &command_surface::StepDeclaration) -> String {
+    let help = verb.input_schema()["description"]
+        .as_str()
+        .unwrap_or_default();
+    let help = help.split_once("`: ").map_or(help, |(_, rest)| rest);
+    let help = help.split("\n\n").next().unwrap_or(help).replace('\n', " ");
+    match help.find(". ") {
+        Some(end) => help[..=end].to_owned(),
+        None => help,
     }
 }
 
@@ -312,7 +373,7 @@ const CLI: Command = Command {
     help: "",
     calling_process: None,
     examples: &[],
-    run: local_command::<local::arguments::Empty>(local::not_built),
+    run: local_command::<local::arguments::Empty>(local::no_action),
     cli: Cli::Subcommand,
     tool: None,
     http: false,
@@ -755,21 +816,6 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                     .register_failure_code(code.as_str(), crate::protocol::kind(*code))
                     .expect("failure classification is unique");
             }
-            for tool in Tool::ALL {
-                if COMMANDS
-                    .iter()
-                    .any(|command| command.tool == Some(tool) && command.operation().is_some())
-                {
-                    declarations
-                        .declare_tool(command_surface::ToolFamily {
-                            name: tool.family().into(),
-                            description: tool.description().into(),
-                            open_world: tool.open_world(),
-                            idempotent: tool.idempotent(),
-                        })
-                        .expect("declared tool is unique");
-                }
-            }
             for command in COMMANDS.iter() {
                 match command.run {
                     Run::Local(_, declare, _)
@@ -781,6 +827,22 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                     declarations
                         .declare_steps(command.name, "steps", crate::daemon::verbs::declarations())
                         .expect("the line's steps are declared once");
+                }
+            }
+            for tool in Tool::ALL {
+                if COMMANDS
+                    .iter()
+                    .any(|command| command.tool == Some(tool) && command.operation().is_some())
+                {
+                    let description = tool.description(&declarations);
+                    declarations
+                        .declare_tool(command_surface::ToolFamily {
+                            name: tool.family().into(),
+                            description,
+                            open_world: tool.open_world(),
+                            idempotent: tool.idempotent(),
+                        })
+                        .expect("declared tool is unique");
                 }
             }
             declarations

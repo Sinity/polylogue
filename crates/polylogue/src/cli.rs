@@ -368,6 +368,26 @@ fn parse_text(error: &clap::Error, output: crate::config::OutputConfig) -> Strin
     polylogue_render::terminal::heading(&error.render().to_string(), color)
 }
 
+/// A command's option that the list of designed options names, when clap
+/// refused it as unknown: the typed `not_built` refusal in place of clap's.
+pub(crate) fn unbuilt_option(
+    error: &clap::Error,
+    words: &[String],
+) -> Option<command_surface::Failure> {
+    use clap::error::{ContextKind, ContextValue, ErrorKind};
+    if error.kind() != ErrorKind::UnknownArgument {
+        return None;
+    }
+    let Some(ContextValue::String(option)) = error.get(ContextKind::InvalidArg) else {
+        return None;
+    };
+    let command = crate::commands::COMMANDS
+        .iter()
+        .filter(|command| words.starts_with(&command.cli_words()))
+        .max_by_key(|command| command.cli_words().len())?;
+    crate::unbuilt::option(command.name, option)
+}
+
 pub(crate) fn parse_error(error: clap::Error, output: crate::config::OutputConfig) -> ExitCode {
     let text = parse_text(&error, output);
     if error.use_stderr() {
