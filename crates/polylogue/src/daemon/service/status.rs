@@ -158,6 +158,13 @@ pub(super) fn answer(
     if let Some(error) = &totals_error {
         missing.push(format!("archive totals: {error}"));
     }
+    let index = d.archive.index_status().ok();
+    if let Some(failure) = index
+        .as_ref()
+        .and_then(|index| index.install_failure.as_ref())
+    {
+        missing.push(format!("{}: {}", failure.subject, failure.message));
+    }
     if let Some(error) = &vectors_error {
         missing.push(format!("vector counts: {error}"));
     }
@@ -176,6 +183,7 @@ pub(super) fn answer(
         caught_up,
         store,
         index_build,
+        index,
         build_progress: d.archive.build_progress(),
         totals_error,
         vectors,
@@ -320,6 +328,7 @@ fn unread(
         caught_up: false,
         store: None,
         index_build: build.clone(),
+        index: d.archive.index_status().ok(),
         build_progress: d.archive.build_progress(),
         totals_error: Some(unread.clone()),
         vectors,

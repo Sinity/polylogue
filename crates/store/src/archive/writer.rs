@@ -50,7 +50,20 @@ pub use query_objects::HistorySlot;
 /// `archive.db`'s write counter after a commit: every committed row carries
 /// the position of its commit, so rows committed after a position are those
 /// whose `commit_seq` is larger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    serde::Serialize,
+    serde::Deserialize,
+    schemars::JsonSchema,
+)]
+#[serde(transparent)]
 pub struct Position(pub u64);
 
 /// A group of rows the writer commits in one transaction.

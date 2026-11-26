@@ -314,19 +314,21 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
 /// the running one in bold with its count, rate and estimate, those to come)
 /// and the time left.
 fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
-    use polylogue_store::archive::index_rebuild::IndexRebuildReason;
+    let failed = status
+        .index
+        .as_ref()
+        .and_then(|index| index.install_failure.as_ref())
+        .map(|failure| {
+            format!(
+                "the rebuilt index could not be installed: {}; it is tried again at the next commit",
+                failure.message
+            )
+        });
     let Some(build) = &status.index_build else {
-        return Vec::new();
+        return failed.into_iter().collect();
     };
     let progress = status.build_progress.as_ref();
-    let why = match progress.and_then(|progress| progress.reason.as_ref()) {
-        None => "the archive had no index".to_owned(),
-        Some(IndexRebuildReason::SchemaDiffers) => "its tables changed".to_owned(),
-        Some(IndexRebuildReason::FormatVersion { found, wanted }) => {
-            format!("its format changed ({found} to {wanted})")
-        }
-        Some(IndexRebuildReason::OlderFormat) => "it was written by an older Polylogue".to_owned(),
-    };
+    let why = &build.reason;
     let mut lines = vec![if build.bytes > 0 {
         format!(
             "building the index from {} of stored files: {why}",
@@ -335,11 +337,16 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
     } else {
         format!("building the index: {why}")
     }];
-    lines.push(view.dim(if build.serving_previous {
-        "reads and searches use the previous index until the new one is installed"
+    let serving = status
+        .index
+        .as_ref()
+        .is_some_and(|index| index.files.serves());
+    lines.push(view.dim(if serving {
+        "reads and searches use the installed index until the rebuilt one replaces it"
     } else {
         "reads and searches answer \"index building\" until it is installed"
     }));
+    lines.extend(failed);
     let Some(progress) = progress else {
         return lines;
     };

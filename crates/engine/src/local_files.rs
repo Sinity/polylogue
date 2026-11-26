@@ -120,7 +120,8 @@ impl Engine {
         };
         let stored = self
             .reads
-            .read_current(|reader| reader.stored_chain(&plan.input.id, chain, plan.size))?;
+            .reader()
+            .and_then(|reader| reader.stored_chain(&plan.input.id, chain, plan.size))?;
         // Only the records this reading parses are looked at: an append's
         // records, or every record when the reading starts again.
         let start = plan.parse_pos.min(plan.size);

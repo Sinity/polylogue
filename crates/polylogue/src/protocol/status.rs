@@ -53,9 +53,14 @@ pub struct Answer {
     pub caught_up: bool,
     /// The archive totals; none when they could not be read (`totals_error`).
     pub store: Option<polylogue_store::Status>,
-    /// The build of `index.db` in progress, with its progress.
+    /// The rebuild of `index.db` in progress, with its reason and counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_build: Option<polylogue_store::archive::index_build::IndexBuild>,
+    /// Which index files exist and what they mean: the installed index
+    /// (`none`, `current` or `unusable` with why) and the rebuild (`no`,
+    /// `writing` with its reason, or `ready`), with a failed install's error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<polylogue_store::archive::index_build::IndexStatus>,
     /// The build's phase, rates and estimate, beside its counts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_progress: Option<polylogue_store::archive::build_progress::BuildProgress>,

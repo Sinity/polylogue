@@ -358,13 +358,18 @@ struct PoolState {
 /// One consistent read: a read transaction on `index.db` with `archive.db`
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
 /// the pool when dropped. Holding a reader slot takes no read lock; the first
-/// database access starts the read on both databases and checks them.
+/// database access starts the read on both databases and checks them. A
+/// reader whose read has not started when a rebuild's install replaces the
+/// index starts it on the installed index; a read that has started keeps the
+/// file it opened.
 /// Current annotation revisions are stored (`revision_state`), so no read builds it.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
-    conn: Option<Connection>,
-    index_identity: Option<IndexIdentity>,
-    state: std::cell::Cell<ReadState>,
+    /// The connection opened for this reader and the index file it names,
+    /// until its read starts.
+    opened: std::cell::RefCell<Option<(Connection, IndexIdentity)>>,
+    /// The connection and its index file once the read has started.
+    started: std::cell::OnceCell<(Connection, IndexIdentity)>,
     holder: ThreadId,
     background: bool,
     limit: Option<limit::ReadLimit>,
@@ -377,12 +382,6 @@ pub struct Reader<'a> {
     annotation_history_ready: std::cell::RefCell<std::collections::BTreeSet<i64>>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ReadState {
-    Deferred,
-    Ready,
-    IndexReplaced,
-}
 /// The path a connection was opened through and the file it named: a build
 /// file renamed into place keeps its inode, and a connection opened through
 /// its old path must not be reused.
@@ -448,9 +447,9 @@ pub struct Status {
     pub search_pending: u64,
     /// The latest confirmed full discovery walk from each source machine.
     pub capture_coverage: Vec<polylogue_model::capture::Coverage>,
-    /// Set when this index replaced one written for another schema.
+    /// Why this index replaced the one before it, as its rebuild recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_rebuild: Option<crate::archive::index_rebuild::IndexRebuild>,
+    pub index_rebuild: Option<crate::index::file::IndexRebuild>,
 }
 
 impl ReadPool {
@@ -627,36 +626,16 @@ impl ReadPool {
     /// capacity remains; waiting while this thread already holds a slot
     /// refuses to avoid deadlock.
     pub fn checkout(&self, lane: Lane, limit: &limit::ReadLimit) -> Result<Reader<'_>> {
-        self.acquire(lane, Some(limit.clone()), |path| self.connect(path))
+        self.acquire(lane, Some(limit.clone()))
     }
 
     /// A reader for work outside a request (the loop, workers): the ordinary
     /// lane, under the limit of the scope this thread runs in, if any.
     pub fn reader(&self) -> Result<Reader<'_>> {
-        self.acquire(Lane::Ordinary, limit::ReadLimit::current(), |path| {
-            self.connect(path)
-        })
+        self.acquire(Lane::Ordinary, limit::ReadLimit::current())
     }
 
-    /// Runs `read` on a new reader, and again on another when a build's
-    /// install replaced the index under the first
-    /// ([`StoreError::ReadIndexReplaced`]): the replacement is the index to
-    /// read, so the error is never the answer.
-    pub fn read_current<T>(&self, read: impl Fn(&Reader<'_>) -> Result<T>) -> Result<T> {
-        loop {
-            match self.reader().and_then(|reader| read(&reader)) {
-                Err(StoreError::ReadIndexReplaced) => continue,
-                result => return result,
-            }
-        }
-    }
-
-    fn acquire(
-        &self,
-        lane: Lane,
-        limit: Option<limit::ReadLimit>,
-        connect: impl FnOnce(&Path) -> Result<Connection>,
-    ) -> Result<Reader<'_>> {
+    fn acquire(&self, lane: Lane, limit: Option<limit::ReadLimit>) -> Result<Reader<'_>> {
         // Refused before a slot is taken: nothing can be read until the build ends.
         self.index_path()?;
         let scope = self.archive.read_scope.token()?;
@@ -730,11 +709,10 @@ impl ReadPool {
         };
         // Hold the slot before the open and BEGIN, which can fail. Every
         // failure releases the slot and wakes a waiter, including a racing close.
-        let mut reader = Reader {
+        let reader = Reader {
             pool: self,
-            conn: None,
-            index_identity: None,
-            state: std::cell::Cell::new(ReadState::Deferred),
+            opened: std::cell::RefCell::new(None),
+            started: std::cell::OnceCell::new(),
             holder,
             background,
             limit,
@@ -750,46 +728,14 @@ impl ReadPool {
         let idle = idle.filter(|(_, identity)| current.as_ref().is_ok_and(|now| now == identity));
         let (conn, identity) = match idle {
             Some(connection) => connection,
-            None => {
-                let before = current?;
-                let conn = match &reader.limit {
-                    Some(limit) => limit.scope(|| connect(&before.0)),
-                    None => connect(&before.0),
-                };
-                let after = self.index_identity()?;
-                // An open that raced a build's install fails on the moved file.
-                let conn = match conn {
-                    Err(_) if before != after => return Err(StoreError::ReadIndexReplaced),
-                    conn => conn?,
-                };
-                if before != after {
-                    return Err(StoreError::ReadIndexReplaced);
-                }
-                (conn, after)
-            }
+            None => reader.open()?,
         };
-        // Every reader observes the process's stop and the access scope; a
-        // request's reader also its own deadline and cancellation.
-        if let Some(limit) = &reader.limit {
-            limit.install(&conn)?;
-        }
-        let (scope, stop, limit) = (reader.scope.clone(), stop.clone(), reader.limit.clone());
-        crate::cancellation::interrupt_on(&conn, move || {
-            stop.check()?;
-            scope.check()?;
-            limit
-                .as_ref()
-                .map_or(Ok(()), limit::ReadLimit::count_and_check)
-        })?;
-        reader.check()?;
-        crate::sql_functions::register_calendar(&conn, &reader.calendar)?;
-        conn.execute_batch("BEGIN")?;
+        reader.prepare(&conn)?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
             return Err(StoreError::ReadPoolClosed);
         }
-        reader.conn = Some(conn);
-        reader.index_identity = Some(identity);
+        *reader.opened.borrow_mut() = Some((conn, identity));
         drop(state);
         Ok(reader)
     }
@@ -819,17 +765,17 @@ fn pool_poisoned() -> StoreError {
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
-        let conn = self.conn.take().filter(|conn| {
-            if conn.progress_handler(0, None::<fn() -> bool>).is_err()
-                || conn
-                    .busy_timeout(std::time::Duration::from_secs(30))
-                    .is_err()
-            {
-                return false;
-            }
-            matches!(self.state.get(), ReadState::Deferred | ReadState::Ready)
-                && conn.execute_batch("ROLLBACK").is_ok()
-        });
+        let conn = self
+            .started
+            .take()
+            .or_else(|| self.opened.get_mut().take())
+            .filter(|(conn, _)| {
+                conn.progress_handler(0, None::<fn() -> bool>).is_ok()
+                    && conn
+                        .busy_timeout(std::time::Duration::from_secs(30))
+                        .is_ok()
+                    && conn.execute_batch("ROLLBACK").is_ok()
+            });
         let mut state = self.pool.state.locked();
         if let Some(held) = state.holders.get_mut(&self.holder) {
             *held -= 1;
@@ -847,12 +793,7 @@ impl Drop for Reader<'_> {
         }
         state.in_use -= 1;
         match conn {
-            Some(conn) if !state.closed => state.idle.push((
-                conn,
-                self.index_identity
-                    .take()
-                    .expect("opened connection has an index identity"),
-            )),
+            Some(opened) if !state.closed => state.idle.push(opened),
             _ => state.live -= 1,
         }
         // A freed slot may suit only a reserved waiter, so every waiter looks.
@@ -1001,92 +942,143 @@ impl Reader<'_> {
 
     pub(crate) fn conn(&self) -> Result<&Connection> {
         self.check()?;
-        let conn = self
-            .conn
-            .as_ref()
-            .expect("reader holds a connection until dropped");
-        match self.state.get() {
-            ReadState::Ready => {}
-            ReadState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
-            ReadState::Deferred => {
-                // An unused slot holds no read and no lock. Start the read on
-                // both databases and check them at the first database access.
-                if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
-                    return Err(StoreError::ReadPoolClosed);
-                }
-                let waiting = std::time::Instant::now();
-                let _shared = crate::write_lock::wait_shared(&self.pool.archive, || {
-                    self.pool.archive.stop().check()?;
-                    self.scope.check()?;
-                    if conn.is_interrupted() {
-                        return Err(rusqlite::Error::SqliteFailure(
-                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
-                            None,
-                        )
-                        .into());
-                    }
-                    if let Some(limit) = &self.limit {
-                        limit.check()?;
-                    }
-                    let state = self.pool.state.lock().map_err(|_| pool_poisoned())?;
-                    if state.closed {
-                        return Err(StoreError::ReadPoolClosed);
-                    }
-                    if waiting.elapsed() >= std::time::Duration::from_secs(30) {
-                        return Err(rusqlite::Error::SqliteFailure(
-                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                            None,
-                        )
-                        .into());
-                    }
-                    drop(
-                        self.pool
-                            .available
-                            .wait_timeout(state, std::time::Duration::from_millis(5))
-                            .map_err(|_| pool_poisoned())?,
-                    );
-                    Ok(())
-                })?;
-                // This closed check under the lock is the read's start. Closing
-                // before it refuses; a read that started here may finish afterward.
-                if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
-                    return Err(StoreError::ReadPoolClosed);
-                }
-                if Some(self.pool.index_identity()?) != self.index_identity {
-                    self.state.set(ReadState::IndexReplaced);
-                    return Err(StoreError::ReadIndexReplaced);
-                }
-                // One statement starts the read on `index.db` (`main`), then on
-                // the register (`a`). The shared lock keeps register commits
-                // out of the gap between the two, so they see a committed pair.
-                let started = conn.query_row(
-                    "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM source_meta)",
-                    [],
-                    |_| Ok(()),
-                );
-                // A build file installed between the check and this start
-                // (`crate::archive::index_build`) changes the path identity. An
-                // already-started read keeps its open file and snapshot.
-                if let Err(error) = started {
-                    if Some(self.pool.index_identity()?) != self.index_identity {
-                        self.state.set(ReadState::IndexReplaced);
-                        return Err(StoreError::ReadIndexReplaced);
-                    }
-                    return Err(error.into());
-                }
-                self.state.set(ReadState::Ready);
+        if let Some((conn, _)) = self.started.get() {
+            return Ok(conn);
+        }
+        loop {
+            if self.start()? {
+                let started = self
+                    .opened
+                    .borrow_mut()
+                    .take()
+                    .expect("a started reader holds its connection");
+                let started = self.started.get_or_init(|| started);
+                return Ok(&started.0);
+            }
+            // The index was replaced before this read started: it starts on
+            // the installed one.
+            let (conn, identity) = self.open()?;
+            self.prepare(&conn)?;
+            *self.opened.borrow_mut() = Some((conn, identity));
+        }
+    }
+
+    /// Opens a connection to the index file the pool reads now. An open that
+    /// raced an install named the replaced file and is done again.
+    fn open(&self) -> Result<(Connection, IndexIdentity)> {
+        loop {
+            let before = self.pool.index_identity()?;
+            let conn = match &self.limit {
+                Some(limit) => limit.scope(|| self.pool.connect(&before.0)),
+                None => self.pool.connect(&before.0),
+            };
+            if self.pool.index_identity()? == before {
+                return Ok((conn?, before));
             }
         }
-        Ok(conn)
+    }
+
+    /// Every reader observes the process's stop and the access scope; a
+    /// request's reader also its own deadline and cancellation. The read
+    /// transaction is begun and takes its snapshot at the first statement.
+    fn prepare(&self, conn: &Connection) -> Result<()> {
+        if let Some(limit) = &self.limit {
+            limit.install(conn)?;
+        }
+        let (scope, stop, limit) = (
+            self.scope.clone(),
+            self.pool.archive.stop().clone(),
+            self.limit.clone(),
+        );
+        crate::cancellation::interrupt_on(conn, move || {
+            stop.check()?;
+            scope.check()?;
+            limit
+                .as_ref()
+                .map_or(Ok(()), limit::ReadLimit::count_and_check)
+        })?;
+        self.check()?;
+        crate::sql_functions::register_calendar(conn, &self.calendar)?;
+        conn.execute_batch("BEGIN")?;
+        Ok(())
+    }
+
+    /// Starts the read on both databases of the opened connection; false when
+    /// the index it opened was replaced before the read started.
+    fn start(&self) -> Result<bool> {
+        let opened = self.opened.borrow();
+        let (conn, identity) = opened
+            .as_ref()
+            .expect("an unstarted reader holds its connection");
+        // An unused slot holds no read and no lock. Start the read on
+        // both databases and check them at the first database access.
+        if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
+            return Err(StoreError::ReadPoolClosed);
+        }
+        let waiting = std::time::Instant::now();
+        let _shared = crate::write_lock::wait_shared(&self.pool.archive, || {
+            self.pool.archive.stop().check()?;
+            self.scope.check()?;
+            if conn.is_interrupted() {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                    None,
+                )
+                .into());
+            }
+            if let Some(limit) = &self.limit {
+                limit.check()?;
+            }
+            let state = self.pool.state.lock().map_err(|_| pool_poisoned())?;
+            if state.closed {
+                return Err(StoreError::ReadPoolClosed);
+            }
+            if waiting.elapsed() >= std::time::Duration::from_secs(30) {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    None,
+                )
+                .into());
+            }
+            drop(
+                self.pool
+                    .available
+                    .wait_timeout(state, std::time::Duration::from_millis(5))
+                    .map_err(|_| pool_poisoned())?,
+            );
+            Ok(())
+        })?;
+        // This closed check under the lock is the read's start. Closing
+        // before it refuses; a read that started here may finish afterward.
+        if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
+            return Err(StoreError::ReadPoolClosed);
+        }
+        if self.pool.index_identity()? != *identity {
+            return Ok(false);
+        }
+        // One statement starts the read on `index.db` (`main`), then on
+        // the register (`a`). The shared lock keeps register commits
+        // out of the gap between the two, so they see a committed pair.
+        let started = conn.query_row(
+            "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM source_meta)",
+            [],
+            |_| Ok(()),
+        );
+        // A rebuild installed between the check and this start
+        // (`crate::archive::index_build`) changes the path identity. An
+        // already-started read keeps its open file and snapshot.
+        match started {
+            Ok(()) => Ok(true),
+            Err(_) if self.pool.index_identity()? != *identity => Ok(false),
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// The index file this reader's read transaction started on.
     pub fn index_identity(&self) -> Result<(u64, u64)> {
         self.conn()?;
-        self.index_identity
-            .as_ref()
-            .map(|(_, device, inode)| (*device, *inode))
-            .ok_or(StoreError::ReadIndexReplaced)
+        let (_, (_, device, inode)) = self.started.get().expect("a started reader");
+        Ok((*device, *inode))
     }
 
     /// The key read cursors are sealed with: a secret of this index
@@ -1456,7 +1448,7 @@ impl Reader<'_> {
             unused,
             search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
             capture_coverage: self.all_capture_coverage()?,
-            index_rebuild: crate::archive::index_rebuild::status(c, &self.pool.archive)?,
+            index_rebuild: crate::index::file::IndexRebuild::recorded(c)?,
         })
     }
 

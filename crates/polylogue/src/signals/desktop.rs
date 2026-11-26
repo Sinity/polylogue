@@ -183,7 +183,7 @@ async fn drive(
         }
         // Rules read the index; while it is being built with nothing to
         // serve, the next commit (its install among them) evaluates again.
-        if evaluate && matches!(d.archive.index_build(), Some(build) if !build.serving_previous) {
+        if evaluate && d.archive.index_files().is_ok_and(|files| !files.serves()) {
             evaluate = false;
             due = d.config.requests.now().unix_ms().saturating_add(30_000);
         }

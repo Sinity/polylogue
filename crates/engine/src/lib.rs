@@ -633,9 +633,6 @@ pub struct Engine {
     requests: Option<Requests>,
     /// Imports answered by a build while it ran, for the loop's summary.
     imports_during_build: u64,
-    /// The paths an import request stored new bytes for and their sizes,
-    /// kept across its retry after a build installed under it.
-    import_stored: Vec<(PathBuf, u64)>,
     /// What is failing, logged when it starts and when it clears.
     failure_log: failure_log::FailureLog,
     /// The files the current pass planned to read.
@@ -746,7 +743,6 @@ impl Engine {
             collectors: collectors::Collectors::default(),
             requests: None,
             imports_during_build: 0,
-            import_stored: Vec::new(),
             failure_log: Default::default(),
             planned: HashSet::new(),
         })

@@ -218,7 +218,13 @@ impl Inner {
         while let Some(step) = read_step(&mut reader)? {
             has_step = true;
             if step.delivery.is_none()
-                || crate::wire_shapes::admit_export(&self.index, &input.id, chain, length, &step)?
+                || crate::wire_shapes::admit_export(
+                    self.index.get()?,
+                    &input.id,
+                    chain,
+                    length,
+                    &step,
+                )?
             {
                 all_replayed = false;
                 break;
@@ -230,6 +236,7 @@ impl Inner {
         drop(reader);
         let tx = self
             .index
+            .get_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&tx)?;

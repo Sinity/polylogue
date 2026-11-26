@@ -3,7 +3,6 @@
 pub mod build_progress;
 pub(crate) mod generation;
 pub mod index_build;
-pub mod index_rebuild;
 mod metadata;
 pub mod writer;
 pub use metadata::Mode;
@@ -143,7 +142,8 @@ pub struct Archive {
     /// store hands out, the writer's long work and the engine's loop observe
     /// it; clones share it.
     stop: crate::cancellation::Cancellation,
-    /// Whether `index.db` is being built, shared by every value for this root.
+    /// The index files' state and a rebuild's progress, shared by every
+    /// value for this root ([`index_build`]).
     pub(crate) index_build: std::sync::Arc<index_build::State>,
 }
 
@@ -399,8 +399,8 @@ impl Archive {
         crate::search::files::sweep(&self.root)
     }
 
-    /// The caller holds the archive lock. An index is built in a private
-    /// file and installed when its build ends ([`index_build`]).
+    /// The caller holds the archive lock. An index is rebuilt in a private
+    /// file and installed when its rebuild ends ([`index_build`]).
     pub(crate) fn prepare_index(&self) -> Result<()> {
         index_build::prepare(self)
     }

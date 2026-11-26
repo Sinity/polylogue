@@ -269,7 +269,6 @@ impl Engine {
             } else {
                 report.imported.push(at.clone());
                 report.pass.bytes_stored += stored.length;
-                self.import_stored.push((at.clone(), stored.length));
             }
             let plan = self.stored_import_plan(&at, origin, input, &stored, facts);
             if plan.is_err() {
@@ -296,9 +295,7 @@ impl Engine {
         if plan.origin.name != polylogue_sources::polylogue_bundle::ORIGIN {
             return Ok(());
         }
-        // A build installed while an import is answered replaces the index
-        // under this read; the bundle is read from the installed one.
-        let stored = self.reads.read_current(|reader| {
+        let stored = self.reads.reader().and_then(|reader| {
             let chain = match plan.change {
                 Change::Reparse { chain } => chain,
                 _ => {
