@@ -834,6 +834,7 @@ fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
 
 mod query_surfaces;
 
+mod bundle_probe;
 mod surface_table;
 
 mod agent_guidance;
