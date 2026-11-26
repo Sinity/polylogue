@@ -469,7 +469,8 @@ pub(super) fn page(
         seed,
         &mut walk,
         direction,
-        |step_items, node, place| {
+        |step, step_items, place| {
+            let node = matches!(step, Step::Node { .. });
             let (size, cost) = encoded_size(&step_items);
             if !steps.is_empty()
                 && (used + size > limits.bytes.get()
