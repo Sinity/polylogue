@@ -285,10 +285,7 @@ impl Bindings {
             kept.validate_output_metadata()?;
         }
         let (query, _) = source::expand(text, self)?;
-        // Origin choices validate input against this daemon, not saved output types.
-        let mut output_bindings = self.clone();
-        output_bindings.origins.clear();
-        schema::output_metadata(&query, &output_bindings.catalog())
+        schema::output_metadata(&query, &self.catalog())
     }
     pub fn definition_parameters(&self, text: &str) -> Result<Vec<String>, QueryError> {
         definition_parameters(text, &self.catalog())
