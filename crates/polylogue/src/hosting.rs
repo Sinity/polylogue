@@ -846,7 +846,9 @@ impl StdioState {
         }
         if self.first_prompt && self.first_reply.is_none() {
             self.first_reply = match self.protocol {
-                HostProtocol::ClaudeStreamJson if message["type"].is_string() => Some(Ok(())),
+                HostProtocol::ClaudeStreamJson if self.turns > 0 && message["type"].is_string() => {
+                    Some(Ok(()))
+                }
                 HostProtocol::Acp if self.prompts.contains(&message["id"]) => {
                     Some(match message.get("error") {
                         Some(error) => Err(error.to_string()),

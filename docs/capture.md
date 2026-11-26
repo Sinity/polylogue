@@ -142,6 +142,7 @@ When importing files into the archive, the reply and command exit status follow 
 | Everything already stored | `ok` with a note | 0 |
 | New files stored and some refused or failed | `degraded` with a reason for each refused or failed path | 5 |
 | No new files stored and at least one path refused or failed | `error` with the paths and reasons | 2 for an input the caller must change, 4 for `not_found` or `io` |
+| Stored, not yet readable (`readable.when` is `after_build`) | `degraded` with index rebuild progress | 5 |
 
 A mistyped `--origin` gives one `bad_value` error listing the importable origins. Failed and partial file imports appear in the daemon's recent log. The text output names the stored paths and gives the reasons for refusals. With `--json`, these facts are in the reply. When an import has a next call, the text output gives a command that runs it.
 

@@ -101,7 +101,10 @@ fn a_message_with_no_channel_is_refused_and_recorded() {
     let ended = test_daemon::start_with_clock("ended", at("2026-03-02T10:00:00Z"));
     let answer = send(&ended, true);
     assert_eq!(answer["deliveries"][0]["outcome"], "not_sent");
-    assert_eq!(answer["deliveries"][0]["reason"], "session_not_live");
+    assert_eq!(
+        answer["deliveries"][0]["reason"],
+        json!({"kind": "session_not_live", "state": "ended"})
+    );
     let delivery = answer["deliveries"][0]["delivery"].as_str().unwrap();
     ended.wait_for(|status| status["pending_writes"]["delivery_outcomes"] == 0);
     let reader = ended.daemon.reads.reader().unwrap();
@@ -113,7 +116,10 @@ fn a_message_with_no_channel_is_refused_and_recorded() {
     // Running by its transcript's growth, but no hook event: no channel.
     let running = test_daemon::start_with_clock("running", at("2026-03-01T10:05:00Z"));
     let answer = send(&running, false);
-    assert_eq!(answer["deliveries"][0]["reason"], "unsupported");
+    assert_eq!(
+        answer["deliveries"][0]["reason"],
+        json!({"kind": "unsupported", "message": "claude-code has no hook installed to take a message"})
+    );
     assert!(!crate::mailbox::raised(running.daemon.acts.mail(), &s1()));
 }
 

@@ -149,12 +149,8 @@ impl Call<'_> {
     /// or for a write, so a committed result is read back whatever the time.
     pub fn reader(&self) -> Result<polylogue_store::Reader<'_>, Failure> {
         let reads = &self.daemon.reads;
-        let Some(limit) = ReadLimit::current() else {
-            return Ok(reads.checkout(
-                self.lane,
-                &ReadLimit::without_deadline(self.limit.cancellation.clone()),
-            )?);
-        };
+        let limit = ReadLimit::current()
+            .unwrap_or_else(|| ReadLimit::without_deadline(self.limit.cancellation.clone()));
         Ok(match self.after_write {
             Some(position) => reads.checkout_after(
                 super::service::writer(self.daemon)?,

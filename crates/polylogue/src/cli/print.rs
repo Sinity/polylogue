@@ -255,11 +255,11 @@ fn delivered(out: &mut String, act: &str, delivered: &protocol::acts::Delivered)
     if let Some(role) = &delivered.started {
         let _ = write!(out, ", a new instance of the role {role}");
     }
-    for part in [&delivered.reason, &delivered.detail, &delivered.note]
-        .into_iter()
-        .flatten()
-    {
-        let _ = write!(out, "; {part}");
+    if let Some(reason) = &delivered.reason {
+        let _ = write!(out, "; {reason}");
+    }
+    if let Some(note) = &delivered.note {
+        let _ = write!(out, "; {note}");
     }
     out.push('\n');
 }
@@ -284,10 +284,13 @@ pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
         match reached {
             Reached::Session(sent) => {
                 for one in &sent.deliveries {
-                    let action = if one.outcome == protocol::acts::ActOutcome::NotSent {
-                        "could not send to"
-                    } else {
-                        "sent to"
+                    use protocol::acts::ActOutcome::*;
+                    let action = match one.outcome {
+                        Delivered => "sent to",
+                        Started => "started a run for",
+                        Prepared | Queued => "held message for",
+                        NotSent => "could not send to",
+                        Cancelled => "cancelled message to",
                     };
                     delivered(&mut out, action, one);
                 }
@@ -505,7 +508,13 @@ pub fn import(answer: &protocol::import::Answer, style: TextStyle) -> String {
             }
             let mut out = String::new();
             for (paths, label) in [
-                (&report.imported, "stored"),
+                (
+                    &report.imported,
+                    match report.readable {
+                        polylogue_engine::Readable::Now => "stored",
+                        polylogue_engine::Readable::AfterBuild { .. } => "stored, not yet readable",
+                    },
+                ),
                 (&report.already_stored, "already stored"),
             ] {
                 for path in paths {

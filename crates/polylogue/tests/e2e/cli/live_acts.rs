@@ -94,8 +94,10 @@ fn send_to_a_gone_directory_reports_not_sent_and_exits_five() {
     assert_eq!(row["session"], "claude-code:s1");
     assert_eq!(row["outcome"], "not_sent");
     assert_eq!(row["channel"], "resume");
-    assert_eq!(row["reason"], "directory_missing");
-    assert_eq!(row["detail"], json!(root.path().join("missing-checkout")));
+    assert_eq!(
+        row["reason"],
+        json!({"kind": "directory_missing", "path": root.path().join("missing-checkout")})
+    );
 }
 
 #[test]

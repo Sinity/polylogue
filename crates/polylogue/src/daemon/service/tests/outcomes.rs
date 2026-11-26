@@ -144,10 +144,8 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
     test_answers::ok(answer);
 }
 
-/// docs/capture.md, Import: "where that waits for a build, the reply says
-/// index_building with the build's progress".
 #[test]
-fn an_import_answered_during_a_build_says_the_index_is_being_built() {
+fn an_import_answered_during_a_build_says_the_file_is_stored_and_not_yet_readable() {
     let build = polylogue_store::archive::index_build::IndexBuild {
         reason: polylogue_store::index::file::RebuildReason::NoIndex,
         chains: 3,
@@ -157,16 +155,24 @@ fn an_import_answered_during_a_build_says_the_index_is_being_built() {
     };
     let report = polylogue_engine::ImportReport {
         readable: polylogue_engine::Readable::AfterBuild { build },
+        imported: vec!["/home/op/export.json".into()],
         ..Default::default()
     };
     let answer = import_answer(report, false);
     assert_eq!(answer.exit_code(), 5);
-    let (_, notes) = test_answers::degraded(answer);
+    let (report, notes) = test_answers::degraded(answer);
     assert_eq!(
         notes,
         [
-            "the index is being built (the archive had no index): 100 of 300 bytes parsed; 1 of 3 input chains read; the imported inputs are readable once it is installed"
+            "stored, not yet readable: the index is being built (the archive had no index): 100 of 300 bytes parsed; 1 of 3 input chains read"
         ]
+    );
+    assert_eq!(
+        crate::cli::print::import(
+            &crate::protocol::import::Answer::Files(Box::new(report)),
+            command_surface::TextStyle::default(),
+        ),
+        "stored, not yet readable: /home/op/export.json\n",
     );
 }
 

@@ -108,9 +108,7 @@ pub(crate) fn import_answer(
         missing.push(crate::protocol::AWAITING_CONFIRMATION.into());
     }
     if let polylogue_engine::Readable::AfterBuild { build } = &report.readable {
-        missing.push(format!(
-            "{build}; the imported inputs are readable once it is installed"
-        ));
+        missing.push(format!("stored, not yet readable: {build}"));
     }
     let already_stored = report.imported.is_empty() && !report.already_stored.is_empty();
     let mut answer = if missing.is_empty() {

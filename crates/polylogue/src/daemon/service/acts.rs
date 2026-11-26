@@ -14,7 +14,7 @@ use crate::daemon::handler::{Call, Operation, Policy};
 use crate::live_acts::{ResumeRun, probe};
 use crate::protocol::acts::{
     ActOutcome, Answered, Claim, Claimed, ClaimedDelivery, Continued, Decided, Delivered,
-    Interrupted, Permission, Sent, Start, StartReply, Started,
+    Interrupted, NotSentReason, Permission, Sent, Start, StartReply, Started,
 };
 use command_surface::{Answer, TextStyle};
 use polylogue_model::live::channel::{Act, Channel, channel};
@@ -334,13 +334,12 @@ fn protocol_send(
     delivery: &str,
     pack: &str,
 ) -> Result<Delivered, Failure> {
-    let row = |outcome, reason: Option<String>, note: Option<&str>| Delivered {
+    let row = |outcome, reason, note: Option<&str>| Delivered {
         session: session.clone(),
         delivery: Some(delivery.to_owned()),
         channel: Some(Channel::Protocol),
         outcome,
         reason,
-        detail: None,
         note: note.map(str::to_owned),
         started: None,
     };
@@ -368,7 +367,11 @@ fn protocol_send(
                 DeliveryOutcome::NotSent,
                 format!("failed({reason})"),
             )?;
-            row(ActOutcome::NotSent, Some(reason), None)
+            row(
+                ActOutcome::NotSent,
+                Some(NotSentReason::Failed { message: reason }),
+                None,
+            )
         }
     })
 }
@@ -478,8 +481,7 @@ pub(crate) fn send(
                     delivery: None,
                     channel: None,
                     outcome: ActOutcome::NotSent,
-                    reason: Some("session_missing".into()),
-                    detail: None,
+                    reason: Some(NotSentReason::SessionMissing),
                     note: None,
                     started: None,
                 });
@@ -519,7 +521,6 @@ pub(crate) fn send(
             channel,
             outcome,
             reason: None,
-            detail: None,
             note: note.map(str::to_owned),
             started: None,
         };
@@ -536,14 +537,22 @@ pub(crate) fn send(
             }
             Ok(Channel::Resume) => {
                 let argv = crate::live_acts::headless_resume(session, &pack);
-                let cwd = d.reads.reader()?.resume_directory(session)?;
-                let (reason, detail) = match (argv, cwd) {
-                    (None, _) => ("unsupported", None),
-                    (_, None) => ("directory_unknown", None),
-                    (Some(_), Some(dir)) if !std::path::Path::new(&dir).is_dir() => {
-                        ("directory_missing", Some(dir))
+                let cwd = d
+                    .reads
+                    .reader()
+                    .and_then(|reader| reader.resume_directory(session));
+                let reason = match (argv, cwd) {
+                    (None, _) => NotSentReason::Unsupported {
+                        message: format!("{} has no headless resume", session.origin()),
+                    },
+                    (_, Err(error)) => NotSentReason::Failed {
+                        message: error.to_string(),
+                    },
+                    (_, Ok(None)) => NotSentReason::DirectoryUnknown,
+                    (Some(_), Ok(Some(dir))) if !std::path::Path::new(&dir).is_dir() => {
+                        NotSentReason::DirectoryMissing { path: dir.into() }
                     }
-                    (Some(argv), Some(cwd)) => {
+                    (Some(argv), Ok(Some(cwd))) => {
                         let run = ResumeRun {
                             session: session.clone(),
                             delivery: delivery.clone(),
@@ -564,23 +573,24 @@ pub(crate) fn send(
                                     ));
                                     continue;
                                 }
-                                Ok(Err(problem)) => ("failed", Some(problem)),
-                                Err(error) => (
-                                    "failed",
-                                    Some(format!("the resume worker stopped: {error}")),
-                                ),
+                                Ok(Err(message)) => NotSentReason::Failed { message },
+                                Err(error) => NotSentReason::Failed {
+                                    message: format!("the resume worker stopped: {error}"),
+                                },
                             },
-                            Err(problem) => ("failed", Some(problem)),
+                            Err(message) => NotSentReason::Failed { message },
                         }
                     }
                 };
-                let recorded = detail
-                    .as_ref()
-                    .map_or_else(|| reason.to_owned(), |detail| format!("{reason}({detail})"));
-                outcome_event(d, invocation, &delivery, DeliveryOutcome::NotSent, recorded)?;
+                outcome_event(
+                    d,
+                    invocation,
+                    &delivery,
+                    DeliveryOutcome::NotSent,
+                    reason.to_string(),
+                )?;
                 Delivered {
-                    reason: Some(reason.into()),
-                    detail,
+                    reason: Some(reason),
                     ..row(Some(Channel::Resume), ActOutcome::NotSent, None)
                 }
             }
@@ -594,8 +604,13 @@ pub(crate) fn send(
                     refusal.reason.to_owned(),
                 )?;
                 Delivered {
-                    reason: Some(refusal.reason.to_owned()),
-                    detail: Some(refusal.detail.to_string()),
+                    reason: Some(if live && !view_state.running() {
+                        NotSentReason::SessionNotLive { state: view_state }
+                    } else {
+                        NotSentReason::Unsupported {
+                            message: refusal.detail,
+                        }
+                    }),
                     ..row(None, ActOutcome::NotSent, None)
                 }
             }
@@ -1434,7 +1449,6 @@ fn message_new_instance(
             channel: Some(Channel::Protocol),
             outcome: ActOutcome::Delivered,
             reason: None,
-            detail: None,
             note: None,
             started: Some(role.name.clone()),
         }],
