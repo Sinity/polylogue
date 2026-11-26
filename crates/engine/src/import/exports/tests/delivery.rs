@@ -418,7 +418,9 @@ fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
         assert!(report.refused.is_empty(), "{report:?}");
         assert_eq!(report.pass.errors.len(), 1, "{report:?}");
         assert!(
-            report.pass.errors[0].contains("injected fault at parse"),
+            report.pass.errors[0]
+                .to_string()
+                .contains("injected fault at parse"),
             "{report:?}"
         );
         assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);

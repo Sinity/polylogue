@@ -225,13 +225,11 @@ fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
         &mut report,
     )
     .unwrap();
-    assert!(
-        report
-            .pass
-            .errors
-            .iter()
-            .any(|error| error.contains("already parsed as another origin"))
-    );
+    assert!(report.pass.errors.iter().any(|error| {
+        error
+            .to_string()
+            .contains("already parsed as another origin")
+    }));
     assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), before);
 }
 

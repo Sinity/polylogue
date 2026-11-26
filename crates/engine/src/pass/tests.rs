@@ -388,7 +388,10 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
         .execute_pool(vec![plan], Vec::new(), &[], &mut failed)
         .unwrap();
     assert_eq!(failed.errors.len(), 1, "{failed:?}");
-    assert!(failed.errors[0].starts_with("read "), "{failed:?}");
+    assert!(
+        failed.errors[0].to_string().starts_with("read "),
+        "{failed:?}"
+    );
     std::fs::rename(&aside, &path).unwrap();
     assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
     let second = if edit_tail {
@@ -755,7 +758,11 @@ fn unparseable_stored_input_refused_and_pass_continues() {
         unreadable.display()
     );
     assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
-    assert!(pass.errors[0].ends_with(&reason), "{:?}", pass.errors);
+    assert!(
+        pass.errors[0].to_string().ends_with(&reason),
+        "{:?}",
+        pass.errors
+    );
     let refused = home
         .reads()
         .reader()
@@ -812,7 +819,11 @@ fn unparsed_watched_input_is_refused_and_finishes() {
         unreadable.display()
     );
     assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
-    assert!(pass.errors[0].ends_with(&reason), "{:?}", pass.errors);
+    assert!(
+        pass.errors[0].to_string().ends_with(&reason),
+        "{:?}",
+        pass.errors
+    );
     let refused = home
         .reads()
         .reader()

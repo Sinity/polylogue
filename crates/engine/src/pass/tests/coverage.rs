@@ -142,7 +142,9 @@ fn a_refused_coverage_report_does_not_stop_reading() {
     let pass = pass.unwrap();
     assert_eq!(pass.errors.len(), 1, "{pass:?}");
     assert!(
-        pass.errors[0].contains("injected fault at write.coverage (test-machine)"),
+        pass.errors[0]
+            .to_string()
+            .contains("injected fault at write.coverage (test-machine)"),
         "{pass:?}"
     );
     assert_eq!(home.texts("kept"), ["kept words"]);

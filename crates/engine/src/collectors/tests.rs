@@ -119,7 +119,8 @@ fn collector_acceptance_requires_the_complete_archived_body() {
     assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .unwrap_err(),
+            .unwrap_err()
+            .to_string(),
         "revision is not archived"
     );
     std::fs::write(&path, small).unwrap();
@@ -128,14 +129,16 @@ fn collector_acceptance_requires_the_complete_archived_body() {
     assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .unwrap_err(),
+            .unwrap_err()
+            .to_string(),
         "revision is not archived"
     );
     std::fs::write(&path, complete).unwrap();
     assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .unwrap_err(),
+            .unwrap_err()
+            .to_string(),
         "revision is not archived"
     );
     let pass = engine.run_pass().unwrap();
@@ -146,7 +149,8 @@ fn collector_acceptance_requires_the_complete_archived_body() {
     assert_eq!(
         engine
             .advance_collector("codex", &ARCHIVE_ACCEPTANCE, &paths)
-            .unwrap_err(),
+            .unwrap_err()
+            .to_string(),
         "revision is not archived"
     );
     let mut wrong = complete.to_vec();
@@ -156,7 +160,8 @@ fn collector_acceptance_requires_the_complete_archived_body() {
     assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .unwrap_err(),
+            .unwrap_err()
+            .to_string(),
         "revision is not archived"
     );
     // A missing local file must be written again; it is never an acceptance.
@@ -164,7 +169,8 @@ fn collector_acceptance_requires_the_complete_archived_body() {
     assert_eq!(
         engine
             .advance_collector("ai-studio", &ARCHIVE_ACCEPTANCE, &paths)
-            .unwrap_err(),
+            .unwrap_err()
+            .to_string(),
         "revision is not archived"
     );
 }

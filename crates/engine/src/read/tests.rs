@@ -705,7 +705,7 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         assert!(
             pass.errors
                 .iter()
-                .any(|error| error.contains("injected fault at parse")),
+                .any(|error| error.to_string().contains("injected fault at parse")),
             "attempt {attempt}: {pass:?}"
         );
         if attempt == 1 {

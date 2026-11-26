@@ -62,7 +62,9 @@ fn rejected_replacement_keeps_the_committed_reading() {
         let failed = engine.run_pass().unwrap();
         assert_eq!(failed.errors.len(), 1, "{failed:?}");
         assert!(
-            failed.errors[0].contains(&format!("injected fault at {point}")),
+            failed.errors[0]
+                .to_string()
+                .contains(&format!("injected fault at {point}")),
             "{failed:?}"
         );
         if point == "parse" {

@@ -46,8 +46,8 @@ fn an_unchanged_database_read_after_restart_keeps_the_original_pending_capture()
             repeated
                 .errors
                 .iter()
-                .all(|error| error.starts_with("confirmed stream:")
-                    && error.contains("Connection refused")),
+                .all(|error| error.to_string().starts_with("confirmed stream:")
+                    && error.to_string().contains("Connection refused")),
             "{repeated:?}"
         );
         // This compares original generation, nonce, observation/revision IDs,

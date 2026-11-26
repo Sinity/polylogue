@@ -39,10 +39,9 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
         let failed = engine.run_pass().unwrap();
         assert!(!failed.errors.is_empty(), "{point}: {failed:?}");
         assert!(
-            failed
-                .errors
-                .iter()
-                .all(|e| e.contains(&format!("injected fault at {point}"))),
+            failed.errors.iter().all(|e| e
+                .to_string()
+                .contains(&format!("injected fault at {point}"))),
             "{point}: {failed:?}"
         );
         assert!(w.texts("new").is_empty(), "{point}");

@@ -31,7 +31,7 @@ fn stored_and_unbuilt(name: &str) -> ClaudeHome {
         &claude_user("first", name, "first body"),
     );
     {
-        let (mut engine, _lock) = home.engine(1 << 20);
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
         assert!(engine.run_pass().unwrap().errors.is_empty());
     }
     polylogue_testkit::delete_index(&home.root);
@@ -45,7 +45,7 @@ fn stored_and_unbuilt(name: &str) -> ClaudeHome {
 #[test]
 fn a_store_failure_while_the_build_reads_a_chain_is_not_its_parse_failure() {
     let home = stored_and_unbuilt("busy-build");
-    let (mut engine, _lock) = home.engine(1 << 20);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
     fault::clear();
     fault::arm("reparse.prepare", "", Action::Fail, 0, 1);
     let failed = engine.run_pass();
@@ -73,7 +73,7 @@ fn a_store_failure_while_the_build_reads_a_chain_is_not_its_parse_failure() {
 fn a_parser_panic_in_the_build_fails_the_chain_with_its_message() {
     let home = stored_and_unbuilt("panicking-build");
     let path = home.file("panicking-build.jsonl");
-    let (mut engine, _lock) = home.engine(1 << 20);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
     fault::clear();
     fault::arm("parse", "panicking-build", Action::Panic, 0, 1);
     let pass = engine.run_pass().unwrap();

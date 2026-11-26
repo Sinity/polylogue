@@ -95,7 +95,9 @@ fn a_stopped_export_resumes_after_its_last_committed_batch() {
         fault::clear();
         assert_eq!(report.pass.errors.len(), 1, "{report:?}");
         assert!(
-            report.pass.errors[0].contains("injected fault at parse"),
+            report.pass.errors[0]
+                .to_string()
+                .contains("injected fault at parse"),
             "{report:?}"
         );
     }

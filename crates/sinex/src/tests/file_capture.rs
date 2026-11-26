@@ -164,8 +164,8 @@ fn database_completion_preserves_pending_provider_files_in_the_same_batch() {
     assert!(
         pass.errors
             .iter()
-            .all(|error| error.starts_with("confirmed stream:")
-                && error.contains("Connection refused")),
+            .all(|error| error.to_string().starts_with("confirmed stream:")
+                && error.to_string().contains("Connection refused")),
         "{pass:?}"
     );
     assert_eq!(
@@ -212,8 +212,8 @@ fn quiet_offline_file_reopens_without_prefix_reads() {
     assert!(
         pass.errors
             .iter()
-            .all(|error| error.starts_with("confirmed stream:")
-                && error.contains("Connection refused")),
+            .all(|error| error.to_string().starts_with("confirmed stream:")
+                && error.to_string().contains("Connection refused")),
         "{pass:?}"
     );
     assert!(pass.capture_pending);
@@ -230,8 +230,8 @@ fn quiet_offline_file_reopens_without_prefix_reads() {
         quiet
             .errors
             .iter()
-            .all(|error| error.starts_with("confirmed stream:")
-                && error.contains("Connection refused")),
+            .all(|error| error.to_string().starts_with("confirmed stream:")
+                && error.to_string().contains("Connection refused")),
         "{quiet:?}"
     );
     assert!(quiet.capture_pending);
@@ -255,8 +255,8 @@ fn scope_reset_keeps_vanished_unconfirmed_files() {
         first
             .errors
             .iter()
-            .all(|error| error.starts_with("confirmed stream:")
-                && error.contains("Connection refused")),
+            .all(|error| error.to_string().starts_with("confirmed stream:")
+                && error.to_string().contains("Connection refused")),
         "{first:?}"
     );
     assert!(first.capture_pending);
@@ -283,8 +283,8 @@ fn scope_reset_keeps_vanished_unconfirmed_files() {
         resumed
             .errors
             .iter()
-            .all(|error| error.starts_with("confirmed stream:")
-                && error.contains("Connection refused")),
+            .all(|error| error.to_string().starts_with("confirmed stream:")
+                && error.to_string().contains("Connection refused")),
         "{resumed:?}"
     );
     assert!(resumed.capture_pending);
@@ -355,8 +355,8 @@ fn restart_after_first_chunk_reads_spooled_bytes_first() {
     assert!(
         pass.errors
             .iter()
-            .all(|error| error.starts_with("confirmed stream:")
-                && error.contains("Connection refused")),
+            .all(|error| error.to_string().starts_with("confirmed stream:")
+                && error.to_string().contains("Connection refused")),
         "{pass:?}"
     );
     assert_eq!(pass.bytes_read, text.len() as u64 - CHUNK);
@@ -384,8 +384,8 @@ fn offline_empty_file_has_body_and_eof_but_no_source() {
     assert!(
         pass.errors
             .iter()
-            .all(|error| error.starts_with("confirmed stream:")
-                && error.contains("Connection refused")),
+            .all(|error| error.to_string().starts_with("confirmed stream:")
+                && error.to_string().contains("Connection refused")),
         "{pass:?}"
     );
     assert!(pass.capture_pending);
@@ -747,8 +747,8 @@ fn finished_database_worker_keeps_spooled_bytes_pending() {
             pending
                 .errors
                 .iter()
-                .all(|error| error.starts_with("confirmed stream:")
-                    && error.contains("Connection refused")),
+                .all(|error| error.to_string().starts_with("confirmed stream:")
+                    && error.to_string().contains("Connection refused")),
             "{pending:?}"
         );
         assert_eq!(pending.bytes_read, 0);
@@ -849,7 +849,7 @@ fn a_deferred_database_read_error_preserves_another_files_confirmation_wait() {
         assert!(
             pass.errors
                 .iter()
-                .any(|error| error.contains("state_5.sqlite")),
+                .any(|error| error.to_string().contains("state_5.sqlite")),
             "the stored database read must fail: {pass:?}"
         );
         assert_eq!(pass.capture_pending, pending_file, "{pass:?}");
@@ -930,8 +930,12 @@ fn idle_continuation_reports_errors_and_keeps_spool() {
     let continued = engine.run_pass().unwrap();
     assert!(
         continued.errors.iter().any(|error| {
-            error.starts_with("input idle-continuation-error:")
-                && error.contains("stored reading input identity differs")
+            error
+                .to_string()
+                .starts_with("input idle-continuation-error:")
+                && error
+                    .to_string()
+                    .contains("stored reading input identity differs")
         }),
         "{continued:?}"
     );
@@ -953,7 +957,7 @@ fn idle_continuation_reports_errors_and_keeps_spool() {
     assert!(
         next.errors
             .iter()
-            .all(|error| !error.contains("idle-continuation-error"))
+            .all(|error| !error.to_string().contains("idle-continuation-error"))
     );
 }
 
@@ -1139,8 +1143,8 @@ fn a_gone_observation_waits_on_the_confirmed_input_through_the_capture_route() {
         first
             .errors
             .iter()
-            .all(|error| error.starts_with("confirmed stream:")
-                && error.contains("Connection refused")),
+            .all(|error| error.to_string().starts_with("confirmed stream:")
+                && error.to_string().contains("Connection refused")),
         "{first:?}"
     );
     let pending = sdk.pending_captures().unwrap();

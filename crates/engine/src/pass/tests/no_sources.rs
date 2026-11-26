@@ -304,7 +304,7 @@ fn a_turn_failing_as_the_one_before_ends_an_idle_run() {
             .work
             .errors
             .iter()
-            .any(|e| e.contains("read.watched_inputs")),
+            .any(|e| e.to_string().contains("read.watched_inputs")),
         "{summary:?}"
     );
 }

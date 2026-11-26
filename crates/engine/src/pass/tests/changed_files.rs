@@ -7,8 +7,8 @@ use polylogue_store::fault::{self, Action};
 fn pass_while_a_file_grows(
     home: &ClaudeHome,
     record: &str,
-    pass: impl FnOnce() -> Result<Vec<String>, String> + Send + 'static,
-) -> Vec<String> {
+    pass: impl FnOnce() -> Result<Vec<polylogue_model::Failure>, String> + Send + 'static,
+) -> Vec<polylogue_model::Failure> {
     fault::arm("pass.admit", "grows.jsonl", Action::Hold, 0, 1);
     let running = std::thread::spawn(pass);
     while !fault::held() && !running.is_finished() {

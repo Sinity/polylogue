@@ -25,7 +25,10 @@ fn interrupted_database_read_keeps_committed_batches_and_retries_without_duplica
             let (mut engine, _lock) = w.engine();
             let first = engine.run_pass().unwrap();
             assert!(
-                first.errors.iter().any(|e| e.contains("database")),
+                first
+                    .errors
+                    .iter()
+                    .any(|e| e.to_string().contains("database")),
                 "{:?}",
                 first.errors
             );
@@ -73,10 +76,9 @@ fn a_failed_comparison_commit_recovers_stored_database_rows_on_retry() {
         let (mut engine, _lock) = w.engine();
         let result = engine.run_pass().unwrap();
         assert!(
-            result
-                .errors
-                .iter()
-                .any(|e| e.contains("injected fault at tool_database.comparison_commit")),
+            result.errors.iter().any(|e| e
+                .to_string()
+                .contains("injected fault at tool_database.comparison_commit")),
             "{:?}",
             result.errors
         );

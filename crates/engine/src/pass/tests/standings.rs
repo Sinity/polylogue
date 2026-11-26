@@ -73,11 +73,9 @@ fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
     let summary = result.unwrap();
     assert!(summary.passes >= 2, "{summary:?}");
     assert!(
-        summary
-            .work
-            .errors
-            .iter()
-            .any(|error| error.contains("injected fault at read.watched_inputs")),
+        summary.work.errors.iter().any(|error| error
+            .to_string()
+            .contains("injected fault at read.watched_inputs")),
         "{summary:?}"
     );
     assert!(!summary.work.capture_pending, "{summary:?}");
@@ -252,7 +250,9 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
     fault::clear();
     assert_eq!(retry.errors.len(), 1, "{retry:?}");
     assert!(
-        retry.errors[0].contains("injected fault at parse"),
+        retry.errors[0]
+            .to_string()
+            .contains("injected fault at parse"),
         "{retry:?}"
     );
     assert!(
