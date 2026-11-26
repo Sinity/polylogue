@@ -446,11 +446,14 @@ fn observations(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// Column names, each as (earlier, now).
+type Columns = &'static [(&'static str, &'static str)];
+
 /// The stored names format 8 changed: each table's name in format 6 and 7,
 /// its name now, and its columns whose names changed (earlier, now). Nothing
 /// else about these tables changed, so their rows are copied column by
 /// column under the new names.
-const RENAMED: &[(&str, &str, &[(&str, &str)])] = &[
+const RENAMED: &[(&str, &str, Columns)] = &[
     ("machine", "machine", &[("first_seen", "first_seen_at")]),
     ("input", "input", &[("format", "origin")]),
     ("kept_result", "saved_rows", &[("read_at", "read_position")]),
