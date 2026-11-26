@@ -128,6 +128,7 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
         config.clone(),
         crate::daemon::service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilIdle,
+        &Default::default(),
     )
     .unwrap();
     assert!(
