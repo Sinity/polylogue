@@ -4,46 +4,33 @@ use super::ReadError;
 use crate::{BlockKind, Message, PromptKind, Role};
 use serde::{Deserialize, Serialize};
 
-/// A context message, local archive position or annotation time. The wire form remains
-/// one string, including for stored reads accepted before historical reading.
+/// The moment a reading's annotations and pages are taken at: an exact local
+/// archive position or a time. The wire form is one string.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 pub enum ReadAt {
-    Message(crate::MessageId),
-    Position {
-        position: crate::ChangePosition,
-        // Context message IDs are opaque: numeric components may have leading
-        // zeroes even when the same word also parses as a local position.
-        spelling: String,
-    },
+    Position(crate::ChangePosition),
     Time(crate::Timestamp),
+    /// A time in the shared time grammar, resolved against the accepted
+    /// read's clock.
     TimeExpression(String),
 }
 impl TryFrom<String> for ReadAt {
     type Error = String;
     fn try_from(text: String) -> Result<Self, String> {
-        // Local clock/date-time spellings can also have three colon-separated
-        // parts. The shared time grammar owns those words; context reads still
-        // recover the original opaque message coordinate from this string.
+        // Local clock and date-time words can also have three colon-separated
+        // parts, so the shared time grammar reads the word first.
         if query_language::time::is_time_expression(&text) {
-            if crate::MessageId::parse(&text).is_err()
-                && let Some(at) = crate::Timestamp::parse_rfc3339(&text)
-            {
-                return Ok(Self::Time(at));
-            }
-            return Ok(Self::TimeExpression(text));
-        }
-        if let Some(position) = crate::ChangePosition::parse(&text) {
-            return Ok(Self::Position {
-                position,
-                spelling: text,
+            return Ok(match crate::Timestamp::parse_rfc3339(&text) {
+                Some(at) => Self::Time(at),
+                None => Self::TimeExpression(text),
             });
         }
-        if let Ok(message) = crate::MessageId::parse(&text) {
-            return Ok(Self::Message(message));
+        if let Some(position) = crate::ChangePosition::parse(&text) {
+            return Ok(Self::Position(position));
         }
         if text.trim().is_empty() {
-            return Err("read --at requires a time, local position or context message".into());
+            return Err("read --at requires a time or a local position".into());
         }
         Ok(Self::TimeExpression(text))
     }
@@ -56,8 +43,7 @@ impl From<ReadAt> for String {
 impl std::fmt::Display for ReadAt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Message(message) => message.fmt(f),
-            Self::Position { spelling, .. } => f.write_str(spelling),
+            Self::Position(position) => position.fmt(f),
             Self::Time(at) => at.fmt(f),
             Self::TimeExpression(text) => f.write_str(text),
         }
@@ -168,9 +154,10 @@ pub struct ReadOptions {
     /// For `root:REF`: read only the named physical session.
     #[serde(default)]
     pub physical: bool,
-    /// A context message, exact local annotation position or annotation time.
-    // The existing published nullable-string codec and its declaration text
-    // stay immutable; Rust parses the same string into the appropriate case.
+    /// The time or exact local position annotations and pages are read at;
+    /// now when absent.
+    // Polylogue's Sinex kind declarations hash this field's published schema,
+    // so its declared type and text change only with a new kind version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(
         with = "Option<crate::MessageId>",
@@ -460,27 +447,16 @@ impl ReadOptions {
     pub fn harness(&self) -> Expansion {
         self.harness.unwrap_or(Expansion::Collapsed)
     }
-    /// A possible legacy context coordinate. The pinned reader decides whether
-    /// this word names a stored message before interpreting time/position syntax.
-    pub fn context_message_candidate(&self) -> Option<crate::MessageId> {
-        if self.view != View::Context {
-            return None;
-        }
-        self.at
-            .as_ref()
-            .and_then(|at| crate::MessageId::parse(&at.to_string()).ok())
-    }
-
     pub fn annotation_position(&self) -> Option<&crate::ChangePosition> {
         match &self.at {
-            Some(ReadAt::Position { position, .. }) => Some(position),
+            Some(ReadAt::Position(position)) => Some(position),
             _ => None,
         }
     }
 
     pub fn annotation_at(&self) -> Option<AnnotationAt> {
         match self.at.as_ref()? {
-            ReadAt::Position { position, .. } => Some(AnnotationAt::Position(position.archive)),
+            ReadAt::Position(position) => Some(AnnotationAt::Position(position.archive)),
             ReadAt::Time(at) => Some(AnnotationAt::Time(*at)),
             _ => None,
         }

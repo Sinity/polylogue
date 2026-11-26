@@ -11,10 +11,6 @@ pub fn withdrawn_annotation(row: &str) -> String {
     )
 }
 
-pub fn live_annotation(row: &str) -> String {
-    current_annotation(row)
-}
-
 /// Whether annotation `row` is in conflict: its family has several current
 /// revisions, or another family holds one of its single-value slots with a
 /// current revision (each written first where the other was not yet seen,

@@ -1075,26 +1075,9 @@ fn historical_context_refuses_around_and_fresh_physical_message_options() {
 }
 
 #[test]
-fn session_context_keeps_the_legacy_missing_message_refusal() {
+fn current_and_historical_context_streams_share_the_page_projection() {
     let d = test_daemon::start("neutral target text");
-    let call = historical_call(
-        "session:claude-code:s1",
-        &"claude-code:missing",
-        100000,
-        View::Context,
-    );
-    let error = crate::test_answers::refusal(call.answer(&d.daemon));
-    assert_eq!(error.code.as_deref(), Some("not_found"));
-    assert_eq!(
-        error.message,
-        "message claude-code:missing is not in the reading"
-    );
-}
-
-#[test]
-fn current_legacy_and_historical_context_streams_share_the_page_projection() {
-    let d = test_daemon::start("neutral target text");
-    for at in [None, Some("claude-code:u1"), Some("2026-11-21T10:00:00Z")] {
+    for at in [None, Some("2026-11-21T10:00:00Z")] {
         let call = match at {
             Some(at) => historical_call("session:claude-code:s1", &at, 100000, View::Context),
             None => Call::new(
@@ -1116,40 +1099,6 @@ fn current_legacy_and_historical_context_streams_share_the_page_projection() {
         assert_eq!(complete.counts.sessions, 1);
         assert_eq!(complete.counts.messages, 1);
     }
-}
-
-#[test]
-fn an_explicit_context_message_keeps_the_matching_legacy_anchor_and_refuses_a_double_anchor() {
-    let d = test_daemon::start("neutral target text");
-    let page = crate::test_answers::read(
-        historical_call(
-            "message:claude-code:u1",
-            &"claude-code:u1",
-            100000,
-            View::Context,
-        )
-        .answer(&d.daemon),
-    );
-    assert!(
-        page.document
-            .items
-            .iter()
-            .any(|item| item.source.reference == "message:claude-code:u1")
-    );
-    let error = crate::test_answers::refusal(
-        historical_call(
-            "message:claude-code:u1",
-            &"claude-code:another",
-            100000,
-            View::Context,
-        )
-        .answer(&d.daemon),
-    );
-    assert_eq!(error.code.as_deref(), Some("bad_request"));
-    assert_eq!(
-        error.message,
-        "context has two different message anchors; select one message"
-    );
 }
 
 #[test]

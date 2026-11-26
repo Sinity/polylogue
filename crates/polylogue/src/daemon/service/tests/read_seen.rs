@@ -69,25 +69,16 @@ fn from_seen_keeps_its_accepted_bound_through_both_directions_and_reopen() {
         "a non-displayed CLI page must not mark"
     );
 
-    // The anchor's header is displayed before its body enters the context.
-    page(
-        &d,
-        json!({"verb":"read", "view":"context", "at":"claude-code:u1", "displayed":true, "budget":100000}),
-    );
-    assert!(
-        marks(&d).is_empty(),
-        "a header alone cannot consume its unread body"
-    );
-    // At u2 the first message's body is present; the u2 body is still unread.
+    // The page holds the first message whole and stops inside the second.
     let displayed = page(
         &d,
-        json!({"verb":"read", "view":"context", "at":"claude-code:u2", "displayed":true, "budget":100000}),
+        json!({"verb":"read", "displayed":true, "budget":800, "hide":["annotations"]}),
     );
     assert!(displayed.document.items.iter().any(
         |item| matches!(&item.kind, ItemKind::Text { text } if text.starts_with("message 1 "))
     ));
     assert!(!displayed.document.items.iter().any(
-        |item| matches!(&item.kind, ItemKind::Text { text } if text.starts_with("message 2 "))
+        |item| matches!(&item.kind, ItemKind::Text { text } if text.starts_with("message 3 "))
     ));
     let before = marks(&d);
     assert_eq!(before.len(), 1);

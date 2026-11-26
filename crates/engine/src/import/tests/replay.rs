@@ -21,7 +21,6 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
                 std::slice::from_ref(&path),
                 &ImportOptions {
                     origin: Some("claude-code".into()),
-                    explain: false,
                     ..Default::default()
                 }
             )

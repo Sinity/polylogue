@@ -71,13 +71,6 @@ fn malformed_bundle_suffix_is_refused_before_writes() {
     );
 }
 
-#[test]
-fn a_retired_export_document_is_refused_before_writes() {
-    assert_refused_before_writes(
-        br#"{"format":"polylogue-export","version":4,"sessions":[],"user_state":[]}"#.to_vec(),
-    );
-}
-
 #[cfg(feature = "faults")]
 #[test]
 #[ignore = "child process of interrupt_authored_import"]

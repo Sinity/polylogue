@@ -849,17 +849,14 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
             .collect()
     };
     let last = composed.parts.len() - 1;
-    let latest = Place {
+    // The composition ends at the selected message, or the session's latest.
+    let at = Place {
         part: last,
         entry: composed.parts[last].end.saturating_sub(1),
     };
     let place_of = |message: &MessageId| -> Result<Place, Error> {
         find(&composed.parts, entries, &EntryKey::header(message))
             .ok_or_else(|| Error::not_found(format!("message {message} is not in the reading")))
-    };
-    let at = match &options.at {
-        Some(ReadAt::Message(message)) => place_of(message)?,
-        _ => latest,
     };
     let context = context_at(&composed.parts, entries, at);
     let Some(diff) = &options.diff else {
@@ -1700,7 +1697,7 @@ pub(super) fn page(
                     continue;
                 }
             } else if block.is_none() {
-                // Context can stop at the anchor's header, before its body.
+                // A reading can stop at a message's header, before its body.
                 // A complete header must not consume those unread blocks.
                 let index = &composed.indexes[entry.part];
                 let next = reader.item_window(

@@ -646,54 +646,7 @@ fn full_tool_output_and_numeric_line_limits_round_trip_without_changing_stored_f
 }
 
 #[test]
-fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
-    let legacy = serde_json::json!({"view":"context","at":"claude-code:u1"});
-    let options: ReadOptions = serde_json::from_value(legacy).unwrap();
-    options.validate().unwrap();
-    assert_eq!(
-        options.at,
-        Some(ReadAt::Message(MessageId::parse("claude-code:u1").unwrap()))
-    );
-    assert_eq!(
-        serde_json::to_value(&options).unwrap()["at"],
-        "claude-code:u1"
-    );
-    let opaque: ReadAt = serde_json::from_value(serde_json::json!("message:opaque")).unwrap();
-    assert_eq!(
-        opaque,
-        ReadAt::Message(MessageId::parse("message:opaque").unwrap())
-    );
-    assert_eq!(serde_json::to_value(&opaque).unwrap(), "message:opaque");
-    let numeric: ReadOptions =
-        serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:2:3"}))
-            .unwrap();
-    numeric.validate().unwrap();
-    assert_eq!(
-        numeric.context_message_candidate(),
-        Some(MessageId::parse("claude-code:2:3").unwrap())
-    );
-    // The reading owner resolves this ambiguous word against stored messages.
-    assert_eq!(numeric.at.as_ref().unwrap().to_string(), "claude-code:2:3");
-    let padded: ReadOptions =
-        serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:02:03"}))
-            .unwrap();
-    assert_eq!(
-        padded.context_message_candidate(),
-        Some(MessageId::parse("claude-code:02:03").unwrap())
-    );
-    assert_eq!(
-        serde_json::to_value(&padded).unwrap()["at"],
-        "claude-code:02:03"
-    );
-    for text in ["08:00:00", "2026-11-21t08:00:00z"] {
-        let context: ReadOptions =
-            serde_json::from_value(serde_json::json!({"view":"context","at":text})).unwrap();
-        assert_eq!(
-            context.context_message_candidate(),
-            Some(MessageId::parse(text).unwrap())
-        );
-        assert_eq!(serde_json::to_value(&context).unwrap()["at"], text);
-    }
+fn read_at_is_a_position_or_a_time_in_one_string() {
     let historical = serde_json::json!({"at":"generation:2:3"});
     let options: ReadOptions = serde_json::from_value(historical).unwrap();
     options.validate().unwrap();
@@ -708,18 +661,6 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
     assert_eq!(
         serde_json::to_value(&options).unwrap()["at"],
         "generation:2:3"
-    );
-    let schema = schemars::schema_for!(ReadOptions).to_value();
-    assert_eq!(
-        schema["properties"]["at"],
-        serde_json::json!({
-            "description":"The message a context reading is taken at; the latest when absent.",
-            "anyOf":[{"$ref":"#/$defs/MessageId"},{"type":"null"}]
-        })
-    );
-    assert_eq!(
-        schema["$defs"]["MessageId"],
-        serde_json::json!({"type":"string"})
     );
 }
 

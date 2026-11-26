@@ -196,8 +196,6 @@ reasons! {
         "streaming reads require stream delivery";
     BlobsNeedStream "blobs_need_stream" => BadRequest {}
         "with_blobs requires streaming delivery";
-    TwoMessageAnchors "two_message_anchors" => BadRequest {}
-        "context has two different message anchors; select one message";
     /// A time that does not resolve.
     BadTime "bad_time" => BadRequest { text: String, problem: String }
         "`{text}` is not a time: {problem}";

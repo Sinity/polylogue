@@ -131,14 +131,6 @@ pub(super) fn declared(
     file.rewind()?;
     let head = read_head(&mut *file)?;
     rewind_past_byte_order_mark(file)?;
-    if named_origin == Some("polylogue-export") || retired_export(&mut *file)? {
-        file.rewind()?;
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "retired polylogue-export input requires explicit private conversion to polylogue-bundle v2",
-        ));
-    }
-    file.rewind()?;
     if polylogue_sources::polylogue_bundle::manifest(&mut *file).is_ok() {
         file.rewind()?;
         return Ok(polylogue_sources::origin::by_name(
@@ -278,36 +270,4 @@ pub(super) fn refuse(report: &mut ImportReport, path: &Path, reason: impl Into<S
         reason: reason.into(),
         structures_tried: STRUCTURES.iter().map(|s| (*s).into()).collect(),
     });
-}
-
-// Recognizing a retired type field refuses it; it does not decode old data.
-fn retired_export(reader: impl std::io::Read) -> std::io::Result<bool> {
-    struct Header<'a>(&'a mut bool);
-    impl<'de> Visitor<'de> for Header<'_> {
-        type Value = ();
-        fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-            f.write_str("an input header")
-        }
-        fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<(), M::Error> {
-            while let Some(key) = map.next_key::<String>()? {
-                if key == "format" {
-                    *self.0 = map.next_value::<String>()? == "polylogue-export";
-                    return Ok(());
-                }
-                map.next_value::<IgnoredAny>()?;
-            }
-            Ok(())
-        }
-    }
-    let mut retired = false;
-    let result = serde::Deserializer::deserialize_map(
-        &mut serde_json::Deserializer::from_reader(std::io::BufReader::new(reader)),
-        Header(&mut retired),
-    );
-    if let Err(error) = result
-        && error.is_io()
-    {
-        return Err(std::io::Error::other(error));
-    }
-    Ok(retired)
 }

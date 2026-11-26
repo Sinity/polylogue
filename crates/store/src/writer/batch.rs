@@ -123,21 +123,6 @@ mod prepared;
 pub(crate) use prepared::PreparedRows;
 
 impl ParseStep {
-    pub fn validate_stopped_attempt(&self) -> crate::Result<()> {
-        if self.stopped_attempt.is_some()
-            && !matches!(
-                self.progress,
-                polylogue_model::batch::StepProgress::Failed { .. }
-                    | polylogue_model::batch::StepProgress::Refused { .. }
-            )
-        {
-            return Err(crate::StoreError::Invalid(
-                "only a stopped parse step has a stopped attempt".into(),
-            ));
-        }
-        Ok(())
-    }
-
     /// The comparison hashes of the row-dump records parsed in this step.
     pub fn compare_records(&mut self, bytes: &[u8]) -> crate::Result<()> {
         let mut update = crate::tool_databases::RowComparison::records(bytes)?;
@@ -293,15 +278,4 @@ pub struct WriteReport {
     /// Batches the writer could not store, with the reason. The rest of
     /// their transaction was retried one batch at a time.
     pub errors: Vec<String>,
-}
-
-impl InContainer {
-    pub fn display_path(&self) -> String {
-        String::from_utf8(self.path_bytes.clone()).unwrap_or_else(|_| {
-            self.path_bytes
-                .iter()
-                .map(|byte| format!("%{byte:02X}"))
-                .collect()
-        })
-    }
 }

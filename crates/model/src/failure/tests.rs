@@ -103,11 +103,6 @@ fn every_reason_has_one_code_and_one_text() {
             "with_blobs requires streaming delivery",
         ),
         (
-            Reason::TwoMessageAnchors {},
-            Code::BadRequest,
-            "context has two different message anchors; select one message",
-        ),
-        (
             Reason::BadTime {
                 text: "text-x".into(),
                 problem: "problem-x".into(),

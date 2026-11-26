@@ -23,7 +23,6 @@ fn interrupted_import_keeps_committed_bytes_across_restart() {
                     std::slice::from_ref(&path),
                     &ImportOptions {
                         origin: Some("claude-code".into()),
-                        explain: false,
                         ..Default::default()
                     },
                 )
@@ -61,7 +60,6 @@ fn interrupted_import_keeps_committed_bytes_across_restart() {
                 std::slice::from_ref(&path),
                 &ImportOptions {
                     origin: Some("claude-code".into()),
-                    explain: false,
                     ..Default::default()
                 },
             )
