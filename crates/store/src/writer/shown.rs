@@ -639,7 +639,7 @@ impl<'c> Work<'_, 'c> {
             let rows = self
                 .tx()
                 .prepare_cached(
-                    "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.seq,
+                    "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.position,
                          r.record_position,r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
                          r.content_group,r.content_start,r.content_length
                      FROM message_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.message_id=?1",
@@ -1479,7 +1479,7 @@ impl<'c> Work<'_, 'c> {
         Ok(self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.seq,r.source_start,r.source_start+r.source_length,
+                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.position,r.source_start,r.source_start+r.source_length,
                      r.content_group,r.content_start,r.content_length,r.data_length
                  FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.event_id=?1",
             )?
@@ -1629,7 +1629,7 @@ impl<'c> Work<'_, 'c> {
         match stored {
             Some((pk, before_session, before)) => {
                 let same = self.tx().exists(
-                    "SELECT EXISTS(SELECT 1 FROM event WHERE id=?1 AND session_pk IS ?2 AND seq IS ?3 AND after_message_id IS ?4
+                    "SELECT EXISTS(SELECT 1 FROM event WHERE id=?1 AND session_pk IS ?2 AND position IS ?3 AND after_message_id IS ?4
                      AND kind IS ?5 AND at IS ?6 AND input_pk IS ?7 AND source_chain IS ?8 AND source_start IS ?9
                      AND source_end IS ?10)",
                     params![shown, session_pk, seq, after, winner.event.kind,
@@ -1649,7 +1649,7 @@ impl<'c> Work<'_, 'c> {
                     }
                 }
                 self.tx().prepare_cached(
-                    "UPDATE event SET session_pk=?2,seq=?3,after_message_id=?4,kind=?5,at=?6,input_pk=?7,
+                    "UPDATE event SET session_pk=?2,position=?3,after_message_id=?4,kind=?5,at=?6,input_pk=?7,
                          source_chain=?8,source_start=?9,source_end=?10,content_group=?11,content_start=?12,
                          content_length=?13,data_length=?14,session_order=?15,at_until=?16,at_precision=?17
                      WHERE id=?1",
@@ -1661,7 +1661,7 @@ impl<'c> Work<'_, 'c> {
             }
             None => {
                 self.tx().prepare_cached(
-                    "INSERT INTO event(id,session_pk,seq,after_message_id,kind,at,input_pk,source_chain,source_start,
+                    "INSERT INTO event(id,session_pk,position,after_message_id,kind,at,input_pk,source_chain,source_start,
                          source_end,content_group,content_start,content_length,data_length,session_order,
                          at_until,at_precision)
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
@@ -1703,7 +1703,7 @@ impl<'c> Work<'_, 'c> {
         };
         for stated in self.ids.stated_messages(message)? {
             let seq: Option<i64> = self.tx().scalar_optional(
-                "SELECT seq FROM message_parse WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
+                "SELECT position FROM message_parse WHERE input_pk=?1 AND chain=?2 AND message_id=?3",
                 params![input, chain, stated],
             )?;
             if seq.is_some() {

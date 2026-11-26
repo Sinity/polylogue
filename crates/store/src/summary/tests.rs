@@ -930,11 +930,11 @@ fn a_call_lookup_reads_no_line_of_its_session() {
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     for (sql, wanted) in [
         (
-            "SELECT seq FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY seq",
+            "SELECT position FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY position",
             "SEARCH transcript_call USING PRIMARY KEY (session_pk=? AND call_id=?)",
         ),
         (
-            "SELECT c.call_id, c.seq, c.class
+            "SELECT c.call_id, c.position, c.class
              FROM json_each(?2) j CROSS JOIN transcript_call c
              WHERE c.session_pk = ?1 AND c.call_id = j.value",
             "SEARCH c USING PRIMARY KEY (session_pk=? AND call_id=?)",

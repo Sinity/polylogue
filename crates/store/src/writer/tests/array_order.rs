@@ -36,7 +36,7 @@ fn a_parse_from_the_first_byte_restates_event_positions() {
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
     let rows = reader
-        .query("SELECT seq AS source_order FROM event", &[])
+        .query("SELECT position AS source_order FROM event", &[])
         .unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0]["source_order"], 1);

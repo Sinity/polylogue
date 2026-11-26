@@ -289,7 +289,7 @@ pub(super) fn write(
                 chain: chain.chain,
                 parse_version: step.parse_version.clone(),
             });
-        tx.prepare_cached("INSERT INTO shared_prefix_message(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,committed) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET committed=coalesce(max(shared_prefix_message.committed,excluded.committed),shared_prefix_message.committed,excluded.committed)")?
+        tx.prepare_cached("INSERT INTO shared_prefix_message(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,position,record_position,committed) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET committed=coalesce(max(shared_prefix_message.committed,excluded.committed),shared_prefix_message.committed,excluded.committed)")?
             .execute(params![chain.input_pk,chain.chain,parent,child,member.message.to_string(),source.input,source.chain,source.parse_version,member.position[0].to_string(),member.position[1].to_string(),chain.committed])?;
         write_prefix_copy(tx, chain, &parent, &child, true, touched)?;
     }
@@ -601,7 +601,7 @@ fn write_messages(
             let route = row.route(chain.route);
             let message = &row.message;
             tx.prepare_cached(
-                "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_length,seq,record_position,
+                "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_length,position,record_position,
                      at,route,completion,id_kind,hash,layout,response_key,content_name,
                      content_group,content_start,content_length)
                  VALUES (?1,?2,?3,?4,?5,?6-?5,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
@@ -674,22 +674,21 @@ fn order_times(
     restates: bool,
     touched: &mut Touched,
 ) -> Result<()> {
-    let mut running: Option<i64> =
-        if restates {
-            None
-        } else {
-            tx.prepare_cached(
+    let mut running: Option<i64> = if restates {
+        None
+    } else {
+        tx.prepare_cached(
             "SELECT order_time FROM message_parse WHERE input_pk=?1 AND chain=?2 AND session_id=?3
-             AND (seq,record_position)<(?4,?5) ORDER BY seq DESC,record_position DESC LIMIT 1",
+             AND (position,record_position)<(?4,?5) ORDER BY position DESC,record_position DESC LIMIT 1",
         )?
         .query_row(params![chain.input_pk, chain.chain, session, first.0, first.1], |r| r.get(0))
         .optional()?
         .flatten()
-        };
+    };
     let later = tx
         .prepare_cached(
             "SELECT message_id,at,order_time FROM message_parse WHERE input_pk=?1 AND chain=?2 AND session_id=?3
-             AND (seq,record_position)>=(?4,?5) ORDER BY seq,record_position",
+             AND (position,record_position)>=(?4,?5) ORDER BY position,record_position",
         )?
         .query_map(params![chain.input_pk, chain.chain, session, first.0, first.1], |r| {
             <(String, Option<i64>, Option<i64>)>::try_from(r)
@@ -907,12 +906,12 @@ fn write_events(
         };
         let session = event.session.as_ref().map(ToString::to_string);
         tx.prepare_cached(
-            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,source_start,source_length,
+            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,position,source_start,source_length,
                  after_message_id,kind,at,hash,imported_sources,
                  content_group,content_start,content_length,data_length)
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8-?7,?9,?10,?11,?12,?13,?14,?15,?16,?17)
              ON CONFLICT(input_pk,chain,event_id) DO UPDATE SET session_id=excluded.session_id,route=excluded.route,
-                 seq=excluded.seq,source_start=excluded.source_start,source_length=excluded.source_length,
+                 position=excluded.position,source_start=excluded.source_start,source_length=excluded.source_length,
                  after_message_id=excluded.after_message_id,kind=excluded.kind,at=excluded.at,hash=excluded.hash,
                  imported_sources=excluded.imported_sources,
                  content_group=excluded.content_group,content_start=excluded.content_start,

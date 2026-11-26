@@ -43,7 +43,7 @@ pub(super) fn assert_matches_rows(w: &TestArchive, session: &str) {
         let conn = reader.conn().unwrap();
         let mut statement = conn
             .prepare(
-                "SELECT unit IS NOT NULL FROM transcript_line WHERE session_pk = ?1 ORDER BY seq",
+                "SELECT unit IS NOT NULL FROM transcript_line WHERE session_pk = ?1 ORDER BY position",
             )
             .unwrap();
         statement
@@ -232,7 +232,7 @@ fn selected_event_changes_keep_their_payload_fields_and_placement() {
         );
         if change == 5 {
             assert_eq!(
-                reader.query("SELECT seq FROM event", &[]).unwrap()[0]["seq"],
+                reader.query("SELECT position FROM event", &[]).unwrap()[0]["position"],
                 9
             );
         }
@@ -374,8 +374,8 @@ fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query("SELECT seq FROM event", &[])
-            .unwrap()[0]["seq"],
+            .query("SELECT position FROM event", &[])
+            .unwrap()[0]["position"],
         9
     );
     main.parse[0].order_from = Some(1);
@@ -387,8 +387,8 @@ fn unchanged_shown_message_still_moves_events_to_its_new_source_sequence() {
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query("SELECT seq FROM event", &[])
-            .unwrap()[0]["seq"],
+            .query("SELECT position FROM event", &[])
+            .unwrap()[0]["position"],
         1
     );
     assert_matches_rows(&w, "s");

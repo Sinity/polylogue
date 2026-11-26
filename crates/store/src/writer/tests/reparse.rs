@@ -827,7 +827,7 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     let pool = ReadPool::open(&w.archive).unwrap();
     let positions = || {
         pool.reader().unwrap().query(
-        "SELECT e.kind,m.id AS after,e.seq FROM event e LEFT JOIN message m ON m.id=e.after_message_id ORDER BY e.kind", &[]).unwrap()
+        "SELECT e.kind,m.id AS after,e.position FROM event e LEFT JOIN message m ON m.id=e.after_message_id ORDER BY e.kind", &[]).unwrap()
     };
     let changed = || {
         pool.reader()
@@ -858,8 +858,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert_eq!(
         json!(positions()),
         json!([
-            {"kind":"message_position","after":null,"seq":0},
-            {"kind":"own_position","after":null,"seq":7},
+            {"kind":"message_position","after":null,"position":0},
+            {"kind":"own_position","after":null,"position":7},
         ])
     );
     let before = changed();
@@ -877,8 +877,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert_eq!(
         json!(positions()),
         json!([
-            {"kind":"message_position","after":"claude-code:anchor","seq":10},
-            {"kind":"own_position","after":"claude-code:anchor","seq":7},
+            {"kind":"message_position","after":"claude-code:anchor","position":10},
+            {"kind":"own_position","after":"claude-code:anchor","position":7},
         ])
     );
     assert!(changed() > before);
@@ -893,8 +893,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert_eq!(
         json!(positions()),
         json!([
-            {"kind":"message_position","after":"claude-code:anchor","seq":50},
-            {"kind":"own_position","after":"claude-code:anchor","seq":7},
+            {"kind":"message_position","after":"claude-code:anchor","position":50},
+            {"kind":"own_position","after":"claude-code:anchor","position":7},
         ])
     );
     assert!(changed() > before);
@@ -915,8 +915,8 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert_eq!(
         json!(positions()),
         json!([
-            {"kind":"message_position","after":null,"seq":0},
-            {"kind":"own_position","after":null,"seq":7},
+            {"kind":"message_position","after":null,"position":0},
+            {"kind":"own_position","after":null,"position":7},
         ])
     );
     assert!(changed() > before);

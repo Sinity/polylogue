@@ -773,7 +773,7 @@ impl Fixture {
         })?;
         let piece = crate::content::store_piece(&self.index, &fields, Some(b"{}"))?;
         self.index.execute(
-            "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,source_chain,content_group,content_start,
+            "INSERT INTO event(id,session_pk,position,kind,at,input_pk,source_chain,content_group,content_start,
                  content_length,data_length,session_order,at_precision)
                  VALUES (?1,?2,?3,?4,?5,?6,1,?7,?8,?9,?10,?11,iif(?5 IS NULL, NULL, 'instant'))",
             params![id, session_pk, self.seq, kind, at, self.input_pk, piece.group, piece.start,
@@ -782,7 +782,7 @@ impl Fixture {
         )?;
         let hash = *blake3::hash(b"{}").as_bytes();
         self.index.execute(
-            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,kind,at,hash,
+            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,position,kind,at,hash,
                 imported_sources,content_group,content_start,content_length,data_length)
             SELECT ?2,1,?1,s.id,'live',?4,?5,?6,?3,'[]',?8,?9,?10,?11 FROM session s WHERE s.pk=?7",
             params![

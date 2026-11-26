@@ -99,7 +99,7 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
             );
         }
         let before: Vec<Vec<u8>> = conn
-            .prepare("SELECT entry FROM transcript_line ORDER BY seq")
+            .prepare("SELECT entry FROM transcript_line ORDER BY position")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
@@ -107,7 +107,7 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
             .unwrap();
         assert_eq!(crate::summary::apply(&conn, &reveal).unwrap(), vec![false]);
         let after: Vec<Vec<u8>> = conn
-            .prepare("SELECT entry FROM transcript_line ORDER BY seq")
+            .prepare("SELECT entry FROM transcript_line ORDER BY position")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()

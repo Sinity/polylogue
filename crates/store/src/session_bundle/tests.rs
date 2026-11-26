@@ -2,7 +2,7 @@ use crate::ReadPool;
 use polylogue_model::SessionId;
 
 // The original query is the independent result and negative work control.
-const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parser_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session parent ON parent.pk=m.session_pk JOIN session_prefix p ON p.parent_id=parent.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
+const ALL_PREFIXES: &str = r#"SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parser_version,s.position,s.record_position,p.parent_id FROM message m JOIN session parent ON parent.pk=m.session_pk JOIN session_prefix p ON p.parent_id=parent.id AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)"#;
 
 fn copied_archive() -> (
     crate::fixture::writer::WriterArchive,
@@ -124,7 +124,7 @@ fn copied_messages_keep_sources_and_branch_points() {
             [sid("copy").to_string()],
         )
         .unwrap();
-    index.execute("INSERT INTO shared_prefix_message(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position)
+    index.execute("INSERT INTO shared_prefix_message(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,position,record_position)
         SELECT input_pk,chain,parent_id,child_id,?1,'original-copy',17,'synthetic=2','18446744073709551615','42' FROM shared_prefix WHERE child_id=?2",
         rusqlite::params![id.to_string(),sid("copy").to_string()]).unwrap();
     let expected = CopiedFor {

@@ -45,13 +45,13 @@ row! {
         record_order: i64,
         input: String,
         chain: i64,
-        seq: u64,
+        position: u64,
         record_position: u64,
     }
     statements {
         const OF_COPY = concat!(
             super::order::record_ranks!(),
-            "SELECT DISTINCT m.pk, m.id, c.record_order, ir.id AS input, s.chain, s.seq, s.record_position
+            "SELECT DISTINCT m.pk, m.id, c.record_order, ir.id AS input, s.chain, s.position, s.record_position
             FROM message m
             JOIN record_ranks c ON c.pk=m.pk
             JOIN message_parse s ON s.message_id = m.id
@@ -74,13 +74,13 @@ row! {
         source_input: String,
         source_chain: i64,
         source_version: String,
-        sequence: String,
         position: String,
+        record_position: String,
     }
     statements {
         const OF_COPY = concat!(
             super::order::record_ranks!(),
-            "SELECT DISTINCT m.pk, m.id, c.record_order, p.source_input, p.source_chain, p.source_version, p.sequence, p.position
+            "SELECT DISTINCT m.pk, m.id, c.record_order, p.source_input, p.source_chain, p.source_version, p.position, p.record_position
             FROM shared_prefix_message p JOIN message m ON m.id=p.message_id JOIN record_ranks c ON c.pk=m.pk
             WHERE p.child_id=?2 AND p.parent_id=?3 AND m.session_pk=?1 AND m.duplicate_of IS NULL"
         );
@@ -305,7 +305,7 @@ fn parent_keys(
                         input: copied.input,
                         chain: copied.chain,
                         version: String::new(),
-                        sequence: copied.seq,
+                        sequence: copied.position,
                         position: copied.record_position,
                         key: key(copied.pk, copied.id, copied.record_order),
                     });
@@ -331,8 +331,8 @@ fn parent_keys(
                         input: listed.source_input,
                         chain: listed.source_chain,
                         version: listed.source_version,
-                        sequence: coordinate(&listed.sequence)?,
-                        position: coordinate(&listed.position)?,
+                        sequence: coordinate(&listed.position)?,
+                        position: coordinate(&listed.record_position)?,
                         key: key(listed.pk, listed.id, listed.record_order),
                     });
                 }

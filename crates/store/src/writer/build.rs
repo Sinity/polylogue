@@ -1037,10 +1037,10 @@ fn compose_records(
         let mut reader = crate::content::Reader::default();
         // In each chain's order, so that its texts are read group by group.
         let mut statement = tx.prepare_cached(
-            "SELECT r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.seq,r.record_position,
+            "SELECT r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.position,r.record_position,
                  r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
                  r.content_group,r.content_start,r.content_length,r.layout
-             FROM message_parse r ORDER BY r.seq,r.record_position",
+             FROM message_parse r ORDER BY r.position,r.record_position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -1099,7 +1099,7 @@ fn compose_records(
     {
         let mut statement = tx.prepare_cached(
             "SELECT event_id,session_id,route,hash,content_group,content_start,content_length,data_length,
-                 seq,source_start,source_start+source_length,after_message_id
+                 position,source_start,source_start+source_length,after_message_id
              FROM event_parse WHERE session_id IS NOT NULL",
         )?;
         let mut rows = statement.query([])?;

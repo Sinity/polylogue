@@ -190,7 +190,7 @@ CREATE TABLE message_parse (
   session_id        TEXT NOT NULL,          -- as the chain names it
   source_start      INTEGER NOT NULL,
   source_length        INTEGER NOT NULL CHECK (source_length >= 0),
-  seq               INTEGER NOT NULL,       -- its place in the input: the record's offset, or the
+  position               INTEGER NOT NULL,       -- its place in the input: the record's offset, or the
   record_position   INTEGER NOT NULL,       --   explicit reading order; then its position in the record
   order_time        INTEGER,                -- the latest source time (ms) of this reading and the readings
                                             --   before it in its chain and session; NULL before any time
@@ -209,7 +209,7 @@ CREATE TABLE message_parse (
 ) STRICT;
 CREATE INDEX message_parse_id ON message_parse(message_id);
 CREATE INDEX message_parse_session ON message_parse(session_id);
-CREATE INDEX message_parse_position ON message_parse(input_pk, chain, session_id, seq, record_position);
+CREATE INDEX message_parse_position ON message_parse(input_pk, chain, session_id, position, record_position);
 CREATE INDEX message_parse_start ON message_parse(input_pk, chain, source_start);
 CREATE INDEX message_parse_response ON message_parse(input_pk, chain, response_key) WHERE response_key IS NOT NULL;
 CREATE INDEX message_parse_content ON message_parse(input_pk, chain, content_name, source_start) WHERE content_name IS NOT NULL;
@@ -259,7 +259,7 @@ CREATE TABLE event_parse (
   event_id          TEXT NOT NULL,          -- as the chain names it
   session_id        TEXT,                   -- NULL: an event about its input
   route             TEXT NOT NULL CHECK (route IN (@names(Route))),
-  seq               INTEGER NOT NULL,
+  position               INTEGER NOT NULL,
   source_start      INTEGER,
   source_length        INTEGER CHECK (source_length >= 0),
   after_message_id  TEXT,                   -- the message it follows, as the chain names it
@@ -532,10 +532,10 @@ CREATE TABLE shared_prefix_message (
   source_input TEXT NOT NULL,
   source_chain INTEGER NOT NULL,
   source_version TEXT NOT NULL,
-  sequence TEXT NOT NULL,
   position TEXT NOT NULL,
+  record_position TEXT NOT NULL,
   committed INTEGER CHECK(committed > 0),
-  PRIMARY KEY(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position)
+  PRIMARY KEY(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,position,record_position)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX shared_prefix_message_child ON shared_prefix_message(child_id,parent_id,message_id);
 CREATE INDEX shared_prefix_message_id ON shared_prefix_message(message_id,parent_id);
@@ -566,7 +566,7 @@ CREATE TABLE event (
   id                TEXT NOT NULL,          -- unique: event_id. Computed by the parser from the raw record; an
                                             --   event that names no session is keyed by its input record instead
   session_pk        INTEGER REFERENCES session(pk),  -- NULL for an event about its input, not a session
-  seq               INTEGER NOT NULL,       -- display position: its reading's place in its input, or for an event
+  position               INTEGER NOT NULL,       -- display position: its reading's place in its input, or for an event
                                             --   placed after a message with no place of its own, that message's
                                             --   main reading's; not a key
   after_message_id  TEXT,                   -- the message it follows, joined by ID; export `after_message`
@@ -593,10 +593,10 @@ CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session_order ON event(session_pk, session_order, id) WHERE session_pk IS NOT NULL;  -- summary folds
 CREATE INDEX event_path_marker ON event(session_pk)
   WHERE kind IN ('active_leaf','active_path_empty','active_path_unknown');   -- the active path summary
-CREATE INDEX event_session ON event(session_pk, seq);
+CREATE INDEX event_session ON event(session_pk, position);
 CREATE INDEX event_input   ON event(input_pk, source_chain, source_start);
 CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
-CREATE INDEX event_placement ON event(session_pk, pk, seq, after_message_id, at, id);   -- where an unchanged event goes, without its row
+CREATE INDEX event_placement ON event(session_pk, pk, position, after_message_id, at, id);   -- where an unchanged event goes, without its row
 CREATE INDEX event_kind    ON event(kind, at);
 
 
