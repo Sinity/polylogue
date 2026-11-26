@@ -113,10 +113,12 @@ stay its own.
 ## Building, testing and measuring
 
 [Development](docs/development.md) owns shell setup, command selection,
-local overrides and build graphs. Enter with `nix develop`. Use
-`cargo xtask check --changed` while editing,
-`cargo xtask test -p <crate> --lib -E 'test(<name>)'` for library unit tests,
-and `cargo xtask check` for the required hosted check. A run builds only the
+local overrides and build graphs. Enter with `nix develop`. While writing,
+type-check with `cargo check --locked -p <package> --tests` (the `compile`
+operation) and run only the tests being written or changed, scoped to their
+package and target, with `cargo xtask test -p <package> --lib -E
+'test(<name>)'` (the `focused` operation). The suite runs in the hosted check
+on the pull request. A test run builds only the
 selected packages' test targets, with the units the full test build uses;
 Cargo target flags such as `--lib` or `--bin NAME` bound it further. After
 changing a dependency or its features, run `cargo hakari generate`.
@@ -151,10 +153,9 @@ complete features, built on the architecture's abstractions, with the earlier
 Python Polylogue's behaviour and test cases ported.
 
 **Edit in bulk; type-check as you go.** Change whole modules, crates and call
-sites in one pass. Run `cargo xtask check --changed` (formatting,
-clippy and the tests the change can affect) after each layer you write; it
-reports every type error at once. Run the wider tests once the change is
-coherent.
+sites in one pass. Type-check each layer you write with the `compile`
+operation; it reports every type error at once. Run the tests you wrote or
+changed once the change is coherent.
 
 **Review your own work before verifying it.** Read the whole diff once
 against the task, the owning page, `docs/architecture.md` and the
@@ -167,12 +168,13 @@ changed. Then verify. The author makes the work good; a separate reviewer is not
 that.
 
 **Verify scoped to the change.** Commit first, so a result belongs to a
-commit. While editing, `cargo xtask check --changed` runs formatting, clippy
-and the tests the change can affect. A pull request is verified by GitHub
-Actions, which runs the parts of `cargo xtask check` as parallel jobs for
-its head (affected tests only);
-every test runs again on master after the merge. Run a full local check only
-to reproduce a failure CI reported. Before treating a failure as yours,
+commit. Locally, run only the tests the change writes or changes: the
+development host's build queue is shared, while the hosted check runs the
+suite in four parallel shards in about ten minutes. A pull request is
+verified by GitHub Actions, which runs the parts of `cargo xtask check` as
+parallel jobs for its head (affected tests only); every test runs again on
+master after the merge. Run a full local `cargo xtask check` only to
+reproduce a failure the hosted check reported. Before treating a failure as yours,
 compare with the same test on current master (`gh run list -b master`).
 
 **Finish what the task names.** A task states its done condition before work
@@ -195,9 +197,12 @@ later and no compatibility path between steps. Small related fixes share one
 pull request, since each pull request costs a full CI run. Master requires
 the `check` status on the pull request's head; branches need not be up to
 date with master, so rebase only to resolve a conflict, taking master's names
-and structure and reapplying your change. Once `check` passes on the head you tested, merge
-it with `gh pr merge <n> --squash --match-head-commit <sha>` (waiting with
-`gh pr checks <n> --required --watch`); GitHub auto-merge is not used, since
+and structure and reapplying your change. Land with `dev/land <n>`: it waits
+for `check` on the head; when master has since changed a package the pull
+request changes, it merges master into the branch and waits again; then it
+squash-merges the tested head. `dev/land --dry-run <n>` says whether a green
+result is still current. Master can still move in the second or two between
+its last comparison and the merge. GitHub auto-merge is not used, since
 armed on a clean, green head it sometimes never fires. Development speed
 comes before a perfectly green master: when two
 separately green changes combine into a failing master, whoever's change

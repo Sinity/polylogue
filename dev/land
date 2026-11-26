@@ -1,0 +1,191 @@
+#!/usr/bin/env bash
+# dev/land [--dry-run] <pr-number>
+#
+# Squash-merges a pull request once its required check is green and the base
+# commit that check tested is still current for the packages concerned. A
+# pull request's check runs on GitHub's merge of its head with the base
+# branch; the `check` workflow records that base commit as a notice
+# annotation titled "tested base" on the required check run. If the base
+# branch has since changed a package the pull request changes (a package is a
+# directory with a Cargo.toml; files outside every package count by their
+# top-level directory, and root manifests, Cargo.lock, rust-toolchain.toml,
+# the flake, .cargo/, .config/ and .github/ count as every package; Markdown
+# never counts), the branch is brought up to date with a merge of the base
+# branch, the check is awaited on the new head, and the question is asked
+# again.
+#
+# --dry-run prints the decision without waiting, updating or merging, and
+# exits 0 only when the pull request would merge now.
+#
+# Needs git, gh and awk; compiles nothing and keeps no state between runs.
+set -euo pipefail
+
+usage() { echo "usage: dev/land [--dry-run] <pr-number>" >&2; exit 2; }
+dry_run=false
+number=
+for arg in "$@"; do
+    case $arg in
+        --dry-run) dry_run=true ;;
+        [0-9]*) number=$arg ;;
+        *) usage ;;
+    esac
+done
+[ -n "$number" ] || usage
+
+die() { echo "land #$number: $*" >&2; exit 1; }
+say() { echo "land #$number: $*"; }
+
+read -r owner name < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
+
+# One GraphQL call: state, base branch and its tip, head, and the required
+# check runs on the head as name|status|conclusion|check-run id|details URL,
+# separated by semicolons.
+pull_request_state() {
+    gh api graphql -F owner="$owner" -F name="$name" -F number="$number" -f query='
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      state baseRefName headRefOid
+      baseRef { target { oid } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+        ... on CheckRun { name status conclusion databaseId detailsUrl isRequired(pullRequestNumber: $number) }
+      } } } } } }
+    }
+  }
+}' --jq '.data.repository.pullRequest as $p | [$p.state, $p.baseRefName, $p.baseRef.target.oid, $p.headRefOid,
+  ([$p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | select(.isRequired)
+    | "\(.name)|\(.status)|\(.conclusion)|\(.databaseId)|\(.detailsUrl)"] | join(";"))] | @tsv'
+}
+
+refresh() {
+    IFS=$'\t' read -r state base_branch tip head checks < <(pull_request_state)
+    [ "$state" = OPEN ] || die "the pull request is $state"
+}
+
+run_of() { local url=${1#*/actions/runs/}; echo "${url%%/*}"; }
+
+runs_waited=()
+note_run() {
+    local run="https://github.com/$owner/$name/actions/runs/$(run_of "$1") ($2, head ${head:0:10})"
+    case " ${runs_waited[*]-} " in *" $run "*) ;; *) runs_waited+=("$run") ;; esac
+}
+
+# Polls once a minute (every agent shares one hourly API limit) until the
+# head differs from $1 and a required check has reported on it.
+await_new_checks() {
+    local previous=$1 polls=0
+    while sleep 60; do
+        refresh
+        [ "$head" != "$previous" ] && [ -n "$checks" ] && return
+        polls=$((polls + 1))
+        [ $polls -lt 15 ] || die "no required check reported on head ${head:0:10} within 15 minutes"
+    done
+}
+
+# Workspace units the paths on stdin change, one per line.
+units() {
+    awk -v dirs="$package_dirs" '
+        BEGIN { n = split(dirs, dir, "\n") }
+        /\.md$/ { next }
+        /^(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|flake\.nix|flake\.lock)$/ || /^\.(cargo|config|github)\// {
+            print "everything"; next
+        }
+        {
+            best = ""
+            for (i = 1; i <= n; i++)
+                if (dir[i] != "" && index($0, dir[i] "/") == 1 && length(dir[i]) > length(best)) best = dir[i]
+            if (best == "") { best = $0; sub(/\/.*/, "", best) }
+            print best
+        }' | sort -u
+}
+
+report() {
+    echo "  head:                    $head"
+    echo "  tested base:             ${tested:-(not recorded)}"
+    echo "  base branch tip:         $tip ($base_branch)"
+    echo "  changed by the PR:       $(list "$pr_units")"
+    echo "  changed on base since:   $(list "$moved_units")"
+    for run in "${runs_waited[@]}"; do echo "  check run:               $run"; done
+}
+
+list() { [ -n "$1" ] && echo "$1" | paste -sd' ' || echo "(none)"; }
+
+while true; do
+    refresh
+    if [ -z "$checks" ]; then
+        $dry_run && die "no required check has reported on head ${head:0:10} yet"
+        say "waiting for the required check to report on head ${head:0:10}"
+        await_new_checks ""
+        continue
+    fi
+    pending=false failed=false check_run= details=
+    IFS=';' read -ra required <<<"$checks"
+    for c in "${required[@]}"; do
+        IFS='|' read -r c_name c_status c_conclusion c_id c_url <<<"$c"
+        if [ "$c_status" != COMPLETED ]; then pending=true
+        elif [ "$c_conclusion" != SUCCESS ]; then failed=true details=$c_url
+        else check_run=${check_run:-$c_id} details=${details:-$c_url}
+        fi
+    done
+    if $failed; then
+        note_run "$details" failed
+        jobs=$(gh run view "$(run_of "$details")" -R "$owner/$name" --json jobs \
+            --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | .name] | join(", ")')
+        die "the required check failed on head ${head:0:10}: $jobs ($details)"
+    fi
+    if $pending; then
+        $dry_run && die "the required check is still running on head ${head:0:10}"
+        say "waiting for the required check on head ${head:0:10}"
+        gh pr checks "$number" -R "$owner/$name" --required --watch --interval 60 >/dev/null || true
+        continue
+    fi
+    note_run "$details" passed
+
+    tested=$(gh api "repos/$owner/$name/check-runs/$check_run/annotations" \
+        --jq '[.[] | select(.title == "tested base") | .message][0] // empty')
+    git fetch -q --no-tags origin "$tip" "$head"
+    package_dirs=$( { git ls-tree -r --name-only "$tip"; git ls-tree -r --name-only "$head"; } \
+        | sed -n 's|/Cargo\.toml$||p' | sort -u)
+    if [ -n "$tested" ]; then
+        pr_units=$(git diff --no-renames --name-only "$tested...$head" | units)
+        moved_units=$(git diff --no-renames --name-only "$tested" "$tip" | units)
+        reason="$base_branch changed a package the PR changes since the tested base"
+        if [ -n "$pr_units" ] && [ -n "$moved_units" ] &&
+            { comm -12 <(echo "$pr_units") <(echo "$moved_units") | grep -q . ||
+              printf '%s\n%s\n' "$pr_units" "$moved_units" | grep -qx everything; }; then
+            stale=true
+        else
+            stale=false
+        fi
+    else
+        # A run of a workflow that records no base: only a PR that changes
+        # nothing but Markdown is current against any base.
+        pr_units=$(git diff --no-renames --name-only "$tip...$head" | units)
+        moved_units="(unknown)"
+        reason="the check recorded no tested base"
+        if [ -n "$pr_units" ]; then stale=true; else stale=false; fi
+    fi
+
+    if ! $stale; then
+        if $dry_run; then
+            say "would merge: the check is green and its tested base is current for the packages the PR changes"
+            report
+            exit 0
+        fi
+        gh pr merge "$number" -R "$owner/$name" --squash --match-head-commit "$head"
+        say "merged head ${head:0:10}"
+        report
+        exit 0
+    fi
+
+    if $dry_run; then
+        say "would update the branch: $reason"
+        report
+        exit 1
+    fi
+    say "updating the branch: $reason"
+    report
+    gh pr update-branch "$number" -R "$owner/$name" ||
+        die "the branch could not be updated with $base_branch; resolve the conflict by rebasing, push, and run dev/land again"
+    await_new_checks "$head"
+done

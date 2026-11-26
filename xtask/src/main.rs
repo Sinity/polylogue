@@ -69,7 +69,7 @@ enum Cli {
     /// tests those changes can affect and the Nix checks when their inputs
     /// changed. Clippy reuses
     /// every unchanged crate's result, so `check --changed` costs what the
-    /// change touches: the loop while editing.
+    /// change touches.
     Check {
         #[command(flatten)]
         base: Base,
