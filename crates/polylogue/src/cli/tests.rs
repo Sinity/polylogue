@@ -176,12 +176,22 @@ fn an_answer_frame_without_its_end_is_the_daemon_gone() {
 #[test]
 fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
     use crate::config::OutputConfig;
-    let data = rows_document(
-        serde_json::json!([{"name":"text","kind":"text"}]),
-        serde_json::json!([{"text":"stored \x1b[31m λ", "snippet":{"text":"match stored \x1b[31m λ","marks":[[0,5]]}}]),
-        1,
+    let daemon = crate::test_daemon::start("match stored \x1b[31m λ");
+    let answer = crate::client::call(
+        &daemon.daemon.archive.socket(),
+        &crate::client::request(
+            "rows",
+            serde_json::json!({"selection": "messages where match", "fields": ["text"]}),
+            "colour-query".into(),
+        ),
+    )
+    .unwrap();
+    let data = &answer.value().expect("query result")["reply"];
+    assert_eq!(data["rows"][0]["text"], "match stored \x1b[31m λ");
+    assert_eq!(
+        data["rows"][0]["snippet"],
+        serde_json::json!({"text":"match stored \x1b[31m λ", "marks":[[0,5]]})
     );
-    let original = data.clone();
     // Colour is decided for each sink, as specified in terminal.md.
     for (stdout, stderr, no_color, term, stdout_color, stderr_color) in [
         (false, false, false, Some("xterm"), false, false),
@@ -194,13 +204,7 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
         let output = OutputConfig::new(stdout, stderr, no_color, term);
         let style = style(output);
         let text = crate::commands::declarations()
-            .render_text(
-                "rows",
-                &command_surface::Answer::ok(
-                    serde_json::json!({"kind":"listing","reply":data.clone()}),
-                ),
-                style,
-            )
+            .render_text("rows", &answer, style)
             .unwrap();
         assert_eq!(text.contains("\x1b[1m"), stdout_color, "stdout: {output:?}");
         assert!(
@@ -222,11 +226,11 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
         assert!(!error.contains("\x1b[31m"));
         assert!(error.contains("\\x1b[31m"));
         assert!(error.ends_with("polylogue: try: query λ\n"));
-        let json = print::json(&data, style);
+        let json = print::json(data, style);
         assert!(!json.contains('\x1b'));
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&json).unwrap(),
-            original
+            *data
         );
     }
 }
@@ -337,56 +341,6 @@ fn an_answer_from_another_protocol_is_refused_before_it_is_printed() {
             .validate_answer("rows", &failed)
             .is_ok()
     );
-}
-
-/// A query answer document of the declared type, with these columns and rows.
-fn rows_document(
-    columns: serde_json::Value,
-    rows: serde_json::Value,
-    count: u64,
-) -> serde_json::Value {
-    let context = polylogue_reading::operation::Context::standalone(
-        polylogue_reading::operation::Invocation::new(
-            polylogue_model::Timestamp::parse_rfc3339("2026-03-01T12:00:00Z").unwrap(),
-            "synthetic-print".into(),
-            polylogue_model::authorship::Authorship {
-                author: polylogue_model::Author::Operator,
-                via: polylogue_model::authorship::Channel::Cli,
-            },
-        ),
-        query_language::time::DaySetting::new(
-            jiff::tz::TimeZone::UTC,
-            jiff::civil::Time::constant(4, 0, 0, 0),
-        )
-        .unwrap(),
-    );
-    let rows = crate::protocol::query::Rows {
-        read_at: crate::protocol::query::Position {
-            freshness: None,
-            generation: "synthetic".into(),
-            index: 1,
-            archive: 1,
-            cursor: "synthetic:1:1".into(),
-        },
-        unit: "messages".into(),
-        shape: polylogue_query::Shape::Rows,
-        columns: serde_json::from_value(columns).unwrap(),
-        rows: serde_json::from_value(rows).unwrap(),
-        references: None,
-        count: Some(count),
-        next: None,
-        ranked: false,
-        notes: vec![],
-        incomplete: vec![],
-        resolved: crate::protocol::query::Resolved {
-            context: context.run_context(),
-            times: vec![],
-        },
-        definitions: vec![],
-        unknown: Default::default(),
-        why: None,
-    };
-    serde_json::to_value(crate::protocol::query::Answer::Rows(Box::new(rows))).unwrap()
 }
 
 #[test]
