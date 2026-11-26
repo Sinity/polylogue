@@ -55,6 +55,8 @@ mod tool_calls;
 pub(crate) mod values;
 
 pub use fold::Key;
+#[cfg(any(test, feature = "fixture"))]
+pub use fold::rows_folded;
 
 /// Sessions taken per round, so one of the writer's summary transactions
 /// stays short.

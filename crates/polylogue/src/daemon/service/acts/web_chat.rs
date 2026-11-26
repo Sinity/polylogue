@@ -8,12 +8,12 @@ use super::super::browser as chat;
 use super::{Failure, error};
 use crate::browser::actions::{self, ChatFile, ChatRequest};
 use crate::daemon::handler::Call;
-use crate::protocol::act as protocol;
+use crate::protocol::acts::Start;
+use crate::protocol::browser::ChatAnswer;
 use command_surface::Answer;
 use polylogue_model::SessionId;
 use polylogue_model::authorship::Author;
 use polylogue_model::user::{ChatAction, ChatStatus, UserWrite};
-use serde_json::Value;
 use std::path::{Path, PathBuf};
 
 #[cfg(test)]
@@ -35,7 +35,7 @@ pub(crate) fn send(
     session: &SessionId,
     text: &str,
     attach: &[String],
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<ChatAnswer>, Failure> {
     let Some((provider, conversation)) = conversation(session) else {
         return Err(Failure::bad_request(format!(
             "{session} is not a web-chat conversation"
@@ -64,8 +64,8 @@ pub(crate) fn send(
 pub(crate) fn start(
     call: &Call<'_>,
     provider: &str,
-    a: protocol::Start,
-) -> Result<Answer<Value>, Failure> {
+    a: Start,
+) -> Result<Answer<ChatAnswer>, Failure> {
     if a.role.is_some() || a.cwd.is_some() {
         return Err(Failure::bad_request(
             "--role and --cwd start harness sessions; a web conversation takes --model, --effort, --project, --attach and --submit",
@@ -95,7 +95,7 @@ fn queue(
     request: ChatRequest,
     attach: &[PathBuf],
     held: bool,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<ChatAnswer>, Failure> {
     let reader = call.reader()?;
     let on = chat::enabled(call.invocation, &reader)?;
     drop(reader);
@@ -116,11 +116,9 @@ fn queue(
     let stored = chat::store_files(call.daemon, &files)?;
     Ok(
         match actions::new_action(call.request_id, &request, stored, held) {
-            Ok(new) => as_value(chat::chat_then_view(
-                call.daemon,
-                call.invocation,
-                UserWrite::ChatEnqueue(new),
-            )),
+            Ok(new) => {
+                chat::chat_then_view(call.daemon, call.invocation, UserWrite::ChatEnqueue(new))
+            }
             Err(refusal) => super::super::browser_refusal(refusal),
         },
     )
@@ -161,10 +159,6 @@ fn media_type(name: &str) -> &'static str {
     }
 }
 
-fn as_value<T: serde::Serialize>(answer: Answer<T>) -> Answer<Value> {
-    answer.map(|value| serde_json::to_value(value).unwrap_or(Value::Null))
-}
-
 /// `answer allow|deny` on a web-chat session: the operator's answer to the
 /// oldest turn held for it.
 pub(crate) fn answer(
@@ -172,7 +166,7 @@ pub(crate) fn answer(
     session: &SessionId,
     value: &str,
     reason: Option<String>,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<ChatAnswer>, Failure> {
     let Some((provider, conversation)) = conversation(session) else {
         return Err(Failure::bad_request(format!(
             "{session} is not a web-chat conversation"
@@ -210,7 +204,7 @@ pub(crate) fn answer_action(
     id: &str,
     value: &str,
     reason: Option<String>,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<ChatAnswer>, Failure> {
     let approve = match value {
         "allow" => true,
         "deny" => false,
@@ -251,7 +245,7 @@ pub(crate) fn answer_action(
         };
         return Ok(error(polylogue_model::Code::Conflict, message));
     }
-    Ok(as_value(chat::chat_then_view(
+    Ok(chat::chat_then_view(
         call.daemon,
         call.invocation,
         UserWrite::ChatDecide {
@@ -260,5 +254,5 @@ pub(crate) fn answer_action(
             by: call.invocation.authorship.author.to_string(),
             detail: reason,
         },
-    )))
+    ))
 }

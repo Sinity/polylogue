@@ -142,7 +142,30 @@ fn view_url(
         match options.validate() {
             Ok(()) => break,
             Err(ReadError::UnsupportedOption { option, .. }) => {
-                args.remove(&option);
+                // A refused item kind leaves the show and hide words that
+                // name it; any other refused option leaves the arguments.
+                let kind = if option == "context_meter" {
+                    "context"
+                } else {
+                    option.as_str()
+                };
+                let mut removed = args.remove(&option).is_some();
+                for words in ["show", "hide"] {
+                    if let Some(Value::Array(list)) = args.get_mut(words) {
+                        let before = list.len();
+                        list.retain(|word| {
+                            word.as_str()
+                                .is_none_or(|word| word.split(':').next() != Some(kind))
+                        });
+                        removed |= list.len() != before;
+                    }
+                }
+                if !removed {
+                    return Err(Failure::new(
+                        FailureKind::BadRequest,
+                        format!("view {view} does not accept {option}"),
+                    ));
+                }
             }
             Err(error) => return Err(Failure::new(FailureKind::BadRequest, error.to_string())),
         }

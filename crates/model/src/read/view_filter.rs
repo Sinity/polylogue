@@ -57,10 +57,10 @@ pub fn project_record(
                     return Ok(None);
                 }
             } else {
-                if facts.inherited && !options.inherited {
+                if facts.inherited && !options.inherited() {
                     return Ok(None);
                 }
-                if matches!(facts.branch, BranchState::Abandoned { .. }) && !options.branches {
+                if matches!(facts.branch, BranchState::Abandoned { .. }) && !options.branches() {
                     return Ok(None);
                 }
             }
@@ -123,7 +123,7 @@ pub fn project_record(
             super::fragments::project_fragment(row, options, facts)?;
         }
         Record::Authored(_) | Record::Annotation(_) => {
-            if !options.annotations {
+            if !options.annotations() {
                 return Ok(None);
             }
         }

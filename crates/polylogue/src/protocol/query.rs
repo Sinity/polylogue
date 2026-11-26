@@ -1,27 +1,8 @@
-//! Query operation DTOs. Result rows follow the columns selected by the query.
+//! The listing's reply. Result rows follow the columns selected by the query.
 use command_surface::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Arguments {
-    /// A query, when no subcommand is given
-    #[serde(default)]
-    #[schemars(extend("argument_form" = "rest"))]
-    pub query: String,
-    /// Rows per page
-    pub limit: Option<u64>,
-    /// Explain an empty result: how many rows each condition keeps
-    #[serde(default)]
-    pub why: bool,
-    /// The session named by self in the query
-    pub session: Option<String>,
-    /// The columns to show instead of the unit's defaults, comma-separated (`--fields id,cost,repo`)
-    #[serde(default)]
-    pub fields: Vec<String>,
-}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
