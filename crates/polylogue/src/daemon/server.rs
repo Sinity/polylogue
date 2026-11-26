@@ -203,14 +203,15 @@ pub(crate) fn peer(
         })
     };
     crate::hook::hermes_session(&mut details, variable);
-    let arguments = std::fs::read(root.join("cmdline"))?;
-    // Lossy, so a non-UTF-8 path keeps its position and an option still
-    // consumes its own value.
+    let mut arguments = std::fs::read(root.join("cmdline"))?;
+    // Each argument ends with a NUL.
+    if arguments.last() == Some(&0) {
+        arguments.pop();
+    }
     let words = arguments
         .split(|byte| *byte == 0)
-        .map(String::from_utf8_lossy)
+        .map(|word| std::ffi::OsString::from_vec(word.to_vec()))
         .collect::<Vec<_>>();
-    let words = words.iter().map(|word| &**word).collect::<Vec<&str>>();
     let via = via_of_command_line(&words);
     if via == command_surface::Via::Mcp && supplied.tool_call_id.is_some() {
         details.tool_call_id = supplied.tool_call_id.clone();
@@ -225,33 +226,20 @@ fn working_directory(stream: &UnixStream) -> std::io::Result<PathBuf> {
     std::fs::read_link(format!("/proc/{}/cwd", credentials.pid.as_raw_pid()))
 }
 
-/// How a peer process reached the daemon, from its command line: the first
-/// word after the global options names the subcommand.
-fn via_of_command_line(words: &[&str]) -> command_surface::Via {
-    use crate::cli::GLOBAL_VALUED_OPTIONS as VALUED;
+/// How a peer process reached the daemon, from its command line as the
+/// command line's own scan reads it.
+fn via_of_command_line(arguments: &[std::ffi::OsString]) -> command_surface::Via {
+    use crate::cli::invocation::Shape;
     use command_surface::Via;
-    let mut words = words.iter().skip(1);
-    while let Some(word) = words.next() {
-        match *word {
-            "--json" | "internal" => continue,
-            word if VALUED.contains(&word) => {
-                words.next();
-                continue;
-            }
-            word if word
-                .split_once('=')
-                .is_some_and(|(name, _)| VALUED.contains(&name)) =>
-            {
-                continue;
-            }
-            "mcp" => return Via::Mcp,
-            "hook" => return Via::Hook,
-            "browser-host" => return Via::Extension,
-            word if word.starts_with("chrome-extension://") => return Via::Extension,
-            _ => return Via::Cli,
-        }
+    match crate::cli::invocation::scan(arguments, &crate::config::EnvSnapshot::from_values([]))
+        .shape
+    {
+        Shape::Hook => Via::Hook,
+        Shape::NativeHost => Via::Extension,
+        Shape::Command(Some(command)) if command.name == "mcp" => Via::Mcp,
+        Shape::Command(Some(command)) if command.name == "internal browser-host" => Via::Extension,
+        _ => Via::Cli,
     }
-    Via::Cli
 }
 
 fn serve_client(stream: UnixStream, shared: &Shared) {
@@ -357,12 +345,32 @@ pub struct Run {
 /// Serves the archive until a signal or, for a run until idle, until the
 /// loop has no work; then returns what the loop did in a run until idle.
 /// Each transport is dropped before the application workers and archive lock.
+/// Why `serve` failed: before the daemon served its socket, or while it ran.
+#[derive(Debug)]
+pub enum Failed {
+    Start(std::io::Error),
+    Run(std::io::Error),
+}
+impl Failed {
+    pub fn error(&self) -> &std::io::Error {
+        match self {
+            Self::Start(error) | Self::Run(error) => error,
+        }
+    }
+}
+impl std::fmt::Display for Failed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error().fmt(f)
+    }
+}
+
 pub fn serve(
     startup: &crate::config::Startup,
     run: Run,
-) -> std::io::Result<Option<polylogue_engine::RunSummary>> {
+) -> Result<Option<polylogue_engine::RunSummary>, Failed> {
     raise_open_file_limit();
-    let supervisor = super::lifecycle::Supervisor::start(&startup.lifecycle)?;
+    let supervisor =
+        super::lifecycle::Supervisor::start(&startup.lifecycle).map_err(Failed::Start)?;
     let root = &startup.config.archive;
     let mut engine = startup.engine.clone();
     engine.reads_sources = run.reads_sources;
@@ -372,9 +380,10 @@ pub fn serve(
         startup.mode.clone(),
         run.lifetime,
         startup.stopped_attempt,
-    )?;
+    )
+    .map_err(Failed::Start)?;
     let idle = runtime.idle();
-    let server = Server::start(Arc::clone(&runtime.daemon))?;
+    let server = Server::start(Arc::clone(&runtime.daemon)).map_err(Failed::Start)?;
     polylogue_store::log!(
         info,
         "serving {} on {}{}",
@@ -396,7 +405,7 @@ pub fn serve(
             None
         }
     };
-    supervisor.run(runtime, server, web)?;
+    supervisor.run(runtime, server, web).map_err(Failed::Run)?;
     let summary = idle.borrow().clone();
     Ok(summary)
 }

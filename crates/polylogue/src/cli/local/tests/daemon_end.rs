@@ -1,4 +1,5 @@
 use super::super::DaemonEnd;
+use crate::daemon::server::Failed;
 use polylogue_store::storage_failure::StorageFailure;
 
 fn failure() -> StorageFailure {
@@ -25,8 +26,9 @@ fn idle(errors: &[&str]) -> polylogue_engine::RunSummary {
     summary
 }
 
-/// Exit statuses of docs/operations.md: 0 clean stop, 1 failure, 74 storage
-/// failure, 78 refused archive.
+/// Exit statuses of docs/operations.md: 0 clean stop, 1 a failed run or a
+/// held lock, 74 storage failure, 78 refused archive, and a start that
+/// failed for another reason by the failure table.
 #[test]
 fn each_way_a_run_ends_has_its_exit_status() {
     let ends = [
@@ -38,26 +40,50 @@ fn each_way_a_run_ends_has_its_exit_status() {
             1,
         ),
         (
-            Err(std::io::Error::other("synthetic worker failure")),
+            Err(Failed::Run(std::io::Error::other(
+                "synthetic worker failure",
+            ))),
             DaemonEnd::Failed,
             1,
         ),
         (
-            Err(std::io::Error::other(
+            Err(Failed::Start(std::io::Error::other(
                 crate::daemon::storage_stop::StorageStopped("refusing to start".into()),
-            )),
+            ))),
             DaemonEnd::StorageFailedEarlier,
             74,
         ),
         (
-            Err(std::io::Error::other(
+            Err(Failed::Start(std::io::Error::other(
                 polylogue_store::StoreError::OtherFormat {
                     database: "archive.db",
                     found: 1,
                 },
-            )),
+            ))),
             DaemonEnd::ArchiveRefused,
             78,
+        ),
+        (
+            Err(Failed::Start(std::io::Error::other(
+                polylogue_store::StoreError::Locked {
+                    path: "/home/op/archive".into(),
+                    holder: Some(41),
+                },
+            ))),
+            DaemonEnd::Locked,
+            1,
+        ),
+        (
+            Err(Failed::Start(std::io::Error::other(
+                polylogue_store::StoreError::Io(std::io::Error::from_raw_os_error(20)),
+            ))),
+            DaemonEnd::StartFailed(command_surface::FailureKind::Io),
+            4,
+        ),
+        (
+            Err(Failed::Start(std::io::Error::from_raw_os_error(13))),
+            DaemonEnd::StartFailed(command_surface::FailureKind::Io),
+            4,
         ),
     ];
     for (served, end, exit) in ends {
@@ -76,7 +102,9 @@ fn a_recorded_storage_failure_decides_the_exit_however_the_run_ended() {
         Ok(None),
         Ok(Some(idle(&[]))),
         Ok(Some(idle(&["read input: synthetic"]))),
-        Err(std::io::Error::other("the register failed a disk sync")),
+        Err(Failed::Run(std::io::Error::other(
+            "the register failed a disk sync",
+        ))),
     ];
     for served in ways {
         let end = DaemonEnd::of(&served, Some(failure()));

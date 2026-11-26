@@ -408,7 +408,7 @@ fn status_exit_code_is_degraded_when_answer_is_degraded() {
         };
         let (_, values) = parse(&argv).unwrap();
         assert_eq!(
-            status_output(&values, &degraded, &startup, true),
+            status_output(&values, &degraded, &startup.client, true),
             ExitCode::from(degraded.exit_code()),
             "line: {line}"
         );
@@ -417,10 +417,71 @@ fn status_exit_code_is_degraded_when_answer_is_degraded() {
             status_output(
                 &values,
                 &command_surface::Answer::ok(data.clone()),
-                &startup,
+                &startup.client,
                 true
             ),
             ExitCode::SUCCESS
+        );
+    }
+}
+
+fn resume_plan(harness: Option<crate::resume::Command>) -> crate::resume::Plan {
+    let session = polylogue_model::SessionId::parse("claude-code:s1").unwrap();
+    crate::resume::Plan {
+        harness_command: harness,
+        context_assisted: crate::resume::Command {
+            program: "polylogue".into(),
+            args: vec!["session:claude-code:s1".into(), "brief".into()],
+            cwd: None,
+        },
+        session,
+    }
+}
+
+/// docs/interfaces.md#exit-codes: a session that cannot be reopened here
+/// is `refused` (3), whichever part is missing.
+#[test]
+fn resume_without_a_way_to_reopen_exits_3() {
+    let output = crate::config::OutputConfig::new(false, false, true, None);
+    let missing = tempfile::tempdir().unwrap().path().join("gone");
+    for harness in [
+        None,
+        Some(crate::resume::Command {
+            program: "claude".into(),
+            args: vec![],
+            cwd: None,
+        }),
+        Some(crate::resume::Command {
+            program: "claude".into(),
+            args: vec![],
+            cwd: Some(missing.display().to_string()),
+        }),
+    ] {
+        for replace in [false, true] {
+            assert_eq!(run_plan(&resume_plan(harness.clone()), output, replace), 3);
+        }
+    }
+}
+
+/// A harness that cannot be started is an `io` failure (4), whether this
+/// process waits for it or becomes it.
+#[test]
+fn resume_exec_failure_exits_4() {
+    let output = crate::config::OutputConfig::new(false, false, true, None);
+    let directory = tempfile::tempdir().unwrap();
+    let harness = crate::resume::Command {
+        program: directory
+            .path()
+            .join("no-such-harness")
+            .display()
+            .to_string(),
+        args: vec!["--resume".into(), "s1".into()],
+        cwd: Some(directory.path().display().to_string()),
+    };
+    for replace in [false, true] {
+        assert_eq!(
+            run_plan(&resume_plan(Some(harness.clone())), output, replace),
+            4
         );
     }
 }
