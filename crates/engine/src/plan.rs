@@ -130,6 +130,9 @@ pub(crate) struct Plan {
     pub(crate) failed: bool,
     /// The chain's parse state records this plan's failure or refusal.
     pub(crate) failure_recorded: bool,
+    /// The parser's failure the plan recorded, and the stored length it was
+    /// recorded at.
+    pub(crate) failed_at: Option<(polylogue_model::ChainFailure, u64)>,
     pub(crate) replace: bool,
     /// The bytes after `parse_pos` are an incomplete last record.
     pub(crate) waiting: bool,
@@ -188,6 +191,7 @@ impl Plan {
             tracked,
             failed: false,
             failure_recorded: false,
+            failed_at: None,
             replace: false,
             waiting: false,
             input_finished: false,
@@ -289,6 +293,12 @@ impl Plan {
             return;
         }
         if d.error.is_some() {
+            if d.failure_recorded
+                && !d.write_failed
+                && let Some(crate::EngineError::Chain(failure)) = &d.error
+            {
+                self.failed_at = Some((failure.clone(), d.end));
+            }
             self.failure_recorded |= d.failure_recorded && !d.write_failed;
             if d.stored > 0 && !d.write_failed {
                 // The parser failed after its bytes were stored. Keep its last

@@ -183,6 +183,22 @@ impl Engine {
         if plan.failure_recorded || plan.stored_upto == 0 {
             return;
         }
+        match self.send_failure(plan, failure) {
+            Ok(()) => plan.failure_recorded = true,
+            Err(error) => pass.errors.push(
+                polylogue_model::Failure::new(plan.path.display(), &error)
+                    .doing("record the failure"),
+            ),
+        }
+    }
+
+    /// Writes the chain's failure at the plan's cursor, at the length the
+    /// plan has stored.
+    fn send_failure(
+        &mut self,
+        plan: &Plan,
+        failure: polylogue_model::ChainFailure,
+    ) -> Result<(), EngineError> {
         let mut step = polylogue_store::ParseStep::failed(plan.parse_pos..plan.parse_pos, failure);
         step.reset = false;
         step.parse_version = plan.origin.parse_version();
@@ -203,20 +219,10 @@ impl Engine {
             capture_read: None,
             release: Default::default(),
         };
-        let recorded = self
-            .writer
-            .send(batch)
-            .map_err(EngineError::from)
-            .and_then(|()| match self.flush_writes()?.failed() {
-                None => Ok(()),
-                Some(error) => Err(error.into()),
-            });
-        match recorded {
-            Ok(()) => plan.failure_recorded = true,
-            Err(error) => pass.errors.push(
-                polylogue_model::Failure::new(plan.path.display(), &error)
-                    .doing("record the failure"),
-            ),
+        self.writer.send(batch)?;
+        match self.flush_writes()?.failed() {
+            None => Ok(()),
+            Some(error) => Err(error.into()),
         }
     }
 
@@ -1417,6 +1423,7 @@ impl Engine {
             tracked: true,
             failed: false,
             failure_recorded: false,
+            failed_at: None,
             replace: false,
             waiting: false,
             input_finished: false,
@@ -2522,6 +2529,19 @@ impl Engine {
 
     /// Finished inputs keep their cursors; an append restores the committed checkpoint.
     pub(crate) fn finish_plan(&mut self, plan: Plan) {
+        // A parse that failed before the plan stored the rest of the file
+        // fails at the length the plan left stored: reading those bytes
+        // again would meet the same failure.
+        if let Some((failure, at)) = plan.failed_at.clone()
+            && plan.stored_upto > at
+            && let Err(error) = self.send_failure(&plan, failure)
+        {
+            polylogue_store::log!(
+                warning,
+                "{}: recording the failure at the stored length: {error}",
+                plan.path.display()
+            );
+        }
         if !plan.tracked {
             return;
         }

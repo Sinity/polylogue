@@ -1,6 +1,6 @@
 use crate::{Archive, Change, ReadPool, Writer};
 use polylogue_model::chain::{ChainState, Outcomes, ParserState};
-use polylogue_model::{Caused as _, ChainFailure, ChainFailureKind};
+use polylogue_model::{ChainFailure, ChainFailureKind};
 
 /// What a test holds open: the archive's directory and lock, its writer,
 /// the chain `bytes` were stored as, and a step over them not yet sent.

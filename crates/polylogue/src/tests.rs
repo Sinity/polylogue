@@ -16,28 +16,10 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
         ])
         .unwrap();
     assert!(super::keeps_sigpipe_ignored(&daemon));
-    assert!(super::cli::needs_engine(
-        &daemon,
-        &super::daemon::service::ArchiveMode::Standalone
-    ));
     let tour = super::cli::command()
         .try_get_matches_from(["polylogue", "demo", "/synthetic/tour"])
         .unwrap();
-    assert!(super::cli::needs_engine(
-        &tour,
-        &super::daemon::service::ArchiveMode::Standalone
-    ));
     assert!(!super::keeps_sigpipe_ignored(&tour));
-    #[cfg(feature = "sinex")]
-    {
-        let blocked = super::daemon::service::ArchiveMode::Blocked {
-            configured: Some("primary"),
-            path: "/synthetic/sinex.toml".into(),
-            error: "invalid configuration".into(),
-        };
-        assert!(!super::cli::needs_engine(&daemon, &blocked));
-        assert!(super::cli::needs_engine(&tour, &blocked));
-    }
     let origin = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/";
     assert!(super::cli::run_line::native_host(&[origin.into()]));
     assert!(!super::cli::run_line::native_host(&[

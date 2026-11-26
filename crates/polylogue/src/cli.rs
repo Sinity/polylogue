@@ -287,18 +287,6 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
     crate::commands::command(&name).map(|c| (c, leaf))
 }
 
-/// Only configured local commands that construct an Engine need its binary identity.
-pub(crate) fn needs_engine(
-    matches: &ArgMatches,
-    mode: &crate::daemon::service::ArchiveMode,
-) -> bool {
-    chosen(matches).is_some_and(|(command, _)| match command.name {
-        "daemon" => mode.needs_engine(),
-        "demo" => true,
-        _ => false,
-    })
-}
-
 /// Clap owns presentation, OS-valued startup options and lexical placement.
 /// The shared parser alone turns the accepted words into values and an envelope.
 fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {

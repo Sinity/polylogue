@@ -259,17 +259,6 @@ pub enum ArchiveMode {
     },
 }
 
-impl ArchiveMode {
-    pub(crate) fn needs_engine(&self) -> bool {
-        match self {
-            Self::Standalone => true,
-            #[cfg(feature = "sinex")]
-            Self::Primary => true,
-            Self::Blocked { .. } => false,
-        }
-    }
-}
-
 /// Primary mode is not built in this version (`docs/primary-mode.md`).
 #[cfg(feature = "sinex")]
 fn primary_not_built() -> std::io::Error {
