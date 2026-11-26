@@ -494,12 +494,6 @@ pub fn import(answer: &protocol::import::Answer, style: TextStyle) -> String {
     }
 }
 
-pub(super) fn import_next(next: &command_surface::Next) -> String {
-    let request = serde_json::to_string(&next.request).expect("request serializes");
-    let label = polylogue_render::terminal::escape(&next.label);
-    format!("{label}: polylogue --request {}\n", shell_quote(&request))
-}
-
 /// `import PROVIDER`: the job's line, or a write still awaiting
 /// confirmation as JSON.
 pub fn import_job_answer(answer: &protocol::browser::ImportJobAnswer, style: TextStyle) -> String {

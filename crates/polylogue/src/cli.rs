@@ -557,7 +557,14 @@ pub fn run(matches: &ArgMatches, client: &crate::config::Client) -> ExitCode {
             );
             if cmd.name == "import" {
                 for next in &answer.envelope.next {
-                    print!("{}", print::import_next(next));
+                    let line = match crate::commands::declarations().cli_command(&next.request) {
+                        Ok(line) => line,
+                        Err(failure) => return fail_with(policy, json, &failure, &[]),
+                    };
+                    eprint!(
+                        "{}",
+                        print::diagnostic(&next.label, &line, None, policy.stderr_color())
+                    );
                 }
             }
             ExitCode::from(outcome_code)

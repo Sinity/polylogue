@@ -37,7 +37,11 @@ fn file_import_reports_what_was_stored_and_logs_failures() {
     let Outcome::Ok(report) = answer.outcome else {
         panic!("{answer:?}");
     };
-    assert_eq!(report.already_stored, [first]);
+    assert_eq!(
+        report.already_stored.as_slice(),
+        std::slice::from_ref(&first)
+    );
+    std::fs::remove_file(first).unwrap();
     assert_eq!(
         answer.envelope.notes,
         ["Everything named was already stored."]
@@ -46,7 +50,7 @@ fn file_import_reports_what_was_stored_and_logs_failures() {
     let second = project.join("second.jsonl");
     std::fs::write(&second, line("u2", "second", "the second import")).unwrap();
     let unknown = export.join("unknown.json");
-    std::fs::write(&unknown, b"{").unwrap();
+    std::fs::write(&unknown, b"{}").unwrap();
     let unknown_path = unknown.to_str().unwrap();
     let refusal = format!("refused {unknown_path}: no declared structure matched");
     let out = cli(&env, &["--json", "import", export.to_str().unwrap()]);
@@ -133,7 +137,7 @@ fn file_import_reports_what_was_stored_and_logs_failures() {
             ("warning", format!("import incomplete: {refusal}").as_str()),
             (
                 "error",
-                format!("import failed (bad_value): no files were stored; {refusal}").as_str()
+                format!("import failed (bad_value): no files were stored | {refusal}").as_str()
             ),
             ("error", format!("import failed (io): {cause}").as_str()),
         ]
@@ -192,16 +196,15 @@ fn import_prints_a_runnable_next_call() {
     let _daemon = start_daemon(&env);
     let out = cli(&env, &["import", "grok", "--wait", "1ms"]);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
-    let text = String::from_utf8(out.stdout).unwrap();
-    let request = text
-        .lines()
-        .last()
-        .unwrap()
-        .strip_prefix("wait again: polylogue --request '")
-        .unwrap()
-        .strip_suffix('\'')
+    let text = String::from_utf8(out.stderr).unwrap();
+    let next = text
+        .strip_prefix("polylogue: wait again: polylogue ")
         .unwrap();
-    let out = cli(&env, &["--json", "--request", request]);
+    let args: Vec<_> = ["--json"]
+        .into_iter()
+        .chain(next.split_whitespace())
+        .collect();
+    let out = cli(&env, &args);
     assert_eq!(out.status.code(), Some(1), "{out:?}");
     let answer: command_surface::Answer<serde_json::Value> =
         serde_json::from_slice(&out.stdout).unwrap();

@@ -67,10 +67,15 @@ pub(crate) fn import_answer(
     let mut missing = Vec::new();
     if !dry_run && (!report.refused.is_empty() || !report.pass.errors.is_empty()) {
         // Staging failures have no entry among the classified members.
-        let members: HashSet<_> = report.members.iter().map(|m| &m.path).collect();
+        let refused_members: HashSet<_> = report
+            .members
+            .iter()
+            .filter(|member| member.class == "refused")
+            .map(|member| &member.path)
+            .collect();
         let mut staging_failed = false;
         missing.extend(report.refused.iter().map(|r| {
-            let label = if members.contains(&r.path) {
+            let label = if refused_members.contains(&r.path) {
                 "refused"
             } else {
                 staging_failed = true;
@@ -81,8 +86,11 @@ pub(crate) fn import_answer(
         missing.extend(report.pass.errors.iter().map(ToString::to_string));
         if report.imported.is_empty() {
             let problem = missing.join("\n");
-            if let Some(failure) = report.pass.errors.first()
-                && failure.cause != polylogue_model::Cause::Content
+            if let Some(failure) = report
+                .pass
+                .errors
+                .iter()
+                .find(|failure| failure.cause != polylogue_model::Cause::Content)
             {
                 return error(failure.code, problem);
             }
@@ -94,7 +102,7 @@ pub(crate) fn import_answer(
         polylogue_store::log!(
             warning,
             "import incomplete: {}",
-            missing.join("; ").replace('\n', "; ")
+            missing.join(" | ").replace('\n', " | ")
         );
     }
     if report.user_state.pending > 0 {

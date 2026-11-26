@@ -378,11 +378,11 @@ impl Operation for Import {
         }
         let answer = import_files(arguments, call).unwrap_or_else(Failure::answer);
         if let Some(error) = answer.failure() {
-            let code = error.code.as_deref().unwrap_or_else(|| error.kind.name());
+            let code = error.code.as_deref().unwrap_or(error.kind.name());
             polylogue_store::log!(
                 error,
                 "import failed ({code}): {}",
-                error.message.replace('\n', "; ")
+                error.message.replace('\n', " | ")
             );
         }
         Ok(answer)
@@ -419,7 +419,7 @@ fn import_files(
             spec.support == Support::Parsed
                 || (spec.support == Support::NoParser && !spec.capture.is_row_dump())
         });
-        if !importable.clone().any(|spec| spec.name == origin) {
+        if !importable.clone().any(|spec| spec.name == origin.as_str()) {
             let known = importable
                 .map(|spec| spec.name)
                 .chain(["python-vectors"])
@@ -448,7 +448,7 @@ fn import_files(
     let sent = tx
         .send(polylogue_engine::LoopMsg::Import {
             paths,
-            format: arguments.origin.clone(),
+            format: arguments.origin,
             dry_run: arguments.dry_run,
             authorship: invocation.authorship.clone(),
             parent: invocation.parent_lifetime(),
