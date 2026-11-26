@@ -1,56 +1,65 @@
 #!/usr/bin/env bash
-# dev/land [--dry-run] <pr-number>
+# dev/land [--dry-run] [--now] <pr-number>
 # dev/land --queue [--once] [--dry-run]
 #
-# Squash-merges a pull request once its required check is green and the base
-# commit that check tested is still current for the packages concerned. A
-# pull request's check runs on GitHub's merge of its head with the base
-# branch; the `check` workflow records that base commit as a notice
-# annotation titled "tested base" on a required check run. If the base
-# branch has since changed a package the pull request changes (a package is a
-# directory with a Cargo.toml; files outside every package count by their
-# top-level directory, and root manifests, Cargo.lock, rust-toolchain.toml,
-# the flake, .cargo/, .config/ and .github/ count as every package; Markdown
-# never counts), the branch is brought up to date with a merge of the base
-# branch and the check runs again.
+# --queue is the landing queue. Each cycle takes the ready pull requests
+# (open, not a draft, not labelled `hold`, no unresolved review threads, not
+# conflicting with master, required check green on their own heads, not sent
+# back at their current head), oldest first, at most eight. It builds one
+# staging commit on master's tip with each as a squash commit, without a
+# working tree, pushes it to the branch `land-queue` and dispatches the check
+# workflow on exactly that commit. When the run is green, and master has not
+# moved since in a package the batch changes, it squash-merges the members in
+# order and compares master's tree with the staging commit's. When it is red
+# it splits the batch in half, oldest half first; a pull request red alone
+# has its failed jobs run once more, and is merged if they pass or sent back
+# with a comment if they fail again. --once runs one cycle; --dry-run prints
+# the batch and the staging commit without pushing or merging. Master's
+# protection requires `check` on each merged head, not an up-to-date branch,
+# so no pull request head is rewritten.
 #
-# With a number it lands that pull request, waiting for its checks, and stops
-# on a draft, a `hold` label, unresolved review threads, a conflict or a red
-# check. --queue lands every ready pull request (open, not a draft, not
-# labelled `hold`, no unresolved review threads, required check green), oldest
-# first, in passes a minute apart, and lists what it skipped and why; --once
-# runs one pass and exits 0 unless a pull request is red or conflicting.
-# --dry-run prints the decisions without updating or merging.
+# With a number it lands that one pull request by hand: once its required
+# check is green and the base commit that check tested (the "tested base"
+# annotation the `check` workflow records) is still current for the packages
+# it changes, it squash-merges it; otherwise it merges master into the branch
+# and waits for the check again. A package is a directory with a Cargo.toml;
+# files outside every package count by their top-level directory; root
+# manifests, Cargo.lock, rust-toolchain.toml, the flake, .cargo/, .config/
+# and .github/ count as every package; Markdown never counts. It refuses
+# while the queue is testing a batch, unless given --now.
 #
 # Needs git (fetching from the remote `origin`), gh and awk; compiles nothing
 # and keeps no state beyond what GitHub holds, so it is always safe to stop
 # and restart.
 set -euo pipefail
 
-usage() { echo "usage: dev/land [--dry-run] <pr-number> | dev/land --queue [--once] [--dry-run]" >&2; exit 2; }
-dry_run=false queue=false once=false number=
+usage() { echo "usage: dev/land [--dry-run] [--now] <pr-number> | dev/land --queue [--once] [--dry-run]" >&2; exit 2; }
+dry_run=false queue=false once=false now=false number=
+staging_branch=land-queue
 for arg in "$@"; do
     case $arg in
         --dry-run) dry_run=true ;;
         --queue) queue=true ;;
         --once) once=true ;;
+        --now) now=true ;;
         [0-9]*) number=$arg ;;
         *) usage ;;
     esac
 done
-if $queue; then [ -z "$number" ] || usage; else [ -n "$number" ] && ! $once || usage; fi
+if $queue; then [ -z "$number" ] && ! $now || usage; else [ -n "$number" ] && ! $once || usage; fi
 
 read -r owner name default_branch < <(gh repo view --json owner,name,defaultBranchRef \
     --jq '"\(.owner.login) \(.name) \(.defaultBranchRef.name)"')
 
 # One GraphQL call for the given pull requests, oldest first, one line each:
 # number state draft mergeable base-branch head labels unresolved-threads
-# check-runs required failing title, tab-separated, "-" for an empty field. `required`
+# check-runs sent-back required failing title, tab-separated, "-" for an empty field. `required`
 # lists the required check runs on the head as name|status|conclusion|details
 # URL, separated by semicolons; `failing` names the failed jobs, the
 # required ones only when nothing else failed. A queued run, or a job waiting
 # for other jobs, reports nothing yet. Each tested base the required runs
 # recorded is printed after its pull request's line as "base <number> <sha>".
+# `sent-back` is the head named in the queue's latest send-back comment.
 pr_rows() {
     local q='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {' n
     for n in "$@"; do
@@ -59,6 +68,7 @@ pr_rows() {
     number state isDraft mergeable title createdAt baseRefName headRefOid
     labels(first: 20) { nodes { name } }
     reviewThreads(first: 100) { nodes { isResolved } }
+    comments(last: 30) { nodes { body } }
     commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 50) { nodes {
       ... on CheckRun { name status conclusion detailsUrl isRequired(pullRequestNumber: $n)
         annotations(first: 10) { nodes { title message } } }
@@ -76,14 +86,15 @@ pr_rows() {
       (($failed | map(select(.isRequired | not))) as $jobs | (if $jobs == [] then $failed else $jobs end) | map(.name) | join(", ") | dash) as $fail |
       ([.labels.nodes[].name] | join(",") | dash) as $labels |
       ([.reviewThreads.nodes[] | select(.isResolved | not)] | length) as $threads |
-      ([.number, .state, .isDraft, .mergeable, .baseRefName, .headRefOid, $labels, $threads, ($runs | length), $req, $fail, .title] | map(tostring) | join("\t")),
+      ([.number, .state, .isDraft, .mergeable, .baseRefName, .headRefOid, $labels, $threads, ($runs | length),
+        ([.comments.nodes[].body | capture("land-queue sent back (?<h>[0-9a-f]{40})") | .h] | last // "-"), $req, $fail, .title] | map(tostring) | join("\t")),
       ([$required[] | select(.status == "COMPLETED" and .conclusion == "SUCCESS") | .annotations.nodes[] | select(.title == "tested base") | .message][0] // empty | "base \(.)")
     ' | awk -F'\t' '/^base / { sub(/^base /, "base " last " "); print; next } { last = $1; print }'
 }
 
 # Reads one pr_rows line into the row variables.
 parse_row() {
-    IFS=$'\t' read -r number state draft mergeable base_branch head labels threads runs checks failing title <<<"$1"
+    IFS=$'\t' read -r number state draft mergeable base_branch head labels threads runs sent_back checks failing title <<<"$1"
 }
 
 # The required check on the head into `check`: none, pending, failed or
@@ -177,6 +188,9 @@ land_one() {
         local run="${details%/job/*} ($1, head ${head:0:10})"
         case " ${runs_waited[*]-} " in *" $run "*) ;; *) runs_waited+=("$run") ;; esac
     }
+    if ! $dry_run && ! $now && [ -n "$(git ls-remote origin "refs/heads/$staging_branch")" ]; then
+        die "the queue is testing a batch; this pull request will be landed by it, or use --now to merge anyway"
+    fi
     while true; do
         rows=$(pr_rows "$number")
         parse_row "$(head -1 <<<"$rows")"
@@ -241,104 +255,290 @@ land_one() {
 # ---- the queue -----------------------------------------------------------
 
 # One pass over every open pull request. Prints its block when it merged or
-# updated something, when $1 is "always", or ten minutes after the last
-# block. Returns 1 when a pull request is red or conflicting.
-queue_pass() {
-    local rows numbers line n sha result flight blocker would= changed=false red=false
-    local in_flight=() ready=() stale_rows=() out=()
-    local -A tested_of=()
-    # Sorts the block: what the pass did first, then why the rest wait.
+
+# ---- the queue -----------------------------------------------------------
+
+workflow=check.yml
+batch_limit=8
+problems=false
+merged_this_cycle=()
+
+note() { echo "$(date -u '+%H:%MZ')   $*"; }
+
+# Sorts what is not in the batch into one listing, and the ready pull
+# requests, oldest first, into `ready` (their rows into row_of).
+classify() {
+    local line
+    ready=() out=()
+    declare -gA row_of=()
     entry() {
         local order
         case $1 in
-            merged|"would merge") order=1 ;; updated|"would update") order=2 ;; waiting) order=3 ;;
-            review) order=4 ;; red) order=5 ;; conflicting) order=6 ;; held) order=7 ;; draft) order=8 ;; *) order=9 ;;
+            waiting) order=3 ;; review) order=4 ;; red) order=5 ;; "sent back") order=6 ;;
+            conflicting) order=7 ;; held) order=8 ;; draft) order=9 ;; *) order=10 ;;
         esac
-        out+=("$order$(printf '  %-12s #%s %s%s' "$1" "$number" "${title:0:72}" "${2:+ ($2)}")")
+        out+=("$(printf '%02d  %-12s #%s %s%s' "$order" "$1" "$number" "${title:0:72}" "${2:+ ($2)}")")
     }
+    while IFS= read -r line; do
+        parse_row "$line"
+        check_state
+        if [ "$base_branch" != "$default_branch" ]; then entry other "targets $base_branch"
+        elif [ "$draft" = true ]; then entry draft
+        elif [[ ",$labels," == *,hold,* ]]; then entry held
+        elif [ "$mergeable" = CONFLICTING ]; then
+            entry conflicting "conflicts with $default_branch: needs its owner or a new worker"; problems=true
+        elif [ $check = failed ]; then entry red "$failing"; problems=true
+        elif [ "$threads" != 0 ]; then entry review "waiting on $threads unresolved review threads"
+        elif [ $check != passed ]; then entry waiting "check queued or running on its head"
+        elif [ "$sent_back" = "$head" ]; then
+            entry "sent back" "fails combined with $default_branch; a new head or a branch update requeues it"; problems=true
+        else ready+=("$number"); row_of[$number]=$line
+        fi
+    done < <(grep -v '^base ' <<<"$1" || true)
+}
+
+listing() {
+    [ ${#out[@]} -eq 0 ] || printf '%s\n' "${out[@]}" | sort -s -n -k1,1 | cut -c3-
+}
+
+# Builds the staging commit on $1 from the pull requests after it, each as
+# one squash commit, into `staging`; members that merge cleanly go into
+# `included`, the others into `left_out`. Needs no working tree.
+build_staging() {
+    local base=$1 n tree
+    shift
+    staging=$base included=() left_out=()
+    for n in "$@"; do
+        parse_row "${row_of[$n]}"
+        if tree=$(git merge-tree --write-tree --no-messages "$staging" "$head" 2>/dev/null); then
+            staging=$(git commit-tree "$tree" -p "$staging" -m "#$n $title")
+            included+=("$n")
+        else
+            left_out+=("$n")
+        fi
+    done
+}
+
+# Tests $staging: pushes it to the staging branch, dispatches the check on
+# exactly that commit and waits for it. Sets run (its ID) and conclusion.
+test_staging() {
+    local polls=0
+    git push -q -f origin "$staging:refs/heads/$staging_branch"
+    gh workflow run "$workflow" -R "$owner/$name" --ref "$staging_branch" -f rev="$staging" >/dev/null
+    run=
+    while [ -z "$run" ]; do
+        sleep 15
+        run=$(gh run list -R "$owner/$name" --workflow "$workflow" --branch "$staging_branch" --event workflow_dispatch \
+            --limit 10 --json databaseId,headSha --jq "[.[] | select(.headSha == \"$staging\") | .databaseId][0] // empty")
+        polls=$((polls + 1))
+        [ -n "$run" ] || [ $polls -lt 20 ] || { conclusion=missing; return; }
+    done
+    note "run https://github.com/$owner/$name/actions/runs/$run"
+    await_run
+}
+
+await_run() {
+    local polls=0
+    # A rerun takes a moment to leave the completed state.
+    while [ "${1-}" = rerun ] && [ $polls -lt 6 ] &&
+        [ "$(gh run view "$run" -R "$owner/$name" --json status --jq .status)" = completed ]; do
+        polls=$((polls + 1)); sleep 10
+    done
+    gh run watch "$run" -R "$owner/$name" --interval 60 >/dev/null 2>&1 || true
+    conclusion=$(gh run view "$run" -R "$owner/$name" --json conclusion --jq .conclusion)
+}
+
+failed_jobs() {
+    gh run view "$run" -R "$owner/$name" --json jobs \
+        --jq '[.jobs[] | select(.conclusion == "failure" or .conclusion == "cancelled" or .conclusion == "timed_out") | .name] | join(", ")'
+}
+
+# The tests that failed in the run, from its JUnit reports, one per line.
+failed_tests() {
+    local dir
+    dir=$(mktemp -d)
+    gh run download "$run" -R "$owner/$name" -p 'junit-*' -D "$dir" >/dev/null 2>&1 || true
+    find "$dir" -name '*.xml' -exec awk '
+        /<testcase / { match($0, /name="[^"]*"/); test = substr($0, RSTART + 6, RLENGTH - 7)
+                       match($0, /classname="[^"]*"/); class = substr($0, RSTART + 11, RLENGTH - 12) }
+        /<(failure|error)[ >\/]/ { print class " " test }' {} + | sort -u
+    rm -rf "$dir"
+}
+
+# Waits until GitHub has computed whether pull request $1 merges, after an
+# earlier merge made it unknown.
+await_mergeable() {
+    local polls=0 state
+    while true; do
+        state=$(gh api graphql -F owner="$owner" -F name="$name" -F number="$1" -f query='
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) { pullRequest(number: $number) { mergeable } }
+}' --jq .data.repository.pullRequest.mergeable)
+        [ "$state" = UNKNOWN ] || return 0
+        polls=$((polls + 1))
+        [ $polls -lt 18 ] || return 0
+        sleep 10
+    done
+}
+
+# Merges the tested members in order on $1, the tip the staging was built
+# on, and compares master's tree with the tree the staging predicts.
+merge_members() {
+    local start=$1 n expected result final
+    shift
+    build_staging "$start" "$@"
+    expected=$staging
+    for n in "$@"; do
+        parse_row "${row_of[$n]}"
+        await_mergeable "$n"
+        if result=$(gh pr merge "$n" -R "$owner/$name" --squash --match-head-commit "$head" 2>&1); then
+            note "merged #$n $title"
+            merged_this_cycle+=("$n")
+        else
+            note "MERGE REFUSED for #$n, the rest wait for the next cycle: $(tr '\n' ' ' <<<"$result")"
+            return
+        fi
+    done
+    final=$(tip_of "$default_branch")
+    git fetch -q --no-tags origin "$final"
+    if [ "$(git rev-parse "$final^{tree}")" = "$(git rev-parse "$expected^{tree}")" ]; then
+        note "$default_branch ${final:0:10} has exactly the tree of the tested staging commit"
+    else
+        note "!!! $default_branch ${final:0:10} DIFFERS from the tree of the tested staging commit ${expected:0:10}; $default_branch's own run is the evidence"
+    fi
+}
+
+# Sends pull request $1 back: it passes on its own head but fails combined
+# with master. The marker names the head; a new head requeues it.
+send_back() {
+    local n=$1 jobs=$2 tests=$3 base=$4 also=
+    parse_row "${row_of[$n]}"
+    [ ${#merged_this_cycle[@]} -eq 0 ] ||
+        also=", which includes $(printf '#%s ' "${merged_this_cycle[@]}")merged from the same batch"
+    gh pr comment "$n" -R "$owner/$name" --body "<!-- land-queue sent back $head -->
+The landing queue sent this pull request back. Its head \`${head:0:10}\` passes \`check\` on its own, but fails combined with $default_branch \`${base:0:10}\`$also.
+
+- Run: https://github.com/$owner/$name/actions/runs/$run (failed, and failed again when its failed jobs were run once more)
+- Failed jobs: $jobs
+- Failed tests: ${tests:-(none named in the JUnit reports)}
+
+Pushing a new head or updating the branch puts it back in the queue." >/dev/null
+    note "sent back #$n $title: $jobs"
+    problems=true
+}
+
+# Lands the given ready pull requests as one tested batch: builds the staging
+# commit on master's tip, tests it, merges it when green, and when red splits
+# it in half, oldest half first, until a single pull request is red.
+land_batch() {
+    local members=("$@") base moved batch_units moved_units jobs tests rows n line
+    while [ ${#members[@]} -gt 0 ]; do
+        base=$(tip_of "$default_branch")
+        git fetch -q --no-tags origin "$base"
+        build_staging "$base" "${members[@]}"
+        for n in "${left_out[@]}"; do
+            parse_row "${row_of[$n]}"
+            note "left out #$n $title: conflicts with an earlier pull request in the batch"
+        done
+        [ ${#included[@]} -gt 0 ] || return 0
+        note "batch $(printf '#%s ' "${included[@]}")as staging ${staging:0:10} on $default_branch ${base:0:10}"
+        $dry_run && { note "would push $staging_branch and dispatch $workflow on ${staging:0:10}"; return 0; }
+        test_staging
+        if [ "$conclusion" = missing ]; then
+            note "the dispatched run did not appear; the batch waits for the next cycle"
+            return 0
+        fi
+        if [ "$conclusion" != success ] && [ ${#included[@]} -eq 1 ]; then
+            jobs=$(failed_jobs) tests=$(failed_tests)
+            note "red alone on $default_branch: $jobs; running the failed jobs once more"
+            gh run rerun "$run" -R "$owner/$name" --failed >/dev/null 2>&1 || true
+            await_run rerun
+            if [ "$conclusion" = success ]; then
+                note "failed once, passed on rerun (#${included[0]}): $(paste -sd' ' <<<"${tests:-unnamed}")"
+            else
+                send_back "${included[0]}" "$jobs" "$(paste -sd',' <<<"$tests" | sed 's/,/, /g')" "$base"
+                return 0
+            fi
+        fi
+        if [ "$conclusion" != success ]; then
+            note "red: $(failed_jobs); splitting the batch"
+            local half=$(((${#included[@]} + 1) / 2))
+            land_batch "${included[@]:0:half}"
+            land_batch "${included[@]:half}"
+            return 0
+        fi
+        note "green"
+        # A member pushed or parked during the test leaves; the rest are
+        # tested again without it.
+        rows=$(pr_rows "${included[@]}")
+        members=()
+        while IFS= read -r line; do
+            parse_row "$line"
+            check_state
+            if [ "$state" = OPEN ] && [ "$draft" = false ] && [[ ",$labels," != *,hold,* ]] && [ "$threads" = 0 ] &&
+                [ $check = passed ] && [ "$(cut -f6 <<<"${row_of[$number]}")" = "$head" ]; then
+                members+=("$number")
+            else
+                note "#$number $title changed during the test; it waits for the next cycle"
+            fi
+        done < <(grep -v '^base ' <<<"$rows" || true)
+        [ ${#members[@]} -eq ${#included[@]} ] || continue
+        moved=$(tip_of "$default_branch")
+        if [ "$moved" != "$base" ]; then
+            git fetch -q --no-tags origin "$moved"
+            package_dirs=$(git ls-tree -r --name-only "$moved" | sed -n 's|/Cargo\.toml$||p' | sort -u)
+            batch_units=$(git diff --no-renames --name-only "$base" "$staging" | units)
+            moved_units=$(git diff --no-renames --name-only "$base" "$moved" | units)
+            if overlap "$batch_units" "$moved_units"; then
+                note "$default_branch moved to ${moved:0:10} in $(list "$moved_units"), which the batch also changes; testing again"
+                continue
+            fi
+            note "$default_branch moved to ${moved:0:10} only in $(list "$moved_units"); the result stands"
+            base=$moved
+        fi
+        merge_members "$base" "${members[@]}"
+        return 0
+    done
+}
+
+# One cycle: the batch is the oldest ready pull requests, at most eight.
+queue_cycle() {
+    local numbers rows tip
+    problems=false merged_this_cycle=()
     numbers=$(gh api graphql -F owner="$owner" -F name="$name" -f query='
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) { pullRequests(states: OPEN, first: 100) { nodes { number } } }
 }' --jq '.data.repository.pullRequests.nodes[].number') &&
         rows=$([ -z "$numbers" ] || pr_rows $numbers) &&
         tip=$(tip_of "$default_branch") || {
-        echo "$(date -u '+%Y-%m-%d %H:%MZ') reading the pull requests failed; next pass in a minute"
+        echo "$(date -u '+%Y-%m-%d %H:%MZ') reading the pull requests failed; next cycle in a minute"
         return 0
     }
-    $dry_run && would="would "
-    while read -r _ n sha; do tested_of[$n]=$sha; done < <(grep '^base ' <<<"$rows" || true)
-    git fetch -q --no-tags origin "$tip" $(awk -F'\t' '$3 == "false" { print $6 }' <<<"$rows")
-
-    while IFS= read -r line; do
-        parse_row "$line"
-        if [ "$base_branch" != "$default_branch" ]; then entry other "targets $base_branch"
-        elif [ "$draft" = true ]; then entry draft
-        elif [[ ",$labels," == *,hold,* ]]; then entry held
-        elif [ "$mergeable" = CONFLICTING ]; then
-            entry conflicting "conflicts with $default_branch: needs its owner or a new worker"; red=true
-        else
-            check_state
-            if [ $check = failed ]; then entry red "$failing"; red=true
-            elif [ "$threads" != 0 ]; then entry review "waiting on $threads unresolved review threads"
-            elif [ $check = passed ]; then ready+=("$line")
-            elif [ "$runs" = 0 ]; then entry waiting "no check job on its head yet"
-            else
-                pr_units_against
-                in_flight+=("$number $(echo "$pr_units" | paste -sd' ')")
-                entry waiting "check queued or running"
-            fi
-        fi
-    done < <(grep -v '^base ' <<<"$rows" || true)
-
-    # Merges, oldest first, each decided against the tip after the one before.
-    for line in "${ready[@]}"; do
-        parse_row "$line"
-        tested=${tested_of[$number]-}
-        decide
-        if $stale; then stale_rows+=("$line"); continue; fi
-        if $dry_run; then entry "would merge"; changed=true; continue; fi
-        if result=$(gh pr merge "$number" -R "$owner/$name" --squash --match-head-commit "$head" 2>&1); then
-            entry merged "head ${head:0:10}"
-            changed=true
-            tip=$(tip_of "$default_branch")
-            git fetch -q --no-tags origin "$tip"
-        else
-            entry waiting "merge refused: $(tr '\n' ' ' <<<"$result")"
-        fi
-    done
-
-    # Updates: at most one in flight among pull requests whose packages overlap.
-    for line in "${stale_rows[@]}"; do
-        parse_row "$line"
-        tested=${tested_of[$number]-}
-        decide
-        blocker=
-        for flight in "${in_flight[@]}"; do
-            overlap "$pr_units" "$(tr ' ' '\n' <<<"${flight#* }")" && { blocker=${flight%% *}; break; }
-        done
-        if [ -n "$blocker" ]; then entry waiting "stale: $reason; waits for #$blocker, in flight with overlapping packages"; continue; fi
-        if $dry_run || result=$(gh pr update-branch "$number" -R "$owner/$name" 2>&1); then
-            entry "${would}update" "$reason"
-            changed=true
-            in_flight+=("$number $(echo "$pr_units" | paste -sd' ')")
-        else
-            entry conflicting "update-branch failed: $(tr '\n' ' ' <<<"$result")"; red=true
-        fi
-    done
-
-    if $changed || [ "${1-}" = always ] || [ $((SECONDS - last_block)) -ge 600 ]; then
-        echo "$(date -u '+%Y-%m-%d %H:%MZ') $default_branch ${tip:0:10}, $(grep -c . <<<"$numbers") open"
-        [ ${#out[@]} -eq 0 ] || printf '%s\n' "${out[@]}" | sort -s -n -k1.1,1.1 | cut -c2-
+    classify "$rows"
+    local batch=("${ready[@]:0:batch_limit}")
+    if [ ${#batch[@]} -gt 0 ] || [ "${1-}" = always ] || [ $((SECONDS - last_block)) -ge 600 ]; then
+        echo "$(date -u '+%Y-%m-%d %H:%MZ') $default_branch ${tip:0:10}, $(grep -c . <<<"$numbers") open, ${#ready[@]} ready"
+        listing
+        local n
+        for n in "${ready[@]:batch_limit}"; do parse_row "${row_of[$n]}"; printf '  %-12s #%s %s\n' "next batch" "$n" "${title:0:72}"; done
         last_block=$SECONDS
     fi
-    ! $red
+    if [ ${#batch[@]} -gt 0 ]; then
+        git fetch -q --no-tags origin "$tip" $(for n in "${batch[@]}"; do cut -f6 <<<"${row_of[$n]}"; done)
+        land_batch "${batch[@]}"
+        last_block=$SECONDS
+    fi
+    if ! $dry_run && [ -n "$(git ls-remote origin "refs/heads/$staging_branch")" ]; then
+        git push -q origin --delete "$staging_branch"
+    fi
+    ! $problems
 }
 
 if $queue; then
     last_block=-600
-    if $once; then queue_pass always; exit; fi
+    if $once; then queue_cycle always; exit; fi
     while true; do
-        queue_pass || true
+        queue_cycle || true
         sleep 60
     done
 fi
