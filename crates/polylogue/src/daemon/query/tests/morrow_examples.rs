@@ -482,11 +482,8 @@ fn a_query_on_an_absent_id_answers_empty() {
     let mut runtime =
         crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
             .unwrap();
-    let mut server = crate::daemon::server::Server::start(
-        std::sync::Arc::clone(&runtime.daemon),
-        std::sync::Arc::clone(&runtime.operations),
-    )
-    .unwrap();
+    let mut server =
+        crate::daemon::server::Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
     let absent = "sessions where id:claude-code:7f3a2c10-0009-4000-8000-000000000009";
     let answer = crate::test_daemon::Call::new("rows", serde_json::json!({ "selection": absent }))
         .answer(&runtime.daemon);
