@@ -34,9 +34,9 @@
 //! source fragment; accessible-empty text remains an item. Mandatory metadata that
 //! cannot fit without any source content is reported explicitly.
 //!
-//! Expanded tool output keeps its first and last `output_lines` lines (100 by
-//! default), with counts for the omitted middle. A line over 4,000
-//! characters is bounded by kept ends. `output_lines: 0` keeps the complete
+//! Expanded tool output keeps its first and last N lines (`--show tools:N`,
+//! 100 by default), with counts for the omitted middle. A line over 4,000
+//! characters is bounded by kept ends. `--show tools:full` keeps the complete
 //! value. The source record always keeps the complete result.
 //! Availability, annotations, context omissions, branches and alternates keep
 //! typed value states instead of inventing zero or success.
