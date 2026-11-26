@@ -29,7 +29,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             "claude-code:agent-a7f3a2c1000000003",
             SessionKind::Subagent,
             6,
-            6,
+            10,
             0,
         ),
         (
@@ -186,8 +186,8 @@ fn parents_set_lineage_matches_morrow_facts() {
             "session message count: {id}"
         );
         assert_eq!(
-            row["cost_complete"].as_bool(),
-            Some(true),
+            row["cost_complete"].as_i64(),
+            Some(1),
             "own cost complete: {id}"
         );
         let amount = row["cost"].as_i64().expect("known own cost");
@@ -227,13 +227,14 @@ fn parents_set_lineage_matches_morrow_facts() {
     assert_eq!(links, expected_links, "provider links");
     // FACTS.md: a copied message is stored once; L4 and L5 have four copies,
     // #4 has eighteen, and L8 has three copies belonging to 0199.
+    // #3's fork-context-ref names #2's prefix through its fourth message.
     let unique: BTreeSet<_> = own_ids.iter().collect();
     assert_eq!(
         unique.len(),
         own_ids.len(),
         "messages stored once across sessions"
     );
-    for (child, parent, copies) in [(3, 1, 18), (8, 6, 4), (9, 4, 4), (12, 13, 3)] {
+    for (child, parent, copies) in [(2, 1, 4), (3, 1, 18), (8, 6, 4), (9, 4, 4), (12, 13, 3)] {
         assert_eq!(
             &shown_ids[expected[child].0][..copies],
             &shown_ids[expected[parent].0][..copies],
