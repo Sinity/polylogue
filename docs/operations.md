@@ -72,6 +72,8 @@ Putting back an older copy of `archive.db` beside the segment log and index of a
 
 ## Idle and steady-state work
 
+Workers following commits log a failure once at error priority, a changed error once more, and recovery once at information priority. A transient failure waits for the next commit before another attempt. Other causes halt the work until restart. Waiting for an index rebuild is normal work and waits for the install commit. A failing or halted worker stays in the thread activity and appears under status problems with its name and error.
+
 An idle daemon reads and writes about as much as changes:
 - With stored readings current, a pass with no changed inputs reads no stored input bytes and runs no archive-wide chain planning. Startup and parser upgrades resume from committed reading progress; completed chains stay finished across passes and restarts. With sources off and stored work finished, the loop blocks for a request or stop.
 - Discovery is event-scoped. A full scan of the declared locations runs only at start and after a watcher error or overflow, never on a schedule.

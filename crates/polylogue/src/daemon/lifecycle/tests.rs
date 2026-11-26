@@ -193,7 +193,8 @@ fn sigterm_and_sigint_drain_daemons_keeping_accepted_writes() {
         send(&process, signal);
         until(&receiver, "STOPPING=1");
         assert!(process.0.wait().unwrap().success());
-        eprintln!(
+        polylogue_store::log!(
+            info,
             "{signal:?} shutdown_seconds={:.6}",
             stopping.elapsed().as_secs_f64()
         );
