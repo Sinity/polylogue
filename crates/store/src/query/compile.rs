@@ -50,11 +50,15 @@ pub enum Param {
     Text(String),
 }
 
-/// A pasted ID-shaped word: it is a reference only if it names exactly one
-/// session or message. The caller checks that before running the query.
+/// An ID-shaped word or a field condition on a session ID: it names at
+/// most one session, and a reference names exactly one. The caller checks
+/// that before running the query.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct IdCheck {
     pub word: String,
+    /// A reference that names no session is `not_found`; a field condition
+    /// on an ID no session has matches no row.
+    pub reference: bool,
     /// Returns the session IDs the word may name (at most a few).
     pub sql: String,
     pub params: Vec<Param>,

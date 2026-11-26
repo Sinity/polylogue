@@ -471,3 +471,60 @@ fn pages_of_every_size_concatenate_to_the_whole_answer() {
     }
     assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
+
+/// A query whose ID condition names no session answers `empty` (exit 1),
+/// as `--json` prints it and over MCP, and its negation holds for every
+/// session (docs/query.md, References).
+#[test]
+fn a_query_on_an_absent_id_answers_empty() {
+    use crate::daemon::service::ArchiveMode;
+    let archive = Morrow::build(Set::Main);
+    let mut runtime =
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
+    let mut server = crate::daemon::server::Server::start(
+        std::sync::Arc::clone(&runtime.daemon),
+        std::sync::Arc::clone(&runtime.operations),
+    )
+    .unwrap();
+    let absent = "sessions where id:claude-code:7f3a2c10-0009-4000-8000-000000000009";
+    let answer = crate::test_daemon::Call::new("rows", serde_json::json!({ "selection": absent }))
+        .answer(&runtime.daemon);
+    assert_eq!(answer.exit_code(), 1, "{answer:?}");
+    let printed = serde_json::to_value(&answer).unwrap();
+    assert_eq!(printed["outcome"], "empty", "{printed}");
+    assert_eq!(
+        printed["value"]["reply"]["rows"],
+        serde_json::json!([]),
+        "{printed}"
+    );
+    let over_mcp = crate::mcp::tests::structured_call_as(
+        &polylogue_store::Archive::at(&archive.root),
+        "rows",
+        serde_json::json!({ "selection": absent })
+            .as_object()
+            .unwrap()
+            .clone(),
+        "absent-id",
+    );
+    assert_eq!(over_mcp.exit_code(), 1, "{over_mcp:?}");
+    assert_eq!(serde_json::to_value(&over_mcp).unwrap()["outcome"], "empty");
+    // Its negation is false for no session: it keeps every session that
+    // excluding a present one keeps, and that one.
+    let count = |selection: &str| {
+        crate::test_answers::ok(
+            crate::test_daemon::Call::new("rows", serde_json::json!({ "selection": selection }))
+                .answer(&runtime.daemon),
+        )["reply"]["count"]
+            .as_u64()
+            .unwrap()
+    };
+    let without_absent =
+        count("sessions where NOT id:claude-code:7f3a2c10-0009-4000-8000-000000000009");
+    let without_first =
+        count("sessions where NOT id:claude-code:7f3a2c10-0001-4000-8000-000000000001");
+    assert!(without_first > 0);
+    assert_eq!(without_absent, without_first + 1);
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
+}
