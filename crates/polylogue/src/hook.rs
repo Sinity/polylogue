@@ -579,7 +579,7 @@ fn spool_error(what: &str, error: &std::io::Error) {
         && socket.set_nonblocking(true).is_ok()
     {
         let _ = socket.send_to(
-            format!("PRIORITY=3\nSYSLOG_IDENTIFIER=polylogue-hook\nMESSAGE={message}").as_bytes(),
+            format!("PRIORITY=3\nSYSLOG_IDENTIFIER=polylogue-hook\nMESSAGE={message}\n").as_bytes(),
             "/run/systemd/journal/socket",
         );
     }
