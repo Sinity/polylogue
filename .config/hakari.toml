@@ -1,0 +1,14 @@
+# The workspace-hack crate (crates/workspace-hack) depends on every
+# third-party crate with the features the whole workspace's test build
+# enables, and every workspace package depends on it. A build of any subset of
+# packages then compiles the same third-party units as the full build, so a
+# focused test run reuses them. `cargo hakari generate` rewrites the crate
+# after a dependency change; `cargo xtask fast` verifies it.
+hakari-package = "workspace-hack"
+dep-format-version = "4"
+resolver = "2"
+platforms = ["x86_64-unknown-linux-gnu"]
+
+# devkit is xtask's; it stays out of the products' normal dependencies.
+[final-excludes]
+third-party = [{ name = "devkit", git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }]

@@ -20,6 +20,7 @@ maud = "0.27"
 http = "1"
 base64.workspace = true
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [lints]
 workspace = true

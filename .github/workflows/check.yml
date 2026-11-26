@@ -59,6 +59,8 @@ jobs:
         with:
           name: sinity
           skipPush: true
+      - name: cargo-hakari at the flake's version
+        run: echo "$(nix build --no-link --print-out-paths --inputs-from . nixpkgs#cargo-hakari)/bin" >> "$GITHUB_PATH"
       # Every event may reuse master's whole target directory, whose source
       # commit is recorded alongside it. Full test selection on master is
       # independent of compiler reuse. A fresh checkout makes source files
@@ -84,7 +86,7 @@ jobs:
           echo "restored build of $built; $(git diff --no-renames --name-only "$built" HEAD | wc -l) files differ"
       # Pull requests check their merge tree; pushes and exact-revision dispatches run all tests.
       - name: cargo xtask check
-        run: cargo xtask check ${{ github.event_name == 'pull_request' && '--changed-base HEAD^1' || '' }}
+        run: cargo xtask check ${{ github.event_name == 'pull_request' && '--base HEAD^1' || '' }}
       # A failed test leaves a valid build, so it is saved too.
       - name: Save master's build
         if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/master' }}

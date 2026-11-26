@@ -61,6 +61,7 @@ unicode-normalization.workspace = true
 reqwest.workspace = true
 crossterm = { version = "0.29", default-features = false, features = ["events", "bracketed-paste"] }
 fuzzy-matcher = "0.3"
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
 polylogue-model = { workspace = true, features = ["fixture"] }

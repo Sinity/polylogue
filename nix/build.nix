@@ -14,6 +14,13 @@ let
     fi
   '';
   craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
+  # sccache hashes every CARGO_* variable, so a target directory chosen per
+  # checkout through CARGO_TARGET_DIR would make every checkout miss the
+  # others' entries. The compiler never reads it.
+  sccacheRustc = pkgs.writeShellScript "sccache-rustc" ''
+    unset CARGO_TARGET_DIR
+    exec ${pkgs.sccache}/bin/sccache "$@"
+  '';
   workspace = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).workspace.package;
   common = {
     src = source;
@@ -170,6 +177,8 @@ in
       toolchain
       pkgs.git
       pkgs.cargo-nextest
+      pkgs.cargo-hakari
+      pkgs.sccache
       pkgs.cargo-llvm-cov
       pkgs.cargo-fuzz
       pkgs.cargo-deny
@@ -198,7 +207,23 @@ in
       if [ -z "''${CARGO_TARGET_DIR:-}" ] && command -v sinnix-cargo-target >/dev/null 2>&1; then
         if cargo_target="$(sinnix-cargo-target)"; then
           export CARGO_TARGET_DIR="$cargo_target"
+          # One compiler cache for every checkout's target, beside them.
+          : "''${SCCACHE_DIR:=$(dirname "$(dirname "$cargo_target")")/sccache}"
+          export SCCACHE_DIR
         fi
+      fi
+      # Where the host names a compiler cache, compilations go through
+      # sccache. Each checkout's shell starts its own server on a socket under
+      # the runtime directory (starting one under a long TMPDIR fails); a
+      # server that stops with the job that started it costs the next
+      # compilation a cache lookup, not a failure.
+      if [ -n "''${SCCACHE_DIR:-}" ] && [ -z "''${RUSTC_WRAPPER:-}" ] && [ -n "''${XDG_RUNTIME_DIR:-}" ]; then
+        export RUSTC_WRAPPER=${sccacheRustc}
+        export SCCACHE_IGNORE_SERVER_IO_ERROR=1
+        export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-40G}"
+        SCCACHE_SERVER_UDS="$XDG_RUNTIME_DIR/sccache-$(printf %s "$PWD" | sha256sum | cut -c1-16).sock"
+        export SCCACHE_SERVER_UDS
+        TMPDIR="$XDG_RUNTIME_DIR" ${pkgs.sccache}/bin/sccache --start-server >/dev/null 2>&1 || true
       fi
     ''
     + installGitHooks;

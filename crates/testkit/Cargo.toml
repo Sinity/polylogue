@@ -6,13 +6,17 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# Only tests depend on the testkit, so it enables the test support of what it
+# builds on; a test that selects one package then builds these packages as
+# the workspace's test build does.
 [dependencies]
-polylogue-engine.workspace = true
-polylogue-model.workspace = true
-polylogue-sources.workspace = true
-polylogue-store.workspace = true
+polylogue-engine = { workspace = true, features = ["faults"] }
+polylogue-model = { workspace = true, features = ["fixture"] }
+polylogue-sources = { workspace = true, features = ["fixture"] }
+polylogue-store = { workspace = true, features = ["faults", "fixture"] }
 serde_json.workspace = true
 tempfile.workspace = true
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true

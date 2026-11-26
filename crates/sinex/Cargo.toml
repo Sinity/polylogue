@@ -16,6 +16,7 @@ sinex-model = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
 crossbeam-channel.workspace = true
