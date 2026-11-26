@@ -55,15 +55,28 @@ pub fn delivered_activity() -> impl Strategy<Value = (Activity, Vec<File>, Sched
 }
 
 /// A schedule for `files`: each file whole or cut at up to two bytes
-/// anywhere, the pieces of all files written in any order that keeps each
+/// anywhere (half of them inside a multi-byte character, where the file has
+/// one), the pieces of all files written in any order that keeps each
 /// file's pieces in order, a store after every write, and after a store
 /// sometimes a restart or a rebuild. The chunk is either larger than any
 /// file or small enough that most files take several.
 pub fn schedule(files: &[File]) -> impl Strategy<Value = Schedule> + use<> {
     let lens: Vec<usize> = files.iter().map(|f| f.bytes.len()).collect();
-    let cuts = lens
+    let cuts = files
         .iter()
-        .map(|len| prop::collection::vec(0..=*len, 0..=2))
+        .map(|file| {
+            // The bytes that continue a character: a cut there splits it.
+            let inside: Vec<usize> = (0..file.bytes.len())
+                .filter(|&i| file.bytes[i] & 0xC0 == 0x80)
+                .collect();
+            let anywhere = (0..=file.bytes.len()).boxed();
+            let cut = if inside.is_empty() {
+                anywhere
+            } else {
+                prop_oneof![anywhere, prop::sample::select(inside)].boxed()
+            };
+            prop::collection::vec(cut, 0..=2)
+        })
         .collect::<Vec<_>>();
     (cuts, prop_oneof![Just(crate::WHOLE_FILES), 128u64..2048])
         .prop_flat_map(move |(cuts, chunk)| {

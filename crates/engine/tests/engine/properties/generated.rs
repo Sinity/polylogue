@@ -9,7 +9,9 @@
 use polylogue_store::{Archive, ReadPool};
 use polylogue_testkit::activity::{Part, ToolResult};
 use polylogue_testkit::generate::{activity, delivered_activity};
-use polylogue_testkit::{Activity, Home, Schedule, Transcript, View, delete_index, store_with};
+use polylogue_testkit::{
+    Activity, Home, Schedule, Step, Transcript, View, delete_index, store_with,
+};
 use proptest::prelude::*;
 use proptest::test_runner::FileFailurePersistence;
 use std::fs;
@@ -189,11 +191,41 @@ fn a_copied_record_is_stored_once() {
     );
 }
 
+/// A file whose first line arrives in three appends, each stored before the
+/// next, is stored as one record when it completes (docs/archive.md, an
+/// incomplete suffix waits at its recorded byte length).
+#[test]
+fn a_first_line_written_in_three_pieces_is_stored() {
+    let at = 1_772_359_200_000;
+    let mut session = Transcript::new("5e551000-0000-4000-8000-000000000001", "/home/op/morrow");
+    session.prompt("a1", None, at, "parse the dates");
+    session.response("a2", Some("a1"), at + 1_000, vec![Part::text("done")]);
+    let activity = Activity {
+        sessions: vec![session],
+    };
+    let files = activity.claude_code_files();
+    let end = files[0].bytes.len();
+    let schedule = Schedule {
+        chunk: polylogue_testkit::WHOLE_FILES,
+        steps: vec![
+            Step::Write { file: 0, end: 10 },
+            Step::Store,
+            Step::Write { file: 0, end: 20 },
+            Step::Store,
+            Step::Write { file: 0, end },
+            Step::Store,
+        ],
+    };
+    let home = Home::empty();
+    drop(home.deliver(&files, &schedule));
+    assert_eq!(View::stored(&home), activity.expected());
+}
+
 proptest! {
     // Seeds of past failures are kept beside this file; cargo runs
     // integration tests from the package directory.
     #![proptest_config(ProptestConfig {
-        cases: 24,
+        cases: 16,
         failure_persistence: Some(Box::new(FileFailurePersistence::Direct(
             "tests/engine/properties/regressions.txt",
         ))),

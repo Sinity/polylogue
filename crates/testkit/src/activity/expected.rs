@@ -2,7 +2,9 @@
 //! derived from the description alone.
 //!
 //! - A session is everything that states its ID; a sidechain is a session of
-//!   its own, kind `sidechain`, spawned by its main session.
+//!   its own, kind `sidechain`, spawned by its main session. A copied record
+//!   states the session it came from, so a file whose own records are all
+//!   sidechain records states no main session of its own.
 //! - A message is stored once, in the session that originated it: a copy in
 //!   a resume's file stores nothing new, and a read of the resume shows the
 //!   copied messages first, in the file's order.
@@ -86,13 +88,17 @@ impl Activity {
                 .filter(|line| !line.entry.sidechain)
                 .map(|line| format!("claude-code:{}", line.entry.uuid))
                 .collect();
-            sessions.push(SessionView {
-                id: main.clone(),
-                kind: SessionKind::Main,
-                cwd: vec![transcript.cwd.clone()],
-                messages: own,
-                read,
-            });
+            // A file whose own records are all sidechain records states no
+            // main session: only its sidechain and the sessions it copied.
+            if !own.is_empty() {
+                sessions.push(SessionView {
+                    id: main.clone(),
+                    kind: SessionKind::Main,
+                    cwd: vec![transcript.cwd.clone()],
+                    messages: own,
+                    read,
+                });
+            }
             if !side_own.is_empty() {
                 sessions.push(SessionView {
                     id: side.clone(),
