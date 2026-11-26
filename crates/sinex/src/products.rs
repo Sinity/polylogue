@@ -654,14 +654,15 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         8
                     } else {
                         match *product {
-                            "message" => 10,
+                            "message" => 11,
                             "request" | "restored_request" => 11,
-                            "session" | "link" | "parse_progress" => 8,
+                            "session" | "link" | "parse_progress" => 9,
                             "input" => 8,
-                            "document" | "event" | "background" | "repository" => 7,
-                            "fragment" => 5,
+                            "document" | "event" | "background" | "repository" => 8,
+                            "fragment" => 6,
                             "query_run" => 10,
-                            "tool_call" | "prefix_copy" | "prefix_member" | "query" => 3,
+                            "tool_call" | "prefix_copy" | "prefix_member" => 4,
+                            "query" => 3,
                             "query_run_outcome" => 2,
                             "attachment_binding" => 2,
                             "restored_history" => 1,
