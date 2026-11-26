@@ -497,7 +497,9 @@ fn link_statements_resolve_to_relations() {
         links
     };
     let some = |text: &str| Some(text.to_owned());
-    let expected_prefixes: &[(&str, Vec<(String, Option<String>, bool)>)] = &[
+    // A parent, its branch point and whether the prefix is copied.
+    type Prefix = (String, Option<String>, bool);
+    let expected_prefixes: &[(&str, Vec<Prefix>)] = &[
         ("test:p", vec![]),
         ("test:q", vec![]),
         (
