@@ -125,6 +125,7 @@ fn parser_versions_include_referenced_modules() {
             .filter_map(|entry| entry.split_once('='))
             .map(|(name, _)| {
                 name.strip_prefix("crate::")
+                    .or_else(|| name.strip_prefix("polylogue_sources::"))
                     .unwrap_or(name)
                     .trim_end_matches("::VERSION")
                     .to_owned()
@@ -156,6 +157,7 @@ fn parser_versions_include_referenced_modules() {
             }
             let source = std::fs::read_to_string(&path).unwrap();
             let mut test_only = false;
+            let mut references = String::new();
             for line in source.lines().map(str::trim) {
                 if line == "#[cfg(test)]" {
                     test_only = true;
@@ -167,14 +169,33 @@ fn parser_versions_include_referenced_modules() {
                 if line.starts_with("//") {
                     continue;
                 }
-                // Private children are versioned with their parent; public
-                // parser modules have their own entry in the origin.
+                // A declaration outside the macro must not omit a child.
                 if let Some(child) = line.strip_prefix("mod ").and_then(|s| s.strip_suffix(';'))
                     && child != "tests"
                 {
-                    files.push(path.with_extension("").join(child).with_extension("rs"));
+                    let child_path = path.with_extension("").join(child);
+                    let module = child_path
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .replace('/', "::");
+                    assert!(
+                        declared.contains(&module),
+                        "{}: parser version is missing module {module}",
+                        origin.name
+                    );
+                    files.push(child_path.with_extension("rs"));
                 }
-                for reference in line.split("crate::").skip(1) {
+                references.push_str(line);
+            }
+            for reference in references.split("crate::").skip(1) {
+                let names = reference.strip_prefix('{').map_or_else(
+                    || vec![reference],
+                    |group| group.split('}').next().unwrap().split(',').collect(),
+                );
+                for reference in names {
+                    let reference = reference.trim();
                     let module: String = reference
                         .chars()
                         .take_while(|c| c.is_ascii_lowercase() || *c == '_')

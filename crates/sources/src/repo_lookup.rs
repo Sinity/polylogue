@@ -7,6 +7,8 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 3;
 
+parser_modules! {}
+
 use crate::parse::{DocumentParser, Output, Parse};
 use crate::{RecordOutcome, Records};
 use polylogue_model::{Json, RepoLookup};

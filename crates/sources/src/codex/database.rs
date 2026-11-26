@@ -12,6 +12,8 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 4;
 
+parser_modules! {}
+
 use super::session_id;
 use crate::lines::Record;
 use crate::origin::Root;

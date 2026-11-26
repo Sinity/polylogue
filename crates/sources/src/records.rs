@@ -3,6 +3,8 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
 
+parser_modules! {}
+
 use crate::fields::{Fields, inspect};
 use polylogue_model::{CountMismatch, Json, RecordCounts, RecordOutcome};
 

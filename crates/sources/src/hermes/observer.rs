@@ -1,5 +1,10 @@
 //! ATOF runtime records: each becomes one event, with its run and scope IDs
 //! in the event data. An event names a session only when the record does.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::{Event, Json, Parse, Sink, lines};
 use crate::RecordOutcome;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};

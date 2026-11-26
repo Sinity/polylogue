@@ -21,6 +21,8 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
 
+parser_modules! {}
+
 use polylogue_model::{MessageId, Role, SessionId};
 use serde::Serialize;
 

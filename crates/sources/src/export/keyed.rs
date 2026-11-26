@@ -1,4 +1,9 @@
 //! A named message map: stream its values and keep surrounding metadata.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::*;
 use polylogue_model::Json;
 use serde::de::{Error as _, MapAccess};

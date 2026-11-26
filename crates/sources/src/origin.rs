@@ -137,7 +137,6 @@ pub struct ParserModule {
     pub version: u32,
 }
 
-// Private child modules share their parent's VERSION.
 macro_rules! modules {
     (@entry $name:expr, $module:path) => {
         ParserModule {
@@ -145,19 +144,25 @@ macro_rules! modules {
             version: { use $module as parser; parser::VERSION },
         }
     };
-    ($($module:path),* $(,)?) => { &[
-        modules!(@entry "parse", crate::parse),
-        modules!(@entry "lines", crate::lines),
-        modules!(@entry "records", crate::records),
-        modules!(@entry "fields", crate::fields),
-        modules!(@entry "document", crate::document),
-        modules!(@entry "time", crate::time),
-        modules!(@entry "command", polylogue_model::command),
-        modules!(@entry "content_ids", crate::content_ids),
-        modules!(@entry "chain_names", crate::chain_names),
-        modules!(@entry "export", crate::export),
-        $(modules!(@entry concat!(stringify!($module), "::VERSION"), $module)),*
-    ] };
+    ($($module:path),* $(,)?) => { modules!($($module),*;) };
+    ($($module:path),*; $($external:path),* $(,)?) => { parser_modules!(@join
+        &[
+            modules!(@entry "parse", crate::parse),
+            modules!(@entry "lines", crate::lines),
+            modules!(@entry "records", crate::records),
+            modules!(@entry "fields", crate::fields),
+            modules!(@entry "document", crate::document),
+            modules!(@entry "time", crate::time),
+            modules!(@entry "command", polylogue_model::command),
+            modules!(@entry "content_ids", crate::content_ids),
+            modules!(@entry "chain_names", crate::chain_names),
+            modules!(@entry "export", crate::export),
+            $(modules!(@entry concat!(stringify!($module), "::VERSION"), $module),)*
+            $(modules!(@entry concat!(stringify!($external), "::VERSION"), $external)),*
+        ],
+        crate::export::MODULES,
+        $({ use $module as parser; parser::MODULES }),*
+    ) };
 }
 
 /// One origin's whole declaration: where its files live, how they are
@@ -852,7 +857,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         name: crate::polylogue_bundle::ORIGIN,
         harness_prefixes: &[],
-        modules: modules!(crate::polylogue_bundle, polylogue_model::bundle),
+        modules: modules!(crate::polylogue_bundle; polylogue_model::bundle),
         support: Support::Parsed,
         arrival: Arrival::Import,
         route: Route::Copy,

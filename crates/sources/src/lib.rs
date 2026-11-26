@@ -9,6 +9,37 @@
 #[cfg(test)]
 extern crate self as polylogue_sources;
 
+// A parser's child declarations also collect their row versions.
+macro_rules! parser_modules {
+    (@join $($part:expr),* $(,)?) => { &{
+        const LEN: usize = 0 $(+ ($part).len())*;
+        let parts: &[&[crate::origin::ParserModule]] = &[$($part),*];
+        let mut modules = [crate::origin::ParserModule { name: "", version: 0 }; LEN];
+        let mut next = 0;
+        let mut part = 0;
+        while part < parts.len() {
+            let mut index = 0;
+            while index < parts[part].len() {
+                modules[next] = parts[part][index];
+                next += 1;
+                index += 1;
+            }
+            part += 1;
+        }
+        modules
+    } };
+    ($($visibility:vis mod $module:ident;)*) => {
+        $($visibility mod $module;)*
+        pub(crate) const MODULES: &[crate::origin::ParserModule] = parser_modules!(@join
+            &[$(crate::origin::ParserModule {
+                name: concat!(module_path!(), "::", stringify!($module), "::VERSION"),
+                version: $module::VERSION,
+            }),*],
+            $($module::MODULES),*
+        );
+    };
+}
+
 pub mod ai_studio;
 pub mod aider;
 pub mod antigravity;

@@ -3,6 +3,14 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
+parser_modules! {
+    mod objects;
+    mod state;
+    mod path;
+    mod keyed;
+    mod nested;
+}
+
 use crate::document::{BYTE_ORDER_MARK, after_byte_order_mark};
 use serde::Deserialize;
 use serde::de::{DeserializeSeed, SeqAccess, Visitor};
@@ -103,16 +111,11 @@ pub struct ScanStats {
     pub peak_element_bytes: usize,
 }
 
-mod objects;
-pub(crate) use objects::{FieldShape, scan_objects};
-mod state;
-pub use state::MemoryState;
-mod path;
-pub use path::scan_path;
-mod keyed;
 pub use keyed::scan_map;
-mod nested;
 pub use nested::{scan_array_or_nested, scan_nested, scan_nested_unique};
+pub(crate) use objects::{FieldShape, scan_objects};
+pub use path::scan_path;
+pub use state::MemoryState;
 
 /// Calls `item` once per complete element. Only the current raw element is
 /// buffered. A callback error stops decoding; the outer document is valid only

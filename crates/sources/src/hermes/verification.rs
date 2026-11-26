@@ -1,4 +1,9 @@
 //! Hermes's verification ledger contains observations, not conversation turns.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::{Event, Json, Parse, Sink, lines};
 use crate::RecordOutcome;
 use crate::export::{ExportParser, ExportState, Input, ItemSink, ScanError, ScanStats};

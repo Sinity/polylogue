@@ -12,6 +12,8 @@ use polylogue_model::{
 use std::path::Path;
 
 pub const VERSION: u32 = 1;
+
+parser_modules! {}
 pub const ORIGIN: &str = "codex-cloud";
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
