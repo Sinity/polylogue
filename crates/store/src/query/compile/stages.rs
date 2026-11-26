@@ -127,7 +127,7 @@ impl<'a> Compiler<'a> {
                 let s = &scope.a.s;
                 let unpriced = |sessions: &str| crate::measure::unpriced_in(sessions);
                 let partial = match (scope.unit, field) {
-                    (Unit::Turns, "cost") => Some(format!("NOT {}.cost_complete", scope.a.r)),
+                    (Unit::Turns, "cost") => Some(scope.a.expand("NOT {r}.cost_complete")),
                     (Unit::Sessions, "cost") => Some(unpriced(&format!("SELECT {s}.pk"))),
                     (Unit::Sessions, "tree_cost") => {
                         let tree = fields::descendants(s);
