@@ -977,7 +977,7 @@ pub fn first_seen_of(m: &str) -> String {
     format!(
         "(SELECT min(fr.seen_at) FROM shown_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
-         AND fr.length > fs.source_start AND fr.length >= fs.source_end \
+         AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
          WHERE fs.message_pk = {m}.pk)"
     )
 }
@@ -1004,7 +1004,7 @@ fn session_first_seen(a: &Aliases) -> String {
         "(SELECT min(fr.seen_at) FROM message fm JOIN shown_message_parse fs ON fs.message_pk = fm.pk \
          JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
-         AND fr.length > fs.source_start AND fr.length >= fs.source_end \
+         AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
          WHERE fm.session_pk = {}.pk)",
         a.s
     )

@@ -14,7 +14,7 @@ row! {
         source_end: u64,
     }
     statements {
-        const OF_DOCUMENT = "SELECT i.id AS input, ds.chain, ds.source_end FROM document d
+        const OF_DOCUMENT = "SELECT i.id AS input, ds.chain, ds.source_start + ds.source_length AS source_end FROM document d
             JOIN document_parse ds ON ds.document_id=d.id AND ds.input_pk=d.input_pk AND ds.chain=d.source_chain
             JOIN input_ref i ON i.pk=ds.input_pk WHERE d.id=?1";
     }

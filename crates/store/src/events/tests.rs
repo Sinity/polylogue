@@ -13,7 +13,7 @@ fn unreadable_event_coordinates_are_stored_value_failures() {
             Some("negative event source coordinate"),
         ),
         (
-            "UPDATE event_parse SET source_start=-1,source_end=1",
+            "UPDATE event_parse SET source_start=-1,source_length=2",
             3,
             None,
         ),

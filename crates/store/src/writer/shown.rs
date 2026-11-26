@@ -626,7 +626,7 @@ impl<'c> Work<'_, 'c> {
             let rows = self
                 .tx()
                 .prepare_cached(
-                    "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_end,r.seq,
+                    "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.seq,
                          r.record_position,r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
                          r.content_group,r.content_start,r.content_length
                      FROM message_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.message_id=?1",
@@ -1473,7 +1473,7 @@ impl<'c> Work<'_, 'c> {
         Ok(self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.seq,r.source_start,r.source_end,
+                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.seq,r.source_start,r.source_start+r.source_length,
                      r.content_group,r.content_start,r.content_length,r.data_length
                  FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.event_id=?1",
             )?
@@ -1848,7 +1848,7 @@ impl<'c> Work<'_, 'c> {
         let mut found = self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.input_pk,r.chain,r.route,r.source_time,r.hash,r.source_start,r.source_end
+                "SELECT i.id,r.input_pk,r.chain,r.route,r.source_time,r.hash,r.source_start,r.source_start+r.source_length
                  FROM document_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.document_id=?1",
             )?
             .query_map([id], |r| {
