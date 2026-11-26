@@ -842,7 +842,7 @@ fn latest_delivery_event(r: &str, col: &str) -> String {
 pub(crate) fn deliveries_outcome(a: &Aliases) -> String {
     format!(
         "COALESCE({}, 'prepared')",
-        latest_delivery_event(&a.row, "what")
+        latest_delivery_event(&a.row, "outcome")
     )
 }
 

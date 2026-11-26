@@ -265,10 +265,10 @@ row! {
 }
 
 row! {
-    /// A path's latest observation, its input's format and latest revision.
+    /// A path's latest observation, its input's origin and latest revision.
     struct Observation {
         input: String,
-        format: String,
+        origin: String,
         class: String,
         device: Option<i64>,
         inode: Option<i64>,
@@ -1775,7 +1775,7 @@ impl Reader<'_> {
         for o in observed {
             let f = [o.device, o.inode, o.size, o.mtime_ns, o.ctime_ns];
             let (input_id, format, chain, length, path_bytes) =
-                (o.input, o.format, o.chain, o.length, o.path_bytes);
+                (o.input, o.origin, o.chain, o.length, o.path_bytes);
             let path = String::from_utf8_lossy(&path_bytes).into_owned();
             let gone = crate::input_rows::ObservationClass::from_name(&o.class)
                 == Some(crate::input_rows::ObservationClass::Deleted);
