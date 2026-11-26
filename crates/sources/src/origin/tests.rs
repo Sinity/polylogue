@@ -189,6 +189,26 @@ fn parser_versions_include_referenced_modules() {
                 }
                 references.push_str(line);
             }
+            for child in source
+                .lines()
+                .filter_map(|line| line.trim().strip_prefix("pub mod ")?.strip_suffix(';'))
+            {
+                if references.contains(&format!("{child}::")) {
+                    let child_path = path.with_extension("").join(child);
+                    let module = child_path
+                        .strip_prefix(&root)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .replace('/', "::");
+                    assert!(
+                        declared.contains(&module),
+                        "{}: parser version is missing module {module}",
+                        origin.name
+                    );
+                    files.push(child_path.with_extension("rs"));
+                }
+            }
             for reference in references.split("crate::").skip(1) {
                 let names = reference.strip_prefix('{').map_or_else(
                     || vec![reference],
