@@ -506,6 +506,19 @@ fn work(
             }
             continue;
         };
+        let _doing = match &task {
+            Task::Range(job) => polylogue_store::activity::doing_on(
+                "parsing a file",
+                job.path.display().to_string(),
+            ),
+            Task::Chain { plan, .. } => {
+                polylogue_store::activity::doing_on("parsing a chain again", plan.input.id.clone())
+            }
+            Task::Capture(capture) => polylogue_store::activity::doing_on(
+                "storing a captured rollout",
+                capture.path.display().to_string(),
+            ),
+        };
         match task {
             Task::Range(job) => {
                 let size = job.bytes();

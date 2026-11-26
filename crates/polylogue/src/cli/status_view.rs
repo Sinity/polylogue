@@ -18,6 +18,11 @@ const LABEL: usize = 11;
 const BAR: usize = 30;
 /// Log records the view shows; `--log` prints every kept one.
 const RECENT: usize = 5;
+/// Seconds without progress after which a busy thread says so.
+const PROGRESS_SHOWN_AFTER: f64 = 10.;
+/// Seconds without progress after which a busy thread is stalled
+/// (docs/operations.md, the halt state).
+const STALLED_AFTER: f64 = 600.;
 
 /// How the view is drawn.
 pub(crate) struct View<'a> {
@@ -52,7 +57,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         out.push_str(&view.cut_to(line, view.width.saturating_sub(LABEL)));
         out.push('\n');
     }
-    let sections: [(&str, Vec<String>); 13] = [
+    let sections: [(&str, Vec<String>); 14] = [
         ("ARCHIVE", archive(status, view)),
         (
             "READING",
@@ -78,6 +83,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         ("PENDING", pending(status, view)),
         ("CAPTURE", capture(status, view)),
         ("UNUSED", unused(status)),
+        ("THREADS", threads(status, view)),
         ("RECENT", recent(status, view)),
         (
             "NOTES",
@@ -835,6 +841,54 @@ fn unused(status: &Answer) -> Vec<String> {
         line.push_str(&format!(" · {more} more in --json"));
     }
     vec![line]
+}
+
+/// Each busy daemon thread: what it is doing, outermost first, for how
+/// long, and how long since it last made progress when that is a while
+/// (stalled, marked, after [`STALLED_AFTER`]); under it the statements it
+/// has run for a few seconds, running time first since the SQL is cut.
+fn threads(status: &Answer, view: &View<'_>) -> Vec<String> {
+    let seconds = |seconds: f64| short_duration((seconds * 1000.) as i64);
+    let mut lines = Vec::new();
+    for thread in &status.threads {
+        let doing: Vec<String> = thread
+            .doing
+            .iter()
+            .map(|work| match &work.subject {
+                Some(subject) => format!("{} ({})", work.what, clean(subject)),
+                None => work.what.clone(),
+            })
+            .collect();
+        let mut line = match thread.doing.last() {
+            Some(innermost) => format!(
+                "{}  {}  {}",
+                clean(&thread.name),
+                view.bold(&doing.join(" › ")),
+                seconds(innermost.seconds)
+            ),
+            None => format!("{}  {}", clean(&thread.name), view.dim("no work recorded")),
+        };
+        match thread.seconds_since_progress {
+            Some(since) if since >= STALLED_AFTER => line.push_str(&format!(
+                " · {}",
+                view.warning_text(&format!("stalled, no progress for {}", seconds(since)))
+            )),
+            Some(since) if since >= PROGRESS_SHOWN_AFTER => {
+                line.push_str(&format!(" · no progress for {}", seconds(since)));
+            }
+            _ => {}
+        }
+        lines.push(line);
+        for statement in &thread.statements {
+            lines.push(format!(
+                "  {} on the {} connection: {}",
+                view.warning_text(&format!("running {}", seconds(statement.seconds))),
+                statement.connection,
+                clean(&statement.sql)
+            ));
+        }
+    }
+    lines
 }
 
 /// The newest log records, warnings and errors marked. While an index is

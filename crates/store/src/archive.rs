@@ -688,6 +688,7 @@ pub fn open_write(path: &Path, cache_mib: i64) -> Result<Connection> {
             | OpenFlags::SQLITE_OPEN_URI,
     )?;
     tune(&conn)?;
+    crate::activity::trace_statements(&conn, crate::activity::Connection::Writer);
     crate::sql_functions::register_source_alias(&conn)?;
     writer_settings(&conn, cache_mib)?;
     conn.pragma_update(None, "wal_autocheckpoint", WAL_AUTOCHECKPOINT)?;
@@ -730,6 +731,7 @@ pub(crate) fn open_archive_writer(archive: &Archive) -> Result<Connection> {
     )?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.pragma_update(Some("temp"), "cache_size", -1024)?;
+    crate::activity::trace_statements(&conn, crate::activity::Connection::ArchiveWriter);
     Ok(conn)
 }
 
@@ -755,6 +757,7 @@ fn open_read_connection(path: &Path, recover: bool) -> Result<Connection> {
         true,
     )?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    crate::activity::trace_statements(&conn, crate::activity::Connection::Reader);
     if let Some(limit) = crate::read::limit::ReadLimit::current() {
         limit.install(&conn)?;
     }

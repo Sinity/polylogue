@@ -285,3 +285,62 @@ fn status_answers_while_every_request_place_is_held() {
         .unwrap_or_else(|| panic!("{:?}", answer.outcome));
     assert_eq!(status["pid"], std::process::id());
 }
+
+/// `threads` lists each daemon thread that is doing something, with what it
+/// is doing, outermost first, and how long since it made progress; a thread
+/// whose work ended is not listed (docs/operations.md#status).
+#[test]
+fn status_lists_what_each_busy_thread_is_doing() {
+    use std::sync::mpsc::channel;
+    const THREAD: &str = "status-test-busy";
+    let daemon = crate::test_daemon::start("synthetic source");
+    let threads = || {
+        let answer =
+            crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&daemon.daemon);
+        let value = answer.value().expect("status answers").clone();
+        serde_json::from_value::<crate::protocol::status::Answer>(value)
+            .unwrap()
+            .threads
+            .into_iter()
+            .find(|thread| thread.name == THREAD)
+    };
+    let (busy_tx, busy) = channel::<()>();
+    let (finish, finish_rx) = channel::<()>();
+    let (idle_tx, idle) = channel::<()>();
+    let (exit, exit_rx) = channel::<()>();
+    let worker = std::thread::Builder::new()
+        .name(THREAD.into())
+        .spawn(move || {
+            {
+                let _outer = polylogue_store::activity::doing("building the index");
+                let _inner = polylogue_store::activity::doing_on("indexing", "sessions");
+                busy_tx.send(()).unwrap();
+                finish_rx.recv().unwrap();
+            }
+            idle_tx.send(()).unwrap();
+            exit_rx.recv().unwrap();
+        })
+        .unwrap();
+    busy.recv().unwrap();
+    let busy = threads().expect("a busy thread is listed");
+    assert_eq!(
+        (
+            busy.doing
+                .iter()
+                .map(|work| (work.what.as_str(), work.subject.as_deref()))
+                .collect::<Vec<_>>(),
+            busy.seconds_since_progress.is_some(),
+            busy.statements,
+        ),
+        (
+            vec![("building the index", None), ("indexing", Some("sessions"))],
+            true,
+            Vec::new(),
+        )
+    );
+    finish.send(()).unwrap();
+    idle.recv().unwrap();
+    assert_eq!(threads(), None, "an idle thread is not listed");
+    exit.send(()).unwrap();
+    worker.join().unwrap();
+}

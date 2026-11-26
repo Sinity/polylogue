@@ -216,6 +216,7 @@ pub(super) fn answer(
         #[cfg(feature = "sinex")]
         primary,
         recent_log: recent_log(whole_log),
+        threads: polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER),
     };
     capture_note(
         d,
@@ -340,6 +341,7 @@ fn unread(
         #[cfg(feature = "sinex")]
         primary: None,
         recent_log: recent_log(whole_log),
+        threads: polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER),
     };
     let mut answer = crate::protocol::read(status, &freshness);
     if let command_surface::Outcome::Degraded { missing, .. } = &mut answer.outcome {

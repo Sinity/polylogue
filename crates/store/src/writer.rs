@@ -372,6 +372,9 @@ const QUEUE: usize = 256;
 /// keep parsing while the writer commits, instead of the two alternating.
 const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 
+/// The writer thread's name; its busy time is read from its activity.
+pub(crate) const WRITER_THREAD: &str = "polylogue-writer";
+
 /// The writer's index connection: the private build file while a build runs,
 /// otherwise `index.db`, with a standalone archive's register attached.
 fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
@@ -494,7 +497,7 @@ impl Writer {
             build_job: None,
         };
 
-        let handle = polylogue_model::spawn_named("polylogue-writer", move || inner.run(&rx))?;
+        let handle = polylogue_model::spawn_named(WRITER_THREAD, move || inner.run(&rx))?;
         let follower = stream_source
             .map(|sinex| follow::Follower::start(sinex, WriterSender(queue.clone()), archive))
             .transpose()?;
@@ -1028,6 +1031,7 @@ impl Inner {
                     Ok(first) => first,
                     Err(TryRecvError::Empty) => {
                         let _busy = crate::timing::start_stage(crate::timing::Stage::Writer);
+                        let _doing = crate::activity::doing("building the index");
                         self.advance_build();
                         continue;
                     }
@@ -1040,6 +1044,7 @@ impl Inner {
                 }
             };
             let _busy = crate::timing::start_stage(crate::timing::Stage::Writer);
+            let _doing = crate::activity::doing("writing");
             self.serve_users();
             let mut stopping = false;
             let mut group = Vec::new();
@@ -1635,7 +1640,10 @@ impl Inner {
         let Some(mut job) = self.build_job.take() else {
             return;
         };
-        match self.until_stopped(|inner| inner.build_step(&mut job)) {
+        job.show_step();
+        let stepped = self.until_stopped(|inner| inner.build_step(&mut job));
+        job.hide_step();
+        match stepped {
             Ok(Some(false)) => self.build_job = Some(job),
             Ok(Some(true)) => job.finish(Ok(())),
             Ok(None) => job.finish(Err(StoreError::Stopped)),

@@ -92,6 +92,7 @@ impl Progress {
             return;
         }
         self.files += 1;
+        polylogue_store::activity::progressed();
         engine.archive.record_build_count(
             STORING_FILES,
             StepCount {

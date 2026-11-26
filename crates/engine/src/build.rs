@@ -200,6 +200,8 @@ impl Prepare {
                 continue;
             };
             let (input, length) = (plan.input.clone(), plan.size);
+            let _doing =
+                polylogue_store::activity::doing_on("reading a stored file", input.id.clone());
             let admitted = self.admission.admit(
                 length.min(self.chunk) * PREPARED_PER_INPUT_BYTE + length / SCRATCH_DIVISOR,
                 || self.abandoned(),

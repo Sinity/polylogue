@@ -60,6 +60,7 @@ pub use identical_chains::{
     ChainLayout, ChainLayouts, PrefixCopies, PrefixCopy, ReadingCopy, SharedPrefixes,
     StoredParseState,
 };
+pub mod activity;
 pub mod alternates;
 pub mod schema;
 pub mod schema_inputs;
