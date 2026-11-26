@@ -56,7 +56,7 @@ fn a_deliberate_index_rebuild_keeps_authored_rows_and_vectors() {
     drop(index);
     let queries = [
         "SELECT * FROM annotation ORDER BY id",
-        "SELECT * FROM annotation_link ORDER BY record,role,ref",
+        "SELECT * FROM annotation_link ORDER BY annotation,role,ref",
         "SELECT * FROM revision_state ORDER BY id",
     ];
     let before: Vec<_> = queries.iter().map(|sql| rows(&archive_conn, sql)).collect();

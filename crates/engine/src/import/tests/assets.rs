@@ -161,7 +161,7 @@ fn duplicate_zip_member_content_keeps_each_member_association() {
         assert_eq!(
             w.count(&format!(
                 "SELECT count(*) AS n FROM a.observation_container \
-                 WHERE member_index = {index} AND path_bytes = CAST('{name}' AS BLOB)"
+                 WHERE member_position = {index} AND path_bytes = CAST('{name}' AS BLOB)"
             )),
             1,
             "{name}"

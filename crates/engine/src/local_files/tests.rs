@@ -35,7 +35,7 @@ fn recorded_directory_captures_original_assets_and_reports_missing_and_unresolve
             .unwrap(),
         b"original image"
     );
-    let rows=r.query("SELECT DISTINCT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.format='tool-context' AND CAST(o.path_bytes AS TEXT) LIKE 'codex-local-references/%'",&[]).unwrap();
+    let rows=r.query("SELECT DISTINCT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.origin='tool-context' AND CAST(o.path_bytes AS TEXT) LIKE 'codex-local-references/%'",&[]).unwrap();
     let mut statuses = Vec::new();
     for row in rows {
         let id = row["input"].as_str().unwrap();
@@ -68,7 +68,7 @@ fn every_reference_after_four_thousand_is_still_reported() {
     let p = e.run_pass().unwrap();
     assert!(p.errors.is_empty(), "{p:?}");
     let reader = e.reads.reader().unwrap();
-    let rows=reader.query("SELECT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.format='tool-context' AND CAST(o.path_bytes AS TEXT)='codex-local-references/codex:rollout:many-native@test-machine.jsonl'",&[]).unwrap();
+    let rows=reader.query("SELECT o.input FROM a.observation o JOIN a.input i ON i.id=o.input WHERE i.origin='tool-context' AND CAST(o.path_bytes AS TEXT)='codex-local-references/codex:rollout:many-native@test-machine.jsonl'",&[]).unwrap();
     assert_eq!(rows.len(), 1);
     let input = rows[0]["input"].as_str().unwrap();
     let progress = reader.input_progress(input).unwrap().unwrap();
@@ -118,7 +118,7 @@ fn reopen_observes_local_references_after_raw_commit_before_parse() {
                 "codex:rollout:interrupted-native@test-machine"
             );
             assert_eq!(
-                w.count("SELECT count(*) AS n FROM a.input WHERE format='codex-local-file'"),
+                w.count("SELECT count(*) AS n FROM a.input WHERE origin='codex-local-file'"),
                 0
             );
         }
@@ -181,7 +181,7 @@ fn a_loop_without_sources_reads_no_referenced_file() {
     );
     assert_eq!(
         w.count(
-            "SELECT count(*) AS n FROM a.input WHERE format IN ('codex-local-file','tool-context')"
+            "SELECT count(*) AS n FROM a.input WHERE origin IN ('codex-local-file','tool-context')"
         ),
         0
     );
@@ -251,14 +251,14 @@ fn fifo_local_reference_child() {
     assert_eq!(
         reader
             .query(
-                "SELECT count(*) AS n FROM a.input WHERE format='codex-local-file'",
+                "SELECT count(*) AS n FROM a.input WHERE origin='codex-local-file'",
                 &[]
             )
             .unwrap()[0]["n"],
         0
     );
     let manifests = reader
-        .query("SELECT id FROM a.input WHERE format='tool-context'", &[])
+        .query("SELECT id FROM a.input WHERE origin='tool-context'", &[])
         .unwrap();
     assert_eq!(manifests.len(), 1);
     let id = manifests[0]["id"].as_str().unwrap();

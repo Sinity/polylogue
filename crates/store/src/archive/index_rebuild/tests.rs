@@ -70,7 +70,7 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
     let archive_conn = open_archive_writer(&archive).unwrap();
     archive_conn
         .execute(
-            "INSERT INTO input(id,format) VALUES ('kept-input','synthetic')",
+            "INSERT INTO input(id,origin) VALUES ('kept-input','synthetic')",
             [],
         )
         .unwrap();
@@ -143,7 +143,7 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
     let archive_conn = open_read(&archive.archive_db()).unwrap();
     assert_eq!(
         archive_conn
-            .query_row("SELECT format FROM input WHERE id='kept-input'", [], |r| {
+            .query_row("SELECT origin FROM input WHERE id='kept-input'", [], |r| {
                 r.get::<_, String>(0)
             })
             .unwrap(),

@@ -1449,9 +1449,9 @@ impl Reader<'_> {
             messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
             documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
             tool_calls: count("SELECT n FROM main.row_count WHERE name = 'tool_call'")?,
-            inputs: count("SELECT n FROM source_row_count WHERE name = 'input'")?,
-            revisions: count("SELECT n FROM source_row_count WHERE name = 'revision'")?,
-            stored_bytes: count("SELECT n FROM source_row_count WHERE name = 'stored_bytes'")?,
+            inputs: count("SELECT count FROM source_row_count WHERE name = 'input'")?,
+            revisions: count("SELECT count FROM source_row_count WHERE name = 'revision'")?,
+            stored_bytes: count("SELECT count FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
             unused,
             search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
@@ -1715,7 +1715,7 @@ impl Reader<'_> {
             )
         };
         let sql = format!(
-            "SELECT o.input, i.format, o.class, o.device, o.inode,
+            "SELECT o.input, i.origin, o.class, o.device, o.inode,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.length ELSE o.size END AS size,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.mtime_ns ELSE o.mtime_ns END AS mtime_ns,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.ctime_ns ELSE o.ctime_ns END AS ctime_ns,
@@ -1899,7 +1899,7 @@ pub(crate) fn retitled_sessions(
     for root in crate::annotations::changed_roots(conn, after)? {
         sessions.extend(conn.values::<String>(
             "SELECT DISTINCT substr(l.ref, 9) FROM source_annotation a \
-             JOIN source_annotation_link l ON l.record = a.id AND l.role = 'about' \
+             JOIN source_annotation_link l ON l.annotation = a.id AND l.role = 'about' \
              WHERE a.root = ?1 AND a.kind = 'title' AND l.ref LIKE 'session:%'",
             [&root],
         )?);

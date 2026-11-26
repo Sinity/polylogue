@@ -140,7 +140,7 @@ impl Compiler<'_> {
             shape,
             statements: Statements::Derived(DerivedRows {
                 rows: format!(
-                    "SELECT {} FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param} ORDER BY j.key",
+                    "SELECT {} FROM source_saved_rows k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param} ORDER BY j.key",
                     select.join(", ")
                 ),
                 count: None,
@@ -163,7 +163,7 @@ impl Compiler<'_> {
             why: vec![],
             why_defaults: vec![],
             why_of: format!(
-                "SELECT count(*) FROM source_kept_result k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param}"
+                "SELECT count(*) FROM source_saved_rows k, json_each(k.rows_json, '$.{part}') j WHERE k.id={id_param}"
             ),
             page_size: opts.page_size.unwrap_or(default_page_size(unit, shape)),
             near: None,

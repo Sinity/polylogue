@@ -31,7 +31,7 @@ const CURRENT: &str = "kept_with_database_rows";
 /// read the input as, else the input's own.
 fn chain_rows(chains: &str) -> String {
     let database = crate::source::database_original("c.input");
-    let format = crate::source::parse_format("c.input", "i.format");
+    let format = crate::source::parse_format("c.input", "i.origin");
     format!(
         "SELECT c.input, c.chain,
             CASE WHEN {database} THEN 'export-file' ELSE

@@ -57,7 +57,7 @@ fn chains_behind() -> String {
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
-                COALESCE(f.format, i.format) AS format,
+                COALESCE(f.format, i.origin) AS format,
                 COALESCE(f.path_bytes, o.path_bytes),
                 COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.parse_version, p.status, p.at_length, p.reason, p.stopped_attempt,
                 COALESCE(f.path_bytes, o.path_bytes)
@@ -75,7 +75,7 @@ fn chains_behind() -> String {
                     AND p.parsed_upto < c.length)
                 OR (?2 AND p.status IN ('refused','failed') AND p.at_length=c.length)
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
-                    WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
+                    WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.origin)
                       AND json_extract(expected.value, '$[1]') IS NOT p.parse_version)))
             "#
     )
@@ -161,7 +161,7 @@ impl Reader<'_> {
     pub fn newest_parse_bytes(&self, versions: &[(String, String)]) -> Result<(u64, u64)> {
         let token = self.scope_token();
         let database = crate::source::database_original("c.input");
-        let format = crate::source::parse_format("i.id", "i.format");
+        let format = crate::source::parse_format("i.id", "i.origin");
         let progress = self.conn()?.query_row(
             &format!(
                 "WITH latest AS (

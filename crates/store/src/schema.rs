@@ -167,7 +167,7 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 ];
 
 /// The register format version.
-pub const ARCHIVE_VERSION: u32 = 7;
+pub const ARCHIVE_VERSION: u32 = 8;
 
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 16;

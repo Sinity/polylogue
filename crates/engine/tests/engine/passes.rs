@@ -508,7 +508,7 @@ fn a_zip_export_imports_its_conversations_and_keeps_its_other_files() {
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].text(), "look at this");
     assert_eq!(
-        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'export-file'"),
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE origin = 'export-file'"),
         2,
         "the original ZIP and image are kept as bytes"
     );
