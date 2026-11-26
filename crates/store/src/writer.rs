@@ -461,6 +461,12 @@ impl WriterSender {
         self.0.commits.subscribe()
     }
 
+    /// The logical index commits made since the writer started; see
+    /// [`crate::completion::CommitEvents::made`].
+    pub fn commits_made(&self) -> u64 {
+        self.0.commits.made()
+    }
+
     /// Subscribe before the caller's first index read; the callback only
     /// queues a wake in its existing inbox.
     pub fn completion_commits_with_wake(

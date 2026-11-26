@@ -202,7 +202,7 @@ impl Operation for Status {
     type Reply = protocol::status::Answer;
     /// Status reads the daemon's snapshot and its own state and takes the
     /// reserved reader if any; vector counts and verification are slow work
-    /// at idle priority with no default deadline.
+    /// at idle priority with no default deadline, and so is a wait.
     fn policy(arguments: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
         if arguments.manifest.is_some() && !arguments.verify {
             return Err(Failure::bad_request("--manifest requires --verify"));
@@ -211,6 +211,14 @@ impl Operation for Status {
             return Err(Failure::bad_request(
                 "--line cannot be combined with --verify or --vectors",
             ));
+        }
+        if arguments.wait.is_some() && (arguments.watch || arguments.verify) {
+            return Err(Failure::bad_request(
+                "--wait cannot be combined with --watch or --verify",
+            ));
+        }
+        if arguments.after.is_some() && arguments.wait.is_none() {
+            return Err(Failure::bad_request("--after needs --wait"));
         }
         if arguments.watch && (arguments.line || arguments.verify) {
             return Err(Failure::bad_request(
@@ -231,6 +239,12 @@ impl Operation for Status {
             Policy {
                 bound: Bound::CallerOnly,
                 lane: Lane::Background,
+                ..Policy::READ
+            }
+        } else if arguments.wait.is_some() {
+            Policy {
+                bound: Bound::CallerOnly,
+                lane: Lane::Interactive,
                 ..Policy::READ
             }
         } else {
@@ -259,7 +273,15 @@ impl Operation for Status {
                         .map_err(|error| error.to_string())
                 })
         });
-        let mut status = status::answer(call.daemon, vectors, arguments.log);
+        let mut status = match &arguments.wait {
+            Some(wait) => {
+                let wait = super::line::listing_wait(wait, call.caller.channel())?;
+                status::wait(call, wait, arguments.after, || {
+                    status::answer(call.daemon, vectors.clone(), arguments.log)
+                })?
+            }
+            None => status::answer(call.daemon, vectors, arguments.log),
+        };
         if arguments.verify
             && status
                 .value()
@@ -497,7 +519,8 @@ impl Operation for Import {
         }
         Ok(match wait.recv() {
             Ok(Ok(report)) => {
-                super::import_answer(report).map(|r| protocol::import::Answer::Files(Box::new(r)))
+                super::import_answer(report, d.archive.index_build())
+                    .map(|r| protocol::import::Answer::Files(Box::new(r)))
             }
             Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
             Ok(Err(polylogue_engine::ImportFailure::Import(

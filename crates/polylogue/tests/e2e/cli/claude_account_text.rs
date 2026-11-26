@@ -4,11 +4,14 @@ use serde_json::json;
 use polylogue_model::bundle::Record;
 use polylogue_model::read::ReadPage;
 
-pub(super) fn import_report(out: &Output) -> polylogue_engine::ImportReport {
+/// The report of an import that succeeded, once the daemon has caught up
+/// with it, so what follows reads the imported inputs whole.
+pub(super) fn import_report(env: &crate::Fixture, out: &Output) -> polylogue_engine::ImportReport {
     assert!(out.status.success(), "{out:?}");
     let report: polylogue_engine::ImportReport = serde_json::from_value(json(out)).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
+    wait_caught_up(env);
     report
 }
 pub(super) fn target(reference: &str) -> String {
@@ -25,30 +28,20 @@ pub(super) fn reading(env: &crate::Fixture, reference: &str, options: &[&str]) -
     let target = target(reference);
     let mut args = vec!["--json", target.as_str(), "read"];
     args.extend_from_slice(options);
-    let started = Instant::now();
-    loop {
-        let out = cli(env, &args);
-        let answer: command_surface::Answer<serde_json::Value> =
-            serde_json::from_slice(&out.stdout)
-                .unwrap_or_else(|error| panic!("invalid reading: {error}: {out:?}"));
-        assert_eq!(
-            out.status.code(),
-            Some(i32::from(answer.exit_code())),
-            "{out:?}"
-        );
-        match answer.outcome {
-            command_surface::Outcome::Ok(page) | command_surface::Outcome::Empty(page) => {
-                return read_page(page);
-            }
-            command_surface::Outcome::Degraded { value: _, missing } => {
-                assert!(
-                    started.elapsed() < READY_DEADLINE,
-                    "the awaited current reading did not come within {READY_DEADLINE:?}: {missing:?}"
-                );
-            }
-            other => panic!("reading failed: {other:?}: {out:?}"),
+    wait_caught_up(env);
+    let out = cli(env, &args);
+    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_slice(&out.stdout)
+        .unwrap_or_else(|error| panic!("invalid reading: {error}: {out:?}"));
+    assert_eq!(
+        out.status.code(),
+        Some(i32::from(answer.exit_code())),
+        "{out:?}"
+    );
+    match answer.outcome {
+        command_surface::Outcome::Ok(page) | command_surface::Outcome::Empty(page) => {
+            read_page(page)
         }
-        std::thread::sleep(Duration::from_millis(25));
+        other => panic!("a current reading was expected: {other:?}: {out:?}"),
     }
 }
 pub(super) fn portable(env: &crate::Fixture, reference: &str, path: &Path) -> Vec<Record> {
@@ -170,7 +163,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-    let _ = import_report(&imported);
+    let _ = import_report(&env, &imported);
     let old = messages(&env, "claude-ai:old-conversation");
     assert_eq!(old[0]["blocks"][0]["text"], "Existing conversation text.");
     let documents = cli(
@@ -273,7 +266,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
             .any(|record| matches!(record, Record::Session(_)))
     );
     let imported = cli(&env, &["--json", "import", copy.to_str().unwrap()]);
-    let _ = import_report(&imported);
+    let _ = import_report(&env, &imported);
     assert_eq!(document(&env, reference), before);
     let note = cli(
         &env,

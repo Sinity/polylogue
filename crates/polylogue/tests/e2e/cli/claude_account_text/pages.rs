@@ -44,7 +44,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
     let _daemon = start_daemon(&env);
     eprintln!("document pages: initial import");
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-    let _ = import_report(&imported);
+    let _ = import_report(&env, &imported);
     let reference = "document:claude-ai:manual";
     eprintln!("document pages: whole reading");
     let whole = reading(&env, reference, &["--budget", "100000"]);
@@ -142,7 +142,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
     write_documents(&changed, &[doc]);
     eprintln!("document pages: replacement import and stale continuation");
     let imported = cli(&env, &["--json", "import", changed.to_str().unwrap()]);
-    let _ = import_report(&imported);
+    let _ = import_report(&env, &imported);
     let stale = read_failure(follow(&env, &next));
     assert_eq!(serde_json::to_value(stale).unwrap()["kind"], "stale_cursor");
 }

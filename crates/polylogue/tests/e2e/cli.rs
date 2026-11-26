@@ -95,13 +95,22 @@ impl Drop for Daemon {
     }
 }
 
+/// Starts the fixture's daemon and waits until it has caught up with its
+/// home and archive: its first index installed and its first pass done.
 pub(super) fn start_daemon(env: &crate::Fixture) -> Daemon {
-    start_daemon_with(command(env))
+    start_daemon_with(env, command(env))
 }
 
-/// Starts `command`, already holding the fixture's arguments, as the daemon
-/// and waits for it to serve.
-fn start_daemon_with(mut command: Command) -> Daemon {
+/// Starts `command`, already holding the fixture's arguments, as the daemon,
+/// waits for it to serve and then for it to catch up ([`wait_caught_up`]).
+fn start_daemon_with(env: &crate::Fixture, command: Command) -> Daemon {
+    let daemon = serving(command);
+    wait_caught_up(env);
+    daemon
+}
+
+/// Starts `command` as the daemon and waits for its readiness line.
+fn serving(mut command: Command) -> Daemon {
     command.arg("daemon").stderr(Stdio::piped());
     let mut daemon = Daemon(polylogue_testkit::spawn_daemon(&mut command).unwrap());
     use std::os::fd::AsRawFd;
@@ -183,83 +192,75 @@ fn start_daemon_with(mut command: Command) -> Daemon {
     daemon
 }
 
-/// Polls `status` until `ready` holds and the loop is idle, so whatever pass
-/// made `ready` true has also derived from its rows. Polls pause briefly so
-/// the CLI processes do not compete with the daemon for the host; a state
-/// that has not come within the deadline fails with the last status seen.
+/// Waits for the daemon to catch up with what it was given (`status
+/// --wait`): no index being built, no pass running or due, derived figures
+/// and search text current, and the status read after the latest commit.
+/// Every test that reads what it gave the daemon (a start, an import, a
+/// written file) waits here first. While `ready` does not hold for a
+/// caught-up status, the change the test made has not reached the daemon
+/// yet, and the next wait is for a status that caught up after a later
+/// change (`--after`): each answer follows something the daemon did, and
+/// nothing is polled.
 pub(super) fn wait_status(
     env: &crate::Fixture,
     ready: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
-    const PAUSE: Duration = Duration::from_millis(25);
-    let started = Instant::now();
+    let wait = format!("{}s", READY_DEADLINE.as_secs());
+    let mut after: Option<String> = None;
     loop {
-        // The poll lifts its deadline, so a loaded host delays the answer
+        // The wait sets its own bound, so a loaded host delays the answer
         // instead of turning it into a timeout.
-        let out = cli(env, &["--deadline", "none", "--json", "status"]);
+        let mut args = vec!["--deadline", "none", "--json", "status", "--wait", &wait];
+        if let Some(after) = &after {
+            args.extend(["--after", after]);
+        }
+        let out = cli(env, &args);
         let answer: command_surface::Answer<serde_json::Value> =
             serde_json::from_slice(&out.stdout)
-                .unwrap_or_else(|error| panic!("invalid startup status: {error}: {out:?}"));
+                .unwrap_or_else(|error| panic!("invalid status: {error}: {out:?}"));
         assert_eq!(
             out.status.code(),
             Some(i32::from(answer.exit_code())),
             "{out:?}"
         );
-        match &answer.outcome {
-            command_surface::Outcome::Ok(status) => {
-                if status["busy"] == false && status["store"].is_object() && ready(status) {
-                    return status.clone();
-                }
-            }
-            command_surface::Outcome::Degraded { .. } => {}
-            command_surface::Outcome::Error(failure)
-                if failure.code.as_deref() == Some("index_building") => {}
-            other => panic!("startup status failed: {other:?}: {out:?}"),
-        }
-        assert!(
-            started.elapsed() < READY_DEADLINE,
-            "the awaited status did not come within {READY_DEADLINE:?}: {answer:?}"
+        let status = answer
+            .value()
+            .unwrap_or_else(|| panic!("status failed: {out:?}"))
+            .clone();
+        assert_eq!(
+            status["caught_up"], true,
+            "the daemon did not catch up within {READY_DEADLINE:?}: {status}"
         );
-        std::thread::sleep(PAUSE);
+        if status["store"].is_object() && ready(&status) {
+            return status;
+        }
+        let changes = status["changes"].as_u64().unwrap();
+        assert!(
+            after.is_none_or(|after| changes > after.parse().unwrap()),
+            "the awaited status did not come within {READY_DEADLINE:?}: {status}"
+        );
+        after = Some(changes.to_string());
     }
 }
 
-/// Poll a query until the current answer has the expected rows. A degraded
-/// answer cannot satisfy a ready fixture even when its partial rows match.
-pub(super) fn wait_rows(
+/// Waits until the daemon has caught up with what it was given; see
+/// [`wait_status`].
+pub(super) fn wait_caught_up(env: &crate::Fixture) -> serde_json::Value {
+    wait_status(env, |_| true)
+}
+
+/// The current rows of `query` once the daemon has caught up, which must
+/// satisfy `expected`.
+pub(super) fn caught_up_rows(
     env: &crate::Fixture,
     query: &str,
-    ready: impl Fn(&serde_json::Value) -> bool,
+    expected: impl Fn(&serde_json::Value) -> bool,
 ) -> serde_json::Value {
-    let started = Instant::now();
-    loop {
-        let out = cli(env, &["--json", query]);
-        let answer: command_surface::Answer<serde_json::Value> =
-            serde_json::from_slice(&out.stdout)
-                .unwrap_or_else(|error| panic!("invalid query answer: {error}: {out:?}"));
-        assert_eq!(
-            out.status.code(),
-            Some(i32::from(answer.exit_code())),
-            "{out:?}"
-        );
-        // Reads answer `index_building` until the daemon's first build is
-        // installed (docs/operations.md, Replacing an index from another schema).
-        let building = matches!(
-            &answer.outcome,
-            command_surface::Outcome::Error(failure) if failure.code.as_deref() == Some("index_building")
-        );
-        if !building && !matches!(&answer.outcome, command_surface::Outcome::Degraded { .. }) {
-            let rows = query_rows(&out);
-            if ready(&rows) {
-                return rows;
-            }
-        }
-        assert!(
-            started.elapsed() < READY_DEADLINE,
-            "the awaited current rows did not come within {READY_DEADLINE:?}: {answer:?}"
-        );
-        std::thread::sleep(Duration::from_millis(25));
-    }
+    wait_caught_up(env);
+    let out = cli(env, &["--json", query]);
+    let rows = query_rows(&out);
+    assert!(expected(&rows), "{rows}");
+    rows
 }
 
 pub(super) fn query_rows(out: &Output) -> serde_json::Value {
@@ -539,6 +540,7 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
         "{}",
         String::from_utf8_lossy(&out.stdout)
     );
+    wait_caught_up(&env);
 
     let out = cli(&env, &["--json", "sessions"]);
     let ids: Vec<String> = listing(json(&out))["rows"]
@@ -607,7 +609,7 @@ fn the_scenario_daemon_stores_nothing_from_an_inherited_tool_directory() {
         .arg(env.archive())
         .arg("--config")
         .arg(dir.path().join("config/polylogue/polylogue.toml"));
-    let _daemon = start_daemon_with(command);
+    let _daemon = start_daemon_with(&env, command);
     // One idle pass has scanned every root it was given.
     let status = wait_status(&env, |s| s["store"]["messages"].as_u64() > Some(0));
     assert_eq!(status["store"]["messages"], 1, "{status}");

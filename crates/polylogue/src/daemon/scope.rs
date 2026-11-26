@@ -124,9 +124,15 @@ impl ScopeWorker {
                     completed.store(true, Ordering::Release);
                     return;
                 }
+                let commits_read = daemon
+                    .writes
+                    .as_ref()
+                    .map_or(0, polylogue_store::WriterSender::commits_made);
                 let result = daemon.reads.reader().and_then(|reader| {
                     daemon.scope.refresh(&reader)?;
-                    daemon.status_snapshot.refresh(&daemon, &reader);
+                    daemon
+                        .status_snapshot
+                        .refresh(&daemon, &reader, commits_read);
                     Ok(())
                 });
                 if let Err(error) = result {
@@ -140,7 +146,7 @@ impl ScopeWorker {
                     }
                     let building = matches!(error, polylogue_store::StoreError::IndexBuilding(_));
                     if building {
-                        daemon.status_snapshot.clear();
+                        daemon.status_snapshot.clear(&daemon);
                     }
                     // A build's message carries its progress; waiting for it
                     // is logged once, not at every commit.

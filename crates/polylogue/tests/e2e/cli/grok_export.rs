@@ -26,10 +26,7 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     let original = serde_json::to_vec_pretty(&first).unwrap();
     std::fs::write(&source, &original).unwrap();
     let import = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-    let _ = import_report(&import);
-    // The import answers once its bytes are stored; the listing needs the
-    // parse and derivation, which an idle loop has finished.
-    wait_status(&env, |_| true);
+    let _ = import_report(&env, &import);
     let query = cli(&env, &["--json", "origin:grok | sort by id"]);
     assert!(query.status.success(), "{query:?}");
     let rows = listing(json(&query))["rows"].as_array().unwrap().clone();
@@ -83,7 +80,7 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     std::fs::create_dir_all(renamed.parent().unwrap()).unwrap();
     std::fs::write(&renamed, serde_json::to_vec(&reordered).unwrap()).unwrap();
     let import = cli(&env, &["--json", "import", renamed.to_str().unwrap()]);
-    let _ = import_report(&import);
+    let _ = import_report(&env, &import);
     let query = cli(&env, &["--json", "origin:grok | sort by id"]);
     let rows = listing(json(&query))["rows"].as_array().unwrap().clone();
     assert_eq!(
@@ -120,7 +117,7 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     )
     .unwrap();
     let imported = cli(&env, &["--json", "import", appended.to_str().unwrap()]);
-    let _ = import_report(&imported);
+    let _ = import_report(&env, &imported);
     let query = cli(&env, &["--json", "origin:grok"]);
     assert_eq!(
         listing(json(&query))["count"],
@@ -149,8 +146,7 @@ fn grok_native_ids_blank_content_and_unknown_shapes_are_visible() {
     std::fs::create_dir_all(source.parent().unwrap()).unwrap();
     std::fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-    let _ = import_report(&imported);
-    wait_status(&env, |_| true);
+    let _ = import_report(&env, &imported);
     let messages = messages(&env, "grok:native-account");
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[0]["id"], "grok:native-user");
@@ -213,7 +209,7 @@ fn grok_metadata_before_the_shared_recognition_prefix_requires_the_standard_file
     let standard = dir.path().join("prod-grok-backend.json");
     std::fs::write(&standard, &bytes).unwrap();
     let imported = cli(&env, &["--json", "import", standard.to_str().unwrap()]);
-    let report = import_report(&imported);
+    let report = import_report(&env, &imported);
     assert_eq!(report.imported.len(), 1);
     assert!(report.already_stored.is_empty());
     assert_eq!(report.members[0].origin.as_deref(), Some("grok"));

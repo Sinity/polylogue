@@ -314,7 +314,7 @@ fn empty_active_path_differs_from_missing_flags() {
             .unwrap();
         drop(db);
         let daemon = start_daemon(&env);
-        wait_rows(
+        caught_up_rows(
             &env,
             &format!("messages where session:{empty} {condition}"),
             |rows| rows["count"] == expected,

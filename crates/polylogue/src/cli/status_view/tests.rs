@@ -35,6 +35,8 @@ fn answer() -> Answer {
         index_build: None,
         build_progress: None,
         warming: false,
+        changes: 0,
+        caught_up: true,
         totals_error: None,
         vectors: None,
         vectors_error: None,

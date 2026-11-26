@@ -17,25 +17,19 @@ fn cli_read_shows_hook_error_events_in_every_format() {
     std::fs::write(&source, &original).unwrap();
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
+    // The daemon has caught up: the pass that stored the summary has also
+    // derived from it.
     let id = polylogue_model::SessionId::parse("claude-code:hooks").unwrap();
-    loop {
-        let ready = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive))
-            .and_then(|pool| {
-                let ready = pool
-                    .reader()?
-                    .events(&id)?
-                    .iter()
-                    .any(|event| event.data == summary);
-                Ok(ready)
-            })
-            .unwrap_or(false);
-        if ready {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    // The pass that stored the summary has also derived from it.
-    wait_status(&env, |_| true);
+    let stored = polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive))
+        .unwrap()
+        .reader()
+        .unwrap()
+        .events(&id)
+        .unwrap();
+    assert!(
+        stored.iter().any(|event| event.data == summary),
+        "{stored:?}"
+    );
     for format in ["terminal", "markdown", "html", "json"] {
         let items = hook_items(&env, format, "10000");
         assert!(

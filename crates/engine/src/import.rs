@@ -266,6 +266,7 @@ impl Engine {
             } else {
                 report.imported.push(at.clone());
                 report.pass.bytes_stored += stored.length;
+                self.import_stored.push((at.clone(), stored.length));
             }
             let plan = self.stored_import_plan(&at, origin, input, &stored, facts);
             if plan.is_err() {

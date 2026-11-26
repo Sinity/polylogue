@@ -65,7 +65,7 @@ fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.live_every = Duration::from_millis(1);
     let (tx, rx) = crossbeam_channel::unbounded();
-    let status = Arc::new(Mutex::new(LoopStatus::default()));
+    let status = Arc::new(SharedLoopStatus::default());
     fault::clear();
     fault::arm("read.watched_inputs", "test-machine", Action::Fail, 0, 1);
     let result = engine.run(tx, rx, &status, Lifetime::UntilIdle, || {});

@@ -1,6 +1,6 @@
 //! Opening the archive and owning application workers.
 use super::{Daemon, ModeState, acts};
-use polylogue_engine::{Config, Engine, Lifetime, LoopStatus, RunSummary};
+use polylogue_engine::{Config, Engine, Lifetime, LoopStatus, RunSummary, SharedLoopStatus};
 use polylogue_store::{Archive, ReadPool, WriterSender};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
@@ -354,7 +354,7 @@ pub fn start(
     let (tx, rx) = crossbeam_channel::unbounded();
     let (act_reports, act_reports_received) = channel();
     // The loop's first pass starts as soon as it runs.
-    let status = Arc::new(Mutex::new(LoopStatus {
+    let status = Arc::new(SharedLoopStatus::new(LoopStatus {
         busy: engine.is_some(),
         ..LoopStatus::default()
     }));
@@ -436,11 +436,16 @@ pub fn start(
         .map(WriterSender::completion_commits);
     // The first status snapshot is read before any request is served, so
     // status says it is warming only while no index can be read yet.
+    let commits_read = runtime
+        .daemon
+        .writes
+        .as_ref()
+        .map_or(0, WriterSender::commits_made);
     if let Ok(reader) = runtime.daemon.reads.reader() {
         runtime
             .daemon
             .status_snapshot
-            .refresh(&runtime.daemon, &reader);
+            .refresh(&runtime.daemon, &reader, commits_read);
     }
     runtime.scope = Some(crate::daemon::scope::ScopeWorker::start(
         Arc::clone(&runtime.daemon),

@@ -370,7 +370,7 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
     let (tx, rx) = crossbeam_channel::unbounded();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
-        let status = Arc::new(Mutex::new(LoopStatus::default()));
+        let status = Arc::new(SharedLoopStatus::default());
         let result = engine.run(worker_tx, rx, &status, Lifetime::UntilIdle, || {});
         drop(engine);
         drop(lock);

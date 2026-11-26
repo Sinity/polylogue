@@ -45,6 +45,7 @@ fn export_folder_import_resolves_assets_after_rebuild() {
                 && member.class == "parsed"
                 && member.origin.as_deref() == Some("chatgpt"))
     );
+    wait_caught_up(&env);
     assert_eq!(
         std::fs::read(source.join("file-Native.dat")).unwrap(),
         b"imported asset bytes"

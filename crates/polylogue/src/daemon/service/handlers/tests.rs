@@ -83,14 +83,5 @@ fn absent_drive_authorization_is_a_status_note_without_a_pass_fault() {
             .any(|note| note.contains("polylogue install drive")),
         "{answer:?}"
     );
-    assert!(
-        daemon
-            .daemon
-            .status
-            .lock()
-            .unwrap()
-            .last_pass
-            .errors
-            .is_empty()
-    );
+    assert!(daemon.daemon.status.get().last_pass.errors.is_empty());
 }

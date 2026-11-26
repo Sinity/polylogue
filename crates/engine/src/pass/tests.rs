@@ -265,24 +265,19 @@ fn idle_loop_turns_do_not_repeat_the_startup_discovery_walk() {
     let home = ClaudeHome::new();
     let (mut engine, _lock) = open_engine(&home);
     engine.config.live_every = Duration::from_millis(1);
-    let status = Arc::new(Mutex::new(LoopStatus::default()));
+    let status = Arc::new(SharedLoopStatus::default());
     let shared = Arc::clone(&status);
     let (tx, rx) = crossbeam_channel::unbounded();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
         engine.run(worker_tx, rx, &shared, Lifetime::UntilStopped, || {})
     });
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let observed = loop {
-        let now = status.lock().unwrap().clone();
-        if now.passes >= 3 || Instant::now() >= deadline {
-            break now;
-        }
-        std::thread::sleep(Duration::from_millis(1));
-    };
+    let observed = status.wait_for(Instant::now() + Duration::from_secs(10), |now| {
+        now.passes >= 3
+    });
     tx.send(LoopMsg::Stop).unwrap();
     let summary = worker.join().unwrap().unwrap();
-    assert!(observed.passes >= 3, "{observed:?}");
+    assert!(observed.is_some(), "{:?}", status.get());
     assert_eq!(summary.work.full_scans, 1);
     assert!(summary.work.errors.is_empty(), "{summary:?}");
 }

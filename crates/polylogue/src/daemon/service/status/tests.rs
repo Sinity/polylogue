@@ -12,7 +12,7 @@ fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
     };
     for vectors in [None, Some(Err(progress.to_string()))] {
         let requested = vectors.is_some();
-        let answer = unread(&daemon.daemon, Some(progress.clone()), vectors, false);
+        let answer = unread(&daemon.daemon, Some(progress.clone()), vectors, false, 0);
         assert_eq!(answer.exit_code(), 5);
         let status = answer.value().unwrap();
         assert_eq!(status.index_build, Some(progress.clone()));
@@ -33,7 +33,7 @@ fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
 #[test]
 fn status_is_warming_until_the_first_reads_are_ready() {
     let daemon = crate::test_daemon::start("synthetic source");
-    daemon.daemon.status_snapshot.clear();
+    daemon.daemon.status_snapshot.clear(&daemon.daemon);
     let warming = answer(&daemon.daemon, None, false);
     assert_eq!(warming.exit_code(), 5);
     assert!(warming.value().unwrap().warming);
@@ -45,7 +45,7 @@ fn status_is_warming_until_the_first_reads_are_ready() {
             .map(|reader| daemon
                 .daemon
                 .status_snapshot
-                .refresh(&daemon.daemon, &reader))
+                .refresh(&daemon.daemon, &reader, 0))
             .is_ok()
     );
     assert!(daemon.daemon.scope.is_loaded());

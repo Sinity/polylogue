@@ -114,9 +114,14 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     .map_err(|e| e.to_string())?;
     // Tour reads need the bundled SDK files as well as the explicit exports.
     // An import answers for its own inputs, independently of background work.
+    // A loop that ended changes its status no more: look at the workers
+    // each second the status has not changed.
     loop {
-        let status = runtime.daemon.status.lock().map_err(|e| e.to_string())?;
-        if status.passes > 0 && !status.busy {
+        let idle = runtime.daemon.status.wait_for(
+            std::time::Instant::now() + Duration::from_secs(1),
+            |status| status.passes > 0 && !status.busy,
+        );
+        if let Some(status) = idle {
             if !status.last_pass.errors.is_empty() {
                 return Err(polylogue_model::Failure::joined(&status.last_pass.errors)
                     .map(|failure| failure.message)
@@ -124,11 +129,9 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
             }
             break;
         }
-        drop(status);
         if let Some(failure) = runtime.worker_failure() {
             return Err(failure.into());
         }
-        std::thread::sleep(Duration::from_millis(10));
     }
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
         let declaration =
