@@ -168,7 +168,7 @@ impl Reader<'_> {
             "SELECT k.id, k.name,
                CASE WHEN json_valid(k.rows_json) AND json_type(k.rows_json,'$.unit')='text' THEN json_extract(k.rows_json,'$.unit') END,
                CASE WHEN json_valid(k.rows_json) AND json_type(k.rows_json,'$.rows')='array' THEN json_array_length(k.rows_json,'$.rows') END
-             FROM source_kept_result k
+             FROM source_saved_rows k
              WHERE (k.name >= ?1 AND (?2 IS NULL OR k.name < ?2)) OR (k.id >= ?1 AND (?2 IS NULL OR k.id < ?2))
              ORDER BY coalesce(k.name, k.id), k.id",
         )?;

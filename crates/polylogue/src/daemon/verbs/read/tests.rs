@@ -97,12 +97,8 @@ fn a_continuation_carries_every_option_of_its_step() {
         "sealed",
     ]
     .map(str::to_owned);
-    let parsed = crate::cli::line::parse(
-        &words,
-        &crate::cli::line::SavedNames::default(),
-        false,
-    )
-    .unwrap();
+    let parsed =
+        crate::cli::line::parse(&words, &crate::cli::line::SavedNames::default(), false).unwrap();
     let call = crate::cli::run_line::request(&parsed).unwrap();
     assert!(call.cursor.is_none());
     let rows: Rows = serde_json::from_value(call.arguments).unwrap();
