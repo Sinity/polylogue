@@ -17,11 +17,6 @@ fn unreadable_event_coordinates_are_stored_value_failures() {
             3,
             None,
         ),
-        (
-            "UPDATE event_parse SET committed=-1",
-            6,
-            Some("invalid event commit position"),
-        ),
     ] {
         let root = tempfile::tempdir().unwrap();
         let mut fixture = Fixture::new(root.path()).unwrap();
@@ -32,9 +27,18 @@ fn unreadable_event_coordinates_are_stored_value_failures() {
             })
             .unwrap();
         fixture.event(session, "marker", None).unwrap();
-        let conn = crate::archive::open_write(&fixture.archive.index_db(), 1).unwrap();
-        conn.execute("UPDATE event_parse SET committed=1", [])
+        // The event's byte range, and the archive extent its commit is read from.
+        rusqlite::Connection::open(fixture.archive.archive_db())
+            .unwrap()
+            .execute_batch(
+                "PRAGMA foreign_keys=OFF;
+                 INSERT INTO input VALUES('fixture','fixture');
+                 INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('fixture',1,'first',1,1,1);
+                 INSERT INTO extent(input,chain,offset,length,blob,blob_offset,commit_seq) VALUES('fixture',1,0,1,x'00',0,1);",
+            )
             .unwrap();
+        let conn = crate::archive::open_write(&fixture.archive.index_db(), 1).unwrap();
+        conn.execute("UPDATE event SET source_end=1", []).unwrap();
         let pool = ReadPool::open(&fixture.archive).unwrap();
         {
             let reader = pool.reader().unwrap();
