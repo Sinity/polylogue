@@ -4,6 +4,7 @@
 use crate::plan::{InputState, Plan, span, whole};
 use crate::source_read::PlannedFile;
 use crate::*;
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use polylogue_sources::export::ExportParser;
 use polylogue_store::RevisionChains;
 
