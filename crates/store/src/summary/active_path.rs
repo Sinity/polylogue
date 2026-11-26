@@ -73,15 +73,9 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>
         .collect::<rusqlite::Result<_>>()?)
 }
 
-pub(super) fn apply(
-    tx: &Transaction<'_>,
-    moved: &[(i64, Option<i64>)],
-    changes: &crate::change_summary::ChangeSummary,
-) -> Result<()> {
+pub(super) fn apply(tx: &Transaction<'_>, moved: &[(i64, Option<i64>)]) -> Result<()> {
     let mut set = tx.prepare_cached("UPDATE message SET on_active_path = ?2 WHERE pk = ?1")?;
     for (pk, place) in moved {
-        // The session and parent stay as they were; only the place changed.
-        changes.message_metadata(tx, *pk)?;
         set.execute(rusqlite::params![pk, place])?;
     }
     Ok(())

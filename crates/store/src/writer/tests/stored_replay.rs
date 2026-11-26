@@ -43,7 +43,7 @@ fn queued_stored_reading_changes_only_the_index() {
     );
     assert_eq!(
         reader
-            .query("SELECT status,parsed_upto FROM parse_state", &[])
+            .query("SELECT CASE WHEN state='failed' AND failure_kind='refused' THEN 'refused' WHEN state='failed' THEN 'failed' WHEN waiting>0 THEN 'waiting' ELSE 'done' END AS status,parsed_to AS parsed_upto FROM parse_state", &[])
             .unwrap(),
         vec![serde_json::json!({"status":"done","parsed_upto":100})]
     );
@@ -127,9 +127,9 @@ fn sparse_stored_readings_commit_their_diagnosis_during_stop() {
         let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
         step.reset = false;
         step.parse_version = "synthetic=1".into();
-        step.progress = polylogue_model::batch::StepProgress::Refused {
-            reason: format!("missing source {missing}"),
-        };
+        step.failure = Some(polylogue_model::ChainFailure::refused(format!(
+            "missing source {missing}"
+        )));
         reading.parse = vec![step];
         let before = archive_state(&w);
         w.archive.stop().cancel();
@@ -140,7 +140,7 @@ fn sparse_stored_readings_commit_their_diagnosis_during_stop() {
             reads
                 .reader()
                 .unwrap()
-                .query("SELECT status,reason,parsed_upto FROM parse_state", &[])
+                .query("SELECT CASE WHEN state='failed' AND failure_kind='refused' THEN 'refused' WHEN state='failed' THEN 'failed' WHEN waiting>0 THEN 'waiting' ELSE 'done' END AS status,failure_detail AS reason,parsed_to AS parsed_upto FROM parse_state", &[])
                 .unwrap(),
             vec![
                 serde_json::json!({"status":"refused","reason":format!("missing source {missing}"),"parsed_upto":0})

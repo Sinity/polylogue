@@ -82,9 +82,6 @@ enum Msg {
         SyncSender<Result<Vec<build::BuildPhase>>>,
     ),
     ReplaceChain(InputKey, i64, u64, Box<ChainParse>, SyncSender<Result<u64>>),
-    /// Record one older chain's reading from a newer chain of the same
-    /// input holding the same bytes.
-    CopyReading(crate::ReadingCopy, SyncSender<Result<Result<bool>>>),
     Stop,
     /// The archive committed: what follows from it in the index is applied.
     Wake,
@@ -116,8 +113,7 @@ pub struct Writer {
     /// The archive's stop request ([`Archive::stop`]). It ends the writer's
     /// long work early: a derive pass after the transaction in progress, a
     /// first build's ending (its deferred indexes) at its next step, replay
-    /// of stored bytes and copies of identical-chain readings by rolling
-    /// back their unfinished index transaction. What committed stays; the
+    /// of stored bytes by rolling back its unfinished index transaction. What committed stays; the
     /// rest is done at the next start. Capture and authored writes are not
     /// affected.
     stop: crate::cancellation::Cancellation,
@@ -261,7 +257,6 @@ impl Writer {
         let building = archive.index_build.building();
         let index = open_index_writer(archive, building)?;
         let installed = archive.root.join("index.db");
-        crate::chain_progress::open(&index)?;
         let commits = crate::completion::CommitEvents::default();
         let archive_writer =
             crate::archive::writer::ArchiveWriter::start(archive, commits.clone())?;
@@ -556,18 +551,6 @@ impl WriterSender {
         self.0.ask(|reply| Msg::Coverage(Box::new(coverage), reply))
     }
 
-    /// Records one older chain's complete reading from its newer chain of
-    /// the same bytes. A successful copy commits all its rows and source commits
-    /// before answering. The inner answer is `false` when copying would not
-    /// equal parsing, or an error from the copy;
-    /// both leave the chain unchanged and let the caller parse it instead.
-    /// Transaction, transport and stop failures are outer errors. A stop
-    /// interrupts only this reconstructible copy as `Stopped`;
-    /// copies already committed remain recorded.
-    pub fn copy_reading(&self, copy: crate::ReadingCopy) -> Result<Result<bool>> {
-        self.0.ask(|reply| Msg::CopyReading(copy, reply))
-    }
-
     /// Puts sessions whose live state changed with the clock alone on the change feed.
     pub fn live_clock(&self, sessions: Vec<String>) -> Result<()> {
         self.0.ask(|reply| Msg::LiveClock(sessions, reply))
@@ -653,7 +636,6 @@ impl Inner {
         let mut assets = Vec::new();
         let mut coverage = Vec::new();
         let mut live_clock = Vec::new();
-        let mut copies = Vec::new();
         let mut replacements = Vec::new();
         let mut builds = Vec::new();
         // An archive commit woke the writer and what it handed over may not
@@ -720,10 +702,6 @@ impl Inner {
                     live_clock.push((sessions, reply));
                     false
                 }
-                Msg::CopyReading(copy, reply) => {
-                    copies.push((copy, reply));
-                    false
-                }
                 Msg::ReplaceChain(input, chain, length, reading, reply) => {
                     replacements.push((input, chain, length, *reading, reply));
                     false
@@ -787,6 +765,12 @@ impl Inner {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(group));
             }
             for (write, reply) in derive_writes.drain(..) {
+                // Computed from the installed index: while a build is being
+                // written, nothing of it is applied and its sessions stay due.
+                if self.building() {
+                    let _ = reply.send(Ok(vec![false; write.len()]));
+                    continue;
+                }
                 let result = self
                     .index
                     .get()
@@ -865,9 +849,6 @@ impl Inner {
             for (sessions, reply) in live_clock.drain(..) {
                 let _ = reply.send(self.write_live_clock(&sessions));
             }
-            for (copy, reply) in copies.drain(..) {
-                let _ = reply.send(self.write_copy_reading(&copy));
-            }
             if !flushes.is_empty() || self.build_job.is_some() {
                 following = false;
                 if let Err(error) = self.follow_archive() {
@@ -902,37 +883,25 @@ impl Inner {
         }
         self.derive.stop();
         self.search.stop();
-        let closed = self
-            .follow_archive()
-            .and_then(|()| crate::chain_progress::mark_current(self.index.get()?));
+        let closed = self.follow_archive();
         self.published.close();
         if let Err(error) = closed {
-            crate::log!(error, "writer: chain progress: {error}");
+            crate::log!(error, "writer: following the archive: {error}");
         }
     }
 
-    /// Applies, in an index transaction of its own, what archive commits
-    /// with no index transaction after them changed: the chain progress of
-    /// the chains and inputs they stored (bytes stored without parsed rows,
-    /// a write whose index transaction failed), and the text of alternates
-    /// committed after the index's `archive_position`, which it advances.
+    /// Applies, in an index transaction of its own, the text of alternates
+    /// committed after the index's `archive_position`, which it advances to
+    /// the archive's last commit.
     fn follow_archive(&mut self) -> Result<()> {
-        // Drained before taking what was handed over, so a commit after this
-        // point wakes the writer again.
+        // Drained before reading the position, so a commit after this point
+        // wakes the writer again.
         while self.follow.try_recv().is_ok() {}
-        let followed = self.followed.take_followed();
-        let result = self.apply_followed(&followed);
-        if result.is_err() {
-            self.followed.give_back(followed);
-        }
-        result
-    }
-
-    fn apply_followed(&mut self, followed: &crate::archive::writer::Handover) -> Result<()> {
-        let position = followed.position.0.to_string();
+        let followed = self.followed.committed_position();
+        let position = followed.0.to_string();
         let kept = crate::meta_get(self.index.get()?, ARCHIVE_POSITION)?;
-        if followed.changes.is_empty() && kept.as_deref() == Some(position.as_str()) {
-            self.published.publish(followed.position);
+        if kept.as_deref() == Some(position.as_str()) {
+            self.published.publish(followed);
             return Ok(());
         }
         let after: i64 = kept.and_then(|kept| kept.parse().ok()).unwrap_or(-1);
@@ -941,7 +910,6 @@ impl Inner {
             .get_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let before = tx.total_changes();
-        crate::chain_progress::refresh(&tx, &followed.changes)?;
         let alternates: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM source_alternate WHERE commit_seq > ?1)",
             [after],
@@ -956,7 +924,7 @@ impl Inner {
         }
         crate::meta_set(&tx, ARCHIVE_POSITION, &position)?;
         tx.commit()?;
-        self.published.publish(followed.position);
+        self.published.publish(followed);
         if changed {
             self.commits
                 .committed(crate::completion::Committed::CONTENT);
@@ -1045,39 +1013,6 @@ impl Inner {
         Ok(())
     }
 
-    fn write_copy_reading(&mut self, copy: &crate::ReadingCopy) -> Result<Result<bool>> {
-        self.until_stopped(|inner| inner.copy_reading_uninterrupted(copy))?
-            .ok_or(StoreError::Stopped)
-    }
-
-    fn copy_reading_uninterrupted(&mut self, copy: &crate::ReadingCopy) -> Result<Result<bool>> {
-        let tx = self.index.get_mut()?.transaction()?;
-        let counter = bump_counter(&tx)?;
-        let answer = crate::fault::check("write.copy_reading", &copy.input)
-            .and_then(|()| crate::identical_chains::copy_reading(&tx, copy, counter));
-        let answer = match answer {
-            Err(StoreError::Sqlite(error))
-                if error.sqlite_error_code() == Some(rusqlite::ErrorCode::OperationInterrupted) =>
-            {
-                // SQLite has rolled back the interrupted transaction. Do not
-                // turn cancellation into a refusal followed by parsing.
-                return Err(StoreError::Sqlite(error));
-            }
-            answer => answer,
-        };
-        if matches!(answer, Ok(true)) {
-            crate::write_lock::commit(tx)?;
-            self.commits
-                .committed(crate::completion::Committed::CONTENT);
-            self.report.transactions += 1;
-        } else {
-            // A refusal or a copy error leaves no rows, source commits or
-            // write-counter change from this attempt.
-            tx.rollback()?;
-        }
-        Ok(answer)
-    }
-
     fn write_coverage(&mut self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
         crate::fault::check("write.coverage", &coverage.machine)?;
         coverage
@@ -1123,6 +1058,11 @@ impl Inner {
                     .errors
                     .push(polylogue_model::Failure::new("derive", &e));
                 let _ = reply.send(Ok(*report));
+            }
+            (Err(e), derive_thread::Waiting::Session(question)) => {
+                question.answer(Err(StoreError::Failed(polylogue_model::Failure::new(
+                    "derive", &e,
+                ))));
             }
             (Err(e), derive_thread::Waiting::Nobody) => {
                 self.report
@@ -1240,7 +1180,6 @@ impl Inner {
         crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
         match &installed {
             Ok(()) => {
-                crate::chain_progress::install_triggers(self.index.get()?)?;
                 self.search.ready();
                 self.commits
                     .committed(crate::completion::Committed::CONTENT);
@@ -1259,9 +1198,6 @@ impl Inner {
     fn open_index(&mut self) -> Result<()> {
         let building = self.location.index_build.building();
         let index = open_index_writer(&self.location, building)?;
-        if building {
-            crate::chain_progress::open(&index)?;
-        }
         self.index = index_connection::IndexConnection::Open(index);
         Ok(())
     }
@@ -1464,7 +1400,6 @@ impl Inner {
                         b,
                         p,
                         rows::StepWrite {
-                            counter,
                             chain,
                             source_commit: &source_commit,
                             replacement: false,
@@ -1476,17 +1411,9 @@ impl Inner {
             }
             batches += 1;
         }
-        let (messages, read) = rows::finish(&itx, touched, &changes, counter)?;
-        self.report.item_units_read += read;
-        let followed = self.followed.take_followed();
-        let committed = crate::chain_progress::refresh(&itx, &followed.changes)
-            .and_then(|()| crate::fault::check("write.index_commit", ""))
-            .and_then(|()| Ok(itx.commit()?));
-        if let Err(error) = committed {
-            // What the archive handed over is applied by a later transaction.
-            self.followed.give_back(followed);
-            return Err(error);
-        }
+        let messages = rows::finish(&itx, touched, &changes, counter)?;
+        crate::fault::check("write.index_commit", "")?;
+        itx.commit()?;
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();
@@ -1533,14 +1460,7 @@ fn replayed_input(batch: &Batch) -> bool {
 
 /// Failure records still commit so a stop never erases their diagnosis.
 fn cancellable_replay(batch: &Batch) -> bool {
-    replayed_input(batch)
-        && batch.parse.iter().all(|step| {
-            !matches!(
-                step.progress,
-                polylogue_model::batch::StepProgress::Refused { .. }
-                    | polylogue_model::batch::StepProgress::Failed { .. }
-            )
-        })
+    replayed_input(batch) && batch.parse.iter().all(|step| step.failure.is_none())
 }
 
 /// Packs each step's rows and settles its attachment references on the
@@ -1584,6 +1504,5 @@ fn merge_report(report: &mut WriteReport, other: WriteReport) {
     report.segment_bytes_written += other.segment_bytes_written;
     report.blobs_appended += other.blobs_appended;
     report.blobs_deduplicated += other.blobs_deduplicated;
-    report.item_units_read += other.item_units_read;
     report.errors.extend(other.errors);
 }

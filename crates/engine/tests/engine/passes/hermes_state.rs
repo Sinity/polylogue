@@ -164,7 +164,12 @@ fn hermes_many_messages_in_records_keep_supplied_subagent_metadata() {
         .unwrap()[0]["n"],
         128
     );
-    let counts = r.query("SELECT records FROM parse_state", &[]).unwrap();
+    let counts = r
+        .query(
+            "SELECT used+skipped+unreadable AS records FROM parse_state",
+            &[],
+        )
+        .unwrap();
     println!("Hermes128 messages: counts={counts:?}");
     assert_eq!(counts[0]["records"], 130);
 }

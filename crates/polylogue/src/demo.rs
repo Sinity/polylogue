@@ -63,7 +63,12 @@ pub fn tour(
             }
             ExitCode::SUCCESS
         }
-        Err(error) => crate::cli::fail(startup.output, json, polylogue_model::Code::Demo, &error),
+        Err(error) => crate::cli::fail(
+            startup.client.output,
+            json,
+            polylogue_model::Code::Demo,
+            &error,
+        ),
     }
 }
 
@@ -82,7 +87,7 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         fs::write(path, bytes).map_err(|e| e.to_string())?;
     }
     let config = Config {
-        clock: startup.clock.clone(),
+        clock: startup.client.clock.clone(),
         home,
         tool_dirs: Default::default(),
         workers: 2,
@@ -109,7 +114,6 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         config,
         service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilStopped,
-        startup.stopped_attempt,
     )
     .map_err(|e| e.to_string())?;
     // Tour reads need the bundled SDK files as well as the explicit exports.

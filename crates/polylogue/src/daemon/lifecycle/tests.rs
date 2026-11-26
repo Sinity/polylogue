@@ -190,7 +190,8 @@ fn sigterm_and_sigint_drain_daemons_keeping_accepted_writes() {
         send(&process, signal);
         until(&receiver, "STOPPING=1");
         assert!(process.0.wait().unwrap().success());
-        eprintln!(
+        polylogue_store::log!(
+            info,
             "{signal:?} shutdown_seconds={:.6}",
             stopping.elapsed().as_secs_f64()
         );
@@ -389,7 +390,6 @@ fn isolated_signal_child() {
             startup.engine.clone(),
             startup.mode.clone(),
             polylogue_engine::Lifetime::UntilStopped,
-            startup.stopped_attempt,
         )
         .unwrap();
         let stop_worker = runtime.signal_stop_for_test();
@@ -453,30 +453,7 @@ fn isolated_signal_child() {
     .unwrap();
 }
 
-/// A vector load in progress on the daemon, holding a reader, until dropped.
-struct VectorLoad(
-    Option<std::sync::mpsc::Sender<()>>,
-    Option<std::thread::JoinHandle<()>>,
-);
-impl VectorLoad {
-    fn start(daemon: &std::sync::Arc<crate::daemon::service::Daemon>) -> Self {
-        let (started, entered) = std::sync::mpsc::channel();
-        let (release, released) = std::sync::mpsc::channel();
-        let daemon = std::sync::Arc::clone(daemon);
-        let thread = std::thread::spawn(move || {
-            let reader = daemon.reads.reader().unwrap();
-            daemon.warm.load_vectors_until(&reader, started, released);
-        });
-        entered.recv_timeout(Duration::from_secs(10)).unwrap();
-        Self(Some(release), Some(thread))
-    }
-}
-impl Drop for VectorLoad {
-    fn drop(&mut self) {
-        drop(self.0.take());
-        let _ = self.1.take().unwrap().join();
-    }
-}
+use crate::test_daemon::embeddings::VectorLoad;
 
 fn probe_now(archive: &polylogue_store::Archive, budget: Duration) -> bool {
     tokio::runtime::Builder::new_current_thread()
@@ -489,14 +466,14 @@ fn probe_now(archive: &polylogue_store::Archive, budget: Duration) -> bool {
 #[test]
 fn readiness_succeeds_during_a_vector_load() {
     let daemon = crate::test_daemon::start("readiness during a vector load");
-    let _load = VectorLoad::start(&daemon.daemon);
+    let _load = VectorLoad::start(&daemon);
     assert!(probe_now(&daemon.daemon.archive, READINESS_BUDGET));
 }
 
 #[test]
 fn probe_fits_the_watchdog_budget_during_a_vector_load() {
     let daemon = crate::test_daemon::start("watchdog during a vector load");
-    let _load = VectorLoad::start(&daemon.daemon);
+    let _load = VectorLoad::start(&daemon);
     // The watchdog budget is a quarter of the period; 2 s is the shortest
     // WatchdogSec the tests above use.
     for _ in 0..3 {

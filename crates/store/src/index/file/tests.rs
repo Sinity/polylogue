@@ -167,7 +167,7 @@ fn a_second_process_sees_the_files_the_open_made() {
     );
     assert!(files.serves());
     let pool = ReadPool::serving(&archive, 1, 8 << 20).unwrap();
-    assert_eq!(pool.reader().unwrap().status().unwrap().messages, 0);
+    assert_eq!(pool.reader().unwrap().status(&[]).unwrap().messages, 0);
 }
 
 /// The reason is on disk from the rebuild's start: a stop before the
@@ -243,7 +243,7 @@ fn an_index_of_another_format_is_replaced_and_the_rebuild_records_why() {
             .unwrap()
             .reader()
             .unwrap()
-            .status()
+            .status(&[])
             .unwrap();
         assert_eq!(status.index_rebuild, Some(record), "{change}");
         assert!(!dir.path().join(DIR).exists(), "{change}");

@@ -234,15 +234,15 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let pool = crate::ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
-    assert_eq!(reader.status().unwrap().messages, 1);
-    let position = reader.input_progress("resume-input").unwrap().unwrap();
-    assert_eq!(position.parsed_upto, 2);
+    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    let position = reader.latest_chain("resume-input").unwrap().unwrap();
+    assert_eq!(position.state.parsed_to(), 2);
     drop(reader);
     let writer = crate::Writer::start(&archive).unwrap();
     writer.derive().unwrap();
     drop(writer);
     let index = open_read(&archive.index_db()).unwrap();
-    assert!(schema::same_schema(&index, schema::INDEX_SCHEMA).unwrap());
+    assert!(schema::same_schema(&index, &*schema::INDEX_SCHEMA).unwrap());
     assert!(archive.index_build().is_none());
 }
 
@@ -338,7 +338,7 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     for _ in 0..2 {
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         let index = open_read(&archive.index_db()).unwrap();
-        assert!(schema::same_schema(&index, schema::INDEX_SCHEMA).unwrap());
+        assert!(schema::same_schema(&index, &*schema::INDEX_SCHEMA).unwrap());
         assert_eq!(
             index
                 .query_row("SELECT value FROM meta WHERE key='index-marker'", [], |r| r

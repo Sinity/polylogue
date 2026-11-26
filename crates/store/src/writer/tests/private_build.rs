@@ -42,7 +42,7 @@ fn serving(archive: &Archive) -> ReadPool {
 }
 
 fn messages(pool: &ReadPool) -> u64 {
-    pool.reader().unwrap().status().unwrap().messages
+    pool.reader().unwrap().status(&[]).unwrap().messages
 }
 
 fn journal_mode(path: &std::path::Path) -> String {
@@ -200,7 +200,7 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
     for step in announced.try_iter() {
         archive.record_build_step(step, polylogue_model::Timestamp::from_unix_ms(1).unwrap());
     }
-    let progress = archive.build_progress().unwrap();
+    let (_, progress) = archive.build_progress().unwrap();
     crate::fault::release();
     built.recv().unwrap().unwrap();
     crate::fault::clear();
@@ -327,7 +327,11 @@ fn a_failed_round_leaves_an_empty_build_file_for_the_next() {
         let failed = writer.build(first);
         crate::fault::clear();
         assert!(failed.is_err(), "{point}");
-        let status = pipeline.reader().unwrap().status().unwrap();
+        let status = pipeline
+            .reader()
+            .unwrap()
+            .status(&crate::fixture::synthetic_contracts())
+            .unwrap();
         assert_eq!(status.parse_states.get("done"), None, "{point}");
         assert_eq!(status.inputs, 1, "{point}");
         let again = runs(&archive, &writer, &["first-round"], &chains);
@@ -532,8 +536,8 @@ fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
         let reader = pipeline.reader().unwrap();
         // The stored bytes survive in the archive; the build file holds
         // nothing of the prepared runs.
-        assert_eq!(reader.status().unwrap().messages, 0, "{point}");
-        assert_eq!(reader.status().unwrap().inputs, 2, "{point}");
+        assert_eq!(reader.status(&[]).unwrap().messages, 0, "{point}");
+        assert_eq!(reader.status(&[]).unwrap().inputs, 2, "{point}");
         drop(reader);
         let writer = Writer::start(&archive).unwrap();
         let chains = [1, 1];
@@ -602,7 +606,7 @@ fn a_pipeline_reader_opened_before_an_install_reads_the_installed_index() {
     let reader = checkout.expect("a pipeline reader opens the ready build before install");
     assert_eq!(selected_path, paths.ready);
     // Its read had not started: it starts on the installed index.
-    assert_eq!(reader.status().unwrap().messages, 1);
+    assert_eq!(reader.status(&[]).unwrap().messages, 1);
     assert_eq!(reader.index_identity().unwrap(), {
         use std::os::unix::fs::MetadataExt as _;
         let installed = std::fs::metadata(&paths.index).unwrap();
@@ -653,7 +657,7 @@ fn a_request_read_that_meets_the_install_reads_the_installed_index() {
     crate::fault::clear();
 
     assert_eq!(opened, paths.ready);
-    assert_eq!(reader.status().unwrap().messages, 1);
+    assert_eq!(reader.status(&[]).unwrap().messages, 1);
     assert_eq!(archive.index_db(), paths.index);
 }
 
@@ -681,7 +685,7 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
     }
     let held = crate::fault::held();
     let checkout = pipeline.reader();
-    let started = checkout.as_ref().ok().map(|reader| reader.status());
+    let started = checkout.as_ref().ok().map(|reader| reader.status(&[]));
     crate::fault::release();
     let installed = installer.join();
     crate::fault::clear();
@@ -692,7 +696,7 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
     assert_eq!(started.unwrap().unwrap().messages, 1);
     store_message(&archive, &writer, "ready-second", "written after install");
     drop(writer);
-    assert_eq!(reader.status().unwrap().messages, 1);
+    assert_eq!(reader.status(&[]).unwrap().messages, 1);
     assert_eq!(messages(&pipeline), 2);
 }
 

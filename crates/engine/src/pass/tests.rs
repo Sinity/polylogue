@@ -51,7 +51,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
         .reads
         .reader()
         .unwrap()
-        .input_progress(&engine.inputs[&path].input_id)
+        .latest_chain(&engine.inputs[&path].input_id)
         .unwrap()
         .unwrap()
         .chain;
@@ -132,7 +132,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
         .read_to_end(&mut actual)
         .unwrap();
     assert_eq!(actual, std::fs::read(&path).unwrap());
-    assert_eq!(known.parsed_upto, known.stored);
+    assert_eq!(known.state.parsed_to(), known.stored);
     assert_eq!(
         reader
             .query("SELECT count(DISTINCT chain) AS n FROM a.revision", &[])
@@ -150,10 +150,7 @@ fn open_engine(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
     config.machine = "test-machine".into();
     config.host = "test".into();
     let (archive, lock) = Archive::open_or_create(&home.root).unwrap();
-    (
-        Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap(),
-        lock,
-    )
+    (Engine::new(config, archive).unwrap(), lock)
 }
 
 /// An engine whose clock reads `ahead` past the real time the test files get.
@@ -168,10 +165,7 @@ fn open_engine_ahead(
     config.host = "test".into();
     config.clock = polylogue_model::WallClock::fixed(jiff::Timestamp::now() + ahead);
     let (archive, lock) = Archive::open_or_create(&home.root).unwrap();
-    (
-        Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap(),
-        lock,
-    )
+    (Engine::new(config, archive).unwrap(), lock)
 }
 
 #[test]
@@ -230,10 +224,10 @@ fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
             .reads
             .reader()
             .unwrap()
-            .input_progress(&engine.location_id(&db))
+            .latest_chain(&engine.location_id(&db))
             .unwrap()
             .unwrap()
-            .length
+            .stored
     };
     let before = length(&engine);
     let changed = [db.clone()].into_iter().collect();
@@ -310,9 +304,8 @@ fn first_byte_read_failure_retries_after_restart() {
     assert_eq!(home.count("SELECT count(*) AS n FROM parse_state"), 0);
     let config = engine.config.clone();
     let archive = engine.archive.clone();
-    let attempt = engine.stopped_attempt;
     drop(engine);
-    let mut engine = Engine::new(config, archive, attempt).unwrap();
+    let mut engine = Engine::new(config, archive).unwrap();
     let retried = engine.run_pass().unwrap();
     assert!(retried.errors.is_empty(), "{retried:?}");
     assert!(retried.bytes_stored > 0, "{retried:?}");
@@ -373,7 +366,7 @@ fn unparseable_stored_input_refused_and_pass_continues() {
         .reader()
         .unwrap()
         .query(
-            "SELECT reason FROM parse_state WHERE status = 'refused'",
+            "SELECT failure_detail AS reason FROM parse_state WHERE failure_kind='refused'",
             &[],
         )
         .unwrap();
@@ -434,7 +427,7 @@ fn unparsed_watched_input_is_refused_and_finishes() {
         .reader()
         .unwrap()
         .query(
-            "SELECT reason, at_length FROM parse_state WHERE status = 'refused'",
+            "SELECT failure_detail AS reason, (parsed_to+waiting) AS at_length FROM parse_state WHERE failure_kind='refused'",
             &[],
         )
         .unwrap();

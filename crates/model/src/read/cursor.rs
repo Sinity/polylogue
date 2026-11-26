@@ -7,7 +7,7 @@ use query_language::cursor::OrderPosition;
 pub use query_language::identity::QuestionId;
 use serde::{Deserialize, Serialize};
 
-/// One place in a session's item index: a message header (no block), one of
+/// One place in a session's transcript lines: a message header (no block), one of
 /// its blocks by original ordinal, or an in-place event.
 #[derive(
     Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,

@@ -1,4 +1,4 @@
-//! Session pages and finite context streams over the session item index. A page is a run of
+//! Session pages and finite context streams over transcript lines. A page is a run of
 //! shown entries read in windows from its first entry; where it sits among the
 //! shown entries, and the counts a reading shows, come from the counts the
 //! writer stores per entry class, so a page reads its own entries and the
@@ -396,7 +396,24 @@ fn prefix(reader: &Reader<'_>, session: &SessionId, composed: &mut Composed) -> 
     Ok(())
 }
 
+/// Composes the reading. Reading a due session's lines waits for its
+/// summary and starts a newer read ([`Reader::restarts`]); then every
+/// session is composed again, so that all its parts come from one read.
 fn compose(reader: &Reader<'_>, scope: &Scope, options: &ReadOptions) -> Result<Composed, Error> {
+    loop {
+        let restarts = reader.restarts();
+        let composed = compose_once(reader, scope, options)?;
+        if reader.restarts() == restarts {
+            return Ok(composed);
+        }
+    }
+}
+
+fn compose_once(
+    reader: &Reader<'_>,
+    scope: &Scope,
+    options: &ReadOptions,
+) -> Result<Composed, Error> {
     let around = options.around.unwrap_or(0) as usize;
     let own = session_index(reader, &scope.session)?
         .ok_or_else(|| Error::not_found(format!("no session {}", scope.session)))?;

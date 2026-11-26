@@ -515,21 +515,5 @@ fn drain(mut app: Started) -> io::Result<()> {
     failure.map_or(Ok(()), Err)
 }
 
-/// Waits for an index-install commit; a stopped worker marks its exit expected.
-pub(crate) fn wait_for_index(
-    subscription: &polylogue_store::completion::CommitSubscription,
-    stopped: &std::sync::atomic::AtomicBool,
-    completed: &std::sync::atomic::AtomicBool,
-) -> bool {
-    if subscription.recv().is_ok() {
-        true
-    } else {
-        if stopped.load(std::sync::atomic::Ordering::Acquire) {
-            completed.store(true, std::sync::atomic::Ordering::Release);
-        }
-        false
-    }
-}
-
 #[cfg(test)]
 mod tests;

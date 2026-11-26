@@ -37,13 +37,13 @@ fn resume_in_hands_off() {
     let prepared = crate::brief::prepare(
         crate::brief::BriefContext {
             reader: &reader,
+            pending_deliveries: &[],
             delivery_id: "resume-dry-1",
             context: &context,
             ranking_identity: None,
             near: None,
         },
         &d.daemon.scope,
-        None,
         &[],
         &crate::brief::Ask::Takeover {
             session: source,

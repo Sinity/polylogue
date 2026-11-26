@@ -38,6 +38,7 @@ mod test_answers;
 mod test_daemon;
 mod web;
 
+use cli::invocation::Shape;
 use std::process::ExitCode;
 
 /// mimalloc instead of glibc's allocator: it fragments less across parse
@@ -95,200 +96,175 @@ fn main() -> ExitCode {
 }
 
 fn run() -> ExitCode {
-    // A harness treats a non-zero hook exit as a refusal of its tool call, so
-    // a hook that cannot start says why on stderr and exits 0.
-    let hook = hook_invocation(&std::env::args_os().collect::<Vec<_>>());
-    let process = match config::ProcessInputs::capture() {
-        Ok(process) => process,
-        Err(error) => {
-            return startup_error(
-                hook,
-                error,
-                config::OutputConfig::new(false, false, true, None),
-            );
-        }
-    };
+    let process = config::ProcessInputs::capture();
     let arguments = std::env::args_os().collect::<Vec<_>>();
-    if process.environment.get_os("COMPLETE").is_some() {
-        client_pipe_signal();
-        let separator = arguments.iter().position(|value| value == "--");
-        let callback = separator
-            .map(|separator| arguments[separator + 1..].to_vec())
-            .unwrap_or_default();
-        let index = process
-            .environment
-            .get_os("_CLAP_COMPLETE_INDEX")
-            .and_then(|value| value.to_str())
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_else(|| callback.len().saturating_sub(1));
-        let mut invocation = arguments[..separator.unwrap_or(arguments.len())].to_vec();
-        invocation.extend(callback.iter().skip(1).cloned());
-        let overrides = completion_overrides(&invocation);
-        let catalog = config::archive_location(&process, &overrides)
-            .ok()
-            .and_then(|archive| {
-                let paths = config::Paths::resolve(&process.environment).ok()?;
-                Some(cli::completion::Catalog {
-                    path: paths.completion_catalog(&archive),
-                    archive_key: runtime_dir::archive_key(&archive),
-                })
-            });
-        cli::completion::capture(cli::completion::Context {
-            arguments: callback,
-            index,
-            catalog,
-            prefix: process
-                .environment
-                .get_os("_POLYLOGUE_COMPLETE_PREFIX")
-                .and_then(|value| value.to_str())
-                .map(str::to_owned),
-        });
-        let basename = arguments
-            .first()
-            .and_then(|argument| std::path::Path::new(argument).file_name())
-            .unwrap_or(std::ffi::OsStr::new("polylogue"));
-        let bin_name = basename.to_string_lossy().into_owned();
-        // Shell function names must distinguish '-' from '_' and other bytes.
-        let name = format!(
-            "polylogue_{}",
-            polylogue_model::hex(basename.as_encoded_bytes())
-        );
-        clap_complete::CompleteEnv::with_factory(move || {
-            cli::command().name(name.clone()).bin_name(bin_name.clone())
-        })
-        .complete();
+    let invocation = cli::invocation::scan(&arguments, &process.environment);
+    let start = Start {
+        // A harness treats a non-zero hook exit as a refusal of its tool
+        // call, so a hook that cannot start says why on stderr and exits 0.
+        hook: matches!(invocation.shape, Shape::Hook),
+        json: invocation.json,
+        output: process.output,
+    };
+    if let Shape::Completion(completion) = &invocation.shape {
+        return complete(&process, &invocation, completion, &arguments);
     }
-    let (overrides, words) = match cli::run_line::deployment_arguments(&arguments[1..]) {
-        Ok(arguments) => arguments,
-        Err(error) => return startup_error(hook, error, process.output),
-    };
-    let native = cli::run_line::native_host(&words);
-    let empty_catalog = cli::line::FirstWordCatalog::default();
-    let preliminary = cli::line::parse(&words, &empty_catalog, cli::run_line::terminal());
-    let catalog = if preliminary
-        .as_ref()
-        .is_ok_and(|parsed| parsed.first == cli::line::FirstWord::Command)
-        || words.as_slice() == ["--version"]
-        || native
-    {
-        empty_catalog
-    } else {
-        let paths = match config::Paths::resolve(&process.environment) {
-            Ok(paths) => paths,
-            Err(error) => return startup_error(hook, error, process.output),
-        };
-        let archive = match config::archive_location(&process, &overrides) {
-            Ok(archive) => archive,
-            Err(error) => return startup_error(hook, error, process.output),
-        };
-        cli::line::FirstWordCatalog::load(&paths, &archive)
-    };
-    let parsed = match cli::line::parse(&words, &catalog, cli::run_line::terminal()) {
-        Ok(parsed) => parsed,
-        Err(error) => {
+    if let Some(problem) = &invocation.problem {
+        return start.failed(&protocol::failure(
+            polylogue_model::Code::BadRequest,
+            problem,
+        ));
+    }
+    let words = &invocation.words;
+    match invocation.shape {
+        Shape::Completion(_) => ExitCode::SUCCESS,
+        Shape::NativeHost => {
             client_pipe_signal();
-            let mut failure = crate::protocol::failure(error.code, error.message);
-            failure.hint = error.try_line.map(|line| format!("try: {line}"));
-            if !error.candidates.is_empty() {
-                failure
-                    .hint
-                    .get_or_insert_default()
-                    .push_str(&format!("\n{}", error.candidates.join("\n")));
+            let startup = match load_startup(&process, &invocation, &start) {
+                Ok(startup) => startup,
+                Err(exit) => return exit,
+            };
+            browser::native::run(
+                &startup.engine,
+                &polylogue_store::Archive::at(&startup.config.archive),
+                &startup.config.paths,
+            )
+        }
+        Shape::Help if cli::run_line::help(&words[1..]) => ExitCode::SUCCESS,
+        Shape::Help | Shape::Hook | Shape::Command(_) => {
+            let mut argv = vec!["polylogue".to_owned()];
+            argv.extend(words.iter().cloned());
+            if matches!(invocation.shape, Shape::Help) {
+                argv[1] = "help".into();
             }
-            return cli::fail_with(
-                process.output,
-                words.iter().any(|word| word == "--json"),
-                &failure,
-                &[],
-            );
-        }
-    };
-    let command =
-        parsed.first == cli::line::FirstWord::Command || words.as_slice() == ["--version"];
-    let matches = if command {
-        let mut command_words = words.clone();
-        if matches!(
-            command_words.first().map(String::as_str),
-            Some("--help" | "-h")
-        ) {
-            command_words[0] = "help".into();
-        }
-        if command_words.first().is_some_and(|word| word == "help")
-            && cli::run_line::help(&command_words[1..])
-        {
-            return ExitCode::SUCCESS;
-        }
-        let mut argv = vec!["polylogue".to_owned()];
-        argv.extend(command_words);
-        let matches = match cli::command().try_get_matches_from(argv) {
-            Ok(matches) => matches,
-            Err(error) => {
-                client_pipe_signal();
-                if hook {
-                    return hook_startup_error(error);
+            let matches = match cli::command().try_get_matches_from(argv) {
+                Ok(matches) => matches,
+                Err(error) => {
+                    client_pipe_signal();
+                    if start.hook {
+                        return hook_startup_error(error);
+                    }
+                    return cli::parse_error(error, process.output);
                 }
-                return cli::parse_error(error, process.output);
+            };
+            if !keeps_sigpipe_ignored(&matches) {
+                client_pipe_signal();
             }
-        };
-        if !keeps_sigpipe_ignored(&matches) {
+            match cli::configuration(&matches) {
+                cli::Configuration::None => cli::run_local(&matches, process.output),
+                cli::Configuration::Client => {
+                    let client = match config::Client::load(&process, invocation.overrides) {
+                        Ok(client) => client,
+                        Err(error) => return start.failed(&error.failure()),
+                    };
+                    crate::client::remember_this_process(&process.environment);
+                    cli::run(&matches, &client)
+                }
+                cli::Configuration::Deployment => {
+                    let startup = match load_startup(&process, &invocation, &start) {
+                        Ok(startup) => startup,
+                        Err(exit) => return exit,
+                    };
+                    cli::run_configured(&matches, &startup)
+                }
+            }
+        }
+        Shape::Line => {
             client_pipe_signal();
+            let client = match config::Client::load(&process, invocation.overrides.clone()) {
+                Ok(client) => client,
+                Err(error) => return start.failed(&error.failure()),
+            };
+            // Saved names are recognised from the catalog the daemon
+            // publishes beside the archive.
+            let catalog = cli::line::FirstWordCatalog::load(&client.paths, &client.archive);
+            let parsed = match cli::line::parse(words, &catalog, cli::run_line::terminal()) {
+                Ok(parsed) => parsed,
+                Err(error) => {
+                    let mut failure = protocol::failure(error.code, error.message);
+                    failure.hint = error.try_line.map(|line| format!("try: {line}"));
+                    if !error.candidates.is_empty() {
+                        failure
+                            .hint
+                            .get_or_insert_default()
+                            .push_str(&format!("\n{}", error.candidates.join("\n")));
+                    }
+                    return cli::fail_with(process.output, invocation.json, &failure, &[]);
+                }
+            };
+            crate::client::remember_this_process(&process.environment);
+            cli::run_line::run(parsed, &client)
         }
-        if let Some(result) = cli::run_local(&matches, process.output) {
-            return result;
+    }
+}
+
+/// How a failure before any command ran is reported.
+struct Start {
+    hook: bool,
+    json: bool,
+    output: config::OutputConfig,
+}
+
+impl Start {
+    /// Exits with the failure's code from the failure table; a hook exits 0.
+    fn failed(&self, failure: &command_surface::Failure) -> ExitCode {
+        if self.hook {
+            return hook_startup_error(&failure.message);
         }
-        Some(matches)
-    } else {
-        client_pipe_signal();
-        None
-    };
-    let mut startup = match config::Startup::load(&process, overrides) {
-        Ok(startup) => startup,
-        Err(error) => return startup_error(hook, error, process.output),
-    };
+        cli::fail_with(self.output, self.json, failure, &[])
+    }
+}
+
+/// The whole deployment, for the daemon and the commands that run the
+/// engine in this process.
+fn load_startup(
+    process: &config::ProcessInputs,
+    invocation: &cli::invocation::Invocation,
+    start: &Start,
+) -> Result<config::Startup, ExitCode> {
+    let startup = config::Client::load(process, invocation.overrides.clone())
+        .and_then(|client| config::Startup::extend(client, process))
+        .map_err(|error| start.failed(&error.failure()))?;
     crate::client::remember_this_process(&process.environment);
-    if native {
-        return browser::native::run(
-            &startup.engine,
-            &polylogue_store::Archive::at(&startup.config.archive),
-            &startup.config.paths,
-        );
-    }
-    if matches
-        .as_ref()
-        .is_some_and(|matches| cli::needs_engine(matches, &startup.mode))
-    {
-        startup.stopped_attempt = match executable_attempt() {
-            Ok(attempt) => Some(attempt),
-            Err(error) => return startup_error(hook, error, process.output),
-        };
-    }
-    match matches {
-        Some(matches) => cli::run(&matches, &startup),
-        None => cli::run_line::run(parsed, &startup),
-    }
+    Ok(startup)
 }
 
-/// The process boundary captures the running image, rather than a build label.
-fn executable_attempt() -> std::io::Result<polylogue_model::batch::StoppedAttempt> {
-    // Opening the process image keeps the running executable even after an upgrade
-    // replaces its former path.
-    #[cfg(target_os = "linux")]
-    let file = std::fs::File::open("/proc/self/exe")?;
-    #[cfg(not(target_os = "linux"))]
-    let file = std::fs::File::open(std::env::current_exe()?)?;
-    attempt_from_executable(file)
-}
-
-fn attempt_from_executable(
-    file: std::fs::File,
-) -> std::io::Result<polylogue_model::batch::StoppedAttempt> {
-    let mut digest = blake3::Hasher::new();
-    digest.update_reader(file)?;
-    Ok(polylogue_model::batch::StoppedAttempt {
-        executable: polylogue_model::BlobHash(*digest.finalize().as_bytes()),
-        // Parser selection currently has no configurable parser settings.
-        parser_settings: None,
+/// Answers a shell's completion callback.
+fn complete(
+    process: &config::ProcessInputs,
+    invocation: &cli::invocation::Invocation,
+    completion: &cli::invocation::Completion,
+    arguments: &[std::ffi::OsString],
+) -> ExitCode {
+    client_pipe_signal();
+    // Unfinished words complete with what the arguments so far select.
+    let catalog = config::Client::load(process, invocation.overrides.clone())
+        .ok()
+        .map(|client| cli::completion::Catalog {
+            path: client.paths.completion_catalog(&client.archive),
+            archive_key: runtime_dir::archive_key(&client.archive),
+        });
+    cli::completion::capture(cli::completion::Context {
+        arguments: completion.arguments.clone(),
+        index: completion.index,
+        catalog,
+        prefix: completion.prefix.clone(),
+    });
+    let basename = arguments
+        .first()
+        .and_then(|argument| std::path::Path::new(argument).file_name())
+        .unwrap_or(std::ffi::OsStr::new("polylogue"));
+    let bin_name = basename.to_string_lossy().into_owned();
+    // Shell function names must distinguish '-' from '_' and other bytes.
+    let name = format!(
+        "polylogue_{}",
+        polylogue_model::hex(basename.as_encoded_bytes())
+    );
+    clap_complete::CompleteEnv::with_factory(move || {
+        cli::command().name(name.clone()).bin_name(bin_name.clone())
     })
+    .complete();
+    ExitCode::SUCCESS
 }
 
 /// The daemon and `polylogue internal host` write to peers that may go away, so a
@@ -306,21 +282,6 @@ fn client_pipe_signal() {
     }
 }
 
-fn startup_error(
-    hook: bool,
-    error: impl std::fmt::Display,
-    output: config::OutputConfig,
-) -> ExitCode {
-    if hook {
-        return hook_startup_error(error);
-    }
-    eprint!(
-        "{}",
-        cli::print::diagnostic("", &error.to_string(), None, output.stderr_color())
-    );
-    ExitCode::from(2)
-}
-
 fn hook_startup_error(error: impl std::fmt::Display) -> ExitCode {
     let text = error.to_string();
     let line = text
@@ -329,62 +290,6 @@ fn hook_startup_error(error: impl std::fmt::Display) -> ExitCode {
         .unwrap_or("");
     eprintln!("polylogue hook: {}", line.trim_start_matches("error: "));
     ExitCode::SUCCESS
-}
-
-/// Whether the command line names `internal hook`: its first words that are
-/// neither a global option nor that option's value.
-fn hook_invocation(arguments: &[std::ffi::OsString]) -> bool {
-    let mut words = arguments.iter().skip(1).filter_map(|word| word.to_str());
-    while let Some(word) = words.next() {
-        if cli::GLOBAL_VALUED_OPTIONS.contains(&word) {
-            words.next();
-        } else if !word.starts_with('-') {
-            return word == "internal" && words.next() == Some("hook");
-        }
-    }
-    false
-}
-
-/// Completion resolves deployment flags without parsing unfinished query
-/// words. Each flag is parsed alone, so an incomplete or invalid one drops
-/// only itself.
-fn completion_overrides(arguments: &[std::ffi::OsString]) -> config::Overrides {
-    let mut groups: Vec<Vec<std::ffi::OsString>> = Vec::new();
-    let mut arguments = arguments.iter().skip(1);
-    while let Some(argument) = arguments.next() {
-        let Some(text) = argument.to_str() else {
-            continue;
-        };
-        if ["--archive", "--config", "--listen", "--auth-token-file"].contains(&text) {
-            let mut group = vec![argument.clone()];
-            if let Some(value) = arguments.next() {
-                group.push(value.clone());
-            }
-            groups.push(group);
-        } else if ["--archive=", "--config=", "--listen=", "--auth-token-file="]
-            .iter()
-            .any(|prefix| text.starts_with(prefix))
-        {
-            groups.push(vec![argument.clone()]);
-        }
-    }
-    let mut merged = config::Overrides::default();
-    for group in groups {
-        let flags = std::iter::once(std::ffi::OsString::from("polylogue")).chain(group);
-        let Ok(matches) =
-            config::augment_command(clap::Command::new("polylogue")).try_get_matches_from(flags)
-        else {
-            continue;
-        };
-        let found = config::Overrides::from_matches(&matches);
-        merged = config::Overrides {
-            config_file: found.config_file.or(merged.config_file),
-            archive: found.archive.or(merged.archive),
-            listen: found.listen.or(merged.listen),
-            auth_token_file: found.auth_token_file.or(merged.auth_token_file),
-        };
-    }
-    merged
 }
 
 #[cfg(test)]

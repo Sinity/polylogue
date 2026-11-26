@@ -27,6 +27,8 @@ pub struct Fixture {
     input_pk: i64,
     seq: i64,
     commit_seq: i64,
+    /// Each session's `changed` when its transcript lines were last written.
+    lines_written: std::cell::RefCell<std::collections::HashMap<i64, i64>>,
 }
 
 /// A session's facts; everything not given is unknown, except that an empty
@@ -126,6 +128,7 @@ impl Fixture {
             input_pk,
             seq: 0,
             commit_seq: 0,
+            lines_written: Default::default(),
         })
     }
 
@@ -162,11 +165,15 @@ impl Fixture {
         crate::summary::run_with_catalog(&mut self.index, catalog)
     }
 
-    /// The writer indexes each session's items as it commits; fixture rows
-    /// are written directly, so sessions they changed are indexed before
-    /// reads open.
+    /// The summary worker writes each session's transcript lines once it
+    /// is due; fixture rows are written directly and mark nothing, so the
+    /// lines of every session changed since they were written are written
+    /// before reads open.
     pub fn reads(&self) -> Result<ReadPool> {
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         ReadPool::open(&self.archive)
     }
 
@@ -235,7 +242,10 @@ impl Fixture {
             "UPDATE session SET changed=changed+1, last_activity_at=(SELECT max(at) FROM message WHERE session_pk=session.pk) WHERE pk=(SELECT session_pk FROM message WHERE pk=?1)",
             [message_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -392,7 +402,10 @@ impl Fixture {
             )?;
         }
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(pk)
     }
 
@@ -455,7 +468,10 @@ impl Fixture {
             [session_pk],
         )?;
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(pk)
     }
 
@@ -574,7 +590,10 @@ impl Fixture {
              VALUES (?1, ?2, ?3, ?4, 'fixture', ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -585,7 +604,10 @@ impl Fixture {
              VALUES (?1, ?2, ?3, 1, 'fixture', ?4)",
             params![parent, child, kind, self.input_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -665,7 +687,10 @@ impl Fixture {
             [session_pk],
         )?;
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -721,7 +746,10 @@ impl Fixture {
              WHERE pk = (SELECT session_pk FROM message WHERE pk = ?1)",
             [message_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -913,6 +941,15 @@ impl Fixture {
     }
 }
 
+/// The parser version the writer fixtures parse `claude-code` chains under,
+/// as the reading contract status and completeness judge them by.
+pub fn synthetic_contracts() -> Vec<crate::ReadingContract> {
+    vec![crate::ReadingContract::Expected {
+        origin: "claude-code".into(),
+        version: "synthetic=1".into(),
+    }]
+}
+
 /// Marks one origin's readings as older, in an isolated test or benchmark archive.
 /// The caller serializes writes and keeps the archive lock.
 pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
@@ -922,10 +959,12 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
         [archive.archive_db().to_string_lossy().as_ref()],
     )?;
     crate::source::views(&conn)?;
-    crate::chain_progress::install_triggers(&conn)?;
     let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
         FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
-    conn.execute("UPDATE parse_state SET parse_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE parse_state SET parser_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    crate::archive::bump_counter(&tx)?;
+    tx.commit()?;
     Ok(size)
 }
 

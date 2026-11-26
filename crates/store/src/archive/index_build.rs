@@ -398,15 +398,18 @@ impl Archive {
         });
     }
 
-    /// The steps, rate and estimates of the rebuild in progress.
-    pub fn build_progress(&self) -> Option<super::build_progress::BuildProgress> {
+    /// The rebuild in progress with its steps, rate and estimates, read
+    /// under one lock so a rebuild that starts or ends meanwhile never gives
+    /// one without the other.
+    pub fn build_progress(&self) -> Option<(IndexBuild, super::build_progress::BuildProgress)> {
         let held = self.index_build.held().ok()?;
-        held.progress()?;
-        Some(
+        let build = held.progress()?;
+        Some((
+            build,
             held.inner
                 .measured
                 .report(std::time::Instant::now(), crate::timing::writer_seconds()),
-        )
+        ))
     }
 }
 

@@ -12,6 +12,10 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 4;
 
+parser_modules! {
+    mod stream;
+}
+
 use crate::RecordOutcome;
 use crate::document::{Sink, session_id};
 use crate::export::{ExportParser, ExportState};
@@ -55,8 +59,6 @@ struct Entry {
     response: String,
     conversation: Option<String>,
 }
-
-mod stream;
 
 impl GeminiApp {
     /// A turn's message, named by the text its routes agree on.

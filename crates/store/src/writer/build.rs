@@ -60,8 +60,7 @@ const TABLES: u8 = 3;
 
 /// What decides which sessions are composed from the stream, read before
 /// it: sessions whose composition reaches other sessions' readings
-/// ([`FALLBACK`]); each message ID with the sessions stating it (with the
-/// reading's input, chain and whether it is named by its content) and the
+/// ([`FALLBACK`]); each message ID with the sessions stating it and the
 /// sessions with an event following it ([`MESSAGE_ID`], then [`STATES`] or
 /// [`FOLLOWS`]: one message's marks come together, its statements first);
 /// and each event ID with its session ([`EVENT_ID`]).
@@ -83,20 +82,12 @@ const OUTCOME: u8 = 3;
 /// The tables composition writes, and those of their indexes kept while it
 /// composes from the stream: those whose first column is the session,
 /// message or event a row belongs to, which are also all it reads (its rows
-/// in order, the replies to each message, for its item index, counts and
-/// values). Composition makes those keys in the order it writes, so each
+/// in order and the replies to each message). Composition makes those keys in the order it writes, so each
 /// such entry lands at its index's end and costs no read; made after the
 /// stream, each would scan its whole table again. Their other indexes,
 /// keyed by IDs in no order (a message's, an event's), are made after the
 /// stream: kept while it writes, each new row would read a page at random.
-const SHOWN_TABLES: &[&str] = &[
-    "message",
-    "message_route",
-    "block",
-    "tool_call",
-    "event",
-    "session_item",
-];
+const SHOWN_TABLES: &[&str] = &["message", "message_route", "block", "tool_call", "event"];
 const COMPOSED_IN_ORDER: &[&str] = &["session_pk", "message_pk", "event_pk"];
 
 /// The table an index statement is on, and its first column.
@@ -779,7 +770,6 @@ impl super::chain::ChainSink for OpenChain<'_> {
         step.prepare();
         let w = super::chain::ReadingWrite {
             register: self.register,
-            counter: 1,
             changes: &self.changes,
         };
         self.steps
@@ -788,8 +778,7 @@ impl super::chain::ChainSink for OpenChain<'_> {
         // what the step prepared rather than read back from the scratch
         // index.
         for (row, prepared) in step.output.messages.iter().zip(&mut step.prepared.messages) {
-            let size =
-                prepared.items.len() * std::mem::size_of::<polylogue_model::read::IndexEntry>();
+            let size = prepared.texts.len() * std::mem::size_of::<Option<[u8; 32]>>();
             if size > self.value_room {
                 continue;
             }
@@ -801,7 +790,6 @@ impl super::chain::ChainSink for OpenChain<'_> {
                     Prepared {
                         hash: prepared.hash,
                         block_count: prepared.block_selection.block_count,
-                        items: std::mem::take(&mut prepared.items),
                         words: super::shown::text_words(&row.message),
                         texts: prepared.texts.clone(),
                     },
@@ -1058,19 +1046,8 @@ fn compose_records(
         while let Some(row) = rows.next()? {
             let message: String = row.get(0)?;
             let session: String = row.get(1)?;
-            // Whether the reading is still held once newer chains of its
-            // input are read is decided at the load.
-            value.clear();
-            encode_row(
-                &[
-                    ValueRef::from(input),
-                    ValueRef::Integer(chain),
-                    row.get_ref(9)?,
-                ],
-                &mut value,
-            );
             out.sorter
-                .push(&message_mark(&message, STATES, &session), &value)?;
+                .push(&message_mark(&message, STATES, &session), &[])?;
             // What a step prepared is the reading's when the reading is that
             // step's statement: the same version and blocks. A reading
             // joined from several statements is read back.
@@ -1098,7 +1075,6 @@ fn compose_records(
                 out.sorter.push(&mark_key(FALLBACK, &[&session]), &[])?;
                 continue;
             }
-            let items = crate::items::entry_bytes::encode_message(&reading.items)?;
             let mut values: Vec<ValueRef<'_>> = (2..11)
                 .map(|n| row.get_ref(n))
                 .collect::<rusqlite::Result<_>>()?;
@@ -1106,7 +1082,6 @@ fn compose_records(
             values.push(row.get_ref(12)?);
             values.push(row.get_ref(13)?);
             values.push(ValueRef::Integer(reading.words));
-            values.push(ValueRef::Blob(&items));
             for text in &reading.texts {
                 values.push(
                     text.as_ref()
@@ -1165,12 +1140,11 @@ fn compose_records(
 }
 
 /// What composing a message reading takes besides its stored content:
-/// whether it holds every block of its version, its index entries, its
-/// words and its blocks' text hashes (see [`super::shown::ReadingValue`]).
+/// whether it holds every block of its version, its words and its blocks'
+/// text hashes (see [`super::shown::ReadingValue`]).
 struct Prepared {
     hash: [u8; 32],
     block_count: u64,
-    items: Vec<polylogue_model::read::IndexEntry>,
     words: i64,
     texts: Vec<Option<[u8; 32]>>,
 }
@@ -1180,7 +1154,6 @@ impl Prepared {
         Self {
             hash: value.selection.source_version.0,
             block_count: value.selection.block_count,
-            items: value.items,
             words: value.words,
             texts: value.texts,
         }
@@ -1238,9 +1211,6 @@ pub(super) struct Loaded {
     fallback: BTreeSet<String>,
     shared_events: HashSet<String>,
     groups: Arc<GroupKeys>,
-    /// Messages an event follows from a session that does not state them,
-    /// shown in another session (see [`MARKS`]).
-    elsewhere: HashSet<String>,
 }
 
 /// Where a build's composition stands between its steps
@@ -1268,9 +1238,6 @@ pub(super) struct ComposeState {
     /// Event IDs several sessions state: the stream leaves them for the
     /// index to compose from every session's readings.
     shared_events: Arc<HashSet<String>>,
-    /// Messages an event follows from a session that does not state them,
-    /// shown in another session.
-    elsewhere: Arc<HashSet<String>>,
     /// Events left by the stream for the index to compose.
     deferred: Vec<(Option<String>, String)>,
     /// Sessions the stream composed, of the sessions it holds: every session
@@ -1313,7 +1280,6 @@ impl ComposeState {
             mut fallback,
             shared_events,
             groups,
-            elsewhere,
         } = loaded;
         let aliases = Arc::new(super::identity::Aliases::load(index)?);
         // Composing runs no trigger per row: each counted table is counted
@@ -1380,7 +1346,6 @@ impl ComposeState {
             fallback: fallback.into_iter().collect(),
             aliases,
             shared_events: Arc::new(shared_events),
-            elsewhere: Arc::new(elsewhere),
             deferred: Vec::new(),
             assembled: 0,
             to_assemble,
@@ -1475,61 +1440,18 @@ struct Load {
     upkept_messages: BTreeSet<String>,
     upkept_events: HashSet<String>,
     aliases: Option<super::identity::Aliases>,
-    /// The message ID whose marks are being read, with its statements so
-    /// far; each input's
-    /// newest chain read to its end or waiting, read once at the marks; and
-    /// the messages some session's event follows that only other sessions
-    /// state and show.
-    message: Option<(String, Vec<Statement>)>,
-    newest: Option<std::collections::HashMap<String, Option<i64>>>,
-    elsewhere: HashSet<String>,
+    /// The message ID whose marks are being read, with the sessions stating
+    /// it so far.
+    message: Option<(String, Vec<String>)>,
     last_event: Option<(String, String)>,
     shared_events: HashSet<String>,
 }
 
-/// One chain's statement of a message, as its mark gives it.
-struct Statement {
-    session: String,
-    input: String,
-    chain: i64,
-    /// The message is named by its content.
-    content: bool,
-}
-
-/// Whether a message its statements give is shown: each input's newest
-/// chain stating it holds it, unless the message is named by its content
-/// and a newer chain of the input was read to its end or waits for more
-/// (as composition takes a message's readings).
-fn shown(stating: &[Statement], newest: &std::collections::HashMap<String, Option<i64>>) -> bool {
-    let mut latest = std::collections::HashMap::<&str, &Statement>::new();
-    for statement in stating {
-        let held = latest.entry(&statement.input).or_insert(statement);
-        if statement.chain > held.chain {
-            *held = statement;
-        }
-    }
-    latest.values().any(|statement| {
-        !statement.content
-            || newest
-                .get(&statement.input)
-                .copied()
-                .flatten()
-                .is_none_or(|newest| newest <= statement.chain)
-    })
-}
-
-/// The newest chain of input `i` read to its end or waiting for more, as an
-/// SQL expression.
+/// The newest parsed chain of input `i`, as an SQL expression: the chain
+/// that decides which content-named messages its input holds
+/// (`held_message_parse`).
 const NEWEST_READ_CHAIN: &str = "(SELECT max(p.chain) FROM parse_state p
-    WHERE p.input_pk=i.pk AND p.status IN ('done','waiting'))";
-
-/// Each input's newest chain read to its end or waiting for more.
-fn newest_read_chains(conn: &Connection) -> Result<std::collections::HashMap<String, Option<i64>>> {
-    Ok(conn
-        .prepare(&format!("SELECT i.id,{NEWEST_READ_CHAIN} FROM input_ref i"))?
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?)
-}
+    WHERE p.input_pk=i.pk AND p.state='parsed')";
 
 /// The reading text rows, joined to their texts, being loaded.
 struct TextHolders {
@@ -1702,7 +1624,6 @@ impl Inner {
                             fallback: upkept.sessions,
                             shared_events: HashSet::new(),
                             groups: Arc::default(),
-                            elsewhere: HashSet::new(),
                         }),
                     )
                 } else {
@@ -1731,7 +1652,6 @@ impl Inner {
                         fallback: load.fallback,
                         shared_events: load.shared_events,
                         groups: Arc::new(load.groups),
-                        elsewhere: load.elsewhere,
                     });
                     let holders = Merger::open(
                         holders.finish()?,
@@ -1992,8 +1912,6 @@ impl Inner {
             upkept_events: upkept.events,
             aliases: None,
             message: None,
-            newest: None,
-            elsewhere: HashSet::new(),
             last_event: None,
             shared_events: HashSet::new(),
         })
@@ -2170,10 +2088,6 @@ impl Inner {
                             if load.message.as_ref().is_none_or(|(id, _)| id != message) {
                                 load.message = Some((message.to_owned(), Vec::new()));
                             }
-                            let newest = match &mut load.newest {
-                                Some(newest) => newest,
-                                None => load.newest.insert(newest_read_chains(&t)?),
-                            };
                             let (_, stating) = load.message.as_mut().expect("set above");
                             match how {
                                 // A message stated under several sessions, or
@@ -2182,43 +2096,18 @@ impl Inner {
                                     if load.upkept_messages.contains(message) {
                                         load.fallback.insert(session.to_owned());
                                     }
-                                    if stating.iter().any(|other| other.session != session) {
-                                        load.fallback.extend(
-                                            stating.iter().map(|other| other.session.clone()),
-                                        );
+                                    if stating.iter().any(|other| other != session) {
+                                        load.fallback.extend(stating.iter().cloned());
                                         load.fallback.insert(session.to_owned());
                                     }
-                                    let row = decode_row(value)?;
-                                    let [
-                                        Value::Text(input),
-                                        Value::Integer(chain),
-                                        Value::Integer(content),
-                                    ] = &row[..]
-                                    else {
-                                        return Err(StoreError::Invalid(
-                                            "a message mark names no reading".into(),
-                                        ));
-                                    };
-                                    stating.push(Statement {
-                                        session: session.to_owned(),
-                                        input: input.clone(),
-                                        chain: *chain,
-                                        content: *content != 0,
-                                    });
+                                    stating.push(session.to_owned());
                                 }
-                                // An event following a message only other
-                                // sessions state: its session's item index
-                                // places the event by whether that message is
-                                // shown, which composing the session alone
-                                // takes from here; one a reading upkeep wrote
-                                // states is decided by the index.
+                                // An event following a message a reading
+                                // upkeep wrote states: its session is
+                                // composed from the index.
                                 FOLLOWS => {
                                     if load.upkept_messages.contains(message) {
                                         load.fallback.insert(session.to_owned());
-                                    } else if !stating.iter().any(|other| other.session == session)
-                                        && shown(stating, newest)
-                                    {
-                                        load.elsewhere.insert(message.to_owned());
                                     }
                                 }
                                 _ => {
@@ -2307,8 +2196,8 @@ impl Inner {
 
     /// Composes the next part of a build with the composition upkeep uses
     /// (docs/architecture.md, one path), in a transaction of its own: links
-    /// and documents first, from the index, so each session's item index
-    /// sees its links; then sessions from the stream, grouped as they come;
+    /// and documents first, from the index, so each session is composed
+    /// after its links; then sessions from the stream, grouped as they come;
     /// then, from the index, the sessions whose readings reach other
     /// sessions' readings, with the events about inputs and the events
     /// placed after another session's message. True once all is composed.
@@ -2471,8 +2360,7 @@ impl Inner {
     }
 
     /// Starts reading the stream into batches and the composer threads,
-    /// once links and documents are composed: a session's item index reads
-    /// its links.
+    /// once links and documents are composed.
     fn start_composers(&mut self, state: &mut ComposeState) -> Result<()> {
         let (merged, texts, groups) = state
             .unread
@@ -2489,7 +2377,6 @@ impl Inner {
             self.index.get()?,
             Arc::clone(&state.aliases),
             Arc::clone(&state.shared_events),
-            Arc::clone(&state.elsewhere),
             counter,
         )?;
         let skipped: BTreeSet<String> = state.fallback.iter().cloned().collect();
@@ -2787,12 +2674,12 @@ fn read_session(
                 pending_bytes += value.len();
                 // Columns: start, end, seq, position, order time, route,
                 // completion, content-named, hash, the content's group, start
-                // and length, words, items; then each block's text hash.
+                // and length, words; then each block's text hash.
                 let hash = blob(8)?.to_vec();
-                if row.len() < 14 {
+                if row.len() < 13 {
                     return Err(bad());
                 }
-                let texts_of = row[14..]
+                let texts_of = row[13..]
                     .iter()
                     .map(|text| match text {
                         Value::Blob(hash) => Ok(Some(
@@ -2820,9 +2707,7 @@ fn read_session(
                     }
                     texts.next()?;
                 }
-                let message_id =
-                    polylogue_model::MessageId::parse(&item).map_err(StoreError::invalid)?;
-                let items = crate::items::entry_bytes::decode_message(blob(13)?, &message_id)?;
+                polylogue_model::MessageId::parse(&item).map_err(StoreError::invalid)?;
                 let reading = MessageReading {
                     input_pk: 0,
                     input,
@@ -2848,7 +2733,6 @@ fn read_session(
                         kind: None,
                         superseded: false,
                         words: int(12)?,
-                        items,
                         texts: texts_of,
                         text_ids: ids,
                     }),

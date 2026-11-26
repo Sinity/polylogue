@@ -41,6 +41,8 @@ pub struct Thread {
     pub seconds_since_progress: Option<f64>,
     /// The SQL statements it is running, longest first.
     pub statements: Vec<Statement>,
+    /// State of commit-following work, including failures while idle.
+    pub worker: Option<crate::follow::Worker>,
 }
 
 /// One thing a thread is doing.
@@ -87,6 +89,7 @@ struct Record {
 }
 
 struct State {
+    worker: Option<crate::follow::Worker>,
     doing: Vec<Entry>,
     next_entry: u64,
     last_progress: Instant,
@@ -126,6 +129,7 @@ fn register() -> Arc<Record> {
     let record = Arc::new(Record {
         name,
         state: Mutex::new(State {
+            worker: None,
             doing: Vec::new(),
             next_entry: 0,
             last_progress: Instant::now(),
@@ -227,7 +231,13 @@ pub fn threads(statements_over: Duration) -> Vec<Thread> {
                     )
                 })
                 .collect();
-            if state.doing.is_empty() && statements.is_empty() {
+            if state.doing.is_empty()
+                && statements.is_empty()
+                && state
+                    .worker
+                    .as_ref()
+                    .is_none_or(|worker| matches!(worker, crate::follow::Worker::Running))
+            {
                 return None;
             }
             let doing = state
@@ -241,6 +251,7 @@ pub fn threads(statements_over: Duration) -> Vec<Thread> {
                 .collect();
             let seconds_since_progress =
                 (!state.doing.is_empty()).then(|| seconds(state.last_progress));
+            let worker = state.worker.clone();
             drop(state);
             statements.sort_by_key(|(since, _)| *since);
             for (_, statement) in &mut statements {
@@ -248,6 +259,7 @@ pub fn threads(statements_over: Duration) -> Vec<Thread> {
             }
             Some(Thread {
                 name: record.name.clone(),
+                worker,
                 doing,
                 seconds_since_progress,
                 statements: statements
@@ -365,3 +377,8 @@ fn traced<const CONNECTION: usize>(event: TraceEvent<'_>) {
 
 #[cfg(test)]
 mod tests;
+
+/// Sets the commit-following worker state on the current thread.
+pub(crate) fn worker(worker: crate::follow::Worker) {
+    RECORD.with(|record| record.state.locked().worker = Some(worker));
+}

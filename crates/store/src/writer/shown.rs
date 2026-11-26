@@ -62,7 +62,6 @@ pub(super) struct Given {
     /// A newer chain of its input was read to its end or waits for more.
     pub superseded: bool,
     pub words: i64,
-    pub items: Vec<polylogue_model::read::IndexEntry>,
     /// Each block's text hash and text row.
     pub texts: Vec<Option<[u8; 32]>>,
     pub text_ids: Vec<Option<i64>>,
@@ -70,14 +69,12 @@ pub(super) struct Given {
 
 /// What composition takes from a reading's value: its message and where its
 /// blocks' pieces are stored. The message's texts are needed only for its
-/// word count and items, so a value given those may carry the message
-/// without them.
+/// word count, so a value given it may carry the message without them.
 #[derive(Debug)]
 pub(super) struct ReadingValue {
     pub message: Message,
     pub words: i64,
     pub selection: polylogue_model::bundle::ShownBlocks,
-    pub items: Vec<polylogue_model::read::IndexEntry>,
     /// Each block's piece, in the content of a reading that holds it.
     pub pieces: Vec<crate::content::Piece>,
     /// Each block's text hash, for a block that keeps its text in `text`.
@@ -96,17 +93,11 @@ impl ReadingValue {
             pieces,
         } = stored;
         selection.validate(message.blocks.len())?;
-        let items = polylogue_model::read::message_entries(
-            &message,
-            &selection.block_ordinals,
-            polylogue_model::read::MessagePlace::default(),
-        );
         Ok(Self {
             words: text_words(&message),
             texts: crate::encoding::text_hashes(&message.blocks),
             message,
             selection,
-            items,
             pieces,
             text_ids: None,
         })
@@ -666,7 +657,7 @@ impl<'c> Work<'_, 'c> {
         let tx = self.tx();
         latest_readings(all, |r| {
             tx.exists(
-                "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk=?1 AND chain>?2 AND status IN ('done','waiting'))",
+                "SELECT EXISTS(SELECT 1 FROM parse_state WHERE input_pk=?1 AND chain>?2 AND state='parsed')",
                 params![r.input_pk, r.chain],
             )
         })
@@ -697,7 +688,7 @@ impl<'c> Work<'_, 'c> {
     fn value(&mut self, r: &mut MessageReading) -> Result<ReadingValue> {
         if let Some(given) = r.given.take() {
             // The content without texts or structured values: composition
-            // writes neither, and the words and items came with the reading.
+            // writes neither, and the words came with the reading.
             let (message, pieces) = crate::encoding::read_message_content(
                 self.reader.bytes(self.context.tx, r.stored)?,
                 false,
@@ -719,7 +710,6 @@ impl<'c> Work<'_, 'c> {
                 message,
                 words: given.words,
                 selection,
-                items: given.items,
                 pieces: readings::placed(r.stored, &pieces),
                 texts: given.texts,
                 text_ids: Some(given.text_ids),
@@ -886,18 +876,11 @@ impl<'c> Work<'_, 'c> {
                     // The same content may be stored again elsewhere (a
                     // reading written anew): its blocks name it there.
                     self.move_blocks(pk, &value.pieces)?;
+                    self.context.changes.message(self.tx(), pk)?;
                     if before[CONTENT_COLUMNS..] != row[CONTENT_COLUMNS..] {
-                        // Where the main reading is changes no item; its
-                        // place and completion do.
-                        if before[CONTENT_COLUMNS] != row[CONTENT_COLUMNS]
-                            || before[IN_PROGRESS] != row[IN_PROGRESS]
-                        {
-                            self.context.changes.message_metadata(self.tx(), pk)?;
-                        }
                         self.update_message(pk, &row)?;
                         self.events_after(shown, false)?;
                     }
-                    self.context.changes.reached(self.tx(), pk)?;
                     self.context.changes.session(session_pk);
                     return Ok(Some(session));
                 }
@@ -921,23 +904,14 @@ impl<'c> Work<'_, 'c> {
                             .chain(row.iter().map(|v| ToSqlOutput::Borrowed(ValueRef::from(v)))),
                     ))?;
                 let pk = self.tx().last_insert_rowid();
-                if self.stream.is_some() {
-                    self.context.changes.new_message_in(pk, session_pk);
-                } else {
-                    self.context.changes.new_message(pk);
+                self.context.changes.new_message(pk);
+                if self.stream.is_none() {
                     self.events_after(shown, true)?;
                 }
                 pk
             }
         };
         self.context.changes.session(session_pk);
-        let mut items = std::mem::take(&mut value.items);
-        polylogue_model::read::update_message_entries(
-            &mut items,
-            &value.message,
-            polylogue_model::read::MessagePlace::default(),
-        );
-        self.context.changes.prepare_items(pk, items);
         self.insert_blocks(pk, session_pk, &order, &value)?;
         for (group, input, chain) in &routes {
             self.tx()
@@ -1001,7 +975,7 @@ impl<'c> Work<'_, 'c> {
             ],
         )?;
         if same {
-            self.context.changes.reached(self.tx(), pk)?;
+            self.context.changes.message(self.tx(), pk)?;
             self.context.changes.session(session_pk);
         }
         Ok(same)
@@ -1073,7 +1047,7 @@ impl<'c> Work<'_, 'c> {
     }
 
     /// The events placed after a message move with it: their place in the
-    /// item index changes, and those that take their place in the input
+    /// transcript changes, and those that take their place in the input
     /// from the message's reading are composed again.
     fn events_after(&mut self, message: &str, placement: bool) -> Result<()> {
         // Nothing stored follows a message composed from a stream.
@@ -2117,7 +2091,6 @@ const MESSAGE_COLUMNS: &[&str] = &[
     "in_progress",
 ];
 const CONTENT_COLUMNS: usize = 25;
-const IN_PROGRESS: usize = 30;
 
 /// A block layout worth storing: `None` for a message holding every block.
 fn layout_column(selection: &polylogue_model::bundle::ShownBlocks) -> Result<Option<Vec<u8>>> {

@@ -47,7 +47,7 @@ Because one daemon assembly answers every transport, the same line gives identic
 
 ## Warm state
 
-The daemon keeps derived state warm so the classes hold. Each item is keyed by what it depends on, so no reply from before a write is served after it; none is a second archive, and each is rebuilt from the archive after a restart (`status` says `warming` until they are built). An LRU may evict items; it never limits replies.
+The daemon keeps derived state warm so the classes hold. Each item is keyed by what it depends on, so no reply from before a write is served after it; none is a second archive, and each is rebuilt from the archive after a restart: until the status snapshot is read, `status` answers that its figures are not read yet, and `warm.scope_index_loaded` says whether the scope index is built ([operations.md#status](operations.md#status)). An LRU may evict items; it never limits replies.
 
 | Warm item | Serves | Keyed by | Refreshed |
 |---|---|---|---|
@@ -57,7 +57,10 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 | compiled plans, the shipped saved queries' precompiled | every query | normal form, definitions and options | on definition change |
 | first pages, next pages and counts | repeated listings, page turns, footers, the count preview, `--dry-run` counts | question hash and read position | evicted on write; a live page cell's result stays until the change feed touches one of its sources ([pages.md](pages.md#queries-on-pages)) |
 | saved-query names and kept-result shapes | compiling | write position | on user write |
-| loaded vectors (int8 in memory, f32 on disk) and stored query vectors | `similar:` | vector write counter | on vector write |
+| loaded vectors (int8 in memory, f32 on disk) | `similar:` | model and snapshot revision | when a request needs that revision |
+| query vectors | `similar:TEXT` | model and NFC text | on first use |
 | search vocabulary | fuzzy matching in the brief of a search | write position | batch delta |
 | scope index and session summaries | `brief` | write position and live-state change | batch delta and each hook event |
 | rendered overviews of recent sessions | the picker preview | session, read position, width | evicted on write to that session |
+
+A request needing vectors extends the newest held set to its snapshot revision itself, reading appended rows or loading the whole set after a replacement or metadata change. Loading and quantization do not hold the cache mutex. Requests for the same model and revision share that load and its result or failure; each waiting request observes its own deadline and cancellation, including daemon stop. The cache holds the two newest sets; older snapshots load their own without replacing them. Clearing warm state disconnects loads already in progress from the cache, while their requesting callers still receive their results. Query vectors keep the 256 most recently used texts.

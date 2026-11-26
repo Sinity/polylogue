@@ -8,10 +8,9 @@ use polylogue_store::fault::{self, Action};
 use polylogue_testkit::{Morrow, Set, session};
 use std::fs;
 
-mod identical_chains;
 mod older_chains;
-mod prefix_copies;
 mod reparse;
+mod repeated_chains;
 
 /// a failure at any step of a write loses nothing. The writer fails
 /// at its n-th archive commit, between its archive and index commits, or at

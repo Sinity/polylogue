@@ -16,6 +16,16 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::cell::RefCell;
 
+/// Rows the fold runs of this process read: what a test counts to show a
+/// summary's cost follows the change.
+#[cfg(any(test, feature = "fixture"))]
+static ROWS_FOLDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "fixture"))]
+pub fn rows_folded() -> u64 {
+    ROWS_FOLDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A state is kept after every this many rows of a session.
 pub(crate) const EVERY: u64 = 512;
 
@@ -58,13 +68,33 @@ impl Key {
     }
 
     /// The `session_order` the key starts with.
-    fn order(&self) -> &str {
+    pub(crate) fn order(&self) -> &str {
         let end = self.0.iter().position(|b| *b == 0).unwrap_or(self.0.len());
         std::str::from_utf8(&self.0[..end]).unwrap_or("")
     }
 
     pub(crate) fn is_start(&self) -> bool {
         self.0.is_empty()
+    }
+
+    /// The row the key names, as a log line says it.
+    pub(crate) fn row(&self) -> String {
+        if self.is_start() {
+            return "the first row".into();
+        }
+        if *self >= Self::past_every_row() {
+            return "no row".into();
+        }
+        let order = self.order();
+        let rest = &self.0[(order.len() + 1).min(self.0.len())..];
+        match rest.split_first() {
+            Some((kind, id)) => format!(
+                "{} {} at {order}",
+                if *kind == 0 { "message" } else { "event" },
+                String::from_utf8_lossy(id)
+            ),
+            None => format!("place {order}"),
+        }
     }
 }
 
@@ -267,6 +297,40 @@ pub(crate) struct Kept {
     pub state: Vec<u8>,
 }
 
+/// Where a run started, as its log line says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Began {
+    /// From the state kept after the session's `rows`th row.
+    Kept { rows: u64 },
+    /// From the first row, and why.
+    First(Why),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Why {
+    /// The change reached the first row, or the folds' version moved.
+    Change,
+    /// No state was kept before the earliest change.
+    NoState,
+    /// The named fold could not continue from the kept state.
+    Restart(&'static str),
+}
+
+impl std::fmt::Display for Began {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Kept { rows } => write!(f, "from the state kept after row {rows}"),
+            Self::First(Why::Change) => write!(f, "from the first row, which the change reached"),
+            Self::First(Why::NoState) => {
+                write!(f, "from the first row: no state kept before the change")
+            }
+            Self::First(Why::Restart(fold)) => {
+                write!(f, "from the first row: the {fold} fold could not continue")
+            }
+        }
+    }
+}
+
 /// What a run folded: from where, every fold's output and the states to
 /// keep.
 pub(crate) struct Folded {
@@ -277,6 +341,10 @@ pub(crate) struct Folded {
     pub kept: Vec<Kept>,
     /// The rows it read.
     pub read: u64,
+    /// Where it started.
+    pub began: Began,
+    /// The session's rows after the run.
+    pub rows: u64,
 }
 
 /// The driver: folds a session's rows on a connection that holds them.
@@ -289,16 +357,29 @@ impl Run<'_> {
     /// before `from` (from its first row when `from` is the start).
     pub(crate) fn session(&self, session_pk: i64, from: &Key) -> Result<Folded> {
         match self.fold(session_pk, from, true)? {
-            Some(folded) => Ok(folded),
+            Ok(folded) => Ok(folded),
             // A fold could not go on from a stored state: from the start,
             // keeping no state until the end, so nothing settles early.
-            None => self
-                .fold(session_pk, &Key::start(), false)?
-                .ok_or_else(|| StoreError::internal("a fold restarted a run from the start")),
+            Err(fold) => match self.fold(session_pk, &Key::start(), false)? {
+                Ok(folded) => Ok(Folded {
+                    began: Began::First(Why::Restart(fold)),
+                    ..folded
+                }),
+                Err(_) => Err(StoreError::internal(
+                    "a fold restarted a run from the start",
+                )),
+            },
         }
     }
 
-    fn fold(&self, session_pk: i64, from: &Key, sparse: bool) -> Result<Option<Folded>> {
+    /// Folds from the nearest state before `from`; `Err` with the name of a
+    /// fold that could not continue from it.
+    fn fold(
+        &self,
+        session_pk: i64,
+        from: &Key,
+        sparse: bool,
+    ) -> Result<std::result::Result<Folded, &'static str>> {
         let resumed: Option<(Key, u64, Vec<u8>)> = if from.is_start() {
             None
         } else {
@@ -311,6 +392,11 @@ impl Run<'_> {
                     Ok((Key(r.get(0)?), r.get::<_, i64>(1)? as u64, r.get(2)?))
                 })
                 .optional()?
+        };
+        let began = match &resumed {
+            Some((_, rows, _)) => Began::Kept { rows: *rows },
+            None if from.is_start() => Began::First(Why::Change),
+            None => Began::First(Why::NoState),
         };
         let (mut states, after, mut rows) = match resumed {
             Some((after, rows, state)) => (serde_json::from_slice::<States>(&state)?, after, rows),
@@ -326,17 +412,19 @@ impl Run<'_> {
         let mut read = 0;
         let mut reader = Rows::after(self.conn, session_pk, &after)?;
         while let Some(row) = reader.next(self.conn)? {
-            let mut restart = false;
+            let mut restart = None;
             each_fold!(states, state, {
                 if let Flow::Restart = F::step(state, &row, &cx, &mut output)? {
-                    restart = true;
+                    restart = restart.or(Some(F::NAME));
                 }
             });
-            if restart {
-                return Ok(None);
+            if let Some(fold) = restart {
+                return Ok(Err(fold));
             }
             rows += 1;
             read += 1;
+            #[cfg(any(test, feature = "fixture"))]
+            ROWS_FOLDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if sparse && rows % EVERY == 0 {
                 kept.push(Kept {
                     after: row.key().clone(),
@@ -356,11 +444,13 @@ impl Run<'_> {
             });
         }
         each_fold!(states, state, F::end(state, &cx, &mut output)?);
-        Ok(Some(Folded {
+        Ok(Ok(Folded {
             after,
             output,
             kept,
             read,
+            began,
+            rows,
         }))
     }
 }

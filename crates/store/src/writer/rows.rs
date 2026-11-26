@@ -7,12 +7,12 @@
 use super::readings::{self, Touched};
 use super::*;
 use crate::change_summary::ChangeSummary;
+use polylogue_model::chain::ChainState;
 
-mod checkpoint;
+mod state;
 
 /// How a step's rows are written.
 pub(super) struct StepWrite<'a> {
-    pub counter: i64,
     /// The chain the step's bytes were stored in.
     pub chain: i64,
     /// The record commit that holds the step's bytes.
@@ -49,15 +49,13 @@ pub(super) fn write_step(
     let input_pk: i64 = tx
         .prepare_cached("SELECT pk FROM input_ref WHERE id=?1")?
         .query_row([&b.input.id], |row| row.get(0))?;
-    let previous = checkpoint::read(tx, input_pk, chain)?;
-    if p.delivery.is_none() && !accept_step(previous.as_ref(), p)? {
-        return Ok(());
-    }
+    let previous = crate::parse_state::state(tx, input_pk, chain)?;
+    state::check_start(&b.input.id, chain, &previous, p)?;
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
     }
     let source_commit = w.source_commit;
-    let checkpoint = checkpoint::Update::new(b, p, previous.as_ref(), w.counter)?;
+    let next = state::next(&previous, p, b.length)?;
     if p.reset {
         readings::delete(tx, w.changes, input_pk, chain, touched)?;
     }
@@ -71,6 +69,8 @@ pub(super) fn write_step(
             chain,
             committed,
             changes: w.changes,
+            holds_changed: matches!(previous, ChainState::Parsed { .. })
+                != matches!(next, ChainState::Parsed { .. }),
         },
         b,
         p,
@@ -96,7 +96,7 @@ pub(super) fn write_step(
         },
         p,
     )?;
-    checkpoint.write(tx, input_pk, chain)?;
+    crate::parse_state::write(tx, input_pk, chain, &next)?;
     let a = &p.counts;
     let groups = [
         ("skipped:", &a.skipped, 1),
@@ -124,15 +124,14 @@ pub(super) fn write_step(
 }
 
 /// Ends a transaction that wrote readings: computes the shown rows of what
-/// they state, marks the sessions it touched due for their summaries and
-/// brings the session item index up to date. Returns the messages written
-/// and the item units read.
+/// they state and marks the sessions it touched due for their summaries.
+/// Returns the messages written.
 pub(crate) fn finish(
     tx: &Transaction<'_>,
     touched: Touched,
     changes: &ChangeSummary,
     counter: i64,
-) -> Result<(u64, u64)> {
+) -> Result<u64> {
     let written = super::shown::compose(
         &super::shown::Context {
             tx,
@@ -141,23 +140,19 @@ pub(crate) fn finish(
         },
         touched,
     )?;
-    let read = finish_summaries(tx, changes, counter)?;
-    Ok((written, read))
+    finish_summaries(tx, changes, counter)?;
+    Ok(written)
 }
 
 /// Marks the sessions a transaction's shown rows changed due for their
-/// summaries, and brings the session item index up to date with the rows;
-/// returns the item units read. Nothing of a summary is computed here.
+/// summaries. Nothing of a summary is computed here.
 pub(super) fn finish_summaries(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
     counter: i64,
-) -> Result<u64> {
+) -> Result<()> {
     changes.mark_due(tx, counter)?;
-    changes.finish_links(tx)?;
-    crate::timing::time(crate::timing::Stage::Items, || {
-        crate::items::refresh(tx, changes)
-    })
+    changes.finish_links(tx)
 }
 
 fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
@@ -170,26 +165,4 @@ fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// A continuing reading can only extend its committed prefix. Explicit resets
-/// replace a complete reading, including row dumps whose accounting starts later.
-fn accept_step(previous: Option<&checkpoint::Stored>, step: &ParseStep) -> Result<bool> {
-    if step.reset {
-        return Ok(true);
-    }
-    let cursor = previous.map_or(0, checkpoint::Stored::cursor);
-    if step.start < cursor
-        && step.parsed_upto <= cursor
-        && previous.is_some_and(|prior| prior.version() == step.parse_version)
-    {
-        return Ok(false);
-    }
-    if step.start != cursor {
-        return Err(StoreError::Invalid(format!(
-            "reading starts at {} after committed position {cursor}",
-            step.start
-        )));
-    }
-    Ok(true)
 }

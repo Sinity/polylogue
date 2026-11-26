@@ -1,0 +1,140 @@
+use super::*;
+use crate::summary::{Output, SessionWrite, Token, Write};
+use crate::writer::{ChainParse, InputKey, ParseStep};
+use rusqlite::{Connection, params};
+
+fn duplicate_write(
+    conn: &Connection,
+    session: i64,
+    message: i64,
+    duplicate: Option<&str>,
+) -> Write {
+    let token = Token::read(conn, session).unwrap().unwrap().0;
+    Write {
+        sessions: vec![SessionWrite {
+            pk: session,
+            token,
+            computed: Vec::new(),
+            output: Output {
+                duplicates: vec![(message, duplicate.map(str::to_owned))],
+                ..Output::default()
+            },
+            folded: None,
+        }],
+        finish: false,
+    }
+}
+
+fn hidden() -> (WriterArchive, Connection, i64, i64) {
+    let mut world = WriterArchive::new();
+    world.write(
+        "session",
+        prose("session", 1, 1000, "retained original content"),
+    );
+    let conn = crate::archive::open_write(&world.archive.index_db(), crate::archive::cache::SETUP)
+        .unwrap();
+    let (message, session) = conn
+        .query_row("SELECT pk,session_pk FROM message", [], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+        })
+        .unwrap();
+    crate::summary::mark(&conn, session, &crate::summary::Key::start()).unwrap();
+    let hide = duplicate_write(&conn, session, message, Some("synthetic-repeat"));
+    assert_eq!(crate::summary::apply(&conn, &hide).unwrap(), vec![true]);
+    (world, conn, session, message)
+}
+
+/// A message the first wave reveals is written into the lines of the same
+/// round from its blocks: the summary worker reads it, not the writer.
+#[test]
+fn a_revealed_message_gets_its_lines_from_its_blocks() {
+    let (world, conn, session, _) = hidden();
+    assert!(world.writer.derive().unwrap() > 0);
+    let expected = crate::summary::lines::computed_entries(&conn, session).unwrap();
+    let actual = crate::items::stored_entries(&conn, session, 0).unwrap();
+    assert_eq!(actual, expected);
+    assert_eq!(actual[1].body_bytes, 25);
+}
+
+#[test]
+fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
+    for retract in [false, true] {
+        let (mut world, conn, session, message) = hidden();
+        let reveal = duplicate_write(&conn, session, message, None);
+        if retract {
+            let mut reading = ChainParse::new().unwrap();
+            reading
+                .push(&mut ParseStep::new(
+                    polylogue_model::Output::default(),
+                    polylogue_model::RecordCounts::default(),
+                    0..world.offset(),
+                    true,
+                ))
+                .unwrap();
+            world
+                .writer
+                .replace_chain(
+                    InputKey {
+                        id: "input-session".into(),
+                        format: "claude-code".into(),
+                        route: polylogue_model::Route::Live,
+                    },
+                    1,
+                    world.offset(),
+                    reading,
+                )
+                .unwrap();
+            world.writer.derive().unwrap();
+            assert_eq!(
+                conn.query_row("SELECT count(*) FROM message", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "the replacement must retract the message before the stale reveal arrives"
+            );
+        } else {
+            world.write_snapshot(
+                "session",
+                prose("session", 1, 2000, "newer selected content"),
+            );
+        }
+        let before: Vec<Vec<u8>> = conn
+            .prepare("SELECT entry FROM transcript_line ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(crate::summary::apply(&conn, &reveal).unwrap(), vec![false]);
+        let after: Vec<Vec<u8>> = conn
+            .prepare("SELECT entry FROM transcript_line ORDER BY seq")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(after, before);
+        if retract {
+            assert_eq!(
+                conn.query_row(
+                    "SELECT count(*) FROM message WHERE pk=?1",
+                    [message],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+                0
+            );
+        } else {
+            let selected = crate::summary::lines::computed_entries(&conn, session).unwrap();
+            assert_eq!(selected[1].body_bytes, 22);
+            let hidden: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM message WHERE pk=?1 AND duplicate_of IS NOT NULL)",
+                    params![message],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(!hidden);
+        }
+    }
+}

@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 
 pub const VERSION: u32 = 3;
 
+parser_modules! {}
+
 pub fn open() -> Parse {
     Parse::Lines(Box::new(RowDump))
 }

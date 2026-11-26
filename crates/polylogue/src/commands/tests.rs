@@ -140,7 +140,10 @@ fn mcp_offers_one_tool_per_family_over_the_commands_marked_for_it() {
 fn only_daemon_rows_go_over_mcp_and_http() {
     for c in COMMANDS.iter().filter(|c| c.tool.is_some() || c.http) {
         assert!(
-            !matches!(c.run, Run::Local(..) | Run::ConfiguredLocal(..)),
+            !matches!(
+                c.run,
+                Run::Local(..) | Run::ConfiguredLocal(..) | Run::ClientLocal(..)
+            ),
             "{} runs locally",
             c.name
         );
@@ -242,7 +245,7 @@ fn request_id_travels_beside_the_arguments_on_every_surface() {
     let root = crate::cli::command();
     assert!(
         root.get_arguments()
-            .any(|arg| arg.get_id() == "request_id" && arg.is_global_set())
+            .any(|arg| arg.get_long() == Some("request-id") && arg.is_global_set())
     );
     for command in COMMANDS.iter().filter(|command| command.writes) {
         assert!(

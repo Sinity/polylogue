@@ -6,7 +6,7 @@
 use crate::{OptionExt as _, ResultExt as _};
 use crate::{ParseStep, Result, StoreError};
 use polylogue_model::WireShape;
-use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadRange, StepProgress};
+use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadRange};
 mod export;
 pub(crate) use export::admit_export;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
@@ -111,7 +111,6 @@ polylogue_model::stored_names! {
         Partial => "partial",
         Unreadable => "unreadable",
         Refused => "refused",
-        NoParserYet => "no_parser_yet",
         Failed => "failed",
         Unknown => "unknown",
     }
@@ -207,7 +206,11 @@ struct Reading {
     input: String,
     parsed_upto: u64,
     length: u64,
-    progress: StepProgress,
+    /// The last step read through the end of the bytes it was given.
+    reached_end: bool,
+    /// The input was refused by its origin's shape check.
+    #[serde(default)]
+    refused: bool,
     unreadable: u64,
     prefix_missing: bool,
     first: Occurrence,
@@ -262,15 +265,14 @@ impl Reading {
     }
 
     fn status(&self) -> CoverageStatus {
-        match &self.progress {
-            StepProgress::NoParserYet { .. } => CoverageStatus::NoParserYet,
-            _ if self.unreadable > 0 => CoverageStatus::Unreadable,
-            StepProgress::AtEnd if !self.prefix_missing && self.parsed_upto >= self.length => {
-                CoverageStatus::Complete
-            }
-            StepProgress::AtEnd | StepProgress::Partway => CoverageStatus::Partial,
-            StepProgress::Refused { .. } => CoverageStatus::Refused,
-            StepProgress::Failed { .. } => CoverageStatus::Failed,
+        if self.unreadable > 0 {
+            CoverageStatus::Unreadable
+        } else if self.refused {
+            CoverageStatus::Refused
+        } else if self.reached_end && !self.prefix_missing && self.parsed_upto >= self.length {
+            CoverageStatus::Complete
+        } else {
+            CoverageStatus::Partial
         }
     }
 }
@@ -288,39 +290,6 @@ fn stored_reading(tx: &Connection, source: Source<'_>, version: &str) -> Result<
     Ok(state
         .map(|json| serde_json::from_str::<Reading>(&json))
         .transpose()?)
-}
-
-/// Restates a reading copied from another chain's reading (with its occurrences
-/// already taken again for this chain) against this chain's own `source`:
-/// its length, whether the copy read it to its end, and so whether, and at
-/// which occurrence, it covers its whole source. A completion of the other
-/// chain belonged to that chain's bytes, not to the copied ones.
-pub(crate) fn copied(
-    tx: &Connection,
-    source: Source<'_>,
-    parse_version: &str,
-    reaches_end: bool,
-) -> Result<()> {
-    let Some(mut reading) = stored_reading(tx, source, parse_version)? else {
-        return Ok(());
-    };
-    reading.length = source.length;
-    reading.progress = reading.progress.clone().with_end(reaches_end);
-    reading.completed = None;
-    reading.completed_before_reset = None;
-    if reading.status() == CoverageStatus::Complete {
-        reading.complete(source, &Occurrence::from(source));
-    }
-    tx.prepare_cached(
-        "UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3",
-    )?
-    .execute(params![
-        source.input_pk,
-        source.chain,
-        parse_version,
-        serde_json::to_string(&reading)?
-    ])?;
-    Ok(())
 }
 
 /// Apply before or after the parse checkpoint, in the same transaction.
@@ -351,7 +320,11 @@ fn apply_inner(
     replacement: bool,
 ) -> Result<()> {
     // A failed parse observed no records; its standing is the parse state's.
-    if matches!(step.progress, StepProgress::Failed { .. }) {
+    if step
+        .failure
+        .as_ref()
+        .is_some_and(|failure| failure.kind != polylogue_model::ChainFailureKind::Refused)
+    {
         return Ok(());
     }
     if step.parsed_upto < step.start || step.parsed_upto > source.length {
@@ -389,7 +362,6 @@ fn apply_inner(
             .values()
             .copied()
             .try_fold(0u64, add)?,
-        matches!(step.progress, StepProgress::NoParserYet { .. }),
     ))?)
     .to_hex()
     .to_string();
@@ -432,14 +404,12 @@ fn apply_inner(
             let prefix_missing = !step.reset && old.prefix_missing;
             let coverage_changed = prefix_missing != old.prefix_missing;
             old.prefix_missing = prefix_missing;
-            let reaches_end = step.progress.reached_end() && step.parsed_upto >= source.length;
+            let reaches_end = step.at_end && step.parsed_upto >= source.length;
             if coverage_changed
-                || (step.parsed_upto == old.parsed_upto
-                    && reaches_end
-                    && !old.progress.reached_end())
+                || (step.parsed_upto == old.parsed_upto && reaches_end && !old.reached_end)
             {
-                if reaches_end {
-                    old.progress = old.progress.clone().with_end(true);
+                if reaches_end && !old.refused {
+                    old.reached_end = true;
                 }
                 old.length = source.length;
                 old.last = occurrence.clone();
@@ -456,7 +426,8 @@ fn apply_inner(
         input: source.input.to_owned(),
         parsed_upto: step.parsed_upto,
         length: source.length,
-        progress: step.progress.clone(),
+        reached_end: step.at_end && step.failure.is_none(),
+        refused: step.failure.is_some(),
         prefix_missing: if reset {
             false
         } else {
@@ -512,7 +483,7 @@ fn apply_inner(
     }
     // A missing prefix is incomplete even if this suffix reached EOF.
     if previous.is_none() && step.start != 0 && !step.reset && !export_delivery {
-        reading.progress = reading.progress.clone().with_end(false);
+        reading.reached_end = false;
     }
     if reading.status() == CoverageStatus::Complete {
         reading.complete(source, &occurrence);

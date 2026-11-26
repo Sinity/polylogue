@@ -20,6 +20,10 @@ fn process(root: &Path) -> ProcessInputs {
         cwd: Some(root.into()),
     }
 }
+/// The daemon's load: the client's configuration extended with the rest.
+fn loaded(process: &ProcessInputs, overrides: Overrides) -> Result<Startup, Error> {
+    Client::load(process, overrides).and_then(|client| Startup::extend(client, process))
+}
 fn deployment(root: &Path, text: &str) {
     let config = root.join("config/polylogue");
     std::fs::create_dir_all(&config).unwrap();
@@ -45,7 +49,7 @@ fn explicit_configuration_selects_its_auxiliary_files_without_changing_xdg_paths
         config_file: Some("deployment/polylogue.toml".into()),
         ..Overrides::default()
     };
-    let startup = Startup::load(&process, options()).unwrap();
+    let startup = loaded(&process, options()).unwrap();
     assert_eq!(startup.config.archive, selected.join("archive"));
     assert_eq!(startup.config.paths.config, root.path().join("config"));
     assert_eq!(startup.config.paths.home, root.path().join("home"));
@@ -57,7 +61,7 @@ fn explicit_configuration_selects_its_auxiliary_files_without_changing_xdg_paths
     assert_eq!(command.program, selected.join("bin/refresh"));
     assert_eq!(command.arguments, ["two words"]);
     std::fs::write(selected.join("signals.toml"), "invalid = [").unwrap();
-    assert!(Startup::load(&process, options()).is_err());
+    assert!(loaded(&process, options()).is_err());
 }
 
 /// The day's zone and start when the deployment names no zone, loaded in a
@@ -69,12 +73,12 @@ fn standalone_day_host_zone_child() {
     };
     let root = tempfile::tempdir().unwrap();
     deployment(root.path(), "");
-    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let startup = loaded(&process(root.path()), Overrides::default()).unwrap();
     let day = startup.config.standalone_day().unwrap();
     assert_eq!(day.zone_name(), zone.to_str().unwrap());
     assert_eq!(day.start(), jiff::civil::Time::constant(4, 0, 0, 0));
     deployment(root.path(), "[day]\nstart='06:00:00'\n");
-    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let startup = loaded(&process(root.path()), Overrides::default()).unwrap();
     let day = startup.config.standalone_day().unwrap();
     assert_eq!(day.zone_name(), zone.to_str().unwrap());
     assert_eq!(day.start(), jiff::civil::Time::constant(6, 0, 0, 0));
@@ -109,7 +113,7 @@ fn standalone_day_uses_the_named_zone_across_dst_and_refuses_invalid_zones() {
         root.path(),
         "[day]\nzone='America/Los_Angeles'\nstart='06:00:00'\n",
     );
-    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let startup = loaded(&process(root.path()), Overrides::default()).unwrap();
     let day = startup.config.standalone_day().unwrap();
     assert_eq!(day.zone_name(), "America/Los_Angeles");
     let range = day.day("2026-03-07".parse().unwrap()).unwrap();
@@ -131,7 +135,7 @@ fn standalone_day_uses_the_named_zone_across_dst_and_refuses_invalid_zones() {
         "[day]\nzone='Invalid/Zone'\nstart='06:00:00'\n",
     );
     assert!(matches!(
-        Startup::load(&process(root.path()), Overrides::default()),
+        loaded(&process(root.path()), Overrides::default()),
         Err(Error::Invalid(_))
     ));
 }
@@ -152,7 +156,7 @@ fn configuration_precedence_is_file_then_flags_then_meaningful_environment() {
         .environment
         .values
         .insert("POLYLOGUE_ARCHIVE".into(), "/unrelated".into());
-    let startup = Startup::load(
+    let startup = loaded(
         &process,
         Overrides {
             archive: Some("flag/../archive".into()),
@@ -177,12 +181,12 @@ fn remote_listen_requires_a_loaded_token_and_never_reads_it_again() {
         listen: Some("0.0.0.0:8765".parse().unwrap()),
         ..Overrides::default()
     };
-    assert!(Startup::load(&process, overrides()).is_err());
+    assert!(loaded(&process, overrides()).is_err());
     let token = root.path().join("token");
     std::fs::write(&token, "synthetic-token\n").unwrap();
     let mut options = overrides();
     options.auth_token_file = Some(token.clone());
-    let startup = Startup::load(&process, options).unwrap();
+    let startup = loaded(&process, options).unwrap();
     std::fs::write(token, "changed-token").unwrap();
     assert_eq!(
         startup.config.http.token.as_ref().unwrap().expose(),
@@ -217,20 +221,13 @@ fn output_and_grammar_inputs_need_no_deployment_or_machine_identity() {
             .contains_key("POLYLOGUE_AUTH_TOKEN_FILE")
     );
     assert!(!format!("{environment:?}").contains("synthetic-secret"));
-    let matches = augment_command(Command::new("polylogue"))
-        .try_get_matches_from(["polylogue", "--archive", "/synthetic/archive"])
-        .unwrap();
-    assert_eq!(
-        Overrides::from_matches(&matches).archive,
-        Some("/synthetic/archive".into())
-    );
 }
 #[test]
 fn outlets_use_typed_arguments_and_stable_resolved_identity() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("signals.toml");
     std::fs::write(&path, "[notifications]\naway_command={program='./bin/../notify',arguments=['a b','literal;$HOME']}\n[value_targets.answer]\npath='./state/../answer'\n[action_commands.refresh]\nprogram='bin/refresh'\narguments=['--mode','once']\n").unwrap();
-    let config = SignalDeployment::load(&path).unwrap();
+    let config = SignalDeployment::read(&path).unwrap();
     assert_eq!(
         config
             .notifications
@@ -256,7 +253,7 @@ fn outlets_use_typed_arguments_and_stable_resolved_identity() {
     );
     assert_eq!(
         config.identity().unwrap(),
-        SignalDeployment::load(&path).unwrap().identity().unwrap()
+        SignalDeployment::read(&path).unwrap().identity().unwrap()
     );
     let before = config.identity().unwrap();
     std::fs::write(
@@ -265,16 +262,16 @@ fn outlets_use_typed_arguments_and_stable_resolved_identity() {
     )
     .unwrap();
     assert_ne!(
-        SignalDeployment::load(&path).unwrap().identity().unwrap(),
+        SignalDeployment::read(&path).unwrap().identity().unwrap(),
         before
     );
     // The route function decides where a notice goes; no route is configured.
     std::fs::write(&path, "[notifications]\nroute='command'\n").unwrap();
-    assert!(SignalDeployment::load(&path).is_err());
+    assert!(SignalDeployment::read(&path).is_err());
     std::fs::write(&path, "[notifications]\naway_command={program=' '}\n").unwrap();
-    assert!(SignalDeployment::load(&path).is_err());
+    assert!(SignalDeployment::read(&path).is_err());
     std::fs::write(&path, "[value_targets.answer]\npath=''\n").unwrap();
-    assert!(SignalDeployment::load(&path).is_err());
+    assert!(SignalDeployment::read(&path).is_err());
 }
 #[test]
 fn unreadable_primary_deployment_stays_blocked_without_local_day() {
@@ -282,7 +279,7 @@ fn unreadable_primary_deployment_stays_blocked_without_local_day() {
     deployment(root.path(), "");
     // A directory gives a deterministic read failure even under a privileged test runner.
     std::fs::create_dir_all(root.path().join("home/.local/share/polylogue/sinex.toml")).unwrap();
-    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let startup = loaded(&process(root.path()), Overrides::default()).unwrap();
     assert!(matches!(
         startup.mode,
         crate::daemon::service::ArchiveMode::Blocked { .. }
@@ -305,7 +302,7 @@ fn fixture_configuration_uses_explicit_engine_inputs_and_has_no_external_outlets
     let startup = Startup::for_test(engine.clone(), &root.path().join("archive"));
     assert_eq!(startup.config.identity.machine, "fixture-machine");
     assert_eq!(startup.config.requests.now(), engine.clock.now().into());
-    assert_eq!(startup.clock.now(), engine.clock.now());
+    assert_eq!(startup.client.clock.now(), engine.clock.now());
     assert_eq!(startup.config.standalone_day().unwrap().zone_name(), "UTC");
     assert!(startup.config.notification_bus_address.is_none());
     assert!(startup.config.signals.action_commands.is_empty());
@@ -313,43 +310,93 @@ fn fixture_configuration_uses_explicit_engine_inputs_and_has_no_external_outlets
 }
 
 #[test]
-fn completion_and_startup_share_declared_archive_selection_without_clock_dependencies() {
+fn the_client_loads_without_identity_clock_or_daemon_files() {
     let root = tempfile::tempdir().unwrap();
     deployment(
         root.path(),
-        "archive='file-archive'\n[day]\nzone='Invalid/Zone'\nstart='04:00:00'\n",
+        "archive='file-archive'\n[http]\nauth_token_file='missing-token'\n[day]\nzone='Invalid/Zone'\nstart='04:00:00'\n",
     );
+    let defaults = root.path().join("config/polylogue");
+    std::fs::write(defaults.join("signals.toml"), "invalid = [").unwrap();
+    std::fs::create_dir_all(root.path().join("config/polylogue/file-archive")).unwrap();
+    std::fs::write(
+        root.path().join("config/polylogue/file-archive/sinex.toml"),
+        "invalid = [",
+    )
+    .unwrap();
     let mut inputs = process(root.path());
     inputs.identity = None;
     inputs.workers = None;
-    let overrides = Overrides::default();
+    let client = Client::load(&inputs, Overrides::default()).unwrap();
     assert_eq!(
-        archive_location(&inputs, &overrides).unwrap(),
+        client.archive,
         root.path().join("config/polylogue/file-archive")
     );
+    assert_eq!(client.zone(), jiff::tz::TimeZone::UTC);
     assert_eq!(
-        archive_location(
+        Client::load(
             &inputs,
-            &Overrides {
+            Overrides {
                 archive: Some("chosen".into()),
                 ..Overrides::default()
             }
         )
-        .unwrap(),
+        .unwrap()
+        .archive,
         root.path().join("chosen")
     );
-    deployment(root.path(), "archive='file-archive'\n");
-    let inputs = process(root.path());
+    // The daemon's load reads what the client did not, and refuses it.
+    assert!(matches!(
+        Startup::extend(client, &process(root.path())),
+        Err(Error::File { path, .. }) if path == defaults.join("missing-token")
+    ));
+}
+
+/// The client's load: the file, then the flag; no environment variable
+/// selects the archive.
+#[test]
+fn client_configuration_precedence_is_file_then_flags() {
+    let root = tempfile::tempdir().unwrap();
+    let mut inputs = process(root.path());
+    inputs
+        .environment
+        .values
+        .insert("POLYLOGUE_ARCHIVE".into(), "/unrelated".into());
+    let archive = |overrides: Overrides| Client::load(&inputs, overrides).unwrap().archive;
     assert_eq!(
-        archive_location(&inputs, &overrides).unwrap(),
-        Startup::load(&inputs, overrides).unwrap().config.archive
+        archive(Overrides::default()),
+        root.path().join("home/.local/share/polylogue")
     );
+    deployment(root.path(), "archive='file-archive'\n");
+    assert_eq!(
+        archive(Overrides::default()),
+        root.path().join("config/polylogue/file-archive")
+    );
+    assert_eq!(
+        archive(Overrides {
+            archive: Some("flag/../archive".into()),
+            ..Overrides::default()
+        }),
+        root.path().join("archive")
+    );
+}
+
+#[test]
+fn startup_without_working_directory_is_an_io_failure() {
+    let root = tempfile::tempdir().unwrap();
+    let mut inputs = process(root.path());
+    inputs.cwd = None;
+    let error = Client::load(&inputs, Overrides::default()).unwrap_err();
+    assert!(matches!(error, Error::WorkingDirectory));
+    let failure = error.failure();
+    assert_eq!(failure.kind.exit_code(), 4);
+    assert_eq!(failure.message, "the current directory is unavailable");
 }
 
 #[test]
 fn synthetic_archive_gets_an_explicit_day_without_operator_outlets() {
     let root = tempfile::tempdir().unwrap();
-    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
+    let startup = loaded(&process(root.path()), Overrides::default()).unwrap();
     let day = DaySetting::new(
         jiff::tz::TimeZone::UTC,
         jiff::civil::Time::constant(6, 0, 1, 0),
@@ -408,7 +455,7 @@ fn archive_override_selects_its_own_mode_configuration() {
     std::fs::write(first.join("sinex.toml"), "mode='unknown'\n").unwrap();
     std::fs::write(second.join("sinex.toml"), "mode='standalone'\n").unwrap();
     let load = |archive| {
-        Startup::load(
+        loaded(
             &process(root.path()),
             Overrides {
                 archive: Some(archive),
@@ -445,7 +492,7 @@ fn startup_sizes_the_pipeline_within_the_process_allowance() {
         let mut inputs = process(root.path());
         inputs.workers = Some(cpus);
         inputs.memory_bytes = Some(bytes);
-        let startup = Startup::load(&inputs, Overrides::default()).unwrap();
+        let startup = loaded(&inputs, Overrides::default()).unwrap();
         assert_eq!(startup.engine.workers, workers);
         assert_eq!(startup.engine.reader_memory_bytes, readers);
         assert_eq!(startup.engine.bytes_in_flight, queued);
@@ -461,8 +508,11 @@ fn zsh_startup_directory_is_resolved_from_the_captured_environment() {
         ("HOME".into(), root.path().join("home").into_os_string()),
         ("ZDOTDIR".into(), "shell-startup".into()),
     ]);
-    let startup = Startup::load(&inputs, Overrides::default()).unwrap();
-    assert_eq!(startup.zsh_directory, root.path().join("shell-startup"));
+    let startup = loaded(&inputs, Overrides::default()).unwrap();
+    assert_eq!(
+        startup.client.zsh_directory,
+        root.path().join("shell-startup")
+    );
 }
 #[test]
 fn an_empty_xdg_variable_is_unset() {

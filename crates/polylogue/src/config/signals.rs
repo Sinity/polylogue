@@ -48,7 +48,7 @@ pub struct SignalDeployment {
     pub action_commands: BTreeMap<String, ActionCommand>,
 }
 impl SignalDeployment {
-    pub fn load(path: &Path) -> Result<Self, Error> {
+    pub fn read(path: &Path) -> Result<Self, Error> {
         let mut config: Self = super::optional_file(path)?
             .map(|text| {
                 toml::from_str(&text)

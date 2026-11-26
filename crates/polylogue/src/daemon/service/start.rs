@@ -205,15 +205,6 @@ impl Runtime {
                     if let Err(error) = result {
                         failure.get_or_insert(error);
                     }
-                    if let Some(writes) = &self.daemon.writes
-                        && let Err(error) = self.daemon.queued_deliveries.drain(writes)
-                    {
-                        let error = format!("delivery outcome drain: {error}");
-                        failure = Some(std::io::Error::other(match failure.take() {
-                            Some(previous) => format!("{previous}; {error}"),
-                            None => error,
-                        }));
-                    }
                     // Engine owns the writer. Its final acknowledgments precede close.
                     drop(engine);
                 }
@@ -259,17 +250,6 @@ pub enum ArchiveMode {
     },
 }
 
-impl ArchiveMode {
-    pub(crate) fn needs_engine(&self) -> bool {
-        match self {
-            Self::Standalone => true,
-            #[cfg(feature = "sinex")]
-            Self::Primary => true,
-            Self::Blocked { .. } => false,
-        }
-    }
-}
-
 /// Primary mode is not built in this version (`docs/primary-mode.md`).
 #[cfg(feature = "sinex")]
 fn primary_not_built() -> std::io::Error {
@@ -288,7 +268,6 @@ pub fn start(
     config: Config,
     mode: ArchiveMode,
     lifetime: Lifetime,
-    stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
 ) -> std::io::Result<Runtime> {
     let root = deployment.archive.as_path();
     if let Some(stopped) = crate::daemon::storage_stop::this_boot(&deployment.paths, root) {
@@ -301,11 +280,6 @@ pub fn start(
     let budget = config.memory_budget;
     let config = config.with_memory_budget(budget);
     let settings = config.clone();
-    let attempt = || {
-        stopped_attempt.ok_or_else(|| {
-            std::io::Error::other("the executable identity is required to start the Engine")
-        })
-    };
     // An archive recorded as primary is refused before anything opens it,
     // so it is left as it was.
     #[cfg(feature = "sinex")]
@@ -316,11 +290,10 @@ pub fn start(
     }
     let (archive, lock, mode, engine, completion_scope) = match mode {
         ArchiveMode::Standalone => {
-            let attempt = attempt()?;
             let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
                 .map_err(std::io::Error::other)?;
             let archive = archive.with_memory_budget(settings.memory_budget);
-            let engine = Engine::new(config, archive.clone(), attempt).map_err(|e| to_io(&e))?;
+            let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
         ArchiveMode::Blocked {
@@ -374,7 +347,6 @@ pub fn start(
         warm,
         scope: crate::daemon::scope::SharedScopeIndex::default(),
         status_snapshot: Default::default(),
-        queued_deliveries: crate::daemon::queued_deliveries::QueuedDeliveries::default(),
         live_spool: Default::default(),
         advisories: crate::advisory::Cooldowns::default(),
         acts: crate::live_acts::Acts::new(
@@ -397,8 +369,6 @@ pub fn start(
         status: Arc::clone(&status),
         started: Instant::now(),
         signals: Mutex::new(serde_json::Value::Null),
-        #[cfg(test)]
-        signal_trace: Mutex::new(None),
         idle_gate: crate::daemon::schema::IdleGate::default(),
     });
     let acts_worker = {

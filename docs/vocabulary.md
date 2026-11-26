@@ -148,7 +148,14 @@ generated page of the thing they belong to, or on the area page that owns them.
   is owned by its chain; the **shown rows** of a session are composed from
   the parses that state it. **Reading** is what `read` produces.
 - **covered chain**: a chain a newer chain of the same input is known to
-  begin with all of; it has no reading.
+  begin with all of; it has no reading and is shown as `repeated`.
+- **chain state**: what the index holds of one chain: no parse, parsed to a
+  length under a parse version, or failed there with its reason. With what
+  the archive says of the chain it decides whether the chain is **due** and
+  how it is shown: `parsing`, `repeated`, `no_parser`, `done`, `waiting`,
+  `refused` or `failed`.
+- **stale part**: a part of a chain's parse that does not start where the
+  chain's stored state ends; it is refused and the chain stays due.
 - **upkeep** and **build**: keeping the installed index current as the record
   grows, and making an index from nothing; they give the same index.
 - **re-parse**: reading a chain's stored bytes again with a newer reading
@@ -257,6 +264,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **fusion**: ranking rows by their places in several ordered lists.
 - **warm state**: derived state the daemon keeps between requests, each item
   keyed by what it depends on (`docs/latency.md`).
+- **status snapshot**: what `status` reads from the index, read after each
+  commit; a status reply **answers from** the snapshot, an index build, or
+  nothing read yet (`docs/operations.md`).
 
 ## Reading
 
@@ -462,6 +472,9 @@ generated page of the thing they belong to, or on the area page that owns them.
   sessions marked due.
 - **fold**: a session summary computed over the session's rows in order,
   resumed from a state stored after an earlier row.
+- **transcript line**: one layout item a transcript of a session can show
+  (a message header, a block, an in-place event), with its token estimates
+  and the counts before it; a session summary pages read from.
 - **validity kind**: how a derivation's validity is shown: `exact`,
   `parameterized`, `extracted` or `judged`.
 - **measure**: a computation a pipeline cannot express, named after `| measure`
@@ -482,6 +495,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   resolves it.
 
 ## The daemon and its surfaces
+
+- **worker**: work following committed changes. It is **running**, **failing** while a transient failure waits for another commit, or **halted** when repeating the work cannot end its failure.
 
 - **daemon**: the one process on the archive, the background service; it
   holds the lock, runs the two writers and serves every client.
@@ -637,3 +652,5 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `last` (reference) | `latest` |
 | `--format` on `import` | `--origin` |
 | `--since` on the change feed | `--after` |
+| `no_parser_yet`, `partial` (parse states) | `no_parser`; a chain whose earlier bytes are missing has no state of its own |
+| stopped attempt (a failure bound to the executable) | a failed chain state, tried again only when its bytes or parse version change |
