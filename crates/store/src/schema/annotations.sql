@@ -18,14 +18,14 @@ CREATE INDEX annotation_commit_seq ON annotation(commit_seq,id);
 -- Every reference an annotation makes, in its role: target, evidence, scope,
 -- origin, revision, withdrawal and every relation are one fact.
 CREATE TABLE annotation_link (
-  record    TEXT NOT NULL REFERENCES annotation(id),
+  annotation TEXT NOT NULL REFERENCES annotation(id),
   role      TEXT NOT NULL,
   ref       TEXT NOT NULL,        -- the stored reference form
   seen_hash BLOB CHECK(seen_hash IS NULL OR length(seen_hash)=32), -- BLAKE3 of the target text when written
   quote     TEXT CHECK(quote IS NULL OR json_valid(quote)),        -- span links: the exact text with up to 32 characters before and after
-  PRIMARY KEY(record,role,ref)
+  PRIMARY KEY(annotation,role,ref)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX annotation_link_ref ON annotation_link(ref,role,record);
+CREATE INDEX annotation_link_ref ON annotation_link(ref,role,annotation);
 
 -- Which revisions are current and withdrawn, recomputed in the writing
 -- transaction for exactly the roots a write can affect. An index over the
@@ -38,12 +38,12 @@ CREATE TABLE revision_state (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX revision_state_root ON revision_state(root,current,id);
 
--- The uniqueness slots each revision's content occupies, by the slot's digest.
--- A write without bases finds the current holders of its slots here.
-CREATE TABLE annotation_slot (
-  slot      BLOB NOT NULL CHECK(length(slot)=32),
+-- The unique keys each revision's content holds, by the key's digest.
+-- A write without bases finds the current holders of its keys here.
+CREATE TABLE annotation_unique_key (
+  key_hash  BLOB NOT NULL CHECK(length(key_hash)=32),
   id        TEXT NOT NULL REFERENCES annotation(id),
-  PRIMARY KEY(slot,id)
+  PRIMARY KEY(key_hash,id)
 ) STRICT, WITHOUT ROWID;
 
 -- A source can contain a fact already held through another physical ingress.

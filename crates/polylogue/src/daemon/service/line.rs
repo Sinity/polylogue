@@ -4,19 +4,18 @@
 //! once). A failing step stops the line; earlier steps keep their effects.
 //! A selection with no steps is the listing; a line ending in a streamed
 //! read streams.
-use super::{Failure, answers, handlers, query_targets};
+use super::{Failure, answers, query_targets};
 use crate::commands::ToolAccess;
 use crate::daemon::handler::{Bound, Call, Operation, Policy};
 use crate::daemon::verbs::{
-    self, Given, RowRule, Selection, StepCall, read::LineReads, refused_pick, rows_rule,
+    self, Given, RowRule, Selection, StepCall, StepDone, read::LineReads, refused_pick,
 };
 use crate::protocol::line::{
-    LineAnswer, LineExplanation, Resolved, Rows, SelectionForm, Step, StepExplanation, StepOutcome,
-    StepReport, StepsAnswer,
+    LineAnswer, LineExplanation, Resolved, Rows, SelectionForm, Step, StepAnswer, StepExplanation,
+    StepOutcome, StepReport, StepsAnswer,
 };
 use command_surface::{Answer, Envelope, Outcome, TextStyle};
 use polylogue_model::authorship::Channel;
-use polylogue_model::read::ReadDelivery;
 use polylogue_model::user::UserWrite;
 use polylogue_model::{Code, Reference};
 use polylogue_reading::operation::Context;
@@ -112,7 +111,7 @@ impl Operation for Line {
                 .map(|(index, step)| {
                     let request_id = step_request(call.request_id, index);
                     let step_call = StepCall::new(call, &request_id);
-                    let outcome = match verbs::would(step, &selection, &step_call) {
+                    let outcome = match step.would(&selection, &step_call) {
                         Ok(would) => StepOutcome::WouldDo {
                             would,
                             refusal: None,
@@ -148,7 +147,7 @@ pub(crate) fn streams(rows: &Rows) -> bool {
         && !rows.dry_run
         && rows.steps.iter().any(|step| {
             matches!(step,
-        Step::Read(read) if read.follow || read.delivery == ReadDelivery::Stream)
+        Step::Read(read) if read.follow || read.delivery.streams())
         })
 }
 
@@ -528,7 +527,7 @@ fn resolve(
                 ));
             }
             if query_rows.is_none()
-                && let Some(step) = steps.iter().find(|step| rows_rule(step) != RowRule::Any)
+                && let Some(step) = steps.iter().find(|step| step.rows() != RowRule::Any)
             {
                 return Err(Failure::bad_request(format!(
                     "{} needs archive rows; the selection is grouped or measured",
@@ -552,7 +551,7 @@ fn resolve(
     let needed = steps.len() > 1
         || steps
             .iter()
-            .any(|step| step.access() > ToolAccess::Read || rows_rule(step) == RowRule::One);
+            .any(|step| step.access() > ToolAccess::Read || step.rows() == RowRule::One);
     let resolved = match &given {
         Given::None => None,
         Given::Reference(reference) => Some(vec![reference.clone()]),
@@ -562,7 +561,7 @@ fn resolve(
             let reader = call.reader()?;
             if selects_rows(call, &reader, text)? {
                 Some(query_targets(call.daemon, &reader, text, call.invocation)?)
-            } else if let Some(step) = steps.iter().find(|step| rows_rule(step) != RowRule::Any) {
+            } else if let Some(step) = steps.iter().find(|step| step.rows() != RowRule::Any) {
                 return Err(Failure::bad_request(format!(
                     "{} needs archive rows; the selection is grouped or measured",
                     step.verb()
@@ -724,36 +723,29 @@ impl Stream<'_> {
         read: &crate::protocol::steps::ReadStep,
         selection: &Selection,
         call: &StepCall<'_>,
-    ) -> Result<verbs::StepDone, Failure> {
-        let target = verbs::read::target(selection)?;
+    ) -> Result<StepDone, Failure> {
         if read.follow {
             if read.until_idle {
                 return Err(verbs::not_built("read", "until-idle"));
             }
+            let target = verbs::read::target(selection)?;
             let marks =
                 super::follow::run(call.call.daemon, self.context, &target, None, self.output)?;
-            return verbs::delegated(Answer::ok(marks), |marks| {
-                crate::protocol::line::StepAnswer::Followed(Box::new(marks))
-            });
+            return Ok(Answer::ok(StepAnswer::Followed(Box::new(marks))).into());
         }
-        let call = Call {
-            cursor: read.cursor.as_deref(),
-            ..call.call.copy()
-        };
-        let answer = super::read::stream(
-            verbs::read::arguments(read, target)?,
-            &call,
+        let answer = verbs::read::stream(
+            verbs::read::request(read.clone(), selection)?,
+            &call.call,
             self.context,
             self.output,
             &LineReads {
-                daemon: call.daemon,
+                daemon: call.call.daemon,
                 accepted: self.context.accepted_request(),
             },
-            selection.resolved.as_deref(),
         )?;
-        verbs::delegated(answer, |complete| {
-            crate::protocol::line::StepAnswer::Streamed(Box::new(complete))
-        })
+        Ok(answer
+            .map(|complete| StepAnswer::Streamed(Box::new(complete)))
+            .into())
     }
 }
 
@@ -787,32 +779,36 @@ fn execute_steps(
                 limit.check()?;
             }
             match (&mut stream, &step) {
-                (Some(stream), Step::Read(read))
-                    if read.follow || read.delivery == ReadDelivery::Stream =>
-                {
+                (Some(stream), Step::Read(read)) if read.follow || read.delivery.streams() => {
                     stream.reports(selection, &mut reports, &mut envelope)?;
-                    stream.read(read, selection, &step_call)
+                    stream
+                        .read(read, selection, &step_call)
+                        .and_then(StepDone::checked)
                 }
-                _ => verbs::run_step(step, selection, &step_call),
+                _ => step.run(selection, &step_call),
             }
         };
         // Each step inherits the original line deadline. A preceding writer
-        // handoff must not remove that bound from later required reads.
+        // hand-over must not remove that bound from later required reads.
         let result = match limit {
             Some(limit) => limit.scope(work),
             None => work(),
         };
         let reported = match result {
             Ok(done) => {
-                verbs::merge_outcome(&mut outcome, done.outcome);
-                envelope.notes.extend(done.envelope.notes);
-                if !done.envelope.next.is_empty() {
-                    envelope.next = done.envelope.next;
+                verbs::merge_outcome(&mut outcome, done.outcome());
+                let StepDone { answer, undo } = done;
+                envelope.notes.extend(answer.envelope.notes);
+                if !answer.envelope.next.is_empty() {
+                    envelope.next = answer.envelope.next;
                 }
-                StepOutcome::Done {
-                    reply: done.reply,
-                    undo: done.undo,
-                }
+                let reply = match answer.outcome {
+                    Outcome::Ok(reply)
+                    | Outcome::Empty(reply)
+                    | Outcome::Degraded { value: reply, .. } => reply,
+                    Outcome::Error(_) => unreachable!("a failed step answer is its failure"),
+                };
+                StepOutcome::Done { reply, undo }
             }
             Err(failure) => {
                 failed = true;
@@ -842,10 +838,6 @@ fn execute_steps(
     })
 }
 
-fn listing_answer(answer: Answer<crate::protocol::query::Answer>) -> Answer<LineAnswer> {
-    answer.map(|found| LineAnswer::Listing(Box::new(found)))
-}
-
 /// How long a `--wait` waits: over MCP at most 50 seconds, which a model
 /// can hold a call open for.
 pub(super) fn listing_wait(wait: &str, channel: Channel) -> Result<Duration, Failure> {
@@ -859,6 +851,51 @@ pub(super) fn listing_wait(wait: &str, channel: Channel) -> Result<Duration, Fai
     })
 }
 
+/// The listing's page of rows, with the ranking the archive's settings
+/// allow. While a wait has no rows, its read phase stays open.
+fn rows_page(
+    call: &Call<'_>,
+    rows: &Rows,
+    query: &str,
+    waiting: bool,
+) -> Result<Answer<LineAnswer>, Failure> {
+    let reader = call.reader()?;
+    let context = call.context()?;
+    let d = call.daemon;
+    let freshness = d.freshness(&reader)?;
+    Ok(crate::daemon::query::with_ranking(
+        &reader,
+        &d.warm,
+        &d.config,
+        |embeddings, ranking_identity, near| {
+            let ask = crate::daemon::query::Ask {
+                text: query,
+                cursor: call.cursor,
+                page_size: rows.page_size.map(std::num::NonZeroU64::get),
+                why: rows.why,
+                session: None,
+                context,
+                embeddings,
+                ranking_identity,
+                near: Some(near),
+                fields: &rows.fields,
+            };
+            match crate::daemon::query::prepare(&reader, ask).and_then(|prepared| {
+                if !waiting || !prepared.is_empty() || !freshness.up_to_date() {
+                    call.hand_over("optional query count")?;
+                    prepared.complete_within(call.limit)
+                } else {
+                    prepared.complete()
+                }
+            }) {
+                Ok(answer) => super::query_outcome(answer, &freshness),
+                Err(failure) => failure.answer(),
+            }
+        },
+    )
+    .map(|found| LineAnswer::Listing(Box::new(found))))
+}
+
 /// The selection alone: its rows, a page at a time.
 fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
     let query = Selection {
@@ -868,16 +905,11 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         retained: None,
     }
     .query_text()
-    .ok_or_else(|| Failure::bad_request("a listing needs a selection"))?;
-    let arguments = crate::protocol::query::Arguments {
-        query,
-        limit: rows.page_size.map(std::num::NonZeroU64::get),
-        why: rows.why,
-        session: None,
-        fields: rows.fields.clone(),
-    };
+    .ok_or_else(|| Failure::refusal(polylogue_model::Reason::ListingNeedsSelection {}))?;
     let Some(wait) = rows.wait.as_deref() else {
-        return handlers::Query::run(arguments, call).map(listing_answer);
+        call.runs_query(&query);
+        crate::daemon::query::prefetch_ranking(call, &query);
+        return rows_page(call, &rows, &query, false);
     };
     let mut duration = listing_wait(wait, call.caller.channel())?;
     let limit = ReadLimit::current();
@@ -904,8 +936,19 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
         if let Some(limit) = &limit {
             limit.check()?;
         }
-        let answer = listing_answer(handlers::waiting_query(&arguments, call)?);
-        if !matches!(answer.outcome, command_surface::Outcome::Empty(_)) {
+        let answer = rows_page(call, &rows, &query, true)?;
+        // A listing waits for rows: an answer with none keeps waiting, also
+        // when it is degraded because the index is behind its archive.
+        let no_rows = match &answer.outcome {
+            command_surface::Outcome::Empty(_) => true,
+            command_surface::Outcome::Degraded { value, .. } => matches!(
+                value,
+                LineAnswer::Listing(found)
+                    if matches!(&**found, crate::protocol::query::Answer::Rows(rows) if rows.rows.is_empty())
+            ),
+            _ => false,
+        };
+        if !no_rows {
             return Ok(answer);
         }
         let left = until.saturating_duration_since(Instant::now());
@@ -964,10 +1007,10 @@ fn explain(rows: &Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnsw
             let plain = || format!("would {} {}", step.verb(), selection.described());
             // A step that acts on rows one by one cannot look at a query's
             // rows here, which are not resolved.
-            let would = if selection.question.is_some() && rows_rule(step) != RowRule::Any {
+            let would = if selection.question.is_some() && step.rows() != RowRule::Any {
                 plain()
             } else {
-                verbs::would(step, &selection, &step_call)
+                step.would(&selection, &step_call)
                     .unwrap_or_else(|failure| format!("{}; refused: {}", plain(), failure.message))
             };
             StepExplanation {

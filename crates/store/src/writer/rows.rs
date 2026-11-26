@@ -7,12 +7,12 @@
 use super::readings::{self, Touched};
 use super::*;
 use crate::change_summary::ChangeSummary;
+use polylogue_model::chain::ChainState;
 
-mod checkpoint;
+mod state;
 
 /// How a step's rows are written.
 pub(super) struct StepWrite<'a> {
-    pub counter: i64,
     /// The chain the step's bytes were stored in.
     pub chain: i64,
     /// The record commit that holds the step's bytes.
@@ -49,15 +49,13 @@ pub(super) fn write_step(
     let input_pk: i64 = tx
         .prepare_cached("SELECT pk FROM input_ref WHERE id=?1")?
         .query_row([&b.input.id], |row| row.get(0))?;
-    let previous = checkpoint::read(tx, input_pk, chain)?;
-    if p.delivery.is_none() && !accept_step(previous.as_ref(), p)? {
-        return Ok(());
-    }
+    let previous = crate::parse_state::state(tx, input_pk, chain)?;
+    state::check_start(&b.input.id, chain, &previous, p)?;
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
     }
     let source_commit = w.source_commit;
-    let checkpoint = checkpoint::Update::new(b, p, previous.as_ref(), w.counter)?;
+    let next = state::next(&previous, p, b.length)?;
     if p.reset {
         readings::delete(tx, w.changes, input_pk, chain, touched)?;
     }
@@ -71,6 +69,8 @@ pub(super) fn write_step(
             chain,
             committed,
             changes: w.changes,
+            holds_changed: matches!(previous, ChainState::Parsed { .. })
+                != matches!(next, ChainState::Parsed { .. }),
         },
         b,
         p,
@@ -96,7 +96,7 @@ pub(super) fn write_step(
         },
         p,
     )?;
-    checkpoint.write(tx, input_pk, chain)?;
+    crate::parse_state::write(tx, input_pk, chain, &next)?;
     let a = &p.counts;
     let groups = [
         ("skipped:", &a.skipped, 1),
@@ -165,26 +165,4 @@ fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-/// A continuing reading can only extend its committed prefix. Explicit resets
-/// replace a complete reading, including row dumps whose accounting starts later.
-fn accept_step(previous: Option<&checkpoint::Stored>, step: &ParseStep) -> Result<bool> {
-    if step.reset {
-        return Ok(true);
-    }
-    let cursor = previous.map_or(0, checkpoint::Stored::cursor);
-    if step.start < cursor
-        && step.parsed_upto <= cursor
-        && previous.is_some_and(|prior| prior.version() == step.parse_version)
-    {
-        return Ok(false);
-    }
-    if step.start != cursor {
-        return Err(StoreError::Invalid(format!(
-            "reading starts at {} after committed position {cursor}",
-            step.start
-        )));
-    }
-    Ok(true)
 }

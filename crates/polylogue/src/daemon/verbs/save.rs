@@ -1,6 +1,7 @@
 //! `save [NAME]`: name the question and keep this line's rows; `--watch`
 //! also watches the question.
 use super::{RowRule, Selection, StepCall, StepDone, Verb, not_built};
+use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::service::handlers;
 use crate::protocol::line::StepAnswer;
@@ -11,6 +12,7 @@ impl Verb for Save {
     type Step = SaveStep;
     const NAME: &'static str = "save";
     const ROWS: RowRule = RowRule::Any;
+    const ACCESS: ToolAccess = ToolAccess::Write;
     fn run(
         step: SaveStep,
         selection: &Selection,
@@ -49,13 +51,15 @@ impl Verb for Save {
             question = value.text;
         }
         let mut undo = Vec::new();
-        let mut done = super::delegated(
-            handlers::save_selection(step, question, selection, &call.call)?,
-            |(report, committed)| {
-                undo = committed;
-                StepAnswer::Saved(report)
-            },
-        )?;
+        let mut done = StepDone::from(
+            handlers::save_selection(step, question, selection, &call.call)?.map(
+                |(report, committed)| {
+                    undo = committed;
+                    StepAnswer::Saved(report)
+                },
+            ),
+        )
+        .checked()?;
         done.undo
             .extend(super::undo_line(call.call.request_id, &undo)?);
         Ok(done)
@@ -81,7 +85,7 @@ fn check(step: &SaveStep, selection: &Selection) -> Result<(), Failure> {
         let catalog = polylogue_query::catalog::catalog(&[]);
         let captured = if crate::commands::is_cli_command(name) {
             Some("command")
-        } else if crate::protocol::steps::declarations()
+        } else if crate::daemon::verbs::declarations()
             .verbs()
             .iter()
             .any(|verb| verb.verb() == name)

@@ -211,7 +211,7 @@ fn demo_steps_run_through_rows() {
         let pool =
             polylogue_store::ReadPool::open(&polylogue_store::Archive::at(&archive)).unwrap();
         let reader = pool.reader().unwrap();
-        reader.status().unwrap()
+        reader.status(&[]).unwrap()
     };
     let daemon = super::cli::start_daemon(&env);
     let status = super::cli::wait_status(&env, |_| true);

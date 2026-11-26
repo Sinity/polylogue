@@ -492,11 +492,13 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
             .unwrap()
             .to_string();
     rt().block_on(async {
-        for at in [
-            None,
-            Some("claude-code:u1"),
-            Some("2026-11-21T10:00:00Z"),
-            Some(position.as_str()),
+        // The selection names the context message; `--at` reads the
+        // annotations as they stood.
+        for (target, at) in [
+            ("session:claude-code:s1", None),
+            ("message:claude-code:u1", None),
+            ("session:claude-code:s1", Some("2026-11-21T10:00:00Z")),
+            ("session:claude-code:s1", Some(position.as_str())),
         ] {
             let mut options = vec![("view", "context"), ("format", "jsonl")];
             if let Some(at) = at {
@@ -504,9 +506,9 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
             }
             let mut paged = options.clone();
             paged.retain(|(key, _)| *key != "format");
-            let expected = read_page(&r, "session:claude-code:s1", &paged).await;
+            let expected = read_page(&r, target, &paged).await;
             options.push(("delivery", "stream"));
-            let path = read_url("session:claude-code:s1", &options);
+            let path = read_url(target, &options);
             assert_eq!(
                 send(&r, get(&path).body(Body::empty()).unwrap()).await.0,
                 StatusCode::UNAUTHORIZED

@@ -32,12 +32,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), before);
     let sid = SessionId::parse("chatgpt:rapid").unwrap();
-    let mut engine = Engine::new(
-        config.clone(),
-        archive.clone(),
-        polylogue_testkit::stopped_attempt(),
-    )
-    .unwrap();
+    let mut engine = Engine::new(config.clone(), archive.clone()).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     {
@@ -49,12 +44,7 @@ fn rapid_captures_show_the_latest_and_keep_retry_identity() {
         );
     }
     drop(engine);
-    let mut engine = Engine::new(
-        config,
-        archive.clone(),
-        polylogue_testkit::stopped_attempt(),
-    )
-    .unwrap();
+    let mut engine = Engine::new(config, archive.clone()).unwrap();
     let pass = engine.run_pass().unwrap();
     assert_eq!(pass.bytes_read, 0, "restart must use stored progress");
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);

@@ -257,6 +257,38 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 #[test]
+fn clean_http_stop_removes_its_token_and_port() {
+    let daemon = test_daemon::start("Web shutdown");
+    let directory = daemon
+        .daemon
+        .config
+        .paths
+        .runtime_dir(&daemon.daemon.archive.root);
+    let runtime = directory.parent().unwrap();
+    let mut server = start_on(Arc::clone(&daemon.daemon), 0).unwrap();
+    for name in ["token", "port"] {
+        assert_eq!(
+            std::fs::symlink_metadata(directory.join(name))
+                .map(|metadata| metadata.is_file())
+                .map_err(|error| error.kind()),
+            Ok(true),
+            "{name} while HTTP is running"
+        );
+    }
+    server.shutdown().unwrap();
+    assert!(runtime.is_dir());
+    for name in ["token", "port"] {
+        assert_eq!(
+            std::fs::symlink_metadata(directory.join(name))
+                .map(|metadata| metadata.is_file())
+                .map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::NotFound),
+            "{name} after HTTP shutdown"
+        );
+    }
+}
+
+#[test]
 fn access_rules() {
     let r = reader();
     rt().block_on(async {

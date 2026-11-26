@@ -230,9 +230,9 @@ impl Engine {
             // release it before provider IO.
             let prior = {
                 let reader = self.reads.reader()?;
-                match reader.input_progress(&plan.input.id)? {
+                match reader.latest_chain(&plan.input.id)? {
                     Some(progress)
-                        if progress.length == plan.stored_upto
+                        if progress.stored == plan.stored_upto
                             && self
                                 .inputs
                                 .get(&plan.path)
@@ -263,7 +263,6 @@ impl Engine {
                 plan.parse_pos = 0;
                 plan.parser_state = None;
                 plan.parser_chain = None;
-                plan.checkpoint = None;
             }
         }
         let mut tail = vec![0; plan.size.min(read::TAIL as u64) as usize];
@@ -317,9 +316,9 @@ impl Engine {
         pass.bytes_stored += bytes;
         let r = self.reads.reader()?;
         let progress = r
-            .input_progress(&plan.input.id)?
+            .latest_chain(&plan.input.id)?
             .ok_or_else(|| EngineError::internal("a stored export has no revision"))?;
-        let chain = r.stored_chain(&plan.input.id, progress.chain, progress.length)?;
+        let chain = r.stored_chain(&plan.input.id, progress.chain, progress.stored)?;
         if plan.tracked {
             let known = r.known_watched_input_at(
                 &self.config.machine,
@@ -385,7 +384,7 @@ impl Engine {
         }
         let done = item.done;
         pending.bytes += item.source_bytes();
-        let (mut parse, cursor) = item.into_parse(plan, &self.blobs, &self.stopped_attempt)?;
+        let (mut parse, cursor) = item.into_parse(plan, &self.blobs)?;
         if done && plan.origin.is_row_dump(&plan.path) {
             pass.bytes_read += plan.size;
         }
@@ -488,7 +487,6 @@ impl ExportStep {
         self,
         plan: &Plan,
         blobs: &Arc<polylogue_store::blobs::Blobs>,
-        stopped_attempt: &polylogue_model::batch::StoppedAttempt,
     ) -> Result<(ParseStep, Option<ExportCursor>), EngineError> {
         let mut step = ParseStep::new(
             self.output,
@@ -509,15 +507,7 @@ impl ExportStep {
         step.reset = self.reset;
         step.parse_version = plan.origin.parse_version();
         if let Some(reason) = self.refused {
-            step.progress = polylogue_model::batch::StepProgress::Refused { reason };
-            step.stopped_attempt = Some(*stopped_attempt);
-        }
-        if self.done {
-            step.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
-                step.parse_version.clone(),
-                step.parsed_upto,
-                None,
-            ));
+            step.failure = Some(polylogue_model::ChainFailure::refused(reason));
         }
         let cursor = self
             .source

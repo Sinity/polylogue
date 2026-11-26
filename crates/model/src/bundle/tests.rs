@@ -40,7 +40,7 @@ fn manifest() -> Manifest {
 fn bundle_header_refuses_earlier_and_newer_formats() {
     let mut value = manifest();
     assert!(value.validate().is_ok());
-    for version in [0, 1, 2, 3, 5, u32::MAX] {
+    for version in [0, 1, 2, 3, 4, 6, u32::MAX] {
         value.version = version;
         assert_eq!(
             value.validate(),
@@ -385,14 +385,14 @@ fn hook_injection_keeps_message_and_imports_as_declared() {
 fn declared_blob_records_require_blob_transfer() {
     let mut value: Manifest = serde_json::from_str(
         r#"{
-        "format":"polylogue-bundle","version":4,
+        "format":"polylogue-bundle","version":5,
         "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
         "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
         "read_at":{"generation":"synthetic","index":0,"archive":0},
         "counts":{"sessions":0,"messages":0,"documents":0,"events":0,"links":0,
                   "authored":0,"annotations":0,"text_fragments":0,"alternates":0,"alternate_parts":0,"blobs":1},
         "flags":{"format":"jsonl","with_blobs":false,
-                 "read":{"view":"transcript","inherited":false,"annotations":false}},
+                 "read":{"view":"transcript","hide":["annotations"]}},
         "enabled_alternates":[],"author":"script:fixture","freshness":{"local":{"parsing":{"state":"complete"},"derivation":{"state":"complete"},"search":{"state":"complete"},"confirmed_stream":{"state":"not_applicable"},"kept_chains":0,"raw_only_chains":0},"sinex":{"mode":"standalone"}}
     }"#,
     )

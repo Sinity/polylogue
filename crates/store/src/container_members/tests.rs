@@ -122,7 +122,7 @@ fn linked_duplicate_bytes_keep_every_observation_and_member_index() {
     );
     assert_eq!(
         db.query_row(
-            "SELECT count(DISTINCT member_index) FROM observation_container",
+            "SELECT count(DISTINCT member_position) FROM observation_container",
             [],
             |r| r.get::<_, i64>(0)
         )
