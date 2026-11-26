@@ -1097,7 +1097,7 @@ fn every_encoder_exposes_controls_without_losing_json_source_values() {
         vec![
             ReadPart::Header(doc.header),
             ReadPart::Item(doc.items.into_iter().next().unwrap()),
-            ReadPart::Footer(doc.footer),
+            ReadPart::Footer(Box::new(doc.footer)),
         ]
     );
 }
