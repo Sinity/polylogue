@@ -5,7 +5,7 @@
 # commit that check tested is still current for the packages concerned. A
 # pull request's check runs on GitHub's merge of its head with the base
 # branch; the `check` workflow records that base commit as a notice
-# annotation titled "tested base" on the required check run. If the base
+# annotation titled "tested base" on a required check run. If the base
 # branch has since changed a package the pull request changes (a package is a
 # directory with a Cargo.toml; files outside every package count by their
 # top-level directory, and root manifests, Cargo.lock, rust-toolchain.toml,
@@ -17,7 +17,8 @@
 # --dry-run prints the decision without waiting, updating or merging, and
 # exits 0 only when the pull request would merge now.
 #
-# Needs git, gh and awk; compiles nothing and keeps no state between runs.
+# Needs git (fetching from the remote `origin`), gh and awk; compiles nothing
+# and keeps no state between runs.
 set -euo pipefail
 
 usage() { echo "usage: dev/land [--dry-run] <pr-number>" >&2; exit 2; }
@@ -37,31 +38,32 @@ say() { echo "land #$number: $*"; }
 
 read -r owner name < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
 
-# One GraphQL call: state, base branch and its tip, head, the number of
-# checks reported on the head, and the required check runs on it as
+# One GraphQL call: state, whether it merges cleanly, base branch and its
+# tip, head, and the required check runs on the head as
 # name|status|conclusion|check-run id|details URL, separated by semicolons.
-# A job waiting for other jobs reports nothing until they finish.
+# A queued run, or a job waiting for other jobs, reports nothing yet.
 pull_request_state() {
     gh api graphql -F owner="$owner" -F name="$name" -F number="$number" -f query='
 query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
-      state baseRefName headRefOid
+      state mergeable baseRefName headRefOid
       baseRef { target { oid } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes {
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
         ... on CheckRun { name status conclusion databaseId detailsUrl isRequired(pullRequestNumber: $number) }
       } } } } } }
     }
   }
-}' --jq '.data.repository.pullRequest as $p | [$p.state, $p.baseRefName, $p.baseRef.target.oid, $p.headRefOid,
-  ($p.commits.nodes[0].commit.statusCheckRollup.contexts.totalCount // 0),
+}' --jq '.data.repository.pullRequest as $p | [$p.state, $p.mergeable, $p.baseRefName, $p.baseRef.target.oid, $p.headRefOid,
   ([$p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | select(.isRequired)
     | "\(.name)|\(.status)|\(.conclusion)|\(.databaseId)|\(.detailsUrl)"] | join(";"))] | @tsv'
 }
 
 refresh() {
-    IFS=$'\t' read -r state base_branch tip head reported checks < <(pull_request_state)
+    IFS=$'\t' read -r state mergeable base_branch tip head checks < <(pull_request_state)
     [ "$state" = OPEN ] || die "the pull request is $state"
+    [ "$mergeable" != CONFLICTING ] ||
+        die "the branch conflicts with $base_branch; rebase to resolve the conflict, push, and run dev/land again"
 }
 
 run_of() { local url=${1#*/actions/runs/}; echo "${url%%/*}"; }
@@ -80,8 +82,6 @@ await_required_check() {
         refresh
         [ "$head" != "$previous" ] && [ -n "$checks" ] && return
         polls=$((polls + 1))
-        [ "$reported" -gt 0 ] || [ $polls -lt 15 ] ||
-            die "no check reported on head ${head:0:10} within 15 minutes; a pull request that conflicts with $base_branch gets no run"
         [ $polls -lt 120 ] || die "the required check did not report on head ${head:0:10} within two hours"
     done
 }
@@ -122,13 +122,13 @@ while true; do
         await_required_check ""
         continue
     fi
-    pending=false failed=false check_run= details=
+    pending=false failed=false passed_runs=() details=
     IFS=';' read -ra required <<<"$checks"
     for c in "${required[@]}"; do
         IFS='|' read -r c_name c_status c_conclusion c_id c_url <<<"$c"
         if [ "$c_status" != COMPLETED ]; then pending=true
         elif [ "$c_conclusion" != SUCCESS ]; then failed=true details=$c_url
-        else check_run=${check_run:-$c_id} details=${details:-$c_url}
+        else passed_runs+=("$c_id") details=${details:-$c_url}
         fi
     done
     if $failed; then
@@ -145,8 +145,12 @@ while true; do
     fi
     note_run "$details" passed
 
-    tested=$(gh api "repos/$owner/$name/check-runs/$check_run/annotations" \
-        --jq '[.[] | select(.title == "tested base") | .message][0] // empty')
+    tested=
+    for run in "${passed_runs[@]}"; do
+        tested=$(gh api "repos/$owner/$name/check-runs/$run/annotations" \
+            --jq '[.[] | select(.title == "tested base") | .message][0] // empty')
+        [ -z "$tested" ] || break
+    done
     git fetch -q --no-tags origin "$tip" "$head"
     package_dirs=$( { git ls-tree -r --name-only "$tip"; git ls-tree -r --name-only "$head"; } \
         | sed -n 's|/Cargo\.toml$||p' | sort -u)
