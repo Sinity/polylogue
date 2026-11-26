@@ -70,7 +70,7 @@ Recovery:
 
 ### Restoring `archive.db` alone
 
-Putting back an older copy of `archive.db` beside the segment log and index of a later run leaves a segment holding blobs the older record does not name. The daemon's start does not cut them off: the segment's open compares the end the record names with the largest end any commit recorded (kept beside the segment), and stops, naming both lengths, when the segment holds bytes a newer record committed. Nothing is changed. To go on from the older record, put back the segment directory from the same copy, or the newer `archive.db`; to keep the newer bytes the older record lacks, import them again where their sources still hold them.
+Putting back an older copy of `archive.db` beside the segment log and index of a later run leaves a segment holding blobs the older record does not name. The daemon's start does not cut them off: the segment's open compares the end the record names with the largest end any commit recorded (kept beside the segment), and stops, naming both lengths, when the segment holds bytes a newer record committed. Nothing is changed. To go on from the older record, put back the segment directory from the same copy, or the newer `archive.db`; to keep the newer bytes the older record lacks, import them again where their sources still hold them. An index that has taken in record positions the older `archive.db` lacks is not read: the start replaces it by a rebuild with the reason `ahead_of_archive` ([installing.md](installing.md#replacing-an-index-from-another-schema)), and an index built from another archive is replaced the same way (`other_archive`).
 
 ## Idle and steady-state work
 

@@ -39,6 +39,7 @@ const DECLARED_POINTS: &[&str] = &[
     "reparse.prepare",
     "repo_lookup.refresh",
     "search.before_queue",
+    "search.read_queue",
     "segment.after_append",
     "segment.after_sync",
     "tool_database.comparison_commit",
