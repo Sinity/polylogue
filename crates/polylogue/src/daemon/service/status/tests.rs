@@ -1,55 +1,125 @@
 use super::*;
 
+/// While an index is built and none can be read, status answers from the
+/// build: its header and steps, no archive figures, and no error fields
+/// holding the build's words (docs/operations.md#status).
 #[test]
-fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
+fn a_build_that_serves_no_index_is_what_status_answers_from() {
+    use crate::protocol::status::AnswersFrom;
     let daemon = crate::test_daemon::start("synthetic source");
-    let progress = polylogue_store::archive::index_build::IndexBuild {
+    let header = polylogue_store::archive::index_build::IndexBuild {
         serving_previous: false,
         chains: 3,
         chains_read: 1,
         bytes: 900,
         bytes_read: 100,
     };
-    for vectors in [None, Some(Err(progress.to_string()))] {
+    let steps: polylogue_store::archive::build_progress::BuildProgress =
+        serde_json::from_value(serde_json::json!({"to_come": ["installing"]})).unwrap();
+    for vectors in [None, Some(Err(header.to_string()))] {
         let requested = vectors.is_some();
-        let answer = unread(&daemon.daemon, Some(progress.clone()), vectors, false, 0);
+        let answer = unread(
+            &daemon.daemon,
+            AnswersFrom::Build,
+            Some((header.clone(), steps.clone())),
+            vectors,
+            false,
+            0,
+        );
         assert_eq!(answer.exit_code(), 5);
-        let status = answer.value().unwrap();
-        assert_eq!(status.index_build, Some(progress.clone()));
-        assert_eq!(status.totals_error, Some(progress.to_string()));
-        assert!(!status.warming, "a build names itself, it is not warming");
-        assert!(status.vectors.is_none() && status.verification.is_none());
+        let command_surface::Outcome::Degraded { value, missing } = &answer.outcome else {
+            panic!("{answer:?}");
+        };
+        assert_eq!(missing, &["the index is being built"]);
+        assert_eq!(value.answers_from, AnswersFrom::Build);
         assert_eq!(
-            status.vectors_error,
-            requested.then(|| progress.to_string()),
-            "the unread reason is the build's progress"
+            (&value.index_build, &value.build_progress),
+            (&Some(header.clone()), &Some(steps.clone()))
+        );
+        assert_eq!(
+            (
+                value.store.is_none(),
+                value.totals_error.as_deref(),
+                value.notices.is_none(),
+                value.running.is_none(),
+                value.quota.is_empty(),
+            ),
+            (true, None, true, true, true)
+        );
+        assert!(value.vectors.is_none() && value.verification.is_none());
+        assert_eq!(
+            value.vectors_error,
+            requested.then(|| header.to_string()),
+            "a refused vector read names the build"
         );
     }
 }
 
-/// Status is warming until the first reads are ready: with no snapshot and
-/// no build it says so, and once the daemon has read its scope index and
-/// snapshot it does not.
+/// Before a snapshot is read, status says since when: the daemon's start,
+/// or a built index's install; once read, it answers from the snapshot with
+/// the time it was read. Whether the scope index is loaded is `warm`'s
+/// (docs/operations.md#status).
 #[test]
-fn status_is_warming_until_the_first_reads_are_ready() {
+fn status_says_what_it_answers_from() {
+    use crate::protocol::status::{AnswersFrom, NotReadSince};
     let daemon = crate::test_daemon::start("synthetic source");
-    daemon.daemon.status_snapshot.clear(&daemon.daemon);
-    let warming = answer(&daemon.daemon, None, false);
-    assert_eq!(warming.exit_code(), 5);
-    assert!(warming.value().unwrap().warming);
-    assert!(
-        daemon
-            .daemon
-            .reads
-            .reader()
-            .map(|reader| daemon
-                .daemon
-                .status_snapshot
-                .refresh(&daemon.daemon, &reader, 0))
-            .is_ok()
+    let d = &daemon.daemon;
+    assert!(matches!(
+        StatusSnapshot::default().latest(),
+        Latest::NotRead(NotReadSince::Start)
+    ));
+    let started = unread(
+        d,
+        AnswersFrom::NotReadYet {
+            since: NotReadSince::Start,
+        },
+        None,
+        None,
+        false,
+        0,
     );
-    assert!(daemon.daemon.scope.is_loaded());
-    assert!(!answer(&daemon.daemon, None, false).value().unwrap().warming);
+    let command_surface::Outcome::Degraded { value, missing } = &started.outcome else {
+        panic!("{started:?}");
+    };
+    assert_eq!(missing, &["figures not read yet since the daemon started"]);
+    assert_eq!(
+        (
+            value.store.is_none(),
+            value.totals_error.as_deref(),
+            value.notices.is_none(),
+            value.running.is_none()
+        ),
+        (true, None, true, true)
+    );
+
+    d.status_snapshot.clear(d);
+    let installed = answer(d, None, false);
+    assert_eq!(installed.exit_code(), 5);
+    let command_surface::Outcome::Degraded { value, missing } = &installed.outcome else {
+        panic!("{installed:?}");
+    };
+    assert_eq!(
+        value.answers_from,
+        AnswersFrom::NotReadYet {
+            since: NotReadSince::Install
+        }
+    );
+    assert_eq!(
+        missing,
+        &["figures not read yet since the new index was installed"]
+    );
+    assert!(value.warm.scope_index_loaded);
+
+    let before = polylogue_model::Timestamp::from(d.clock.now());
+    d.status_snapshot.refresh(d, &d.reads.reader().unwrap(), 0);
+    let read = answer(d, None, false);
+    let value = read.value().unwrap();
+    let AnswersFrom::Snapshot { read_at } = value.answers_from else {
+        panic!("{:?}", value.answers_from);
+    };
+    assert!(read_at >= before, "{read_at:?} {before:?}");
+    assert_eq!(value.store.as_ref().map(|store| store.messages), Some(1));
+    assert!(value.notices.is_some() && value.running.is_some());
 }
 
 #[test]

@@ -891,7 +891,7 @@ fn unused(status: &Answer) -> Vec<String> {
     let listed = store.unused.len() as u64 - 1;
     if more > listed {
         line.push_str(&format!(
-            " · {} more, the {listed} most frequent in --json",
+            " · {} more, {listed} of them in --json",
             count(more)
         ));
     } else if more > 0 {
