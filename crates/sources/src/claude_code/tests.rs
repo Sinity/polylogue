@@ -957,3 +957,39 @@ fn an_older_sidechain_cannot_be_resumed_as_a_main_session() {
         Some(vec!["claude".into(), "--resume".into(), "s1".into()])
     );
 }
+
+#[test]
+fn a_background_task_launch_keeps_its_sidechain_open() {
+    let records = vec![
+        assistant(
+            "task",
+            "task-message",
+            json!({"type":"tool_use","id":"call-one",
+            "name":"Task","input":{"prompt":"Review the file."}}),
+        ),
+        json!({"type":"user","uuid":"root","sessionId":"s1","isSidechain":true,
+            "parentUuid":"task","message":{"role":"user","content":"Review the file."}}),
+        json!({"type":"user","uuid":"launch","sessionId":"s1","parentUuid":"task",
+            "toolUseResult":{"isAsync":true,"backgroundTaskId":"task-one"},
+            "message":{"role":"user","content":[{"type":"tool_result",
+                "tool_use_id":"call-one","content":"Started.","is_error":false}]}}),
+        json!({"type":"assistant","uuid":"answer","sessionId":"s1","isSidechain":true,
+            "parentUuid":"root","message":{"role":"assistant","content":"File reviewed."}}),
+    ];
+    let step = run(
+        &main_file("s1"),
+        &mut ParserState::default(),
+        &jsonl(&records),
+        0,
+    )
+    .unwrap();
+    let messages = final_messages(&[step]);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.session.native().as_str() == "s1~side-root")
+            .map(|message| message.id.native().as_str())
+            .collect::<Vec<_>>(),
+        ["root", "answer"]
+    );
+}

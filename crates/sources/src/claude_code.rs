@@ -746,17 +746,15 @@ impl ClaudeCode {
                         call_id: Some(call),
                         outcome,
                         ..
-                    } => {
-                        if !matches!(
-                            outcome,
-                            ToolOutcome::Unknown {
-                                reason: polylogue_model::UnknownReason::RunningInBackground
-                            }
-                        ) && v.pointer("/toolUseResult/isAsync").and_then(Json::as_bool)
-                            != Some(true)
-                        {
-                            parser_state.finish_task(call);
+                    } if !matches!(
+                        outcome,
+                        ToolOutcome::Unknown {
+                            reason: polylogue_model::UnknownReason::RunningInBackground
                         }
+                    ) && v.pointer("/toolUseResult/isAsync").and_then(Json::as_bool)
+                        != Some(true) =>
+                    {
+                        parser_state.finish_task(call);
                     }
                     _ => {}
                 }
@@ -1284,9 +1282,12 @@ impl Parser for ClaudeCode {
             return self.journal(parser_state, record, v, ty, out);
         }
         let record_session = self.record_session(parser_state, v);
-        if record_session.kind == SessionKind::Sidechain
-            && let Some(uuid) = v.str("uuid").filter(|uuid| !uuid.is_empty())
-        {
+        if record_session.kind == SessionKind::Sidechain {
+            let uuid = v
+                .str("uuid")
+                .filter(|uuid| !uuid.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| crate::content_ids::untagged_hash(v));
             let parent = v.str("parentUuid");
             let caller = parent
                 .and_then(|parent| parser_state.sidechains.get(parent))
@@ -1294,7 +1295,7 @@ impl Parser for ClaudeCode {
                 .unwrap_or_else(|| parent.map(str::to_owned));
             parser_state
                 .sidechains
-                .insert(uuid.to_owned(), (record_session.native, caller));
+                .insert(uuid, (record_session.native, caller));
         }
         let hook = (ty == "system"
             && v.str("subtype").filter(|s| !s.is_empty()) == Some("stop_hook_summary"))
