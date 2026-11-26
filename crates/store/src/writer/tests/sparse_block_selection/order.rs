@@ -80,7 +80,7 @@ fn record_ordinals_precede_subsets_and_use_record_positions_before_ids() {
     write(
         &w,
         batch(
-            "aaa-earlier",
+            &input_sorting_before("middle", "earlier"),
             Route::Live,
             0,
             vec![row(0, message("new", "s"))],
