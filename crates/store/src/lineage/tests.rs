@@ -107,6 +107,8 @@ fn missing_parent_arrival_stub_resolution_and_retraction_invalidate_descendants(
     let conn = db(&f);
     conn.execute("UPDATE session SET stub=1 WHERE pk=?1", [parent])
         .unwrap();
+    // As the writer does when a session turns to or from a stub.
+    mark_due(&conn, "test:parent").unwrap();
     // A stub parent ends the walk at the child, exactly as a missing one does.
     assert_eq!(
         read(&f, "test:leaf"),
@@ -122,9 +124,13 @@ fn missing_parent_arrival_stub_resolution_and_retraction_invalidate_descendants(
     );
     conn.execute("UPDATE session SET stub=0 WHERE pk=?1", [parent])
         .unwrap();
+    // As the writer does when a session turns to or from a stub.
+    mark_due(&conn, "test:parent").unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:parent", 2));
     conn.execute("DELETE FROM link WHERE parent_id='test:parent'", [])
         .unwrap();
+    // As the writer does with a link it removes.
+    mark_due(&conn, "test:child").unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:child", 1));
     f.derive().unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:child", 1));
@@ -171,6 +177,7 @@ fn conflicting_parents_choose_neither_and_keep_one_structural_parent() {
     )
     .unwrap();
     conn.execute("INSERT INTO link(parent_id,child_id,kind,evidence,input_pk,branch_point) SELECT parent_id,child_id,kind,evidence,input_pk,'test:two' FROM link WHERE child_id='test:child'",[]).unwrap();
+    mark_due(&conn, "test:child").unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:a", 2));
     assert_eq!(
         conn.query_row(
@@ -198,6 +205,7 @@ fn conflicting_parents_choose_neither_and_keep_one_structural_parent() {
     );
     conn.execute("DELETE FROM link WHERE parent_id='test:b'", [])
         .unwrap();
+    mark_due(&conn, "test:child").unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:a", 2));
 }
 
@@ -214,12 +222,14 @@ fn lineage_has_no_silent_depth_limit_and_unrelated_components_are_not_dirtied() 
       SELECT 'test:'||(cast(native_id AS INTEGER)-1),id,'continuation','fixture',(SELECT pk FROM input_ref LIMIT 1)
       FROM session WHERE origin='test' AND native_id<>'unrelated' AND cast(native_id AS INTEGER)>0;
       COMMIT;").unwrap();
+    mark_due(&conn, "test:0").unwrap();
     assert_eq!(read(&f, "test:1005"), rooted("test:0", 1005));
     let conn = db(&f);
     conn.execute("DELETE FROM summary_due WHERE session_pk=?1", [unrelated])
         .unwrap();
     conn.execute("DELETE FROM link WHERE child_id='test:1'", [])
         .unwrap();
+    mark_due(&conn, "test:1").unwrap();
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM summary_due WHERE session_pk=?1",
