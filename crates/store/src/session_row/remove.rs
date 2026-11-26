@@ -46,10 +46,9 @@ pub(crate) fn remove(i: &Transaction<'_>, pk: i64, id: &str, counter: i64) -> Re
             i.execute(&format!("DELETE FROM {table} WHERE session_pk = ?1"), [pk])?;
         }
     }
-    i.execute(
-        "DELETE FROM link WHERE parent_id = ?1 OR child_id = ?1",
-        [id],
-    )?;
+    // Links stay: a link is shown while a reading states it, whether or
+    // not the sessions it names are in the index, and leaves with its
+    // statements when links are composed.
     i.execute("DELETE FROM message WHERE session_pk = ?1", [pk])?;
     i.execute("DELETE FROM session WHERE pk = ?1", [pk])?;
     Ok(())

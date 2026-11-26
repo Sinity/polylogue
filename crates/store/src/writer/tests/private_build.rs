@@ -275,6 +275,21 @@ fn a_build_is_private_until_installed_and_reads_answer_its_progress() {
     assert_eq!(messages(&pool), 3);
 }
 
+/// The planner's total and the workers' count are sampled apart, so a
+/// sample can hold a count the total has not caught up with.
+#[test]
+fn a_builds_files_read_stay_within_its_files() {
+    let dir = tempfile::tempdir().unwrap();
+    due_a_build(dir.path(), &["first-build"]);
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    archive.record_build_progress(36_571, 37_383);
+    let build = archive.index_build().unwrap();
+    assert_eq!((build.chains_read, build.chains), (37_383, 37_383));
+    archive.record_build_progress(40_000, 37_383);
+    let build = archive.index_build().unwrap();
+    assert_eq!((build.chains_read, build.chains), (37_383, 40_000));
+}
+
 #[test]
 fn a_stopped_build_starts_again_from_the_stored_bytes() {
     let dir = tempfile::tempdir().unwrap();

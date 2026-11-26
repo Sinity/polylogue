@@ -117,6 +117,16 @@ fn mixed_session_coordinates_survive_projection_nesting_and_keyset_pages() {
                     .collect::<Vec<_>>(),
             );
         }
+        // A position with fewer values than the order has keys is refused,
+        // not read with the limit bound in a key's place.
+        let short = &after.as_deref().unwrap()[1..];
+        assert!(matches!(
+            reader.query_page(&program, Some(short)),
+            Err(crate::selection::SelectionError::Invalid {
+                kind: polylogue_model::Code::InvalidQuery,
+                ..
+            })
+        ));
         assert_eq!(
             selected,
             [

@@ -546,12 +546,6 @@ impl Reader<'_> {
         }
         // The enclosing selection context has validated the program once.
         let program = &selection.program;
-        if after.is_some_and(|after| after.len() != program.order.len()) {
-            return Err(E::from(SelectionError::invalid(
-                polylogue_model::Code::InvalidQuery,
-                "selection order position has the wrong arity",
-            )));
-        }
         self.visit_page(program, after, reverse, -1, |mut row| {
             selection
                 .scope
