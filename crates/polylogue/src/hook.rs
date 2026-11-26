@@ -843,7 +843,17 @@ fn start(
     startup: &Startup,
     until: Instant,
 ) -> Option<(String, String)> {
-    let cwd = payload["cwd"].as_str().map(PathBuf::from)?;
+    let Some(cwd) = payload["cwd"].as_str().map(PathBuf::from) else {
+        record_start_context(
+            startup,
+            harness,
+            session_of(harness, payload, startup),
+            json!({
+                "outcome":"not_given", "cause":"directory", "detail":"the hook payload names no working directory",
+            }),
+        );
+        return None;
+    };
     context(
         startup,
         Ask::SessionStart {
@@ -944,33 +954,45 @@ fn prompt_context(
     )
 }
 
-/// Session-start and the context of the sessions pasted into its prompt, with its deliveries.
-pub fn respond(
+#[derive(Debug, PartialEq, Eq)]
+struct HookContext {
+    deliveries: String,
+    text: String,
+    session_start: bool,
+}
+
+/// Session-start and pasted-session context for an event, with its deliveries.
+fn respond(
     harness: Harness,
     event: &str,
     payload: &Value,
     startup: &Startup,
     until: Instant,
-) -> Option<(String, String)> {
-    match (harness, event) {
+) -> Option<HookContext> {
+    let (reply, session_start) = match (harness, event) {
         (Harness::ClaudeCode | Harness::Codex | Harness::GeminiCli, "SessionStart") => {
             let source = payload["source"].as_str().unwrap_or("startup");
             // A fork carries its parent's context already.
             if source == "fork" {
                 return None;
             }
-            start(harness, payload, StartSource::parse(source), startup, until)
+            (
+                start(harness, payload, StartSource::parse(source), startup, until),
+                true,
+            )
         }
         (Harness::ClaudeCode | Harness::Codex, "UserPromptSubmit")
-        | (Harness::GeminiCli, "BeforeAgent") => prompt_context(
-            harness,
-            payload,
-            payload["prompt"].as_str()?,
-            startup,
-            until,
+        | (Harness::GeminiCli, "BeforeAgent") => (
+            prompt_context(
+                harness,
+                payload,
+                payload["prompt"].as_str()?,
+                startup,
+                until,
+            ),
+            false,
         ),
-        // Hermes injects context only into a turn's prompt: the first
-        // turn's carries the brief, and any turn's the session briefs it asks for.
+        // Hermes's first turn may carry both its start brief and pasted sessions.
         (Harness::Hermes, "pre_llm_call") => {
             let extra = &payload["extra"];
             let prompt = extra["user_message"].as_str().unwrap_or("");
@@ -985,15 +1007,24 @@ pub fn respond(
             } else {
                 prompt_context(harness, payload, prompt, startup, until)
             };
-            match (brief, pasted) {
+            let session_start = brief
+                .as_ref()
+                .is_some_and(|(_, text)| text != TIMEOUT_NOTICE);
+            let reply = match (brief, pasted) {
                 (Some((d1, t1)), Some((d2, t2))) => {
                     Some((format!("{d1},{d2}"), format!("{t1}\n\n{t2}")))
                 }
                 (one, other) => one.or(other),
-            }
+            };
+            (reply, session_start)
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    reply.map(|(deliveries, text)| HookContext {
+        session_start: session_start && text != TIMEOUT_NOTICE,
+        deliveries,
+        text,
+    })
 }
 
 pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
@@ -1078,28 +1109,24 @@ fn run_event(
     let responded = respond(harness, event, &payload, startup, until);
     let mut ids: Vec<String> = Vec::new();
     let mut texts: Vec<String> = Vec::new();
-    if let Some((deliveries, text)) = &responded {
+    if let Some(context) = &responded {
         ids.extend(
-            deliveries
+            context
+                .deliveries
                 .split(',')
                 .filter(|id| !id.is_empty())
                 .map(str::to_owned),
         );
-        texts.push(text.clone());
+        texts.push(context.text.clone());
     }
     if let Some((claimed, text)) = &mail {
         ids.extend(claimed.iter().cloned());
         texts.push(text.clone());
     }
     let emitted = !texts.is_empty() && recorder.emit(&ids, &texts.join("\n\n"), output);
-    let starts = (event == "SessionStart" && payload["source"] != "fork")
-        || (harness == Harness::Hermes
-            && event == "pre_llm_call"
-            && payload["extra"]["is_first_turn"] == true);
-    if starts
-        && responded
-            .as_ref()
-            .is_some_and(|(_, text)| text != TIMEOUT_NOTICE)
+    if responded
+        .as_ref()
+        .is_some_and(|context| context.session_start)
     {
         record_start_context(
             startup,

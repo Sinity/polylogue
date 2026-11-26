@@ -168,7 +168,11 @@ fn context_uses_the_configured_archive_socket_and_clock() {
     peer.join().unwrap();
     assert_eq!(
         reply,
-        Some(("context-1".into(), "configured archive".into()))
+        Some(HookContext {
+            deliveries: "context-1".into(),
+            text: "configured archive".into(),
+            session_start: true
+        })
     );
 }
 
@@ -867,7 +871,7 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
         if timed_out {
             assert!(result.is_none(), "optional timeout must emit no notice");
         } else {
-            assert_eq!(result.unwrap().1, "one pointer");
+            assert_eq!(result.unwrap().text, "one pointer");
         }
         assert_eq!(
             listener.accept().unwrap_err().kind(),
@@ -950,7 +954,14 @@ fn an_elapsed_hook_deadline_sends_no_request_or_delivery() {
         &startup,
         until,
     );
-    assert_eq!(result, Some((String::new(), TIMEOUT_NOTICE.into())));
+    assert_eq!(
+        result,
+        Some(HookContext {
+            deliveries: String::new(),
+            text: TIMEOUT_NOTICE.into(),
+            session_start: false
+        })
+    );
     assert!(claim(&startup, &SessionId::parse("codex:turn-1").unwrap(), until).is_none());
     permission(
         &startup,
@@ -974,7 +985,14 @@ fn expired_multi_session_context_emits_one_unreferenced_notice() {
         &startup,
         Instant::now(),
     );
-    assert_eq!(result, Some((String::new(), TIMEOUT_NOTICE.into())));
+    assert_eq!(
+        result,
+        Some(HookContext {
+            deliveries: String::new(),
+            text: TIMEOUT_NOTICE.into(),
+            session_start: false
+        })
+    );
 }
 
 /// docs/agent-context.md: three or more pasted sessions inject one index,
@@ -1147,8 +1165,42 @@ fn a_morrow_session_start_without_context_is_stored_and_counted_after_daemon_sta
             Instant::now() + CONTEXT_BUDGET,
         )
         .unwrap();
-        assert_eq!(reply.1, expected);
+        assert_eq!(reply.text, expected);
     }
+    let mut text = String::new();
+    assert_eq!(
+        run_event(
+            Harness::Hermes,
+            "pre_llm_call",
+            json!({"session_id":"starting", "extra":{"is_first_turn":true,"user_message":"claude-code:absent"}}),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+            |_, _, context| {
+                text = context.into();
+                true
+            }
+        ),
+        ExitCode::SUCCESS
+    );
+    assert_eq!(
+        text,
+        "session claude-code:absent is not in the archive (yet)"
+    );
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    let path = spool.join(format!("{}.ndjson", std::os::unix::process::parent_id()));
+    let text = std::fs::read_to_string(path).unwrap();
+    let starts: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|line| line["provider"] == "hermes" && line["event"] == "SessionContext")
+        .collect();
+    assert_eq!(starts.len(), 1);
+    assert_eq!(
+        starts[0]["payload"],
+        json!({"outcome":"not_given", "cause":"directory", "detail":"the hook payload names no working directory"})
+    );
     assert_eq!(
         context(
             &startup,
