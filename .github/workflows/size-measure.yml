@@ -1,0 +1,40 @@
+name: size-measure
+on:
+  pull_request:
+    paths: [.github/workflows/size-measure.yml]
+jobs:
+  size:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: default, vars: "" }
+          - { name: strip, vars: "CARGO_PROFILE_RELEASE_STRIP=symbols" }
+          - { name: thin, vars: "CARGO_PROFILE_RELEASE_LTO=thin" }
+          - { name: fat1, vars: "CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1" }
+          - { name: fat1strip, vars: "CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 CARGO_PROFILE_RELEASE_STRIP=symbols" }
+          - { name: fat1stripabort, vars: "CARGO_PROFILE_RELEASE_LTO=fat CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1 CARGO_PROFILE_RELEASE_STRIP=symbols CARGO_PROFILE_RELEASE_PANIC=abort" }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain from rust-toolchain.toml
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-bloat
+      - name: Build and measure ${{ matrix.name }}
+        run: |
+          export ${{ matrix.vars }}
+          echo "variant ${{ matrix.name }}: ${{ matrix.vars }}"
+          free -g | sed -n 2p
+          t0=$(date +%s)
+          cargo build --release --locked -p polylogue --features polylogue/sinex
+          echo "RESULT ${{ matrix.name }} build_wall_s=$(( $(date +%s) - t0 ))"
+          b=target/release/polylogue
+          cp "$b" /tmp/p; strip --strip-debug -o /tmp/p.sd /tmp/p; strip --strip-all -o /tmp/p.sa /tmp/p
+          echo "RESULT ${{ matrix.name }} bytes=$(stat -c %s $b) strip_debug=$(stat -c %s /tmp/p.sd) strip_all=$(stat -c %s /tmp/p.sa)"
+          size -A $b | sort -k2 -n -r | head -12
+          s0=$(date +%s%N); for i in $(seq 20); do $b --version >/dev/null; done
+          echo "RESULT ${{ matrix.name }} version_x20_ms=$(( ($(date +%s%N) - s0) / 1000000 ))"
+          cargo bloat --release --locked -p polylogue --features polylogue/sinex --crates -n 30
