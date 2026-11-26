@@ -13,7 +13,7 @@ fn each_view_keeps_its_columns() {
     for (view, columns) in [
         (
             "v1_sessions",
-            "id origin kind title cwd repo branch harness started_at last_activity_at",
+            "id origin kind title cwd repo branch harness started_at last_active_at",
         ),
         (
             "v1_messages",
@@ -228,7 +228,7 @@ fn the_sessions_view_leaves_out_stubs() {
         .unwrap();
     crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
-        .execute("UPDATE session SET stub=1 WHERE pk=?1", [stub])
+        .execute("UPDATE session SET has_transcript=0 WHERE pk=?1", [stub])
         .unwrap();
     let pool = f.reads().unwrap();
     let sessions = pool

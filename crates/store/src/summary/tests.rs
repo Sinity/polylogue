@@ -72,8 +72,8 @@ fn a_session_without_a_title_is_named_by_its_first_prompt() {
         prose("a", 1, 1_000, "\n  Fix the flaky crash test\nplease"),
     );
     assert_eq!(
-        one(&w, "SELECT title, derived_title FROM session"),
-        json!({"title": null, "derived_title": "Fix the flaky crash test"})
+        one(&w, "SELECT title, prompt_title FROM session"),
+        json!({"title": null, "prompt_title": "Fix the flaky crash test"})
     );
 }
 
@@ -312,9 +312,9 @@ fn a_display_title_without_a_prose_prompt_is_unknown() {
         assert_eq!(
             one(
                 &w,
-                "SELECT derived_title FROM session WHERE id = 'claude-code:agent-fork'"
+                "SELECT prompt_title FROM session WHERE id = 'claude-code:agent-fork'"
             ),
-            json!({"derived_title": null})
+            json!({"prompt_title": null})
         );
     }
 }
@@ -709,7 +709,7 @@ fn a_held_derivation_does_not_hold_parse_commits() {
     let title = |id: &str| -> Option<String> {
         index()
             .query_row(
-                "SELECT derived_title FROM session WHERE id = ?1",
+                "SELECT prompt_title FROM session WHERE id = ?1",
                 [format!("claude-code:{id}")],
                 |r| r.get(0),
             )

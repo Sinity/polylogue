@@ -3,7 +3,7 @@
 -- undated ones (query/compile/statements.rs, page_of), so one index on
 -- `(time, ...)` serves both parts in either direction and a time bound or
 -- a continuation seeks in it.
-CREATE INDEX IF NOT EXISTS session_activity ON session(last_activity_at, id);   -- default order, since:
+CREATE INDEX IF NOT EXISTS session_last_active ON session(last_active_at, id);   -- default order, since:
 CREATE INDEX IF NOT EXISTS message_time ON message(at, session_order, id);
 CREATE INDEX IF NOT EXISTS event_time ON event(at, id);
 CREATE INDEX IF NOT EXISTS document_time ON document(at, id);

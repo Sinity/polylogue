@@ -805,7 +805,7 @@ pub(crate) fn apply(index: &Connection, write: &Write) -> Result<Vec<bool>> {
         if !session.computed.is_empty() {
             // Its summaries reach the change feed; its own rows did not
             // change.
-            tx.prepare_cached("UPDATE session SET derived_changed = ?2 WHERE pk = ?1")?
+            tx.prepare_cached("UPDATE session SET summary_changed = ?2 WHERE pk = ?1")?
                 .execute(params![session.pk, counter])?;
         }
         if write.finish {
@@ -859,7 +859,7 @@ pub(crate) fn caught_up(conn: &Connection) -> Result<bool> {
     let due: bool = conn.scalar(
         // CROSS JOIN keeps the due marks the outer loop: an empty
         // `summary_due` answers without visiting any session.
-        "SELECT EXISTS(SELECT 1 FROM summary_due d CROSS JOIN session s ON s.pk = d.session_pk WHERE s.stub = 0)",
+        "SELECT EXISTS(SELECT 1 FROM summary_due d CROSS JOIN session s ON s.pk = d.session_pk WHERE s.has_transcript = 1)",
         [])?;
     if due {
         return Ok(false);

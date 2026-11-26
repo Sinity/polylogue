@@ -257,7 +257,7 @@ pub const SESSION_LINEAGE: Construct = Construct {
     represents: "The root and depth of explicit provider ancestry",
     reads: &[
         "session.id",
-        "session.stub",
+        "session.has_transcript",
         "link.parent_id",
         "link.child_id",
         "link.kind",

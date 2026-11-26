@@ -15,8 +15,8 @@ pub const VIEWS: &[(&str, &str)] = &[
     (
         "v1_sessions",
         "SELECT s.id, s.origin, s.kind, {title} AS title, \
-         s.cwd, s.repo, s.branch, s.harness, s.started_at, s.last_activity_at \
-         FROM main.session s WHERE s.stub = 0",
+         s.cwd, s.repo, s.branch, s.harness, s.started_at, s.last_active_at \
+         FROM main.session s WHERE s.has_transcript = 1",
     ),
     (
         "v1_messages",

@@ -746,7 +746,7 @@ fn equal_timestamps_order_by_input_and_position_through_a_rebuild() {
         let r = reads.reader().unwrap();
         let title = r
             .query(
-                "SELECT derived_title FROM session WHERE id = 'claude-code:s1'",
+                "SELECT prompt_title FROM session WHERE id = 'claude-code:s1'",
                 &[],
             )
             .unwrap();

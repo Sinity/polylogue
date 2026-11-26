@@ -14,7 +14,7 @@ fn downward() -> String {
 }
 
 const DOWNWARD: &str = "SELECT id,rank FROM (
-    SELECT s.id,s.last_activity_at,(SELECT min(h.rank) FROM hits h
+    SELECT s.id,s.last_active_at,(SELECT min(h.rank) FROM hits h
       JOIN block b ON b.text_id=h.text_id JOIN message m ON m.pk=b.message_pk
       WHERE b.kind='text' AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind='compaction_summary')
         AND m.duplicate_of IS NULL AND coalesce(m.on_active_path,1)=1
@@ -25,7 +25,7 @@ const DOWNWARD: &str = "SELECT id,rank FROM (
           WHERE l.kind IN ('spawn','fork','continuation','resume')
         ) SELECT pk FROM tree)) AS rank
     FROM session s WHERE s.origin='test' AND s.kind='main'
-) WHERE rank IS NOT NULL ORDER BY rank,last_activity_at DESC,id";
+) WHERE rank IS NOT NULL ORDER BY rank,last_active_at DESC,id";
 
 fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
     let dir = tempfile::tempdir().unwrap();

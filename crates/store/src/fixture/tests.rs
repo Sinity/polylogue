@@ -51,7 +51,7 @@ fn time_accuracy_and_order_survive_fixture_storage() {
     let cached: Option<i64> = fixture
         .index
         .query_row(
-            "SELECT last_activity_at FROM session WHERE pk=?1",
+            "SELECT last_active_at FROM session WHERE pk=?1",
             [session],
             |row| row.get(0),
         )
@@ -108,7 +108,7 @@ fn time_accuracy_and_order_survive_fixture_storage() {
     let cached: Option<i64> = fixture
         .index
         .query_row(
-            "SELECT last_activity_at FROM session WHERE pk=?1",
+            "SELECT last_active_at FROM session WHERE pk=?1",
             [session],
             |row| row.get(0),
         )

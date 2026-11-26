@@ -105,7 +105,7 @@ fn missing_parent_arrival_stub_resolution_and_retraction_invalidate_descendants(
     assert_eq!(read(&f, "test:leaf"), rooted("test:parent", 2));
     f.derive().unwrap();
     let conn = db(&f);
-    conn.execute("UPDATE session SET stub=1 WHERE pk=?1", [parent])
+    conn.execute("UPDATE session SET has_transcript=0 WHERE pk=?1", [parent])
         .unwrap();
     // As the writer does when a session turns to or from a stub.
     mark_due(&conn, "test:parent").unwrap();
@@ -122,7 +122,7 @@ fn missing_parent_arrival_stub_resolution_and_retraction_invalidate_descendants(
             })
         }
     );
-    conn.execute("UPDATE session SET stub=0 WHERE pk=?1", [parent])
+    conn.execute("UPDATE session SET has_transcript=1 WHERE pk=?1", [parent])
         .unwrap();
     // As the writer does when a session turns to or from a stub.
     mark_due(&conn, "test:parent").unwrap();

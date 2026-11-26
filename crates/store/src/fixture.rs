@@ -244,7 +244,7 @@ impl Fixture {
             serde_json::to_value(s.title.map(|_| polylogue_model::TitleSource::Generated))?;
         self.index.execute(
             "INSERT INTO session(id, origin, native_id, kind, title, cwd, cwd_json, repo, record_repo,
-                 started_at, last_activity_at, changed, started_time, title_source,
+                 started_at, last_active_at, changed, started_time, title_source,
                  started_precision, last_active_precision)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8, ?9, ?10, 1, ?11, ?12,
                  iif(?9 IS NULL, NULL, 'instant'), iif(?10 IS NULL, NULL, 'instant'))",
@@ -327,7 +327,7 @@ impl Fixture {
         drop(times);
         let (last, until, precision) = latest.columns();
         self.index.execute(
-            "UPDATE session SET changed=changed+1, last_activity_at=?2, last_active_until=?3,
+            "UPDATE session SET changed=changed+1, last_active_at=?2, last_active_until=?3,
                  last_active_precision=?4 WHERE pk=?1",
             params![session, last, until, precision],
         )?;
@@ -601,7 +601,7 @@ impl Fixture {
         {
             let mut session = tx.prepare(
                 "INSERT INTO session(id, origin, native_id, kind, cwd, cwd_json, started_at,
-                     last_activity_at, changed, started_time, started_precision, last_active_precision)
+                     last_active_at, changed, started_time, started_precision, last_active_precision)
                  VALUES (?1, 'test', ?2, 'main', ?3, ?4, ?5, ?6, 1, ?7, 'instant', 'instant')",
             )?;
             let mut message = tx.prepare(

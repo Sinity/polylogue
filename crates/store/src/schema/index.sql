@@ -20,20 +20,20 @@ CREATE TABLE session (
   origin            TEXT NOT NULL,
   native_id         TEXT NOT NULL,
   kind              TEXT NOT NULL CHECK (kind IN (@names(SessionKind))),  -- continuations are links, not a kind
-  stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook line naming a session that has no
+  has_transcript    INTEGER NOT NULL DEFAULT 1,  -- 0: created by a hook line naming a session that has no
                                             --   transcript yet, so its live state exists; cleared when its messages arrive
   title             TEXT,                   -- provider title only
   title_source      TEXT,                   -- title source; precedence is owned by model TitleSource
-  derived_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
+  prompt_title     TEXT,                   -- derived (title): first line of the first typed prompt; shown when
                                             --   title is NULL, never exported as recorded
   cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
   started_time      BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   started_at        INTEGER,                -- from the messages and events the session counts as its own
   started_until     INTEGER,                --   with started_precision, as message.at_until and at_precision
   started_precision TEXT CHECK (started_precision IN (@names(Precision))),
-  last_activity_at  INTEGER,                -- the latest start of its messages' times (session summary)
+  last_active_at  INTEGER,                -- the latest start of its messages' times (session summary)
   last_active_until INTEGER,                -- the latest end of their periods, when one ends after
-                                            --   last_activity_at (docs/query.md, times)
+                                            --   last_active_at (docs/query.md, times)
   last_active_precision TEXT CHECK (last_active_precision IN (@names(Precision))),
   cwd               TEXT,
   repo              TEXT,                   -- name or URL, for display: record_repo, else the remote of the
@@ -59,7 +59,7 @@ CREATE TABLE session (
   error_count INTEGER,
   changed           INTEGER NOT NULL,       -- write counter of the last change to its own rows
                                             --   (not its derived values or live columns)
-  derived_changed   INTEGER,                -- write counter of the summary transaction that last wrote its summaries
+  summary_changed   INTEGER,                -- write counter of the summary transaction that last wrote its summaries
   live_changed      INTEGER,                -- write counter value of the last change to its live columns
   -- Live facts: the live summary of the session's live events (hook, process
   -- and registry lines, summary/live.rs); the live state is computed at read
@@ -69,8 +69,8 @@ CREATE TABLE session (
   CHECK ((started_at IS NULL) = (started_precision IS NULL)),
   CHECK (started_until IS NULL OR (started_precision <> 'instant' AND started_until > started_at)),
   CHECK (started_until IS NOT NULL OR started_precision IS NULL OR started_precision IN ('instant','day','month','year')),
-  CHECK ((last_activity_at IS NULL) = (last_active_precision IS NULL)),
-  CHECK (last_active_until IS NULL OR (last_active_precision <> 'instant' AND last_active_until > last_activity_at)),
+  CHECK ((last_active_at IS NULL) = (last_active_precision IS NULL)),
+  CHECK (last_active_until IS NULL OR (last_active_precision <> 'instant' AND last_active_until > last_active_at)),
   CHECK (last_active_until IS NOT NULL OR last_active_precision IS NULL OR last_active_precision IN ('instant','day','month','year'))
 ) STRICT;
 CREATE INDEX session_started  ON session(started_at);         -- started between, until:

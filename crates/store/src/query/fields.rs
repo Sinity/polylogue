@@ -174,7 +174,7 @@ pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<Stored
         // The latest of the session's message times, which the session
         // summary keeps; its quality is read from the messages.
         (Sessions, "last_active") => (
-            "{s}.last_activity_at",
+            "{s}.last_active_at",
             "{s}.last_active_until",
             "{s}.last_active_precision",
             None,
@@ -361,7 +361,7 @@ pub fn rule(id: FieldId) -> Rule {
         AnnotationsLinksTo => Rule::NONE.custom(custom::links_to),
         AnnotationsAnswered => Rule::NONE.sql_fn(|a| crate::session_sql::answered(&a.row)),
         AnnotationsOpen => Rule::NONE.sql_fn(|a| crate::session_sql::open_annotation(&a.row)),
-        SessionsMonthDay => Rule::NONE.sql("pl_month_day({s}.last_activity_at)"),
+        SessionsMonthDay => Rule::NONE.sql("pl_month_day({s}.last_active_at)"),
         DocumentsMonthDay => Rule::NONE.sql("pl_month_day({r}.at)"),
         MessagesMonthDay => Rule::NONE.sql("pl_month_day({m}.at)"),
         BlocksMonthDay => Rule::NONE.sql("pl_month_day({m}.at)"),
@@ -505,7 +505,7 @@ pub fn rule(id: FieldId) -> Rule {
         // session's last activity and does not hold the session; or the newest
         // chain of an input that states the session states it gone (the Drive
         // collector's listing of a removed prompt).
-        SessionsSource => Rule::NONE.sql("CASE WHEN {s}.stub = 1 THEN 'missing' WHEN EXISTS(SELECT 1 FROM session_parse {s}_g WHERE {s}_g.session_id={s}.id AND json_extract({s}_g.facts,'$.gone')=1 AND {s}_g.chain=(SELECT max({s}_n.chain) FROM session_parse {s}_n WHERE {s}_n.input_pk={s}_g.input_pk AND {s}_n.session_id={s}_g.session_id)) THEN 'gone' WHEN EXISTS(SELECT 1 FROM export_parse {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_activity_at AND NOT EXISTS(SELECT 1 FROM session_parse {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_id={s}.id AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
+        SessionsSource => Rule::NONE.sql("CASE WHEN {s}.has_transcript = 0 THEN 'missing' WHEN EXISTS(SELECT 1 FROM session_parse {s}_g WHERE {s}_g.session_id={s}.id AND json_extract({s}_g.facts,'$.gone')=1 AND {s}_g.chain=(SELECT max({s}_n.chain) FROM session_parse {s}_n WHERE {s}_n.input_pk={s}_g.input_pk AND {s}_n.session_id={s}_g.session_id)) THEN 'gone' WHEN EXISTS(SELECT 1 FROM export_parse {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_active_at AND NOT EXISTS(SELECT 1 FROM session_parse {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_id={s}.id AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
         SessionsLive => Rule::NONE.custom(custom::live).sql_clock(sessions_live),
         SessionsWaiting => Rule::NONE.custom(custom::waiting).sql_clock(sessions_waiting),
         SessionsRunning => Rule::NONE.custom(custom::running).sql_clock(sessions_running),
@@ -542,7 +542,7 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsStarted => Rule::NONE.sql("{s}.started_at"),
         SessionsFirstSeen => Rule::NONE.sql_fn(session_first_seen),
         SessionsSeenBy => Rule::NONE.custom(custom::seen_by),
-        SessionsLastActive => Rule::NONE.sql("{s}.last_activity_at"),
+        SessionsLastActive => Rule::NONE.sql("{s}.last_active_at"),
         SessionsSince => Rule::NONE.custom(custom::since),
         SessionsUntil => Rule::NONE.custom(custom::until),
         SessionsMessages => Rule::NONE.sql_fn(|a| crate::session_sql::count(&a.s,"message_count")),
@@ -793,7 +793,7 @@ pub use polylogue_query::fields::LIVE_STATES;
 /// `state`, `until`, `since`, `waiting_on`, `stall`, `process_alive` or
 /// `rank`.
 pub fn live_part(s: &str, part: &str, now: i64) -> String {
-    format!("pl_live({s}.live_facts, {s}.last_activity_at, {now}, '{part}')")
+    format!("pl_live({s}.live_facts, {s}.last_active_at, {now}, '{part}')")
 }
 
 /// The live state of session alias `s` at `now`.

@@ -497,14 +497,14 @@ static SESSIONS: UnitSpec = UnitSpec {
         ("kind", T("{s}.kind"), Text),
         ("title", Expr::Fn(display_title), Text),
         ("started", T("{s}.started_at"), Time),
-        ("last_active", T("{s}.last_activity_at"), Time),
+        ("last_active", T("{s}.last_active_at"), Time),
         ("cwd", T("{s}.cwd"), Text),
         ("repo", T("{s}.repo"), Text),
     ],
-    time: "{s}.last_activity_at",
+    time: "{s}.last_active_at",
     newest_first: true,
     session_order: false,
-    since: Some("{s}.last_activity_at >= {v}"),
+    since: Some("{s}.last_active_at >= {v}"),
     until: Some("{s}.started_at < {v}"),
     session_pk: "{r}.session_pk",
     session_scope: None,
@@ -800,7 +800,7 @@ static LINKS: UnitSpec = UnitSpec {
         ("evidence", T("{r}.evidence"), Text),
         ("pending", T("({r}p.pk IS NULL)"), Bool),
     ],
-    time: "{r}p.last_activity_at",
+    time: "{r}p.last_active_at",
     newest_first: false,
     session_order: false,
     since: None,
@@ -943,8 +943,8 @@ static PROCESSES: UnitSpec = UnitSpec {
 static CHANGES: UnitSpec = UnitSpec {
     from: Expr::Template(
         "(SELECT 'session' AS kind, cs.id AS ref, cs.pk AS session_pk, \
-           MAX(cs.changed, COALESCE(cs.live_changed, 0), COALESCE(cs.derived_changed, 0)) AS seq, \
-           cs.changed AS changed, cs.live_changed AS live_changed, cs.derived_changed AS derived_changed, \
+           MAX(cs.changed, COALESCE(cs.live_changed, 0), COALESCE(cs.summary_changed, 0)) AS seq, \
+           cs.changed AS changed, cs.live_changed AS live_changed, cs.summary_changed AS summary_changed, \
            NULL AS annotation_kind FROM session cs \
          UNION ALL SELECT 'removed', rs.session_id, NULL, rs.changed, rs.changed, NULL, NULL, NULL \
            FROM removed_session rs \
@@ -1284,7 +1284,7 @@ mod tests;
 pub fn default_sql(id: DefaultId, a: &Aliases) -> String {
     match id {
         DefaultId::LogicalSessions => "1".into(),
-        DefaultId::NotStub => a.expand("{s}.stub = 0"),
+        DefaultId::NotStub => a.expand("{s}.has_transcript = 1"),
         DefaultId::SessionsVisible | DefaultId::Visible => not_hidden(a),
         DefaultId::NotDuplicate => a.expand("{m}.duplicate_of IS NULL"),
         DefaultId::OnActivePath => a.expand("COALESCE({m}.on_active_path, 1) = 1"),

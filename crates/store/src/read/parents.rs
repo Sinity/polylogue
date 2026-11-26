@@ -271,7 +271,7 @@ fn parent_keys(
                 }
             };
             let parent_pk: Option<SessionPk> = conn.value(
-                "SELECT pk FROM session WHERE id=?1 AND stub=0",
+                "SELECT pk FROM session WHERE id=?1 AND has_transcript=1",
                 [parent.to_string()],
             )?;
             let Some(parent_pk) = parent_pk else {
@@ -417,7 +417,7 @@ pub(crate) fn compare_session_messages(
 ) -> Result<std::cmp::Ordering> {
     let target_pk: SessionPk = conn
         .scalar_optional(
-            "SELECT pk FROM session WHERE id=?1 AND stub=0",
+            "SELECT pk FROM session WHERE id=?1 AND has_transcript=1",
             [target.to_string()],
         )?
         .ok_or_else(|| StoreError::NotFound(format!("session:{target}")))?;

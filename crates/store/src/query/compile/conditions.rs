@@ -404,7 +404,7 @@ impl<'a> Compiler<'a> {
                 "{n}.kind = '{}'",
                 polylogue_model::SessionKind::Main.as_str()
             ),
-            format!("{n}.stub = 0"),
+            format!("{n}.has_transcript = 1"),
         ];
         if let Some(me) = self.opts.self_session.clone() {
             conditions.push(format!("{n}.id <> {}", self.text_param(&me)));
@@ -412,7 +412,7 @@ impl<'a> Compiler<'a> {
         conditions.extend(within);
         format!(
             "{outer}.pk = (SELECT {n}.pk FROM {} WHERE {} \
-             ORDER BY {n}.last_activity_at IS NULL, {n}.last_activity_at DESC, {n}.pk DESC LIMIT 1)",
+             ORDER BY {n}.last_active_at IS NULL, {n}.last_active_at DESC, {n}.pk DESC LIMIT 1)",
             base_from(Unit::Sessions, inner),
             conditions.join(" AND ")
         )

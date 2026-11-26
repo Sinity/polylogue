@@ -311,10 +311,10 @@ fn summaries(w: &WriterArchive) -> Json {
     for (name, sql) in [
         (
             "session",
-            "SELECT id, title, derived_title, kind, started_at, last_activity_at, message_count,
+            "SELECT id, title, prompt_title, kind, started_at, last_active_at, message_count,
                     human_prompt_count, human_command_count, word_count, human_word_count,
                     model_word_count, thinking_count, compaction_count, tool_call_count,
-                    error_count, live_facts, live_last_at, stub
+                    error_count, live_facts, live_last_at, has_transcript
              FROM session ORDER BY id",
         ),
         (

@@ -288,7 +288,7 @@ fn walk(session: &str) -> String {
         SELECT min(l.parent_id) FROM session_link l
         WHERE l.child_id=a.id AND l.kind IN ({STRUCTURAL_KINDS})
         HAVING count(DISTINCT l.parent_id)=1)
-      WHERE a.cycle=0 AND p.stub=0
+      WHERE a.cycle=0 AND p.has_transcript=1
     ), terminal AS (SELECT * FROM ancestry ORDER BY depth DESC LIMIT 1),
     observed AS (SELECT t.*, (SELECT json_group_array(parent_id) FROM (
       SELECT DISTINCT l.parent_id FROM session_link l

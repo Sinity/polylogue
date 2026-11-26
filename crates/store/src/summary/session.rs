@@ -208,10 +208,10 @@ pub(super) fn compute(conn: &Connection, session_pk: i64, out: &mut Output) -> R
         // No input states anything of the session. One the assembly left
         // as a stub, named only by events, has no facts of its own; any
         // other keeps the columns it was written with.
-        let (id, stub): (String, bool) = conn
-            .prepare_cached("SELECT id, stub FROM session WHERE pk=?1")?
+        let (id, has_transcript): (String, bool) = conn
+            .prepare_cached("SELECT id, has_transcript FROM session WHERE pk=?1")?
             .query_row([session_pk], |r| <(_, _)>::try_from(r))?;
-        if !stub {
+        if has_transcript {
             out.session = Some(Box::new(Facts {
                 last_active: spans.latest.columns(),
                 session: None,
@@ -256,8 +256,8 @@ pub(super) fn place(
 pub(super) fn apply(tx: &Transaction<'_>, session_pk: i64, facts: &Facts) -> Result<()> {
     let (at, until, precision) = &facts.last_active;
     tx.prepare_cached(
-        "UPDATE session SET last_activity_at=?2, last_active_until=?3, last_active_precision=?4
-         WHERE pk=?1 AND NOT (last_activity_at IS ?2 AND last_active_until IS ?3 AND last_active_precision IS ?4)",
+        "UPDATE session SET last_active_at=?2, last_active_until=?3, last_active_precision=?4
+         WHERE pk=?1 AND NOT (last_active_at IS ?2 AND last_active_until IS ?3 AND last_active_precision IS ?4)",
     )?
     .execute(params![session_pk, at, until, precision])?;
     if let Some(session) = &facts.session {

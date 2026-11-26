@@ -1184,7 +1184,7 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
             .collect::<Vec<_>>();
         let title = r
             .query(
-                "SELECT derived_title FROM session WHERE id = 'claude-code:s1'",
+                "SELECT prompt_title FROM session WHERE id = 'claude-code:s1'",
                 &[],
             )
             .unwrap();
@@ -1201,7 +1201,7 @@ fn source_arrival_order_does_not_change_message_order_or_derived_title() {
             "claude-code:later"
         ]
     );
-    assert_eq!(forward.1[0]["derived_title"], "First question");
+    assert_eq!(forward.1[0]["prompt_title"], "First question");
 }
 
 mod restating;

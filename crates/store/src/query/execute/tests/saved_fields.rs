@@ -1739,7 +1739,7 @@ fn since_seen_returns_a_session_whose_live_or_derived_counter_passed_the_mark() 
     // changed again (docs/live-sessions.md: live-state changes are session
     // changes on the change feed).
     let index = crate::archive::open_write(&archive.archive.index_db(), 16).unwrap();
-    for (column, name) in [("live_changed", "live"), ("derived_changed", "derived")] {
+    for (column, name) in [("live_changed", "live"), ("summary_changed", "derived")] {
         index
             .execute(
                 &format!("UPDATE session SET {column} = ?1 WHERE id = ?2"),

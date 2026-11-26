@@ -135,7 +135,7 @@ fn default_pages_read_in_index_order() {
     for (text, index) in [
         ("messages", "message_time"),
         ("events", "event_time"),
-        ("sessions", "session_activity"),
+        ("sessions", "session_last_active"),
     ] {
         let steps = page_plan(&f, text);
         assert!(

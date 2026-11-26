@@ -547,10 +547,10 @@ impl<'c> Work<'_, 'c> {
             return Ok(pk);
         }
         let id = SessionId::parse(session).map_err(StoreError::invalid)?;
-        self.tx().prepare_cached("INSERT INTO session(id,origin,native_id,kind,cwd_json,changed,harness,stub,
+        self.tx().prepare_cached("INSERT INTO session(id,origin,native_id,kind,cwd_json,changed,harness,has_transcript,
             message_count,human_prompt_count,human_command_count,word_count,human_word_count,model_word_count,
             thinking_count,compaction_count,tool_call_count,error_count)
-            VALUES (?1,?2,?3,'main','[]',?4,?2,1,0,0,0,0,0,0,0,0,0,0)")?
+            VALUES (?1,?2,?3,'main','[]',?4,?2,0,0,0,0,0,0,0,0,0,0,0)")?
             .execute(params![session, id.origin().as_str(), id.native().as_str(), self.context.counter])?;
         let pk = self.tx().last_insert_rowid();
         self.sessions.insert(session.to_owned(), pk);
@@ -570,7 +570,7 @@ impl<'c> Work<'_, 'c> {
             let pk = self.session_row(session)?;
             self.context.changes.whole_session(pk);
             self.context.changes.session(pk);
-            self.set_stub(pk, session, !own)?;
+            self.set_has_transcript(pk, session, own)?;
             return Ok(());
         }
         let stated = self.ids.stated(session)?;
@@ -610,17 +610,20 @@ impl<'c> Work<'_, 'c> {
             (_, true) => {
                 let pk = self.session_row(session)?;
                 self.context.changes.session(pk);
-                self.set_stub(pk, session, !own)
+                self.set_has_transcript(pk, session, own)
             }
         }
     }
 
-    /// Makes session `pk` a stub or not; a change marks its lineage due.
-    fn set_stub(&mut self, pk: i64, session: &str, stub: bool) -> Result<()> {
+    /// Records whether session `pk` has a transcript (it is a stub while only
+    /// events name it); a change marks its lineage due.
+    fn set_has_transcript(&mut self, pk: i64, session: &str, has_transcript: bool) -> Result<()> {
         let changed = self
             .tx()
-            .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
-            .execute(params![pk, stub])?;
+            .prepare_cached(
+                "UPDATE session SET has_transcript=?2 WHERE pk=?1 AND has_transcript IS NOT ?2",
+            )?
+            .execute(params![pk, has_transcript])?;
         if changed > 0 {
             crate::lineage::mark_due(self.tx(), session)?;
         }

@@ -170,7 +170,7 @@ pub(crate) const BUILT_AT_END: &[&str] = &[
     "event_time",
     "document_time",
     "event_period",
-    "session_activity",
+    "session_last_active",
     "session_started",
     "session_cwd",
     "session_repo",

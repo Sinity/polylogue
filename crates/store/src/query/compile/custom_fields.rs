@@ -329,7 +329,7 @@ pub(crate) fn changes_after(
     c.change_generations.push(position.generation);
     Ok(format!(
         "(({r}.kind = 'annotation' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
-         OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index} OR {r}.derived_changed > {index})))",
+         OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index} OR {r}.summary_changed > {index})))",
         r = x.row(),
         index = position.index,
         archive = position.archive,
@@ -955,7 +955,7 @@ fn since_seen(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, Quer
     );
     let unchanged = match x.unit {
         Unit::Sessions => format!(
-            "substr({at},1,instr({at},':')-1)=(SELECT value FROM main.meta WHERE key='generation') AND {s}.changed<={index} AND COALESCE({s}.live_changed,0)<={index} AND COALESCE({s}.derived_changed,0)<={index}",
+            "substr({at},1,instr({at},':')-1)=(SELECT value FROM main.meta WHERE key='generation') AND {s}.changed<={index} AND COALESCE({s}.live_changed,0)<={index} AND COALESCE({s}.summary_changed,0)<={index}",
             s = x.s()
         ),
         Unit::Annotations => format!("{}.commit_seq<={archive}", x.row()),

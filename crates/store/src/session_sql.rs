@@ -25,7 +25,7 @@ pub fn display_title(s: &str) -> String {
          JOIN source_annotation ta ON ta.id = tl.annotation AND ta.kind = 'title' \
          JOIN source_revision_state ts ON ts.id = ta.id AND ts.current = 1 AND ts.withdrawn = 0 \
          WHERE tl.ref = 'session:' || {s}.id AND tl.role = 'about' ORDER BY 1) tv), \
-         {s}.title, {s}.derived_title)"
+         {s}.title, {s}.prompt_title)"
     )
 }
 
@@ -207,7 +207,7 @@ fn own_cost(s: &str) -> String {
 pub fn outlier(s: &str) -> String {
     let distribution = |value: String| {
         format!(
-            "(SELECT avg(value) FROM (SELECT value,row_number() OVER(ORDER BY value) AS n,count(*) OVER() AS total FROM (SELECT {value} AS value FROM session previous WHERE (({s}.repo_root IS NOT NULL AND previous.repo_root={s}.repo_root) OR ({s}.repo_root IS NULL AND {s}.repo IS NOT NULL AND previous.repo={s}.repo)) AND previous.last_activity_at>={s}.last_activity_at-2592000000 AND previous.last_activity_at<{s}.last_activity_at) WHERE value IS NOT NULL) WHERE n IN ((total+1)/2,(total+2)/2))"
+            "(SELECT avg(value) FROM (SELECT value,row_number() OVER(ORDER BY value) AS n,count(*) OVER() AS total FROM (SELECT {value} AS value FROM session previous WHERE (({s}.repo_root IS NOT NULL AND previous.repo_root={s}.repo_root) OR ({s}.repo_root IS NULL AND {s}.repo IS NOT NULL AND previous.repo={s}.repo)) AND previous.last_active_at>={s}.last_active_at-2592000000 AND previous.last_active_at<{s}.last_active_at) WHERE value IS NOT NULL) WHERE n IN ((total+1)/2,(total+2)/2))"
         )
     };
     let cost = distribution(own_cost("previous"));
@@ -220,7 +220,7 @@ pub fn outlier(s: &str) -> String {
 }
 pub fn triage_score(s: &str) -> String {
     format!(
-        "CASE WHEN EXISTS(SELECT 1 FROM source_annotation a JOIN source_annotation_link l ON l.annotation=a.id AND l.role='about' JOIN source_revision_state ar ON ar.id=a.id AND ar.current=1 AND ar.withdrawn=0 WHERE a.kind='tag' AND a.key='triaged' AND l.ref='session:'||{s}.id AND a.created_at>{s}.last_activity_at) THEN 0 ELSE {}+({}>=3)+{}+({}>=3)+{} END",
+        "CASE WHEN EXISTS(SELECT 1 FROM source_annotation a JOIN source_annotation_link l ON l.annotation=a.id AND l.role='about' JOIN source_revision_state ar ON ar.id=a.id AND ar.current=1 AND ar.withdrawn=0 WHERE a.kind='tag' AND a.key='triaged' AND l.ref='session:'||{s}.id AND a.created_at>{s}.last_active_at) THEN 0 ELSE {}+({}>=3)+{}+({}>=3)+{} END",
         unrecovered_failures(s),
         failure_streak(s),
         outlier(s),
@@ -234,7 +234,7 @@ pub fn triage_score(s: &str) -> String {
 /// than treating an ancestor's entire history as inherited.
 pub fn parent_prefix_messages(s: &str) -> String {
     format!(
-        "WITH RECURSIVE ancestors(pk,id,depth,path,child_id,point,copied) AS (SELECT {s}.pk,{s}.id,0,'/'||{s}.pk||'/',NULL,NULL,0 UNION ALL SELECT p.pk,p.id,a.depth+1,a.path||p.pk||'/',a.id,l.branch_point,(EXISTS(SELECT 1 FROM shared_prefix pc WHERE pc.child_id=a.id AND pc.parent_id=p.id AND pc.explicit_members=1) OR l.copies_prefix=1 AND l.branch_point IS NULL) FROM ancestors a JOIN session_prefix l ON l.child_id=a.id JOIN session p ON p.id=l.parent_id AND p.stub=0 WHERE a.copied=0 AND instr(a.path,'/'||p.pk||'/')=0 AND (l.branch_point IS NULL OR (SELECT count(*) FROM session_prefix conflicting WHERE conflicting.child_id=a.id AND conflicting.branch_point IS NOT NULL)=1)), candidates AS (SELECT a.*,m.pk AS message_pk,m.id AS message_id,m.session_order FROM ancestors a JOIN message m ON m.session_pk=a.pk WHERE {}) SELECT DISTINCT c.message_pk FROM candidates c WHERE c.depth=0 OR NOT EXISTS(SELECT 1 FROM ancestors edge WHERE edge.depth>0 AND instr(c.path,edge.path)=1 AND ((edge.copied=1 AND NOT(EXISTS(SELECT 1 FROM shared_prefix_message pm WHERE pm.child_id=edge.child_id AND pm.parent_id=edge.id AND pm.message_id=c.message_id) OR EXISTS(SELECT 1 FROM message_parse ms JOIN shared_prefix pc ON pc.input_pk=ms.input_pk AND pc.chain=ms.chain AND pc.explicit_members=0 WHERE ms.message_id=(SELECT id FROM message WHERE pk=c.message_pk) AND pc.child_id=edge.child_id AND pc.parent_id=edge.id AND NOT EXISTS(SELECT 1 FROM shared_prefix explicit WHERE explicit.child_id=pc.child_id AND explicit.parent_id=pc.parent_id AND explicit.input_pk=pc.input_pk AND explicit.chain=pc.chain AND explicit.explicit_members=1)))) OR (edge.copied=0 AND NOT EXISTS(SELECT 1 FROM candidates point WHERE point.message_id=edge.point AND instr(point.path,edge.path)=1 AND (c.depth>point.depth OR c.depth=point.depth AND (c.session_order,c.message_id)<=(point.session_order,point.message_id))))))",
+        "WITH RECURSIVE ancestors(pk,id,depth,path,child_id,point,copied) AS (SELECT {s}.pk,{s}.id,0,'/'||{s}.pk||'/',NULL,NULL,0 UNION ALL SELECT p.pk,p.id,a.depth+1,a.path||p.pk||'/',a.id,l.branch_point,(EXISTS(SELECT 1 FROM shared_prefix pc WHERE pc.child_id=a.id AND pc.parent_id=p.id AND pc.explicit_members=1) OR l.copies_prefix=1 AND l.branch_point IS NULL) FROM ancestors a JOIN session_prefix l ON l.child_id=a.id JOIN session p ON p.id=l.parent_id AND p.has_transcript=1 WHERE a.copied=0 AND instr(a.path,'/'||p.pk||'/')=0 AND (l.branch_point IS NULL OR (SELECT count(*) FROM session_prefix conflicting WHERE conflicting.child_id=a.id AND conflicting.branch_point IS NOT NULL)=1)), candidates AS (SELECT a.*,m.pk AS message_pk,m.id AS message_id,m.session_order FROM ancestors a JOIN message m ON m.session_pk=a.pk WHERE {}) SELECT DISTINCT c.message_pk FROM candidates c WHERE c.depth=0 OR NOT EXISTS(SELECT 1 FROM ancestors edge WHERE edge.depth>0 AND instr(c.path,edge.path)=1 AND ((edge.copied=1 AND NOT(EXISTS(SELECT 1 FROM shared_prefix_message pm WHERE pm.child_id=edge.child_id AND pm.parent_id=edge.id AND pm.message_id=c.message_id) OR EXISTS(SELECT 1 FROM message_parse ms JOIN shared_prefix pc ON pc.input_pk=ms.input_pk AND pc.chain=ms.chain AND pc.explicit_members=0 WHERE ms.message_id=(SELECT id FROM message WHERE pk=c.message_pk) AND pc.child_id=edge.child_id AND pc.parent_id=edge.id AND NOT EXISTS(SELECT 1 FROM shared_prefix explicit WHERE explicit.child_id=pc.child_id AND explicit.parent_id=pc.parent_id AND explicit.input_pk=pc.input_pk AND explicit.chain=pc.chain AND explicit.explicit_members=1)))) OR (edge.copied=0 AND NOT EXISTS(SELECT 1 FROM candidates point WHERE point.message_id=edge.point AND instr(point.path,edge.path)=1 AND (c.depth>point.depth OR c.depth=point.depth AND (c.session_order,c.message_id)<=(point.session_order,point.message_id))))))",
         own_messages("m", None)
     )
 }
