@@ -1,4 +1,9 @@
 //! A sidecar object as borrowed raw JSON values by field name, refusing a repeated field.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use serde::de::{DeserializeSeed, Error as _, MapAccess, Visitor};
 use serde_json::value::RawValue;
 use std::collections::BTreeMap;

@@ -27,12 +27,12 @@ pub(crate) fn reads_attachment(request: &RunnableRequest) -> bool {
 
 /// Reads every range of the attachment and writes it to `path`.
 pub(crate) fn write_to(
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     request: &RunnableRequest,
     path: &Path,
     json: bool,
 ) -> ExitCode {
-    match write(startup, request, path) {
+    match write(client, request, path) {
         Ok(written) => {
             if json {
                 println!(
@@ -43,9 +43,9 @@ pub(crate) fn write_to(
             }
             ExitCode::SUCCESS
         }
-        Err(Written::Refused(error)) => super::fail_with(startup.output, json, &error, &[]),
+        Err(Written::Refused(error)) => super::fail_with(client.output, json, &error, &[]),
         Err(Written::Output(message)) => {
-            super::fail(startup.output, json, Code::AttachmentOutput, &message)
+            super::fail(client.output, json, Code::AttachmentOutput, &message)
         }
     }
 }
@@ -85,11 +85,11 @@ fn range(archive: &Archive, request: &RunnableRequest) -> Result<BytePage, Writt
 }
 
 fn write(
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     request: &RunnableRequest,
     path: &Path,
 ) -> Result<std::path::PathBuf, Written> {
-    let archive = Archive::at(&startup.config.archive);
+    let archive = Archive::at(&client.archive);
     let mut temporary = super::staged_file::StagedFile::new(path).map_err(|e| e.to_string())?;
     let mut request = request.clone();
     let mut hasher = blake3::Hasher::new();

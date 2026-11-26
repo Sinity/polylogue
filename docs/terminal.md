@@ -102,7 +102,7 @@ Row numbers name rows of the last list printed on this terminal. The other refer
 | `@all` | every row shown |
 
 - **Terminal only.** Row numbers resolve when standard input and output are a terminal. Elsewhere (pipes, agents' tool shells) `@3` is refused `row_numbers_off_terminal` with "use the references printed above": parallel subagents share one harness session ID, so a list remembered per session would let one act on another's rows. Every reply carries short references, so agents lose nothing.
-- **The row file**, per terminal and archive, holds the last list's question, the shown rows' references and when they were shown. Only list replies replace it: a listing, a page of picker candidates once it has arrived and `ambiguous` candidates. Reads, writes and acts never do.
+- **The row file**, per terminal and archive, holds the last list's question, the shown rows' references and when they were shown. Only list replies replace it: a listing, a page of picker candidates once it has arrived and `ambiguous` candidates. Reads, writes and acts never do. A list that cannot be written removes the previous one, so a row number never names a row of an older list.
 - A write or act that used row numbers prints `rows of '<question>' shown <n> min ago` before its outcome.
 - Row numbers are rewritten only in the selection position (and in `judge`'s word), never inside text. They travel as resolved references: row numbers never leave the command line, and the daemon refuses a row number with "row numbers are resolved by the command line".
 

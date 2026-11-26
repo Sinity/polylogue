@@ -66,6 +66,7 @@ pub use identical_chains::{
 };
 pub mod activity;
 pub mod alternates;
+pub mod follow;
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;
@@ -288,7 +289,7 @@ impl StoreError {
     }
 
     /// Stored data this build cannot read back that no one column holds:
-    /// extents, item indexes, stored sums.
+    /// extents, transcript lines, stored sums.
     pub fn stored_data(reason: impl ToString) -> Self {
         Self::StoredValue {
             column: None,

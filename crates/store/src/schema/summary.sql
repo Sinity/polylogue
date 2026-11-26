@@ -2,11 +2,14 @@
 -- its assembled rows off the writer, for the sessions marked due.
 
 -- The version each declared summary of a session was computed under; a
--- summary whose version moved is computed again for every session.
+-- summary whose version moved is computed again for every session. `state`
+-- is what a summary keeps beside its rows: the transcript lines' counters and
+-- totals (summary/lines.rs, `LineState`), which cursors bind.
 CREATE TABLE summary_state (
   name              TEXT NOT NULL,
   session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
   version           TEXT NOT NULL,
+  state             BLOB,
   PRIMARY KEY (name, session_pk)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX summary_state_session ON summary_state(session_pk);

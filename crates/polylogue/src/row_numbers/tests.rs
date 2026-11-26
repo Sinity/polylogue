@@ -86,3 +86,32 @@ fn all_of_an_empty_list_is_refused() {
         "@all: the last list has 0 rows"
     );
 }
+
+#[test]
+fn failed_row_write_leaves_no_stale_listing() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("rows-pts-3");
+    let listing = |reference: &str| ShownRows {
+        question: "clock".into(),
+        shown_at: 0,
+        rows: vec![Row {
+            reference: reference.into(),
+            hits: vec![],
+        }],
+    };
+    replace_listing(&path, &listing("session:codex:older"), |path, bytes| {
+        polylogue_model::atomic_write::write_atomic(path, bytes, None)
+    });
+    let stored: ShownRows = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    assert_eq!(
+        select("@1", &stored).unwrap(),
+        ["session:codex:older".to_owned()]
+    );
+    replace_listing(&path, &listing("session:codex:newer"), |_, _| {
+        Err(std::io::Error::from_raw_os_error(28))
+    });
+    assert_eq!(
+        fs::read(&path).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+}

@@ -1,4 +1,9 @@
 //! Frame the outer-cell delimiter used by this Takeout format, preserving bytes.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::CELL;
 use crate::export::{Input, ScanError, ScanStats};
 use std::ops::Range;

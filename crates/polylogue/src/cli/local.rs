@@ -41,7 +41,12 @@ pub fn daemon(
         }
         Err(e) => eprint!(
             "{}",
-            super::print::diagnostic("", &e.to_string(), None, startup.output.stderr_color())
+            super::print::diagnostic(
+                "",
+                &e.to_string(),
+                None,
+                startup.client.output.stderr_color()
+            )
         ),
     }
     if let DaemonEnd::StorageFailed(failure) = &end {
@@ -53,7 +58,7 @@ pub fn daemon(
                     "",
                     &failure.to_string(),
                     None,
-                    startup.output.stderr_color()
+                    startup.client.output.stderr_color()
                 )
             );
         }
@@ -79,51 +84,59 @@ enum DaemonEnd {
     StorageFailedEarlier,
     /// The archive or the embeddings are in a format this build refuses.
     ArchiveRefused,
+    /// Another process holds the archive lock.
+    Locked,
+    /// The daemon could not start serving, for a reason the failure table
+    /// classifies: an archive directory it cannot create or open is `io`.
+    StartFailed(command_surface::FailureKind),
+    /// A run that served and then failed.
     Failed,
     /// Stopped by a signal, with nothing to report.
     Stopped,
     /// A run until idle ended; `complete` when it met no errors, since a
     /// run that met errors did not process everything it was given.
-    Idle {
-        complete: bool,
-    },
+    Idle { complete: bool },
 }
 
 impl DaemonEnd {
     fn of(
-        served: &std::io::Result<Option<polylogue_engine::RunSummary>>,
+        served: &Result<Option<polylogue_engine::RunSummary>, crate::daemon::server::Failed>,
         recorded: Option<polylogue_store::storage_failure::StorageFailure>,
     ) -> Self {
+        use crate::daemon::server::Failed;
         if let Some(failure) = recorded {
             return Self::StorageFailed(failure);
         }
-        let error = match served {
+        let failed = match served {
             Ok(None) => return Self::Stopped,
             Ok(Some(summary)) => {
                 return Self::Idle {
                     complete: summary.work.errors.is_empty(),
                 };
             }
-            Err(error) => error.get_ref(),
+            Err(failed) => failed,
         };
-        if error.is_some_and(|inner| inner.is::<crate::daemon::storage_stop::StorageStopped>()) {
+        let inner = failed.error().get_ref();
+        if inner.is_some_and(|inner| inner.is::<crate::daemon::storage_stop::StorageStopped>()) {
             return Self::StorageFailedEarlier;
         }
-        let refused = error
-            .and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>())
-            .is_some_and(|inner| {
-                matches!(
-                    inner,
-                    polylogue_store::StoreError::NewerSchema { .. }
-                        | polylogue_store::StoreError::OtherFormat { .. }
-                        | polylogue_store::StoreError::EmbeddingsSchemaDiffers { .. }
-                        | polylogue_store::StoreError::OlderFormat { .. }
-                )
-            });
-        if refused {
-            Self::ArchiveRefused
-        } else {
-            Self::Failed
+        let store = inner.and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>());
+        match store {
+            Some(
+                polylogue_store::StoreError::NewerSchema { .. }
+                | polylogue_store::StoreError::OtherFormat { .. }
+                | polylogue_store::StoreError::EmbeddingsSchemaDiffers { .. }
+                | polylogue_store::StoreError::OlderFormat { .. },
+            ) => return Self::ArchiveRefused,
+            Some(polylogue_store::StoreError::Locked { .. }) => return Self::Locked,
+            _ => {}
+        }
+        match failed {
+            Failed::Run(_) => Self::Failed,
+            Failed::Start(error) => Self::StartFailed(match store {
+                Some(store) => crate::protocol::store_failure(store).kind,
+                None => crate::protocol::failure(polylogue_model::Code::Io, error.to_string()).kind,
+            }),
         }
     }
 
@@ -131,8 +144,9 @@ impl DaemonEnd {
         match self {
             Self::StorageFailed(_) | Self::StorageFailedEarlier => crate::EXIT_STORAGE_FAILED,
             Self::ArchiveRefused => crate::EXIT_SCHEMA_REFUSED,
+            Self::StartFailed(kind) => kind.exit_code(),
             Self::Stopped | Self::Idle { complete: true } => 0,
-            Self::Failed | Self::Idle { complete: false } => 1,
+            Self::Locked | Self::Failed | Self::Idle { complete: false } => 1,
         }
     }
 }
@@ -140,23 +154,19 @@ impl DaemonEnd {
 pub fn mcp(
     _: &Command,
     _: &command_surface::ParsedCommand,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     _: bool,
 ) -> ExitCode {
-    match crate::mcp::serve_stdio(&polylogue_store::Archive::at(&startup.config.archive)) {
+    match crate::mcp::serve_stdio(&polylogue_store::Archive::at(&client.archive)) {
         Ok(()) => ExitCode::SUCCESS,
-        Err(e) => {
-            eprint!(
-                "{}",
-                super::print::diagnostic(
-                    "",
-                    &format!("mcp: {e}"),
-                    None,
-                    startup.output.stderr_color()
-                )
-            );
-            ExitCode::FAILURE
-        }
+        // Standard output carries the MCP protocol, so the failure goes to
+        // standard error as text.
+        Err(error) => fail(
+            client.output,
+            false,
+            polylogue_model::Code::Io,
+            &format!("mcp: {error}"),
+        ),
     }
 }
 
@@ -180,10 +190,10 @@ pub fn hook(
 pub fn web(
     _: &Command,
     _: &command_surface::ParsedCommand,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     json: bool,
 ) -> ExitCode {
-    open_reader(startup, json)
+    open_reader(client, json)
 }
 
 pub fn browser_host(
@@ -226,7 +236,7 @@ fn install_with_output(
         Ok(arguments) => arguments,
         Err(error) => {
             return fail(
-                startup.output,
+                startup.client.output,
                 json,
                 polylogue_model::Code::BadRequest,
                 &error.to_string(),
@@ -236,7 +246,7 @@ fn install_with_output(
     let target = arguments.target.as_str();
     let not_built = |part: &str| {
         fail(
-            startup.output,
+            startup.client.output,
             json,
             polylogue_model::Code::NotBuilt,
             &format!("install {part} is not built yet"),
@@ -246,7 +256,7 @@ fn install_with_output(
         return match instructions::install(startup, &arguments, json, output) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => fail(
-                startup.output,
+                startup.client.output,
                 json,
                 if error.kind() == std::io::ErrorKind::InvalidInput {
                     polylogue_model::Code::BadRequest
@@ -261,7 +271,7 @@ fn install_with_output(
         return match shell::install(startup, &arguments, json, output) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => fail(
-                startup.output,
+                startup.client.output,
                 json,
                 if error.kind() == std::io::ErrorKind::InvalidInput {
                     polylogue_model::Code::BadRequest
@@ -287,7 +297,7 @@ fn install_with_output(
     }
     let Some(harness) = crate::hook::Harness::parse(target) else {
         return fail(
-            startup.output,
+            startup.client.output,
             json,
             polylogue_model::Code::BadRequest,
             &format!(
@@ -304,7 +314,7 @@ fn install_with_output(
             Ok(path) => path,
             Err(message) => {
                 return fail(
-                    startup.output,
+                    startup.client.output,
                     json,
                     polylogue_model::Code::BadRequest,
                     &message,
@@ -341,7 +351,7 @@ fn install_with_output(
             match result {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => fail(
-                    startup.output,
+                    startup.client.output,
                     json,
                     polylogue_model::Code::Io,
                     &error.to_string(),
@@ -349,7 +359,7 @@ fn install_with_output(
             }
         }
         Err(error) => fail(
-            startup.output,
+            startup.client.output,
             json,
             polylogue_model::Code::Io,
             &error.to_string(),
@@ -438,7 +448,7 @@ fn install_drive(
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(
-            startup.output,
+            startup.client.output,
             json,
             if error.kind() == std::io::ErrorKind::InvalidInput {
                 polylogue_model::Code::BadValue
@@ -530,7 +540,7 @@ fn install_chrome(
             extension_id.filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase()))
         else {
             return fail(
-                startup.output,
+                startup.client.output,
                 json,
                 polylogue_model::Code::BadRequest,
                 "`--extension-id` (the ID chrome://extensions shows) is required",
@@ -540,7 +550,7 @@ fn install_chrome(
             Ok(binary) => binary,
             Err(error) => {
                 return fail(
-                    startup.output,
+                    startup.client.output,
                     json,
                     polylogue_model::Code::Io,
                     &error.to_string(),
@@ -551,7 +561,7 @@ fn install_chrome(
             Ok(bytes) => Some(bytes),
             Err(error) => {
                 return fail(
-                    startup.output,
+                    startup.client.output,
                     json,
                     polylogue_model::Code::Io,
                     &error.to_string(),
@@ -623,7 +633,7 @@ fn install_chrome(
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => fail(
-            startup.output,
+            startup.client.output,
             json,
             polylogue_model::Code::Io,
             &error.to_string(),
@@ -664,14 +674,14 @@ fn installed_chrome_manifest(bytes: &[u8]) -> bool {
 /// Opens the web reader: reads the running daemon's port and token, checks
 /// that the port's listener is this user's, and opens `/auth#<token>` in
 /// the browser. The fragment never reaches a server log or history.
-fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
+fn open_reader(client: &crate::config::Client, json: bool) -> ExitCode {
     use crate::web::access;
-    let root = startup.config.archive.clone();
-    let auth = match access::reader_url(&startup.config.paths, &root) {
+    let root = client.archive.clone();
+    let auth = match access::reader_url(&client.paths, &root) {
         Ok(url) => url,
         Err(error) => {
             return fail(
-                startup.output,
+                client.output,
                 json,
                 polylogue_model::Code::DaemonRequired,
                 &format!(
@@ -699,7 +709,7 @@ fn open_reader(startup: &crate::config::Startup, json: bool) -> ExitCode {
                 "",
                 &format!("could not start a browser; open {auth}"),
                 None,
-                startup.output.stderr_color()
+                client.output.stderr_color()
             )
         );
     }

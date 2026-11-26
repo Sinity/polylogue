@@ -193,7 +193,7 @@ fn visible_tool_outcomes_use_original_source_block_indices() {
         reader.tool_outcomes(&id).unwrap(),
         vec![(1, polylogue_model::CallOutcome::Error)]
     );
-    // The compaction event is one entry of the session's item index, after
+    // The compaction event is one of the session's transcript lines, after
     // the message it follows.
     let items = reader
         .item_index(&SessionId::parse("claude-code:outcome").unwrap())

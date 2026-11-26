@@ -2,6 +2,11 @@
 //! reason. Records that become events keep all their fields in the event's
 //! data, so only message records are checked.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule::*};
 

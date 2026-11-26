@@ -1,6 +1,11 @@
 //! Message content: blocks, tool-result outcomes and what kind of user
 //! message a record is.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use crate::parse::ExtractedBlob;
 use base64::Engine;
 use polylogue_model::JsonExt;

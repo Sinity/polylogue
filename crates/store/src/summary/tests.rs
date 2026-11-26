@@ -841,12 +841,13 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
     );
 }
 
-mod prepared_items;
+mod revealed_lines;
 
 /// The summary worker's cost of an append follows the append: one message
 /// appended to a session of 10,000 is folded from the state the previous
 /// run kept, reading only the new row, and gives what folding every row
-/// from the start gives.
+/// from the start gives; its transcript lines are written from the message
+/// before it.
 #[test]
 fn appending_one_message_to_a_long_session_reads_the_appended_row() {
     let mut w = WriterArchive::new();
@@ -867,14 +868,89 @@ fn appending_one_message_to_a_long_session_reads_the_appended_row() {
         )
         .unwrap();
     let run = super::fold::Run { conn: &index };
-    let appended = run.session(pk, &super::Key(from)).unwrap();
+    let appended = run.session(pk, &super::Key(from.clone())).unwrap();
     assert_eq!(appended.read, 1);
     let whole = run.session(pk, &super::Key::start()).unwrap();
     assert_eq!(whole.read, 10_001);
+    // The lines start from the last message before the new one: two units
+    // placed, one message made from its blocks, its two lines written.
+    let before = super::lines::counted::now();
+    let lines = super::lines::compute(&index, pk, &super::Key(from)).unwrap();
+    let after = super::lines::counted::now();
+    assert_eq!(lines.read, 2);
+    assert_eq!(lines.written(), 2);
+    assert_eq!(after[2] - before[2], 1);
     assert_eq!(appended.output.counts, whole.output.counts);
     assert_eq!(appended.output.values, whole.output.values);
     assert_eq!(
         serde_json::to_value(&appended.output.span).unwrap(),
         serde_json::to_value(&whole.output.span).unwrap()
     );
+}
+
+/// A transcript read made right after a commit, before any summary pass,
+/// shows what the commit wrote: the reader asks the summary worker for the
+/// session and waits for it.
+#[test]
+fn a_transcript_read_after_a_commit_shows_the_new_lines() {
+    let mut w = WriterArchive::new();
+    w.write("s", prose("s", 0, 1_000, "a first question"));
+    let pool = crate::ReadPool::open(&w.archive).unwrap();
+    let before = pool
+        .reader()
+        .unwrap()
+        .item_index(&sid("s"))
+        .unwrap()
+        .unwrap();
+    w.write_underived("s", prose("s", 1, 2_000, "a later question"));
+    let due: i64 = rusqlite::Connection::open(w.archive.index_db())
+        .unwrap()
+        .query_row("SELECT count(*) FROM summary_due", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(due, 1);
+    let reader = pool.reader().unwrap();
+    let after = reader.item_index(&sid("s")).unwrap().unwrap();
+    assert_eq!(after.entries.len(), before.entries.len() * 2);
+    assert_eq!(after.entries[..before.entries.len()], before.entries[..]);
+    assert_eq!(after.append_seq, before.append_seq + 1);
+    assert_eq!(after.rewrite_version, before.rewrite_version);
+    assert_eq!(reader.restarts(), 1);
+    assert_eq!(
+        after.entries,
+        super::lines::computed_entries(reader.conn().unwrap(), after.session_pk).unwrap()
+    );
+}
+
+/// A call's lines are found through `transcript_call`, by the session and
+/// the call ID, without reading the session's lines.
+#[test]
+fn a_call_lookup_reads_no_line_of_its_session() {
+    let mut w = WriterArchive::new();
+    w.write("s", prose("s", 0, 1_000, "a question"));
+    let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    for (sql, wanted) in [
+        (
+            "SELECT seq FROM transcript_call WHERE session_pk = ?1 AND call_id = ?2 ORDER BY seq",
+            "SEARCH transcript_call USING PRIMARY KEY (session_pk=? AND call_id=?)",
+        ),
+        (
+            "SELECT c.call_id, c.seq, c.class
+             FROM json_each(?2) j CROSS JOIN transcript_call c
+             WHERE c.session_pk = ?1 AND c.call_id = j.value",
+            "SEARCH c USING PRIMARY KEY (session_pk=? AND call_id=?)",
+        ),
+    ] {
+        let plan: Vec<String> = index
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .unwrap()
+            .query_map(rusqlite::params![1, "[]"], |r| r.get(3))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(plan.iter().any(|step| step == wanted), "{plan:?}");
+        assert!(
+            !plan.iter().any(|step| step.contains("transcript_line")),
+            "{plan:?}"
+        );
+    }
 }

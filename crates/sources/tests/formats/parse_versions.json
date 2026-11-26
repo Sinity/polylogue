@@ -1,106 +1,106 @@
 {
   "ai-studio": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::ai_studio::VERSION=6,crate::export::VERSION=2",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::ai_studio::VERSION=6,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "5cc1d8795cc234f2c565c3dd344e45dce90bf0a1daba7cb05b0672e992e29680"
   ],
   "aider": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::aider::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::aider::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "d45d8b9e745b127f491ccc90d1ab03c74be904ed7a96684cf16436958c2f6bc7"
   ],
   "antigravity": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "4782a10352c13ddce87d12b788b7183ef08be8ef35cfa1beafdf95c8eb3a00c0"
   ],
   "antigravity-database": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::database::VERSION=1",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::antigravity::database::VERSION=1,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "31af61d461d1c6b651a1f133e93e1635c5f24f7f3d94d95e8996883e26fd151b"
   ],
   "antigravity-exports": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::antigravity::VERSION=1,crate::antigravity::cli::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "772aeaf490963ed1d9ba12440682a9730f823105dc2a36129b8433e3fe71cd64"
   ],
   "browser-capture": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::browser_capture::VERSION=5,crate::chatgpt::VERSION=4,crate::claude_ai::VERSION=5,crate::codex_cloud::VERSION=1,crate::grok::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::browser_capture::VERSION=5,crate::chatgpt::VERSION=4,crate::claude_ai::VERSION=5,crate::codex_cloud::VERSION=1,crate::grok::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::browser_capture::files::VERSION=1,polylogue_sources::browser_capture::grok::VERSION=1,polylogue_sources::claude_ai::fields::VERSION=1,polylogue_sources::claude_ai::sidecars::VERSION=1,polylogue_sources::grok::identity::VERSION=1",
     "3e5ecd895974d2c77a7f613096b41d9b5066ac2ea5a0e7765c374352dbe95d59"
   ],
   "chatgpt": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::chatgpt::VERSION=4,crate::export::VERSION=2",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::chatgpt::VERSION=4,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "da93bded7856c910de392e4f06f54aeb3583627930d021ac50210f867db9a5dc"
   ],
   "claude-ai": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_ai::VERSION=5",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_ai::VERSION=5,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_ai::fields::VERSION=1,polylogue_sources::claude_ai::sidecars::VERSION=1",
     "15182f36ad3905e77a58aad4d2ce00830a736ecfcced7aef8f8a4008b878d4c9"
   ],
   "claude-code": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=12",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_code::VERSION=12,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_code::blocks::VERSION=1,polylogue_sources::claude_code::fields::VERSION=1",
     "492b1843b05f06e9b2d85f3a61480d27dadae41124bfcf75471b000e9710b445"
   ],
   "claude-code-history": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=12,crate::claude_code::side::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_code::VERSION=12,crate::claude_code::side::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_code::blocks::VERSION=1,polylogue_sources::claude_code::fields::VERSION=1",
     "92acebf5b2e325829b05a23fbae4b3dcbfdb4f354196541a71ca2f8c418e12f2"
   ],
   "claude-code-side": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_code::VERSION=12,crate::claude_code::side::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_code::VERSION=12,crate::claude_code::side::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_code::blocks::VERSION=1,polylogue_sources::claude_code::fields::VERSION=1",
     "27ae0456023092a3d499b9990d3a91a86704b81e3cd6d9ba14a3a572bb2167a8"
   ],
   "claude-design": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::claude_ai::VERSION=5",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_ai::VERSION=5,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_ai::fields::VERSION=1,polylogue_sources::claude_ai::sidecars::VERSION=1",
     "3c18cef36ae3a1a6771c81f25aac746115b8bddcc624a57e937cf92e767eb8ba"
   ],
   "codex": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::codex::VERSION=12",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::codex::VERSION=12,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::codex::fields::VERSION=1,polylogue_sources::codex::index::VERSION=1,polylogue_sources::codex::items::VERSION=1,polylogue_sources::codex::usage::VERSION=1,polylogue_sources::codex::header::VERSION=1",
     "508f30d2958d9a726362db53f4ae56f86cc76acd82fe1879cde440cc36c94c60"
   ],
   "codex-cloud": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::codex_cloud::VERSION=1",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::codex_cloud::VERSION=1,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "767cb3a07f133a813a21bff568ccf4bb6b0c6d2d4ca0be0dffe8e5ad85c016fd"
   ],
   "codex-database": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::codex::VERSION=12,crate::codex::database::VERSION=4",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::codex::VERSION=12,crate::codex::database::VERSION=4,crate::row_dump::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::codex::fields::VERSION=1,polylogue_sources::codex::index::VERSION=1,polylogue_sources::codex::items::VERSION=1,polylogue_sources::codex::usage::VERSION=1,polylogue_sources::codex::header::VERSION=1",
     "5636ad10cd8637bf626e6bd07bb7548074e44e9fdc28d4549e08a1a27d8ab8e5"
   ],
   "gemini-app": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::gemini_app::VERSION=4",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::gemini_app::VERSION=4,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::gemini_app::stream::VERSION=1",
     "97b60bc1b86d341a821a4131b4c7704655ccc404e465cbca4ffd9d4b150c68bb"
   ],
   "gemini-cli": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::gemini_cli::VERSION=4",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::gemini_cli::VERSION=4,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::gemini_cli::tool_output::VERSION=1",
     "37e0aed2c4247be0ea7af42d14ddde29eb4d080da4c0c321862234fc0d83eb25"
   ],
   "grok": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::grok::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::grok::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::grok::identity::VERSION=1",
     "9ba0a160492e0e98758a0fe848bce9558c789798c2e4adb1a4f2edc85b75c764"
   ],
   "grok-cli": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::grok_cli::VERSION=4",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::grok_cli::VERSION=4,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "679fad14f87adbdff886a69f44db5ca48940b1b52f5eb8dc2f9da8bbb1efd947"
   ],
   "hermes": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::hermes::VERSION=5",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::hermes::VERSION=5,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::hermes::identity::VERSION=1,polylogue_sources::hermes::message::VERSION=1,polylogue_sources::hermes::observer::VERSION=1,polylogue_sources::hermes::outcome::VERSION=1,polylogue_sources::hermes::trajectory::VERSION=1,polylogue_sources::hermes::verification::VERSION=1,polylogue_sources::hermes::trajectory::step::VERSION=1",
     "7b6c40723ad956c9a495b4d80ab64635380654b922fa917304a4579ea379e250"
   ],
   "hook-spool": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::hook_spool::VERSION=5",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::hook_spool::VERSION=5,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "f4115e2f3cda1a916bd063fc32fdf5c58478d709469274c6b4c787ef82cd9196"
   ],
   "openai-chat": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::openai_chat::VERSION=2",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::openai_chat::VERSION=2,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "126eb657b5ea732dd6b008c700ccce7c4d86d30495e5d78b30e470dd2836e30e"
   ],
   "openrouter": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::openrouter::VERSION=2",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::openrouter::VERSION=2,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "2f6b1b969d307266a60e93d52b673cfcaedc3481b51a9536c5fb84df37c40069"
   ],
   "otel-genai": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::otel_genai::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::otel_genai::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::otel_genai::stream::VERSION=1",
     "f290b2dc965bf30d63452dd1d965600c2481bb85136c5aad59019921f6075c95"
   ],
   "polylogue-bundle": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::export::VERSION=2,crate::polylogue_bundle::VERSION=6,polylogue_model::bundle::VERSION=4",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::polylogue_bundle::VERSION=6,polylogue_model::bundle::VERSION=4,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "1474f320977fac084fbc39624f73cbed449179a11fe68d49b7af9129fca8c2a3"
   ],
   "polylogue-repo-lookup": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,crate::repo_lookup::VERSION=3",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::repo_lookup::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1",
     "8448c4cabe1dac0d91f9d82d170e3e996fb7b87968bb77b6fd9fcf64a9c2c632"
   ]
 }

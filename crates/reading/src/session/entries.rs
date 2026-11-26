@@ -1,6 +1,6 @@
-//! The entries a composed reading shows, read from the session item index
+//! The entries a composed reading shows, read from transcript lines
 //! in windows next to a page. Where an entry sits among the shown entries
-//! comes from the counts the writer stores per entry class, so a page in the
+//! comes from the counts stored per entry class, so a page in the
 //! middle of a long session reads its own entries and the unit it starts
 //! in, not the entries before it.
 use super::{Composed, Runs};

@@ -248,8 +248,7 @@ impl Inner {
             &reading,
             &mut touched,
         )?;
-        let (written, read) = rows::finish(&tx, touched, &changes, counter)?;
-        self.report.item_units_read += read;
+        let written = rows::finish(&tx, touched, &changes, counter)?;
         crate::fault::check("write.index_commit", "")?;
         crate::fault::check("reparse.commit", &input.id)?;
         crate::timing::time(crate::timing::Stage::Commit, || tx.commit())?;
