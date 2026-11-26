@@ -190,8 +190,8 @@ fn prepare_inner(
         }
         let mut catalog = options.catalog();
         let mut query = crate::parse::with_catalog(text, &catalog)?;
-        // Binding rewrites the question into its canonical spelling and moves
-        // every span with it; the parse still locates the text as written.
+        // The question is spelled canonically before its identity is checked,
+        // which moves every span; the parse still locates the text as written.
         let mut written = query.clone();
         walk(
             &mut query,
@@ -251,8 +251,8 @@ fn prepare_inner(
             resolve(&mut condition.kind)
         })?;
         normalize_references(&mut query)?;
-        let original = query_language::bind::bind(&query, &catalog)
-            .map_err(|e| QueryError::language(e, text))?;
+        let (original, _) =
+            bind_spelled(&query, &catalog).map_err(|e| QueryError::language(e, text))?;
         let mut identity = original.query().clone();
         values::check(&mut identity, original.typing())
             .map_err(|error| error.at_written(&mut identity, &mut written))?;
@@ -364,10 +364,8 @@ fn prepare_inner(
         let (expanded, _) =
             crate::compile::source::expand_ast(original.query().clone(), text, options)?;
 
-        let expanded = query_language::bind::bind(&expanded, &catalog)
-            .map_err(|e| QueryError::language(e, text))?;
-        let expanded_text = query_language::format::format_query(expanded.query(), &catalog)
-            .map_err(|e| QueryError::language(e, text))?;
+        let (expanded, expanded_text) =
+            bind_spelled(&expanded, &catalog).map_err(|e| QueryError::language(e, text))?;
         crate::stages::check_measure_last(&expanded.query().transforms, &written.transforms)?;
         let mut bindings = options.clone();
         // Names are presentation bindings, never additional stored results.
@@ -389,6 +387,22 @@ fn prepare_inner(
             question_id,
         })
     })
+}
+
+/// A question bound from its own canonical text, and that text. A plan pairs
+/// each tree it keeps with its spelling: the binder and compiler place
+/// refusals and search terms in the expanded text, and a saved question's
+/// body is placed in its stored syntax, by the tree's spans. Binding first
+/// gives the nodes substituted parameter values read as, which the text
+/// then spells.
+pub(crate) fn bind_spelled(
+    expanded: &Query,
+    catalog: &Catalog,
+) -> Result<(BoundQuery, String), query_language::Error> {
+    let elaborated = query_language::bind::bind(expanded, catalog)?;
+    let text = query_language::format::format_query(elaborated.query(), catalog)?;
+    let parsed = query_language::parse::parse(&text, catalog)?;
+    Ok((query_language::bind::bind(&parsed, catalog)?, text))
 }
 
 impl QueryError {

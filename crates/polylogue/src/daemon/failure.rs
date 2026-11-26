@@ -2,12 +2,11 @@
 
 /// A failed operation inside the daemon, as every surface reports it. The
 /// shared failure is wrapped so that store, selection and query errors
-/// convert into it with `?`, and so that a refusal keeps its typed reason.
+/// convert into it with `?`; a refusal's typed reason travels in the shared
+/// failure's `reason`, so every answer built from it carries the reason.
 #[derive(Debug)]
 pub struct Failure {
     pub error: command_surface::Failure,
-    /// Why a request the caller can correct was refused.
-    pub reason: Option<Box<polylogue_model::Reason>>,
 }
 
 impl Failure {
@@ -15,12 +14,10 @@ impl Failure {
         Self::from(crate::protocol::failure(code, message.to_string()))
     }
 
-    /// A refusal with its typed reason, under the reason's code.
+    /// A refusal with its typed reason, under the reason's code; the
+    /// reason's sentence is the message.
     pub fn refusal(reason: polylogue_model::Reason) -> Self {
-        Self {
-            error: crate::protocol::failure(reason.code(), reason.to_string()),
-            reason: Some(Box::new(reason)),
-        }
+        Self::from(crate::protocol::refusal(&reason))
     }
 
     pub fn invalid_query(message: impl ToString) -> Self {
@@ -77,13 +74,7 @@ impl Failure {
     }
 
     pub fn store(error: &polylogue_store::StoreError) -> Self {
-        Self {
-            error: crate::protocol::store_failure(error),
-            reason: match error {
-                polylogue_store::StoreError::Refused(reason) => Some(Box::new(reason.clone())),
-                _ => None,
-            },
-        }
+        Self::from(crate::protocol::store_failure(error))
     }
 
     /// The product code that classified this failure.
@@ -105,10 +96,7 @@ impl std::ops::Deref for Failure {
 
 impl From<command_surface::Failure> for Failure {
     fn from(error: command_surface::Failure) -> Self {
-        Self {
-            error,
-            reason: None,
-        }
+        Self { error }
     }
 }
 

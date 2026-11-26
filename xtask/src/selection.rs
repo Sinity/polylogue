@@ -243,7 +243,7 @@ impl Selection {
         }
         arguments.extend(self.targets.arguments());
         if let Some(base) = base {
-            arguments.push(format!("--changed-base={base}"));
+            arguments.push(format!("--base={base}"));
         }
         if let Some(partition) = &self.partition {
             arguments.extend(["--partition".to_owned(), partition.clone()]);
@@ -407,30 +407,15 @@ pub(crate) fn changed_packages(
     base: &str,
 ) -> Result<Option<BTreeSet<String>>, String> {
     use devkit::select::Selection as Changed;
-    let (changed, binaries) = match devkit::select::changed(root, base)? {
+    let tests = match devkit::select::changed(root, base)? {
         Changed::Workspace => return Ok(None),
-        Changed::Nothing => return Ok(Some(BTreeSet::new())),
-        Changed::Packages(packages) => (packages, Vec::new()),
-        Changed::Tests { packages, binaries } => (
-            packages,
-            binaries.into_iter().map(|(package, _)| package).collect(),
-        ),
-        // devkit narrows a change confined to test functions to a filterset
-        // of `package(=P) & ...` and `rdeps(=P)` terms.
-        Changed::Filter(filter) => (
-            names_after(&filter, "rdeps(="),
-            names_after(&filter, "package(="),
-        ),
+        Changed::Tests(tests) => tests,
     };
-    let mut selected = workspace.with_dependents(changed);
-    selected.extend(binaries);
+    // A package whose own tests run (its test-only source, an integration
+    // binary or test functions changed) runs without its dependents.
+    let mut selected = workspace.with_dependents(tests.with_dependents);
+    selected.extend(tests.packages);
+    selected.extend(tests.binaries.into_iter().map(|(package, _)| package));
+    selected.extend(tests.functions.into_keys());
     Ok(Some(selected))
-}
-
-fn names_after(filter: &str, prefix: &str) -> Vec<String> {
-    filter
-        .split(prefix)
-        .skip(1)
-        .filter_map(|rest| rest.split_once(')').map(|(name, _)| name.to_owned()))
-        .collect()
 }

@@ -347,6 +347,18 @@ pub fn failure(code: polylogue_model::Code, message: impl Into<String>) -> Failu
     failure
 }
 
+/// A refusal under its reason's code, with the reason's sentence as the
+/// message and the reason itself, its name and fields, on the wire.
+pub fn refusal(reason: &polylogue_model::Reason) -> Failure {
+    let mut wire = command_surface::FailureReason::new(reason.name());
+    if let Ok(serde_json::Value::Object(mut serialised)) = serde_json::to_value(reason)
+        && let Some(serde_json::Value::Object(fields)) = serialised.remove("fields")
+    {
+        wire.fields = fields;
+    }
+    failure(reason.code(), reason.to_string()).with_reason(wire)
+}
+
 /// A query error keeps its position, correction and hint as typed fields.
 pub fn query_failure(error: &polylogue_store::query::QueryError) -> Failure {
     use polylogue_store::query::QueryError;
@@ -380,6 +392,7 @@ pub fn query_failure(error: &polylogue_store::query::QueryError) -> Failure {
 pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
     match error {
         polylogue_store::StoreError::Query(error) => query_failure(error),
+        polylogue_store::StoreError::Refused(reason) => refusal(reason),
         error => {
             let mut failure = failure(error.code(), error.to_string());
             failure.retryable = polylogue_model::Caused::cause(error).retryable();
