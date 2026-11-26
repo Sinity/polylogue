@@ -10,7 +10,7 @@ publish.workspace = true
 default = ["archives"]
 # Test archives built through the engine and the store. xtask turns it off:
 # it starts daemons in the sandbox and builds no archive itself.
-archives = ["dep:polylogue-engine", "dep:polylogue-store"]
+archives = ["dep:polylogue-engine", "dep:polylogue-store", "dep:serde_json"]
 
 # Tests depend on the testkit, so it enables the test support of what it
 # builds on; a test that selects one package then builds these packages as
@@ -20,7 +20,7 @@ polylogue-engine = { workspace = true, features = ["faults"], optional = true }
 polylogue-model = { workspace = true, features = ["fixture"] }
 polylogue-sources = { workspace = true, features = ["fixture"] }
 polylogue-store = { workspace = true, features = ["faults", "fixture"], optional = true }
-serde_json.workspace = true
+serde_json = { workspace = true, optional = true }
 tempfile.workspace = true
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 

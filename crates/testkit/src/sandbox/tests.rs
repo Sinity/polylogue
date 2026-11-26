@@ -49,19 +49,15 @@ fn a_sandbox_names_a_loopback_port_and_writes_one_deployment() {
     sandbox.create_directories().unwrap();
     let runtime = std::fs::metadata(dir.path().join("runtime")).unwrap();
     assert_eq!(runtime.permissions().mode() & 0o777, 0o700);
-    let archive = dir.path().join("an \"archive\"");
-    sandbox.write_deployment(&archive).unwrap();
-    let text = std::fs::read_to_string(sandbox.deployment()).unwrap();
+    let archive = Path::new("/srv/an \"archive\"\\\u{7f}");
+    sandbox.write_deployment(archive).unwrap();
     assert_eq!(
-        text,
-        format!(
-            "archive = \"{}\"\n\n[day]\nzone = \"UTC\"\nstart = \"04:00:00\"\n",
-            archive.display().to_string().replace('"', "\\\"")
-        )
+        std::fs::read_to_string(sandbox.deployment()).unwrap(),
+        "archive = \"/srv/an \\\"archive\\\"\\\\\\u007F\"\n\n[day]\nzone = \"UTC\"\nstart = \"04:00:00\"\n"
     );
     // A deployment already there is the caller's.
     std::fs::write(sandbox.deployment(), "archive = \"/elsewhere\"\n").unwrap();
-    sandbox.write_deployment(&archive).unwrap();
+    sandbox.write_deployment(archive).unwrap();
     assert_eq!(
         std::fs::read_to_string(sandbox.deployment()).unwrap(),
         "archive = \"/elsewhere\"\n"

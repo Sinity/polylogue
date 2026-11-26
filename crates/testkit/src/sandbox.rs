@@ -96,10 +96,9 @@ impl Sandbox {
         let archive = archive.to_str().ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidInput, "the archive path is not UTF-8")
         })?;
-        // A JSON string is a TOML basic string: both escape the same way.
         let text = format!(
             "archive = {}\n\n[day]\nzone = \"UTC\"\nstart = \"04:00:00\"\n",
-            serde_json::Value::from(archive)
+            toml_string(archive)
         );
         std::fs::create_dir_all(path.parent().expect("the deployment has a directory"))?;
         std::fs::write(path, text)
@@ -142,6 +141,24 @@ impl Sandbox {
     fn runtime(&self) -> PathBuf {
         self.root.join("runtime")
     }
+}
+
+/// `text` as a TOML basic string: quotes, backslashes and control
+/// characters escaped, everything else as it is.
+fn toml_string(text: &str) -> String {
+    let mut quoted = String::from('"');
+    for character in text.chars() {
+        match character {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            control if control.is_control() => {
+                quoted.push_str(&format!("\\u{:04X}", u32::from(control)));
+            }
+            other => quoted.push(other),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 #[cfg(test)]
