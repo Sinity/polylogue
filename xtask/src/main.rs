@@ -8,6 +8,7 @@ mod selection;
 use clap::Parser;
 use devkit::{Nextest, Run, TestStatus};
 use selection::{Base, Selection};
+use std::path::Path;
 use std::process::ExitCode;
 
 /// Every workspace package's test features: the whole workspace's test build
@@ -61,11 +62,11 @@ const BUILD_XTASK: &[&str] = &["build", "--locked", "-p", "xtask"];
 #[derive(Parser)]
 #[command(name = "xtask", about = "Polylogue development checks")]
 enum Cli {
-    /// Formatting, the workspace-hack crate's verification, and Clippy
-    /// (warnings denied) of every target, with and without the `sinex` feature.
+    /// Formatting and Clippy of every target, with and without the `sinex`
+    /// feature. Verify workspace-hack when the shared crates are unlinked.
     Fast,
     /// Every part of the hosted check in sequence: formatting, the
-    /// workspace-hack verification, the Nix checks, both Clippy
+    /// workspace-hack verification when unlinked, the Nix checks, both Clippy
     /// configurations and the tests. With `--changed` or `--base` it runs the
     /// tests those changes can affect and the Nix checks when their inputs
     /// changed. Clippy reuses
@@ -134,9 +135,19 @@ fn fmt_check(run: &mut Run) -> devkit::Result {
 /// The workspace-hack crate matches the dependency graph
 /// (`cargo hakari generate` rewrites it).
 fn workspace_hack(run: &mut Run) -> devkit::Result {
+    if let Some(reason) = workspace_hack_skip_reason(&run.root) {
+        eprintln!("{reason}");
+        return Ok(());
+    }
     let mut verify = devkit::cargo_command();
     verify.args(["hakari", "verify"]);
     run.command("workspace-hack", &mut verify)
+}
+
+fn workspace_hack_skip_reason(root: &Path) -> Option<&'static str> {
+    root.join(common_link::PATCH_FILE)
+        .exists()
+        .then_some("Skipped workspace-hack verification because the shared crates are linked.")
 }
 
 fn clippy(run: &mut Run) -> devkit::Result {
