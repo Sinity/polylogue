@@ -45,6 +45,148 @@ impl SessionLink {
     }
 }
 
+/// The links whose `column` (the parent or the child) is `session`, as
+/// the `session_link_identity` view states them. The view decides each
+/// statement with subqueries over all the statements of its parent and
+/// child, which for one session with thousands of statements is their
+/// square; this reads the statements once and decides each pair in one
+/// pass, with the view as its oracle.
+fn links_where(conn: &Connection, column: &str, session: &str) -> Result<Vec<SessionLink>> {
+    #[cfg(any(test, feature = "fixture"))]
+    LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut copied: std::collections::HashSet<(String, String)> = Default::default();
+    for pair in conn
+        .prepare_cached(&format!(
+            "SELECT DISTINCT parent_id, child_id FROM prefix_copy WHERE {column} = ?1"
+        ))?
+        .query_map([session], |row| <(String, String)>::try_from(row))?
+    {
+        copied.insert(pair?);
+    }
+    // The statements of each relation: a parent, a child, a kind and
+    // how, in that order.
+    type Relation = (String, String, String, Option<String>);
+    type Statement = (Option<String>, Option<String>, bool);
+    let mut relations: std::collections::BTreeMap<Relation, Vec<Statement>> = Default::default();
+    for row in conn
+        .prepare_cached(&format!(
+            "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
+             FROM link WHERE {column} = ?1"
+        ))?
+        .query_map([session], |row| {
+            Ok((
+                (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?),
+                (row.get(4)?, row.get(5)?, row.get(6)?),
+            ))
+        })?
+    {
+        let (relation, statement): (Relation, Statement) = row?;
+        relations.entry(relation).or_default().push(statement);
+    }
+    let mut links = Vec::new();
+    for ((parent, child, kind, how), statements) in relations {
+        let copies_prefix = statements.iter().any(|(_, _, copies)| *copies)
+            || copied.contains(&(parent.clone(), child.clone()));
+        let known = |of: fn(&Statement) -> &Option<String>| {
+            statements
+                .iter()
+                .filter_map(|statement| of(statement).clone())
+                .collect::<std::collections::BTreeSet<String>>()
+        };
+        let branch_points = known(|statement| &statement.0);
+        let calls = known(|statement| &statement.1);
+        // Coordinates that agree are one link; a coordinate recorded
+        // with several values gives one link for each.
+        let coordinates: Vec<(Option<String>, Option<String>)> =
+            match (branch_points.len() > 1, calls.len() > 1) {
+                (false, false) => {
+                    vec![(branch_points.first().cloned(), calls.first().cloned())]
+                }
+                (true, false) => branch_points
+                    .iter()
+                    .map(|point| (Some(point.clone()), calls.first().cloned()))
+                    .collect(),
+                (false, true) => calls
+                    .iter()
+                    .map(|call| (branch_points.first().cloned(), Some(call.clone())))
+                    .collect(),
+                // Both differ: every statement stands, except one that
+                // another statement completes.
+                (true, true) => {
+                    let with_call: std::collections::HashSet<&str> = statements
+                        .iter()
+                        .filter(|(_, call, _)| call.is_some())
+                        .filter_map(|(point, _, _)| point.as_deref())
+                        .collect();
+                    let with_point: std::collections::HashSet<&str> = statements
+                        .iter()
+                        .filter(|(point, _, _)| point.is_some())
+                        .filter_map(|(_, call, _)| call.as_deref())
+                        .collect();
+                    let mut kept: Vec<_> = statements
+                        .iter()
+                        .filter(|(point, call, _)| match (point, call) {
+                            (Some(_), Some(_)) => true,
+                            (Some(point), None) => !with_call.contains(point.as_str()),
+                            (None, Some(call)) => !with_point.contains(call.as_str()),
+                            (None, None) => false,
+                        })
+                        .map(|(point, call, _)| (point.clone(), call.clone()))
+                        .collect();
+                    kept.sort();
+                    kept
+                }
+            };
+        links.extend(
+            coordinates
+                .into_iter()
+                .map(|(branch_point, spawning_call)| SessionLink {
+                    parent: parent.clone(),
+                    child: child.clone(),
+                    kind: kind.clone(),
+                    how: how.clone(),
+                    copies_prefix,
+                    branch_point,
+                    spawning_call,
+                }),
+        );
+    }
+    Ok(links)
+}
+
+/// The prefixes a session inherits, as the `session_prefix` view states
+/// them, in its order: each parent with a branch point and whether the
+/// child's file copies the prefix. A fork, continuation or resume link
+/// gives one, and so does any link or recorded copy that says the prefix is
+/// copied. Read from the session's links in one pass ([`links_where`]).
+pub(crate) fn inherited_prefixes(
+    conn: &Connection,
+    child: &str,
+) -> Result<Vec<(String, Option<String>, bool)>> {
+    let mut prefixes: std::collections::BTreeSet<(String, Option<String>, bool)> =
+        links_where(conn, "child_id", child)?
+            .into_iter()
+            .filter(|link| {
+                !link.is_reference()
+                    && (matches!(link.kind.as_str(), "fork" | "continuation" | "resume")
+                        || link.copies_prefix)
+            })
+            .map(|link| (link.parent, link.branch_point, link.copies_prefix))
+            .collect();
+    let linked: std::collections::HashSet<String> =
+        prefixes.iter().map(|prefix| prefix.0.clone()).collect();
+    for parent in conn
+        .prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id = ?1")?
+        .query_map([child], |row| row.get::<_, String>(0))?
+    {
+        let parent = parent?;
+        if !linked.contains(&parent) {
+            prefixes.insert((parent, None, true));
+        }
+    }
+    Ok(prefixes.into_iter().collect())
+}
+
 /// The walk advances only when all recorded structural edges name one parent.
 /// Different branch points on that parent remain recorded alternatives, but do not
 /// change structural depth. No path is selected between different parents.
@@ -56,13 +198,13 @@ fn walk(session: &str) -> String {
       SELECT p.pk,p.id,a.depth+1,a.path||printf('%d/',p.pk),
         instr(a.path,printf('/%d/',p.pk))>0
       FROM ancestry a JOIN session p ON p.id=(
-        SELECT min(l.parent_id) FROM session_link_identity l
+        SELECT min(l.parent_id) FROM link l
         WHERE l.child_id=a.id AND l.kind IN ({STRUCTURAL_KINDS})
         HAVING count(DISTINCT l.parent_id)=1)
       WHERE a.cycle=0 AND p.stub=0
     ), terminal AS (SELECT * FROM ancestry ORDER BY depth DESC LIMIT 1),
     observed AS (SELECT t.*, (SELECT json_group_array(parent_id) FROM (
-      SELECT DISTINCT l.parent_id FROM session_link_identity l
+      SELECT DISTINCT l.parent_id FROM link l
       WHERE l.child_id=t.id AND l.kind IN ({STRUCTURAL_KINDS})
       ORDER BY l.parent_id)) AS parents FROM terminal t)"
     )
@@ -149,38 +291,14 @@ impl crate::read::Reader<'_> {
         ))
     }
 
-    fn links_where(&self, column: &str, session: &str) -> Result<Vec<SessionLink>> {
-        #[cfg(any(test, feature = "fixture"))]
-        LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(self
-            .conn()?
-            .prepare_cached(&format!(
-                "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix FROM session_link
-                 WHERE {column} = ?1
-                 ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call"
-            ))?
-            .query_map([session], |row| {
-                Ok(SessionLink {
-                    parent: row.get(0)?,
-                    child: row.get(1)?,
-                    kind: row.get(2)?,
-                    how: row.get(3)?,
-                    copies_prefix: row.get(6)?,
-                    branch_point: row.get(4)?,
-                    spawning_call: row.get(5)?,
-                })
-            })?
-            .collect::<rusqlite::Result<_>>()?)
-    }
-
     /// Links from `id` to its children, ordered by their coordinates.
     pub fn child_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
-        self.links_where("parent_id", &id.to_string())
+        links_where(self.conn()?, "parent_id", &id.to_string())
     }
 
     /// Links from `id`'s parents to it, ordered by their coordinates.
     pub fn parent_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
-        self.links_where("child_id", &id.to_string())
+        links_where(self.conn()?, "child_id", &id.to_string())
     }
 
     /// Current structural root and depth in this pinned read. Missing sessions

@@ -280,3 +280,174 @@ fn family_entries_keep_known_parents_and_cycles_without_a_root() {
         vec![SessionId::parse("test:root").unwrap()]
     );
 }
+
+/// A session's links read through the reader are the rows of the
+/// `session_link_identity` view, in its order: statements whose coordinates
+/// agree are one link, a coordinate recorded with several values gives a
+/// link for each, and a partial statement another completes is not a link.
+#[test]
+fn links_read_for_a_session_are_the_identity_views_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    for id in ["test:p", "test:q", "test:a", "test:b", "test:c", "test:d"] {
+        session(&mut f, id);
+    }
+    type Statement = (Option<&'static str>, Option<&'static str>, bool);
+    // A parent, a child, a kind and how, with the statements of that relation.
+    type Relation<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, &'a [Statement]);
+    let relations: &[Relation<'_>] = &[
+        ("test:p", "test:a", "spawn", None, &[(None, None, false)]),
+        (
+            "test:p",
+            "test:a",
+            "fork",
+            None,
+            &[
+                (Some("m1"), None, false),
+                (None, Some("c1"), true),
+                (None, None, false),
+            ],
+        ),
+        (
+            "test:p",
+            "test:b",
+            "fork",
+            None,
+            &[
+                (Some("m1"), None, false),
+                (Some("m2"), None, false),
+                (None, Some("c1"), false),
+            ],
+        ),
+        (
+            "test:p",
+            "test:c",
+            "spawn",
+            None,
+            &[(None, Some("c2")), (None, Some("c1")), (Some("m1"), None)]
+                .map(|(point, call)| (point, call, false)),
+        ),
+        (
+            "test:p",
+            "test:d",
+            "spawn",
+            None,
+            &[
+                (Some("m1"), Some("c1")),
+                (Some("m2"), Some("c2")),
+                (Some("m1"), None),
+                (None, Some("c2")),
+                (None, None),
+                (Some("m3"), None),
+                (None, Some("c3")),
+            ]
+            .map(|(point, call)| (point, call, false)),
+        ),
+        (
+            "test:p",
+            "test:d",
+            "reference",
+            Some("mention"),
+            &[(None, None, false)],
+        ),
+        (
+            "test:p",
+            "test:d",
+            "reference",
+            Some("briefing"),
+            &[(None, Some("c9"), false)],
+        ),
+        ("test:q", "test:d", "resume", None, &[(None, None, false)]),
+        (
+            "test:q",
+            "test:b",
+            "continuation",
+            None,
+            &[(None, None, false)],
+        ),
+    ];
+    let conn = db(&f);
+    for (parent, child, kind, how, statements) in relations {
+        for (point, call, copies) in *statements {
+            conn.execute(
+                "INSERT INTO link(parent_id, child_id, kind, how, copies_prefix, branch_point,
+                     spawning_call, evidence, input_pk)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'fixture', (SELECT min(pk) FROM input_ref))",
+                params![parent, child, kind, how, copies, point, call],
+            )
+            .unwrap();
+        }
+    }
+    conn.execute(
+        "INSERT INTO prefix_copy(input_pk, chain, parent_id, child_id, committed, explicit_members)
+         VALUES ((SELECT min(pk) FROM input_ref), 1, 'test:q', 'test:b', 1, 0)",
+        [],
+    )
+    .unwrap();
+    // A copied prefix no link records.
+    conn.execute(
+        "INSERT INTO prefix_copy(input_pk, chain, parent_id, child_id, committed, explicit_members)
+         VALUES ((SELECT min(pk) FROM input_ref), 1, 'test:c', 'test:a', 1, 0)",
+        [],
+    )
+    .unwrap();
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let stated_prefixes = |id: &str| -> Vec<(String, Option<String>, bool)> {
+        conn.prepare(
+            "SELECT parent_id, branch_point, copies_prefix FROM session_prefix
+             WHERE child_id = ?1 ORDER BY parent_id, branch_point, copies_prefix",
+        )
+        .unwrap()
+        .query_map([id], |row| <(_, _, _)>::try_from(row))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    };
+    let stated = |column: &str, id: &str| -> Vec<SessionLink> {
+        conn.prepare(&format!(
+            "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
+             FROM session_link_identity WHERE {column} = ?1
+             ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call"
+        ))
+        .unwrap()
+        .query_map([id], |row| {
+            Ok(SessionLink {
+                parent: row.get(0)?,
+                child: row.get(1)?,
+                kind: row.get(2)?,
+                how: row.get(3)?,
+                branch_point: row.get(4)?,
+                spawning_call: row.get(5)?,
+                copies_prefix: row.get(6)?,
+            })
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap()
+    };
+    let mut links = 0;
+    let mut prefixes = 0;
+    for id in ["test:p", "test:q", "test:a", "test:b", "test:c", "test:d"] {
+        let session = SessionId::parse(id).unwrap();
+        let children = reader.child_links(&session).unwrap();
+        assert_eq!(children, stated("parent_id", id), "children of {id}");
+        assert_eq!(
+            reader.parent_links(&session).unwrap(),
+            stated("child_id", id),
+            "parents of {id}"
+        );
+        links += children.len();
+        assert_eq!(
+            inherited_prefixes(&conn, id).unwrap(),
+            stated_prefixes(id),
+            "prefixes of {id}"
+        );
+        prefixes += stated_prefixes(id).len();
+    }
+    // test:a forks from test:p and copies test:c; test:b forks from test:p
+    // at two points and continues test:q; test:d resumes test:q.
+    assert_eq!(prefixes, 6);
+    // 1 + 1 + 2 + 2 + 4 + 1 + 1 of test:p, 2 of test:q.
+    assert_eq!(links, 14);
+}

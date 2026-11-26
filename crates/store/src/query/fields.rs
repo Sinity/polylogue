@@ -1036,7 +1036,7 @@ pub fn hidden(s: &str) -> String {
 /// The session and every session below it through structural links.
 pub fn descendants(s: &str) -> String {
     format!(
-        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM session_link l \
+        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM link l \
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
          JOIN session lc ON lc.id = l.child_id \
          WHERE l.kind IN ({STRUCTURAL_KINDS})) SELECT pk FROM tr"

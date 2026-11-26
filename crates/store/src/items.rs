@@ -1474,9 +1474,10 @@ fn extends(stored: &[IndexEntry], current: &[IndexEntry]) -> bool {
 
 /// What a read of stored entries selects: the row, and the message or
 /// event its unit's first row names.
-const ENTRY_COLUMNS: &str = "i.seq, i.class, i.entry, i.call_id, m.id, e.id, i.unit IS NOT NULL
-    FROM session_item i LEFT JOIN message m ON m.pk = i.message_pk
-    LEFT JOIN event e ON e.pk = i.event_pk";
+const ENTRY_SELECT: &str =
+    "SELECT i.seq, i.class, i.entry, i.call_id, m.id, e.id, i.unit IS NOT NULL FROM session_item i";
+const ENTRY_JOINS: &str =
+    "LEFT JOIN message m ON m.pk = i.message_pk LEFT JOIN event e ON e.pk = i.event_pk";
 
 /// The entries in `range` of one session, forward from its start or
 /// backward from its end, at most `limit` of those whose class `wanted`
@@ -1491,7 +1492,7 @@ fn read_entries(
 ) -> Result<Vec<StoredEntry>> {
     let order = if forward { "" } else { " DESC" };
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT {ENTRY_COLUMNS}
+        "{ENTRY_SELECT} {ENTRY_JOINS}
          WHERE i.session_pk = ?1 AND i.seq >= ?2 AND i.seq < ?3 ORDER BY i.seq{order}"
     ))?;
     let mut rows = statement.query(params![session_pk, range.start, range.end])?;
@@ -1553,7 +1554,7 @@ impl<'c> Run<'c> {
         }
     }
 
-    /// Reads one row of [`ENTRY_COLUMNS`], keeping it when `wanted` accepts
+    /// Reads one row of [`ENTRY_SELECT`], keeping it when `wanted` accepts
     /// its class.
     fn visit(
         &mut self,
@@ -1797,13 +1798,21 @@ impl Reader<'_> {
     /// Source-declared copied prefixes of this physical session, independent
     /// of whether a provider relationship is recorded.
     pub fn copied_prefixes(&self, id: &SessionId) -> Result<Vec<SessionId>> {
-        Ok(self
-            .conn()?
-            .prepare_cached(
-                "SELECT parent_id FROM prefix_copy WHERE child_id=?1 UNION SELECT parent_id FROM session_prefix WHERE child_id=?1 AND copies_prefix=1 AND branch_point IS NULL ORDER BY parent_id",
-            )?
-            .query_map([id.to_string()], |row| row.id::<SessionId>(0))?
-            .collect::<rusqlite::Result<_>>()?)
+        let conn = self.conn()?;
+        let mut parents: BTreeSet<String> = conn
+            .prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id=?1")?
+            .query_map([id.to_string()], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        parents.extend(
+            crate::lineage::inherited_prefixes(conn, &id.to_string())?
+                .into_iter()
+                .filter(|(_, branch_point, copies)| *copies && branch_point.is_none())
+                .map(|(parent, _, _)| parent),
+        );
+        parents
+            .iter()
+            .map(|parent| SessionId::parse(parent).map_err(StoreError::stored_data))
+            .collect()
     }
 
     /// A session's own message count, as derived, when it is stored and
@@ -1860,20 +1869,16 @@ impl Reader<'_> {
 
     /// The recorded prefixes that a physical reading of `id` inherits.
     pub fn inherited_prefixes(&self, id: &SessionId) -> Result<Vec<InheritedPrefix>> {
-        Ok(self
-            .conn()?
-            .prepare_cached(
-                "SELECT parent_id,branch_point,copies_prefix FROM session_prefix
-                 WHERE child_id=?1 ORDER BY parent_id,branch_point",
-            )?
-            .query_map([id.to_string()], |row| {
-                Ok(InheritedPrefix {
-                    parent: row.get(0)?,
-                    copies_prefix: row.get(2)?,
-                    branch_point: row.get(1)?,
+        Ok(
+            crate::lineage::inherited_prefixes(self.conn()?, &id.to_string())?
+                .into_iter()
+                .map(|(parent, branch_point, copies_prefix)| InheritedPrefix {
+                    parent,
+                    copies_prefix,
+                    branch_point,
                 })
-            })?
-            .collect::<rusqlite::Result<_>>()?)
+                .collect(),
+        )
     }
 
     /// A session's whole item index, or `None` when the session is not
@@ -2117,8 +2122,11 @@ impl Reader<'_> {
     /// call's results.
     pub fn item_calls(&self, session_pk: i64, call_id: &str) -> Result<Vec<StoredEntry>> {
         let conn = self.conn()?;
+        // Named, because without table statistics the planner reads every
+        // entry of the session through the primary key instead.
         let mut statement = conn.prepare_cached(&format!(
-            "SELECT {ENTRY_COLUMNS} WHERE i.session_pk = ?1 AND i.call_id = ?2 ORDER BY i.seq"
+            "{ENTRY_SELECT} INDEXED BY session_item_call {ENTRY_JOINS}
+             WHERE i.session_pk = ?1 AND i.call_id = ?2 ORDER BY i.seq"
         ))?;
         let mut rows = statement.query(params![session_pk, call_id])?;
         let mut out = Vec::new();
@@ -2131,6 +2139,37 @@ impl Reader<'_> {
             out.extend(run.finish()?);
         }
         Ok(out)
+    }
+
+    /// Where the call with each of `call_ids` sits in a session's index, for
+    /// those the session holds: one statement, and no entry is decoded.
+    pub fn item_call_places(
+        &self,
+        session_pk: i64,
+        call_ids: &[&str],
+    ) -> Result<HashMap<String, u64>> {
+        let mut places = HashMap::new();
+        if call_ids.is_empty() {
+            return Ok(places);
+        }
+        let conn = self.conn()?;
+        let mut statement = conn.prepare_cached(
+            "SELECT i.call_id, i.seq, i.class
+             FROM json_each(?2) c CROSS JOIN session_item i INDEXED BY session_item_call
+             WHERE i.session_pk = ?1 AND i.call_id = c.value",
+        )?;
+        let mut rows = statement.query(params![session_pk, serde_json::to_string(call_ids)?])?;
+        while let Some(row) = rows.next()? {
+            if !class_of(row.get(2)?)?.is_call() {
+                continue;
+            }
+            let seq = counter(row.get(1)?)?;
+            places
+                .entry(row.get::<_, String>(0)?)
+                .and_modify(|held: &mut u64| *held = (*held).min(seq))
+                .or_insert(seq);
+        }
+        Ok(places)
     }
 
     pub fn item_versions_of(&self, session_pk: i64) -> Result<Option<ItemVersions>> {
