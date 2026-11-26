@@ -16,6 +16,16 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::cell::RefCell;
 
+/// Rows the fold runs of this process read: what a test counts to show a
+/// summary's cost follows the change.
+#[cfg(any(test, feature = "fixture"))]
+static ROWS_FOLDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(any(test, feature = "fixture"))]
+pub fn rows_folded() -> u64 {
+    ROWS_FOLDED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// A state is kept after every this many rows of a session.
 pub(crate) const EVERY: u64 = 512;
 
@@ -413,6 +423,8 @@ impl Run<'_> {
             }
             rows += 1;
             read += 1;
+            #[cfg(any(test, feature = "fixture"))]
+            ROWS_FOLDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if sparse && rows % EVERY == 0 {
                 kept.push(Kept {
                     after: row.key().clone(),

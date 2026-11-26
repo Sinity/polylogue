@@ -750,31 +750,62 @@ fn status_keeps_budget_during_import() {
 }
 
 #[test]
-fn accept_wakes_on_connection_and_on_stop_only() {
-    let mut daemon = crate::test_daemon::start("accept wakeups");
-    let before = daemon.server_wakeups();
+fn the_listener_answers_connections_and_stops_on_request() {
+    let mut daemon = crate::test_daemon::start("accept connections");
     let mut client = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
-    crate::test_answers::ok(answer_of(
-        &mut client,
-        &request_line(PING, serde_json::json!({}), "ping"),
-    ));
-    // Requests on an open connection never wake the listener.
-    crate::test_answers::ok(answer_of(
-        &mut client,
-        &request_line(PING, serde_json::json!({}), "ping-again"),
-    ));
-    assert_eq!(daemon.server_wakeups(), before + 1);
+    for id in ["ping", "ping-again"] {
+        assert_eq!(
+            crate::test_answers::ok(answer_of(
+                &mut client,
+                &request_line(PING, serde_json::json!({}), id),
+            )),
+            serde_json::json!({})
+        );
+    }
     drop(client);
     daemon.stop_server().unwrap();
-    assert_eq!(daemon.server_wakeups(), before + 2);
+    assert_eq!(
+        std::fs::metadata(daemon.daemon.archive.socket())
+            .unwrap_err()
+            .kind(),
+        std::io::ErrorKind::NotFound
+    );
 }
 
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn idle_listener_makes_no_wakeups() {
-    let daemon = crate::test_daemon::start("idle listener");
-    let before = daemon.server_wakeups();
-    std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(daemon.server_wakeups(), before);
+    let directory = tempfile::tempdir().unwrap();
+    let listener = UnixListener::bind(directory.path().join("daemon.sock")).unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let (mut stop, stopped) = UnixStream::pair().unwrap();
+    let (started, thread_id) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        let current = std::fs::read_link("/proc/thread-self").unwrap();
+        started
+            .send(current.file_name().unwrap().to_owned())
+            .unwrap();
+        Accept { listener, stopped }.next().unwrap().map(|_| ())
+    });
+    let syscall = std::path::Path::new("/proc/self/task")
+        .join(thread_id.recv().unwrap())
+        .join("syscall");
+    // On x86_64 Linux rustix uses ppoll: its third argument is a timespec
+    // pointer, null for no timeout. Observing the blocked call distinguishes
+    // an indefinite wait from any timer without measuring elapsed time.
+    let timeout = loop {
+        let state = std::fs::read_to_string(&syscall).unwrap();
+        let fields: Vec<_> = state.split_whitespace().collect();
+        if fields[0] == libc::SYS_ppoll.to_string() {
+            assert_eq!(fields[2], "0x2", "listener and stop descriptors: {state}");
+            break u64::from_str_radix(fields[3].trim_start_matches("0x"), 16).unwrap();
+        }
+        // The test runner bounds a thread that never reaches its wait.
+        std::thread::yield_now();
+    };
+    stop.write_all(&[1]).unwrap();
+    assert_eq!(thread.join().unwrap(), None);
+    assert_eq!(timeout, 0, "the idle listener must wait without a timeout");
 }
 
 /// The JSON of each `record` event a follow sends, as they arrive.
