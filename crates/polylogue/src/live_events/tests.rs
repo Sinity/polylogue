@@ -84,7 +84,7 @@ fn the_watcher_writes_only_changes_and_nothing_without_roots() {
         Default::default(),
     );
     assert!(w.update_roots(&[], now()).is_empty());
-    assert!(w.sample(now()).is_empty());
+    assert!(w.sample(now(), Instant::now()).is_empty());
     fake_proc(
         &proc_root,
         &[
@@ -99,7 +99,8 @@ fn the_watcher_writes_only_changes_and_nothing_without_roots() {
         events(&w.update_roots(&roots, now())),
         [("Started".into(), 10)]
     );
-    let started = w.sample(now());
+    let instant = Instant::now();
+    let started = w.sample(now(), instant);
     assert_eq!(
         events(&started),
         [("Started".into(), 11), ("Started".into(), 12)]
@@ -111,12 +112,16 @@ fn the_watcher_writes_only_changes_and_nothing_without_roots() {
     assert_eq!(started[0]["payload"]["ppid"], 10);
     assert_eq!(started[1]["payload"]["comm"], "cargo");
     // A sample with no change writes nothing.
-    w.watched.get_mut("claude-code:s").unwrap().next_sample = Instant::now();
-    assert!(w.sample(now()).is_empty());
+    assert_eq!(
+        w.sample(now(), instant + Duration::from_secs(1)),
+        Vec::<Value>::new()
+    );
     // A child that exits is written once.
     fake_proc(&proc_root, &[(10, 1, 500, "claude"), (11, 10, 600, "bash")]);
-    w.watched.get_mut("claude-code:s").unwrap().next_sample = Instant::now();
-    assert_eq!(events(&w.sample(now())), [("Ended".into(), 12)]);
+    assert_eq!(
+        events(&w.sample(now(), instant + Duration::from_secs(2))),
+        [("Ended".into(), 12)]
+    );
     // The same roots again add nothing.
     assert!(w.update_roots(&roots, now()).is_empty());
 }
@@ -126,21 +131,57 @@ fn descendants_are_sampled_each_second_during_a_tool_call_and_each_fifteen_secon
     let dir = tempfile::tempdir().unwrap();
     let proc_root = dir.path().join("proc");
     fake_proc(&proc_root, &[(10, 1, 500, "claude")]);
-    let mut w = Watcher::new(proc_root, "b1".into(), Some(0), Default::default());
-    w.update_roots(&[root("s", 10, 500, "b1")], now());
-    for (open_call, cadence) in [
-        (true, Duration::from_secs(1)),
-        (false, Duration::from_secs(15)),
-    ] {
-        let watched = w.watched.get_mut("claude-code:s").unwrap();
-        watched.open_call = open_call;
-        watched.next_sample = Instant::now();
-        let before = Instant::now();
-        w.sample(now());
-        let after = Instant::now();
-        let next = w.watched["claude-code:s"].next_sample;
-        assert!(next >= before + cadence && next <= after + cadence);
-    }
+    let mut watcher = Watcher::new(proc_root.clone(), "b1".into(), Some(0), Default::default());
+    let mut live_root = root("s", 10, 500, "b1");
+    live_root.open_call = false;
+    assert_eq!(
+        events(&watcher.update_roots(&[live_root.clone()], now())),
+        [("Started".into(), 10)]
+    );
+    let instant = Instant::now();
+    assert_eq!(watcher.sample(now(), instant), Vec::<Value>::new());
+
+    fake_proc(&proc_root, &[(10, 1, 500, "claude"), (11, 10, 600, "bash")]);
+    assert_eq!(
+        watcher.sample(now(), instant + Duration::from_secs(14)),
+        Vec::<Value>::new()
+    );
+    live_root.open_call = true;
+    assert_eq!(
+        watcher.update_roots(&[live_root.clone()], now()),
+        Vec::<Value>::new()
+    );
+    assert_eq!(
+        events(&watcher.sample(now(), instant + Duration::from_secs(15))),
+        [("Started".into(), 11)]
+    );
+    fake_proc(&proc_root, &[(10, 1, 500, "claude")]);
+    assert_eq!(
+        events(&watcher.sample(now(), instant + Duration::from_secs(16))),
+        [("Ended".into(), 11)]
+    );
+
+    live_root.open_call = false;
+    assert_eq!(
+        watcher.update_roots(&[live_root], now()),
+        Vec::<Value>::new()
+    );
+    assert_eq!(
+        watcher.sample(now(), instant + Duration::from_secs(17)),
+        Vec::<Value>::new()
+    );
+    fake_proc(
+        &proc_root,
+        &[(10, 1, 500, "claude"), (12, 10, 700, "cargo")],
+    );
+    assert_eq!(
+        watcher.sample(now(), instant + Duration::from_secs(31)),
+        Vec::<Value>::new()
+    );
+    assert_eq!(
+        events(&watcher.sample(now(), instant + Duration::from_secs(32))),
+        [("Started".into(), 12)]
+    );
 }
 
 #[test]

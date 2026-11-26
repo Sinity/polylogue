@@ -225,6 +225,124 @@ fn sigterm_and_sigint_drain_daemons_keeping_accepted_writes() {
     }
 }
 
+/// Every notification until the process stops sending, in order.
+fn notifications_until(receiver: &UnixDatagram, last: &str) -> Vec<String> {
+    let mut seen = Vec::new();
+    loop {
+        let message = notification(receiver).unwrap();
+        let done = message == last;
+        seen.push(message);
+        if done {
+            return seen;
+        }
+    }
+}
+
+#[test]
+fn the_service_manager_sees_each_phase_and_its_steps() {
+    let dir = tempfile::tempdir().unwrap();
+    let notify = dir.path().join("notify");
+    let receiver = UnixDatagram::bind(&notify).unwrap();
+    receiver
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    let root = dir.path().join("archive");
+    let mut process = spawn("daemon", &root, Some(&notify), false);
+    let opening = notifications_until(&receiver, "READY=1");
+    // The start timeout is extended before the first step can run long.
+    assert_eq!(
+        opening
+            .iter()
+            .position(|m| m == "EXTEND_TIMEOUT_USEC=60000000"),
+        Some(0),
+        "{opening:?}"
+    );
+    // The status line shows the step in progress; a step that ended before
+    // the supervisor read it is not shown.
+    let steps = &opening[1..opening.len() - 2];
+    assert!(!steps.is_empty(), "{opening:?}");
+    assert!(
+        steps
+            .iter()
+            .all(|message| message.starts_with("STATUS=Opening: ")),
+        "{opening:?}"
+    );
+    assert_eq!(
+        &opening[opening.len() - 2..],
+        [
+            "STATUS=Opening: waiting for the socket to answer",
+            "READY=1"
+        ]
+    );
+    let serving = notification(&receiver).unwrap();
+    assert!(serving.starts_with("STATUS=Serving"), "{serving}");
+    send(&process, rustix::process::Signal::TERM);
+    let mut stopping = notifications_until(&receiver, "STOPPING=1");
+    stopping.clear();
+    receiver
+        .set_read_timeout(Some(Duration::from_millis(500)))
+        .unwrap();
+    while let Ok(message) = notification(&receiver) {
+        stopping.push(message);
+    }
+    assert!(process.0.wait().unwrap().success());
+    assert_eq!(
+        stopping.first().map(String::as_str),
+        Some("STATUS=Stopping")
+    );
+    assert!(
+        stopping[1..]
+            .iter()
+            .all(|message| message.starts_with("STATUS=Stopping: ")),
+        "{stopping:?}"
+    );
+}
+
+#[test]
+fn a_long_step_names_what_each_busy_thread_is_doing() {
+    use polylogue_store::activity::{Statement, Thread, Work};
+    let start = Instant::now();
+    let step = Step {
+        phase: Phase::Stopping,
+        what: "engine drain",
+        since: start,
+    };
+    let loop_thread = Thread {
+        name: "polylogue-loop".into(),
+        doing: vec![
+            Work {
+                what: "running a pass".into(),
+                subject: None,
+                seconds: 212.5,
+            },
+            Work {
+                what: "building the index".into(),
+                subject: Some("derived rows".into()),
+                seconds: 40.25,
+            },
+        ],
+        seconds_since_progress: Some(1.5),
+        statements: vec![Statement {
+            connection: "writer".into(),
+            sql: "CREATE INDEX messages_by_time ON messages(time)".into(),
+            seconds: 30.0,
+        }],
+        worker: None,
+    };
+    assert_eq!(slow_step(&step, start + Duration::from_secs(9), &[]), None);
+    assert_eq!(
+        slow_step(&step, start + Duration::from_secs(25), &[loop_thread]).unwrap(),
+        "stopping: still engine drain after 25.000 s; waiting on polylogue-loop: \
+         running a pass > building the index (derived rows) for 212.500 s, \
+         last progress 1.500 s ago, running `CREATE INDEX messages_by_time ON \
+         messages(time)` on the writer for 30.000 s"
+    );
+    assert_eq!(
+        slow_step(&step, start + Duration::from_secs(10), &[]).unwrap(),
+        "stopping: still engine drain after 10.000 s; no thread reports what it is doing"
+    );
+}
+
 #[test]
 fn a_second_signal_ends_the_process_while_startup_is_blocked() {
     let dir = tempfile::tempdir().unwrap();
@@ -394,6 +512,7 @@ fn isolated_signal_child() {
             startup.mode.clone(),
             polylogue_engine::Lifetime::UntilStopped,
             startup.stopped_attempt,
+            &Progress::default(),
         )
         .unwrap();
         let stop_worker = runtime.signal_stop_for_test();

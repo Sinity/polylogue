@@ -55,6 +55,7 @@ fn launch(startup: crate::config::Startup) -> std::io::Result<Runtime> {
         startup.mode,
         polylogue_engine::Lifetime::UntilStopped,
         attempt,
+        &Default::default(),
     )
 }
 
