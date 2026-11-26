@@ -215,7 +215,7 @@ impl Warm {
 
     /// The vectors of one embedding key in the reader's snapshot: the set
     /// the worker published for its revision, waited for when not yet
-    /// published. The wait holds no executor place.
+    /// published.
     fn vectors_of(&self, reader: &Reader<'_>, key: &str) -> Result<Arc<Loaded>, String> {
         let revision = reader
             .vectors()
@@ -224,7 +224,7 @@ impl Warm {
         if let Some(set) = cache_lock(&self.vectors.cache)?.exact(key, revision) {
             return Ok(set);
         }
-        match super::executor::outside(|| self.wait_for_worker(key, revision))? {
+        match self.wait_for_worker(key, revision)? {
             Some(set) => Ok(set),
             // The snapshot is older than both sets held: its own load serves
             // it and is not kept.
@@ -344,9 +344,9 @@ impl Warm {
 
     /// The vector for `text`: kept from an earlier read, taken from a
     /// lookup or call another read has in flight, read from the stored
-    /// query vectors, or, with model calls on, asked for and stored.
-    /// Neither the lookup, the call nor the wait for them holds an executor
-    /// place.
+    /// query vectors, or, with model calls on, asked for and stored. It is
+    /// asked for before the request takes a reader, so neither the call nor
+    /// a wait for another read's call holds one.
     pub(crate) fn query_vector(
         &self,
         provider: &Provider,
@@ -377,7 +377,7 @@ impl Warm {
             self.counts
                 .query_vectors_reused
                 .fetch_add(1, Ordering::Relaxed);
-            return super::executor::outside(|| wait_for(&flight));
+            return wait_for(&flight);
         }
         // Waiting reads hear how the call ended, however it ends.
         struct Land<'a> {
@@ -399,8 +399,7 @@ impl Warm {
             key,
             flight,
         };
-        let result =
-            super::executor::outside(|| self.stored_or_asked(provider, text).map(Arc::new));
+        let result = self.stored_or_asked(provider, text).map(Arc::new);
         if let Ok(vector) = &result {
             cache_lock(&self.query_vectors)?.put(key.to_owned(), Arc::clone(vector));
         }

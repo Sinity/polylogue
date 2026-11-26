@@ -34,17 +34,27 @@ async fn get(
     )
 }
 
+/// The feed's lines, from its begin through its completion; the final
+/// answer after them names the completed position.
 fn lines(bytes: &[u8]) -> Vec<Value> {
-    let frames = command_surface::SseDecoder::new().push(bytes).unwrap();
+    let mut frames = command_surface::SseDecoder::new().push(bytes).unwrap();
+    let answer = frames.pop().unwrap();
+    assert_eq!(answer.event, "answer");
     assert_eq!(frames.first().unwrap().event, "begin");
     assert_eq!(frames.last().unwrap().event, "complete");
     for event in &frames[1..frames.len() - 1] {
         assert_eq!(event.event, "record");
     }
-    frames
+    let lines: Vec<Value> = frames
         .iter()
         .map(|event| serde_json::from_str(&event.data).unwrap())
-        .collect()
+        .collect();
+    let answer: command_surface::Answer<String> = serde_json::from_str(&answer.data).unwrap();
+    assert_eq!(
+        answer.value().map(String::as_str),
+        lines.last().unwrap()["position"].as_str()
+    );
+    lines
 }
 
 #[test]
@@ -126,17 +136,18 @@ fn http_feeds_run_generated_calls_and_keep_their_position() {
         "socket feed continuation".into(),
     );
     let mut received = Vec::new();
-    crate::client::stream::run_call(
+    let answer = crate::client::call_streaming(
         &daemon.daemon.archive,
         &request,
         Some(std::time::Duration::from_secs(5)),
         |frame| {
-            let done = frame.event == "complete";
             received.push(serde_json::from_str::<Value>(&frame.data).unwrap());
-            Ok(done)
+            Ok(false)
         },
     )
-    .unwrap();
+    .unwrap()
+    .expect("the feed answers");
+    assert_eq!(answer.exit_code(), 0);
     assert_eq!(received.len(), 2);
     assert_eq!(received[1]["count"], 0);
 }
@@ -159,7 +170,6 @@ fn http_get_feeds_refuse_duplicates_wrong_routes_and_unsupported_options() {
             ("budget_tokens=null", "budget_tokens"),
             ("budget_tokens=10", "budget_tokens"),
             ("fresh=true", "fresh"),
-            ("format=json", "format"),
             ("why=true", "unknown query field why"),
             ("fields=ref", "unknown query field fields"),
         ] {

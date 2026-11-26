@@ -61,27 +61,6 @@ fn start_with_deployment(
     Ok(runtime)
 }
 
-pub(crate) struct ReadObservation {
-    pub limit: polylogue_store::read::limit::ReadLimit,
-    pub owner: std::thread::ThreadId,
-    /// The checkout record survives release before the observing thread runs.
-    pub acquired: Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl ReadObservation {
-    pub(crate) fn reader_acquired(&self) -> bool {
-        self.acquired.load(std::sync::atomic::Ordering::Acquire)
-    }
-}
-
-impl std::ops::Deref for ReadObservation {
-    type Target = polylogue_store::read::limit::ReadLimit;
-
-    fn deref(&self) -> &Self::Target {
-        &self.limit
-    }
-}
-
 pub struct TestDaemon {
     pub home: PathBuf,
     /// The loop's settings the daemon was started with.
@@ -174,8 +153,7 @@ fn start_with_clock_and_workers(
         start_with_deployment(deployment, config.clone(), service::ArchiveMode::Standalone)
             .unwrap();
     let daemon = Arc::clone(&runtime.daemon);
-    let server =
-        server::Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
+    let server = server::Server::start(Arc::clone(&daemon)).unwrap();
     let daemon = TestDaemon {
         _dir: dir,
         home,
@@ -266,15 +244,7 @@ impl TestDaemon {
         )
         .unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);
-        self.server = server::Server::start(
-            Arc::clone(&self.daemon),
-            Arc::clone(&self.runtime.operations),
-        )
-        .unwrap();
-    }
-
-    pub fn operations(&self) -> &Arc<command_surface::OperationTable> {
-        &self.runtime.operations
+        self.server = server::Server::start(Arc::clone(&self.daemon)).unwrap();
     }
 
     /// How often the socket's listener thread has woken.
@@ -286,31 +256,26 @@ impl TestDaemon {
         self.server.shutdown()
     }
 
-    pub(crate) fn watch_reads(&self) -> std::sync::mpsc::Receiver<ReadObservation> {
-        let (sender, receiver) = std::sync::mpsc::channel();
-        *self.daemon.read_limits.lock().unwrap() = Some(sender);
-        receiver
-    }
-
-    pub(crate) fn wait_for_sql(limit: &polylogue_store::read::limit::ReadLimit) {
+    /// Waits until a request holds a reader, which it must within 10 s.
+    pub(crate) fn wait_for_a_read(&self) {
         let start = std::time::Instant::now();
-        while limit.sqlite_steps() < 10_000 {
+        while self.daemon.reads.checked_out() == 0 {
             assert!(
                 start.elapsed() < Duration::from_secs(10),
-                "request never reached SQL"
+                "no request took a reader"
             );
-            std::thread::yield_now();
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
-    /// Waits until the observed read has given its reader slot back, which
-    /// it must within 2 s, and returns how long that took.
-    pub(crate) fn assert_read_released(&self, read: &ReadObservation) -> Duration {
+    /// Waits until every reader is back in the pool, which must happen
+    /// within 2 s, and returns how long that took.
+    pub(crate) fn assert_reads_released(&self) -> Duration {
         let start = std::time::Instant::now();
-        while self.daemon.reads.checked_out_by(read.owner) > 0 {
+        while self.daemon.reads.checked_out() > 0 {
             assert!(
                 start.elapsed() < Duration::from_secs(2),
-                "the read kept its reader slot"
+                "a request kept its reader"
             );
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -353,17 +318,15 @@ pub(crate) fn call(
 }
 
 /// One request as a test sends it; the defaults are the daemon's own
-/// caller on the command line, a new request ID and the default deadline.
+/// caller, a new request ID and the default deadline.
 #[derive(Clone)]
 pub(crate) struct Call {
     pub operation: String,
     pub arguments: serde_json::Value,
     pub request_id: String,
     pub cursor: Option<String>,
-    pub surface: crate::commands::Surface,
-    pub cwd: Option<PathBuf>,
-    pub authorship: polylogue_model::authorship::Authorship,
-    pub limit: polylogue_store::read::limit::ReadLimit,
+    pub deadline: command_surface::Deadline,
+    pub caller: crate::operation::Caller,
 }
 
 impl Call {
@@ -373,22 +336,21 @@ impl Call {
             arguments,
             request_id: polylogue_store::user_writes::new_request_id(),
             cursor: None,
-            surface: crate::commands::Surface::Cli,
-            cwd: None,
-            authorship: command_surface::author_of(
-                &command_surface::CallerEvidence::default(),
+            deadline: command_surface::Deadline::Default,
+            caller: crate::operation::Caller::local(
                 command_surface::Via::Daemon,
-                None,
-            )
-            .into(),
-            limit: crate::daemon::execution::limit(None, Default::default()),
+                Default::default(),
+            ),
         }
     }
-    /// The call a ready request names, with its identity and cursor.
+    /// The call a ready request names, with its identity, cursor and deadline.
     pub(crate) fn from_request(request: &command_surface::RunnableRequest) -> Self {
-        Self::new(&request.operation, request.arguments.clone())
-            .id(&request.request_id)
-            .cursor(request.cursor.as_deref())
+        Self {
+            deadline: request.deadline,
+            ..Self::new(&request.operation, request.arguments.clone())
+                .id(&request.request_id)
+                .cursor(request.cursor.as_deref())
+        }
     }
     pub(crate) fn id(mut self, request_id: &str) -> Self {
         self.request_id = request_id.into();
@@ -398,48 +360,65 @@ impl Call {
         self.cursor = cursor.map(str::to_owned);
         self
     }
-    pub(crate) fn surface(mut self, surface: crate::commands::Surface) -> Self {
-        self.surface = surface;
+    /// The channel the request comes by, keeping its author.
+    pub(crate) fn channel(mut self, via: command_surface::Via) -> Self {
+        let channel: polylogue_model::authorship::Authorship =
+            command_surface::author_of(&Default::default(), via, None).into();
+        self.caller.authorship.via = channel.via;
         self
     }
     pub(crate) fn authorship(
         mut self,
         authorship: polylogue_model::authorship::Authorship,
     ) -> Self {
-        self.authorship = authorship;
+        self.caller.authorship = authorship;
         self
     }
-    pub(crate) fn limit(mut self, limit: polylogue_store::read::limit::ReadLimit) -> Self {
-        self.limit = limit;
+    /// The moment the request is accepted, in place of the daemon's clock.
+    pub(crate) fn at(mut self, at: polylogue_model::Timestamp) -> Self {
+        self.caller.accepted_at = Some(at);
         self
     }
+    pub(crate) fn calling_session(mut self, session: &str) -> Self {
+        self.caller.calling_session = Some(session.into());
+        self
+    }
+    pub(crate) fn cwd(mut self, cwd: PathBuf) -> Self {
+        self.caller.cwd = Some(cwd);
+        self
+    }
+    /// The request's read limit, which the test can observe: its bound,
+    /// cancellation and stages.
+    pub(crate) fn within(mut self, limit: &polylogue_store::read::limit::ReadLimit) -> Self {
+        self.caller.stop = limit.cancellation.clone();
+        self.caller.outer_deadline = limit.deadline();
+        self.caller.read_limit = Some(limit.clone());
+        self
+    }
+    pub(crate) fn request(&self) -> command_surface::RunnableRequest {
+        command_surface::Request {
+            cursor: self.cursor.clone(),
+            deadline: self.deadline,
+            ..crate::client::request(
+                &self.operation,
+                self.arguments.clone(),
+                self.request_id.clone(),
+            )
+        }
+    }
+    /// The answer, through the daemon's one `answer`.
     pub(crate) fn answer(
         self,
         daemon: &crate::daemon::service::Daemon,
     ) -> command_surface::Answer<serde_json::Value> {
-        let invocation = daemon.invocation(&self.authorship);
-        self.answer_with(daemon, &invocation)
+        self.answer_with_events(daemon).1
     }
-    pub(crate) fn answer_with(
+    /// The events and the answer.
+    pub(crate) fn answer_with_events(
         self,
         daemon: &crate::daemon::service::Daemon,
-        invocation: &polylogue_reading::operation::Invocation,
-    ) -> command_surface::Answer<serde_json::Value> {
-        crate::daemon::handler::local(
-            &self.operation,
-            self.arguments,
-            &crate::daemon::handler::Local {
-                daemon,
-                invocation,
-                caller: &crate::commands::Caller {
-                    surface: self.surface,
-                    cwd: self.cwd,
-                },
-                limit: &self.limit,
-                request_id: &self.request_id,
-                cursor: self.cursor.as_deref(),
-            },
-        )
+    ) -> (Vec<u8>, command_surface::Answer<serde_json::Value>) {
+        crate::daemon::handler::answer_collected(daemon, &self.request(), &self.caller)
     }
 }
 
@@ -464,4 +443,77 @@ pub(crate) fn read_call(request: polylogue_reading::ReadRequest) -> Call {
         "rows",
         serde_json::to_value(rows).expect("read line serializes"),
     )
+}
+
+/// What an operation's call borrows, for a test that runs a verb or an
+/// operation directly: the daemon's own caller with `authorship`, no
+/// deadline, and events kept in memory.
+pub(crate) struct CallParts {
+    caller: crate::operation::Caller,
+    invocation: polylogue_reading::operation::Invocation,
+    limit: polylogue_store::read::limit::ReadLimit,
+    query: std::cell::RefCell<Option<String>>,
+    events: KeptEvents,
+    request_id: String,
+    budget: command_surface::TokenBudget,
+}
+
+/// Events written by a call run directly, kept in memory.
+#[derive(Default)]
+pub(crate) struct KeptEvents(pub std::cell::RefCell<Vec<u8>>);
+
+impl crate::daemon::handler::Events for KeptEvents {
+    fn write(&self, frames: &[u8]) -> std::io::Result<()> {
+        self.0.borrow_mut().extend_from_slice(frames);
+        Ok(())
+    }
+}
+
+impl CallParts {
+    pub(crate) fn new(
+        daemon: &crate::daemon::service::Daemon,
+        authorship: polylogue_model::authorship::Authorship,
+        request_id: &str,
+    ) -> Self {
+        let mut caller = crate::operation::Caller::local(
+            command_surface::Via::Daemon,
+            daemon.archive.stop().child(),
+        );
+        caller.authorship = authorship;
+        let request = crate::client::request("rows", serde_json::json!({}), request_id.into());
+        Self {
+            invocation: caller.invocation(daemon, &request),
+            limit: polylogue_store::read::limit::ReadLimit::without_deadline(caller.stop.clone()),
+            caller,
+            query: Default::default(),
+            events: KeptEvents::default(),
+            request_id: request_id.into(),
+            budget: Default::default(),
+        }
+    }
+    pub(crate) fn cwd(mut self, cwd: PathBuf) -> Self {
+        self.caller.cwd = Some(cwd);
+        self
+    }
+    pub(crate) fn budget(mut self, budget: command_surface::TokenBudget) -> Self {
+        self.budget = budget;
+        self
+    }
+    pub(crate) fn call<'a>(
+        &'a self,
+        daemon: &'a crate::daemon::service::Daemon,
+    ) -> crate::daemon::handler::Call<'a> {
+        crate::daemon::handler::Call {
+            daemon,
+            caller: &self.caller,
+            invocation: &self.invocation,
+            request_id: &self.request_id,
+            cursor: None,
+            budget: self.budget,
+            limit: &self.limit,
+            lane: crate::daemon::handler::Lane::Ordinary,
+            output: &self.events,
+            query: &self.query,
+        }
+    }
 }

@@ -9,11 +9,14 @@ use serde_json::json;
 pub(crate) fn tool_call(operation: &str, arguments: Value, request_id: &str) -> Value {
     let command = crate::commands::command(operation).expect("a declared command");
     let home = command.tool.expect("an MCP operation");
-    let access = command
-        .registration()
-        .and_then(|registration| registration.tool_access(&arguments, command).ok())
-        // Admission still owns the refusal of malformed arguments.
-        .unwrap_or_else(|| home.access());
+    let access = crate::daemon::handler::policy(
+        command,
+        &arguments,
+        polylogue_model::authorship::Channel::Mcp,
+    )
+    .map(|policy| policy.access)
+    // The daemon still owns the refusal of malformed arguments.
+    .unwrap_or_else(|_| home.access());
     let tool = Tool::ALL
         .into_iter()
         .find(|tool| tool.access() == access)
@@ -514,7 +517,10 @@ fn larger_tools_offer_smaller_operations() {
     }
     for command in COMMANDS
         .iter()
-        .filter(|command| command.http && command.registration().is_some())
+        // A row the command line follows as a stream is not a tool call.
+        .filter(|command| {
+            command.http && command.operation().is_some() && command.deliver.is_none()
+        })
     {
         if command.name.starts_with("internal ") {
             assert_eq!(
@@ -643,8 +649,6 @@ fn a_tool_call_names_one_of_its_operations() {
     assert!(text.len() <= budget * 4);
 }
 
-mod cancellation;
-
 #[test]
 fn tool_requests_and_answers_keep_terminal_controls_visible() {
     use std::io::{BufRead, BufReader, Write};
@@ -668,7 +672,7 @@ fn tool_requests_and_answers_keep_terminal_controls_visible() {
             let (mut stream, _) = listener.accept().unwrap();
             let mut request = String::new();
             BufReader::new(&stream).read_line(&mut request).unwrap();
-            writeln!(stream, "{response}").unwrap();
+            write!(stream, "event: answer\ndata: {response}\n\n").unwrap();
         });
         let answer = call(&archive, "status", args(json!({})));
         let text = answer.unwrap_or_else(|error| error);
@@ -798,7 +802,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     let answer = serde_json::from_value(refused["result"]["structuredContent"].clone()).unwrap();
     let error = crate::test_answers::refusal(answer);
     assert_eq!(error.kind, command_surface::FailureKind::BadRequest);
-    assert_eq!(error.message, "operation does not continue a page");
+    assert_eq!(error.message, "dev sql does not take cursor");
     assert!(
         polylogue_render::ready::http_url(crate::commands::declarations(), &sql.request)
             .unwrap()
@@ -934,7 +938,12 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
             command_surface::FailureKind::Refused,
             "synthetic refusal",
         ));
-        writeln!(stream, "{}", serde_json::to_string(&refusal).unwrap()).unwrap();
+        write!(
+            stream,
+            "event: answer\ndata: {}\n\n",
+            serde_json::to_string(&refusal).unwrap()
+        )
+        .unwrap();
     });
     let (text, _, failed) = call_with_limit(
         &archive,

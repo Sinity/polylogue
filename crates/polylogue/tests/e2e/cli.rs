@@ -21,9 +21,23 @@ fn follow(
     socket.set_read_timeout(Some(READY_DEADLINE)).unwrap();
     serde_json::to_writer(&mut socket, &call.request).unwrap();
     socket.write_all(b"\n").unwrap();
-    let mut line = String::new();
-    assert!(BufReader::new(socket).read_line(&mut line).unwrap() > 0);
-    serde_json::from_str(&line).unwrap()
+    socket_answer(socket)
+}
+
+/// The final answer of one reply on the socket: its server-sent-event
+/// frames, of which the `answer` frame is last.
+pub(super) fn socket_answer(mut socket: impl Read) -> command_surface::Answer<serde_json::Value> {
+    let mut decoder = command_surface::SseDecoder::new();
+    let mut bytes = [0; 8192];
+    loop {
+        let count = socket.read(&mut bytes).unwrap();
+        assert!(count > 0, "the reply ended before its answer");
+        for frame in decoder.push(&bytes[..count]).unwrap() {
+            if frame.event == "answer" {
+                return serde_json::from_str(&frame.data).unwrap();
+            }
+        }
+    }
 }
 
 pub(super) fn listing(value: serde_json::Value) -> serde_json::Value {
@@ -864,6 +878,8 @@ fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
 }
 
 mod query_surfaces;
+
+mod surface_table;
 
 mod agent_guidance;
 

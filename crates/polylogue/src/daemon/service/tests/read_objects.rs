@@ -82,17 +82,18 @@ fn frames(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
 fn streamed(d: &test_daemon::TestDaemon, id: &str) -> (ReadBegin, ReadRecord, ReadComplete) {
     let request = crate::client::request("rows", read(id).arguments, format!("stream-{id}"));
     let mut frames = Vec::new();
-    crate::client::stream::run_call(
+    let answer = crate::client::call_streaming(
         &d.daemon.archive,
         &request,
         Some(std::time::Duration::from_secs(10)),
         |frame| {
-            let done = frame.event == "answer";
             frames.push((frame.event, serde_json::from_str(&frame.data).unwrap()));
-            Ok(done)
+            Ok(false)
         },
     )
-    .unwrap();
+    .unwrap()
+    .expect("the line answers");
+    frames.push(("answer".into(), serde_json::to_value(answer).unwrap()));
     let events: Vec<&str> = frames
         .iter()
         .map(|(event, _): &(String, serde_json::Value)| event.as_str())
@@ -155,11 +156,14 @@ fn no_effect_request_read_records_one_object_run_and_roundtrips_through_director
     sink.finish(complete).unwrap();
     let mut receiver = test_daemon::start("independent receiving source");
     receiver.pause_signals();
-    let limit = crate::daemon::execution::limit(None, Default::default());
+    let limit = polylogue_store::read::limit::ReadLimit::new(
+        crate::daemon::execution::default_read_deadline(),
+        Default::default(),
+    );
     let imported =
         crate::test_daemon::Call::new("import", serde_json::json!({"paths": [destination]}))
             .id("import-object")
-            .limit(limit.clone())
+            .within(&limit.clone())
             .authorship(actor().clone())
             .answer(&receiver.daemon);
     crate::test_answers::ok(imported);
@@ -196,7 +200,10 @@ fn object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
         d.pause_signals();
         repeat_write_with_no_effect(&d.daemon, "interrupted-object");
         let operation = d.daemon.operation_context(&actor()).unwrap();
-        let limit = crate::daemon::execution::limit(None, Default::default());
+        let limit = polylogue_store::read::limit::ReadLimit::new(
+            crate::daemon::execution::default_read_deadline(),
+            Default::default(),
+        );
         let cancellation = limit.cancellation.clone();
         let archive = &d.daemon.archive;
         let mut output = Interrupt {

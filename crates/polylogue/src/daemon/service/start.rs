@@ -6,13 +6,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// How long a stop waits for running requests (docs/operations.md).
+const STOP_WAIT: Duration = Duration::from_secs(5);
 
 /// Owns the application workers and writer lock. Transports must stop
 /// before this runtime; external daemon references cannot keep workers alive.
 pub struct Runtime {
     pub daemon: Arc<Daemon>,
-    pub operations: Arc<command_surface::OperationTable>,
     /// Ends the signal worker: a child of the archive's stop request.
     pub(super) signals_stop: Option<polylogue_store::cancellation::Cancellation>,
     pub(super) signals: Option<JoinHandle<std::io::Result<()>>>,
@@ -86,8 +88,7 @@ impl Runtime {
     /// writer's reconstructible work; writes the writer was handed, and the
     /// captured bytes in hand, still commit.
     pub fn stop_accepting(&self) {
-        self.daemon.stopping.store(true, Ordering::Release);
-        self.daemon.executor.refuse();
+        self.daemon.requests.refuse();
         self.daemon.archive.stop().cancel();
         self.daemon.warm.clear();
         self.daemon.reads.close();
@@ -104,7 +105,7 @@ impl Runtime {
 
     /// A finished continuous worker is a failure; slow work remains live.
     pub fn worker_failure(&self) -> Option<&'static str> {
-        if self.daemon.stopping.load(Ordering::Acquire) {
+        if self.daemon.is_stopping() {
             return None;
         }
         if self.engine.as_ref().is_some_and(JoinHandle::is_finished) && self.idle.borrow().is_none()
@@ -142,15 +143,12 @@ impl Runtime {
         // ones end (the closed reader pool ends any still waiting for a read).
         // Work that ignores its cancellation is left behind after the bound,
         // so a stop never hangs on it.
-        let executor_started = self.engine.as_ref().map(|_| Instant::now());
-        let running = self
-            .daemon
-            .executor
-            .stop(crate::daemon::executor::STOP_WAIT);
-        if let Some(started) = executor_started {
+        let started = self.engine.as_ref().map(|_| Instant::now());
+        let running = self.daemon.requests.wait(STOP_WAIT);
+        if let Some(started) = started {
             polylogue_store::log!(
                 info,
-                "shutdown executor drain finished in {:?}",
+                "shutdown request drain finished in {:?}",
                 started.elapsed()
             );
         }
@@ -158,7 +156,7 @@ impl Runtime {
             polylogue_store::log!(
                 warning,
                 "{running} request(s) did not stop within {} s; stopping without them",
-                crate::daemon::executor::STOP_WAIT.as_secs()
+                STOP_WAIT.as_secs()
             );
         }
         let mut failure = None;
@@ -348,8 +346,8 @@ pub fn start(
     let per_reader = settings
         .reader_memory_per_connection()
         .map_err(|e| to_io(&e))?;
-    // One reader per ordinary executor place and one for the background
-    // slot; the pool keeps one more for interactive answers.
+    // Readers bound how many requests read at once: one per worker and one
+    // for idle-priority work; the pool keeps one more for interactive answers.
     let readers = settings.workers + 1;
     let reads =
         ReadPool::serving(&archive, readers, per_reader * readers as u64).map_err(|e| to_io(&e))?;
@@ -366,10 +364,9 @@ pub fn start(
     let daemon = Arc::new(Daemon {
         clock: settings.clock.clone(),
         config: deployment,
-        operations: std::sync::OnceLock::new(),
         archive,
         reads,
-        executor: crate::daemon::executor::Executor::new(settings.workers),
+        requests: Default::default(),
         completion_path,
         callers: crate::hook::open_calls::OpenCalls::new(
             settings.spool_dir(polylogue_sources::hook_spool::ORIGIN),
@@ -402,10 +399,7 @@ pub fn start(
         signals: Mutex::new(serde_json::Value::Null),
         #[cfg(test)]
         signal_trace: Mutex::new(None),
-        stopping: AtomicBool::new(false),
         idle_gate: crate::daemon::schema::IdleGate::default(),
-        #[cfg(test)]
-        read_limits: Mutex::new(None),
     });
     let acts_worker = {
         let daemon = Arc::clone(&daemon);
@@ -419,14 +413,8 @@ pub fn start(
     // Messages and notices left pending raise their running sessions' mailbox
     // flags; those to sessions no longer running are closed.
     acts::finish_ended(&daemon, daemon.config.requests.now().unix_ms(), true);
-    let operations = Arc::new(crate::commands::table(Arc::clone(&daemon)));
-    daemon
-        .operations
-        .set(Arc::downgrade(&operations))
-        .expect("runtime installs its operation table once");
     let mut runtime = Runtime {
         daemon,
-        operations,
         signals_stop: None,
         signals: None,
         live_events_stop: None,

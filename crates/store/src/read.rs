@@ -309,8 +309,8 @@ row! {
 }
 
 /// Read-only connections to one archive, reused across requests.
-/// `max_readers` connections serve every read; one more is kept for reads
-/// that run inside [`reserved_reads`], so status and completion answers
+/// `max_readers` connections serve every read; one more is kept for the
+/// [`Lane::Interactive`] checkouts, so status, completion and brief answers
 /// never wait behind a full pool.
 pub struct ReadPool {
     archive: Archive,
@@ -330,22 +330,15 @@ pub struct ReadPool {
     changed: Condvar,
 }
 
-thread_local! {
-    static RESERVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Runs `work` with access to the pool's reserved connection, for the
-/// interactive answers that must keep their budget while bulk reads hold
-/// every other connection.
-pub fn reserved_reads<T>(work: impl FnOnce() -> T) -> T {
-    struct Restore(bool);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            RESERVED.with(|reserved| reserved.set(self.0));
-        }
-    }
-    let _restore = Restore(RESERVED.with(|reserved| reserved.replace(true)));
-    work()
+/// Which connections a checkout may take.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lane {
+    /// Answers that keep a budget while bulk reads hold every other
+    /// connection: they may also take the reserved one.
+    Interactive,
+    Ordinary,
+    /// Idle-priority work: one thread at a time holds such readers.
+    Background,
 }
 
 #[derive(Default)]
@@ -357,6 +350,8 @@ struct PoolState {
     /// Checked-out and still-opening connections.
     in_use: usize,
     holders: HashMap<ThreadId, usize>,
+    /// Readers held in the background lane, by thread.
+    background: HashMap<ThreadId, usize>,
     #[cfg(test)]
     waiters: usize,
 }
@@ -372,6 +367,7 @@ pub struct Reader<'a> {
     index_identity: Option<IndexIdentity>,
     state: std::cell::Cell<ReadState>,
     holder: ThreadId,
+    background: bool,
     limit: Option<limit::ReadLimit>,
     scope: scope::ReadScopeToken,
     // Counting holders by ThreadId detects self-exhaustion only if live readers stay
@@ -626,11 +622,21 @@ impl ReadPool {
         self.archive.read_scope.token()
     }
 
-    /// Waits for a connection while the pool is full. Reuse the existing Reader
-    /// within a request. Nested checkouts are allowed while capacity remains;
-    /// waiting while this thread already holds a slot refuses to avoid deadlock.
+    /// A request's reader: waits for a connection of its lane until the
+    /// request's deadline or cancellation, and reads under `limit`. Reuse the
+    /// existing Reader within a request. Nested checkouts are allowed while
+    /// capacity remains; waiting while this thread already holds a slot
+    /// refuses to avoid deadlock.
+    pub fn checkout(&self, lane: Lane, limit: &limit::ReadLimit) -> Result<Reader<'_>> {
+        self.acquire(lane, Some(limit.clone()), |path| self.connect(path))
+    }
+
+    /// A reader for work outside a request (the loop, workers): the ordinary
+    /// lane, under the limit of the scope this thread runs in, if any.
     pub fn reader(&self) -> Result<Reader<'_>> {
-        self.acquire(|path| self.connect(path))
+        self.acquire(Lane::Ordinary, limit::ReadLimit::current(), |path| {
+            self.connect(path)
+        })
     }
 
     /// Runs `read` on a new reader, and again on another when a build's
@@ -646,16 +652,21 @@ impl ReadPool {
         }
     }
 
-    fn acquire(&self, connect: impl FnOnce(&Path) -> Result<Connection>) -> Result<Reader<'_>> {
+    fn acquire(
+        &self,
+        lane: Lane,
+        limit: Option<limit::ReadLimit>,
+        connect: impl FnOnce(&Path) -> Result<Connection>,
+    ) -> Result<Reader<'_>> {
         // Refused before a slot is taken: nothing can be read until the build ends.
         self.index_path()?;
         let scope = self.archive.read_scope.token()?;
-        let limit = limit::ReadLimit::current();
         if let Some(limit) = &limit {
             limit.bind_scope(scope.clone())?;
         }
         let holder = std::thread::current().id();
-        let capacity = self.max_readers + usize::from(RESERVED.with(std::cell::Cell::get));
+        let capacity = self.max_readers + usize::from(lane == Lane::Interactive);
+        let background = lane == Lane::Background;
         // The process's stop and a cancelled request wake a waiting checkout;
         // the deadline bounds the wait. Nothing polls.
         let stop = self.archive.stop();
@@ -678,9 +689,15 @@ impl ReadPool {
                 if state.closed {
                     return Err(StoreError::ReadPoolClosed);
                 }
-                if state.in_use < capacity {
+                let lane_free = !background
+                    || state.background.is_empty()
+                    || state.background.contains_key(&holder);
+                if state.in_use < capacity && lane_free {
                     state.in_use += 1;
                     *state.holders.entry(holder).or_default() += 1;
+                    if background {
+                        *state.background.entry(holder).or_default() += 1;
+                    }
                     match state.idle.pop() {
                         Some(conn) => break Some(conn),
                         None => {
@@ -720,6 +737,7 @@ impl ReadPool {
             index_identity: None,
             state: std::cell::Cell::new(ReadState::Deferred),
             holder,
+            background,
             limit,
             scope,
             thread_bound: std::marker::PhantomData,
@@ -818,6 +836,14 @@ impl Drop for Reader<'_> {
             *held -= 1;
             if *held == 0 {
                 state.holders.remove(&self.holder);
+            }
+        }
+        if self.background
+            && let Some(held) = state.background.get_mut(&self.holder)
+        {
+            *held -= 1;
+            if *held == 0 {
+                state.background.remove(&self.holder);
             }
         }
         state.in_use -= 1;

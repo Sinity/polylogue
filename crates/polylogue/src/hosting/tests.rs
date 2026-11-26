@@ -179,7 +179,7 @@ while [ ! -f "$1.exit" ]; do sleep 0.01; done
     let waiter = std::thread::spawn(move || {
         let _ = finished.send(server.join());
     });
-    let result = outcome.recv_timeout(crate::daemon::executor::STOP_WAIT);
+    let result = outcome.recv_timeout(std::time::Duration::from_secs(5));
     // Release the pipe before asserting, including when the old joining path hung.
     drop(holder);
     waiter.join().unwrap();

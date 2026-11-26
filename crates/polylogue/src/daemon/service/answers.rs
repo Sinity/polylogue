@@ -9,7 +9,6 @@ use polylogue_store::{StoreError, WriterSender, user_writes};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
 use std::time::Instant;
 
 /// A query's answer over a snapshot of the given freshness: degraded, with a
@@ -308,7 +307,7 @@ pub(crate) fn context(
         if let Err(error) = operation.check_parent_lifetime() {
             return store_error(&error);
         }
-        if let Err(failure) = crate::daemon::handler::finish_read_phase("record delivery") {
+        if let Err(failure) = crate::daemon::handler::hand_over("record delivery") {
             return failure.answer();
         }
         // Queued without the caller's lifetime: the text has been handed
@@ -440,7 +439,7 @@ pub(crate) fn submit_result<T>(
     let accepted = || -> Result<_, Failure> {
         let writes = writer(d)?;
         invocation.check_parent_lifetime()?;
-        crate::daemon::handler::finish_read_phase("write")?;
+        crate::daemon::handler::hand_over("write")?;
         Ok(writes)
     };
     let writes = match accepted() {
@@ -541,7 +540,7 @@ pub(crate) fn repeated_request(
 
 /// Refuses new requests once the daemon is stopping.
 pub(crate) fn accepting(d: &Daemon) -> Result<(), Failure> {
-    if d.stopping.load(Ordering::Acquire) {
+    if d.is_stopping() {
         return Err(shutting_down());
     }
     Ok(())

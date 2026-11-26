@@ -112,7 +112,7 @@ $ polylogue @2 read --follow --until-idle --hide thinking
 - The stream ends each observed batch with its current marks, after all selected sessions have been read. Clients decide whether every session has settled at that boundary.
 - **`--until-idle`** ends it when every selected session settles: nothing new arrives and the session's live state (the query field `live`; for `root:REF`, of its newest physical session) is neither `working` nor `waiting`.
 - **On a selection that is not sessions** it prints the query's rows, then each row (by its reference) as it starts matching, reading the query again whenever the archive's read position moves.
-- **Cost.** A session reading wakes on each commit and looks again only at the selected sessions whose own rows or live state changed since its previous look; between commits it waits without holding a reader or an executor place, and a client that goes away ends it at once.
+- **Cost.** A session reading wakes on each commit and looks again only at the selected sessions whose own rows or live state changed since its previous look; between commits it waits without holding a reader, and a client that goes away ends it at once.
 - **Alone**, `polylogue read --follow` opens the picker over `running`; Tab marks several.
 - `read --follow` must be the last step of its line. HTTP streams it with the shared server-sent event framing.
 - **Not over MCP:** a model cannot hold a stream. The refusal gives the `read` call with `from` set after what the caller has, which is also the call the last page of every session reading carries ([transcripts.md](transcripts.md#rendering-for-models)).

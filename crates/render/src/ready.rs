@@ -2,6 +2,25 @@
 use command_surface::{Access, Failure, FailureKind, OperationDeclarations, RunnableRequest};
 use serde_json::Value;
 
+/// Where a person follows a ready call in the web reader: the reader's
+/// page for a line (an operation with declared steps), at its HTTP route
+/// without the `/api/v1` prefix; the API route for anything else.
+pub fn reader_url(
+    declarations: &OperationDeclarations,
+    request: &RunnableRequest,
+) -> Result<String, Failure> {
+    let url = http_url(declarations, request)?;
+    Ok(
+        match (
+            declarations.steps(&request.operation, "steps"),
+            url.strip_prefix("/api/v1"),
+        ) {
+            (Some(_), Some(page)) => page.to_owned(),
+            _ => url,
+        },
+    )
+}
+
 /// Encode the operation's complete HTTP form; no cursor parsing, target
 /// selection or option defaults occur here. Complex fields use JSON.
 pub fn http_url(

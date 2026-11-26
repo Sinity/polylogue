@@ -1,159 +1,115 @@
 mod feeds;
 mod rows;
 use super::*;
-use crate::daemon::{Failure, service::Daemon};
-use std::io::Write;
+use axum::extract::Query;
 
 fn web(daemon: &crate::test_daemon::TestDaemon) -> Arc<Web> {
     Arc::new(Web {
         daemon: Arc::clone(&daemon.daemon),
-        operations: Arc::clone(daemon.operations()),
         key: "synthetic".into(),
         token: "synthetic".into(),
         port: 8765,
     })
 }
 
-#[test]
-fn stream_failure_before_first_event_uses_the_shared_http_status() {
-    fn failed(
-        _: &Daemon,
-        _: &polylogue_reading::operation::Invocation,
-        _: &std::sync::Arc<polylogue_reading::operation::Context>,
-        _: &mut dyn Write,
-    ) -> Result<(), crate::daemon::Failure> {
-        Err(Failure::bad_request("invalid selection"))
+/// The caller of one HTTP request whose connection is `stop` and whose
+/// outer bound is `outer_deadline`.
+fn caller(
+    stop: polylogue_store::cancellation::Cancellation,
+    outer_deadline: Option<std::time::Instant>,
+) -> crate::operation::Caller {
+    super::super::Lifetime {
+        stop,
+        outer_deadline,
     }
+    .caller(&Default::default())
+}
+
+fn get(web: &Arc<Web>, uri: &str) -> HttpResponse {
+    use tower::ServiceExt;
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            super::super::router(Arc::clone(web))
+                .oneshot(
+                    axum::http::Request::get(uri)
+                        .header(header::HOST, "127.0.0.1:8765")
+                        .header(header::AUTHORIZATION, "Bearer synthetic")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        })
+}
+
+fn body(response: HttpResponse) -> Vec<u8> {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
+        .unwrap()
+        .to_vec()
+}
+
+/// A reply refused before any event is one JSON body with the failure's
+/// HTTP status; a reply whose first event was written is an event stream
+/// ending with its final answer (docs/interfaces.md, operation table).
+#[test]
+fn a_reply_is_json_until_its_first_event_and_a_stream_after_it() {
     let daemon = crate::test_daemon::start("synthetic stream refusal");
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let response = stream(
-                &web(&daemon),
-                crate::daemon::executor::Class::Ordinary,
-                super::super::request_limit(),
-                crate::client::request("dev feed", serde_json::json!({}), "http-stream".into()),
-                Box::new(failed),
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let answer: command_surface::Answer<serde_json::Value> =
-                serde_json::from_slice(&body).unwrap();
-            assert_eq!(answer.exit_code(), 2);
-        });
-}
-
-#[test]
-fn stream_failure_after_begin_delivers_error_without_final_completion() {
-    fn failed(
-        _: &Daemon,
-        _: &polylogue_reading::operation::Invocation,
-        authorship: &std::sync::Arc<polylogue_reading::operation::Context>,
-        output: &mut dyn Write,
-    ) -> Result<(), crate::daemon::Failure> {
-        assert_eq!(
-            authorship.authorship.author,
-            polylogue_model::Author::Operator
-        );
-        assert_eq!(
-            authorship.authorship.via,
-            polylogue_model::authorship::Channel::Web
-        );
-        let accepted = authorship.accepted_request().expect("accepted request");
-        assert_eq!(accepted.request_id, "http-accepted-stream");
-        assert_eq!(accepted.deadline, command_surface::Deadline::None);
-        assert_eq!(accepted.arguments["uncapped"], true);
-        crate::protocol::stream::event(
-            output,
-            "begin",
-            &serde_json::json!({"snapshot":"synthetic"}),
-        )
+    let web = web(&daemon);
+    let refused = get(&web, "/api/v1/dev/feed?after=broken");
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert!(
+        refused.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
+    );
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&body(refused)).unwrap();
+    assert_eq!(answer.exit_code(), 2);
+    let streamed = get(&web, "/api/v1/dev/feed");
+    assert_eq!(streamed.status(), StatusCode::OK);
+    assert_eq!(
+        streamed.headers()[header::CONTENT_TYPE],
+        "text/event-stream"
+    );
+    let frames = command_surface::SseDecoder::new()
+        .push(&body(streamed))
         .unwrap();
-        Err(Failure::conflict("source changed"))
-    }
-    let daemon = crate::test_daemon::start("synthetic stream late failure");
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let response = stream(
-                &web(&daemon),
-                crate::daemon::executor::Class::Ordinary,
-                super::super::request_limit(),
-                command_surface::Request {
-                    operation: "dev feed".into(),
-                    arguments: serde_json::json!({"uncapped":true}),
-                    request_id: "http-accepted-stream".into(),
-                    deadline: command_surface::Deadline::None,
-                    budget_tokens: Default::default(),
-                    cursor: None,
-                    fresh: false,
-                    format: Default::default(),
-                },
-                Box::new(failed),
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::OK);
-            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let events = command_surface::SseDecoder::new().push(&body).unwrap();
-            assert_eq!(
-                events
-                    .iter()
-                    .map(|event| event.event.as_str())
-                    .collect::<Vec<_>>(),
-                ["begin", "error"]
-            );
-            let answer: command_surface::Answer<serde_json::Value> =
-                serde_json::from_str(&events[1].data).unwrap();
-            assert_eq!(answer.http_status(), Some(409));
-        });
+    let names: Vec<&str> = frames.iter().map(|frame| frame.event.as_str()).collect();
+    assert_eq!(names.first(), Some(&"begin"));
+    assert_eq!(&names[names.len() - 2..], ["complete", "answer"]);
+    let answer: command_surface::Answer<String> =
+        serde_json::from_str(&frames.last().unwrap().data).unwrap();
+    assert_eq!(answer.exit_code(), 0);
 }
 
+/// A GET runs only what reads and changes nothing; anything else is
+/// refused with its POST route.
 #[test]
-fn stream_headers_arrive_before_the_body_of_a_large_stream_is_read() {
-    fn large(
-        _: &Daemon,
-        _: &polylogue_reading::operation::Invocation,
-        _: &std::sync::Arc<polylogue_reading::operation::Context>,
-        output: &mut dyn Write,
-    ) -> Result<(), crate::daemon::Failure> {
-        let result = (|| {
-            crate::protocol::stream::event(output, "begin", &serde_json::json!({}))?;
-            // Exceeds a transport buffer; the stream buffer holds it unread.
-            crate::protocol::stream::event(output, "record", &"x".repeat(128 * 1024))?;
-            crate::protocol::stream::event(output, "complete", &serde_json::json!({}))
-        })();
-        result.map_err(Failure::io)
+fn a_get_runs_only_a_request_that_reads() {
+    let daemon = crate::test_daemon::start("synthetic GET rule");
+    let web = web(&daemon);
+    for uri in [
+        "/api/v1/set?key=browser.actions&value=on",
+        "/api/v1/rows?selection=sessions&steps=tag&name=x",
+    ] {
+        let refused = get(&web, uri);
+        assert_eq!(refused.status(), StatusCode::BAD_REQUEST, "{uri}");
+        let answer: command_surface::Answer<serde_json::Value> =
+            serde_json::from_slice(&body(refused)).unwrap();
+        let message = &answer.failure().unwrap().message;
+        assert!(message.contains("use POST /api/v1/"), "{uri}: {message}");
     }
-    let daemon = crate::test_daemon::start("synthetic stream backpressure");
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let response = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                stream(
-                    &web(&daemon),
-                    crate::daemon::executor::Class::Ordinary,
-                    super::super::request_limit(),
-                    crate::client::request("dev feed", serde_json::json!({}), "http-stream".into()),
-                    Box::new(large),
-                ),
-            )
-            .await
-            .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            drop(response);
-        });
+    assert_eq!(
+        get(&web, "/api/v1/set?key=browser.actions").status(),
+        StatusCode::OK
+    );
 }
 
 #[test]
@@ -212,183 +168,43 @@ fn generated_http_ready_call_executes_without_translating_its_arguments() {
         });
 }
 
+/// The API answers a read as JSON whatever the client accepts; the reader
+/// route renders the same typed reply as HTML.
 #[test]
-fn read_html_negotiates_on_the_same_typed_operation_route() {
-    use tower::ServiceExt;
+fn a_read_is_json_in_the_api_and_html_in_the_reader_route() {
     let daemon = crate::test_daemon::start("HTML same operation example <script>");
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let response = super::super::router(web(&daemon))
-                .oneshot(
-                    axum::http::Request::get(
-                        "/api/v1/rows?steps=read&selection=session%3Aclaude-code%3As1&format=html",
-                    )
-                    .header(header::HOST, "127.0.0.1:8765")
-                    .header(header::AUTHORIZATION, "Bearer synthetic")
-                    .header(header::ACCEPT, "text/html")
-                    .body(axum::body::Body::empty())
-                    .unwrap(),
-                )
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::OK);
-            assert!(
-                response.headers()[header::CONTENT_TYPE]
-                    .to_str()
-                    .unwrap()
-                    .starts_with("text/html")
-            );
-            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let text = String::from_utf8(bytes.to_vec()).unwrap();
-            assert!(text.contains("HTML same operation example"), "{text}");
-            assert!(text.contains("&lt;script&gt;"), "{text}");
-        });
-}
-
-#[test]
-fn scope_reset_ends_a_begun_http_stream_unfinished() {
-    fn reset_after_begin(
-        daemon: &Daemon,
-        _: &polylogue_reading::operation::Invocation,
-        _: &std::sync::Arc<polylogue_reading::operation::Context>,
-        output: &mut dyn Write,
-    ) -> Result<(), crate::daemon::Failure> {
-        let reader = match daemon.reads.reader() {
-            Ok(reader) => reader,
-            Err(error) => return Err(Failure::from(error)),
-        };
-        let result = (|| {
-            crate::protocol::stream::event(
-                output,
-                "begin",
-                &serde_json::json!({"generation":reader.change_position()?.to_string()}),
-            )?;
-            daemon.archive.advance_generation_for_test()?;
-            crate::protocol::stream::event(
-                output,
-                "record",
-                &serde_json::json!({"stale":"must not escape"}),
-            )?;
-            crate::protocol::stream::event(output, "complete", &serde_json::json!({}))?;
-            Ok::<(), Box<dyn std::error::Error>>(())
-        })();
-        result.map_err(Failure::io)
-    }
-    let daemon = crate::test_daemon::start("generation stream example");
-    tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(async {
-            let response = stream(
-                &web(&daemon),
-                crate::daemon::executor::Class::Ordinary,
-                super::super::request_limit(),
-                crate::client::request("dev feed", serde_json::json!({}), "http-stream".into()),
-                Box::new(reset_after_begin),
-            )
-            .await;
-            assert_eq!(response.status(), StatusCode::OK);
-            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap();
-            let events = command_surface::SseDecoder::new().push(&bytes).unwrap();
-            assert_eq!(
-                events
-                    .iter()
-                    .map(|event| event.event.as_str())
-                    .collect::<Vec<_>>(),
-                ["begin", "error"]
-            );
-            let answer: command_surface::Answer<serde_json::Value> =
-                serde_json::from_str(&events[1].data).unwrap();
-            let command_surface::Answer {
-                outcome: command_surface::Outcome::Error(error),
-                ..
-            } = answer
-            else {
-                panic!("stale stream was successful")
-            };
-            assert_eq!(error.code.as_deref(), Some("scope_changed"));
-            assert_eq!(error.kind, command_surface::FailureKind::Conflict);
-        });
-}
-
-#[test]
-fn scope_reset_after_http_encoding_cannot_activate_the_old_body() {
-    let daemon = crate::test_daemon::start("HTTP activation fence");
     let web = web(&daemon);
-    let scope = daemon.daemon.reads.scope_token().unwrap();
-    let (status, bytes) = super::super::prepare_json_answer(
+    let api = get(
         &web,
-        command_surface::Answer::ok(serde_json::json!({"stale":"synthetic-old-scope-value"})),
+        "/api/v1/rows?steps=read&selection=session%3Aclaude-code%3As1&format=html",
     );
-    daemon.daemon.archive.advance_generation_for_test().unwrap();
-    let response = scoped_body_response(
-        &web,
-        status,
-        "application/json",
-        bytes,
-        &crate::protocol::ReadScopes::single(Some(scope)),
-    );
-    assert_eq!(response.status(), StatusCode::CONFLICT);
-    let bytes = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
-        .unwrap();
-    assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-old-scope-value"));
-    let answer: command_surface::Answer<serde_json::Value> =
-        serde_json::from_slice(&bytes).unwrap();
-    let command_surface::Answer {
-        outcome: command_surface::Outcome::Error(error),
-        ..
-    } = answer
-    else {
-        panic!("old scope must not activate");
-    };
-    assert_eq!(error.code.as_deref(), Some("scope_changed"));
-}
-
-#[test]
-fn scope_reset_before_polling_an_encoded_http_body_aborts_its_frame() {
-    let daemon = crate::test_daemon::start("HTTP frame fence");
-    let web = web(&daemon);
-    let scope = daemon.daemon.reads.scope_token().unwrap();
-    let (status, bytes) = super::super::prepare_json_answer(
-        &web,
-        command_surface::Answer::ok(serde_json::json!({"stale":"synthetic-old-scope-value"})),
-    );
-    let response = scoped_body_response(
-        &web,
-        status,
-        "application/json",
-        bytes,
-        &crate::protocol::ReadScopes::single(Some(scope)),
-    );
-    daemon.daemon.archive.advance_generation_for_test().unwrap();
-    let result = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-        .block_on(axum::body::to_bytes(response.into_body(), usize::MAX));
+    assert_eq!(api.status(), StatusCode::OK);
     assert!(
-        result.is_err(),
-        "a revoked HTTP body must not send a complete value"
+        api.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("application/json")
     );
+    let page = get(
+        &web,
+        "/rows?steps=read&selection=session%3Aclaude-code%3As1&format=html",
+    );
+    assert_eq!(page.status(), StatusCode::OK);
+    assert!(
+        page.headers()[header::CONTENT_TYPE]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html")
+    );
+    let text = String::from_utf8(body(page)).unwrap();
+    assert!(text.contains("HTML same operation example"), "{text}");
+    assert!(text.contains("&lt;script&gt;"), "{text}");
 }
 
 #[test]
 fn a_captured_parent_deadline_is_not_renewed_during_dispatch_wait() {
     let daemon = crate::test_daemon::start("parent queue bound");
     let web = web(&daemon);
-    let observed = daemon.watch_reads();
     let parent = std::time::Instant::now() + std::time::Duration::from_millis(10);
     let request = command_surface::Request {
         operation: "status".into(),
@@ -401,19 +217,10 @@ fn a_captured_parent_deadline_is_not_renewed_during_dispatch_wait() {
         format: Default::default(),
     };
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let response = runtime.block_on(crate::web::READ_LIMIT.scope(
-        (Some(parent), Default::default()),
-        async {
-            tokio::time::sleep_until(tokio::time::Instant::from_std(parent)).await;
-            answer(
-                &web,
-                crate::commands::command("status").unwrap(),
-                Ok(request),
-                &HeaderMap::new(),
-            )
-            .await
-        },
-    ));
+    let response = runtime.block_on(async {
+        tokio::time::sleep_until(tokio::time::Instant::from_std(parent)).await;
+        respond(&web, request, caller(Default::default(), Some(parent))).await
+    });
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     let bytes = runtime
         .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
@@ -429,21 +236,11 @@ fn a_captured_parent_deadline_is_not_renewed_during_dispatch_wait() {
     };
     assert_eq!(error.kind, command_surface::FailureKind::Timeout);
     assert_eq!(error.code.as_deref(), Some("deadline_exceeded"));
-    let observation = observed
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
-    assert_eq!(observation.sqlite_steps(), 0);
 }
 
 #[test]
 fn no_outer_header_does_not_supply_a_default_parent_for_a_null_request() {
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(
-            crate::web::READ_LIMIT.scope((None, Default::default()), async {
-                assert!(crate::web::parent_deadline().is_none());
-            }),
-        );
+    assert!(caller(Default::default(), None).outer_deadline.is_none());
 }
 
 #[test]
@@ -464,15 +261,7 @@ fn a_cancelled_http_parent_without_a_header_cannot_submit_a_pure_write() {
         format: Default::default(),
     };
     let runtime = tokio::runtime::Runtime::new().unwrap();
-    let response = runtime.block_on(crate::web::READ_LIMIT.scope((None, cancellation), async {
-        answer(
-            &web,
-            crate::commands::command("set").unwrap(),
-            Ok(request),
-            &HeaderMap::new(),
-        )
-        .await
-    }));
+    let response = runtime.block_on(respond(&web, request, caller(cancellation, None)));
     let bytes = runtime
         .block_on(axum::body::to_bytes(response.into_body(), usize::MAX))
         .unwrap();
@@ -524,18 +313,9 @@ fn writer_dispatch_refuses_queued_expiry_but_finishes_an_already_owned_write() {
             format: Default::default(),
         };
         let runtime = tokio::runtime::Runtime::new().unwrap();
-        let task = runtime.spawn(crate::web::READ_LIMIT.scope(
-            (Some(parent), Default::default()),
-            async move {
-                answer(
-                    &web,
-                    crate::commands::command("set").unwrap(),
-                    Ok(request),
-                    &HeaderMap::new(),
-                )
-                .await
-            },
-        ));
+        let task = runtime.spawn(async move {
+            respond(&web, request, caller(Default::default(), Some(parent))).await
+        });
         // This is the writer's own dispatch, not a client-response delay.
         pause.wait().unwrap();
         runtime.block_on(async {

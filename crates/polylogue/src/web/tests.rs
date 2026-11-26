@@ -19,7 +19,6 @@ fn reader() -> Reader {
     let w = test_daemon::start("look at <script>alert(1)</script> & the parser");
     let web = Arc::new(Web {
         daemon: Arc::clone(&w.daemon),
-        operations: Arc::clone(w.operations()),
         key: "abc123def456".into(),
         token: TOKEN.into(),
         port: PORT,
@@ -275,15 +274,6 @@ fn a_blank_search_returns_to_the_overview() {
         assert_eq!(status, StatusCode::SEE_OTHER);
         assert_eq!(headers[header::LOCATION], "/");
     });
-}
-
-#[test]
-fn form_bodies_decode_plus_percent_escapes_and_malformed_percent() {
-    let fields = form_fields("token=t%2B0ken&x=a+b&bad=%zz&short=%4");
-    assert_eq!(fields["token"], "t+0ken");
-    assert_eq!(fields["x"], "a b");
-    assert_eq!(fields["bad"], "%zz");
-    assert_eq!(fields["short"], "%4");
 }
 
 #[test]
@@ -618,12 +608,7 @@ fn owned_http_shutdown_closes_partial_peers_and_releases_daemon() {
     use std::io::Write;
     let daemon = test_daemon::start("HTTP lifecycle fixture");
     let weak = Arc::downgrade(&daemon.daemon);
-    let mut server = start_on(
-        Arc::clone(&daemon.daemon),
-        Arc::clone(daemon.operations()),
-        0,
-    )
-    .unwrap();
+    let mut server = start_on(Arc::clone(&daemon.daemon), 0).unwrap();
     let _idle = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     let mut partial = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     partial
@@ -659,7 +644,7 @@ fn application_shutdown_joins_http_handlers_while_all_reader_slots_remain_held()
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    let mut server = start_on(Arc::clone(&daemon), Arc::clone(&runtime.operations), 0).unwrap();
+    let mut server = start_on(Arc::clone(&daemon), 0).unwrap();
     let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     write!(
         peer,
@@ -690,23 +675,19 @@ fn shutdown_cancels_a_started_http_read_before_joining_its_transport() {
         crate::daemon::service::ArchiveMode::Standalone,
     )
     .unwrap();
-    let mut server = start_on(
-        Arc::clone(&runtime.daemon),
-        Arc::clone(&runtime.operations),
-        0,
-    )
-    .unwrap();
-    let (observed, reads) = std::sync::mpsc::channel();
-    *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
+    let mut server = start_on(Arc::clone(&runtime.daemon), 0).unwrap();
     let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     let sql = "WITH%20RECURSIVE%20n(x)%20AS%20(SELECT%201%20UNION%20ALL%20SELECT%20x%2B1%20FROM%20n%20WHERE%20x%3C2000000000)%20SELECT%20count(*)%20FROM%20n";
     write!(peer, "GET /api/v1/dev/sql?statement={sql} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\n\r\n", server.port, server.token).unwrap();
-    let read = reads
-        .recv_timeout(std::time::Duration::from_secs(5))
-        .unwrap();
-    crate::test_daemon::TestDaemon::wait_for_sql(&read);
+    let started = std::time::Instant::now();
+    while runtime.daemon.reads.checked_out() == 0 {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the HTTP read never took a reader"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
     runtime.stop_accepting();
-    assert!(read.cancellation.is_cancelled());
     server.shutdown().unwrap();
     runtime.shutdown().unwrap();
     assert_eq!(runtime.daemon.reads.checked_out(), 0);
@@ -935,7 +916,7 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
 fn cost_is_served_through_the_owned_loopback_http_listener() {
     use std::io::{Read, Write};
     let r = reader();
-    let mut server = start_on(Arc::clone(&r.web.daemon), Arc::clone(&r.web.operations), 0).unwrap();
+    let mut server = start_on(Arc::clone(&r.web.daemon), 0).unwrap();
     let mut peer = std::net::TcpStream::connect(("127.0.0.1", server.port)).unwrap();
     write!(peer, "GET /cost?q=id%3Aclaude-code%3As1 HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n", server.port, server.token).unwrap();
     let mut response = String::new();
@@ -1045,8 +1026,7 @@ mod pages;
 
 mod notes;
 mod search_api;
-
-mod cancellation;
+mod stops;
 
 fn read_url(target: &str, extra: &[(&str, &str)]) -> String {
     let encode = polylogue_render::html::encode_path_segment;
@@ -1059,8 +1039,13 @@ fn read_url(target: &str, extra: &[(&str, &str)]) -> String {
     }
     path
 }
+/// The reader's HTML for `path`: an API read path is shown at its reader route.
 async fn send_html(r: &Reader, path: &str) -> (StatusCode, HeaderMap, String) {
-    let mut path = path.to_owned();
+    let mut path = path
+        .strip_prefix("/api/v1")
+        .filter(|path| path.starts_with("/rows"))
+        .unwrap_or(path)
+        .to_owned();
     for _ in 0..4 {
         let reply = send(
             r,

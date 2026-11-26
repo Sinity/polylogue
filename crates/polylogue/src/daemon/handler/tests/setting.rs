@@ -19,21 +19,16 @@ fn set_key_reads_declaration_choices_without_changing_write_or_scope_policy() {
         Some(polylogue_model::settings::Value::Boolean(false))
     );
     assert!(details.history.is_empty());
-    let row = crate::commands::command("set").unwrap();
-    for surface in [Surface::Cli, Surface::Mcp, Surface::Http] {
-        let caller = Caller { surface, cwd: None };
-        let policy = row
-            .registration()
-            .unwrap()
-            .admit(&json!({"key":"browser.actions"}), row, &caller)
-            .unwrap();
-        assert!(policy.read_only);
-        let write = row
-            .registration()
-            .unwrap()
-            .admit(&json!({"key":"browser.actions","value":"on"}), row, &caller)
-            .unwrap();
-        assert!(!write.read_only);
+    for channel in [Channel::Cli, Channel::Mcp, Channel::Web] {
+        let read = policy("set", json!({"key":"browser.actions"}), channel).unwrap();
+        assert!(!read.changes_archive);
+        let write = policy(
+            "set",
+            json!({"key":"browser.actions","value":"on"}),
+            channel,
+        )
+        .unwrap();
+        assert!(write.changes_archive);
     }
     for arguments in [
         json!({"key":"browser.actions","machine":"other-host"}),

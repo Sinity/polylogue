@@ -15,21 +15,15 @@ fn verify_through_the_daemon_checks_the_archive_and_writes_a_new_manifest() {
         "verify-manifest".into(),
     );
     // A verification reads at idle priority, without the default deadline.
-    let row = crate::commands::command("status").unwrap();
-    let policy = row
-        .registration()
-        .unwrap()
-        .admit(
-            &request.arguments,
-            row,
-            &crate::commands::Caller {
-                surface: crate::commands::Surface::Cli,
-                cwd: None,
-            },
-        )
-        .unwrap();
-    assert!(policy.read_only && !policy.default_deadline);
-    assert_eq!(policy.class, crate::daemon::executor::Class::Background);
+    let policy = crate::daemon::handler::policy(
+        crate::commands::command("status").unwrap(),
+        &request.arguments,
+        polylogue_model::authorship::Channel::Cli,
+    )
+    .unwrap();
+    assert!(!policy.changes_archive);
+    assert_eq!(policy.bound, crate::daemon::handler::Bound::CallerOnly);
+    assert_eq!(policy.lane, crate::daemon::handler::Lane::Background);
     assert_eq!(crate::client::connection_deadline(&request, None), None);
     let socket = daemon.daemon.archive.socket();
     let answer = crate::client::call(&socket, &request).unwrap();
@@ -71,15 +65,15 @@ fn verification_is_cli_only_and_manifest_requires_verification() {
     let daemon = crate::test_daemon::start("words to verify");
     let manifest = daemon._dir.path().join("not-created.tsv");
     for surface in [
-        crate::commands::Surface::Mcp,
-        crate::commands::Surface::Http,
-        crate::commands::Surface::Hook,
+        command_surface::Via::Mcp,
+        command_surface::Via::Web,
+        command_surface::Via::Hook,
     ] {
         let answer = crate::test_daemon::Call::new(
             "status",
             serde_json::json!({"verify": true, "manifest": manifest}),
         )
-        .surface(surface)
+        .channel(surface)
         .answer(&daemon.daemon);
         assert!(
             failure(&answer).message.contains("command line"),
@@ -151,12 +145,12 @@ fn explicit_vector_status_counts_all_models_without_a_provider() {
         .unwrap();
     drop(vectors);
     for surface in [
-        crate::commands::Surface::Cli,
-        crate::commands::Surface::Mcp,
-        crate::commands::Surface::Http,
+        command_surface::Via::Cli,
+        command_surface::Via::Mcp,
+        command_surface::Via::Web,
     ] {
         let ordinary = crate::test_daemon::Call::new("status", serde_json::json!({}))
-            .surface(surface)
+            .channel(surface)
             .answer(&daemon.daemon);
         let ordinary: crate::protocol::status::Answer =
             serde_json::from_value(ordinary.value().unwrap().clone()).unwrap();
@@ -166,7 +160,7 @@ fn explicit_vector_status_counts_all_models_without_a_provider() {
                 && ordinary.verification.is_none()
         );
         let answer = crate::test_daemon::Call::new("status", serde_json::json!({"vectors": true}))
-            .surface(surface)
+            .channel(surface)
             .answer(&daemon.daemon);
         let status: crate::protocol::status::Answer =
             serde_json::from_value(answer.value().unwrap().clone()).unwrap();
@@ -213,12 +207,12 @@ fn explicit_vector_status_counts_all_models_without_a_provider() {
 fn manifest_resolves_the_cli_directory_and_refuses_symlinks() {
     let daemon = crate::test_daemon::start("synthetic original bytes");
     let directory = tempfile::tempdir().unwrap();
-    let mut call = crate::test_daemon::Call::new(
+    let answer = crate::test_daemon::Call::new(
         "status",
         serde_json::json!({"verify":true,"manifest":"manifest.tsv"}),
-    );
-    call.cwd = Some(directory.path().into());
-    let answer = call.answer(&daemon.daemon);
+    )
+    .cwd(directory.path().into())
+    .answer(&daemon.daemon);
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
     let manifest = directory.path().join("manifest.tsv");
     let original = std::fs::read(&manifest).unwrap();

@@ -6,7 +6,6 @@ use polylogue_render::{results, shell_quote};
 mod cost;
 mod day;
 mod overview;
-pub(crate) use polylogue_render::web as reader;
 mod search;
 pub use cost::cost;
 pub use day::{day, day_queries};

@@ -127,7 +127,12 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
                     }}}
                 }]}
             }));
-            writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
+            write!(
+                stream,
+                "event: answer\ndata: {}\n\n",
+                serde_json::to_string(&answer).unwrap()
+            )
+            .unwrap();
             let (mut stream, _) = listener.accept().unwrap();
             line.clear();
             BufReader::new(&stream).read_line(&mut line).unwrap();
@@ -135,9 +140,9 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             assert_eq!(request["operation"], "internal delivery-event");
             assert_eq!(request["arguments"]["delivery"], delivery);
             assert_eq!(request["arguments"]["what"], "delivered");
-            writeln!(
+            write!(
                 stream,
-                "{}",
+                "event: answer\ndata: {}\n\n",
                 serde_json::to_string(&command_surface::Answer::ok(json!({}))).unwrap()
             )
             .unwrap();

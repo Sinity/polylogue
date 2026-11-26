@@ -166,7 +166,7 @@ Conditions over related rows, transforms after `|`, attached rows and combining 
 - A read past its deadline ends `timeout`, never `ok` with a partial page. The reply names the running transform and rows scanned, a narrower query when one exists ([latency.md](latency.md#writes-and-deadlines)), and the same query with the deadline lifted.
 - A read stops within 100 ms when its deadline passes or its caller cancels or disconnects (MCP cancellation, a closed HTTP connection or socket, Ctrl-C); no abandoned read goes on running in the daemon.
 - A read's deadline covers the whole read, from waiting for a read connection and opening it through the last statement. A deadline that passes before any statement runs ends the read the same way, past its deadline.
-- Background work never blocks an interactive read; one executor place and one read connection are reserved for latency-bound requests (hook briefs, `status`, completion) ([operations.md](operations.md#idle-and-steady-state-work)).
+- Background work never blocks an interactive read; one read connection is reserved for latency-bound requests (hook briefs, `status`, completion) ([operations.md](operations.md#idle-and-steady-state-work)).
 
 ## Replies
 

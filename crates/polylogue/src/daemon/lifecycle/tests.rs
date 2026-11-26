@@ -396,11 +396,7 @@ fn isolated_signal_child() {
         )
         .unwrap();
         let stop_worker = runtime.signal_stop_for_test();
-        let socket = Server::start(
-            std::sync::Arc::clone(&runtime.daemon),
-            std::sync::Arc::clone(&runtime.operations),
-        )
-        .unwrap();
+        let socket = Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
         let mut app = Started {
             socket,
             web: None,

@@ -243,51 +243,58 @@ fn http_get_cursor_continues_read() {
     });
 }
 
+/// The reader route renders a line as HTML: a listing, a brief, and a
+/// read that fails with its own status.
 #[test]
-fn http_html_renders_listing_brief_and_partial_steps() {
+fn reader_route_renders_listing_brief_and_a_failed_read() {
     let daemon = crate::test_daemon::start("Synthetic brief <script>λ🙂</script>");
     tokio::runtime::Runtime::new().unwrap().block_on(async {
-        for (body, expected_status, expected) in [
+        for (uri, expected_status, expected) in [
             (
-                json!({"selection":"sessions","fields":["id"]}),
+                "/rows?selection=sessions&fields=id",
                 StatusCode::OK,
                 vec!["claude-code:s1"],
             ),
             (
-                json!({"selection":"session:claude-code:s1","steps":[{"verb":"brief"}]}),
+                "/rows?selection=session%3Aclaude-code%3As1&steps=brief",
                 StatusCode::OK,
                 vec![r"Synthetic brief \u003cscript\u003eλ🙂\u003c/script\u003e"],
             ),
             (
-                json!({"selection":"session:claude-code:s1","steps":[{"verb":"note","text":"Synthetic completed write"},{"verb":"read","show":["not-a-show-kind"]}]}),
+                "/rows?selection=session%3Aclaude-code%3As1&steps=read&show=not-a-show-kind",
                 StatusCode::BAD_REQUEST,
-                vec!["wrote 1 annotation", "undo:", "read failed:", "not-a-show-kind"],
+                vec!["not-a-show-kind"],
             ),
         ] {
             let response = super::super::super::router(web(&daemon))
                 .oneshot(
-                    axum::http::Request::post("/api/v1/rows")
+                    axum::http::Request::get(uri)
                         .header(header::HOST, "127.0.0.1:8765")
                         .header(header::AUTHORIZATION, "Bearer synthetic")
-                        .header(header::CONTENT_TYPE, "application/json")
-                        .header(header::ACCEPT, "text/html")
-                        .body(axum::body::Body::from(body.to_string()))
+                        .body(axum::body::Body::empty())
                         .unwrap(),
                 )
                 .await
                 .unwrap();
             let status = response.status();
-            assert_eq!(response.headers()[header::CONTENT_TYPE], "text/html; charset=utf-8");
-            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert!(
+                response.headers()[header::CONTENT_TYPE]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("text/html"),
+                "{uri}"
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
             let html = String::from_utf8(bytes.to_vec()).unwrap();
-            assert_eq!(status, expected_status, "{html}");
+            assert_eq!(status, expected_status, "{uri}: {html}");
             for expected in expected {
                 assert!(html.contains(expected), "missing {expected:?}: {html}");
             }
         }
     });
 }
-
 #[test]
 fn http_line_streams_reads_in_order_and_finishes_at_answer() {
     let daemon = crate::test_daemon::start("HTTP ordered stream");

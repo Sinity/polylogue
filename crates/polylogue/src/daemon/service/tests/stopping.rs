@@ -272,7 +272,7 @@ fn a_stop_during_an_import_is_not_reported_done_and_importing_again_finishes_it(
         fresh: false,
         format: Default::default(),
     };
-    use std::io::{BufRead, Write};
+    use std::io::Write;
     writeln!(client, "{}", serde_json::to_string(&request).unwrap()).unwrap();
     assert!(
         fault::wait_held_within(std::time::Duration::from_secs(30)),
@@ -280,11 +280,9 @@ fn a_stop_during_an_import_is_not_reported_done_and_importing_again_finishes_it(
     );
     daemon.stop().unwrap();
     fault::clear();
-    let mut line = String::new();
-    std::io::BufReader::new(client)
-        .read_line(&mut line)
-        .unwrap();
-    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let answer = crate::client::receive(&mut client, None, |_| Ok(false))
+        .unwrap()
+        .expect("the import answers");
     assert!(
         answer.value().is_none(),
         "a stopped import is not reported done: {answer:?}"

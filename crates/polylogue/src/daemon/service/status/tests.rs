@@ -206,12 +206,18 @@ fn status_answers_within_its_default_deadline_while_a_pass_ingests_a_large_corpu
                 let held = held.clone();
                 let (release, released) = std::sync::mpsc::sync_channel::<()>(0);
                 let thread = std::thread::spawn(move || {
-                    polylogue_store::reserved_reads(|| {
-                        let reader = d.reads.reader().unwrap();
-                        reader.query("SELECT 1 AS n", &[]).unwrap();
-                        held.send(()).unwrap();
-                        released.recv().unwrap();
-                    });
+                    let reader = d
+                        .reads
+                        .checkout(
+                            polylogue_store::Lane::Interactive,
+                            &polylogue_store::read::limit::ReadLimit::without_deadline(
+                                Default::default(),
+                            ),
+                        )
+                        .unwrap();
+                    reader.query("SELECT 1 AS n", &[]).unwrap();
+                    held.send(()).unwrap();
+                    released.recv().unwrap();
                 });
                 (release, thread)
             })
@@ -242,36 +248,35 @@ fn status_answers_within_its_default_deadline_while_a_pass_ingests_a_large_corpu
     );
 }
 
-/// Status takes no executor place (docs/operations.md, interactive work):
-/// with every place an interactive request may take held by requests that
-/// wait on something else, as requests waiting on a busy writer hold them,
+/// Status takes no reader (docs/operations.md, interactive work): with
+/// every connection of the read pool held, the interactive one included,
 /// status through the socket still answers within its default deadline.
 #[test]
-fn status_answers_while_every_request_place_is_held() {
+fn status_answers_while_every_reader_is_held() {
     let daemon = crate::test_daemon::start("synthetic source");
-    let executor = &daemon.daemon.executor;
-    // The background place is the only one an interactive request cannot take.
-    let held = executor.places() - 1;
-    let (started, on_start) = std::sync::mpsc::channel();
-    let releases: Vec<_> = (0..held)
+    let readers = daemon.daemon.reads.max_readers() + 1;
+    let (taken, held) = std::sync::mpsc::channel();
+    let releases: Vec<_> = (0..readers)
         .map(|_| {
-            let started = started.clone();
+            let daemon = std::sync::Arc::clone(&daemon.daemon);
+            let taken = taken.clone();
             let (release, released) = std::sync::mpsc::channel::<()>();
-            assert!(executor.submit(
-                crate::daemon::executor::Class::Interactive,
-                None,
-                move || {
-                    started.send(()).unwrap();
-                    let _ = released.recv();
-                }
-            ));
+            std::thread::spawn(move || {
+                let limit =
+                    polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
+                let _reader = daemon
+                    .reads
+                    .checkout(polylogue_store::Lane::Interactive, &limit)
+                    .unwrap();
+                taken.send(()).unwrap();
+                let _ = released.recv();
+            });
             release
         })
         .collect();
-    for _ in 0..held {
-        on_start
-            .recv_timeout(std::time::Duration::from_secs(10))
-            .expect("every place is held");
+    for _ in 0..readers {
+        held.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("every reader is held");
     }
     let request = crate::client::request(
         "status",

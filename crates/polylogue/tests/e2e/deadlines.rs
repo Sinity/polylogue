@@ -52,7 +52,7 @@ fn answer(
             assert_eq!(request.arguments["steps"][0]["format"], "json");
         }
         std::thread::sleep(delay);
-        stream.write_all(response.as_ref()).unwrap();
+        stream.write_all(&framed(response.as_ref())).unwrap();
     });
     let output = crate::Fixture::new(
         &archive,
@@ -66,6 +66,16 @@ fn answer(
     .unwrap();
     peer.join().unwrap();
     output
+}
+
+/// A reply as the socket frames it: a finite answer is one `answer` frame;
+/// a stream is already its frames.
+fn framed(response: &[u8]) -> Vec<u8> {
+    if response.starts_with(b"event:") {
+        return response.to_vec();
+    }
+    let answer = std::str::from_utf8(response).unwrap().trim_end();
+    format!("event: answer\ndata: {answer}\n\n").into_bytes()
 }
 
 #[test]

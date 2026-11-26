@@ -151,7 +151,12 @@ fn context_uses_the_configured_archive_socket_and_clock() {
         let response = command_surface::Answer::ok(
             json!({"kind":"steps", "reply":{"resolved":null, "steps":[{"verb":"brief", "request_id":format!("{}-1", request["request_id"].as_str().unwrap()), "outcome":{"status":"done", "reply":{"kind":"brief", "reply":{"delivery":"context-1", "prepared":{"event":"session_start","empty":false,"text":"configured archive","refs":[],"left_out":[]}}}}}]}}),
         );
-        writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+        write!(
+            stream,
+            "event: answer\ndata: {}\n\n",
+            serde_json::to_string(&response).unwrap()
+        )
+        .unwrap();
     });
     let reply = respond(
         Harness::Codex,
@@ -225,7 +230,12 @@ fn pasted_and_search_briefs_use_rows() {
                     }}}
                 }]}
             }));
-            writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+            write!(
+                stream,
+                "event: answer\ndata: {}\n\n",
+                serde_json::to_string(&response).unwrap()
+            )
+            .unwrap();
         });
         let reply = context(&startup, ask, Some(1000), Instant::now() + CONTEXT_BUDGET);
         peer.join().unwrap();
@@ -753,7 +763,12 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
                 "outcome":{"status":"failed", "error":crate::protocol::failure(polylogue_model::Code::DeadlineExceeded, "fixture timeout")}
             }]}
         }));
-        writeln!(stream, "{}", serde_json::to_string(&failure).unwrap()).unwrap();
+        write!(
+            stream,
+            "event: answer\ndata: {}\n\n",
+            serde_json::to_string(&failure).unwrap()
+        )
+        .unwrap();
         let mut stream = accept();
         stream
             .set_read_timeout(Some(Duration::from_secs(2)))
@@ -768,9 +783,9 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
         );
         assert_eq!(outcome["arguments"]["what"], "not_sent");
         assert_eq!(outcome["arguments"]["detail"], "timeout");
-        writeln!(
+        write!(
             stream,
-            "{}",
+            "event: answer\ndata: {}\n\n",
             serde_json::to_string(&command_surface::Answer::ok(
                 json!({"queued":false,"preparation":"unconfirmed"})
             ))
@@ -831,7 +846,12 @@ fn file_advisory_hook_uses_the_shared_request_and_silences_timeout() {
                     json!({"delivery":request["request_id"],"prepared":{"event":"advice","empty":false,"text":"one pointer", "refs":[],"left_out":[]}}),
                 )
             };
-            writeln!(stream, "{}", serde_json::to_string(&answer).unwrap()).unwrap();
+            write!(
+                stream,
+                "event: answer\ndata: {}\n\n",
+                serde_json::to_string(&answer).unwrap()
+            )
+            .unwrap();
             listener.set_nonblocking(true).unwrap();
             listener
         });
@@ -990,7 +1010,12 @@ fn three_pasted_sessions_give_one_index() {
                 }}}
             }]}
         }));
-        writeln!(stream, "{}", serde_json::to_string(&response).unwrap()).unwrap();
+        write!(
+            stream,
+            "event: answer\ndata: {}\n\n",
+            serde_json::to_string(&response).unwrap()
+        )
+        .unwrap();
         // No second request arrives: one index, not a takeover per session.
         let mut rest = String::new();
         assert_eq!(BufReader::new(&stream).read_line(&mut rest).unwrap_or(0), 0);

@@ -1,6 +1,7 @@
 //! Shared daemon state and its archive mode.
 use crate::daemon::Failure;
 use polylogue_engine::{LoopMsg, LoopStatus};
+use polylogue_model::LockExt as _;
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
 use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(test)]
@@ -14,11 +15,10 @@ pub struct Daemon {
     pub(crate) config: Arc<crate::config::Config>,
     pub archive: Archive,
     pub reads: ReadPool,
-    /// Runs every request's work within bounded slots.
-    pub(crate) executor: crate::daemon::executor::Executor,
+    /// The requests being answered, which a stop waits for.
+    pub(crate) requests: Requests,
     pub(crate) completion_path: std::path::PathBuf,
     pub(crate) callers: crate::hook::open_calls::OpenCalls,
-    pub(super) operations: std::sync::OnceLock<std::sync::Weak<command_surface::OperationTable>>,
 
     pub(crate) warm: crate::daemon::warm::Warm,
     /// Sessions by working directory, kept current by the refresh worker
@@ -42,15 +42,69 @@ pub struct Daemon {
     pub(crate) signals: Mutex<serde_json::Value>,
     #[cfg(test)]
     pub(crate) signal_trace: Mutex<Option<Sender<crate::signals::observations::Phase>>>,
-    pub(super) stopping: AtomicBool,
     pub(in crate::daemon) idle_gate: crate::daemon::schema::IdleGate,
+}
+
+/// How many requests are being answered. Stopping refuses new ones and
+/// waits a bounded time for these.
+#[derive(Default)]
+pub(crate) struct Requests {
+    running: Mutex<usize>,
+    stopping: AtomicBool,
+    ended: std::sync::Condvar,
+}
+
+/// One request counted as running until dropped.
+pub(crate) struct Running<'a>(&'a Requests);
+
+impl Requests {
+    /// Counts a request in, or refuses it while the daemon stops.
+    pub(crate) fn enter(&self) -> Result<Running<'_>, Failure> {
+        let mut running = self.running.locked();
+        if self.stopping.load(Ordering::Acquire) {
+            return Err(super::shutting_down());
+        }
+        *running += 1;
+        Ok(Running(self))
+    }
+
+    /// Refuses requests from now on.
+    pub(crate) fn refuse(&self) {
+        let _running = self.running.locked();
+        self.stopping.store(true, Ordering::Release);
+    }
+
+    /// How many requests are being answered now.
     #[cfg(test)]
-    pub(crate) read_limits: Mutex<Option<Sender<crate::test_daemon::ReadObservation>>>,
+    pub(crate) fn running(&self) -> usize {
+        *self.running.locked()
+    }
+
+    /// Waits up to `bound` for running requests to end; how many did not.
+    pub(crate) fn wait(&self, bound: std::time::Duration) -> usize {
+        let until = Instant::now() + bound;
+        let mut running = self.running.locked();
+        while *running > 0 {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            running = polylogue_model::unpoisoned(self.ended.wait_timeout(running, left)).0;
+        }
+        *running
+    }
+}
+
+impl Drop for Running<'_> {
+    fn drop(&mut self) {
+        *self.0.running.locked() -= 1;
+        self.0.ended.notify_all();
+    }
 }
 
 impl Daemon {
     pub(crate) fn is_stopping(&self) -> bool {
-        self.stopping.load(Ordering::Acquire)
+        self.requests.stopping.load(Ordering::Acquire)
     }
 
     pub(crate) fn invocation(
@@ -98,40 +152,15 @@ impl Daemon {
         request: &command_surface::RunnableRequest,
     ) -> Result<polylogue_model::read::ReadyCall, command_surface::Failure> {
         use command_surface::{Failure, FailureKind};
-        let table = self
-            .operations
-            .get()
-            .and_then(std::sync::Weak::upgrade)
-            .ok_or_else(|| {
-                Failure::new(
-                    FailureKind::NotRunning,
-                    "the operation table is unavailable",
-                )
-            })?;
-        let description = table
-            .descriptions()
-            .iter()
-            .find(|description| description.spec.name == request.operation)
+        let row = crate::commands::command(&request.operation)
             .ok_or_else(|| Failure::new(FailureKind::BadRequest, "unknown operation"))?;
-        let command =
-            crate::commands::command(&request.operation).expect("registered command exists");
-        if let Some(registration) = command.registration() {
-            registration
-                .admit(
-                    &request.arguments,
-                    command,
-                    &crate::commands::Caller {
-                        surface: crate::commands::Surface::Http,
-                        cwd: None,
-                    },
-                )
-                .map_err(|failure| failure.error)?;
-        } else if let crate::commands::Run::Feed { registration, .. } = command.run {
-            registration
-                .validate(request)
-                .map_err(|failure| failure.error)?;
-        }
-        if description.spec.http_route.is_none() {
+        crate::daemon::handler::policy(
+            row,
+            &request.arguments,
+            polylogue_model::authorship::Channel::Web,
+        )
+        .map_err(|failure| failure.error)?;
+        if !row.http {
             return Err(Failure::new(
                 FailureKind::BadRequest,
                 "operation has no HTTP route",

@@ -168,11 +168,10 @@ fn http_answer(
         .map(|(name, value)| (name.clone(), value.clone()))
         .collect();
     let arguments = Value::Object(arguments);
-    let access = c
-        .registration()
-        .unwrap()
-        .tool_access(&arguments, c)
-        .unwrap();
+    let access =
+        crate::daemon::handler::policy(c, &arguments, polylogue_model::authorship::Channel::Mcp)
+            .unwrap()
+            .access;
     let pairs = [
         format!("operation={}", encoded(c.name)),
         format!("arguments={}", encoded(&arguments.to_string())),
@@ -320,7 +319,6 @@ fn internal_completion_http_returns_candidates() {
     let daemon = test_daemon::start("synthetic HTTP completion");
     let web = Arc::new(crate::web::Web {
         daemon: Arc::clone(&daemon.daemon),
-        operations: Arc::clone(daemon.operations()),
         key: "synthetic".into(),
         token: "synthetic".into(),
         port: 8765,
@@ -366,7 +364,6 @@ fn every_client_answers_the_same_request_identically() {
     );
     let web = Arc::new(crate::web::Web {
         daemon: Arc::clone(&w.daemon),
-        operations: Arc::clone(w.operations()),
         key: "abc123def456".into(),
         token: "t0ken".into(),
         port: 8765,
@@ -390,11 +387,13 @@ fn every_client_answers_the_same_request_identically() {
         let (c, values) = parse_line(&argv).unwrap();
         let cli_position = (args.last() == Some(&"read")).then(|| read_position(&w));
         let (cli, cli_exit) = cli_answer(&w, &argv, &request_id);
-        let owned = c
-            .registration()
-            .unwrap()
-            .tool_access(&values.request.arguments, c)
-            .unwrap()
+        let owned = crate::daemon::handler::policy(
+            c,
+            &values.request.arguments,
+            polylogue_model::authorship::Channel::Mcp,
+        )
+        .unwrap()
+        .access
             > crate::commands::ToolAccess::Read;
         let stored = |id: &str| w.daemon.reads.reader().unwrap().user_request(id).unwrap();
         let original =

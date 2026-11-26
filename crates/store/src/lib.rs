@@ -96,8 +96,8 @@ pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, Chunk, FileFacts, NewBlob};
 pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
-    BehindChain, CapturedSession, KnownInput, ReadPool, Reader, ReadingContract, RevisionChains,
-    SqlValue, Status, StoppedChains, StoredSource, reserved_reads,
+    BehindChain, CapturedSession, KnownInput, Lane, ReadPool, Reader, ReadingContract,
+    RevisionChains, SqlValue, Status, StoppedChains, StoredSource,
     scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use scope_index::{
@@ -337,7 +337,7 @@ impl StoreError {
             Self::StorageFailed(_) => Code::Io,
             Self::ReadDeadlineExceeded => Code::DeadlineExceeded,
             Self::ReadCancelled => Code::Cancelled,
-            Self::ReadPoolClosed => Code::NotRunning,
+            Self::ReadPoolClosed => Code::ShuttingDown,
             Self::ReadPoolNested => Code::Internal,
             Self::ScopeChanged => Code::ScopeChanged,
             Self::ReadIndexReplaced => Code::Conflict,

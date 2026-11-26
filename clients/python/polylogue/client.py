@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .models import Answer, _copy
 
-__all__ = ["Client", "Refused"]
+__all__ = ["Client", "Refused", "read_answer"]
 
 # The exit status the CLI gives each outcome that is not a refusal.
 _EXIT_STATUS = {"ok": 0, "empty": 1, "degraded": 5}
@@ -43,6 +43,27 @@ def _refusal(answer, returncode):
     if returncode == 0:
         return RuntimeError("Polylogue returned an error with a successful exit status")
     return Refused(answer, returncode)
+
+
+def read_answer(response):
+    """The final answer of one socket reply.
+
+    A reply is server-sent-event frames: zero or more events, then one
+    `answer` frame. A reply that ends before its answer means the daemon
+    went away.
+    """
+    event, data = None, []
+    for raw in response:
+        line = raw.decode("utf-8").rstrip("\n").rstrip("\r")
+        if line == "":
+            if event == "answer":
+                return json.loads("\n".join(data))
+            event, data = None, []
+        elif line.startswith("event:"):
+            event = line[len("event:"):].strip()
+        elif line.startswith("data:"):
+            data.append(line[len("data:"):].removeprefix(" "))
+    raise RuntimeError("the daemon went away before it answered")
 
 
 class Client:
@@ -163,10 +184,7 @@ class Client:
             connection.connect(os.path.join(archive, "daemon.sock"))
             connection.sendall(json.dumps(request, ensure_ascii=False).encode("utf-8") + b"\n")
             with connection.makefile("rb") as response:
-                line = response.readline()
-        if not line.endswith(b"\n"):
-            raise RuntimeError("Polylogue closed an incomplete answer")
-        answer = json.loads(line)
+                answer = read_answer(response)
         if _failure(answer) is not None:
             raise Refused(answer, None)
         if answer.get("outcome") not in _EXIT_STATUS:

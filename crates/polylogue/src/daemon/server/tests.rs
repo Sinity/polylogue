@@ -1,6 +1,37 @@
 use super::*;
 use polylogue_store::Archive;
 
+/// The final answer of the next reply on a connection: its frames, of which
+/// the `answer` frame is last.
+fn next_answer(input: &mut impl BufRead) -> command_surface::Answer<serde_json::Value> {
+    let mut event = String::new();
+    let mut line = String::new();
+    loop {
+        line.clear();
+        assert!(
+            input.read_line(&mut line).unwrap() > 0,
+            "the reply ended before its answer"
+        );
+        let line = line.trim_end_matches('\n');
+        if let Some(name) = line.strip_prefix("event: ") {
+            event = name.to_owned();
+        } else if let Some(data) = line.strip_prefix("data: ")
+            && event == "answer"
+        {
+            let answer = serde_json::from_str(data).unwrap();
+            line_end(input);
+            return answer;
+        }
+    }
+}
+
+/// Takes the blank line that ends a frame.
+fn line_end(input: &mut impl BufRead) {
+    let mut blank = String::new();
+    input.read_line(&mut blank).unwrap();
+    assert_eq!(blank, "\n");
+}
+
 #[test]
 fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
     let dir = tempfile::tempdir().unwrap();
@@ -14,8 +45,7 @@ fn socket_shutdown_unblocks_idle_and_incomplete_clients() {
         service::ArchiveMode::Standalone,
     )
     .unwrap();
-    let mut server =
-        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
+    let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
     let _idle = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let mut partial = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     partial.write_all(b"{\"op\":").unwrap();
@@ -42,8 +72,7 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
     let root = dir.path().join("archive");
     let mut runtime =
         crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
-    let mut server =
-        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
+    let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let request = command_surface::Request {
         operation: "set".into(),
@@ -56,10 +85,7 @@ fn acknowledged_socket_write_survives_runtime_shutdown() {
         format: Default::default(),
     };
     writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
-    let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response).unwrap();
-    let answer: command_surface::Answer<serde_json::Value> =
-        serde_json::from_str(&response).unwrap();
+    let answer = next_answer(&mut BufReader::new(stream));
     assert!(answer.value().is_some(), "{answer:?}");
     server.shutdown().unwrap();
     runtime.shutdown().unwrap();
@@ -84,9 +110,9 @@ fn dropping_a_stopped_socket_owner_does_not_remove_the_next_socket() {
     let root = dir.path().join("archive");
     let first =
         crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
-    let mut old = Server::start(Arc::clone(&first.daemon), Arc::clone(&first.operations)).unwrap();
+    let mut old = Server::start(Arc::clone(&first.daemon)).unwrap();
     old.shutdown().unwrap();
-    let _server = Server::start(Arc::clone(&first.daemon), Arc::clone(&first.operations)).unwrap();
+    let _server = Server::start(Arc::clone(&first.daemon)).unwrap();
     drop(old);
     assert!(UnixStream::connect(first.daemon.archive.socket()).is_ok());
 }
@@ -107,7 +133,7 @@ fn application_shutdown_joins_socket_clients_while_all_reader_slots_remain_held(
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    let mut server = Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
+    let mut server = Server::start(Arc::clone(&daemon)).unwrap();
     let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
     writeln!(
         stream,
@@ -146,7 +172,7 @@ fn listener_stop_is_visible_before_clients_join() {
     let daemon = Arc::clone(&runtime.daemon);
     let reader = daemon.reads.reader().unwrap();
     assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-    let mut server = Server::start(Arc::clone(&daemon), Arc::clone(&runtime.operations)).unwrap();
+    let mut server = Server::start(Arc::clone(&daemon)).unwrap();
     let mut stream = UnixStream::connect(daemon.archive.socket()).unwrap();
     writeln!(
         stream,
@@ -176,31 +202,6 @@ fn listener_stop_is_visible_before_clients_join() {
 }
 
 #[test]
-fn disconnect_interrupts_sql_and_releases_the_reader_slot() {
-    let daemon = crate::test_daemon::start("socket cancellation");
-    let reads = daemon.watch_reads();
-    let mut stream = UnixStream::connect(daemon.daemon.archive.socket()).unwrap();
-    let request = command_surface::Request {
-        operation: "dev sql".into(),
-        arguments: serde_json::json!({"statement":"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000000000) SELECT count(*) FROM n"}),
-        request_id: "disconnect-sql".into(),
-        deadline: command_surface::Deadline::None,
-        budget_tokens: Default::default(),
-        cursor: None,
-        fresh: false,
-        format: Default::default(),
-    };
-    serde_json::to_writer(&mut stream, &request).unwrap();
-    stream.write_all(b"\n").unwrap();
-    let limit = reads.recv_timeout(Duration::from_secs(5)).unwrap();
-    crate::test_daemon::TestDaemon::wait_for_sql(&limit);
-    drop(stream);
-    let elapsed = daemon.assert_read_released(&limit);
-    assert!(limit.cancellation.is_cancelled());
-    eprintln!("socket disconnect released reader in {elapsed:?}");
-}
-
-#[test]
 fn shutdown_cancels_a_started_socket_read_before_joining_its_transport() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = crate::test_daemon::engine_config(dir.path().to_owned());
@@ -212,10 +213,7 @@ fn shutdown_cancels_a_started_socket_read_before_joining_its_transport() {
         service::ArchiveMode::Standalone,
     )
     .unwrap();
-    let mut server =
-        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
-    let (observed, reads) = std::sync::mpsc::channel();
-    *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
+    let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     let request = command_surface::Request {
         operation: "dev sql".into(),
@@ -228,15 +226,20 @@ fn shutdown_cancels_a_started_socket_read_before_joining_its_transport() {
         format: Default::default(),
     };
     writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
-    let read = reads.recv_timeout(Duration::from_secs(5)).unwrap();
-    crate::test_daemon::TestDaemon::wait_for_sql(&read);
-    assert!(!read.cancellation.is_cancelled());
+    eventually("the read took its reader", || {
+        runtime.daemon.reads.checked_out() == 1
+    });
     runtime.stop_accepting();
-    // The peer stays connected, and the transport has not been asked to stop.
-    // Read cancellation must precede a transport join that waits on this job.
-    assert!(
-        read.cancellation.is_cancelled(),
-        "process stop must cancel started reads before joining clients"
+    // The peer stays connected, and the transport has not been asked to stop:
+    // the stop alone ends the read, which answers that the daemon stops.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let answer = next_answer(&mut BufReader::new(stream));
+    assert_eq!(
+        answer.failure().and_then(|failure| failure.code.as_deref()),
+        Some("shutting_down"),
+        "{answer:?}"
     );
     server.shutdown().unwrap();
     runtime.shutdown().unwrap();
@@ -255,10 +258,7 @@ fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
         let mut runtime =
             crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone)
                 .unwrap();
-        let mut server =
-            Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
-        let (observed, reads) = std::sync::mpsc::channel();
-        *runtime.daemon.read_limits.lock().unwrap() = Some(observed);
+        let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
         let mut reading = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
         let request = command_surface::Request {
             operation: "dev sql".into(),
@@ -271,8 +271,9 @@ fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
             format: Default::default(),
         };
         writeln!(reading, "{}", serde_json::to_string(&request).unwrap()).unwrap();
-        let read = reads.recv_timeout(Duration::from_secs(5)).unwrap();
-        crate::test_daemon::TestDaemon::wait_for_sql(&read);
+        eventually("the read took its reader", || {
+            runtime.daemon.reads.checked_out() == 1
+        });
         let pause = runtime
             .daemon
             .writes
@@ -303,12 +304,17 @@ fn shutdown_cancels_reads_without_revoking_a_handed_over_write() {
         writeln!(writing, "{}", serde_json::to_string(&outgoing).unwrap()).unwrap();
         pause.wait().unwrap();
         runtime.stop_accepting();
-        assert!(read.cancellation.is_cancelled());
+        reading
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let read = next_answer(&mut BufReader::new(reading));
+        assert_eq!(
+            read.failure().and_then(|failure| failure.code.as_deref()),
+            Some("shutting_down"),
+            "{read:?}"
+        );
         pause.release();
-        let mut response = String::new();
-        BufReader::new(writing).read_line(&mut response).unwrap();
-        let answer: command_surface::Answer<serde_json::Value> =
-            serde_json::from_str(&response).unwrap();
+        let answer = next_answer(&mut BufReader::new(writing));
         assert!(
             answer.value().is_some(),
             "handed-over write lost its outcome: {answer:?}"
@@ -350,9 +356,7 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
     serde_json::to_writer(&mut stream, &request).unwrap();
     stream.write_all(b"\n").unwrap();
     let mut input = BufReader::new(stream);
-    let mut line = String::new();
-    input.read_line(&mut line).unwrap();
-    let response: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let response = next_answer(&mut input);
     assert!(
         matches!(&response,command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.kind==command_surface::FailureKind::Timeout),
         "{response:?}"
@@ -368,9 +372,7 @@ fn socket_honours_the_client_deadline_without_closing_the_connection() {
         format: Default::default(),
     };
     writeln!(input.get_mut(), "{}", serde_json::to_string(&next).unwrap()).unwrap();
-    line.clear();
-    input.read_line(&mut line).unwrap();
-    let next: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let next = next_answer(&mut input);
     assert!(next.value().is_some(), "{next:?}");
 }
 
@@ -383,11 +385,7 @@ fn a_client_can_close_its_write_half_and_still_receive_the_answer() {
         .unwrap();
     stream.write_all(b"{\"caller\":{\"controlling_terminal\":false},\"operation\":\"dev sql\",\"request_id\":\"half-close\",\"arguments\":{\"statement\":\"WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<100000) SELECT count(*) AS n FROM n\"}}\n").unwrap();
     stream.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).unwrap();
-    crate::test_answers::ok(
-        serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&line).unwrap(),
-    );
+    crate::test_answers::ok(next_answer(&mut BufReader::new(stream)));
 }
 
 #[test]
@@ -399,9 +397,7 @@ fn a_request_line_that_is_not_utf8_is_refused_and_the_connection_continues() {
         .unwrap();
     stream.write_all(b"{\"operation\":\"\xff\"}\n").unwrap();
     let mut input = BufReader::new(stream);
-    let mut line = String::new();
-    input.read_line(&mut line).unwrap();
-    let refused: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let refused = next_answer(&mut input);
     assert!(
         matches!(&refused, command_surface::Answer { outcome: command_surface::Outcome::Error(error), .. } if error.code.as_deref() == Some("bad_request")),
         "{refused:?}"
@@ -412,80 +408,12 @@ fn a_request_line_that_is_not_utf8_is_refused_and_the_connection_continues() {
         "after-bad-line",
     );
     input.get_mut().write_all(next.as_bytes()).unwrap();
-    line.clear();
-    input.read_line(&mut line).unwrap();
-    let next: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let next = next_answer(&mut input);
     assert!(next.value().is_some(), "{next:?}");
 }
 
-/// A client already queued behind running work must be refused before the
-/// transport waits for it. The running request still finishes normally.
 #[test]
-fn stopping_new_requests_releases_queued_socket_requests() {
-    let directory = tempfile::tempdir().unwrap();
-    let mut config = crate::test_daemon::engine_config(directory.path().join("home"));
-    config.workers = 1;
-    config.reads_sources = false;
-    let mut runtime = crate::test_daemon::start_runtime(
-        &directory.path().join("archive"),
-        config,
-        service::ArchiveMode::Standalone,
-    )
-    .unwrap();
-    let mut server =
-        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
-    let (entered, running) = std::sync::mpsc::channel();
-    let (release, held) = std::sync::mpsc::channel();
-    let (finished, done) = std::sync::mpsc::channel();
-    assert!(runtime.daemon.executor.submit(
-        super::super::executor::Class::Ordinary,
-        None,
-        move || {
-            entered.send(()).unwrap();
-            let _ = held.recv();
-            let _ = finished.send(());
-        }
-    ));
-    running.recv_timeout(Duration::from_secs(2)).unwrap();
-    let mut client = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
-    client
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
-    client
-        .write_all(
-            request_line(
-                "dev sql",
-                serde_json::json!({"statement":"SELECT 1"}),
-                "queued-before-stop",
-            )
-            .as_bytes(),
-        )
-        .unwrap();
-    eventually("request did not enter the executor queue", || {
-        runtime.daemon.executor.queued() == 1
-    });
-    runtime.stop_accepting();
-    let mut line = String::new();
-    BufReader::new(client).read_line(&mut line).unwrap();
-    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
-    let command_surface::Outcome::Error(error) = answer.outcome else {
-        panic!("queued request must be refused");
-    };
-    assert_eq!(error.code.as_deref(), Some("shutting_down"));
-    assert_eq!(error.kind, command_surface::FailureKind::NotRunning);
-    assert_eq!(
-        runtime.daemon.executor.running(),
-        1,
-        "refusing new requests must leave the running one in place"
-    );
-    release.send(()).unwrap();
-    done.recv_timeout(Duration::from_secs(2)).unwrap();
-    server.shutdown().unwrap();
-    runtime.shutdown().unwrap();
-}
-
-#[test]
-fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
+fn a_request_sent_during_the_stop_answers_shutting_down_before_the_socket_drains() {
     let dir = tempfile::tempdir().unwrap();
     let mut config = crate::test_daemon::engine_config(dir.path().join("home"));
     config.tool_dirs.clear();
@@ -496,8 +424,7 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
         service::ArchiveMode::Standalone,
     )
     .unwrap();
-    let mut server =
-        Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations)).unwrap();
+    let mut server = Server::start(Arc::clone(&runtime.daemon)).unwrap();
     let mut stream = UnixStream::connect(runtime.daemon.archive.socket()).unwrap();
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -519,14 +446,7 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
         serde_json::to_string(&request("accepted-peer")).unwrap()
     )
     .unwrap();
-    let mut line = String::new();
-    responses.read_line(&mut line).unwrap();
-    assert!(
-        serde_json::from_str::<command_surface::Answer<serde_json::Value>>(&line)
-            .unwrap()
-            .value()
-            .is_some()
-    );
+    assert!(next_answer(&mut responses).value().is_some());
     runtime.stop_accepting();
     writeln!(
         stream,
@@ -535,9 +455,7 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
     )
     .unwrap();
     server.shutdown().unwrap();
-    line.clear();
-    responses.read_line(&mut line).unwrap();
-    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
+    let answer = next_answer(&mut responses);
     let command_surface::Answer {
         outcome: command_surface::Outcome::Error(error),
         ..
@@ -547,48 +465,6 @@ fn complete_queued_requests_receive_shutting_down_before_socket_drain() {
     };
     assert_eq!(error.code.as_deref(), Some("shutting_down"));
     assert_eq!(error.kind, command_surface::FailureKind::NotRunning);
-}
-
-#[test]
-fn scope_reset_during_json_serialization_sends_only_the_failure() {
-    struct ResetWhileSerializing<'a>(&'a Archive);
-    impl serde::Serialize for ResetWhileSerializing<'_> {
-        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-            self.0
-                .advance_generation_for_test()
-                .map_err(<S::Error as serde::ser::Error>::custom)?;
-            serde::Serialize::serialize(
-                &serde_json::json!({"stale":"synthetic-old-scope-value"}),
-                serializer,
-            )
-        }
-    }
-    let daemon = crate::test_daemon::start("JSON answer fence");
-    let scope = daemon.daemon.reads.scope_token().unwrap();
-    let (mut output, input) = UnixStream::pair().unwrap();
-    input
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
-    let answer = command_surface::Answer::ok(ResetWhileSerializing(&daemon.daemon.archive));
-    send_answer(
-        &mut output,
-        &answer,
-        &crate::protocol::ReadScopes::single(Some(scope)),
-        None,
-    )
-    .unwrap();
-    let mut line = String::new();
-    BufReader::new(input).read_line(&mut line).unwrap();
-    assert!(!line.contains("synthetic-old-scope-value"));
-    let answer: command_surface::Answer<serde_json::Value> = serde_json::from_str(&line).unwrap();
-    let command_surface::Answer {
-        outcome: command_surface::Outcome::Error(error),
-        ..
-    } = answer
-    else {
-        panic!("old scope must not send a value");
-    };
-    assert_eq!(error.code.as_deref(), Some("scope_changed"));
 }
 
 #[test]
@@ -710,9 +586,7 @@ fn answer_of(stream: &mut UnixStream, line: &str) -> command_surface::Answer<ser
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     stream.write_all(line.as_bytes()).unwrap();
-    let mut response = String::new();
-    BufReader::new(stream).read_line(&mut response).unwrap();
-    serde_json::from_str(&response).unwrap()
+    next_answer(&mut BufReader::new(stream))
 }
 
 /// Reads the rest of a stream and returns its last event's name.
@@ -725,7 +599,7 @@ fn last_event(stream: UnixStream) -> String {
         let line = line.unwrap();
         if let Some(name) = line.strip_prefix("event: ") {
             last = name.to_owned();
-            if name == "complete" || name == "error" {
+            if name == "complete" || name == "answer" {
                 break;
             }
         }
@@ -820,7 +694,6 @@ fn status_keeps_budget_during_import() {
     // Every ordinary reader is taken: one here, one by a read that runs
     // until it is cancelled, which also holds the only ordinary place.
     let _held = d.reads.reader().unwrap();
-    let reads = daemon.watch_reads();
     let mut long_read = UnixStream::connect(d.archive.socket()).unwrap();
     long_read
         .write_all(
@@ -832,9 +705,10 @@ fn status_keeps_budget_during_import() {
             .as_bytes(),
         )
         .unwrap();
-    let limit = reads.recv_timeout(Duration::from_secs(10)).unwrap();
-    crate::test_daemon::TestDaemon::wait_for_sql(&limit);
-    // An import runs in the background place meanwhile.
+    eventually("the long read took the other reader", || {
+        d.reads.checked_out() == 2
+    });
+    // An import runs at idle priority meanwhile.
     let export = daemon.home.join("import/session.jsonl");
     std::fs::create_dir_all(export.parent().unwrap()).unwrap();
     std::fs::write(
@@ -868,8 +742,9 @@ fn status_keeps_budget_during_import() {
     );
     let answer = answer_of(&mut status, &line);
     crate::test_answers::ok(answer);
-    assert!(
-        !limit.cancellation.is_cancelled() && limit.check().is_ok(),
+    assert_eq!(
+        d.reads.checked_out(),
+        2,
         "the long read was still running when status answered"
     );
 }
@@ -966,7 +841,7 @@ fn a_follow_shows_what_a_session_appends_and_ends_with_its_marks() {
 }
 
 #[test]
-fn a_follow_whose_client_hangs_up_gives_up_its_place_at_once() {
+fn a_follow_whose_client_hangs_up_ends_at_once_and_waits_without_a_reader() {
     let mut daemon = crate::test_daemon::start("follow hang-up");
     // Nothing commits while the follow waits: only its client can end it.
     daemon.pause_signals();
@@ -985,11 +860,16 @@ fn a_follow_whose_client_hangs_up_gives_up_its_place_at_once() {
     let mut records = follow_records(stream.try_clone().unwrap());
     let first = records.next().expect("the follow answers with its marks");
     assert_eq!(first["kind"], "marks", "{first}");
-    assert_eq!(d.executor.running(), 1, "the follow holds its place");
+    assert_eq!(d.requests.running(), 1, "the follow is running");
+    // Background workers take readers now and then; the waiting follow
+    // holds none.
+    eventually("the waiting follow holds no reader", || {
+        d.reads.checked_out() == 0
+    });
     drop(records);
     drop(stream);
     eventually("the follow ended when its client hung up", || {
-        d.executor.running() == 0
+        d.requests.running() == 0
     });
 }
 
@@ -1040,24 +920,6 @@ fn a_query_word_named_mcp_does_not_change_the_observed_channel() {
         via_of_command_line(&["polylogue", "--cursor=abc", "mcp"]),
         Via::Mcp
     );
-}
-
-#[test]
-fn concurrent_request_identity_distinguishes_the_accepting_channel() {
-    use crate::operation::Accepted;
-    use command_surface::Via;
-    let directory = tempfile::tempdir().unwrap();
-    let open_calls = crate::hook::open_calls::OpenCalls::new(directory.path().to_owned());
-    let details = command_surface::CallerEvidence {
-        controlling_terminal: true,
-        ..Default::default()
-    };
-    let cli = Accepted::new(&open_calls, &details, Via::Cli, Default::default());
-    let web = Accepted::new(&open_calls, &details, Via::Web, Default::default());
-    assert_eq!(cli.authorship.author, web.authorship.author);
-    assert_ne!(cli.scope(), web.scope());
-    let repeated_cli = Accepted::new(&open_calls, &details, Via::Cli, Default::default());
-    assert_eq!(cli.scope(), repeated_cli.scope());
 }
 
 #[test]

@@ -1,15 +1,17 @@
-//! Unix socket framing and listener lifecycle. Application operations live
-//! in `service`; ordinary requests receive one response, finite feeds a batch.
+//! Unix socket framing and listener lifecycle. Every request is answered
+//! through [`answer`](super::handler::answer); every reply is one or more
+//! server-sent-event frames, ending with exactly one `answer` frame.
 //!
 //! One thread blocks on the listener and wakes only for a connection or the
-//! stop signal. Each connection has one thread that reads its requests,
-//! hands their work to the executor and sends the answers; one shared
-//! watcher notices hang-ups. Sending follows one rule: a send waits for the
-//! client until the request's deadline, or until the client hangs up, and
-//! never while holding a reader or an executor place.
+//! stop signal. Each connection has one thread that reads its requests and
+//! answers each on that thread; one shared watcher notices hang-ups. While a
+//! request runs, its events are sent without waiting for the client and
+//! spill to the staging directory when the client is slow; once it has
+//! answered, and holds no reader, the rest is sent at the client's pace.
 
-use super::execution;
-use super::service::{self, Daemon, error};
+use super::output::{Output, Sink, Spill, answer_frame};
+use super::service::{self, Daemon};
+use crate::operation::Caller;
 use polylogue_model::LockExt as _;
 use std::io::{BufRead, BufReader, Write};
 use std::net::Shutdown;
@@ -22,79 +24,106 @@ use std::time::{Duration, Instant};
 /// The largest piece written between two checks of the access scope.
 const SEND_CHUNK: usize = 64 * 1024;
 
-/// Writes `bytes` under the send rule: each piece waits for the client until
-/// `deadline` (a send past it still takes what the socket accepts at once),
-/// and the access scope is checked before each piece, outside the scope
-/// fence. A hang-up or a stopping daemon ends a blocked write at once.
-fn send(
-    output: &mut UnixStream,
-    bytes: &[u8],
-    scopes: &crate::protocol::ReadScopes,
-    deadline: Option<Instant>,
-) -> Result<(), SendError> {
-    for piece in bytes.chunks(SEND_CHUNK) {
-        scopes.check().map_err(SendError::Scope)?;
-        let wait = deadline.map(|deadline| {
-            deadline
-                .saturating_duration_since(Instant::now())
-                .max(Duration::from_millis(1))
-        });
-        output.set_write_timeout(wait).map_err(SendError::Io)?;
-        output.write_all(piece).map_err(SendError::Io)?;
-    }
-    Ok(())
-}
-
-enum SendError {
-    Scope(polylogue_store::StoreError),
-    Io(std::io::Error),
-}
-
-/// Sends one finite answer. Serialization happens before the first byte;
-/// an answer whose scope changed before anything was sent is replaced by the
-/// safe failure, and one that changes mid-answer ends the connection, since a
-/// truncated line is never a complete answer.
-fn send_answer(
-    output: &mut UnixStream,
-    answer: &impl serde::Serialize,
-    scopes: &crate::protocol::ReadScopes,
-    deadline: Option<Instant>,
-) -> std::io::Result<()> {
-    let mut bytes = serde_json::to_vec(answer).map_err(std::io::Error::other)?;
-    bytes.push(b'\n');
-    let mut scopes = scopes;
-    let unscoped = crate::protocol::ReadScopes::default();
-    if let Err(error) = scopes.check() {
-        // The safe failure carries nothing from the old scope.
-        let mut failure = serde_json::to_vec(&service::store_error::<()>(&error))
-            .map_err(std::io::Error::other)?;
-        failure.push(b'\n');
-        bytes = failure;
-        scopes = &unscoped;
-    }
-    match send(output, &bytes, scopes, deadline) {
-        Ok(()) => Ok(()),
-        Err(SendError::Scope(error)) => Err(std::io::Error::other(error)),
-        Err(SendError::Io(error)) => Err(error),
-    }
-}
-
 /// The liveness check readiness and the systemd watchdog send. The client's
 /// thread answers it with no reader and no cache, so a long vector load or a
 /// busy reader pool never fails it.
 pub(crate) const PING: &str = "ping";
 
-fn write_answer(out: &mut UnixStream, answer: &command_surface::Answer<serde_json::Value>) -> bool {
-    send_answer(out, answer, &Default::default(), None).is_ok()
+/// A connection as a [`Sink`]: without waiting while a request runs, and at
+/// the client's pace once it has answered. A hang-up or a stopping daemon
+/// ends a blocked send at once.
+struct Connection<'s> {
+    stream: &'s mut UnixStream,
+    waiting: bool,
+}
+
+impl Connection<'_> {
+    fn set_waiting(&mut self, waiting: bool) -> std::io::Result<()> {
+        if self.waiting != waiting {
+            self.stream.set_nonblocking(!waiting)?;
+            self.waiting = waiting;
+        }
+        Ok(())
+    }
+}
+
+impl Sink for Connection<'_> {
+    fn try_send(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.set_waiting(false)?;
+        match self.stream.write(bytes) {
+            Ok(sent) => Ok(sent),
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => Ok(0),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.set_waiting(true)?;
+        for piece in bytes.chunks(SEND_CHUNK) {
+            self.stream.write_all(piece)?;
+        }
+        Ok(())
+    }
+}
+
+/// One reply on a connection; `sent` says whether all of it went out, so
+/// the connection can take its next request.
+struct Reply<'s> {
+    spill: Option<Spill<Connection<'s>>>,
+    sent: bool,
+}
+
+impl<'s> Reply<'s> {
+    fn new(stream: &'s mut UnixStream, staging: PathBuf) -> Self {
+        Self {
+            spill: Some(Spill::new(
+                Connection {
+                    stream,
+                    waiting: true,
+                },
+                staging,
+            )),
+            sent: false,
+        }
+    }
+}
+
+fn answered() -> std::io::Error {
+    std::io::Error::other("the reply has already answered")
+}
+
+impl Output for Reply<'_> {
+    fn events(&mut self, frames: &[u8]) -> std::io::Result<()> {
+        self.spill.as_mut().ok_or_else(answered)?.write(frames)
+    }
+
+    fn answer(
+        &mut self,
+        answer: command_surface::Answer<serde_json::Value>,
+        _: Option<command_surface::FailureKind>,
+    ) -> std::io::Result<()> {
+        let mut spill = self.spill.take().ok_or_else(answered)?;
+        spill.write(&answer_frame(&answer)?)?;
+        spill.finish()?.set_waiting(true)?;
+        self.sent = true;
+        Ok(())
+    }
+}
+
+/// A reply with nothing but its final answer, for a line that names no
+/// operation the daemon can run.
+fn write_answer(
+    stream: &mut UnixStream,
+    answer: &command_surface::Answer<serde_json::Value>,
+) -> bool {
+    answer_frame(answer)
+        .and_then(|frame| stream.write_all(&frame))
+        .is_ok()
 }
 
 /// What every connection of one server shares.
 struct Shared {
     daemon: Arc<Daemon>,
-    operations: Arc<command_surface::OperationTable>,
-    /// Drives the operation table's futures; the work itself runs on the
-    /// executor.
-    runtime: tokio::runtime::Runtime,
     hangups: super::hangup::Watcher,
     clients: Clients,
 }
@@ -285,157 +314,17 @@ fn serve_client(stream: UnixStream, shared: &Shared) {
             caller,
             parent_deadline_ms,
         } = incoming;
-        let (details, via) =
+        let (evidence, via) =
             peer(&out, &caller).unwrap_or_else(|_| (Default::default(), command_surface::Via::Cli));
-        let mut accepted =
-            crate::operation::Accepted::new(&d.callers, &details, via, cancellation.clone());
-        let parent_deadline = parent_deadline_ms
-            .and_then(|deadline| execution::limit(Some(deadline), cancellation.clone()).deadline());
-        accepted.parent = parent_deadline_ms.map(|_| {
-            polylogue_reading::operation::ParentLifetime::capture(
-                parent_deadline,
-                cancellation.clone(),
-            )
+        let mut caller = Caller::from_peer(&d.callers, &evidence, via, cancellation.child());
+        caller.cwd = working_directory(&out).ok();
+        caller.outer_deadline = parent_deadline_ms.and_then(|deadline| {
+            Instant::now().checked_add(super::execution::remaining(Some(deadline)))
         });
-        accepted.invocation = Some(
-            d.invocation(&accepted.authorship)
-                .with_accepted_request(Some(Arc::new(request.clone()))),
-        );
-        accepted.working_directory = working_directory(&out).ok();
-        let Some(command) = crate::commands::command(&request.operation) else {
-            let answer = error(
-                polylogue_model::Code::BadRequest,
-                format!("unknown operation {}", request.operation),
-            );
-            if !write_answer(&mut out, &answer) {
-                return;
-            }
-            continue;
-        };
-        if let crate::commands::Run::Feed { registration, .. } = command.run {
-            let produce = match registration.prepare(&request) {
-                Ok(produce) => produce,
-                Err(failure) => {
-                    if !write_answer(&mut out, &failure.answer()) {
-                        return;
-                    }
-                    continue;
-                }
-            };
-            let limit = execution::request_limit(
-                request.deadline,
-                command.latency,
-                true,
-                parent_deadline,
-                cancellation.clone(),
-            );
-            if !send_stream(
-                &mut out,
-                d,
-                super::executor::Class::Ordinary,
-                &accepted,
-                limit,
-                produce,
-            ) {
-                return;
-            }
-            continue;
-        }
-        if command.registration().is_none() {
-            let answer = error(
-                polylogue_model::Code::BadRequest,
-                format!("{} runs in the calling process", command.name),
-            );
-            if !write_answer(&mut out, &answer) {
-                return;
-            }
-            continue;
-        }
-        use super::handler::HandlerReply;
-        let (answer, read_scope, deadline) =
-            match shared.runtime.block_on(super::handler::dispatch_native(
-                d,
-                &shared.operations,
-                command,
-                request,
-                accepted,
-                via,
-                false,
-            )) {
-                HandlerReply::Refused(answer) => {
-                    if !write_answer(&mut out, &answer) {
-                        return;
-                    }
-                    continue;
-                }
-                HandlerReply::Stream {
-                    request,
-                    accepted,
-                    policy,
-                    produce,
-                } => {
-                    let limit = execution::request_limit(
-                        request.deadline,
-                        command.latency,
-                        policy.default_deadline,
-                        parent_deadline,
-                        cancellation.clone(),
-                    );
-                    if !send_stream(&mut out, d, policy.class, &accepted, limit, produce) {
-                        return;
-                    }
-                    continue;
-                }
-                HandlerReply::Answer(ready, answer) => {
-                    (answer, ready.scope, ready.publication_deadline)
-                }
-            };
-        let scopes = crate::protocol::ReadScopes::single(read_scope);
-        let answer = crate::protocol::scope_answer(answer, &scopes);
-        if send_answer(&mut out, &answer, &scopes, deadline).is_err() {
+        let mut reply = Reply::new(&mut out, d.archive.staging_dir());
+        super::handler::answer(d, &request, &caller, &mut reply);
+        if !reply.sent {
             return;
-        }
-    }
-}
-
-/// Starts a stream on the executor and sends its events as they come,
-/// outside the producer's reader; `false` when the connection is unusable.
-fn send_stream(
-    out: &mut UnixStream,
-    d: &Arc<Daemon>,
-    class: super::executor::Class,
-    accepted: &crate::operation::Accepted,
-    limit: polylogue_store::read::limit::ReadLimit,
-    produce: super::streaming::Produce,
-) -> bool {
-    let deadline = limit.deadline();
-    let invocation = accepted
-        .invocation
-        .clone()
-        .expect("an accepted request captures its invocation");
-    let scopes = crate::protocol::ReadScopes::single(d.reads.scope_token().ok());
-    let input = match super::streaming::start(d, class, limit, invocation, produce) {
-        Ok(input) => input,
-        Err(failure) => return crate::protocol::stream::error(out, failure).is_ok(),
-    };
-    loop {
-        let next = match input.next_blocking() {
-            Ok(next) => next,
-            Err(error) => {
-                return crate::protocol::stream::error(out, crate::daemon::Failure::io(error))
-                    .is_ok();
-            }
-        };
-        match next {
-            super::stream_buffer::Next::Bytes(bytes) => {
-                if send(out, &bytes, &scopes, deadline).is_err() {
-                    return false;
-                }
-            }
-            super::stream_buffer::Next::End => return true,
-            super::stream_buffer::Next::Failed(failure) => {
-                return crate::protocol::stream::error(out, failure).is_ok();
-            }
         }
     }
 }
@@ -485,7 +374,7 @@ pub fn serve(
         startup.stopped_attempt,
     )?;
     let idle = runtime.idle();
-    let server = Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))?;
+    let server = Server::start(Arc::clone(&runtime.daemon))?;
     polylogue_store::log!(
         info,
         "serving {} on {}{}",
@@ -497,8 +386,7 @@ pub fn serve(
             ", reading no sources"
         }
     );
-    let web = match crate::web::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
-    {
+    let web = match crate::web::start(Arc::clone(&runtime.daemon)) {
         Ok(web) => {
             polylogue_store::log!(info, "web reader on http://127.0.0.1:{}/", web.port);
             Some(web)
@@ -524,22 +412,12 @@ pub struct Server {
 }
 
 impl Server {
-    pub fn start(
-        daemon: Arc<Daemon>,
-        operations: Arc<command_surface::OperationTable>,
-    ) -> std::io::Result<Self> {
+    pub fn start(daemon: Arc<Daemon>) -> std::io::Result<Self> {
         let listener = bind(&daemon)?;
         let (stop, stopped) = UnixStream::pair()?;
         let (stopped_sender, listener_stopped) = tokio::sync::oneshot::channel();
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(1)
-            .thread_name("polylogue-socket-timers")
-            .enable_time()
-            .build()?;
         let shared = Arc::new(Shared {
             daemon: Arc::clone(&daemon),
-            operations,
-            runtime,
             hangups: super::hangup::Watcher::start()?,
             clients: Clients::default(),
         });

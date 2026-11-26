@@ -106,10 +106,9 @@ pub(crate) fn page(
     call: &crate::daemon::handler::Call<'_>,
     references: Option<&[polylogue_model::Reference]>,
 ) -> Result<Answer<ReadPage>, Failure> {
-    let displayed = match call.caller.surface {
-        crate::commands::Surface::Mcp => true,
-        crate::commands::Surface::Cli => arguments.displayed,
-        crate::commands::Surface::Http | crate::commands::Surface::Hook => false,
+    let displayed = match call.caller.channel() {
+        polylogue_model::authorship::Channel::Mcp => true,
+        channel => crate::operation::command_line(channel) && arguments.displayed,
     };
     let mut request =
         request_of(arguments, call.cursor.map(str::to_owned)).map_err(Failure::bad_request)?;

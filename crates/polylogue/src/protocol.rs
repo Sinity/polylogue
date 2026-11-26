@@ -119,8 +119,6 @@ pub mod import {
 }
 
 pub mod line;
-mod scope;
-pub(crate) use scope::{ReadScopes, answer as scope_answer};
 pub mod query;
 pub mod read;
 pub mod resume {
@@ -228,8 +226,7 @@ pub mod setting {
 pub mod status;
 pub mod steps;
 pub mod stream {
-    //! Server-sent-event framing for the daemon's finite streams.
-    use crate::daemon::Failure;
+    //! Server-sent-event framing for every reply the daemon sends.
     use serde::Serialize;
     use std::io::{self, Write};
 
@@ -243,11 +240,6 @@ pub mod stream {
         let frame = event.encode().map_err(io::Error::other)?;
         output.write_all(frame.as_bytes())?;
         output.flush()
-    }
-
-    /// A failure after the stream began ends it with the error answer.
-    pub fn error(output: &mut dyn Write, failure: Failure) -> io::Result<()> {
-        event(output, "error", &failure.answer::<serde_json::Value>())
     }
 }
 

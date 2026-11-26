@@ -224,13 +224,13 @@ fn an_expired_request_prepares_nothing_where_a_live_one_prepares_the_judged_file
         true,
     );
     let advisory = |id: &str| {
-        crate::test_daemon::Call::new("internal advisory", serde_json::json!({"prompt": "Inspect src/parser.rs", "cwd": CWD, "session": SessionId::parse("codex:advisory-test").unwrap()})).id(id).surface(crate::commands::Surface::Hook)
+        crate::test_daemon::Call::new("internal advisory", serde_json::json!({"prompt": "Inspect src/parser.rs", "cwd": CWD, "session": SessionId::parse("codex:advisory-test").unwrap()})).id(id).channel(command_surface::Via::Hook)
     };
     let live = polylogue_store::read::limit::ReadLimit::new(
         std::time::Duration::from_secs(60),
         Default::default(),
     );
-    let answer = advisory("live-advisory").limit(live).answer(&w.daemon);
+    let answer = advisory("live-advisory").within(&live).answer(&w.daemon);
     assert!(answer.failure().is_none(), "{answer:?}");
     let value = crate::test_answers::ok(answer);
     assert_eq!(
@@ -246,7 +246,7 @@ fn an_expired_request_prepares_nothing_where_a_live_one_prepares_the_judged_file
     // docs/agents.md, Advisories: "preparation is capped at 20 ms, intersected
     // with the caller's bound, or the hook says nothing". Past the bound the
     // answer is the empty advisory on every surface, never a timeout.
-    let answer = request.limit(limit.clone()).answer(&w.daemon);
+    let answer = request.within(&limit.clone()).answer(&w.daemon);
     assert!(answer.failure().is_none(), "{answer:?}");
     let value = crate::test_answers::ok(answer);
     assert_eq!(value["delivery"], serde_json::Value::Null);

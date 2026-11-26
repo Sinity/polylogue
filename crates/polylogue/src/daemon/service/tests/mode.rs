@@ -95,7 +95,7 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
             serde_json::json!({"selection":"question", "steps":[{"verb":"brief"}]}),
         )
         .id("delivery")
-        .surface(crate::commands::Surface::Hook),
+        .channel(command_surface::Via::Hook),
         crate::test_daemon::Call::new(
             "rows",
             serde_json::json!({"selection":"sessions", "steps":[{"verb":"save"}]}),
@@ -132,12 +132,12 @@ fn missing_config_is_standalone() {
     assert!(matches!(startup.mode, ArchiveMode::Standalone));
     let runtime = launch(startup).unwrap();
     assert!(runtime.daemon.writes.is_some());
-    assert_eq!(
-        crate::test_answers::ok(
-            crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&runtime.daemon)
-        )["mode"]["state"],
-        "standalone"
-    );
+    // The mode is in every status answer, also one degraded while the
+    // first pass still computes session figures.
+    let status =
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&runtime.daemon);
+    let status = status.value().unwrap_or_else(|| panic!("{status:?}"));
+    assert_eq!(status["mode"]["state"], "standalone");
 }
 
 /// The names and bytes of every file under `root`, to show a refused start

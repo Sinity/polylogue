@@ -23,7 +23,7 @@ fn takeover(d: &test_daemon::TestDaemon, request_id: &str) -> serde_json::Value 
         serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"brief"}]}),
     )
     .id(request_id)
-    .surface(crate::commands::Surface::Hook);
+    .channel(command_surface::Via::Hook);
     match crate::test_answers::step(request.answer(&d.daemon)) {
         crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
         other => panic!("expected a brief: {other:?}"),
@@ -69,9 +69,9 @@ fn accepted_write_result_survives_the_read_deadline() {
         serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"brief"}]}),
     )
     .id(&id)
-    .surface(crate::commands::Surface::Mcp);
+    .channel(command_surface::Via::Mcp);
     let (response, handed_off) = std::thread::scope(|scope| {
-        let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
+        let worker = scope.spawn(|| request.within(&limit.clone()).answer(&d.daemon));
         let until = Instant::now() + Duration::from_secs(5);
         while limit.stage() != Some("record delivery")
             && !worker.is_finished()
@@ -154,7 +154,7 @@ fn brief(d: &test_daemon::TestDaemon, request_id: &str, source: StartSource) -> 
     let request = crate::test_daemon::Call::new(
         "rows",
         serde_json::json!({"steps":[{"verb":"brief", "cwd":"/home/op/proj", "for":"claude-code:newcomer", "source":source}]}),
-    ).id(request_id).surface(crate::commands::Surface::Hook);
+    ).id(request_id).channel(command_surface::Via::Hook);
     match crate::test_answers::step(request.answer(&d.daemon)) {
         crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
         other => panic!("expected a directory brief: {other:?}"),

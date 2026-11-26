@@ -194,10 +194,13 @@ fn accepting_caller_is_preserved_on_retry_and_another_actor_cannot_reuse_the_id(
         author: Author::AgentOrigin(polylogue_model::Origin::new("codex").unwrap()),
         via: Channel::Mcp,
     };
-    let limit = crate::daemon::execution::limit(None, Default::default());
+    let limit = polylogue_store::read::limit::ReadLimit::new(
+        crate::daemon::execution::default_read_deadline(),
+        Default::default(),
+    );
     let call = |authorship: &Authorship| {
         save("caller-request", Some("caller-query"), "sessions")
-            .limit(limit.clone())
+            .within(&limit.clone())
             .authorship(authorship.clone())
             .answer(&d.daemon)
     };

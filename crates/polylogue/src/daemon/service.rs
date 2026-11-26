@@ -9,6 +9,7 @@ pub(crate) use answers::*;
 pub use start::{ArchiveMode, Runtime, start};
 pub use state::Daemon;
 use state::ModeState;
+pub(crate) use state::Running;
 
 pub(crate) mod browser;
 pub(crate) mod handlers;

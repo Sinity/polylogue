@@ -8,8 +8,9 @@
 use super::{Daemon, browser_refusal, store_error, writer};
 use crate::browser::{actions, import_job};
 use crate::cli::print;
+use crate::commands::ToolAccess;
 use crate::daemon::Failure;
-use crate::daemon::handler::{Call, Handler};
+use crate::daemon::handler::{Call, Operation, Policy};
 use crate::protocol::browser as protocol;
 use base64::Engine as _;
 use command_surface::{Answer, TextStyle};
@@ -198,7 +199,7 @@ fn wait_for_job(
 ) -> Result<Answer<protocol::ImportJobAnswer>, Failure> {
     use polylogue_store::read::limit::ReadLimit;
     use std::time::Instant;
-    let mut duration = super::line::listing_wait(wait, call.caller.surface)?;
+    let mut duration = super::line::listing_wait(wait, call.caller.channel())?;
     let limit = ReadLimit::current();
     if let Some(left) = limit.as_ref().and_then(ReadLimit::remaining) {
         duration = duration.min(left.saturating_sub(super::follow::REPLY_MARGIN));
@@ -255,12 +256,12 @@ fn wait_for_job(
             return Ok(Answer::empty(current).with_next("wait again", again));
         }
         ReadLimit::set_stage("import wait");
-        crate::daemon::executor::outside(|| match &commits {
+        match &commits {
             Some(commits) => {
                 let _ = commits.recv_timeout(left);
             }
             None => std::thread::sleep(left),
-        });
+        }
     }
 }
 
@@ -290,14 +291,17 @@ pub(super) fn store_files(
 
 /// The browser handlers: each answers with the JSON view the extension reads.
 macro_rules! browser {
-    ($(#[$doc:meta])* $name:ident, $arguments:ty, $answer:ty, $print:expr, |$args:ident, $call:ident| $body:expr) => {
+    ($(#[$doc:meta])* $name:ident, $arguments:ty, $answer:ty, $print:expr, $policy:expr, |$args:ident, $call:ident| $body:expr) => {
         $(#[$doc])*
         pub(crate) struct $name;
-        impl Handler for $name {
+        impl Operation for $name {
             type Arguments = $arguments;
-            type Answer = $answer;
-            const PRINT: fn(&Self::Answer, TextStyle) -> String = $print;
-            fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+            type Reply = $answer;
+            const PRINT: fn(&Self::Reply, TextStyle) -> String = $print;
+            fn policy(_: &Self::Arguments, _: polylogue_model::authorship::Channel) -> Result<Policy, Failure> {
+                Ok($policy)
+            }
+            fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
                 Ok($body)
             }
         }
@@ -310,6 +314,7 @@ browser!(
     protocol::ChatClaim,
     protocol::ChatAnswer,
     print::json,
+    Policy::write(ToolAccess::Write),
     |a, call| {
         let reader = call.reader()?;
         let on = enabled(call.invocation, &reader)?;
@@ -330,6 +335,7 @@ browser!(
     protocol::ChatReport,
     protocol::ChatAnswer,
     print::json,
+    Policy::write(ToolAccess::Write),
     |a, call| {
         let update = a.update;
         chat_then_view(
@@ -354,6 +360,7 @@ browser!(
     protocol::HeldTurnAnswer,
     serde_json::Value,
     print::json,
+    Policy::write(ToolAccess::Write),
     |a, call| super::acts::web_chat::answer_action(call, &a.id, &a.value, a.reason)?
 );
 
@@ -362,6 +369,7 @@ browser!(
     protocol::ChatAttachment,
     protocol::ChatAttachmentBytes,
     print::json,
+    Policy::READ,
     |a, call| {
         let reader = call.reader()?;
         match reader.chat_attachment(&a.id, &a.attachment) {
@@ -379,6 +387,7 @@ browser!(
     protocol::ImportJobClaim,
     protocol::ImportJobAnswer,
     print::json,
+    Policy::write(ToolAccess::Write),
     |a, call| {
         import_job_then_view(
             call.daemon,
@@ -393,6 +402,7 @@ browser!(
     protocol::ImportJobReport,
     protocol::ImportJobAnswer,
     print::json,
+    Policy::write(ToolAccess::Write),
     |a, call| {
         import_job_then_view(
             call.daemon,
@@ -411,6 +421,7 @@ browser!(
     protocol::Conversations,
     protocol::ConversationsAnswer,
     print::json,
+    Policy::READ,
     |a, call| {
         let reader = call.reader()?;
         let sessions: Vec<_> = a
@@ -450,6 +461,7 @@ browser!(
     protocol::StoredFiles,
     protocol::StoredFilesAnswer,
     print::json,
+    Policy::READ,
     |a, call| {
         let Some(session) =
             polylogue_sources::browser_capture::session_for(&a.provider, &a.conversation)

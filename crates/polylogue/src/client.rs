@@ -1,90 +1,60 @@
-//! One socket client for CLI, MCP, browser-host and hook requests.
-pub mod stream;
-use command_surface::Answer;
+//! One blocking socket client for the CLI, the MCP proxy, the hook and the
+//! browser host. A request is one JSON line; its reply is server-sent-event
+//! frames: zero or more events, then one `answer`. A reply that ends
+//! without its answer is reported as the daemon having gone away.
+use command_surface::{Answer, SseDecoder, SseEvent};
 use polylogue_store::Archive;
 use serde_json::Value;
-use std::io;
+use std::io::{self, Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
-use std::sync::OnceLock;
-use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio_util::sync::CancellationToken;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-/// Wait for a listening daemon or the end of the archive owner's startup.
-/// Register before connecting, so publication between the first failed
-/// connection and this wait cannot be lost.
-pub(crate) async fn wait_for_socket(
-    path: &Path,
-    until: Option<std::time::Instant>,
-) -> io::Result<()> {
+/// Waits for a listening daemon or the end of the archive owner's startup.
+/// The watch is registered before connecting, so publication between the
+/// first failed connection and this wait cannot be lost.
+pub(crate) fn wait_for_socket(path: &Path, until: Option<Instant>) -> io::Result<()> {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
     let watch = crate::socket::Watch::new(path)?;
-    // SAFETY: the watch privately owns its inotify descriptor, which stays
-    // open and unchanged until AsyncFd is dropped.
-    #[allow(unsafe_code)]
-    let watch = unsafe { tokio::io::unix::AsyncFd::register(watch) }.map_err(io::Error::from)?;
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let archive = Archive::at(parent);
-    let last_error = std::sync::Mutex::new(None);
-    let wait = async {
+    loop {
+        let last_error = match UnixStream::connect(path) {
+            Ok(_) => return Ok(()),
+            Err(error) if crate::cli::is_down(&error) && archive.lock_held() => error.kind(),
+            Err(error) => return Err(error),
+        };
         loop {
-            match tokio::net::UnixStream::connect(path).await {
-                Ok(_) => return Ok(()),
-                Err(error) if crate::cli::is_down(&error) && archive.lock_held() => {
-                    *last_error.lock().expect("error slot") = Some(error.kind());
+            let timeout = match until {
+                Some(until) => {
+                    let left = until.saturating_duration_since(Instant::now());
+                    if left.is_zero() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            format!(
+                                "the daemon did not start before the deadline \
+                                 (last connection error: {last_error})"
+                            ),
+                        ));
+                    }
+                    Some(Timespec::try_from(left).map_err(io::Error::other)?)
                 }
-                Err(error) => return Err(error),
+                None => None,
+            };
+            let mut events = [PollFd::new(&watch, PollFlags::IN)];
+            match poll(&mut events, timeout.as_ref()) {
+                Ok(_) | Err(rustix::io::Errno::INTR) => {}
+                Err(error) => return Err(error.into()),
             }
-            loop {
-                let mut ready = watch.readable().await?;
-                match ready.try_io(|watch| {
-                    if watch.get_ref().changed()? {
-                        Ok(())
-                    } else {
-                        Err(io::ErrorKind::WouldBlock.into())
-                    }
-                }) {
-                    Ok(result) => {
-                        result?;
-                        break;
-                    }
-                    Err(_) => continue,
-                }
+            if watch.changed()? {
+                break;
             }
         }
-    };
-    match until {
-        Some(until) => tokio::time::timeout_at(until.into(), wait)
-            .await
-            .map_err(|_| {
-                let cause = (*last_error.lock().expect("error slot"))
-                    .map_or_else(String::new, |kind| {
-                        format!(" (last connection error: {kind})")
-                    });
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    format!("the daemon did not start before the deadline{cause}"),
-                )
-            })?,
-        None => wait.await,
     }
-}
-
-fn runtime() -> io::Result<&'static tokio::runtime::Runtime> {
-    static RUNTIME: OnceLock<Result<tokio::runtime::Runtime, (io::ErrorKind, String)>> =
-        OnceLock::new();
-    RUNTIME
-        .get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(1)
-                .enable_all()
-                .build()
-                .map_err(|error| (error.kind(), error.to_string()))
-        })
-        .as_ref()
-        .map_err(|(kind, message)| io::Error::new(*kind, message.clone()))
 }
 
 static THIS_PROCESS: OnceLock<command_surface::CallerEvidence> = OnceLock::new();
@@ -121,72 +91,39 @@ pub fn request(
     }
 }
 
-/// Sends one request to a running daemon, without waiting for one that is
-/// still starting.
-pub fn call(
-    socket: &Path,
-    request: &command_surface::RunnableRequest,
-) -> io::Result<Answer<Value>> {
-    let budget = connection_deadline(request, None);
-    let outgoing = crate::protocol::wire::Outgoing {
-        request,
-        caller: this_process(),
-        parent_deadline_ms: None,
-    };
-    runtime()?.block_on(async {
-        let work = async {
-            let stream = tokio::net::UnixStream::connect(socket).await?;
-            exchange_message(stream, &outgoing).await
-        };
-        match budget {
-            Some(budget) => match tokio::time::timeout(budget, work).await {
-                Ok(result) => result,
-                Err(_) => Ok(Answer::error(crate::protocol::failure(
-                    polylogue_model::Code::DeadlineExceeded,
-                    "the daemon did not answer before the deadline",
-                ))),
-            },
-            None => work.await,
-        }
-    })
-}
-
 /// How long a client waits for the answer: the request's read deadline
-/// with the protocol's grace for a read-only request, none for one that
+/// with the protocol's grace for a request that reads, none for one that
 /// writes, within the parent's bound.
 pub(crate) fn connection_deadline(
     request: &command_surface::RunnableRequest,
     parent_deadline_ms: Option<i64>,
 ) -> Option<Duration> {
+    use crate::daemon::handler::Bound;
     let command = crate::commands::command(&request.operation);
     let class = command.map_or(command_surface::LatencyClass::Local, |command| {
         command.latency
     });
-    let caller = crate::commands::Caller {
-        surface: crate::commands::Surface::Cli,
-        cwd: None,
-    };
     let policy = command.and_then(|command| {
-        command.registration().and_then(|registration| {
-            registration
-                .admit(&request.arguments, command, &caller)
-                .ok()
-        })
+        crate::daemon::handler::policy(
+            command,
+            &request.arguments,
+            polylogue_model::authorship::Channel::Cli,
+        )
+        .ok()
     });
     let deadline = match policy {
         // A request that reads and then writes may wait on the writer after its
         // read finished; the write is the user's, so the client waits for the
         // daemon's answer, which reports a read that overran its deadline itself.
-        Some(policy) if !policy.read_only => command_surface::Deadline::None,
+        Some(policy) if policy.changes_archive => command_surface::Deadline::None,
         Some(policy)
-            if !policy.default_deadline
+            if policy.bound == Bound::CallerOnly
                 && request.deadline == command_surface::Deadline::Default =>
         {
             command_surface::Deadline::None
         }
-        Some(policy)
-            if policy.default_deadline
-                && request.deadline == command_surface::Deadline::Default
+        Some(_)
+            if request.deadline == command_surface::Deadline::Default
                 && crate::commands::deadlines().get(class).is_none() =>
         {
             command_surface::Deadline::Milliseconds(
@@ -205,22 +142,246 @@ pub(crate) fn connection_deadline(
     }
 }
 
-async fn exchange_message<T: serde::de::DeserializeOwned>(
-    mut stream: tokio::net::UnixStream,
-    outgoing: &impl serde::Serialize,
-) -> io::Result<T> {
-    let mut line = serde_json::to_vec(&outgoing).map_err(io::Error::other)?;
-    line.push(b'\n');
-    stream.write_all(&line).await?;
-    let mut reply = String::new();
-    BufReader::new(stream).read_line(&mut reply).await?;
-    if !reply.ends_with('\n') {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "the operation answer ended before its line boundary",
-        ));
+/// Lets another thread end a call in progress by hanging up its
+/// connection: the MCP proxy, when its client cancels a tool call. The
+/// daemon's hang-up watcher then cancels the request's reads.
+#[derive(Default)]
+pub(crate) struct HangUp {
+    connection: Mutex<Option<UnixStream>>,
+    done: std::sync::atomic::AtomicBool,
+}
+
+impl HangUp {
+    pub(crate) fn hang_up(&self) {
+        self.done.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(connection) = &*self.connection.lock().unwrap_or_else(|e| e.into_inner()) {
+            let _ = connection.shutdown(std::net::Shutdown::Both);
+        }
     }
-    serde_json::from_str(&reply).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+
+    fn hung_up(&self) -> bool {
+        self.done.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn watch(&self, connection: &UnixStream) -> io::Result<()> {
+        *self.connection.lock().unwrap_or_else(|e| e.into_inner()) = Some(connection.try_clone()?);
+        if self.hung_up() {
+            let _ = connection.shutdown(std::net::Shutdown::Both);
+        }
+        Ok(())
+    }
+}
+
+fn cancelled() -> Answer<Value> {
+    Answer::error(crate::protocol::failure(
+        polylogue_model::Code::Cancelled,
+        "the request was cancelled",
+    ))
+}
+
+/// What one call sends and how long it waits.
+pub(crate) struct Exchange<'a> {
+    pub request: &'a command_surface::RunnableRequest,
+    pub caller: command_surface::CallerEvidence,
+    pub parent_deadline_ms: Option<i64>,
+    /// Bounds connecting and the whole reply; `None` waits for the daemon.
+    pub budget: Option<Duration>,
+    pub hang_up: Option<&'a HangUp>,
+}
+
+impl<'a> Exchange<'a> {
+    pub(crate) fn new(request: &'a command_surface::RunnableRequest) -> Self {
+        Self {
+            request,
+            caller: this_process(),
+            parent_deadline_ms: None,
+            budget: connection_deadline(request, None),
+            hang_up: None,
+        }
+    }
+
+    /// Sends the request on `socket` and reads its reply: each event goes to
+    /// `event`, which ends the call early by returning `true`; then the
+    /// answer. `None` when `event` ended it.
+    pub(crate) fn on(
+        &self,
+        socket: UnixStream,
+        event: impl FnMut(SseEvent) -> io::Result<bool>,
+    ) -> io::Result<Option<Answer<Value>>> {
+        let until = self
+            .budget
+            .and_then(|budget| Instant::now().checked_add(budget));
+        if let Some(hang_up) = self.hang_up {
+            hang_up.watch(&socket)?;
+        }
+        let outgoing = crate::protocol::wire::Outgoing {
+            request: self.request,
+            caller: self.caller.clone(),
+            parent_deadline_ms: self.parent_deadline_ms,
+        };
+        let mut line = serde_json::to_vec(&outgoing).map_err(io::Error::other)?;
+        line.push(b'\n');
+        let mut socket = socket;
+        socket.set_write_timeout(self.budget)?;
+        socket.write_all(&line)?;
+        let reply = receive(&mut socket, until, event);
+        // After the caller hangs up, the connection ends without its answer
+        // because of the caller, not the daemon.
+        let hung_up = self.hang_up.is_some_and(HangUp::hung_up);
+        let ended = |answer: &Answer<Value>| {
+            answer.failure().and_then(|failure| failure.code.as_deref()) == Some("not_running")
+        };
+        match reply {
+            Err(_) if hung_up => Ok(Some(cancelled())),
+            Ok(Some(answer)) if hung_up && ended(&answer) => Ok(Some(cancelled())),
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                ) =>
+            {
+                Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "the daemon did not answer before the deadline",
+                ))
+            }
+            reply => reply,
+        }
+    }
+
+    /// Connects to `socket` at once, without waiting for a daemon that is
+    /// still starting, and takes the one answer.
+    pub(crate) fn call(&self, socket: &Path) -> io::Result<Answer<Value>> {
+        let connection = UnixStream::connect(socket)?;
+        self.on(connection, refuse_events)
+            .map(|answer| answer.expect("a call without events runs to its answer"))
+    }
+
+    /// Connects once the archive's daemon listens, waiting for one still
+    /// opening the archive within the budget.
+    pub(crate) fn connect(&self, archive: &Archive) -> io::Result<UnixStream> {
+        let deadline = self.budget.map(crate::daemon::execution::deadline);
+        crate::cli::when_ready(archive, deadline, || UnixStream::connect(archive.socket()))
+    }
+
+    /// [`Exchange::connect`], then the one answer; a deadline that passes,
+    /// starting or answering, is the deadline failure.
+    pub(crate) fn call_ready(&self, archive: &Archive) -> io::Result<Answer<Value>> {
+        let answer = self.connect(archive).and_then(|connection| {
+            self.on(connection, refuse_events)
+                .map(|answer| answer.expect("a call without events runs to its answer"))
+        });
+        match answer {
+            Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+                Ok(Answer::error(crate::protocol::failure(
+                    polylogue_model::Code::DeadlineExceeded,
+                    error.to_string(),
+                )))
+            }
+            answer => answer,
+        }
+    }
+}
+
+fn refuse_events(_: SseEvent) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::InvalidData,
+        "the daemon sent events to a call that takes one answer",
+    ))
+}
+
+/// Reads one reply's frames until its answer.
+pub(crate) fn receive(
+    input: &mut impl Receive,
+    until: Option<Instant>,
+    mut event: impl FnMut(SseEvent) -> io::Result<bool>,
+) -> io::Result<Option<Answer<Value>>> {
+    let mut decoder = SseDecoder::new();
+    let mut bytes = [0; 8192];
+    let mut first = true;
+    loop {
+        input.wait_until(until)?;
+        let count = input.read(&mut bytes)?;
+        if count == 0 {
+            return Ok(Some(gone()));
+        }
+        if std::mem::take(&mut first) {
+            // A daemon from a build before framed replies answers with one
+            // JSON line; anything else that is not a frame is no answer.
+            if bytes[0] == b'{' {
+                return Ok(Some(Answer::error(crate::protocol::protocol_mismatch(
+                    "the request",
+                    "an unframed answer",
+                ))));
+            }
+            if !matches!(bytes[0], b'e' | b'd' | b'i' | b'r' | b':') {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "the daemon's reply is not a framed answer",
+                ));
+            }
+        }
+        let frames = decoder
+            .push(&bytes[..count])
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.message))?;
+        for frame in frames {
+            if frame.event == "answer" {
+                return serde_json::from_str(&frame.data)
+                    .map(Some)
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error));
+            }
+            if event(frame)? {
+                return Ok(None);
+            }
+        }
+    }
+}
+
+/// The answer of a reply that ended before it.
+fn gone() -> Answer<Value> {
+    Answer::error(crate::protocol::failure(
+        polylogue_model::Code::NotRunning,
+        "the daemon went away before it answered; its service log says why",
+    ))
+}
+
+/// A reply's input, which bounds each read by the call's deadline.
+pub(crate) trait Receive: Read {
+    fn wait_until(&mut self, until: Option<Instant>) -> io::Result<()>;
+}
+
+impl Receive for UnixStream {
+    fn wait_until(&mut self, until: Option<Instant>) -> io::Result<()> {
+        let Some(until) = until else {
+            return self.set_read_timeout(None);
+        };
+        let left = until.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        self.set_read_timeout(Some(left))
+    }
+}
+
+#[cfg(test)]
+impl Receive for &[u8] {
+    fn wait_until(&mut self, _: Option<Instant>) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// Sends one request to a running daemon, without waiting for one that is
+/// still starting. A deadline that passes is the deadline failure.
+pub fn call(
+    socket: &Path,
+    request: &command_surface::RunnableRequest,
+) -> io::Result<Answer<Value>> {
+    match Exchange::new(request).call(socket) {
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => Ok(Answer::error(
+            crate::protocol::failure(polylogue_model::Code::DeadlineExceeded, error.to_string()),
+        )),
+        answer => answer,
+    }
 }
 
 /// A hook uses the existing daemon only; its budget covers the entire exchange.
@@ -229,84 +390,66 @@ pub(crate) fn call_with_budget(
     request: &command_surface::RunnableRequest,
     budget: Duration,
 ) -> io::Result<Answer<Value>> {
-    let outgoing = crate::protocol::wire::Outgoing {
-        request,
-        caller: this_process(),
-        parent_deadline_ms: None,
-    };
-    runtime()?.block_on(async {
-        tokio::time::timeout(budget, async {
-            let stream = tokio::net::UnixStream::connect(socket).await?;
-            exchange_message(stream, &outgoing).await
-        })
-        .await
-        .map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::TimedOut,
-                "daemon did not answer before the deadline",
-            )
-        })?
-    })
+    Exchange {
+        budget: Some(budget),
+        ..Exchange::new(request)
+    }
+    .call(socket)
 }
 
-/// Executes a declared typed operation and keeps its entire shared answer.
-pub(crate) async fn call_ready_as(
-    archive: &Archive,
-    request: &command_surface::RunnableRequest,
-    cancelled: &CancellationToken,
-    caller: command_surface::CallerEvidence,
-) -> io::Result<command_surface::Answer<serde_json::Value>> {
-    call_ready_as_bounded(archive, request, cancelled, caller, None).await
-}
-
+/// A ready call from async code, the MCP server's: the exchange runs on a
+/// blocking thread, and the token's cancellation hangs up its connection.
 pub(crate) async fn call_ready_as_bounded(
     archive: &Archive,
     request: &command_surface::RunnableRequest,
-    cancelled: &CancellationToken,
+    cancelled: &tokio_util::sync::CancellationToken,
     caller: command_surface::CallerEvidence,
     parent_deadline_ms: Option<i64>,
 ) -> io::Result<Answer<Value>> {
-    let budget = connection_deadline(request, parent_deadline_ms);
-    let ready_deadline = budget.map(crate::daemon::execution::deadline);
-    let outgoing = crate::protocol::wire::Outgoing {
-        request,
-        caller,
-        parent_deadline_ms,
-    };
-    let work = async {
-        let stream = crate::cli::when_ready(archive, ready_deadline, || {
-            tokio::net::UnixStream::connect(archive.socket())
-        })
-        .await?;
-        exchange_message(stream, &outgoing).await
-    };
-    let work = async {
-        if let Some(budget) = budget {
-            match tokio::time::timeout(budget, work).await {
-                Ok(result) => result,
-                Err(_) => Ok(command_surface::Answer::error(crate::protocol::failure(
-                    polylogue_model::Code::DeadlineExceeded,
-                    "the daemon did not answer before the deadline",
-                ))),
+    let hang_up = std::sync::Arc::new(HangUp::default());
+    let mut work = tokio::task::spawn_blocking({
+        let (archive, request, hang_up) = (archive.clone(), request.clone(), hang_up.clone());
+        move || {
+            Exchange {
+                caller,
+                parent_deadline_ms,
+                budget: connection_deadline(&request, parent_deadline_ms),
+                hang_up: Some(&hang_up),
+                ..Exchange::new(&request)
             }
-        } else {
-            work.await
+            .call_ready(&archive)
         }
-    };
+    });
     tokio::select! {
-        answer = work => answer,
-        _ = cancelled.cancelled() => Ok(command_surface::Answer::error(crate::protocol::failure(polylogue_model::Code::Cancelled, "the request was cancelled"))),
+        answer = &mut work => return answer.map_err(io::Error::other)?,
+        () = cancelled.cancelled() => hang_up.hang_up(),
     }
+    work.await.map_err(io::Error::other)?
 }
 
+/// Sends one request once the archive's daemon listens. A deadline that
+/// passes is the deadline failure.
 pub(crate) fn call_ready(
     archive: &Archive,
     request: &command_surface::RunnableRequest,
-) -> io::Result<command_surface::Answer<serde_json::Value>> {
-    runtime()?.block_on(call_ready_as(
-        archive,
-        request,
-        &CancellationToken::new(),
-        this_process(),
-    ))
+) -> io::Result<Answer<Value>> {
+    Exchange::new(request).call_ready(archive)
 }
+
+/// One call whose reply may stream: events go to `event` as they arrive.
+pub(crate) fn call_streaming(
+    archive: &Archive,
+    request: &command_surface::RunnableRequest,
+    budget: Option<Duration>,
+    event: impl FnMut(SseEvent) -> io::Result<bool>,
+) -> io::Result<Option<Answer<Value>>> {
+    let exchange = Exchange {
+        budget,
+        ..Exchange::new(request)
+    };
+    let connection = exchange.connect(archive)?;
+    exchange.on(connection, event)
+}
+
+#[cfg(test)]
+mod tests;

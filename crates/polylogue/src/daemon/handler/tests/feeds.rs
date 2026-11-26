@@ -6,18 +6,18 @@ fn feed_refuses_unsupported_envelopes_before_production() {
     let operation = "dev feed";
     let arguments = json!({});
     let original = request(operation, arguments, "feed-identity");
-    let row = crate::commands::command(operation).unwrap();
-    let crate::commands::Run::Feed { registration, .. } = row.run else {
-        panic!("feed row")
-    };
     for deadline in [
         command_surface::Deadline::Default,
         command_surface::Deadline::None,
-        command_surface::Deadline::Milliseconds(73),
+        command_surface::Deadline::Milliseconds(5_000),
     ] {
         let mut allowed = original.clone();
         allowed.deadline = deadline;
-        registration.validate(&allowed).unwrap();
+        daemon.daemon.ready_call(&allowed).unwrap();
+        let (events, answer) =
+            crate::test_daemon::Call::from_request(&allowed).answer_with_events(&daemon.daemon);
+        assert_eq!(answer.exit_code(), 0, "{answer:?}");
+        assert!(!events.is_empty());
     }
     let mut refused = Vec::new();
     let mut selected = original.clone();
@@ -33,9 +33,6 @@ fn feed_refuses_unsupported_envelopes_before_production() {
     selected.fresh = true;
     refused.push((selected, "fresh"));
     let mut selected = original.clone();
-    selected.format = command_surface::Format::Json;
-    refused.push((selected, "format"));
-    let mut selected = original.clone();
     selected.request_id.clear();
     refused.push((selected, "request_id"));
     let mut selected = original.clone();
@@ -49,14 +46,8 @@ fn feed_refuses_unsupported_envelopes_before_production() {
         .insert("author".into(), json!("operator"));
     refused.push((selected, "author"));
     for (envelope, field) in refused {
-        let failure = registration.validate(&envelope).unwrap_err();
-        assert_eq!(failure.error.kind, command_surface::FailureKind::BadRequest);
-        assert!(failure.error.message.contains(field), "{failure:?}");
-        let failure = daemon.daemon.ready_call(&envelope).unwrap_err();
-        assert_eq!(failure.kind, command_surface::FailureKind::BadRequest);
-        assert!(failure.message.contains(field), "{failure:?}");
         let mut produced = false;
-        let result = crate::client::stream::run_call(
+        let answer = crate::client::call_streaming(
             &daemon.daemon.archive,
             &envelope,
             Some(std::time::Duration::from_secs(5)),
@@ -64,10 +55,9 @@ fn feed_refuses_unsupported_envelopes_before_production() {
                 produced = true;
                 Ok(true)
             },
-        );
-        let Err(crate::client::stream::Error::Answer(answer)) = result else {
-            panic!("expected pre-stream refusal: {result:?}")
-        };
+        )
+        .unwrap()
+        .expect("a refusal is the whole reply");
         let command_surface::Outcome::Error(error) = answer.outcome else {
             panic!("not an error")
         };

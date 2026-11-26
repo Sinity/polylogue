@@ -1,6 +1,6 @@
 //! The typed read page in the shared frame. Selection and ready calls are
 //! already resolved by the operation; this module formats no cursors.
-use crate::ready::http_url;
+use crate::ready::reader_url;
 use command_surface::{Failure, FailureKind, OperationDeclarations, RunnableRequest};
 use maud::{Markup, html};
 use polylogue_model::JsonExt;
@@ -69,7 +69,7 @@ fn paging_link(
     next: bool,
     table: &OperationDeclarations,
 ) -> Result<Markup, Failure> {
-    Ok(match http_url(table, &call.request) {
+    Ok(match reader_url(table, &call.request) {
         Ok(url) => {
             html! { a href=(url) rel=(if next {"next"}else{"prev"}) { (label) } }
         }
@@ -147,7 +147,7 @@ fn view_url(
             Err(error) => return Err(Failure::new(FailureKind::BadRequest, error.to_string())),
         }
     }
-    http_url(
+    reader_url(
         table,
         &RunnableRequest {
             arguments: Value::Object(args),
