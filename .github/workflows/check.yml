@@ -59,10 +59,6 @@ jobs:
         with:
           name: sinity
           skipPush: true
-      - name: nats-server for the Sinex client tests
-        run: |
-          curl -sSfL https://github.com/nats-io/nats-server/releases/download/v2.10.22/nats-server-v2.10.22-linux-amd64.tar.gz | tar xz -C "$RUNNER_TEMP"
-          sudo mv "$RUNNER_TEMP/nats-server-v2.10.22-linux-amd64/nats-server" /usr/local/bin/
       # Every event may reuse master's whole target directory, whose source
       # commit is recorded alongside it. Full test selection on master is
       # independent of compiler reuse. A fresh checkout makes source files

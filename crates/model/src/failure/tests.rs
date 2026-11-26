@@ -464,6 +464,13 @@ fn every_reason_has_one_code_and_one_text() {
             "archive archive-x has no recorded mode; fix its configuration before creating it",
         ),
         (
+            Reason::ModeNotBuilt {
+                mode: "mode-x".into(),
+            },
+            Code::NotBuilt,
+            "mode-x mode is not built in this version of Polylogue",
+        ),
+        (
             Reason::BadQueryHash {
                 prefix: "prefix-x".into(),
             },

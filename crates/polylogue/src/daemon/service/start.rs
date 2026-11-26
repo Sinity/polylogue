@@ -244,16 +244,15 @@ impl Drop for Runtime {
     }
 }
 
-/// Standalone, primary on Sinex, or blocked: a Sinex configuration that
-/// cannot be read, or a Sinex that cannot be reached at start; never a
-/// fallback to another mode.
+/// Standalone, or blocked: a Sinex configuration that cannot be read; never
+/// a fallback to another mode. With the `sinex` feature, a configuration
+/// asking for primary mode is kept so that start refuses it: primary mode is
+/// not built in this version (`docs/primary-mode.md`).
 #[derive(Clone)]
 pub enum ArchiveMode {
     Standalone,
     #[cfg(feature = "sinex")]
-    Primary {
-        config: polylogue_sinex::Config,
-    },
+    Primary,
     Blocked {
         /// The mode the configuration asked for, when it could be read.
         configured: Option<&'static str>,
@@ -267,10 +266,20 @@ impl ArchiveMode {
         match self {
             Self::Standalone => true,
             #[cfg(feature = "sinex")]
-            Self::Primary { .. } => true,
+            Self::Primary => true,
             Self::Blocked { .. } => false,
         }
     }
+}
+
+/// Primary mode is not built in this version (`docs/primary-mode.md`).
+#[cfg(feature = "sinex")]
+fn primary_not_built() -> std::io::Error {
+    std::io::Error::other(polylogue_store::StoreError::from(
+        polylogue_model::Reason::ModeNotBuilt {
+            mode: "primary".into(),
+        },
+    ))
 }
 
 /// Opens the archive and starts owned application workers. Startup errors
@@ -299,6 +308,14 @@ pub fn start(
             std::io::Error::other("the executable identity is required to start the Engine")
         })
     };
+    // An archive recorded as primary is refused before anything opens it,
+    // so it is left as it was.
+    #[cfg(feature = "sinex")]
+    if Archive::recorded_mode(root).map_err(std::io::Error::other)?
+        == Some(polylogue_store::archive::Mode::Primary)
+    {
+        return Err(primary_not_built());
+    }
     let (archive, lock, mode, engine, completion_scope) = match mode {
         ArchiveMode::Standalone => {
             let attempt = attempt()?;
@@ -324,26 +341,7 @@ pub fn start(
             (archive, lock, state, None, scope)
         }
         #[cfg(feature = "sinex")]
-        ArchiveMode::Primary { config: sinex, .. } => {
-            let attempt = attempt()?;
-            let (archive, lock, scope) =
-                Archive::open_primary_with_invalidator(root, &sinex.store, invalidate)
-                    .map_err(std::io::Error::other)?;
-            let archive = archive.with_memory_budget(settings.memory_budget);
-            let connection = Arc::new(
-                polylogue_sinex::Sinex::open(&sinex, &deployment.primary_auth, &settings.host)
-                    .map_err(std::io::Error::other)?,
-            );
-            let engine = Engine::on_sinex(config, archive.clone(), connection.clone(), attempt)
-                .map_err(|error| to_io(&error))?;
-            (
-                archive,
-                lock,
-                ModeState::Primary { connection },
-                Some(engine),
-                scope,
-            )
-        }
+        ArchiveMode::Primary => return Err(primary_not_built()),
     };
     let mut engine = engine;
     let writes = engine.as_ref().map(Engine::writer);

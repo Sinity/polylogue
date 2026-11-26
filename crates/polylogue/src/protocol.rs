@@ -242,28 +242,6 @@ pub mod stream {
 pub mod wire;
 use command_surface::{Answer, Failure, FailureKind, InputSpan};
 
-#[cfg(feature = "sinex")]
-pub fn context_failure(problem: polylogue_sinex::ContextFailure) -> Failure {
-    use polylogue_sinex::ContextFailureKind as Kind;
-    let code = match problem.kind {
-        Kind::Missing => polylogue_model::Code::PrimaryContextMissing,
-        Kind::Pending => polylogue_model::Code::PrimaryContextPending,
-        Kind::Unavailable => polylogue_model::Code::PrimaryContextUnavailable,
-        Kind::Refused => polylogue_model::Code::PrimaryContextRefused,
-        Kind::Stale => polylogue_model::Code::PrimaryContextStale,
-        Kind::Invalid => polylogue_model::Code::PrimaryContextInvalid,
-    };
-    let mut failure = failure(code, problem.reason);
-    failure.retryable = matches!(
-        problem.kind,
-        Kind::Missing | Kind::Pending | Kind::Unavailable | Kind::Stale
-    );
-    failure.hint = problem
-        .last_known_identity
-        .map(|identity| format!("last observed Sinex settings: {identity}"));
-    failure
-}
-
 pub fn kind(code: polylogue_model::Code) -> FailureKind {
     use polylogue_model::Code;
     match code {

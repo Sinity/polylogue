@@ -44,12 +44,7 @@ let
   };
   primary = evaluate {
     path = "/srv/primary";
-    sinex = {
-      mode = "primary";
-      nats = "nats://127.0.0.1:4222";
-      password_file = "/run/credentials/nats";
-      store = "/var/lib/sinex";
-    };
+    sinex.mode = "primary";
   };
   succeeds = value: (builtins.tryEval (builtins.deepSeq value true)).success;
   refused = value: !succeeds (settings.render (evaluate value));
@@ -75,14 +70,6 @@ assert lib.assertMsg (refused {
 }) "Relative archive paths must fail evaluation.";
 assert lib.assertMsg (refused {
   path = "/archive";
-  sinex = {
-    mode = "primary";
-    nats = "nats://localhost";
-    store = "relative/sinex";
-  };
-}) "Relative Sinex store paths must fail evaluation.";
-assert lib.assertMsg (refused {
-  path = "/archive";
   settings.quiet = true;
 }) "Authored settings must not become deployment options.";
 assert lib.assertMsg (refused {
@@ -91,23 +78,12 @@ assert lib.assertMsg (refused {
 }) "Notification deadlines must be positive.";
 assert lib.assertMsg (refused {
   path = "/archive";
-  sinex = {
-    mode = "primary";
-    nats = "nats://localhost";
-    store = "/sinex";
-  };
+  sinex.mode = "primary";
   settings.day = {
     zone = "UTC";
     start = "04:00:00";
   };
 }) "The primary day must come from Sinex.";
-assert lib.assertMsg (refused {
-  path = "/archive";
-  sinex = {
-    mode = "primary";
-    nats = "nats://localhost";
-  };
-}) "Primary mode needs the Sinex store.";
 assert lib.assertMsg (
   (settings.render (evaluate {
     path = "/archive";
@@ -126,7 +102,7 @@ assert lib.assertMsg (
     };
     sinex.mode = "standalone";
   }
-) "A day may name only its zone, and standalone Sinex needs no endpoint.";
+) "A day may name only its zone.";
 pkgs.runCommand "polylogue-settings" { nativeBuildInputs = [ pkgs.python3 ]; } ''
   python3 ${./settings.py} ${settings.configDirectory full} ${settings.configDirectory primary}
   touch "$out"

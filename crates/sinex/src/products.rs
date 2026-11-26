@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 mod ai;
 
 /// Decode a confirmed event whose kind definition is the one Polylogue declares.
-pub(crate) fn decode_source(
+pub fn decode_source(
     kind: &sinex_model::KindRef,
     definition_hash: &str,
     payload: Value,
@@ -24,51 +24,7 @@ pub(crate) fn decode_source(
     }
 }
 
-pub(crate) fn require_source(product: &Product) -> Result<()> {
-    if matches!(product, Product::Interpreted { .. }) {
-        return Err(Error::invalid("contribution metadata is not a domain fact"));
-    }
-    if product
-        .reading()
-        .is_some_and(|reading| reading.delivery.is_some())
-    {
-        return Err(Error::Refused {
-            name: kind(product).into(),
-            reason: "export products require their bound immutable reading key".into(),
-        });
-    }
-    Ok(())
-}
-
-pub(crate) fn require_reading(
-    product: &Product,
-    key: &polylogue_store::primary::ExportReadingKey,
-) -> Result<()> {
-    let reading = product
-        .reading()
-        .ok_or_else(|| Error::invalid("export contains a product without a reading"))?;
-    if reading.input.id != key.input.id
-        || reading.input.format != key.input.format
-        || reading.chain != key.chain
-        || reading.parse_version != key.parse_version
-        || reading
-            .source_length
-            .is_some_and(|length| length != key.length)
-        || (reading.delivery.is_some() && reading.source_length != Some(key.length))
-    {
-        return Err(Error::invalid(
-            "export product differs from its immutable reading key",
-        ));
-    }
-    if let Some(delivery) = &reading.delivery {
-        delivery
-            .validate()
-            .map_err(|error| Error::invalid(error.to_string()))?;
-    }
-    Ok(())
-}
-
-pub(crate) fn kind(product: &Product) -> &'static str {
+pub fn kind(product: &Product) -> &'static str {
     match product {
         Product::Interpreted { .. } => "polylogue.interpreted",
         Product::AttachmentBinding { .. } => "polylogue.attachment_binding",
@@ -114,7 +70,7 @@ pub(crate) fn kind(product: &Product) -> &'static str {
 
 /// Source copies remain separate readings of one natural record. This keeps
 /// every source rank and provider attribute when another copy arrives.
-pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
+pub fn key(product: &Product, _occurrence: u64) -> Result<String> {
     let natural = match product {
         Product::Interpreted { record, .. } => json!([record.reference, record.value_hash]),
         Product::AttachmentBinding { record } => json!([record.selection()]),
@@ -173,7 +129,7 @@ pub(crate) fn key(product: &Product, _occurrence: u64) -> Result<String> {
 }
 
 /// A Sinex event payload carries its declared domain values whatever the local index holds.
-pub(crate) fn payload(product: &Product, occurrence: u64) -> Result<Value> {
+pub fn payload(product: &Product, occurrence: u64) -> Result<Value> {
     let mut payload = match product {
         Product::Interpreted { .. } => unreachable!("a contribution is local metadata"),
         Product::ToolCall { facts, .. } => serde_json::to_value(ai::ToolFields {
@@ -362,7 +318,7 @@ fn source_kind(kind: &str) -> bool {
 
 /// Reads a product payload of `kind`; a kind version Polylogue does not
 /// declare is refused, never read through the current shape.
-pub(crate) fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Result<Product> {
+pub fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Result<Product> {
     if crate::kinds::kind_reference(&event_kind.name)?.version != event_kind.version {
         return Err(Error::invalid(format!(
             "unsupported Polylogue kind {}@{}",
@@ -797,7 +753,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
 }
 
 /// Build each event from its complete product and its record offset in the confirmed material.
-pub(crate) fn events(
+pub fn events(
     writes: &[polylogue_store::primary::products::ProductWrite],
 ) -> Result<Vec<sinex_protocol::ProducerEvent>> {
     use sinex_model::{Class, MaterialId, RecordLocation};
@@ -905,16 +861,3 @@ pub(crate) fn events(
 
 #[cfg(test)]
 mod tests;
-
-/// Query product logical names survive format changes. Their immutable frames
-/// belong to the current declared source, including completions of old runs.
-pub(crate) fn named_frame(name: &str) -> String {
-    if ["query:", "query-run:", "query-run-outcome:"]
-        .iter()
-        .any(|prefix| name.starts_with(prefix))
-    {
-        format!("polylogue-source-{}:{name}", crate::SOURCE_VERSION)
-    } else {
-        name.to_owned()
-    }
-}

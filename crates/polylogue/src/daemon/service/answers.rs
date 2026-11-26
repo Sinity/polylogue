@@ -1,7 +1,5 @@
 //! Typed answers and the authored writes they perform.
 use super::Daemon;
-#[cfg(feature = "sinex")]
-use super::ModeState;
 use crate::brief::{self, Ask};
 use crate::daemon::Failure;
 use command_surface::Answer;
@@ -117,19 +115,6 @@ pub(crate) fn context(
 ) -> Answer<crate::protocol::context::Answer> {
     use polylogue_store::read::limit::ReadLimit;
     let is_advisory = matches!(ask, Ask::Advisory { .. });
-    #[cfg(feature = "sinex")]
-    if is_advisory
-        && let ModeState::Primary { connection } = &d.mode
-        && !connection.advisory_history_ready()
-    {
-        return crate::protocol::written(
-            crate::protocol::context::Answer {
-                delivery: None,
-                prepared: crate::advisory::empty(),
-            },
-            false,
-        );
-    }
     let mut cooldown = if let Ask::Advisory { session, .. } = ask {
         match d
             .advisories
@@ -525,13 +510,6 @@ pub(crate) fn accepted_write(
     let request = call
         .invocation
         .request(call.request_id.into(), intended.clone());
-    #[cfg(feature = "sinex")]
-    if let ModeState::Primary { connection } = &call.daemon.mode
-        && let Some(original) =
-            polylogue_store::primary::authored::pending_request(connection.as_ref(), &request)?
-    {
-        return Ok(Some(original.write));
-    }
     let reader = call.reader()?;
     repeated_request(&reader, &request.id, intended, call.invocation)
 }

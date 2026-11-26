@@ -4,6 +4,8 @@ Polylogue on Sinex: the one rule, the three parts primary mode adds (bytes kept 
 
 The ingress, frames and acknowledgments, the confirmed stream, refusals, kind registration and the lifecycle on the wire are Sinex's contract, in Sinex's [producers](https://github.com/Sinity/sinex/blob/master/docs/producers.md) and [lifecycle](https://github.com/Sinity/sinex/blob/master/docs/lifecycle.md) pages; this page states only Polylogue's side. Polylogue uses that contract as any outside program does: Sinex has no path that is Polylogue's alone. The two modes are introduced in [architecture.md#modes](architecture.md#modes).
 
+This page is the design; primary mode is not built in this version. A build with the `sinex` feature refuses to start on an archive recorded as primary or with a configuration asking for it ([installing.md](installing.md#deployment)), and the parts below are written on the four operations of the record and the bytes: put, open, commit, and read after a position.
+
 ## The rule
 
 **In both modes the record is the durable account of what this Polylogue captured and what its users authored, and the index follows the record** ([architecture.md](architecture.md#pipeline)). In primary mode the record converges with Sinex: everything in it is shipped to Sinex, everything Sinex decides is applied to it, and it can be rebuilt from Sinex.

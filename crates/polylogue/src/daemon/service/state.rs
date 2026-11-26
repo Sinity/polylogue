@@ -78,15 +78,6 @@ impl Daemon {
                     .map_err(|problem| Failure::not_yet_available(problem.to_string()))?
                     .clone(),
             ),
-            #[cfg(feature = "sinex")]
-            ModeState::Primary { connection } => {
-                let policy = connection
-                    .context(|name| {
-                        jiff::tz::TimeZone::get(name).map_err(|error| error.to_string())
-                    })
-                    .map_err(crate::protocol::context_failure)?;
-                return Self::primary_context(invocation, policy);
-            }
             ModeState::Blocked { error: reason, .. } => {
                 return Err(Failure::sinex_unavailable(reason.clone()));
             }
@@ -99,39 +90,7 @@ impl Daemon {
         authorship: &polylogue_model::authorship::Authorship,
     ) -> Result<Arc<polylogue_reading::operation::Context>, Failure> {
         let invocation = self.invocation(authorship);
-        #[cfg(feature = "sinex")]
-        if let ModeState::Primary { connection } = &self.mode {
-            let policy = connection
-                .context_async(|name| {
-                    jiff::tz::TimeZone::get(name).map_err(|error| error.to_string())
-                })
-                .await
-                .map_err(crate::protocol::context_failure)?;
-            return Self::primary_context(invocation, policy);
-        }
         self.resolve_operation_context(invocation)
-    }
-
-    #[cfg(feature = "sinex")]
-    fn primary_context(
-        invocation: polylogue_reading::operation::Invocation,
-        policy: polylogue_sinex::ResolvedContext,
-    ) -> Result<Arc<polylogue_reading::operation::Context>, Failure> {
-        let observed_at = polylogue_model::Timestamp::from_unix_ns(policy.observed_at.unix_ns())
-            .ok_or_else(|| {
-                Failure::primary_context_invalid(
-                    "the Sinex observation time is outside the supported range",
-                )
-            })?;
-        let sinex = polylogue_model::context::SinexContext::Primary {
-            settings_identity: policy.settings_identity,
-            settings_revision: policy.settings_revision,
-            observed_at,
-            received_seconds_ago: policy.received_seconds_ago,
-        };
-        Ok(Arc::new(polylogue_reading::operation::Context::primary(
-            invocation, policy.day, sinex,
-        )))
     }
 
     pub(crate) fn ready_call(
@@ -219,10 +178,6 @@ impl Daemon {
         use polylogue_model::freshness::IndexFreshness;
         let sinex = match &self.mode {
             ModeState::Standalone => IndexFreshness::Standalone,
-            #[cfg(feature = "sinex")]
-            ModeState::Primary { connection } => connection
-                .freshness(applied.position, applied.scope.clone())
-                .map_err(StoreError::from)?,
             ModeState::Blocked { .. } if !self.archive.is_primary() => IndexFreshness::Standalone,
             ModeState::Blocked { error, .. } => IndexFreshness::primary(
                 applied.position,
@@ -264,11 +219,6 @@ pub(crate) struct Applied {
 #[serde(tag = "state", rename_all = "snake_case")]
 pub(super) enum ModeState {
     Standalone,
-    #[cfg(feature = "sinex")]
-    Primary {
-        #[serde(skip)]
-        connection: Arc<polylogue_sinex::Sinex>,
-    },
     Blocked {
         configured: Option<&'static str>,
         path: std::path::PathBuf,

@@ -369,8 +369,6 @@ pub struct Config {
     pub notification_bus_address: Option<String>,
     pub embedding_credentials: crate::embeddings::Credentials,
     standalone_day: Option<DaySetting>,
-    #[cfg(feature = "sinex")]
-    pub primary_auth: polylogue_sinex::Authentication,
 }
 impl Config {
     pub fn standalone_day(&self) -> Result<&DaySetting, Error> {
@@ -398,10 +396,6 @@ impl Config {
         config.signals = SignalDeployment::default();
         config.notification_bus_address = None;
         config.embedding_credentials = crate::embeddings::Credentials::new(None);
-        #[cfg(feature = "sinex")]
-        {
-            config.primary_auth = polylogue_sinex::Authentication::Anonymous;
-        }
         Ok(Arc::new(config))
     }
 }
@@ -644,7 +638,7 @@ impl Startup {
         } else {
             archive.join("sinex.toml")
         };
-        let (mode, _primary_auth) = load_mode(&mode_path)?;
+        let mode = load_mode(&mode_path);
         let standalone = matches!(mode, crate::daemon::service::ArchiveMode::Standalone);
         let standalone_day = if standalone {
             let DayFile { zone, start } = file.day.unwrap_or(DayFile {
@@ -662,12 +656,6 @@ impl Startup {
             };
             Some(day.map_err(|error| Error::Invalid(error.to_string()))?)
         } else {
-            #[cfg(feature = "sinex")]
-            if file.day.is_some()
-                && matches!(mode, crate::daemon::service::ArchiveMode::Primary { .. })
-            {
-                return Err(Error::SinexDay);
-            }
             None
         };
         let tool_dirs = polylogue_sources::origin::variable_roots()
@@ -714,8 +702,6 @@ impl Startup {
                     .map(str::to_string),
             ),
             standalone_day,
-            #[cfg(feature = "sinex")]
-            primary_auth: _primary_auth,
         });
         Ok(Self {
             stopped_attempt: None,
@@ -795,8 +781,6 @@ impl Config {
                 )
                 .expect("named fixture day"),
             ),
-            #[cfg(feature = "sinex")]
-            primary_auth: polylogue_sinex::Authentication::Anonymous,
         })
     }
 }
@@ -825,84 +809,26 @@ impl Startup {
     }
 }
 
-#[cfg(feature = "sinex")]
-pub(crate) fn load_mode(
-    path: &Path,
-) -> Result<
-    (
-        crate::daemon::service::ArchiveMode,
-        polylogue_sinex::Authentication,
-    ),
-    Error,
-> {
-    use crate::daemon::service::ArchiveMode;
-    use polylogue_sinex::{Authentication, Config, Mode};
-    let text = match optional_file(path) {
-        Ok(Some(text)) => text,
-        Ok(None) => return Ok((ArchiveMode::Standalone, Authentication::Anonymous)),
-        Err(error) => {
-            return Ok((
-                ArchiveMode::Blocked {
-                    configured: None,
-                    path: path.into(),
-                    error: error.to_string(),
-                },
-                Authentication::Unavailable {
-                    reason: error.to_string(),
-                },
-            ));
-        }
-    };
-    match Config::parse(&text) {
-        Ok(mut config) if config.mode == Mode::Primary => {
-            let base = path
-                .parent()
-                .ok_or_else(|| Error::Invalid("Sinex configuration path has no parent".into()))?;
-            config.store = absolute(config.store, base);
-            config.password_file = config.password_file.map(|path| absolute(path, base));
-            let auth = match &config.password_file {
-                None => Authentication::Anonymous,
-                Some(file) => match std::fs::read_to_string(file) {
-                    Ok(value) if !value.trim_end_matches(['\r', '\n']).is_empty() => {
-                        Authentication::Password(value.trim_end_matches(['\r', '\n']).into())
-                    }
-                    Ok(_) => Authentication::Unavailable {
-                        reason: "producer credential file is empty".into(),
-                    },
-                    Err(error) => Authentication::Unavailable {
-                        reason: format!("producer credential file {}: {error}", file.display()),
-                    },
-                },
-            };
-            Ok((ArchiveMode::Primary { config }, auth))
-        }
-        Ok(_) => Ok((ArchiveMode::Standalone, Authentication::Anonymous)),
-        Err(error) => Ok((
-            ArchiveMode::Blocked {
-                configured: None,
-                path: path.into(),
-                error: error.to_string(),
-            },
-            Authentication::Unavailable {
-                reason: error.to_string(),
-            },
-        )),
-    }
-}
-#[cfg(not(feature = "sinex"))]
-pub(crate) fn load_mode(path: &Path) -> Result<(crate::daemon::service::ArchiveMode, ()), Error> {
+/// The mode `sinex.toml` asks for. Primary mode is not built in this version
+/// (`docs/primary-mode.md`): with the `sinex` feature a configuration asking
+/// for it is refused at start; without it the archive is blocked, readable
+/// with writes paused.
+pub(crate) fn load_mode(path: &Path) -> crate::daemon::service::ArchiveMode {
     use crate::daemon::service::ArchiveMode;
     #[derive(Deserialize)]
     struct Header {
         mode: String,
     }
     let result = optional_file(path).and_then(|text| match text {
-        None => Ok(()),
+        None => Ok(ArchiveMode::Standalone),
         Some(text) => {
             let header: Header =
                 toml::from_str(&text).map_err(|error| Error::Invalid(error.to_string()))?;
             match header.mode.as_str() {
-                "standalone" => Ok(()),
+                "standalone" => Ok(ArchiveMode::Standalone),
+                #[cfg(feature = "sinex")]
+                "primary" => Ok(ArchiveMode::Primary),
+                #[cfg(not(feature = "sinex"))]
                 "primary" => Err(Error::Invalid(
                     "this build has no primary-mode support".into(),
                 )),
@@ -910,17 +836,11 @@ pub(crate) fn load_mode(path: &Path) -> Result<(crate::daemon::service::ArchiveM
             }
         }
     });
-    Ok((
-        match result {
-            Ok(()) => ArchiveMode::Standalone,
-            Err(error) => ArchiveMode::Blocked {
-                configured: None,
-                path: path.into(),
-                error: error.to_string(),
-            },
-        },
-        (),
-    ))
+    result.unwrap_or_else(|error| ArchiveMode::Blocked {
+        configured: None,
+        path: path.into(),
+        error: error.to_string(),
+    })
 }
 
 #[cfg(test)]

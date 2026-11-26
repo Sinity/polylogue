@@ -344,32 +344,6 @@ fn an_input_payload_at_an_earlier_kind_version_is_refused() {
         matches!(&error, crate::Error::Invalid(reason) if reason == "unsupported Polylogue kind polylogue.input_observation@4"),
         "{error}"
     );
-    // A spool body of product writes carries no kind version: its rows in
-    // the earlier shape are refused, not read as rows without extents.
-    let write = json!([{
-        "product": earlier["record"],
-        "location": null,
-        "parents": [],
-        "machine": null,
-        "output_index": 0
-    }]);
-    let body = serde_json::to_vec(&write).unwrap();
-    let error =
-        crate::spool::decode_json::<Vec<polylogue_store::primary::ProductWrite>>(body.as_slice())
-            .unwrap_err();
-    assert!(
-        error.to_string().contains("unknown field `extent`"),
-        "{error}"
-    );
-    let mut current_write = write;
-    current_write[0]["product"] = products::payload(&product, 0).unwrap()["record"].clone();
-    let body = serde_json::to_vec(&current_write).unwrap();
-    assert_eq!(
-        crate::spool::decode_json::<Vec<polylogue_store::primary::ProductWrite>>(body.as_slice())
-            .unwrap()[0]
-            .product,
-        product
-    );
 }
 
 #[test]

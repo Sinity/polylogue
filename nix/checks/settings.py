@@ -32,10 +32,5 @@ assert files(sys.argv[1]) == {
 assert files(sys.argv[2]) == {
     "polylogue": {"archive": "/srv/primary", "http": {}},
     "signals": {"notifications": {}, "value_targets": {}, "action_commands": {}},
-    "sinex": {
-        "mode": "primary",
-        "nats": "nats://127.0.0.1:4222",
-        "password_file": "/run/credentials/nats",
-        "store": "/var/lib/sinex",
-    },
+    "sinex": {"mode": "primary"},
 }
