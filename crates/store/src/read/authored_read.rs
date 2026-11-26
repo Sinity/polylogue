@@ -2,6 +2,7 @@
 //! event Sinex confirmed.
 use super::Reader;
 use crate::ConnExt as _;
+use crate::row::Rows as _;
 use crate::{Result, StoreError};
 use polylogue_model::{
     Reference, RevisionReference, authored::PreparedRequest, bundle::AuthoredRecord,
@@ -138,11 +139,9 @@ impl Reader<'_> {
         let mut found = None;
         prepare_membership(conn, &mut || self.check())?;
         let (kind, id, member) = target.candidate_key();
-        let mut statement = conn.prepare_cached("SELECT request FROM temp.authored_effect_request WHERE kind=?1 AND id=?2 AND member=?3 ORDER BY request")?;
-        let mut rows = statement.query(rusqlite::params![kind, id, member])?;
-        while let Some(row) = rows.next()? {
+        let requests: Vec<String> = conn.values("SELECT request FROM temp.authored_effect_request WHERE kind=?1 AND id=?2 AND member=?3 ORDER BY request", rusqlite::params![kind, id, member])?;
+        for id in requests {
             self.check()?;
-            let id: String = row.get(0)?;
             let Some(request) = self.user_request(&id)? else {
                 continue;
             };
@@ -158,8 +157,6 @@ impl Reader<'_> {
                 found = Some(prepared);
             }
         }
-        drop(rows);
-        drop(statement);
         let Some(prepared) = found else {
             return Ok(Some(AuthoredRead::Incomplete {
                 issue: AuthoredReadIssue::MissingAssociation,

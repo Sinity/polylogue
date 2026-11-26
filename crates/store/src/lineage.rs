@@ -1,18 +1,21 @@
 //! One indexed ancestry walk for derived products, current reads and queries.
+use crate::row::{Json, Rows as _, SessionPk, Statement, row};
 use crate::{Result, query::fields::STRUCTURAL_KINDS};
 use polylogue_model::{
     SessionId,
     read::{LineageIssue, SessionLineage},
 };
-use rusqlite::{Connection, OptionalExtension};
+use rusqlite::Connection;
 
 /// The visible incoming relations, including their stored presentation order.
 /// Only the affected child's indexed edge set is read while writing.
 pub(crate) fn relation_identity(conn: &Connection, child: &str) -> Result<String> {
-    Ok(conn.prepare_cached(
+    conn.value(
         "SELECT json_group_array(json_array(pk,parent_id,child_id,kind,how,branch_point,spawning_call,copies_prefix))
          FROM (SELECT * FROM session_link_identity WHERE child_id=?1 ORDER BY pk)",
-    )?.query_row([child], |row| row.get(0))?)
+        [child],
+    )?
+    .ok_or_else(|| crate::StoreError::internal("an aggregate read no row"))
 }
 
 /// How many sessions' links reads have looked up, for tests of how much of
@@ -45,49 +48,78 @@ impl SessionLink {
     }
 }
 
-/// The links whose `column` (the parent or the child) is `session`, as
+row! {
+    /// A parent and child a recorded prefix copy names.
+    struct CopiedPair {
+        parent_id: String,
+        child_id: String,
+    }
+    statements {
+        const OF_PARENT = "SELECT DISTINCT parent_id, child_id FROM prefix_copy WHERE parent_id = ?1";
+        const OF_CHILD = "SELECT DISTINCT parent_id, child_id FROM prefix_copy WHERE child_id = ?1";
+    }
+}
+
+row! {
+    /// One statement of a link between two sessions.
+    struct LinkStatement {
+        parent_id: String,
+        child_id: String,
+        kind: String,
+        how: Option<String>,
+        branch_point: Option<String>,
+        spawning_call: Option<String>,
+        copies_prefix: bool,
+    }
+    statements {
+        const OF_PARENT = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
+            FROM link WHERE parent_id = ?1";
+        const OF_CHILD = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
+            FROM link WHERE child_id = ?1";
+    }
+}
+
+/// Which end of its links a session is.
+#[derive(Clone, Copy)]
+enum End {
+    Parent,
+    Child,
+}
+
+/// The links whose `end` (the parent or the child) is `session`, as
 /// the `session_link_identity` view states them. The view decides each
 /// statement with subqueries over all the statements of its parent and
 /// child, which for one session with thousands of statements is their
 /// square; this reads the statements once and decides each pair in one
 /// pass, with the view as its oracle.
-fn links_where(conn: &Connection, column: &str, session: &str) -> Result<Vec<SessionLink>> {
+fn links_where(conn: &Connection, end: End, session: &str) -> Result<Vec<SessionLink>> {
     #[cfg(any(test, feature = "fixture"))]
     LINK_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut copied: std::collections::HashSet<(String, String)> = Default::default();
-    for pair in conn
-        .prepare_cached(&format!(
-            "SELECT DISTINCT parent_id, child_id FROM prefix_copy WHERE {column} = ?1"
-        ))?
-        .query_map([session], |row| <(String, String)>::try_from(row))?
-    {
-        copied.insert(pair?);
-    }
+    let (copies, stated) = match end {
+        End::Parent => (&CopiedPair::OF_PARENT, &LinkStatement::OF_PARENT),
+        End::Child => (&CopiedPair::OF_CHILD, &LinkStatement::OF_CHILD),
+    };
+    let copied: std::collections::HashSet<(String, String)> = conn
+        .all(copies, [session])?
+        .into_iter()
+        .map(|pair| (pair.parent_id, pair.child_id))
+        .collect();
     // The statements of each relation: a parent, a child, a kind and
     // how, in that order.
     type Relation = (String, String, String, Option<String>);
-    type Statement = (Option<String>, Option<String>, bool);
-    let mut relations: std::collections::BTreeMap<Relation, Vec<Statement>> = Default::default();
-    for row in conn
-        .prepare_cached(&format!(
-            "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
-             FROM link WHERE {column} = ?1"
-        ))?
-        .query_map([session], |row| {
-            Ok((
-                (row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?),
-                (row.get(4)?, row.get(5)?, row.get(6)?),
-            ))
-        })?
-    {
-        let (relation, statement): (Relation, Statement) = row?;
-        relations.entry(relation).or_default().push(statement);
+    type Stated = (Option<String>, Option<String>, bool);
+    let mut relations: std::collections::BTreeMap<Relation, Vec<Stated>> = Default::default();
+    for link in conn.all(stated, [session])? {
+        relations
+            .entry((link.parent_id, link.child_id, link.kind, link.how))
+            .or_default()
+            .push((link.branch_point, link.spawning_call, link.copies_prefix));
     }
     let mut links = Vec::new();
     for ((parent, child, kind, how), statements) in relations {
         let copies_prefix = statements.iter().any(|(_, _, copies)| *copies)
             || copied.contains(&(parent.clone(), child.clone()));
-        let known = |of: fn(&Statement) -> &Option<String>| {
+        let known = |of: fn(&Stated) -> &Option<String>| {
             statements
                 .iter()
                 .filter_map(|statement| of(statement).clone())
@@ -164,7 +196,7 @@ pub(crate) fn inherited_prefixes(
     child: &str,
 ) -> Result<Vec<(String, Option<String>, bool)>> {
     let mut prefixes: std::collections::BTreeSet<(String, Option<String>, bool)> =
-        links_where(conn, "child_id", child)?
+        links_where(conn, End::Child, child)?
             .into_iter()
             .filter(|link| {
                 !link.is_reference()
@@ -175,11 +207,11 @@ pub(crate) fn inherited_prefixes(
             .collect();
     let linked: std::collections::HashSet<String> =
         prefixes.iter().map(|prefix| prefix.0.clone()).collect();
-    for parent in conn
-        .prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id = ?1")?
-        .query_map([child], |row| row.get::<_, String>(0))?
-    {
-        let parent = parent?;
+    let copied: Vec<String> = conn.values(
+        "SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id = ?1",
+        [child],
+    )?;
+    for parent in copied {
         if !linked.contains(&parent) {
             prefixes.insert((parent, None, true));
         }
@@ -236,27 +268,51 @@ pub(crate) fn lineage_column_sql(session: &str, column: &str) -> String {
     )
 }
 
-pub(crate) fn compute_lineage(conn: &Connection, session: i64) -> Result<Option<SessionLineage>> {
-    let sql = observed_lineage_sql("?1");
-    let row = conn
-        .prepare_cached(&sql)?
-        .query_row([session], |r| {
-            <(
-                Option<String>,
-                Option<u64>,
-                bool,
-                Option<String>,
-                String,
-                String,
-            )>::try_from(r)
-        })
-        .optional()?;
-    let Some((root, depth, root_pending, problem, at, parents)) = row else {
+row! {
+    /// Where a session's ancestry walk stopped: the root and depth when it
+    /// reached one, else the problem met and the parents recorded there.
+    struct ObservedLineage {
+        root: Option<String>,
+        depth: Option<u64>,
+        root_pending: bool,
+        problem: Option<String>,
+        stopped_at: String,
+        parents: Json<Vec<String>>,
+    }
+}
+
+row! {
+    /// A session's lineage as the lineage derivation stored it.
+    struct StoredLineage {
+        root: Option<SessionId>,
+        depth: Option<u64>,
+        root_pending: bool,
+        issue: Option<Json<LineageIssue>>,
+    }
+    statements {
+        const CURRENT = "SELECT v.root, v.depth, v.root_pending, v.issue FROM session_lineage v
+            JOIN derive_state ds ON ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_derived_current(ds.name,ds.version)
+            WHERE v.session_pk=?1 AND NOT EXISTS(SELECT 1 FROM derive_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)";
+    }
+}
+
+pub(crate) fn compute_lineage(
+    conn: &Connection,
+    session: SessionPk,
+) -> Result<Option<SessionLineage>> {
+    let Some(ObservedLineage {
+        root,
+        depth,
+        root_pending,
+        problem,
+        stopped_at,
+        parents: Json(parents),
+    }) = conn.maybe(&Statement::built(observed_lineage_sql("?1")), [session])?
+    else {
         return Ok(None);
     };
     let parse = |id: &str| SessionId::parse(id).map_err(crate::StoreError::stored_data);
-    let child = parse(&at)?;
-    let parents: Vec<String> = serde_json::from_str(&parents)?;
+    let child = parse(&stopped_at)?;
     let issue = match problem.as_deref() {
         Some("cycle") => Some(LineageIssue::Cycle { session: child }),
         Some("conflict") => Some(LineageIssue::ConflictingParents {
@@ -282,10 +338,11 @@ impl crate::read::Reader<'_> {
     pub fn lineage_version(&self) -> Result<polylogue_model::BlobHash> {
         let revision: String = self
             .conn()?
-            .prepare_cached(
+            .value(
                 "SELECT coalesce((SELECT value FROM meta WHERE key='relationship_revision'),'0')",
+                [],
             )?
-            .query_row([], |row| row.get(0))?;
+            .unwrap_or_default();
         Ok(polylogue_model::BlobHash::of(
             format!("relationships:{revision}").as_bytes(),
         ))
@@ -293,12 +350,12 @@ impl crate::read::Reader<'_> {
 
     /// Links from `id` to its children, ordered by their coordinates.
     pub fn child_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
-        links_where(self.conn()?, "parent_id", &id.to_string())
+        links_where(self.conn()?, End::Parent, &id.to_string())
     }
 
     /// Links from `id`'s parents to it, ordered by their coordinates.
     pub fn parent_links(&self, id: &SessionId) -> Result<Vec<SessionLink>> {
-        links_where(self.conn()?, "child_id", &id.to_string())
+        links_where(self.conn()?, End::Child, &id.to_string())
     }
 
     /// Current structural root and depth in this pinned read. Missing sessions
@@ -307,18 +364,12 @@ impl crate::read::Reader<'_> {
         let Some(pk) = self.session_pk(session)? else {
             return Ok(None);
         };
-        let cached = self.conn()?.prepare_cached("SELECT v.root,v.depth,v.root_pending,v.issue FROM session_lineage v
-          JOIN derive_state ds ON ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_derived_current(ds.name,ds.version)
-          WHERE v.session_pk=?1 AND NOT EXISTS(SELECT 1 FROM derive_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)")?
-          .query_row([pk], |r| <(Option<String>, Option<u64>, bool, Option<String>)>::try_from(r)).optional()?;
-        match cached {
-            Some((root, depth, root_pending, issue)) => Ok(Some(SessionLineage {
-                root: root
-                    .map(|id| SessionId::parse(&id).map_err(crate::StoreError::stored_data))
-                    .transpose()?,
-                depth,
-                root_pending,
-                issue: issue.map(|s| serde_json::from_str(&s)).transpose()?,
+        match self.conn()?.maybe(&StoredLineage::CURRENT, [pk])? {
+            Some(stored) => Ok(Some(SessionLineage {
+                root: stored.root,
+                depth: stored.depth,
+                root_pending: stored.root_pending,
+                issue: stored.issue.map(|Json(issue)| issue),
             })),
             None => compute_lineage(self.conn()?, pk),
         }
@@ -369,6 +420,14 @@ impl crate::read::Reader<'_> {
         }
         Ok(starts)
     }
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<CopiedPair>();
+    check.row::<LinkStatement>();
+    check.row::<StoredLineage>();
 }
 
 #[cfg(test)]

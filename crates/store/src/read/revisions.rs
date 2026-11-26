@@ -6,6 +6,18 @@ pub struct RevisionPoint {
     pub chain: i64,
     pub length: u64,
 }
+row! {
+    /// A chain's latest revision at a given length.
+    struct ChainAtLength {
+        number: i64,
+        chain: i64,
+    }
+    statements {
+        const LATEST = "SELECT max(number) AS number, chain FROM source_revision
+            WHERE input=?1 AND length=?2 GROUP BY chain ORDER BY max(number) DESC";
+    }
+}
+
 impl Reader<'_> {
     /// Multiple chains of `input`, staged on disk for comparison by chain.
     /// A single chain has no other reading to take its rows from.
@@ -24,19 +36,29 @@ impl Reader<'_> {
         let sql_length = i64::try_from(length).map_err(|_| {
             StoreError::stored_data("revision length exceeds archive address space")
         })?;
-        let conn = self.conn()?;
-        let mut statement = conn.prepare("SELECT max(number),chain FROM source_revision WHERE input=?1 AND length=?2 GROUP BY chain ORDER BY max(number) DESC")?;
-        let mut rows = statement.query(params![input, sql_length])?;
-        while let Some(row) = rows.next()? {
-            let chain = row.get(1)?;
-            if visit(RevisionPoint {
-                number: row.get(0)?,
-                chain,
-                length,
-            })? {
-                break;
-            }
-        }
+        let _ = self.conn()?.each(
+            &ChainAtLength::LATEST,
+            params![input, sql_length],
+            |point| {
+                Ok(
+                    if visit(RevisionPoint {
+                        number: point.number,
+                        chain: point.chain,
+                        length,
+                    })? {
+                        std::ops::ControlFlow::Break(())
+                    } else {
+                        std::ops::ControlFlow::Continue(())
+                    },
+                )
+            },
+        )?;
         Ok(())
     }
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<ChainAtLength>();
 }

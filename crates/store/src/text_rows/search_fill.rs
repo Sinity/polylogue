@@ -15,15 +15,39 @@
 //! settling already made as the same entry.
 
 use super::{folded_text, groups, write_entry};
+use crate::row::{Rows as _, row};
 use crate::search::files::{FILES, file_of};
 use crate::{Result, StoreError};
 use polylogue_model::LockExt as _;
-use rusqlite::{Connection, OpenFlags, OptionalExtension as _};
+use rusqlite::{Connection, OpenFlags};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
+
+row! {
+    /// Where a text is: its group and its place in the group's bytes.
+    struct TextPlace {
+        group_id: i64,
+        start: i64,
+        length: i64,
+    }
+    statements {
+        const OF_ID = "SELECT group_id, start, length FROM text WHERE id = ?1";
+    }
+}
+
+row! {
+    /// Which full-text indexes a text belongs to.
+    struct TextMembership {
+        id: i64,
+        indexed: i64,
+    }
+    statements {
+        const AFTER = "SELECT id, indexed FROM text WHERE id > ?1 ORDER BY id LIMIT ?2";
+    }
+}
 
 /// Reports the writer's trigger gathers before handing them over.
 const REPORTS: usize = 4096;
@@ -150,11 +174,10 @@ impl SearchFill {
             // A build started again in this process keeps what an earlier
             // start entered.
             for (bit, table) in [(0, "text_fts"), (1, "output_fts")] {
-                let mut statement =
-                    file.prepare(&format!("SELECT id FROM {table}_docsize WHERE id > 0"))?;
-                let mut rows = statement.query([])?;
-                while let Some(row) = rows.next()? {
-                    entered[bit].insert(row.get(0)?);
+                let ids: Vec<i64> =
+                    file.values(&format!("SELECT id FROM {table}_docsize WHERE id > 0"), [])?;
+                for id in ids {
+                    entered[bit].insert(id);
                 }
             }
             files.push(file);
@@ -472,16 +495,15 @@ impl Coordinator {
             while next < texts.len() {
                 let read = Instant::now();
                 let tx = self.reader.unchecked_transaction()?;
-                let mut place =
-                    tx.prepare_cached("SELECT group_id, start, length FROM text WHERE id = ?1")?;
                 while next < texts.len() && read.elapsed() < READ_TIME {
                     let (id, bits) = texts[next];
                     next += 1;
-                    match place
-                        .query_row([id], |r| <(i64, i64, i64)>::try_from(r))
-                        .optional()?
-                    {
-                        Some((group, start, length)) => {
+                    match tx.maybe(&TextPlace::OF_ID, [id])? {
+                        Some(TextPlace {
+                            group_id: group,
+                            start,
+                            length,
+                        }) => {
                             places.push((group, start, length, id, bits));
                         }
                         // Not committed yet, or removed: settling decides.
@@ -494,7 +516,6 @@ impl Coordinator {
                         }
                     }
                 }
-                drop(place);
                 tx.finish()?;
             }
             places.sort_unstable();
@@ -518,16 +539,15 @@ impl Coordinator {
                 while bodies.len() < groups.len() {
                     let read = Instant::now();
                     let tx = self.reader.unchecked_transaction()?;
-                    let mut body =
-                        tx.prepare_cached("SELECT body FROM content_group WHERE id = ?1")?;
                     while bodies.len() < groups.len() && read.elapsed() < READ_TIME {
-                        let bytes: Vec<u8> = body
-                            .query_row([groups[bodies.len()]], |r| r.get(0))
-                            .optional()?
+                        let bytes: Vec<u8> = tx
+                            .value(
+                                "SELECT body FROM content_group WHERE id = ?1",
+                                [groups[bodies.len()]],
+                            )?
                             .ok_or_else(|| StoreError::stored(0, "a text row has no group"))?;
                         bodies.push(bytes);
                     }
-                    drop(body);
                     tx.finish()?;
                 }
                 let mut decoded: Option<(i64, Vec<u8>)> = None;
@@ -577,12 +597,9 @@ impl Coordinator {
         // which apply it as the same entry.
         loop {
             let tx = self.reader.unchecked_transaction()?;
-            let rows: Vec<(i64, i64)> = tx
-                .prepare_cached("SELECT id, indexed FROM text WHERE id > ?1 ORDER BY id LIMIT ?2")?
-                .query_map([after, SETTLE_ROWS], |r| <(i64, i64)>::try_from(r))?
-                .collect::<rusqlite::Result<_>>()?;
+            let rows = tx.all(&TextMembership::AFTER, [after, SETTLE_ROWS])?;
             tx.finish()?;
-            for &(id, indexed) in &rows {
+            for &TextMembership { id, indexed } in &rows {
                 for (bit, keys) in members.iter_mut().enumerate() {
                     if indexed & (1 << bit) != 0 {
                         keys.insert(id);
@@ -590,7 +607,7 @@ impl Coordinator {
                 }
             }
             match rows.last() {
-                Some(&(last, _)) if rows.len() as i64 == SETTLE_ROWS => after = last,
+                Some(last) if rows.len() as i64 == SETTLE_ROWS => after = last.id,
                 _ => break,
             }
         }
@@ -662,4 +679,11 @@ fn fill_file(file: Connection, batches: &Receiver<Vec<Entry>>, queued: &AtomicUs
     }
     file.execute_batch("COMMIT")?;
     Ok(())
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<TextPlace>();
+    check.row::<TextMembership>();
 }

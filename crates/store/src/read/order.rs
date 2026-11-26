@@ -10,15 +10,26 @@ pub(super) enum RecordOrder {
     Known(i64),
 }
 
-pub(super) fn session_record_rows(session: &str) -> String {
-    format!(
-        "SELECT pk,row_number() OVER (ORDER BY session_order,id)-1 AS record_order
-        FROM message WHERE session_pk={session} AND duplicate_of IS NULL"
-    )
+/// `WITH record_ranks AS (...)`: each message of the session whose key is
+/// parameter 1 (`pk`), with its place in the session's own reading order
+/// (`record_order`).
+macro_rules! record_ranks {
+    () => {
+        "WITH record_ranks AS (SELECT pk,row_number() OVER (ORDER BY session_order,id)-1 AS record_order
+        FROM message WHERE session_pk=?1 AND duplicate_of IS NULL) "
+    };
 }
+pub(super) use record_ranks;
 
 pub(super) fn checked(value: i64) -> Result<u64> {
     u64::try_from(value).map_err(|_| StoreError::stored(0, "negative message snapshot ordinal"))
+}
+
+row! {
+    /// A message of a range, by ID.
+    struct RangeMember {
+        id: MessageId,
+    }
 }
 
 impl Reader<'_> {
@@ -26,11 +37,10 @@ impl Reader<'_> {
     /// an endpoint body or expands inherited parents.
     pub fn message_session(&self, id: &MessageId) -> Result<Option<SessionId>> {
         let id = crate::chain_names::resolved_message(self.conn()?, id)?;
-        let value = self.conn()?.query_row(
+        self.conn()?.value(
             "SELECT s.id FROM message m JOIN session s ON s.pk=m.session_pk WHERE m.id=?1 AND m.duplicate_of IS NULL",
-            [id.to_string()], |row| crate::encoding::Columns::id::<SessionId>(row, 0),
-        ).optional()?;
-        Ok(value)
+            [id.to_string()],
+        )
     }
 
     /// The export snapshot ordinal in the whole physical session that
@@ -39,13 +49,12 @@ impl Reader<'_> {
     pub fn message_order(&self, id: &MessageId) -> Result<Option<u64>> {
         let id = crate::chain_names::resolved_message(self.conn()?, id)?;
         self.conn()?
-            .prepare_cached(
+            .value(
                 "SELECT (SELECT count(*) FROM message o WHERE o.session_pk=m.session_pk AND o.duplicate_of IS NULL
                    AND (o.session_order,o.id)<(m.session_order,m.id))
                  FROM message m WHERE m.id=?1 AND m.duplicate_of IS NULL",
+                [id.to_string()],
             )?
-            .query_row([id.to_string()], |row| row.get::<_, i64>(0))
-            .optional()?
             .map(checked)
             .transpose()
     }
@@ -74,19 +83,16 @@ impl Reader<'_> {
         .or_stored("a message range has message membership")?;
         let from = i64::try_from(from)
             .map_err(|_| StoreError::stored_data("range ordinal exceeds SQLite's integer range"))?;
-        let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(&format!(
+        let statement = Statement::<RangeMember>::built(format!(
             "SELECT m.id FROM message m WHERE m.pk IN ({members}) AND m.duplicate_of IS NULL
              ORDER BY m.session_order,m.id LIMIT -1 OFFSET {from}"
-        ))?;
-        let mut rows = statement.query(rusqlite::params_from_iter(&params))?;
-        while let Some(row) = rows.next()? {
-            self.check()?;
-            let id: MessageId = crate::encoding::Columns::id(row, 0)?;
-            if visit(id)?.is_break() {
-                break;
-            }
-        }
+        ));
+        let _ = self
+            .conn()?
+            .each(&statement, rusqlite::params_from_iter(&params), |member| {
+                self.check()?;
+                visit(member.id)
+            })?;
         self.check()
     }
 }

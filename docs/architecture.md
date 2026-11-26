@@ -499,8 +499,17 @@ daemon refuses to start; paths are absolute.
 ## Store boundary
 
 A query resolves to a closed `Plan`, which the store executes. All SQL lives in
-the `store` crate, with one row codec per table; no other crate opens SQLite. Clients of the daemon receive typed
+the `store` crate; no other crate opens SQLite. Clients of the daemon receive typed
 replies, never connections or SQL.
+
+A row the store reads or writes is a **row struct**: plain data with named
+fields, declared once, whose field list is the statement's column list, the
+reading of a result row, the binding of an insert and the row's byte form in
+sorted files. Statements are declared beside their row struct; one test
+prepares every declared statement against a fresh index and archive and
+compares its columns with the struct's fields, so a statement and its struct
+cannot drift apart unnoticed. Store keys are typed by their table
+(`SessionPk`, `MessagePk` and the others) and bind as SQLite integers.
 
 ## Deletion
 

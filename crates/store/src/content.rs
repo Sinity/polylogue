@@ -7,8 +7,9 @@
 //! Groups are made off the writer (the parse workers compress them) and
 //! never change once stored, and a group's key is never given to another
 //! group, so a reference read once stays valid while the group exists.
+use crate::row::Rows as _;
 use crate::{Result, StoreError};
-use rusqlite::{Connection, OptionalExtension as _};
+use rusqlite::Connection;
 use std::cell::RefCell;
 use std::ops::Range;
 
@@ -142,10 +143,10 @@ impl Packer {
 /// The row of a group, stored once: a group already stored with the same
 /// bytes is shared.
 pub(crate) fn store(conn: &Connection, group: &Group) -> Result<i64> {
-    let stored = conn
-        .prepare_cached("SELECT id FROM content_group WHERE hash=?1")?
-        .query_row([group.hash.as_slice()], |r| r.get::<_, i64>(0))
-        .optional()?;
+    let stored: Option<i64> = conn.value(
+        "SELECT id FROM content_group WHERE hash=?1",
+        [group.hash.as_slice()],
+    )?;
     if let Some(id) = stored {
         return Ok(id);
     }
@@ -367,10 +368,7 @@ fn matching(
     condition: &str,
     params: impl rusqlite::Params,
 ) -> Result<Vec<i64>> {
-    Ok(conn
-        .prepare(&format!("SELECT pk FROM {table} WHERE {condition}"))?
-        .query_map(params, |r| r.get(0))?
-        .collect::<rusqlite::Result<_>>()?)
+    conn.values(&format!("SELECT pk FROM {table} WHERE {condition}"), params)
 }
 
 /// Reads stored pieces by their group's key on one connection, decoding a
@@ -389,9 +387,10 @@ impl Reader {
             .is_none_or(|(id, _)| *id != stretch.group)
         {
             let body: Vec<u8> = conn
-                .prepare_cached("SELECT body FROM content_group WHERE id=?1")?
-                .query_row([stretch.group], |r| r.get(0))
-                .optional()?
+                .value(
+                    "SELECT body FROM content_group WHERE id=?1",
+                    [stretch.group],
+                )?
                 .ok_or_else(|| StoreError::stored(0, "a stored piece names no group"))?;
             self.last = Some((stretch.group, decode(&body)?));
         }

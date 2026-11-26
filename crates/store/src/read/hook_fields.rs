@@ -1,10 +1,26 @@
 //! Injection fields a message version's sources declared, as they state them.
+use crate::row::{Json, Rows as _, row};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     BlobHash, MessageId,
     injection::{InjectionEvidence, StatedHookField},
 };
 use rusqlite::params;
+
+row! {
+    /// An injection field a reading of a message version declared, on the
+    /// block at `block_ordinal`, and that reading's layout.
+    struct DeclaredField {
+        block_ordinal: String,
+        field: Json<StatedHookField>,
+        layout: Vec<u8>,
+    }
+    statements {
+        const OF_VERSION = "SELECT DISTINCT f.block_ordinal, f.field, r.layout FROM message_parse r
+            JOIN message_injection_field f ON f.input_pk=r.input_pk AND f.chain=r.chain AND f.message_id=r.message_id
+            WHERE r.message_id=?1 AND r.hash=?2 ORDER BY length(f.block_ordinal), f.block_ordinal, f.field";
+    }
+}
 
 impl Reader<'_> {
     /// A missing authenticated receiver stays unknown. Values the parser read
@@ -14,26 +30,24 @@ impl Reader<'_> {
         message: &MessageId,
         source_version: BlobHash,
     ) -> Result<Vec<InjectionEvidence>> {
-        let conn = self.conn()?;
-        let mut statement=conn.prepare_cached(
-            "SELECT DISTINCT f.block_ordinal,f.field,r.layout FROM message_parse r
-             JOIN message_injection_field f ON f.input_pk=r.input_pk AND f.chain=r.chain AND f.message_id=r.message_id
-             WHERE r.message_id=?1 AND r.hash=?2 ORDER BY length(f.block_ordinal),f.block_ordinal,f.field",
+        let declared = self.conn()?.all(
+            &DeclaredField::OF_VERSION,
+            params![message.to_string(), source_version.0.as_slice()],
         )?;
-        let mut rows =
-            statement.query(params![message.to_string(), source_version.0.as_slice()])?;
         let mut grouped = std::collections::BTreeMap::<u64, Vec<StatedHookField>>::new();
         let mut block_selection = None;
-        while let Some(row) = rows.next()? {
-            let ordinal: String = row.get(0)?;
+        for DeclaredField {
+            block_ordinal: ordinal,
+            field: Json(field),
+            layout,
+        } in declared
+        {
             let block: u64 = ordinal
                 .parse()
                 .ok()
                 .filter(|n: &u64| n.to_string() == ordinal)
                 .ok_or_else(|| StoreError::stored(0, "invalid stored injection block ordinal"))?;
-            let field: StatedHookField = serde_json::from_str(&row.get::<_, String>(1)?)?;
             if block_selection.is_none() {
-                let layout: Vec<u8> = row.get(2)?;
                 block_selection = Some(crate::encoding::message_block_selection(
                     &source_version.0,
                     Some(&layout),
@@ -68,6 +82,12 @@ impl Reader<'_> {
             })
             .collect())
     }
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<DeclaredField>();
 }
 
 #[cfg(test)]

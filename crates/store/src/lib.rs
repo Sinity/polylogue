@@ -57,6 +57,7 @@ pub mod query_objects;
 pub mod read;
 pub mod reference;
 mod repo_lookup;
+pub mod row;
 pub use identical_chains::{
     ChainLayout, ChainLayouts, PrefixCopies, PrefixCopy, ReadingCopy, SharedPrefixes,
     StoredParseState,
