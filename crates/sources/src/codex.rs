@@ -19,11 +19,15 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 12;
 
+parser_modules! {
+    mod fields;
+    mod index;
+    mod items;
+    mod usage;
+    mod header;
+}
+
 pub mod database;
-mod fields;
-mod index;
-mod items;
-mod usage;
 
 use crate::lines::Record;
 use crate::origin::Root;
@@ -53,7 +57,6 @@ pub const LOCATIONS: &[&str] = &[
     "session_index.jsonl",
 ];
 
-mod header;
 pub use header::{recorded_directory, rollout_id};
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {

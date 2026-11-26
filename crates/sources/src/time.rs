@@ -4,6 +4,8 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 2;
 
+parser_modules! {}
+
 use polylogue_model::{Json, Precision, TimeAccuracy, TimeAccuracyError, TimeQuality, Timestamp};
 use serde::{Deserialize, Serialize};
 

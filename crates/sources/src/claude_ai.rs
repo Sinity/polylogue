@@ -12,9 +12,12 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 5;
 
+parser_modules! {
+    mod fields;
+    mod sidecars;
+}
+
 use crate::fields::ExpectedType as T;
-mod fields;
-mod sidecars;
 
 use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, time_of};

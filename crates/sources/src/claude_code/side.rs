@@ -9,6 +9,8 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 3;
 
+parser_modules! {}
+
 use super::{ROOT, session_id};
 use crate::lines::Record;
 use crate::origin::Root;
