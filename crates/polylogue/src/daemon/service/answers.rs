@@ -2,8 +2,9 @@
 use super::Daemon;
 use crate::brief::{self, Ask};
 use crate::daemon::Failure;
-use command_surface::Answer;
+use command_surface::{Answer, Outcome};
 use polylogue_model::user::{Delivery, UserWrite};
+use polylogue_model::{Cause, Code};
 use polylogue_reading::operation::{Context, Invocation};
 use polylogue_store::{StoreError, WriterSender, archive::writer::Committed, user_writes};
 use serde_json::Value;
@@ -60,34 +61,65 @@ pub(crate) fn query_outcome(
     }
 }
 
-/// An import is degraded, with the awaiting-confirmation note, while restored
-/// user state Sinex has not confirmed is pending or the Python Polylogue
-/// import's authored publication or source membership is unfinished.
-/// An import whose inputs are readable only after the index being built
-/// is installed says so beside its report's `readable`.
 pub(crate) fn import_answer(
     report: polylogue_engine::ImportReport,
+    dry_run: bool,
 ) -> Answer<polylogue_engine::ImportReport> {
-    let pending = report.user_state.pending > 0;
-    let after_build = match &report.readable {
-        polylogue_engine::Readable::Now => None,
-        polylogue_engine::Readable::AfterBuild { build } => Some(format!(
-            "{build}; the imported inputs are readable once it is installed"
-        )),
-    };
-    let mut answer = crate::protocol::written(report, pending);
-    if let Some(note) = after_build {
-        answer.outcome = match answer.outcome {
-            command_surface::Outcome::Ok(value) => command_surface::Outcome::Degraded {
-                value,
-                missing: vec![note],
-            },
-            command_surface::Outcome::Degraded { value, mut missing } => {
-                missing.push(note);
-                command_surface::Outcome::Degraded { value, missing }
+    let mut missing = Vec::new();
+    if !dry_run && (!report.refused.is_empty() || !report.pass.errors.is_empty()) {
+        // Staging failures have no entry among the classified members.
+        let refused_members: HashSet<_> = report
+            .members
+            .iter()
+            .filter(|member| member.class == "refused")
+            .map(|member| &member.path)
+            .collect();
+        let mut staging_failed = false;
+        missing.extend(report.refused.iter().map(|r| {
+            let label = if refused_members.contains(&r.path) {
+                "refused"
+            } else {
+                staging_failed = true;
+                "failed"
+            };
+            format!("{label} {}: {}", r.path.display(), r.reason)
+        }));
+        missing.extend(report.pass.errors.iter().map(ToString::to_string));
+        if report.imported.is_empty() {
+            let problem = missing.join("\n");
+            if let Some(failure) = report.pass.errors.iter().find(|failure| {
+                failure.code == Code::NotFound
+                    || !matches!(failure.cause, Cause::Content | Cause::Request)
+            }) {
+                return error(failure.code, problem);
             }
-            other => other,
-        };
+            if staging_failed {
+                return error(Code::Io, problem);
+            }
+            return Failure::refusal(polylogue_model::Reason::ImportRefused { problem }).answer();
+        }
+        polylogue_store::log!(
+            warning,
+            "import incomplete: {}",
+            missing.join(" | ").replace('\n', " | ")
+        );
+    }
+    if report.user_state.pending > 0 {
+        missing.push(crate::protocol::AWAITING_CONFIRMATION.into());
+    }
+    if let polylogue_engine::Readable::AfterBuild { build } = &report.readable {
+        missing.push(format!(
+            "{build}; the imported inputs are readable once it is installed"
+        ));
+    }
+    let already_stored = report.imported.is_empty() && !report.already_stored.is_empty();
+    let mut answer = if missing.is_empty() {
+        Answer::ok(report)
+    } else {
+        Answer::degraded(report, missing)
+    };
+    if already_stored && matches!(answer.outcome, Outcome::Ok(_)) {
+        answer = answer.with_note("Everything named was already stored.");
     }
     answer
 }

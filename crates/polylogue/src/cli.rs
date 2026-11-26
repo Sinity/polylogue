@@ -555,6 +555,18 @@ pub fn run(matches: &ArgMatches, client: &crate::config::Client) -> ExitCode {
                 &crate::protocol::notes(&answer).cloned().collect::<Vec<_>>(),
                 policy,
             );
+            if cmd.name == "import" {
+                for next in &answer.envelope.next {
+                    let line = match crate::commands::declarations().cli_command(&next.request) {
+                        Ok(line) => line,
+                        Err(failure) => return fail_with(policy, json, &failure, &[]),
+                    };
+                    eprint!(
+                        "{}",
+                        print::diagnostic(&next.label, &line, None, policy.stderr_color())
+                    );
+                }
+            }
             ExitCode::from(outcome_code)
         }
     }

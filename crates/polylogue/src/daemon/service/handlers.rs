@@ -377,69 +377,113 @@ impl Operation for Import {
             return super::browser::import_provider(call, &arguments, provider)
                 .map(|answer| answer.map(protocol::import::Answer::Provider));
         }
-        if let Some((_, option)) = [
-            (arguments.since.is_some(), "--since"),
-            (arguments.cancel, "--cancel"),
-            (arguments.wait.is_some(), "--wait"),
-        ]
-        .into_iter()
-        .find(|(used, _)| *used)
-        {
-            return Err(Failure::bad_request(format!(
-                "{option} is for a provider import (`polylogue import chatgpt {option}`), not for files"
-            )));
+        let answer = import_files(arguments, call).unwrap_or_else(Failure::answer);
+        if let Some(error) = answer.failure() {
+            let code = error.code.as_deref().unwrap_or(error.kind.name());
+            polylogue_store::log!(
+                error,
+                "import failed ({code}): {}",
+                error.message.replace('\n', " | ")
+            );
         }
-        if arguments.withdraw_missing {
-            return Ok(error(
-                polylogue_model::Code::NotBuilt,
-                "import --withdraw-missing is not built yet",
-            ));
-        }
-        let paths = arguments
-            .paths
-            .iter()
-            .map(|path| call.path(path, "import path"))
-            .collect::<Result<Vec<_>, _>>()?;
-        let d = call.daemon;
-        let invocation = call.invocation;
-        let (reply, wait) = sync_channel(1);
-        let Ok(tx) = d.loop_tx.lock() else {
-            return Ok(loop_stopped());
-        };
-        if let Err(error) = invocation.check_parent_lifetime() {
-            return Ok(store_error(&error));
-        }
-        let sent = tx
-            .send(polylogue_engine::LoopMsg::Import {
-                paths,
-                format: arguments.origin.clone(),
-                dry_run: arguments.dry_run,
-                authorship: invocation.authorship.clone(),
-                parent: invocation.parent_lifetime(),
-                reply,
-            })
-            .is_ok();
-        drop(tx);
-        if !sent {
-            return Ok(loop_stopped());
-        }
-        Ok(match wait.recv() {
-            Ok(Ok(report)) => {
-                super::import_answer(report).map(|r| protocol::import::Answer::Files(Box::new(r)))
-            }
-            Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
-            Ok(Err(polylogue_engine::ImportFailure::Import(
-                polylogue_engine::EngineError::Store(error),
-            ))) => store_error(&error),
-            Ok(Err(polylogue_engine::ImportFailure::Import(
-                polylogue_engine::EngineError::Stopped,
-            ))) => store_error(&polylogue_store::StoreError::Stopped),
-            Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
-                super::error(polylogue_model::Code::Import, error)
-            }
-            Err(_) => loop_stopped(),
-        })
+        Ok(answer)
     }
+}
+
+fn import_files(
+    arguments: protocol::import::Arguments,
+    call: &Call<'_>,
+) -> Result<Answer<protocol::import::Answer>, Failure> {
+    if let Some((_, option)) = [
+        (arguments.since.is_some(), "--since"),
+        (arguments.cancel, "--cancel"),
+        (arguments.wait.is_some(), "--wait"),
+    ]
+    .into_iter()
+    .find(|(used, _)| *used)
+    {
+        return Err(Failure::bad_request(format!(
+            "{option} is for a provider import (`polylogue import chatgpt {option}`), not for files"
+        )));
+    }
+    if arguments.withdraw_missing {
+        return Ok(error(
+            polylogue_model::Code::NotBuilt,
+            "import --withdraw-missing is not built yet",
+        ));
+    }
+    if let Some(origin) = &arguments.origin
+        && origin != "python-vectors"
+    {
+        use polylogue_sources::origin::{ORIGINS, Support};
+        let importable = ORIGINS.iter().filter(|spec| {
+            spec.support == Support::Parsed
+                || (spec.support == Support::NoParser && !spec.capture.is_row_dump())
+        });
+        if !importable.clone().any(|spec| spec.name == origin.as_str()) {
+            let known = importable
+                .map(|spec| spec.name)
+                .chain(["python-vectors"])
+                .collect();
+            return Err(Failure::refusal(polylogue_model::Reason::UnknownChoice {
+                field: "--origin".into(),
+                value: origin.clone(),
+                known,
+            }));
+        }
+    }
+    let paths = arguments
+        .paths
+        .iter()
+        .map(|path| call.path(path, "import path"))
+        .collect::<Result<Vec<_>, _>>()?;
+    let d = call.daemon;
+    let invocation = call.invocation;
+    let (reply, wait) = sync_channel(1);
+    let Ok(tx) = d.loop_tx.lock() else {
+        return Ok(loop_stopped());
+    };
+    if let Err(error) = invocation.check_parent_lifetime() {
+        return Ok(store_error(&error));
+    }
+    let sent = tx
+        .send(polylogue_engine::LoopMsg::Import {
+            paths,
+            format: arguments.origin,
+            dry_run: arguments.dry_run,
+            authorship: invocation.authorship.clone(),
+            parent: invocation.parent_lifetime(),
+            reply,
+        })
+        .is_ok();
+    drop(tx);
+    if !sent {
+        return Ok(loop_stopped());
+    }
+    Ok(match wait.recv() {
+        Ok(Ok(report)) => super::import_answer(report, arguments.dry_run)
+            .map(|r| protocol::import::Answer::Files(Box::new(r))),
+        Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
+        Ok(Err(polylogue_engine::ImportFailure::Import(polylogue_engine::EngineError::Store(
+            error,
+        )))) => store_error(&error),
+        Ok(Err(polylogue_engine::ImportFailure::Import(
+            polylogue_engine::EngineError::Stopped,
+        ))) => store_error(&polylogue_store::StoreError::Stopped),
+        Ok(Err(polylogue_engine::ImportFailure::Import(error))) => {
+            use polylogue_model::{Caused, Code};
+            let code = match &error {
+                polylogue_engine::EngineError::Io(io)
+                    if io.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    Code::NotFound
+                }
+                _ => error.code(),
+            };
+            super::error(code, error)
+        }
+        Err(_) => loop_stopped(),
+    })
 }
 
 /// Submit the complete Save as one authored write and one retry receipt.
