@@ -437,6 +437,7 @@ fn other_delivery(d: &test_daemon::TestDaemon, event: polylogue_model::DeliveryE
             text: "handed over".into(),
             refs: vec![],
             left_out: vec![],
+            prepared_position: None,
         }),
     )
     .unwrap();
@@ -572,6 +573,95 @@ fn a_pending_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
     let text = resume["prepared"]["text"].as_str().unwrap();
     assert!(
         text.contains("the otter release needs release notes"),
+        "{text}"
+    );
+}
+
+/// A brief prepared before a note committed, whose delivery commits after
+/// the note, counts from the read it was prepared at: the next brief still
+/// carries the note once both rows are committed.
+#[test]
+fn a_committed_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
+    use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
+    use polylogue_store::writer::{DispatchPhase, Queued};
+    let d = daemon_with_a_project();
+    let at = polylogue_model::Timestamp::from_unix_ms(1_800_000_000_000).unwrap();
+    let brief = |request_id: &str, source: StartSource| {
+        let request = crate::test_daemon::Call::new(
+            "rows",
+            serde_json::json!({"steps":[{"verb":"brief", "cwd":"/home/op/proj", "for":"claude-code:newcomer", "source":source}]}),
+        ).id(request_id).channel(command_surface::Via::Hook).at(at);
+        match crate::test_answers::step(request.answer(&d.daemon)) {
+            crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
+            other => panic!("expected a directory brief: {other:?}"),
+        }
+    };
+    let (pause, held) = hold_writer(&d, "held-before-committed-note");
+    let writer = d.daemon.writes.as_ref().unwrap();
+    let invocation = d
+        .daemon
+        .invocation(&polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        });
+    let note = invocation.request(
+        "note-before-committed-delivery".into(),
+        UserWrite::Assert {
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Lesson,
+                key: None,
+                value: Some(serde_json::json!("the otter release needs a changelog")),
+                valid_until: None,
+                links: vec![NewAnnotationLink {
+                    role: LinkRole::About,
+                    reference: polylogue_model::Reference::Cwd("/home/op/proj".into()),
+                }],
+            }],
+        },
+    );
+    let Queued::Committing(note) = writer.archive().try_submit(note).unwrap() else {
+        panic!("the note fits in the writer queue");
+    };
+    let delivery_pause =
+        writer.pause_user_dispatch_for_test("brief-before-committed-note-1", DispatchPhase::Owned);
+    let startup = brief("brief-before-committed-note", StartSource::Startup);
+    let delivery = startup["delivery"].as_str().unwrap().to_owned();
+    assert!(
+        !startup["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("the otter release needs a changelog")
+    );
+    delivered(&d, &delivery);
+    pause.release();
+    delivery_pause.wait().unwrap();
+    let note = note.recv().unwrap().unwrap();
+    delivery_pause.release();
+    held.join().unwrap();
+    writer.archive().flush().unwrap();
+    assert!(writer.archive().pending_deliveries().is_empty());
+
+    let reader = d.daemon.reads.reader().unwrap();
+    let row = reader
+        .deliveries_to("claude-code:newcomer")
+        .unwrap()
+        .into_iter()
+        .find(|row| row.id == delivery)
+        .expect("the brief's delivery is committed");
+    let prepared = row.prepared_position.expect("the brief records its read");
+    let note = i64::try_from(note.position.0).unwrap();
+    // The note committed between the brief's read and its delivery's commit.
+    assert!(
+        prepared < note && note < row.seq,
+        "{prepared} {note} {}",
+        row.seq
+    );
+    drop(reader);
+
+    let resume = brief("brief-after-committed-note", StartSource::Resume);
+    let text = resume["prepared"]["text"].as_str().unwrap();
+    assert!(
+        text.contains("the otter release needs a changelog"),
         "{text}"
     );
 }

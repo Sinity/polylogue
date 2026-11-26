@@ -21,6 +21,7 @@ fn pending_notices_are_selected_by_directory_scope_and_acknowledgement() {
                     text: format!("{id} {}", "body".repeat(10000)),
                     refs: vec![],
                     left_out: vec![],
+                    prepared_position: None,
                 }),
             ))
             .unwrap();
@@ -167,6 +168,7 @@ fn delivery_sender_and_event_refuse_unknown_values() {
                 text: "hello".into(),
                 refs: vec![],
                 left_out: vec![],
+                prepared_position: None,
             }),
         ))
         .unwrap();
@@ -202,4 +204,62 @@ fn delivery_sender_and_event_refuse_unknown_values() {
             "{column}: {error:?}"
         );
     }
+}
+
+/// A delivery keeps the read position its content was prepared at, in its
+/// row and in its recorded request and effect; one written without it reads
+/// as unknown.
+#[test]
+fn a_delivery_keeps_the_read_position_it_was_prepared_at() {
+    let archive = WriterArchive::new();
+    let deliver = |id: &str, prepared_position| {
+        archive
+            .writer
+            .archive()
+            .user(operator_request(
+                id.into(),
+                UserWrite::Deliver(Delivery {
+                    recipient_kind: "session".into(),
+                    recipient_id: Some("claude-code:s1".into()),
+                    sender: polylogue_model::DeliverySender::Hook,
+                    event: polylogue_model::DeliveryEvent::SessionStart,
+                    cwd: None,
+                    text: "brief".into(),
+                    refs: vec![],
+                    left_out: vec![],
+                    prepared_position,
+                }),
+            ))
+            .unwrap();
+    };
+    deliver("prepared", Some(5));
+    deliver("unrecorded", None);
+    let pool = crate::ReadPool::open(&archive.archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let rows = reader.deliveries_to("claude-code:s1").unwrap();
+    let position = |id: &str| {
+        rows.iter()
+            .find(|row| row.id == id)
+            .unwrap()
+            .prepared_position
+    };
+    assert_eq!(
+        (position("prepared"), position("unrecorded")),
+        (Some(5), None)
+    );
+    let conn = reader.conn().unwrap();
+    let stored = crate::authored_records::stored_request(conn, "prepared")
+        .unwrap()
+        .unwrap();
+    let UserWrite::Deliver(delivery) = &stored.request.write else {
+        panic!("a delivery")
+    };
+    assert_eq!(delivery.prepared_position, Some(5));
+    assert_eq!(
+        stored.effect.deliveries[0]
+            .delivery
+            .prepared
+            .prepared_position,
+        Some(5)
+    );
 }

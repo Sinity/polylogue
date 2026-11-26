@@ -101,11 +101,12 @@ pub(super) fn delivery_from(conn: &Connection, source: Source, id: &str) -> Resu
         body: Vec<u8>,
         refs: String,
         left_out: String,
+        prepared_position: Option<i64>,
     }
-    let DeliveryRow { recipient_kind, recipient_id, sender, event, cwd, at, body, refs, left_out } = conn.query_row(
-        &source.sql("SELECT recipient_kind,recipient_id,sender,event,cwd,at,body,refs_json,left_out_json FROM @source.delivery WHERE id=?1"),
+    let DeliveryRow { recipient_kind, recipient_id, sender, event, cwd, at, body, refs, left_out, prepared_position } = conn.query_row(
+        &source.sql("SELECT recipient_kind,recipient_id,sender,event,cwd,at,body,refs_json,left_out_json,prepared_position FROM @source.delivery WHERE id=?1"),
         [id],
-        |r| Ok(DeliveryRow { recipient_kind: r.get(0)?, recipient_id: r.get(1)?, sender: r.name(2)?, event: r.name(3)?, cwd: r.get(4)?, at: r.get(5)?, body: r.get(6)?, refs: r.get(7)?, left_out: r.get(8)? }),
+        |r| Ok(DeliveryRow { recipient_kind: r.get(0)?, recipient_id: r.get(1)?, sender: r.name(2)?, event: r.name(3)?, cwd: r.get(4)?, at: r.get(5)?, body: r.get(6)?, refs: r.get(7)?, left_out: r.get(8)?, prepared_position: r.get(9)? }),
     )?;
     Ok(DeliveryRecord {
         signal: crate::signals::metadata(conn, source, id)?,
@@ -119,6 +120,7 @@ pub(super) fn delivery_from(conn: &Connection, source: Source, id: &str) -> Resu
             text: crate::encoding::unpack_text(&body)?,
             refs: serde_json::from_str(&refs)?,
             left_out: serde_json::from_str(&left_out)?,
+            prepared_position,
         },
         at: time(at)?,
         events: delivery_events_from(conn, source, id, None)?,
@@ -234,7 +236,7 @@ pub(super) fn insert_delivery(
         }
         return Ok(());
     }
-    conn.execute(&source.sql("INSERT INTO @source.delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)"),params![value.id,d.recipient_kind,d.recipient_id,d.sender.as_str(),d.event.as_str(),d.cwd,value.at.unix_ms(),&blake3::hash(d.text.as_bytes()).as_bytes()[..],crate::to_i64(d.text.len(), "delivery size is out of range")?,crate::encoding::pack_text(&d.text)?,serde_json::to_string(&d.refs)?,serde_json::to_string(&d.left_out)?,counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.delivery(id,recipient_kind,recipient_id,sender,event,cwd,at,content_hash,bytes,body,refs_json,left_out_json,commit_seq,prepared_position) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)"),params![value.id,d.recipient_kind,d.recipient_id,d.sender.as_str(),d.event.as_str(),d.cwd,value.at.unix_ms(),&blake3::hash(d.text.as_bytes()).as_bytes()[..],crate::to_i64(d.text.len(), "delivery size is out of range")?,crate::encoding::pack_text(&d.text)?,serde_json::to_string(&d.refs)?,serde_json::to_string(&d.left_out)?,counter,d.prepared_position])?;
     if let Some(mut signal) = value.signal.clone() {
         if historical {
             signal.execution = RunsHere::Historical;

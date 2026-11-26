@@ -332,6 +332,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         text: "a synthetic brief".into(),
         refs: vec!["session:claude-code:s1".into()],
         left_out: vec![],
+        prepared_position: None,
     }));
     write(UserWrite::DeliveryEvent {
         delivery,

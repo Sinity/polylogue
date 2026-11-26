@@ -437,6 +437,7 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
                     text: "synthetic pointer".into(),
                     refs,
                     left_out,
+                    prepared_position: None,
                 }),
             ))
             .unwrap();

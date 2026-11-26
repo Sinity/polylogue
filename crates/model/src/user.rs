@@ -221,6 +221,11 @@ pub struct Delivery {
     pub refs: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub left_out: Vec<LeftOut>,
+    /// The archive write counter of the read the content was prepared from:
+    /// what the recipient's next brief counts as already seen. Absent where
+    /// it was not recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepared_position: Option<i64>,
 }
 
 /// A reference or section a delivery did not include, and why.
@@ -243,6 +248,15 @@ impl UserWrite {
                 watch: save.watch.clone(),
                 outcomes: None,
             })),
+            Self::Deliver(delivery) | Self::DeliveredAdvice(delivery) => {
+                let mut delivery = delivery.clone();
+                delivery.prepared_position = None;
+                if matches!(self, Self::Deliver(_)) {
+                    Self::Deliver(delivery)
+                } else {
+                    Self::DeliveredAdvice(delivery)
+                }
+            }
             _ => self.clone(),
         };
         match &mut intent {
