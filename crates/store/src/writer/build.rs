@@ -1020,8 +1020,8 @@ fn compose_records(
         r.get(0)
     })?;
     {
-        let mut statement = tx
-            .prepare_cached("SELECT session_id,json_extract(facts,'$.kind') FROM session_record")?;
+        let mut statement =
+            tx.prepare_cached("SELECT session_id,json_extract(facts,'$.kind') FROM session_parse")?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let mut key = compose_key(&row.get::<_, String>(0)?, FACTS);
@@ -1188,7 +1188,7 @@ impl Fallback {
         };
         Ok(Self {
             sessions: strings(
-                "SELECT session_id FROM session_record UNION SELECT session_id FROM message_parse
+                "SELECT session_id FROM session_parse UNION SELECT session_id FROM message_parse
                  UNION SELECT session_id FROM event_parse WHERE session_id IS NOT NULL
                  UNION SELECT session_id FROM session_alias UNION SELECT alias FROM session_alias
                  UNION SELECT session_id FROM call_outcome",
@@ -1292,7 +1292,7 @@ impl ComposeState {
         // composed from the index, which it passes over.
         let stated: u64 = index.scalar(
             "SELECT count(*) FROM (
-                 SELECT DISTINCT session_id FROM session_record
+                 SELECT DISTINCT session_id FROM session_parse
                  UNION SELECT DISTINCT session_id FROM message_parse
                  UNION SELECT DISTINCT session_id FROM event_parse WHERE session_id IS NOT NULL
                  UNION SELECT DISTINCT session_id FROM call_outcome)",
@@ -1301,7 +1301,7 @@ impl ComposeState {
         let mut passed_over = 0;
         for name in &fallback {
             if index.exists(
-                "SELECT EXISTS(SELECT 1 FROM session_record WHERE session_id=?1)
+                "SELECT EXISTS(SELECT 1 FROM session_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM message_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM event_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM call_outcome WHERE session_id=?1)",

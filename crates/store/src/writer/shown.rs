@@ -567,7 +567,7 @@ impl<'c> Work<'_, 'c> {
         let mut stated_at_all = false;
         for id in &stated {
             own |= self.tx().exists(
-                "SELECT EXISTS(SELECT 1 FROM session_record WHERE session_id=?1)
+                "SELECT EXISTS(SELECT 1 FROM session_parse WHERE session_id=?1)
                  OR EXISTS(SELECT 1 FROM message_parse WHERE session_id=?1)",
                 [id],
             )?;
@@ -679,7 +679,7 @@ impl<'c> Work<'_, 'c> {
         let kind: Option<Option<String>> = self
             .tx()
             .prepare_cached(
-                "SELECT json_extract(facts,'$.kind') FROM session_record WHERE input_pk=?1 AND chain=?2 AND session_id=?3",
+                "SELECT json_extract(facts,'$.kind') FROM session_parse WHERE input_pk=?1 AND chain=?2 AND session_id=?3",
             )?
             .query_row(params![r.input_pk, r.chain, r.session], |row| row.get(0))
             .optional()?;

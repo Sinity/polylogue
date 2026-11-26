@@ -106,7 +106,7 @@ fn position(value: u64) -> Result<i64> {
 
 /// The reading tables, and the per-chain tables that are part of a reading.
 const READING_TABLES: &[&str] = &[
-    "session_record",
+    "session_parse",
     "session_alias",
     "message_parse",
     "parse_text",
@@ -141,7 +141,7 @@ pub(super) fn delete(
             .collect::<rusqlite::Result<_>>()?)
     };
     for session in strings(
-        "SELECT session_id FROM session_record WHERE input_pk=?1 AND chain=?2
+        "SELECT session_id FROM session_parse WHERE input_pk=?1 AND chain=?2
          UNION SELECT session_id FROM message_parse WHERE input_pk=?1 AND chain=?2
          UNION SELECT session_id FROM event_parse WHERE input_pk=?1 AND chain=?2 AND session_id IS NOT NULL",
     )? {
@@ -391,7 +391,7 @@ fn write_sessions(
     for session in &step.output.sessions {
         let id = session.id.to_string();
         let stored: Option<String> = tx.scalar_optional(
-            "SELECT facts FROM session_record WHERE input_pk=?1 AND chain=?2 AND session_id=?3",
+            "SELECT facts FROM session_parse WHERE input_pk=?1 AND chain=?2 AND session_id=?3",
             params![chain.input_pk, chain.chain, id],
         )?;
         let stored: Option<Session> = stored
@@ -400,9 +400,9 @@ fn write_sessions(
         let mut merged = stored.clone().unwrap_or_else(|| session.clone());
         merged.merge(session);
         tx.prepare_cached(
-            "INSERT INTO session_record(input_pk,chain,session_id,facts,committed) VALUES (?1,?2,?3,?4,?5)
+            "INSERT INTO session_parse(input_pk,chain,session_id,facts,committed) VALUES (?1,?2,?3,?4,?5)
              ON CONFLICT(input_pk,chain,session_id) DO UPDATE SET facts=excluded.facts,
-             committed=coalesce(max(session_record.committed,excluded.committed),session_record.committed,excluded.committed)",
+             committed=coalesce(max(session_parse.committed,excluded.committed),session_parse.committed,excluded.committed)",
         )?
         .execute(params![chain.input_pk, chain.chain, id, serde_json::to_string(&merged)?, chain.committed])?;
         let before: BTreeSet<String> = stored

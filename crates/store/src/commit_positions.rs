@@ -49,7 +49,7 @@ impl Reader<'_> {
 
     /// Greatest commit position among the stored session facts.
     pub fn session_commit(&self, id: &SessionId) -> Result<Option<u64>> {
-        self.greatest_commit("SELECT r.committed FROM session s JOIN session_stated x ON x.session_pk=s.pk JOIN session_record r ON r.session_id=x.stated_id WHERE s.id=?1 UNION ALL SELECT committed FROM prefix_copy WHERE child_id=?1", [id.to_string()])
+        self.greatest_commit("SELECT r.committed FROM session s JOIN session_stated x ON x.session_pk=s.pk JOIN session_parse r ON r.session_id=x.stated_id WHERE s.id=?1 UNION ALL SELECT committed FROM prefix_copy WHERE child_id=?1", [id.to_string()])
     }
 
     /// Commit position of the selected document reading, independent of cache changes.

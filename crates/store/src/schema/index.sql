@@ -138,7 +138,7 @@ CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_o
 -- A parse row with a byte range gets its commit position from the archive's
 -- extents for that range; a row without one (sessions, links, prefix copies)
 -- keeps `committed`, the commit of the step that stated it.
-CREATE TABLE session_record (
+CREATE TABLE session_parse (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   session_id        TEXT NOT NULL,          -- as the chain names it
@@ -146,7 +146,7 @@ CREATE TABLE session_record (
   committed         INTEGER CHECK(committed > 0),
   PRIMARY KEY (input_pk, chain, session_id)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX session_record_id ON session_record(session_id);
+CREATE INDEX session_parse_id ON session_parse(session_id);
 
 -- The IDs copies of a session carry when they have no native ID
 -- (Session.aliases): an AI Studio prompt read from Drive names the content
