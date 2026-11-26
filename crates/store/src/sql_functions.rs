@@ -19,7 +19,9 @@
 //!   `since`, `waiting_on`, `stall`, `process_alive` or `rank`;
 //! - `pl_similarity(text_hash)`: the text's similarity to the query text of
 //!   a `near:` ranking ([`with_similarity`]), NULL for a text with no
-//!   vector or outside such a query.
+//!   vector or outside such a query;
+//! - `pl_chat_action(…)`, `pl_import_job(…)`: where a chat action or an
+//!   import job stands at an instant, from its events (`extension_states`).
 //!
 //! Calendar labels and similarities depend on the explicit operation scope.
 //! The remaining functions are deterministic.
@@ -64,6 +66,7 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
             .map(|(text, pattern)| query_language::glob::matches(&text, &pattern)))
     })?;
     aggregates::register(conn)?;
+    extension_states::register(conn)?;
     conn.create_scalar_function("pl_live", 4, FLAGS, |ctx| {
         use polylogue_model::live::{LiveFacts, view};
         use rusqlite::types::Value;
@@ -373,4 +376,5 @@ pub(crate) fn register_calendar(
 mod tests;
 
 mod aggregates;
+mod extension_states;
 mod temporal;

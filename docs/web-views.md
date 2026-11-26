@@ -17,7 +17,7 @@ These views use the [workbench frame](web.md#frame). Session and document readin
 | [Project story](#project-story) | `/page/NAME` | a page from the `project-story` template |
 | [Workspaces](web.md#workspaces) | `/w/MODE`, `/page/NAME` | a page from the `workspace` template |
 | [Timeline, days, firehose](#timeline-days-firehose) | `/timeline`, `/day/DATE`, `/firehose` | time conditions and `\| group by day(at)`; `polylogue recent read --follow` |
-| [Cost](#cost) | `/cost` | `\| measure usage`, `quota`, `outlook`, `daily`; the shipped page `page:cost` |
+| [Cost](#cost) | `/cost` | `\| measure usage`, `responses`, `quota`, `outlook`, `daily`; the shipped page `page:cost` |
 | [Analysis](#analysis-analysisq) | `/analysis?q=QUERY` | any `\| measure` or `\| agg` query |
 | [Pastes, attachments, topics](#pastes-attachments-topics) | `/pastes`, `/attachments`, `/topic?q=QUERY` | `polylogue pastes`, `polylogue attachments`, `polylogue 'QUERY' read` |
 | [Status, Settings](#status-and-settings-status-settings) | `/status`, `/settings` | `polylogue status`; `polylogue set` (listing and writing) |
@@ -127,7 +127,7 @@ Lines: `polylogue page:morrow/story read`, `polylogue page:morrow/story save`.
 - **File at a moment:** a file's state graded by what is recorded: known (after a successful edit), possible (after a failed one), unknown; never by re-running commands. It comes from the `changes` view's data.
 - **`/firehose`:** the timeline reading new rows live with no window end, over AI-session records (messages, tool calls, notes, deliveries) at full detail. The cross-source firehose is Sinex's, a query read live over its confirmed stream; in primary mode `/firehose` links to it.
 
-Lines: `polylogue 'messages since:365d | group by day(at) | count'`, `polylogue 'sessions since:2026-10-08 until:2026-10-09'`, `polylogue recent read --follow`.
+Lines: `polylogue 'messages where since:365d | group by day(at) | count'`; for `/day/2026-10-08`, `polylogue 'sessions where since:2026-10-08 until:2026-10-08'`, `polylogue 'sessions where since:2026-10-08 until:2026-10-08 | measure usage'`, `polylogue 'messages where since:2026-10-01 until:2026-10-31 active:* | group by day(at) | count'` and `polylogue 'sessions where month_day:10-08'`; `polylogue 'messages where at:unknown'`, `polylogue recent read --follow`.
 
 ### Cost
 
@@ -142,7 +142,7 @@ Lines: `polylogue 'messages since:365d | group by day(at) | count'`, `polylogue 
 
 Every table has its own line in the footer. Dollars show two decimals in tables and the exact value in the tooltip. Unknown is never `$0` and never a zero-height bar, and a column never mixes money kinds ([measures.md](measures.md#cost-and-usage)).
 
-Lines: `polylogue 'sessions since:2026-10-01 | measure usage'`, `polylogue 'sessions since:2026-10-01 | measure daily'`, `polylogue 'sessions since:30d | measure quota'`, `polylogue 'sessions | measure outlook'`.
+Lines: `polylogue 'sessions since:2026-10-01 | measure usage'`, `polylogue 'sessions since:2026-10-01 | measure daily:api_cost'`, `polylogue 'sessions since:2026-10-01 | measure responses'`, `polylogue 'sessions since:30d | measure quota'`, `polylogue 'sessions | measure outlook'`.
 
 ### Analysis `/analysis?q=…`
 

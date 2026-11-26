@@ -181,6 +181,7 @@ pub fn router(web: Arc<Web>) -> Router {
         .route("/", get(home))
         .route("/search", get(search))
         .route("/cost", get(cost))
+        .route("/day/{date}", get(day))
         .route("/s/{id}", get(reader::session))
         .route("/d/{id}", get(reader::document))
         .route("/m/{id}", get(reader::message))
@@ -519,6 +520,33 @@ async fn cost(State(web): State<Arc<Web>>, Query(p): Query<CostQuery>) -> HttpRe
         Ok(data) => page(pages::cost(scope, &data["reply"]["data"])),
         Err(failure) => failed_with(&failure),
     }
+}
+
+/// One logical day as queries: its sessions, their usage during the day,
+/// its month by day and the same day in other years.
+async fn day(State(web): State<Arc<Web>>, UrlPath(date): UrlPath<String>) -> HttpResponse {
+    let Ok(date) = date.parse::<jiff::civil::Date>() else {
+        return failed(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "a day is written YYYY-MM-DD",
+        );
+    };
+    let mut replies: [Value; 4] = Default::default();
+    for (reply, query) in replies.iter_mut().zip(pages::day_queries(date)) {
+        let answer = ask(
+            &web,
+            "rows",
+            serde_json::json!({ "selection": query }),
+            None,
+        )
+        .await;
+        match crate::protocol::into_value(answer) {
+            Ok(mut data) => *reply = data["reply"].take(),
+            Err(failure) => return failed_with(&failure),
+        }
+    }
+    page(pages::day(date, &replies))
 }
 
 async fn auth_page() -> HttpResponse {

@@ -11,6 +11,8 @@
 pub enum Paging {
     Sessions,
     Facets,
+    /// The responses `usage` counts, in time order.
+    Responses,
 }
 
 pub mod comparison;
@@ -25,7 +27,7 @@ pub mod time;
 pub mod tool_calls;
 mod usage;
 use crate::query::fields::STRUCTURAL_KINDS;
-pub(crate) use usage::{RESPONSE_ROWS, cost_of, own_responses_sum, unpriced_in};
+pub(crate) use usage::{RESPONSE_ROWS, cost_of, own_responses_sum, responses_query, unpriced_in};
 
 pub use usage::{
     ModelUsage, Money, RecordedUsage, SessionUsage, TokenCount, TokensByKind, Totals, UsageMeasure,

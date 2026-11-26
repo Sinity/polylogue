@@ -18,6 +18,38 @@ pub const SUBJECTS: &[&str] = &[
 
 const SYNTAX: &str = "FIELD:VALUE matches by the field's kind; * includes every value, including unknown; unknown matches missing values. Comparisons use = != < <= > >=. Adjacent conditions and uppercase AND mean both, OR means either, NOT or - negates; parentheses group conditions. exists UNIT(CONDITION) tests related rows; count(UNIT where CONDITION) compares their count. seq(CONDITION -> CONDITION) follows tool calls. FIELD in (QUERY) matches a grouped query's values. Pipe transforms sort by, group by, agg, count, limit, offset, distinct and matches shape rows; a unit transform selects related rows; union, intersect, except and fuse combine queries; measure ends a sessions query.";
 
+/// The line `polylogue help WORD` prints for a word that left the surface:
+/// the row of the "Removed words" table in docs/vocabulary.md naming it.
+pub fn removed_word(word: &str) -> Option<String> {
+    const VOCABULARY: &str = include_str!("../../../docs/vocabulary.md");
+    let table = VOCABULARY.split_once("\n## Removed words\n")?.1;
+    let table = table.split("\n## ").next().unwrap_or(table);
+    table.lines().find_map(|line| {
+        let cells: Vec<&str> = line
+            .strip_prefix('|')?
+            .strip_suffix('|')?
+            .split(" | ")
+            .map(str::trim)
+            .collect();
+        let [words, now] = cells.as_slice() else {
+            return None;
+        };
+        let named = words
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .any(|named| named == word);
+        let plain = |text: &str| text.replace("\\|", "|").replace('`', "");
+        named.then(|| {
+            format!(
+                "{}: no longer part of the surface; now {}\n",
+                plain(words),
+                plain(now)
+            )
+        })
+    })
+}
+
 #[derive(Serialize)]
 struct Page {
     subject: String,

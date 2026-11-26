@@ -133,6 +133,7 @@ Store: **row** (a column on a parsed row), **session** (stored at session grain)
 | Message cost | `cost` on a response | row | exact |
 | Session cost | `session_cost`: `cost`, `cost_with_parents`, `tree_cost`, `subagent_cost`, `cost_complete` | session | exact |
 | Usage over a selection | `measure usage` | read | exact |
+| Responses behind usage | `measure responses` | read | exact |
 | Quota readings | `quota_reading` | row | extracted |
 | Subscription windows, burn, forecast, spend at past limit hits | `measure quota` | read | parameterized |
 | Billing-cycle outlook | `measure outlook` | read | parameterized |
@@ -209,6 +210,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 - **Codex completeness by reconciliation:** `token_count` reports are validated per request (the running total grew by exactly the last counts). A session whose validated reports cover its final running total, with no unconfirmed report, has complete usage and an API-equivalent cost at grain "usage reports"; otherwise it is partial, with the gap in tokens.
 - **Time bounds** select response times (`timed_by: source_record_time`), not session activity. Untimed rows are counted as `untimed` and excluded from bounded sums.
 - A measure that counts messages (`usage`, `outcomes`, `failing`, `transitions`, `daily`, `rhythm`) counts only the messages inside the query's top-level `since:` and `until:`, and a selected session's figures include its whole logical session; each response still counts once.
+- `measure responses` lists the responses `measure usage` sums over the same selection and bounds, one row each (ID, session, time, model, tokens per token kind, API-equivalent and provider-reported cost), in time order with untimed responses last, paged like any listing; `responses:MODEL` narrows the rows to one model and `responses:unknown` to responses naming none.
 - `measure usage` returns: population, `timed_by`, sessions, responses (known, and items with unknown boundaries), tokens per token kind (known, and unknown responses), money by kind and by model, unpriced models with counts, recorded reports, the price catalog hash and label, and untimed items.
 - A provider's own total for a child (Claude `toolUseResult.totalTokens`) is kept for comparison only and is never added. A token kind the provider does not charge is NULL, adds nothing and does not make the response partial (`n/a`).
 
@@ -267,7 +269,7 @@ Activity sessions, presence, agency, interruption and resumption, cross-day epis
 - Each day carries `complete`, `unknown_items` and `untimed_items` for that metric; untimed items go to an `unknown day` row. A session crossing midnight contributes by each item's own time.
 - `baseline_7d` is computed only over 7 complete previous days. **Level changes** are found by binary segmentation with a BIC-style penalty, minimum segment 7 days, over runs of at least 14 complete days, each with means before and after, and labelled "level change", never "trend".
 - **Rhythm:** a 7 × 24 grid by logical weekday and clock hour, of any countable unit.
-- Calendar and this-day views read the same series. Nothing per day is stored, so a setting change re-buckets at the next read. A 23- or 25-hour day is one day. One daily path serves outlooks, `| measure daily`, the web cost and calendar pages and reports by day. A day's activity and usage are queries with a time condition (`polylogue 'sessions since:today | measure usage'`); the same day across years uses `month_day` ([query.md](query.md#units-and-fields)).
+- Calendar and this-day views read the same series. Nothing per day is stored, so a setting change re-buckets at the next read. A 23- or 25-hour day is one day. One daily path serves outlooks, `| measure daily`, the web cost and calendar pages and reports by day. A day's activity and usage are queries with a time condition (`polylogue 'sessions since:today | measure usage'`); the same day across years uses `month_day` ([query.md](query.md#units-and-fields)). The records of a month by logical day are `polylogue 'messages where since:2026-11-01 until:2026-11-30 active:* | group by day(at) | count'` (any timed unit: `events`, `annotations`); the known cost of a selection per day is `| measure daily:api_cost`; the responses behind a selection's usage, with their tokens and cost, are `polylogue 'repo:morrow since:2026-11-09 until:2026-11-09 | measure responses'`, narrowed to one model with `responses:MODEL` or to responses naming none with `responses:unknown`; records with no representable time are `messages where at:unknown`.
 
 ### Context pressure and cache economics
 

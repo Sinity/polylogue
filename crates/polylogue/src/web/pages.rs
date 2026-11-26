@@ -4,10 +4,12 @@
 use polylogue_render::html::{encode_path_segment as encode_id, escape as esc};
 use polylogue_render::{results, shell_quote};
 mod cost;
+mod day;
 mod overview;
 pub(crate) use polylogue_render::web as reader;
 mod search;
 pub use cost::cost;
+pub use day::{day, day_queries};
 pub use overview::home;
 pub use search::search;
 use serde_json::Value;

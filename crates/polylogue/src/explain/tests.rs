@@ -269,3 +269,21 @@ fn transforms_list_every_measure_with_its_help() {
         assert_eq!(entry["help"], m.help);
     }
 }
+
+/// `help WORD` for a removed word prints its row of docs/vocabulary.md.
+#[test]
+fn a_removed_word_names_what_says_it_now() {
+    assert_eq!(
+        removed_word("timeline").as_deref(),
+        Some(
+            "timeline, cost, measure NAME (commands): no longer part of the surface; now queries with | measure\n"
+        )
+    );
+    assert_eq!(removed_word("cost"), removed_word("timeline"));
+    assert!(
+        removed_word("chat list")
+            .unwrap()
+            .ends_with("the unit chat_actions\n")
+    );
+    assert_eq!(removed_word("sessions"), None);
+}

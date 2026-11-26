@@ -40,6 +40,7 @@ pub(crate) fn append_page(paging: Paging, all: &mut Value, mut page: Value) -> R
     let field = match paging {
         Paging::Sessions => "sessions",
         Paging::Facets => "values",
+        Paging::Responses => "responses",
     };
     let values = page
         .get_mut(field)
@@ -135,6 +136,21 @@ pub static MEASURES: &[Measure] = &[
         metrics: &[],
         run: |r, x| json(measure::usage(r, &x.selection)),
         text: |data, _| text::usage(data),
+    },
+    Measure {
+        name: "responses",
+        help: "The responses usage counts, one row each with time, model, tokens by kind and cost, in time order; an optional model, or unknown for none recorded",
+        whole_archive: false,
+        messages: true,
+        paging: Some(Paging::Responses),
+        argument: Some("model"),
+        metrics: &[],
+        run: |_, _| {
+            Err(polylogue_store::StoreError::internal(
+                "responses runs through query paging",
+            ))
+        },
+        text: |data, zone| text::responses(data, zone),
     },
     Measure {
         name: "sessions",

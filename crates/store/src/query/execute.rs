@@ -1026,6 +1026,27 @@ pub fn prepare_measure(
                 },
             ];
         }
+        Some(crate::measure::Paging::Responses) => {
+            *derived = super::compile::DerivedRows {
+                rows: crate::measure::responses_query(
+                    &measure.selection_sql,
+                    measure.since,
+                    measure.until,
+                    options,
+                ),
+                count: None,
+                members: None,
+            };
+            program.counts_near = false;
+            program.page_size = page_size.unwrap_or(50);
+            program.order = ["time_order", "id"]
+                .into_iter()
+                .map(|column| super::OrderKey {
+                    column: column.into(),
+                    descending: false,
+                })
+                .collect();
+        }
         None => {}
     }
     Ok(())

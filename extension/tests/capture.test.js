@@ -695,16 +695,16 @@ describe("the background worker's own messages", () => {
 
   it("shows the running import jobs, the last three ended ones and the actions awaiting approval", async () => {
     const jobs = [
-      { id: "e1", status: "finished" }, { id: "r1", status: "running" }, { id: "e2", status: "finished" },
-      { id: "e3", status: "cancelled" }, { id: "e4", status: "finished" },
+      { id: "e4", state: "finished" }, { id: "e3", state: "cancelled" }, { id: "e2", state: "finished" },
+      { id: "r1", state: "running" }, { id: "e1", state: "finished" },
     ];
-    const actions = [{ id: "a1", status: "awaiting_approval" }, { id: "a2", status: "submitted" }];
+    const actions = [{ id: "a1", state: "awaiting_approval" }, { id: "a2", state: "submitted" }];
     const { extension } = worker({
       "GET /v1/import_job": () => ({ json: { jobs } }),
       "GET /v1/chat-actions": () => ({ json: { actions } }),
     });
     const shown = await extension.popup(null);
-    expect(shown.importJob.map((job) => job.id)).toEqual(["r1", "e2", "e3", "e4"]);
+    expect(shown.importJob.map((job) => job.id)).toEqual(["r1", "e4", "e3", "e2"]);
     expect(shown.approvals.map((action) => action.id)).toEqual(["a1"]);
     expect(shown.version).toBe("9.9.9");
   });

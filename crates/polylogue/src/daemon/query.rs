@@ -16,7 +16,6 @@ use super::Failure;
 pub(crate) mod annotations;
 pub(crate) mod feed;
 mod page;
-pub(crate) use page::{read_positions, read_positions_unchanged};
 use query_language::cursor::CursorSeal;
 
 /// What a request asks besides the text.
@@ -942,6 +941,29 @@ fn answer(
                     polylogue_store::measure::facets::weights(&mut facets, &summary);
                     json!({"summary":summary,"values":facets})
                 }
+                super::measure::Paging::Responses => {
+                    let responses: Vec<Value> = rows
+                        .into_iter()
+                        .map(|mut row| {
+                            if let Some(row) = row.as_object_mut() {
+                                row.remove("time_order");
+                                // Amounts travel as nano-USD and exact dollars.
+                                for (stored, shown) in [
+                                    ("cost_nusd", "cost"),
+                                    ("provider_cost_nusd", "provider_cost"),
+                                ] {
+                                    let amount = row
+                                        .remove(stored)
+                                        .and_then(|v| v.as_i64())
+                                        .map(polylogue_model::money::Amount);
+                                    row.insert(shown.into(), json!(amount));
+                                }
+                            }
+                            row
+                        })
+                        .collect();
+                    json!({ "responses": responses })
+                }
                 super::measure::Paging::Sessions => {
                     let mut data = super::measure::run(
                         reader,
@@ -1176,83 +1198,6 @@ fn validate(reader: &Reader<'_>, program: &Program) -> Result<(), Failure> {
 #[cfg(test)]
 pub(crate) use polylogue_store::query::execute::shape_value;
 pub(crate) use polylogue_store::query::execute::{attach, present, snippets, why};
-
-/// Session keys for usage and its response drill-down, from the same compiler
-/// path as a session measure. Presentation limits never limit the population.
-pub(crate) fn prepare_usage(
-    reader: &Reader<'_>,
-    text: &str,
-    context: std::sync::Arc<polylogue_reading::operation::Context>,
-    embeddings: bool,
-    ranking_identity: Option<String>,
-) -> Result<(polylogue_query::plan::Plan, Options), Failure> {
-    let text = format!("{text} | measure usage");
-    let ask = Ask {
-        text: &text,
-        cursor: None,
-        page_size: None,
-        why: false,
-        session: None,
-        context,
-        embeddings,
-        ranking_identity,
-        near: None,
-        fields: &[],
-    };
-    let opts = options(reader, &ask, 0)?;
-    let plan = polylogue_query::compile(&text, &opts)?;
-    Ok((plan, opts))
-}
-
-pub(crate) fn select_usage(
-    reader: &Reader<'_>,
-    program: &Program,
-    near: Option<&NearFn<'_>>,
-) -> Result<polylogue_store::measure::Selection, Failure> {
-    validate(reader, program)?;
-    let measure = program
-        .measure
-        .as_ref()
-        .ok_or_else(|| Failure::bad_request("cost requires a sessions query"))?;
-    let select = || -> Result<Option<Vec<i64>>, Failure> {
-        Ok(if measure.everything {
-            None
-        } else {
-            Some(reader.query_keys(
-                program,
-                polylogue_store::query::execute::QueryPopulation::Answer,
-            )?)
-        })
-    };
-    let sessions = with_similarity(reader, program, near, select)?;
-    Ok(polylogue_store::measure::Selection {
-        sessions,
-        since: measure.since,
-        until: measure.until,
-        logical: true,
-        ..Default::default()
-    })
-}
-
-#[cfg(test)]
-pub(crate) fn usage_selection(
-    reader: &Reader<'_>,
-    text: &str,
-    context: std::sync::Arc<polylogue_reading::operation::Context>,
-    embeddings: bool,
-    ranking_identity: Option<String>,
-    near: Option<&NearFn<'_>>,
-) -> Result<
-    (
-        polylogue_store::measure::Selection,
-        query_language::identity::QuestionId,
-    ),
-    Failure,
-> {
-    let (plan, options) = prepare_usage(reader, text, context, embeddings, ranking_identity)?;
-    let program = polylogue_store::query::lower(&plan, &options)?;
-    Ok((select_usage(reader, &program, near)?, plan.question_id()))
-}
 
 #[cfg(test)]
 mod tests;

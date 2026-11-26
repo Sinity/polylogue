@@ -118,6 +118,48 @@ pub(crate) fn cost_of(sessions: &str) -> String {
     own_responses_sum(sessions, "cost_nusd")
 }
 
+/// The responses `usage` sums, one row each: the own responses of the
+/// sessions `selection_sql` selects and of their logical sessions, with
+/// times inside `since`..`until` when given. `model` narrows them to one
+/// recorded model, or with `unknown` to responses naming none; totals stay
+/// `usage`'s. Rows order by time, untimed ones last, then by ID.
+pub fn responses_query(
+    selection_sql: &str,
+    since: Option<i64>,
+    until: Option<i64>,
+    model: &str,
+) -> String {
+    let mut conditions = vec![OWN_RESPONSES.to_owned()];
+    if let Some(since) = since {
+        conditions.push(format!("m.at >= {since}"));
+    }
+    if let Some(until) = until {
+        conditions.push(format!("m.at < {until}"));
+    }
+    match model {
+        "" => {}
+        "unknown" => conditions.push("m.model IS NULL".into()),
+        name => conditions.push(format!("m.model = '{}'", name.replace('\'', "''"))),
+    }
+    let kinds = crate::query::fields::STRUCTURAL_KINDS;
+    format!(
+        "WITH RECURSIVE selected AS MATERIALIZED (SELECT _pk FROM ({selection_sql})),
+         logical(pk) AS (SELECT _pk FROM selected UNION SELECT lc.pk FROM session_link l
+           JOIN session lp ON lp.id = l.parent_id JOIN logical ON logical.pk = lp.pk
+           JOIN session lc ON lc.id = l.child_id WHERE l.kind IN ({kinds}))
+         SELECT m.id AS id, s.id AS session, m.at AS at, m.model AS model,
+           m.input_tokens AS input_tokens, m.cache_read_tokens AS cache_read_tokens,
+           m.cache_write_tokens AS cache_write_tokens, m.output_tokens AS output_tokens,
+           m.reasoning_tokens AS reasoning_tokens, m.cost_nusd AS cost_nusd,
+           m.provider_cost_nusd AS provider_cost_nusd,
+           coalesce(m.at, {untimed}) AS time_order
+         FROM message m JOIN session s ON s.pk = m.session_pk
+         WHERE m.session_pk IN (SELECT pk FROM logical) AND {}",
+        conditions.join(" AND "),
+        untimed = i64::MAX,
+    )
+}
+
 const TOKEN_SUMS: &str = "
     count(*), count(DISTINCT m.session_pk),
     coalesce(sum(m.input_tokens), 0), sum(m.input_tokens IS NULL),

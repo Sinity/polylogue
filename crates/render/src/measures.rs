@@ -294,6 +294,40 @@ fn failing_text(data: &Value, zone: &jiff::tz::TimeZone) -> String {
     out
 }
 
+/// `responses`: one line per response, its time, model, tokens and cost.
+pub fn responses(data: &Value, zone: &jiff::tz::TimeZone) -> String {
+    crate::terminal::escape(&responses_text(data, zone))
+}
+
+fn responses_text(data: &Value, zone: &jiff::tz::TimeZone) -> String {
+    let rows = data["responses"].as_array().map_or(&[][..], Vec::as_slice);
+    if rows.is_empty() {
+        return "no responses\n".into();
+    }
+    let count = |row: &Value, key: &str| {
+        row[key]
+            .as_u64()
+            .map_or_else(|| "unknown".to_owned(), tokens)
+    };
+    let mut out = String::new();
+    for row in rows {
+        out.push_str(&format!(
+            "{}  {}  {}  in {} · cache read {} · cache write {} · out {} · reasoning {}  {}  {}\n",
+            time(&row["at"], zone),
+            row["model"].as_str().unwrap_or("(not recorded)"),
+            row["id"].as_str().unwrap_or("?"),
+            count(row, "input_tokens"),
+            count(row, "cache_read_tokens"),
+            count(row, "cache_write_tokens"),
+            count(row, "output_tokens"),
+            count(row, "reasoning_tokens"),
+            amount(&row["cost"]).unwrap_or_else(|| "unknown cost".to_owned()),
+            row["session"].as_str().unwrap_or("?"),
+        ));
+    }
+    out
+}
+
 /// Drift by format: what each parser did not know, most frequent first.
 pub fn drift(data: &Value) -> String {
     crate::terminal::escape(&drift_text(data))

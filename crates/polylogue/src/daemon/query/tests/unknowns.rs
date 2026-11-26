@@ -330,38 +330,17 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
     assert_eq!(kept["rows"].as_array().unwrap().len(), 1);
     let id = "claude-code:7f3a2c10-0002-4000-8000-000000000002";
     assert_eq!(kept["rows"][0]["id"], id);
-    let (selection, _) = usage_selection(
-        &reader,
-        text,
-        fixture_context(OCT1, "UTC", 0),
-        true,
-        Some("synthetic-provider:vectors".into()),
-        Some(&near),
-    )
-    .unwrap();
-    let selected = reader
-        .query(
-            "SELECT pk FROM session WHERE id=?1",
-            &[SqlValue::Text(id.into())],
-        )
-        .unwrap();
-    assert_eq!(
-        selection.sessions,
-        Some(vec![selected[0]["pk"].as_i64().unwrap()])
-    );
-    assert_eq!(
-        usage_selection(
-            &reader,
-            text,
-            fixture_context(OCT1, "UTC", 0),
-            true,
-            None,
-            None
-        )
-        .unwrap_err()
-        .code(),
-        "embed"
-    );
+    // The usage measure reads the same ranked selection the kept rows hold.
+    let mut request = ask("similar:dates | limit 1 | measure usage");
+    request.embeddings = true;
+    request.ranking_identity = Some("synthetic-provider:vectors".into());
+    request.near = Some(&near);
+    let usage = run_q(&w, request).unwrap();
+    let named = run_q(&w, ask(&format!("id:{id} | measure usage"))).unwrap();
+    assert_eq!(usage["data"], named["data"], "{usage}");
+    let mut unranked = ask("similar:dates | limit 1 | measure usage");
+    unranked.embeddings = true;
+    assert_eq!(run_q(&w, unranked).unwrap_err().code(), "embed");
 }
 
 #[test]

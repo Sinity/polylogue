@@ -239,28 +239,6 @@ browser!(
 );
 
 browser!(
-    ChatList,
-    protocol::ChatList,
-    protocol::ChatActionList,
-    print::chat_actions,
-    |_a, call| {
-        let reader = call.reader()?;
-        let now = call.invocation.at.unix_ms();
-        match reader.chat_actions() {
-            Ok(list) => match list
-                .iter()
-                .map(|a| actions::view(a, now))
-                .collect::<Result<Vec<_>, _>>()
-            {
-                Ok(actions) => Answer::ok(protocol::ChatActionList { actions }),
-                Err(error) => unreadable_request(&error).answer(),
-            },
-            Err(e) => store_error(&e),
-        }
-    }
-);
-
-browser!(
     /// The extension instance `by` takes the oldest queued chat action.
     ChatClaim,
     protocol::ChatClaim,
@@ -373,23 +351,6 @@ browser!(
                 import_job_then_view(call.daemon, call.invocation, UserWrite::ImportJobStart(new))
             }
             Err(r) => browser_refusal(r),
-        }
-    }
-);
-
-browser!(
-    ImportJobList,
-    protocol::ImportJobList,
-    protocol::ImportJobs,
-    print::import_jobs,
-    |_a, call| {
-        let reader = call.reader()?;
-        let now = call.invocation.at.unix_ms();
-        match reader.import_jobs() {
-            Ok(jobs) => Answer::ok(protocol::ImportJobs {
-                jobs: jobs.iter().map(|job| import_job::view(job, now)).collect(),
-            }),
-            Err(e) => store_error(&e),
         }
     }
 );

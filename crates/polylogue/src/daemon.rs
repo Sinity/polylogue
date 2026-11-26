@@ -5,7 +5,6 @@
 //! arguments and the request's identity and deadline.
 
 pub(crate) mod attachment;
-pub mod calendar;
 pub mod execution;
 pub(crate) mod executor;
 mod failure;

@@ -72,7 +72,9 @@ Each unit declares, once, its rows, key and identity, default filters, default o
 | `processes` | harness processes |
 | `commits` | commit and pull-request links |
 
-A unit whose rows have no producer yet (`pages`, `slots`, `import_jobs`, `chat_actions`, `prices`, `commits`, `pastes`, `attachments`) is declared with its columns and answers `not_built`.
+A unit whose rows have no producer yet (`pages`, `slots`, `prices`, `commits`, `pastes`, `attachments`) is declared with its columns and answers `not_built`.
+
+`import_jobs` (id, provider, since, state, listed, captured, unchanged, failed, position, detail, created_at, updated_at, claimed_by) and `chat_actions` (id, provider, conversation, model, text, kind `draft` or `submit`, state, phase, needs_approval, created_at, updated_at, claimed_by, detail) read the archive's job and action rows, newest first. A row's `state` is computed from its events at the query's `now`, by the same rule the writer applies: a claim held past its lifetime (3 minutes without a report) reads as `waiting` for an import job and `queued` for a chat action, or `outcome_unknown` once that action may have been sent. `claimed_by` names the extension instance holding an unexpired claim; `detail` is the latest event's, and `position` the latest reported list position: `polylogue 'import_jobs where state:running'`, `polylogue 'chat_actions where state:awaiting_approval'`.
 
 Raw tool-call failures are queryable as recorded outcomes: `tool_calls where outcome:error`. These rows report tool results without classifying a command as a verification check.
 

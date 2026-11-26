@@ -201,11 +201,11 @@ fn streamed_read_has_no_default_deadline_and_explicit_deadlines_still_apply() {
 #[test]
 fn other_read_requests_use_their_operation_name_in_refusals() {
     let daemon = test_daemon::start("synthetic refusal stage");
-    let response = crate::test_daemon::Call::new("backfill list", serde_json::json!({}))
+    let response = crate::test_daemon::Call::new("dev schema unread", serde_json::json!({}))
         .limit(ReadLimit::new(Duration::ZERO, Default::default()))
         .answer(&daemon.daemon);
     assert!(
-        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), envelope: command_surface::Envelope { notes, .. }, .. } if error.code.as_deref() == Some("deadline_exceeded") && notes[0].starts_with("stopped during backfill list ")),
+        matches!(&response, command_surface::Answer { outcome: command_surface::Outcome::Error(error), envelope: command_surface::Envelope { notes, .. }, .. } if error.code.as_deref() == Some("deadline_exceeded") && notes[0].starts_with("stopped during dev schema unread ")),
         "{response:?}"
     );
 }

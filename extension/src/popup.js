@@ -84,7 +84,7 @@
   function showImportJobs(jobs) {
     $("import_job-section").hidden = jobs.length === 0;
     $("import_job").replaceChildren(...jobs.map((job) => item(
-      `${words.providerName(job.provider)}: ${job.status}`,
+      `${words.providerName(job.provider)}: ${job.state}`,
       `${job.listed} listed, ${job.captured} captured, ${job.unchanged} already in the archive, ${job.failed} failed`
         + (job.detail ? `. ${job.detail}` : ""),
     )));

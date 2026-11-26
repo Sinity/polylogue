@@ -1,7 +1,6 @@
 //! Product failure codes classified once into the shared transport contract.
 pub mod act;
 pub mod browser;
-pub mod calendar;
 pub mod complete {
     //! Full query completion uses the shared replacement span and candidate type.
     use schemars::JsonSchema;

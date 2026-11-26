@@ -31,10 +31,12 @@ const ASKED: &[(&str, &[&str])] = &[
     ("rows", &["session:claude-code:s1", "brief"]),
     ("rows", &["session:claude-code:missing", "brief"]),
     ("rows", &["parser", "brief", "--cwd", "/synthetic"]),
-    ("chat list", &[]),
-    ("backfill list", &[]),
-    ("timeline", &["--date", "2024-01-01"]),
-    ("cost", &["--date", "2024-01-01"]),
+    ("rows", &["chat_actions"]),
+    ("rows", &["import_jobs where state:waiting"]),
+    (
+        "rows",
+        &["sessions where since:2024-01-01 until:2024-01-01 | measure responses"],
+    ),
 ];
 fn parse_line(argv: &[&str]) -> Result<(&'static Command, command_surface::ParsedCommand), String> {
     let words = argv
@@ -242,7 +244,6 @@ fn socket_authorship() -> Authorship {
 fn context_authorship_path(name: &str) -> Option<&'static str> {
     match name {
         "rows" => Some("/reply/resolved/context/authorship"),
-        "timeline" | "cost" => Some("/context/authorship"),
         _ => None,
     }
 }

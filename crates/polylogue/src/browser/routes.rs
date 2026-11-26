@@ -342,14 +342,30 @@ struct ClaimQuery {
     by: Option<String>,
 }
 
-/// Lists chat actions, or with `by` hands that extension instance
-/// one queued action (`action`, null when none) while chat actions are on.
+/// The first page of a query's rows, newest first for the extension's units.
+async fn listed(host: Arc<BrowserHost>, selection: &str, key: &str) -> HttpResponse {
+    match ask(host, "rows", json!({ "selection": selection })).await {
+        Ok(data) => Json(json!({ key: data["reply"]["rows"] })).into_response(),
+        Err(refusal) => *refusal,
+    }
+}
+
+/// The chat actions awaiting the operator's approval (the unit
+/// `chat_actions`), or with `by` hands that extension instance one queued
+/// action (`action`, null when none) while chat actions are on.
 async fn chat_actions(
     State(host): State<Arc<BrowserHost>>,
     Query(q): Query<ClaimQuery>,
 ) -> HttpResponse {
     match q.by.filter(|by| !by.is_empty()) {
-        None => answer(host, "chat list", json!({})).await,
+        None => {
+            listed(
+                host,
+                "chat_actions where state:awaiting_approval",
+                "actions",
+            )
+            .await
+        }
         Some(by) => answer(host, "internal chat claim", json!({ "by": by })).await,
     }
 }
@@ -411,8 +427,9 @@ async fn chat_attachment(
     ([(header::CONTENT_TYPE, media_type)], bytes).into_response()
 }
 
+/// The import jobs, newest first (the unit `import_jobs`).
 async fn import_jobs(State(host): State<Arc<BrowserHost>>) -> HttpResponse {
-    answer(host, "backfill list", json!({})).await
+    listed(host, "import_jobs", "jobs").await
 }
 
 #[derive(Deserialize)]

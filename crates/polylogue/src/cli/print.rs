@@ -302,43 +302,6 @@ fn plan(found: &crate::resume::Plan) -> String {
     out
 }
 
-/// `chat list`: one line per chat action.
-pub fn chat_actions(list: &protocol::browser::ChatActionList, _style: TextStyle) -> String {
-    polylogue_render::terminal::escape(&chat_actions_text(&list.actions))
-}
-
-fn chat_actions_text(actions: &[crate::browser::actions::ActionSummary]) -> String {
-    if actions.is_empty() {
-        return "no chat actions\n".into();
-    }
-    let mut out = String::new();
-    for action in actions {
-        let target = action
-            .request
-            .conversation
-            .as_deref()
-            .unwrap_or("new conversation");
-        let _ = writeln!(
-            out,
-            "{}  {}  {}  {}  {}",
-            action.id,
-            name_of(&action.status),
-            action.request.provider,
-            target,
-            action.updated_at.as_deref().unwrap_or_default()
-        );
-        if let Some(error) = &action.last_error {
-            let _ = writeln!(out, "    {error}");
-        }
-    }
-    out
-}
-
-/// `backfill list`: one line per job.
-pub fn import_jobs(list: &protocol::browser::ImportJobs, _style: TextStyle) -> String {
-    polylogue_render::terminal::escape(&import_jobs_text(&list.jobs))
-}
-
 /// `backfill start` and `cancel`: the job's line, or a write still
 /// awaiting confirmation as JSON.
 pub fn import_job_answer(answer: &protocol::browser::ImportJobAnswer, style: TextStyle) -> String {

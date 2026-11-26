@@ -715,3 +715,59 @@ fn failing_measure_keeps_array_data_and_prints_in_the_resolved_day_zone() {
     let text = crate::cli::print::query(&answer.value, command_surface::TextStyle::Plain);
     assert!(text.contains("+02:00"), "{text}");
 }
+
+/// The responses `| measure responses` lists are the ones `usage` sums:
+/// the same count and known cost, in time order, inside the day's bounds.
+#[test]
+fn responses_are_the_rows_behind_usage() {
+    let archive = morrow();
+    for selection in [
+        "sessions",
+        "sessions where since:2026-10-02 until:2026-10-02",
+        "origin:claude-code",
+    ] {
+        let usage = q(&archive, &format!("{selection} | measure usage"));
+        let listed = q(&archive, &format!("{selection} | measure responses"));
+        assert!(listed["next"].is_null(), "{listed}");
+        let rows = listed["data"]["responses"].as_array().unwrap();
+        assert_eq!(
+            rows.len() as u64,
+            usage["data"]["known_response_messages"].as_u64().unwrap(),
+            "{selection}: {listed}"
+        );
+        let known: i64 = rows.iter().filter_map(|r| r["cost"]["nusd"].as_i64()).sum();
+        assert_eq!(
+            Some(known),
+            usage["data"]["api_cost"]["known"]["nusd"].as_i64(),
+            "{selection}"
+        );
+        let times: Vec<i64> = rows.iter().map(|r| r["at"].as_i64().unwrap()).collect();
+        assert!(
+            times.windows(2).all(|w| w[0] <= w[1]),
+            "{selection}: {times:?}"
+        );
+    }
+    // Oct 2 is #2 and its subagent #3, the only session that used
+    // claude-opus-5-5.
+    let day = "sessions where since:2026-10-02 until:2026-10-02";
+    let opus = q(
+        &archive,
+        &format!("{day} | measure responses:claude-opus-5-5"),
+    );
+    let rows = opus["data"]["responses"].as_array().unwrap();
+    assert!(!rows.is_empty());
+    assert!(
+        rows.iter().all(|r| r["model"] == "claude-opus-5-5"
+            && r["session"].as_str().unwrap().contains("0003-4000"))
+    );
+    // Morrow's #2 has one response with a stated cost and no recorded model.
+    let unknown = q(&archive, &format!("{day} | measure responses:unknown"));
+    let unknown = unknown["data"]["responses"].as_array().unwrap();
+    assert_eq!(
+        unknown
+            .iter()
+            .map(|r| (r["id"].as_str().unwrap(), r["model"].is_null()))
+            .collect::<Vec<_>>(),
+        [("claude-code:m2a0", true)]
+    );
+}
