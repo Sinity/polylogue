@@ -282,10 +282,12 @@ pub(crate) fn run(mut parsed: ParsedLine, client: &crate::config::Client) -> Exi
             if parsed.steps[0].verb == "resume" {
                 before.arguments["steps"] = json!([parsed.steps[0].step]);
             } else {
-                before.arguments["selection"] =
-                    json!(crate::protocol::steps::usual_read_selection(
+                before.arguments["selection"] = json!(format!(
+                    "query:{}",
+                    crate::protocol::steps::usual_read_selection(
                         parsed.steps[0].step["follow"] == true
-                    ));
+                    )
+                ));
             }
         }
         let question = before.arguments["selection"]
