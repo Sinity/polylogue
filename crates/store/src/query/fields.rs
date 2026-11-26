@@ -104,87 +104,110 @@ polylogue_model::stored_names! {
         Precision => "precision",
     }
 }
+/// A time a condition tests, as the columns that hold it (docs/query.md,
+/// times): its start, the exclusive end of its period (NULL for an
+/// instant, for an unknown time and for a calendar grain without a bound)
+/// and its precision, all in milliseconds. `bytes` and `storage` hold the
+/// whole source time, read only for its quality and by order relations.
 pub(crate) struct StoredTime {
-    pub cache: String,
+    pub at: String,
+    pub until: String,
+    pub precision: String,
+    /// The table whose `<table>_period` index gives its longest stored
+    /// period, so a lower bound on the end of a period reads a range of
+    /// starts; `None` for a table small enough to read whole.
+    pub periods: Option<&'static str>,
     pub bytes: String,
     pub storage: TimeStorage,
-    /// A condition that holds for every row whose time may be other than a
-    /// plain instant, read from an index. A row it does not hold for is an
-    /// instant, so a bound its `cache` misses it cannot meet, and its stored
-    /// time is not read. `None`: every row's stored time is read to learn
-    /// whether it is an instant.
-    pub periods: Option<String>,
 }
 
-/// The messages whose time is not a plain instant, as the `message_period`
-/// index holds them: the statement names the index, so its condition must
-/// stay the index's own.
-const MESSAGE_PERIODS: &str = "message INDEXED BY message_period \
-     WHERE at IS NOT NULL AND json_extract(at_time,'$[1].precision') IS NOT 'instant'";
 impl StoredTime {
     fn attribute(&self, attribute: TimeAttribute) -> String {
+        match attribute {
+            TimeAttribute::Precision => self.precision.clone(),
+            TimeAttribute::Quality => format!(
+                "pl_time_attribute({}, '{}', 'quality')",
+                self.bytes,
+                self.storage.as_str()
+            ),
+        }
+    }
+
+    /// The last millisecond of the time's period: the instant itself, the
+    /// end of a period less one, or NULL when the time or its end is
+    /// unknown, so any comparison of it is unknown too.
+    pub(crate) fn last(&self) -> String {
         format!(
-            "pl_time_attribute({}, '{}', '{}')",
-            self.bytes,
-            self.storage.as_str(),
-            attribute.as_str()
+            "coalesce({} - 1, iif({} = 'instant', {}, NULL))",
+            self.until, self.precision, self.at
         )
+    }
+
+    /// The longest stored period, read by one seek in its index.
+    pub(crate) fn longest(&self) -> Option<String> {
+        self.periods.map(|table| {
+            format!(
+                "(SELECT coalesce(max(at_until - at), 0) FROM {table} \
+                 INDEXED BY {table}_period WHERE at_until IS NOT NULL)"
+            )
+        })
     }
 }
 pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<StoredTime> {
-    let message_periods = || format!("{{m}}.pk IN (SELECT pk FROM {MESSAGE_PERIODS})");
-    let session_periods = || format!("{{s}}.pk IN (SELECT session_pk FROM {MESSAGE_PERIODS})");
-    let (cache, bytes, storage, periods) = match (unit, field) {
+    let (at, until, precision, periods, bytes, storage) = match (unit, field) {
         (Messages | Blocks | ToolCalls, "at") => (
             "{m}.at",
+            "{m}.at_until",
+            "{m}.at_precision",
+            Some("message"),
             "{m}.at_time".to_owned(),
             TimeStorage::Tuple,
-            Some(message_periods()),
         ),
         (Sessions, "started") => (
             "{s}.started_at",
+            "{s}.started_until",
+            "{s}.started_precision",
+            None,
             "{s}.started_time".to_owned(),
             TimeStorage::Tuple,
-            None,
         ),
-        // The latest of the session's message times. With only instants
-        // that is the latest of the messages in their greatest millisecond,
-        // found by two index seeks; a session holding a period reads all
-        // its messages, since a period that starts earlier can end later.
+        // The latest of the session's message times, which the session
+        // summary keeps; its quality is read from the messages.
         (Sessions, "last_active") => (
             "{s}.last_activity_at",
-            format!(
-                "(CASE WHEN {} \
-                  THEN (SELECT pl_time_latest({{s}}_activity.at_time) FROM message {{s}}_activity \
-                        WHERE {{s}}_activity.session_pk={{s}}.pk AND {{s}}_activity.at IS NOT NULL) \
-                  ELSE (SELECT pl_time_latest({{s}}_activity.at_time) FROM message {{s}}_activity \
-                        WHERE {{s}}_activity.session_pk={{s}}.pk \
-                          AND {{s}}_activity.at=(SELECT max({{s}}_latest.at) FROM message {{s}}_latest \
-                                                 WHERE {{s}}_latest.session_pk={{s}}.pk)) END)",
-                session_periods()
-            ),
+            "{s}.last_active_until",
+            "{s}.last_active_precision",
+            None,
+            "(SELECT pl_time_latest({s}_activity.at_time) FROM message {s}_activity \
+              WHERE {s}_activity.session_pk={s}.pk AND {s}_activity.at IS NOT NULL)"
+                .to_owned(),
             TimeStorage::Latest,
-            Some(session_periods()),
         ),
         (Events, "at") => (
             "{r}.at",
+            "{r}.at_until",
+            "{r}.at_precision",
+            Some("event"),
             crate::content::BODY_BYTES_SQL.to_owned(),
             TimeStorage::Event,
-            None,
         ),
         (Documents, "source_time") => (
-            "{r}.source_time",
+            "{r}.at",
+            "{r}.at_until",
+            "{r}.at_precision",
+            None,
             "(SELECT {r}_time.time FROM document_parse {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)".to_owned(),
             TimeStorage::Tuple,
-            None,
         ),
         _ => return None,
     };
     Some(StoredTime {
-        cache: a.expand(cache),
+        at: a.expand(at),
+        until: a.expand(until),
+        precision: a.expand(precision),
+        periods,
         bytes: a.expand(&bytes),
         storage,
-        periods: periods.map(|periods| a.expand(&periods)),
     })
 }
 pub(crate) fn time_window(unit: Unit, since: bool, a: &Aliases) -> Option<StoredTime> {
@@ -339,7 +362,7 @@ pub fn rule(id: FieldId) -> Rule {
         AnnotationsAnswered => Rule::NONE.sql_fn(|a| crate::session_sql::answered(&a.row)),
         AnnotationsOpen => Rule::NONE.sql_fn(|a| crate::session_sql::open_annotation(&a.row)),
         SessionsMonthDay => Rule::NONE.sql("pl_month_day({s}.last_activity_at)"),
-        DocumentsMonthDay => Rule::NONE.sql("pl_month_day({r}.source_time)"),
+        DocumentsMonthDay => Rule::NONE.sql("pl_month_day({r}.at)"),
         MessagesMonthDay => Rule::NONE.sql("pl_month_day({m}.at)"),
         BlocksMonthDay => Rule::NONE.sql("pl_month_day({m}.at)"),
         ToolCallsMonthDay => Rule::NONE.sql("pl_month_day({m}.at)"),
@@ -461,7 +484,7 @@ pub fn rule(id: FieldId) -> Rule {
         DocumentsPurpose => Rule::NONE.sql("{r}.purpose"),
         DocumentsAuthorship => Rule::NONE.sql("{r}.authorship"),
         DocumentsTitle => Rule::NONE.sql("{r}.title"),
-        DocumentsSourceTime => Rule::NONE.sql("{r}.source_time"),
+        DocumentsSourceTime => Rule::NONE.sql("{r}.at"),
         DocumentsSince => Rule::NONE.custom(custom::since),
         DocumentsUntil => Rule::NONE.custom(custom::until),
         DocumentsVersions => Rule::NONE.sql("(SELECT count(DISTINCT ds.hash) FROM document_parse ds WHERE ds.document_id={r}.id)"),

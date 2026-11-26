@@ -465,7 +465,7 @@ pub(super) fn project_match_parent(result: &mut Program, parent: &Program) {
         ));
         order.push(OrderKey {
             column,
-            descending: key.descending,
+            ..key.clone()
         });
     }
     order.extend(result.order.iter().cloned());

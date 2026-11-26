@@ -302,7 +302,7 @@ fn start(conn: &Connection, session_pk: i64, from: &Key, end: i64) -> Result<Sta
     let mut earliest_timed: Option<i64> = None;
     while let Some(row) = rows.next()? {
         let id: String = row.get(0)?;
-        let event_order: String = row.get(1)?;
+        let event_order: Vec<u8> = row.get(1)?;
         if Key::event(&event_order, &id) < *from {
             continue;
         }
@@ -466,7 +466,7 @@ impl Unit {
 struct MessageRow {
     pk: i64,
     id: String,
-    order: String,
+    order: Vec<u8>,
     content: [u8; 32],
     active: Option<bool>,
     branch_point: bool,
@@ -477,7 +477,7 @@ struct MessageRow {
 struct EventRow {
     pk: i64,
     id: String,
-    order: String,
+    order: Vec<u8>,
     at: Option<i64>,
     after: Option<i64>,
     seq: i64,
@@ -896,7 +896,7 @@ fn reached_events(conn: &Connection, session_pk: i64, from: &Key) -> Result<BTre
     )?;
     let mut rows = now.query(params![session_pk, from.order()])?;
     while let Some(row) = rows.next()? {
-        let order: String = row.get(2)?;
+        let order: Vec<u8> = row.get(2)?;
         if Key::event(&order, &row.get::<_, String>(1)?) >= *from {
             out.insert(row.get(0)?);
         }

@@ -1,27 +1,22 @@
--- Duplicate derivation also clears old marks after capture inputs disappear.
--- Unmarked sessions have no entries and need no message-table scan.
-CREATE INDEX IF NOT EXISTS message_duplicate ON message(session_pk) WHERE duplicate_of IS NOT NULL;
-
 -- A default page reads its unit's rows in the order of its first terms
--- (`time IS NULL, time, ...`), so these indexes carry the same
--- expressions: the page stops after its rows instead of sorting the table.
-CREATE INDEX IF NOT EXISTS session_order ON session(last_activity_at IS NULL, last_activity_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS message_order ON message(at IS NULL, at, session_order, id);
--- Explicit newest-first sorts break ties by ID in ascending order.
-CREATE INDEX IF NOT EXISTS session_recent ON session(last_activity_at IS NULL, last_activity_at DESC, id);
-CREATE INDEX IF NOT EXISTS message_recent ON message(at IS NULL, at DESC, id);
-CREATE INDEX IF NOT EXISTS tool_call_order ON tool_call(at IS NULL, at, call_block_pk);
-CREATE INDEX IF NOT EXISTS event_order ON event(at IS NULL, at, id);
-CREATE INDEX IF NOT EXISTS message_at ON message(at, id);
-CREATE INDEX IF NOT EXISTS message_session_at ON message(session_pk, at, id);
-CREATE INDEX IF NOT EXISTS message_model_at ON message(model, at, id);
-CREATE INDEX IF NOT EXISTS message_session_model_at ON message(session_pk, model, at, id);
--- The messages whose time is a period or of unknown precision, which are few
--- (a source that gives a date or a minute). A time condition reads the stored
--- time only of these and of their sessions; every other row is an instant,
--- decided by its millisecond column (query/fields.rs, MESSAGE_PERIODS).
-CREATE INDEX IF NOT EXISTS message_period ON message(session_pk) WHERE at IS NOT NULL AND json_extract(at_time,'$[1].precision') IS NOT 'instant';
-CREATE INDEX IF NOT EXISTS event_at ON event(at, id);
+-- (`time IS NULL, time, ...`) as two parts, the dated rows and then the
+-- undated ones (query/compile/statements.rs, page_of), so one index on
+-- `(time, ...)` serves both parts in either direction and a time bound or
+-- a continuation seeks in it.
+CREATE INDEX IF NOT EXISTS session_activity ON session(last_activity_at, id);   -- default order, since:
+CREATE INDEX IF NOT EXISTS message_time ON message(at, session_order, id);
+CREATE INDEX IF NOT EXISTS event_time ON event(at, id);
+CREATE INDEX IF NOT EXISTS document_time ON document(at, id);
+CREATE INDEX IF NOT EXISTS tool_call_time ON tool_call(at, call_block_pk);
+-- The longest stored period, read by one seek at the end of the index: a
+-- lower time bound K reads the range at >= K - longest, which holds every
+-- row whose period reaches K (query/fields.rs, TimeColumns).
+CREATE INDEX IF NOT EXISTS message_period ON message(at_until - at) WHERE at_until IS NOT NULL;
+CREATE INDEX IF NOT EXISTS event_period ON event(at_until - at) WHERE at_until IS NOT NULL;
+-- The few messages a summary marks, off the active path or shown as
+-- another's duplicate: a session with none is answered by one probe.
+CREATE INDEX IF NOT EXISTS message_marked ON message(session_pk)
+  WHERE on_active_path IS NOT NULL OR duplicate_of IS NOT NULL;
 CREATE INDEX IF NOT EXISTS block_original_ordinal ON block(message_pk,coalesce(ordinal,cast(idx AS TEXT)));
 
 -- Restored requests select all raw spellings of one NFC request text.

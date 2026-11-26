@@ -381,6 +381,14 @@ pub fn expand_pair(template: &str, a: &Aliases, n: &Aliases) -> String {
 
 /// How the store reads each unit; exhaustive, so a declared unit fails the
 /// build until it has rows here.
+impl UnitSpec {
+    /// The unit's rows are a table's rows, read in an index's order, not
+    /// computed from other rows.
+    pub(crate) fn reads_a_table(&self) -> bool {
+        matches!(self.from, Expr::Template(t) if !t.starts_with('('))
+    }
+}
+
 pub fn spec(unit: Unit) -> &'static UnitSpec {
     match unit {
         Unit::Sessions => &SESSIONS,
@@ -528,15 +536,15 @@ static DOCUMENTS: UnitSpec = UnitSpec {
         ("origin", T("{r}.origin"), Text),
         ("purpose", T("{r}.purpose"), Text),
         ("title", T("{r}.title"), Text),
-        ("source_time", T("{r}.source_time"), Time),
+        ("source_time", T("{r}.at"), Time),
         ("authorship", T("{r}.authorship"), Text),
     ],
-    time: "{r}.source_time",
+    time: "{r}.at",
     newest_first: true,
     session_order: false,
     order: None,
-    since: Some("{r}.source_time >= {v}"),
-    until: Some("{r}.source_time < {v}"),
+    since: Some("{r}.at >= {v}"),
+    until: Some("{r}.at < {v}"),
     session_pk: "",
     session_scope: None,
     search: Search::Hits {
@@ -575,7 +583,8 @@ static MESSAGES: UnitSpec = UnitSpec {
 
 static BLOCKS: UnitSpec = UnitSpec {
     from: Expr::Template(
-        "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
+        // Messages drive, so a page reads blocks in message time order.
+        "message {m} CROSS JOIN block {b} ON {b}.message_pk = {m}.pk JOIN session {s} ON {s}.pk = {b}.session_pk",
     ),
     key: "{b}.pk",
     identity: &["{m}.id", "{b}.idx"],

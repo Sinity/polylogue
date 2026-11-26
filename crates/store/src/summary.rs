@@ -48,7 +48,7 @@ pub(crate) mod lines;
 pub(crate) mod links;
 mod live;
 mod repository;
-mod session;
+pub(crate) mod session;
 pub(crate) mod span;
 mod title;
 mod tool_calls;
@@ -529,7 +529,7 @@ impl<'a> Pass<'a> {
                 .map(|(pk, _)| (*pk, true))
                 .chain(output.active_path.iter().map(|(pk, _)| (*pk, false)));
             for (pk, repeat) in marked {
-                type Keys = (String, String, Option<String>, Option<String>);
+                type Keys = (Vec<u8>, String, Option<Vec<u8>>, Option<String>);
                 if let Some((order, id, parent_order, parent)) =
                     key.query_row([pk], |r| <Keys>::try_from(r)).optional()?
                 {

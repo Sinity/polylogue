@@ -63,7 +63,7 @@ impl ChangeSummary {
                 Ok(Before {
                     session: row.get(0)?,
                     parent: row.get(1)?,
-                    key: Key::message(&row.get::<_, String>(2)?, &row.get::<_, String>(3)?),
+                    key: Key::message(&row.get::<_, Vec<u8>>(2)?, &row.get::<_, String>(3)?),
                 })
             })
             .optional()?;
@@ -92,7 +92,7 @@ impl ChangeSummary {
         let before = conn
             .prepare_cached("SELECT session_pk, session_order, id FROM event WHERE pk = ?1")?
             .query_row([pk], |row| {
-                <(Option<i64>, Option<String>, String)>::try_from(row)
+                <(Option<i64>, Option<Vec<u8>>, String)>::try_from(row)
             })
             .optional()?
             .and_then(|(session, order, id)| Some((session?, Key::event(order.as_deref()?, &id))));
@@ -206,7 +206,7 @@ impl ChangeSummary {
         let mut parent_of = |session: i64, id: &str, existed: bool| -> Result<Option<Key>> {
             Ok(parent
                 .query_row(params![session, id], |row| {
-                    <(String, String, i64)>::try_from(row)
+                    <(Vec<u8>, String, i64)>::try_from(row)
                 })
                 .optional()?
                 .filter(|(_, _, replies)| existed || *replies > 1)
@@ -223,7 +223,7 @@ impl ChangeSummary {
             }
             if let Some((session, order, id, parent)) = message_now
                 .query_row([pk], |row| {
-                    <(i64, String, String, Option<String>)>::try_from(row)
+                    <(i64, Vec<u8>, String, Option<String>)>::try_from(row)
                 })
                 .optional()?
             {
@@ -243,7 +243,7 @@ impl ChangeSummary {
             }
             if let Some((Some(session), Some(order), id)) = event_now
                 .query_row([pk], |row| {
-                    <(Option<i64>, Option<String>, String)>::try_from(row)
+                    <(Option<i64>, Option<Vec<u8>>, String)>::try_from(row)
                 })
                 .optional()?
             {

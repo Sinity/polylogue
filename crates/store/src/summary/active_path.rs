@@ -32,7 +32,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>
         .prepare_cached(
             "SELECT EXISTS(SELECT 1 FROM event INDEXED BY event_path_marker WHERE session_pk = ?1
                              AND kind IN ('active_leaf','active_path_empty','active_path_unknown'))
-                 OR EXISTS(SELECT 1 FROM message INDEXED BY message_branch WHERE session_pk = ?1
+                 OR EXISTS(SELECT 1 FROM message INDEXED BY message_marked WHERE session_pk = ?1
                              AND on_active_path IS NOT NULL)",
         )?
         .query_row([session_pk], |r| r.get(0))?;

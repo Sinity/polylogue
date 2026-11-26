@@ -262,6 +262,17 @@ fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions:
     }
 }
 
+/// An input ID that sorts before `other` among inputs whose messages share
+/// an order time: by the digest of the ID the session order holds
+/// (docs/sessions.md, messages), not by the ID's text.
+fn input_sorting_before(other: &str, stem: &str) -> String {
+    let digest = |id: &str| blake3::hash(id.as_bytes()).as_bytes()[..16].to_vec();
+    (0..)
+        .map(|n| format!("{stem}-{n}"))
+        .find(|id| digest(id) < digest(other))
+        .expect("some name sorts first")
+}
+
 fn row(offset: u64, message: Message) -> MessageRow {
     MessageRow {
         response: None,

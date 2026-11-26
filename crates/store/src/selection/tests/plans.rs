@@ -23,7 +23,7 @@ fn page_plan(f: &Fixture, text: &str) -> Vec<String> {
         &program.statements.page(
             &program.order,
             program.params.len(),
-            false,
+            None,
             false,
             crate::query::PageColumns::All,
         ),
@@ -47,28 +47,248 @@ fn ids(f: &Fixture, text: &str, field: &str) -> Vec<String> {
     ids
 }
 
-/// A default page of messages, tool calls or events reads its unit's rows
-/// in index order and stops after the page, instead of sorting every row.
+/// The steps of a default page's plan outside correlated subqueries: what
+/// the page itself reads, not the per-row values it computes.
+fn page_steps(f: &Fixture, text: &str) -> Vec<String> {
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let program = crate::query::compile(text, &options()).unwrap();
+    let sql = program.statements.page(
+        &program.order,
+        program.params.len(),
+        None,
+        false,
+        crate::query::PageColumns::All,
+    );
+    let rows = reader
+        .query(&format!("EXPLAIN QUERY PLAN {sql}"), &[])
+        .unwrap();
+    let mut inner = std::collections::HashSet::new();
+    let mut steps = Vec::new();
+    for row in rows {
+        let (id, parent) = (row["id"].as_i64().unwrap(), row["parent"].as_i64().unwrap());
+        let detail = row["detail"].as_str().unwrap().to_owned();
+        if inner.contains(&parent) || detail.starts_with("CORRELATED SCALAR SUBQUERY") {
+            inner.insert(id);
+            continue;
+        }
+        steps.push(detail);
+    }
+    steps
+}
+
+/// The default page of every unit reads its rows in the order of an index
+/// and stops after the page: no step sorts the whole result, and no step
+/// reads every message, event or tool call (docs/query.md, paging). A sort
+/// of the last terms orders only rows that share the index's leading terms
+/// as the index is walked, so it is allowed. What a correlated subquery does
+/// for one row is the cost of a column, not of the page.
 #[test]
-fn default_page_plan_has_no_temp_btree() {
+fn default_pages_read_in_index_order() {
     let (_dir, f) = fixture();
+    for unit in polylogue_query::units::Unit::all() {
+        let text = unit.name();
+        let Ok(program) = crate::query::compile(text, &options()) else {
+            continue;
+        };
+        // A derived relation, and a unit whose rows are computed (`files`,
+        // `turns`), is computed whole before its page.
+        let spec = crate::query::units::spec(unit);
+        if !matches!(
+            program.statements,
+            crate::query::compile::Statements::Keyed(_)
+        ) || !spec.reads_a_table()
+        {
+            continue;
+        }
+        // The units over the large tables, and links, read in an index's
+        // order. The others (live intervals, processes, the change feed and
+        // the archive's units) hold few rows, sorted at read.
+        use polylogue_query::units::Unit as U;
+        let in_index_order = matches!(
+            unit,
+            U::Sessions
+                | U::Messages
+                | U::Blocks
+                | U::ToolCalls
+                | U::Events
+                | U::Documents
+                | U::SessionLinks
+        );
+        let steps = page_steps(&f, text);
+        let mut undated = false;
+        for step in &steps {
+            undated |= step == "UNION ALL";
+            // Tool calls that share a time, the undated ones included, are
+            // ordered by their message ID and block position, which the
+            // time index cannot hold.
+            let shared_time = unit == polylogue_query::units::Unit::ToolCalls && undated;
+            assert!(
+                !in_index_order
+                    || !step.starts_with("USE TEMP B-TREE")
+                    || step.contains(" LAST ")
+                    || shared_time,
+                "{text}: {steps:#?}"
+            );
+            for table in ["message", "event", "tool_call"] {
+                // A scan of a whole table reads every row; a scan in an
+                // index's order stops after the page.
+                assert!(
+                    !(step.starts_with("SCAN ") && step.ends_with(&format!(" {table}")))
+                        && step != &format!("SCAN {table}"),
+                    "{text}: {steps:#?}"
+                );
+            }
+        }
+    }
     for (text, index) in [
-        ("messages", "message_order"),
-        ("tool_calls", "tool_call_order"),
-        ("events", "event_order"),
+        ("messages", "message_time"),
+        ("events", "event_time"),
+        ("sessions", "session_activity"),
     ] {
         let steps = page_plan(&f, text);
         assert!(
             steps
                 .iter()
-                .any(|step| step.contains(&format!("USING INDEX {index}"))),
+                .any(|step| step.contains(&format!("INDEX {index}"))),
             "{text}: {steps:#?}"
         );
+    }
+}
+
+/// A time bound compiles to comparisons of the time's columns, so its page
+/// seeks a range of the time index and reads no stored time bytes.
+#[test]
+fn time_bounds_seek_the_time_index() {
+    let (_dir, f) = fixture();
+    for (text, index) in [
+        ("messages where since:2026-01-01", "message_time (at>?)"),
+        (
+            "messages where until:2026-01-01",
+            "message_time (at>? AND at<?)",
+        ),
+        ("events where since:2026-01-01", "event_time (at>?)"),
+    ] {
+        let steps = page_plan(&f, text);
         assert!(
-            !steps
-                .iter()
-                .any(|step| step == "USE TEMP B-TREE FOR ORDER BY"),
+            steps.iter().any(|step| step.contains(index)),
             "{text}: {steps:#?}"
+        );
+    }
+    let program = crate::query::compile(
+        "messages where since:2026-01-01 until:2026-02-01",
+        &options(),
+    )
+    .unwrap();
+    let crate::query::compile::Statements::Keyed(keyed) = &program.statements else {
+        panic!("messages are read by key");
+    };
+    for function in ["pl_time", "at_time", "json_extract", " OR "] {
+        assert!(!keyed.keys.contains(function), "{function}: {}", keyed.keys);
+    }
+}
+
+/// A time condition holds when the whole period of a row's time meets it,
+/// fails when none does and is otherwise unknown, which neither it nor its
+/// negation matches; `since:` and `until:` select the times that overlap
+/// the window (docs/query.md, times).
+#[test]
+fn time_conditions_test_whole_periods() {
+    use polylogue_model::{Precision, TimeAccuracy, TimeQuality, Timestamp};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let s = f
+        .session(SessionFacts {
+            id: "test:periods",
+            last: Some(3_000),
+            ..Default::default()
+        })
+        .unwrap();
+    let ms = |ms| Timestamp::from_unix_ms(ms).unwrap();
+    for (id, time) in [
+        (
+            "test:instant",
+            Some((1_000, TimeAccuracy::intrinsic(Precision::Instant))),
+        ),
+        (
+            "test:period",
+            Some((
+                500,
+                TimeAccuracy {
+                    quality: TimeQuality::Intrinsic,
+                    precision: Some(Precision::Bounded),
+                    until: Some(ms(2_500)),
+                },
+            )),
+        ),
+        (
+            "test:second",
+            Some((3_000, TimeAccuracy::intrinsic(Precision::Second))),
+        ),
+        ("test:undated", None),
+    ] {
+        let m = f
+            .message(
+                s,
+                MessageFacts {
+                    id,
+                    role: "user",
+                    written_by: "human",
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        if let Some((at, accuracy)) = time {
+            f.message_time(m, Some(ms(at)), accuracy).unwrap();
+        }
+    }
+    let t = |s: u32| format!("1970-01-01T00:00:0{s}Z");
+    for (condition, expected) in [
+        (
+            format!("since:{}", t(2)),
+            &["test:period", "test:second"][..],
+        ),
+        // `until:` a second ends with that second.
+        (
+            format!("until:{}", t(1)),
+            &["test:period", "test:instant"][..],
+        ),
+        (format!("until:{}", t(0)), &["test:period"][..]),
+        (
+            format!("at >= {}", t(1)),
+            &["test:instant", "test:second"][..],
+        ),
+        (format!("NOT at >= {}", t(1)), &[][..]),
+        (
+            format!("at < {}", t(3)),
+            &["test:period", "test:instant"][..],
+        ),
+        (format!("NOT at < {}", t(3)), &["test:second"][..]),
+        (
+            format!("at < {} OR at >= {}", t(1), t(3)),
+            &["test:second"][..],
+        ),
+        (
+            "at:*".to_owned(),
+            &["test:period", "test:instant", "test:second", "test:undated"][..],
+        ),
+    ] {
+        assert_eq!(
+            ids(&f, &format!("messages where {condition}"), "id"),
+            expected,
+            "{condition}"
+        );
+    }
+    // The session's latest activity is the latest period's: [3, 4) s.
+    for (condition, expected) in [
+        (format!("since:{}", t(3)), &["test:periods"][..]),
+        (format!("last_active >= {}", t(3)), &["test:periods"][..]),
+        (format!("last_active > {}", t(3)), &[][..]),
+    ] {
+        assert_eq!(
+            ids(&f, &format!("sessions where {condition}"), "id"),
+            expected,
+            "{condition}"
         );
     }
 }
@@ -186,7 +406,7 @@ fn named_session_drives_a_page_of_shell_calls() {
     let sql = program.statements.page(
         &program.order,
         program.params.len(),
-        false,
+        None,
         false,
         crate::query::PageColumns::All,
     );
@@ -198,7 +418,7 @@ fn named_session_drives_a_page_of_shell_calls() {
     assert!(
         plan.iter().any(|step| step["detail"]
             .as_str()
-            .is_some_and(|detail| detail.contains("INDEX tool_call_session (session_pk=?)"))),
+            .is_some_and(|detail| detail.contains("INDEX tool_call_session (session_pk=?"))),
         "{plan:#?}"
     );
 
@@ -347,24 +567,6 @@ fn parent_links_use_index() {
     );
     assert!(
         steps.iter().any(|step| step.contains("session_link_key")),
-        "{steps:#?}"
-    );
-}
-
-/// `model:` keeps reading `message_model_at` now that `message_model` is gone.
-#[test]
-fn model_filter_plans_unchanged() {
-    let (_dir, f) = fixture();
-    let pool = f.reads().unwrap();
-    let reader = pool.reader().unwrap();
-    let steps = plan(
-        &reader,
-        "SELECT pk FROM message WHERE model = ?1 ORDER BY at, id",
-    );
-    assert!(
-        steps
-            .iter()
-            .any(|step| step.contains("INDEX message_model_at")),
         "{steps:#?}"
     );
 }
