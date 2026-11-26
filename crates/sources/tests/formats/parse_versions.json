@@ -32,8 +32,8 @@
     "15182f36ad3905e77a58aad4d2ce00830a736ecfcced7aef8f8a4008b878d4c9"
   ],
   "claude-code": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_code::VERSION=12,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_code::blocks::VERSION=1,polylogue_sources::claude_code::fields::VERSION=1",
-    "492b1843b05f06e9b2d85f3a61480d27dadae41124bfcf75471b000e9710b445"
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_code::VERSION=13,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_code::blocks::VERSION=1,polylogue_sources::claude_code::fields::VERSION=1",
+    "5e2f7c7fb595159361bbf2fc0be756f1713d834369f046fb9f732b0a8c229967"
   ],
   "claude-code-history": [
     "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::claude_code::VERSION=13,crate::claude_code::side::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::claude_code::blocks::VERSION=1,polylogue_sources::claude_code::fields::VERSION=1",
