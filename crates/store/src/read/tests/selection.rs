@@ -14,7 +14,7 @@ fn a_first_read_cannot_see_states_separated_by_two_commits() {
     let reader = pool.reader().unwrap();
     let (reached, gap) = mpsc::channel();
     let (proceed, resume) = mpsc::channel();
-    registration.pause(reader.conn.as_ref().unwrap(), reached, resume);
+    registration.pause(&reader.opened.borrow().as_ref().unwrap().0, reached, resume);
     let location = fixture.archive.clone();
     let writer = std::thread::spawn(move || {
         gap.recv().unwrap();
@@ -133,9 +133,11 @@ fn an_interrupted_first_read_does_not_wait_for_the_lock() {
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     reader
-        .conn
+        .opened
+        .borrow()
         .as_ref()
         .unwrap()
+        .0
         .get_interrupt_handle()
         .interrupt();
     assert!(

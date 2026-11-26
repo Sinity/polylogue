@@ -6,6 +6,6 @@ impl Inner {
         &mut self,
         staged: crate::export_items::ExportItems,
     ) -> Result<()> {
-        crate::assets::install(&mut self.index, &self.archive, staged)
+        crate::assets::install(self.index.get_mut()?, &self.archive, staged)
     }
 }

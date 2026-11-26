@@ -172,10 +172,7 @@ fn sigterm_and_sigint_drain_daemons_keeping_accepted_writes() {
         // The setting's read answers `index_building` until the daemon's
         // first pass installs the index, which removes the build directory
         // (docs/architecture.md, Durability).
-        while root
-            .join(polylogue_store::archive::index_build::DIR)
-            .exists()
-        {
+        while root.join(polylogue_store::index::file::DIR).exists() {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
         let answer = crate::client::call_ready(&archive, &call).unwrap();
