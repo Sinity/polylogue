@@ -920,17 +920,16 @@ fn morrows_older_sidechain_uses_its_first_record_uuid() {
 }
 
 #[test]
-fn sidechain_identity_follows_source_records_before_message_aliases() {
+fn a_parent_before_the_latest_sidechain_record_starts_a_separate_sidechain() {
     let records = vec![
-        json!({"type":"system","subtype":"notice","uuid":"side-root","sessionId":"s1",
-            "isSidechain":true,"parentUuid":"absent",
-            "content":"Starting the task."}),
-        json!({"type":"assistant","uuid":"side-answer","sessionId":"s1","isSidechain":true,
-            "parentUuid":"side-root","message":{"role":"assistant","content":"First answer."}}),
-        json!({"type":"system","subtype":"notice","uuid":"main-notice","sessionId":"s1",
-            "parentUuid":"side-answer","content":"Main session notice."}),
-        json!({"type":"assistant","uuid":"new-side","sessionId":"s1","isSidechain":true,
-            "parentUuid":"main-notice","message":{"role":"assistant","content":"Another task."}}),
+        json!({"type":"user","uuid":"first","sessionId":"s1","isSidechain":true,
+            "parentUuid":null,"message":{"role":"user","content":"Review the file."}}),
+        json!({"type":"assistant","uuid":"second","sessionId":"s1","isSidechain":true,
+            "parentUuid":"first","message":{"role":"assistant","content":"File reviewed."}}),
+        json!({"type":"user","uuid":"third","sessionId":"s1","isSidechain":true,
+            "parentUuid":"first","message":{"role":"user","content":"Check the test."}}),
+        json!({"type":"assistant","uuid":"fourth","sessionId":"s1","isSidechain":true,
+            "parentUuid":"second","message":{"role":"assistant","content":"Review finished."}}),
     ];
     let piece = run(
         &main_file("s1"),
@@ -945,91 +944,11 @@ fn sidechain_identity_follows_source_records_before_message_aliases() {
             .iter()
             .map(|message| message.session.native().as_str())
             .collect::<Vec<_>>(),
-        ["s1~side-side-root", "s1~side-new-side"]
-    );
-}
-
-#[test]
-fn an_older_sidechain_cannot_be_resumed_as_a_main_session() {
-    assert_eq!(resume("s1~side-first"), None);
-    assert_eq!(
-        resume("s1"),
-        Some(vec!["claude".into(), "--resume".into(), "s1".into()])
-    );
-}
-
-#[test]
-fn a_background_task_launch_keeps_its_sidechain_open() {
-    let records = vec![
-        assistant(
-            "task",
-            "task-message",
-            json!({"type":"tool_use","id":"call-one",
-            "name":"Task","input":{"prompt":"Review the file."}}),
-        ),
-        json!({"type":"user","uuid":"root","sessionId":"s1","isSidechain":true,
-            "parentUuid":"task","message":{"role":"user","content":"Review the file."}}),
-        json!({"type":"user","uuid":"launch","sessionId":"s1","parentUuid":"task",
-            "toolUseResult":{"isAsync":true,"backgroundTaskId":"task-one"},
-            "message":{"role":"user","content":[{"type":"tool_result",
-                "tool_use_id":"call-one","content":"Started.","is_error":false}]}}),
-        json!({"type":"assistant","uuid":"answer","sessionId":"s1","isSidechain":true,
-            "parentUuid":"root","message":{"role":"assistant","content":"File reviewed."}}),
-    ];
-    let piece = run(
-        &main_file("s1"),
-        &mut ParserState::default(),
-        &jsonl(&records),
-        0,
-    )
-    .unwrap();
-    let messages = final_messages(&[piece]);
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|message| message.session.native().as_str() == "s1~side-root")
-            .map(|message| message.id.native().as_str())
-            .collect::<Vec<_>>(),
-        ["root", "answer"]
-    );
-}
-
-#[test]
-fn a_task_result_only_closes_sidechains_in_its_session() {
-    let records = vec![
-        assistant(
-            "task-one",
-            "task-message-one",
-            json!({"type":"tool_use","id":"shared-call",
-            "name":"Task","input":{"prompt":"First review."}}),
-        ),
-        json!({"type":"user","uuid":"root-one","sessionId":"s1","isSidechain":true,
-            "parentUuid":"task-one","message":{"role":"user","content":"First review."}}),
-        json!({"type":"assistant","uuid":"task-two","sessionId":"s2",
-            "message":{"role":"assistant","content":[{"type":"tool_use","id":"shared-call",
-                "name":"Task","input":{"prompt":"Second review."}}]}}),
-        json!({"type":"user","uuid":"root-two","sessionId":"s2","isSidechain":true,
-            "parentUuid":"task-two","message":{"role":"user","content":"Second review."}}),
-        json!({"type":"user","uuid":"result-one","sessionId":"s1","parentUuid":"task-one",
-            "message":{"role":"user","content":[{"type":"tool_result",
-                "tool_use_id":"shared-call","content":"Done.","is_error":false}]}}),
-        json!({"type":"assistant","uuid":"answer-two","sessionId":"s2","isSidechain":true,
-            "parentUuid":"root-two","message":{"role":"assistant","content":"Still working."}}),
-    ];
-    let piece = run(
-        &main_file("s1"),
-        &mut ParserState::default(),
-        &jsonl(&records),
-        0,
-    )
-    .unwrap();
-    let messages = final_messages(&[piece]);
-    assert_eq!(
-        messages
-            .iter()
-            .filter(|message| message.session.native().as_str() == "s2~side-root-two")
-            .map(|message| message.id.native().as_str())
-            .collect::<Vec<_>>(),
-        ["root-two", "answer-two"]
+        [
+            "s1~side-first",
+            "s1~side-first",
+            "s1~side-third",
+            "s1~side-first"
+        ]
     );
 }

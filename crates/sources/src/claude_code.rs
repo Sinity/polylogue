@@ -145,8 +145,7 @@ pub struct ClaudeCode {
 /// What the parser carries from one record to the next. A response
 /// written as several records yields one row per record, and a record that
 /// stands for another yields an alias row; both are joined when the chain's
-/// reading is formed ([`crate::chain_names`]). Open sidechains keep their
-/// source parent names until the Task call that started them finishes.
+/// reading is formed ([`crate::chain_names`]).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParserState {
     /// The latest message, for placing events on the timeline.
@@ -167,38 +166,11 @@ pub struct ParserState {
     /// The directory each session was last in, by native ID.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     cwd: BTreeMap<String, String>,
-    /// Each open sidechain record's UUID names its session and the parent
-    /// record that started it. Task results close these names together.
+    /// One entry per sidechain in the file: its latest record's UUID names
+    /// its session. A parent other than a sidechain's latest record starts
+    /// a separate sidechain.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    sidechains: BTreeMap<String, (String, Option<String>)>,
-    /// Call IDs belong to one session. Each open call names its record.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    task_calls: BTreeMap<SessionId, BTreeMap<String, String>>,
-}
-
-impl ParserState {
-    fn finish_task(&mut self, session: &SessionId, call: &str) {
-        let Some(calls) = self.task_calls.get_mut(session) else {
-            return;
-        };
-        let parent = calls
-            .remove(call)
-            .filter(|parent| !calls.values().any(|open| open == parent));
-        if calls.is_empty() {
-            self.task_calls.remove(session);
-        }
-        if let Some(parent) = parent {
-            let cwd = &mut self.cwd;
-            self.sidechains.retain(|_, (session, caller)| {
-                if caller.as_deref() == Some(parent.as_str()) {
-                    cwd.remove(session);
-                    false
-                } else {
-                    true
-                }
-            });
-        }
-    }
+    sidechains: BTreeMap<String, String>,
 }
 
 fn origin() -> Origin {
@@ -255,19 +227,17 @@ impl ClaudeCode {
                             v.str("parentUuid")
                                 .and_then(|parent| parser_state.sidechains.get(parent))
                         })
-                        .filter(|(session, _)| session.starts_with(&format!("{base}~side-")));
+                        .filter(|session| session.starts_with(&format!("{base}~side-")));
                     RecordSession {
-                        native: earlier
-                            .map(|(session, _)| session.clone())
-                            .unwrap_or_else(|| {
-                                format!(
-                                    "{base}~side-{}",
-                                    v.str("uuid")
-                                        .filter(|uuid| !uuid.is_empty())
-                                        .map(str::to_owned)
-                                        .unwrap_or_else(|| crate::content_ids::untagged_hash(v))
-                                )
-                            }),
+                        native: earlier.cloned().unwrap_or_else(|| {
+                            format!(
+                                "{base}~side-{}",
+                                v.str("uuid")
+                                    .filter(|uuid| !uuid.is_empty())
+                                    .map(str::to_owned)
+                                    .unwrap_or_else(|| crate::content_ids::untagged_hash(v))
+                            )
+                        }),
                         kind: SessionKind::Sidechain,
                     }
                 } else {
@@ -737,38 +707,6 @@ impl ClaudeCode {
                 production,
             }
         };
-        if matches!(self.file, File::Main { .. }) {
-            for block in &message.blocks {
-                match block {
-                    Block::ToolCall {
-                        action: polylogue_model::ToolAction::Subagent,
-                        call_id: Some(call),
-                        ..
-                    } => {
-                        parser_state
-                            .task_calls
-                            .entry(message.session.clone())
-                            .or_default()
-                            .insert(call.clone(), id.native().as_str().to_owned());
-                    }
-                    Block::ToolResult {
-                        call_id: Some(call),
-                        outcome,
-                        ..
-                    } if !matches!(
-                        outcome,
-                        ToolOutcome::Unknown {
-                            reason: polylogue_model::UnknownReason::RunningInBackground
-                        }
-                    ) && v.pointer("/toolUseResult/isAsync").and_then(Json::as_bool)
-                        != Some(true) =>
-                    {
-                        parser_state.finish_task(&message.session, call);
-                    }
-                    _ => {}
-                }
-            }
-        }
         out.messages.push(MessageRow {
             response,
             page_text: false,
@@ -1297,14 +1235,10 @@ impl Parser for ClaudeCode {
                 .filter(|uuid| !uuid.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| crate::content_ids::untagged_hash(v));
-            let parent = v.str("parentUuid");
-            let caller = parent
-                .and_then(|parent| parser_state.sidechains.get(parent))
-                .map(|(_, caller)| caller.clone())
-                .unwrap_or_else(|| parent.map(str::to_owned));
-            parser_state
-                .sidechains
-                .insert(uuid, (record_session.native, caller));
+            if let Some(parent) = v.str("parentUuid") {
+                parser_state.sidechains.remove(parent);
+            }
+            parser_state.sidechains.insert(uuid, record_session.native);
         }
         let hook = (ty == "system"
             && v.str("subtype").filter(|s| !s.is_empty()) == Some("stop_hook_summary"))
@@ -1421,9 +1355,6 @@ impl Parser for ClaudeCode {
                 {
                     let (result_at, result_at_evidence) =
                         crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
-                    if let Some(call) = call_id.as_deref() {
-                        parser_state.finish_task(&session, call);
-                    }
                     out.background.push(BackgroundUpdate {
                         result_at,
                         result_at_evidence,
