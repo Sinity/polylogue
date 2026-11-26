@@ -163,20 +163,87 @@ fn unrecoverable_worker_error_halts_and_shows_halted() {
 
 #[test]
 fn failure_lines_carry_error_priority() {
-    follow(
-        "priority test",
-        None,
-        &AtomicBool::new(false),
+    const CHILD: &str = "POLYLOGUE_FOLLOW_JOURNAL_TEST";
+    if std::env::var_os(CHILD).is_some() {
+        follow(
+            "priority test",
+            None,
+            &AtomicBool::new(false),
+            now,
+            || {},
+            || Err(StoreError::internal("synthetic failure")),
+        );
+        return;
+    }
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "follow::tests::failure_lines_carry_error_priority",
+            "--nocapture",
+        ])
+        .env(CHILD, "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "<3>polylogue: priority test: synthetic failure; this is a Polylogue bug; report it with the request ID\n"
+    );
+}
+
+#[test]
+fn a_changed_error_is_logged_once_more() {
+    let events = CommitEvents::default();
+    let subscription = events.subscribe();
+    let stop = AtomicBool::new(false);
+    let mut messages = [
+        "database busy",
+        "database busy",
+        "reader busy",
+        "reader busy",
+    ]
+    .into_iter();
+    assert!(follow(
+        "changed failure test",
+        Some(&subscription),
+        &stop,
         now,
         || {},
-        || Err(StoreError::internal("synthetic failure")),
-    );
-    let record = crate::log::recent(crate::log::KEPT)
+        || {
+            events.committed(Committed::default());
+            if let Some(message) = messages.next() {
+                Err(StoreError::Failed(Failure::stated(
+                    "",
+                    Cause::Transient,
+                    polylogue_model::Code::Busy,
+                    message,
+                )))
+            } else {
+                stop.store(true, Ordering::Release);
+                Ok(())
+            }
+        },
+    ));
+    let lines: Vec<_> = crate::log::recent(crate::log::KEPT)
         .into_iter()
-        .find(|record| record.text.starts_with("priority test:"))
-        .unwrap();
+        .filter(|line| line.text.starts_with("changed failure test:"))
+        .map(|line| (line.priority, line.text))
+        .collect();
     assert_eq!(
-        crate::log::journal_line(record.priority, &record.text),
-        "<3>polylogue: priority test: synthetic failure; this is a Polylogue bug; report it with the request ID"
+        lines,
+        [
+            (
+                crate::log::Priority::Error,
+                "changed failure test: database busy".into()
+            ),
+            (
+                crate::log::Priority::Error,
+                "changed failure test: reader busy".into()
+            ),
+            (
+                crate::log::Priority::Info,
+                "changed failure test: recovered".into()
+            ),
+        ]
     );
 }
