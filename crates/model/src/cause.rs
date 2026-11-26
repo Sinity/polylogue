@@ -92,7 +92,8 @@ impl Caused for crate::Reason {
     Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 pub struct Failure {
-    /// The file, location or step that failed, or empty for a whole turn.
+    /// What failed: a file's path, a location, an input or a step; empty
+    /// for a whole turn.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub subject: String,
     pub cause: Cause,
@@ -109,6 +110,12 @@ impl Failure {
             code: error.code(),
             message: error.to_string(),
         }
+    }
+
+    /// The failure as met while doing `what` to its subject.
+    pub fn doing(mut self, what: &str) -> Self {
+        self.message = format!("{what}: {}", self.message);
+        self
     }
 
     /// A failure of a whole turn, with no one subject.

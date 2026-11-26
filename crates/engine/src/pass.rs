@@ -164,18 +164,18 @@ impl Engine {
     pub(crate) fn chain_failed(
         &mut self,
         plan: &mut Plan,
-        subject: String,
+        doing: &str,
         error: EngineError,
         pass: &mut Pass,
     ) {
         match error {
             EngineError::Chain(failure) => {
-                let failure = polylogue_model::Failure::new(subject, &failure);
+                let failure = polylogue_model::Failure::new(plan.path.display(), &failure);
                 self.record_failure(plan, failure, pass);
             }
             error => {
                 pass.errors
-                    .push(polylogue_model::Failure::new(subject, &error));
+                    .push(polylogue_model::Failure::new(plan.path.display(), &error).doing(doing));
                 plan.failed = true;
             }
         }
@@ -230,10 +230,10 @@ impl Engine {
             });
         match recorded {
             Ok(()) => plan.failure_recorded = true,
-            Err(error) => pass.errors.push(polylogue_model::Failure::new(
-                format_args!("record the failure of {}", plan.path.display()),
-                &error,
-            )),
+            Err(error) => pass.errors.push(
+                polylogue_model::Failure::new(plan.path.display(), &error)
+                    .doing("record the failure"),
+            ),
         }
     }
 
@@ -1006,10 +1006,9 @@ impl Engine {
                     Ok(compressed::RolloutStep::Capture(capture)) => {
                         self.rollout_captures.push_back(*capture);
                     }
-                    Err(error) => pass.errors.push(polylogue_model::Failure::new(
-                        format_args!("capture {}", f.path.display()),
-                        &error,
-                    )),
+                    Err(error) => pass.errors.push(
+                        polylogue_model::Failure::new(f.path.display(), &error).doing("capture"),
+                    ),
                 }
                 continue;
             }
@@ -1146,10 +1145,9 @@ impl Engine {
                         }
                     }
                     Ok(compressed::RolloutStep::Planned(None)) => {}
-                    Err(error) => pass.errors.push(polylogue_model::Failure::new(
-                        format_args!("capture {}", f.path.display()),
-                        &error,
-                    )),
+                    Err(error) => pass.errors.push(
+                        polylogue_model::Failure::new(f.path.display(), &error).doing("capture"),
+                    ),
                 }
                 continue;
             }
@@ -1255,10 +1253,8 @@ impl Engine {
     ) -> Result<Option<Plan>, EngineError> {
         match self.plan(path, now) {
             Err(error @ EngineError::Io(_)) => {
-                pass.errors.push(polylogue_model::Failure::new(
-                    format_args!("plan {}", path.display()),
-                    &error,
-                ));
+                pass.errors
+                    .push(polylogue_model::Failure::new(path.display(), &error).doing("plan"));
                 Ok(None)
             }
             planned => planned,
@@ -2054,14 +2050,12 @@ impl Engine {
             return Ok(None);
         }
         if let Err(error) = self.restore_captured_authored(&plan, pass) {
-            let subject = format!("authored restoration {}", plan.path.display());
-            self.chain_failed(&mut plan, subject, error, pass);
+            self.chain_failed(&mut plan, "authored restoration", error, pass);
             self.finish_plan(plan);
             return Ok(None);
         }
         if let Err(error) = self.observe_local_references(&plan, pass) {
-            let subject = format!("local references {}", plan.path.display());
-            self.chain_failed(&mut plan, subject, error, pass);
+            self.chain_failed(&mut plan, "local references", error, pass);
             self.finish_plan(plan);
             return Ok(None);
         }
@@ -2083,10 +2077,10 @@ impl Engine {
             match self.prepare_byte_read(&mut plan)? {
                 PlannedFile::Ready => return Ok(Some(plan)),
                 PlannedFile::Unreadable(error) => {
-                    pass.errors.push(polylogue_model::Failure::new(
-                        format_args!("read {}", plan.path.display()),
-                        &EngineError::Io(error),
-                    ));
+                    pass.errors.push(
+                        polylogue_model::Failure::new(plan.path.display(), &EngineError::Io(error))
+                            .doing("read"),
+                    );
                     plan.failed = true;
                     self.finish_plan(plan);
                     return Ok(None);
@@ -2179,10 +2173,10 @@ impl Engine {
                     return Ok(());
                 }
                 if let Err(error) = self.store_plan(&mut plan, pass) {
-                    pass.errors.push(polylogue_model::Failure::new(
-                        format_args!("store {} before re-parse", plan.path.display()),
-                        &error,
-                    ));
+                    pass.errors.push(
+                        polylogue_model::Failure::new(plan.path.display(), &error)
+                            .doing("store before re-parse"),
+                    );
                     plan.failed = true;
                     self.finish_plan(plan);
                     continue;
@@ -2223,13 +2217,12 @@ impl Engine {
         }
         let result = polylogue_model::caught(|| self.execute_export(&mut plan, &mut *parser, pass))
             .unwrap_or_else(|panic| Err(polylogue_model::ChainFailure::from(panic).into()));
-        let subject = format!("parse {}", plan.path.display());
         match result {
             Ok(()) => {}
             // A stop is no failure of the export: its committed
             // deliveries stay and the next parse continues after them.
             Err(EngineError::Stopped) => return Err(EngineError::Stopped),
-            Err(error) => self.chain_failed(&mut plan, subject, error, pass),
+            Err(error) => self.chain_failed(&mut plan, "parse", error, pass),
         }
         self.finish_plan(plan);
         Ok(())
@@ -2528,10 +2521,10 @@ impl Engine {
                             Ok(Some(plan)) if !stopping && !yielding => plan,
                             Ok(_) => continue,
                             Err(error) => {
-                                pass.errors.push(polylogue_model::Failure::new(
-                                    format_args!("capture {}", path.display()),
-                                    &error,
-                                ));
+                                pass.errors.push(
+                                    polylogue_model::Failure::new(path.display(), &error)
+                                        .doing("capture"),
+                                );
                                 continue;
                             }
                         };
@@ -2592,10 +2585,8 @@ impl Engine {
                         }
                     }
                     let failure = match &d.error {
-                        Some(error) => polylogue_model::Failure::new(
-                            format_args!("the writer refused {}", plan.path.display()),
-                            error,
-                        ),
+                        Some(error) => polylogue_model::Failure::new(plan.path.display(), error)
+                            .doing("the writer refused it"),
                         None => polylogue_model::Failure::bug(
                             plan.path.display(),
                             "the writer refused a batch without a reason",
@@ -2781,17 +2772,17 @@ impl Engine {
                             if plan.tracked
                                 && let Err(error) = self.refresh_confirmed_input(&plan.path)
                             {
-                                pass.errors.push(polylogue_model::Failure::new(
-                                    format_args!("confirmed reading of {}", plan.path.display()),
-                                    &error,
-                                ));
+                                pass.errors.push(
+                                    polylogue_model::Failure::new(plan.path.display(), &error)
+                                        .doing("confirmed reading"),
+                                );
                             }
                         }
                         Ok(false) => pass.capture_pending = true,
-                        Err(error) => pass.errors.push(polylogue_model::Failure::new(
-                            format_args!("confirmed reading of {}", plan.path.display()),
-                            &error,
-                        )),
+                        Err(error) => pass.errors.push(
+                            polylogue_model::Failure::new(plan.path.display(), &error)
+                                .doing("confirmed reading"),
+                        ),
                     }
                 } else {
                     pass.messages_written += written;
@@ -2803,17 +2794,16 @@ impl Engine {
                 pass.capture_pending = true;
             }
             Err(error) => {
-                pass.errors.push(polylogue_model::Failure::new(
-                    format_args!("re-parse {}", plan.path.display()),
-                    &error,
-                ));
+                pass.errors.push(
+                    polylogue_model::Failure::new(plan.path.display(), &error).doing("re-parse"),
+                );
                 if matches!(error, EngineError::Chain(_))
                     && let Err(error) = self.record_retried_stop(&mut plan, pass)
                 {
-                    pass.errors.push(polylogue_model::Failure::new(
-                        format_args!("record retried stop of {}", plan.path.display()),
-                        &error,
-                    ));
+                    pass.errors.push(
+                        polylogue_model::Failure::new(plan.path.display(), &error)
+                            .doing("record retried stop"),
+                    );
                 }
             }
         }

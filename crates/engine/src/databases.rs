@@ -73,10 +73,10 @@ impl Databases {
                 if let Err(error) =
                     reader.recall(&source.path, &archive, &source.input, &source.observation)
                 {
-                    completed.errors.push(polylogue_model::Failure::new(
-                        format_args!("read database {}", source.path.display()),
-                        &error,
-                    ));
+                    completed.errors.push(
+                        polylogue_model::Failure::new(source.path.display(), &error)
+                            .doing("read database"),
+                    );
                     continue;
                 }
                 let Some(due) = reader.observe(&source.path) else {
@@ -93,10 +93,10 @@ impl Databases {
                 ) {
                     Ok(queue) => queue,
                     Err(error) => {
-                        completed.errors.push(polylogue_model::Failure::new(
-                            format_args!("read database {}", source.path.display()),
-                            &error,
-                        ));
+                        completed.errors.push(
+                            polylogue_model::Failure::new(source.path.display(), &error)
+                                .doing("read database"),
+                        );
                         continue;
                     }
                 };
@@ -115,28 +115,28 @@ impl Databases {
                         completed.changed = true;
                         if let Err(error) = queue.enqueue_staged(report.snapshot) {
                             reader.forget(&source.path);
-                            completed.errors.push(polylogue_model::Failure::new(
-                                format_args!("stage database {}", source.path.display()),
-                                &error,
-                            ));
+                            completed.errors.push(
+                                polylogue_model::Failure::new(source.path.display(), &error)
+                                    .doing("stage database"),
+                            );
                             continue;
                         }
                     }
                     Ok(Err(error)) => {
                         reader.forget(&source.path);
                         completed.changed = true;
-                        completed.errors.push(polylogue_model::Failure::new(
-                            format_args!("read database {}", source.path.display()),
-                            &error,
-                        ));
+                        completed.errors.push(
+                            polylogue_model::Failure::new(source.path.display(), &error)
+                                .doing("read database"),
+                        );
                         continue;
                     }
                     Err(panic) => {
                         completed.changed = true;
-                        completed.errors.push(polylogue_model::Failure::new(
-                            format_args!("read database {}", source.path.display()),
-                            &panic,
-                        ));
+                        completed.errors.push(
+                            polylogue_model::Failure::new(source.path.display(), &panic)
+                                .doing("read database"),
+                        );
                         reader = DatabaseReader::default();
                         reader.stop_when(Arc::clone(&cancelled));
                         continue;
@@ -151,10 +151,10 @@ impl Databases {
                     Err(error) => {
                         reader.forget(&source.path);
                         completed.changed = true;
-                        completed.errors.push(polylogue_model::Failure::new(
-                            format_args!("write database {}", source.path.display()),
-                            &error,
-                        ));
+                        completed.errors.push(
+                            polylogue_model::Failure::new(source.path.display(), &error)
+                                .doing("write database"),
+                        );
                     }
                 }
             }

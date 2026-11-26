@@ -169,10 +169,7 @@ impl Prepare {
     /// failure the machine or a stop causes ends the build, and any other
     /// leaves the chain out to be read again after the install.
     fn chain_failed(&self, plan: Plan, error: EngineError) -> Result<(), EngineError> {
-        let subject = match plan.change {
-            Change::Reparse { chain } => format!("build {} chain {chain}", plan.input.id),
-            _ => format!("build {}", plan.input.id),
-        };
+        let subject = plan.path.display().to_string();
         match error {
             EngineError::Chain(failure) => {
                 let failure = polylogue_model::Failure::new(subject, &failure);
@@ -187,7 +184,7 @@ impl Prepare {
                 | Cause::Content => self
                     .left_out
                     .locked()
-                    .push(polylogue_model::Failure::new(subject, &error)),
+                    .push(polylogue_model::Failure::new(subject, &error).doing("build")),
             },
         }
         Ok(())

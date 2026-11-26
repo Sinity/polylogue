@@ -366,18 +366,16 @@ impl Engine {
             }
             Ok(())
         });
-        let subject = format_args!("{}: authored restoration", path.display());
         if let Some(error) = restore_failed {
-            report
-                .pass
-                .errors
-                .push(polylogue_model::Failure::new(subject, &error));
+            report.pass.errors.push(
+                polylogue_model::Failure::new(path.display(), &error).doing("authored restoration"),
+            );
         } else if let Err(error) = result {
             report.pass.errors.push(polylogue_model::Failure::stated(
-                subject,
+                path.display(),
                 polylogue_model::Cause::Content,
                 polylogue_model::Code::Import,
-                error,
+                format!("authored restoration: {error}"),
             ));
         }
         Ok(())
