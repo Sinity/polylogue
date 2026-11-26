@@ -41,6 +41,7 @@ mod build_log;
 mod chain_names;
 mod collectors;
 mod databases;
+mod failure_log;
 mod import;
 mod source_read;
 pub use import::python_polylogue::{ClassCount, PythonImportReport, RefusedRow};
@@ -527,6 +528,8 @@ pub struct Engine {
     requests: Option<Requests>,
     /// Imports answered by a build while it ran, for the loop's summary.
     imports_during_build: u64,
+    /// What is failing, logged when it starts and when it clears.
+    failure_log: failure_log::FailureLog,
     collectors: collectors::Collectors,
     pub config: Config,
     pub archive: Archive,
@@ -648,6 +651,7 @@ impl Engine {
             collectors: collectors::Collectors::default(),
             requests: None,
             imports_during_build: 0,
+            failure_log: Default::default(),
         })
     }
 

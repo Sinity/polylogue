@@ -7,6 +7,7 @@ mod readings;
 mod returning;
 mod scope_lifecycle;
 mod tool_captures;
+mod unreadable;
 use super::*;
 use polylogue_testkit::{ClaudeHome, claude_user};
 use std::io::Read;

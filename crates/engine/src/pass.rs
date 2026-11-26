@@ -338,7 +338,22 @@ impl Engine {
     /// Waits for database reads as well as the current file pass.
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
         let started = Instant::now();
-        let (mut total, seen) = self.one_pass(true, &Default::default())?;
+        let (mut total, seen) = match self.one_pass(true, &Default::default()) {
+            Ok(done) => done,
+            Err(error) => {
+                if !matches!(error, EngineError::Stopped) {
+                    self.failure_log.pass_ended(
+                        &[polylogue_model::Failure::of(&error)],
+                        crate::failure_log::Looked {
+                            files: &HashSet::new(),
+                            walked: false,
+                            completed: false,
+                        },
+                    );
+                }
+                return Err(error);
+            }
+        };
         let mut paths: std::collections::BTreeSet<_> = seen.into_iter().collect();
         // A confirmed reading can still be pending after all local work ends.
         // Return that wait to the caller instead of spinning inside its pass.
@@ -358,6 +373,15 @@ impl Engine {
             total.add(next);
         }
         total.seconds = started.elapsed().as_secs_f64();
+        let files = paths.into_iter().collect();
+        self.failure_log.pass_ended(
+            &total.errors,
+            crate::failure_log::Looked {
+                files: &files,
+                walked: total.full_scans > 0,
+                completed: true,
+            },
+        );
         Ok(total)
     }
 
@@ -2986,6 +3010,8 @@ impl Engine {
             discover |= self.take_watched(&mut changed, &mut watch_errors);
             busy(true);
             let pending;
+            let mut looked_at = HashSet::new();
+            let mut completed = false;
             let mut finished = match self.one_pass(discover, &changed) {
                 Err(EngineError::Stopped) => {
                     // Writes the pass queued before stopping are committed.
@@ -3007,6 +3033,8 @@ impl Engine {
                         // retaining this scope's unfinished planning page.
                         self.discard_confirmed_progress();
                     }
+                    looked_at.clone_from(&seen);
+                    completed = true;
                     if pending {
                         changed.extend(seen);
                     } else {
@@ -3059,6 +3087,14 @@ impl Engine {
                 }
             };
             finished.errors.append(&mut watch_errors);
+            self.failure_log.pass_ended(
+                &finished.errors,
+                crate::failure_log::Looked {
+                    files: &looked_at,
+                    walked: completed && finished.full_scans > 0,
+                    completed,
+                },
+            );
             summary.passes += 1;
             summary.work.add(finished.clone());
             {
