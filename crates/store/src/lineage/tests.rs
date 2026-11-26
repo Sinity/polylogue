@@ -294,14 +294,8 @@ fn links_read_for_a_session_are_the_identity_views_rows() {
     }
     type Statement = (Option<&'static str>, Option<&'static str>, bool);
     // A parent, a child, a kind and how, with the statements of that relation.
-    type Relation = (
-        &'static str,
-        &'static str,
-        &'static str,
-        Option<&'static str>,
-        &'static [Statement],
-    );
-    let relations: &[Relation] = &[
+    type Relation<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, &'a [Statement]);
+    let relations: &[Relation<'_>] = &[
         ("test:p", "test:a", "spawn", None, &[(None, None, false)]),
         (
             "test:p",
