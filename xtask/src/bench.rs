@@ -108,7 +108,7 @@ pub struct Conditions {
     repetitions: u32,
     /// The memory limit of each measured build (systemd `MemoryMax`, no
     /// swap); a build that exceeds it is killed and reported.
-    #[arg(long, default_value = "8G")]
+    #[arg(long, default_value = "4G")]
     memory_max: String,
 }
 

@@ -200,9 +200,11 @@ and a local `check` only reproduces a failure the hosted check reported.
 the `normal` queue beside them, and full checks and Nix checks in `bulk`.
 `measure` is the one operation for
 benchmarks, archive rebuilds and measurement drivers: it runs one at a time,
-waits until 10 GiB of memory is free rather than starting a run its memory
-limit would end, runs at low CPU and I/O priority, and never sees the paid
-embedding key. A benchmark started there runs each measured build in a unit
+waits until 6 GiB of memory is free, holds the job to 6 GiB (7 GiB at most)
+so it cannot grow far past what was admitted, runs at low CPU and I/O
+priority, and never sees the paid embedding key. A measurement that needs
+more memory than that needs the host's job ceiling raised, which is the
+host's decision. A benchmark started there runs each measured build in a unit
 of its own beside the job's, with the benchmark's `--memory-max`, and reads
 that unit's accounting. Iteration on a write-path change uses one drawn
 sample: `agentctl job start measure --project <checkout> -- cargo run
