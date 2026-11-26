@@ -181,7 +181,7 @@ fn access_rules() {
         // No token: a page sends the browser to sign in, the API refuses.
         let (s, h, _) = send(&r, get("/").body(Body::empty()).unwrap()).await;
         assert_eq!(s, StatusCode::SEE_OTHER);
-        assert_eq!(h[header::LOCATION], "/auth?next=%2F");
+        assert_eq!(h[header::LOCATION], "/auth");
         let req = get("/api/v1/status").body(Body::empty()).unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::UNAUTHORIZED);
         let req = get("/api/v1/status")

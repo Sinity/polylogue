@@ -87,7 +87,7 @@ pub fn auth() -> String {
 }
 
 /// The operation's completeness, failure and next calls, shared by every view.
-pub(super) fn answer_content(answers: &[(&command_surface::Answer<Value>, &str)]) -> String {
+pub(super) fn answer_content<T>(answers: &[(&command_surface::Answer<T>, &str)]) -> String {
     use command_surface::Outcome;
     let table = crate::commands::declarations();
     maud::html! {

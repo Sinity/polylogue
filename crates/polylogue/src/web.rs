@@ -229,13 +229,18 @@ async fn guarded(web: Arc<Web>, req: HttpRequest, next: Next) -> HttpResponse {
     let path = req.uri().path().to_owned();
     if !open_route(&path) && !has_token(&web, headers) {
         return if req.method() == Method::GET && !path.starts_with("/api/") {
-            Redirect::to(&format!(
-                "/auth?next={}",
-                polylogue_render::html::encode_path_segment(
-                    req.uri().path_and_query().map_or("/", |uri| uri.as_str())
-                )
-            ))
-            .into_response()
+            let next = polylogue_render::html::encode_path_segment(
+                req.uri().path_and_query().map_or("/", |uri| uri.as_str()),
+            );
+            let mut response = Redirect::to("/auth").into_response();
+            let cookie = format!(
+                "{}_page={next}; Path=/auth; HttpOnly; SameSite=Strict",
+                access::cookie_name(&web.key)
+            );
+            if let Ok(cookie) = HeaderValue::from_str(&cookie) {
+                response.headers_mut().insert(header::SET_COOKIE, cookie);
+            }
+            response
         } else {
             (
                 StatusCode::UNAUTHORIZED,
@@ -358,24 +363,20 @@ where
 }
 
 /// Archive paths never reach a browser, in values, failures or notes.
-fn browser_response(answer: Answer<Value>, root: &std::path::Path) -> Answer<Value> {
+fn browser_response<T: serde::Serialize + serde::de::DeserializeOwned>(
+    answer: Answer<T>,
+    root: &std::path::Path,
+) -> Answer<T> {
     let mut value = serde_json::to_value(answer).expect("answer serializes");
     access::scrub_value(&mut value, root);
-    let answer: Answer<Value> =
-        serde_json::from_value(value).expect("scrubbed answer deserializes");
-    answer.map(|mut value| {
-        if let Some(object) = value.as_object_mut() {
-            object.remove("archive");
-        }
-        value
-    })
+    if let Some(object) = value.get_mut("value").and_then(Value::as_object_mut) {
+        object.remove("archive");
+    }
+    serde_json::from_value(value).expect("scrubbed answer deserializes")
 }
 
 /// All answer details appear together before the view's content.
-fn answer_page(
-    answers: &[(&Answer<Value>, &str)],
-    render: impl FnOnce() -> String,
-) -> HttpResponse {
+fn answer_page<T>(answers: &[(&Answer<T>, &str)], render: impl FnOnce() -> String) -> HttpResponse {
     let failure = answers
         .iter()
         .find_map(|(answer, _)| match &answer.outcome {
@@ -589,6 +590,21 @@ async fn auth_exchange(
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         r.headers_mut().insert(header::SET_COOKIE, v);
     }
+    let page_cookie = format!("{}_page", access::cookie_name(&web.key));
+    if let Some(page) = access::cookie_token(
+        headers
+            .get(header::COOKIE)
+            .and_then(|value| value.to_str().ok()),
+        &page_cookie,
+    ) && let Ok(page) = HeaderValue::from_str(page)
+    {
+        r.headers_mut().insert("x-polylogue-return-to", page);
+    }
+    if let Ok(cookie) = HeaderValue::from_str(&format!(
+        "{page_cookie}=; Path=/auth; HttpOnly; SameSite=Strict; Max-Age=0"
+    )) {
+        r.headers_mut().append(header::SET_COOKIE, cookie);
+    }
     r
 }
 
@@ -623,7 +639,7 @@ async fn live_js() -> HttpResponse {
 /// An HTML failure page with the failure's shared HTTP status. The message
 /// was already scrubbed of archive paths by `view`.
 fn failed_with(failure: &command_surface::Failure) -> HttpResponse {
-    let answer = Answer::error(failure.clone());
+    let answer = Answer::<Value>::error(failure.clone());
     answer_page(&[(&answer, "")], String::new)
 }
 

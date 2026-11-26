@@ -64,12 +64,20 @@ fn stale_sign_in_keeps_the_requested_session() {
         let (status, headers, _) = send(&r, get("/s/claude-code:s1?view=dialogue")
             .header(header::COOKIE, "polylogue_abc123def456=stale").body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::SEE_OTHER);
-        assert_eq!(headers[header::LOCATION], "/auth?next=%2Fs%2Fclaude-code%3As1%3Fview%3Ddialogue");
+        assert_eq!(headers[header::LOCATION], "/auth");
+        let next_cookie = headers[header::SET_COOKIE].to_str().unwrap();
+        assert_eq!(next_cookie, "polylogue_abc123def456_page=%2Fs%2Fclaude-code%3As1%3Fview%3Ddialogue; Path=/auth; HttpOnly; SameSite=Strict");
         let (_, _, body) = send(&r, get(headers[header::LOCATION].to_str().unwrap()).body(Body::empty()).unwrap()).await;
         assert!(body.contains("Sign-in is needed. The daemon may have restarted. Run <code>polylogue web</code> again to sign in and return to your page."));
-        let (status, _, _) = send(&r, own_origin(post("/auth")).body(Body::from(format!("token={TOKEN}"))).unwrap()).await;
+        let (status, signed_in, _) = send(&r, own_origin(post("/auth"))
+            .header(header::COOKIE, next_cookie.split(';').next().unwrap())
+            .body(Body::from(format!("token={TOKEN}"))).unwrap()).await;
         assert_eq!(status, StatusCode::NO_CONTENT);
-        let (status, _, body) = send(&r, authed(get("/s/claude-code:s1?view=dialogue")).body(Body::empty()).unwrap()).await;
+        assert_eq!(signed_in["x-polylogue-return-to"], "%2Fs%2Fclaude-code%3As1%3Fview%3Ddialogue");
+        assert_eq!(signed_in.get_all(header::SET_COOKIE).iter().nth(1).unwrap(), "polylogue_abc123def456_page=; Path=/auth; HttpOnly; SameSite=Strict; Max-Age=0");
+        let token_cookie = signed_in[header::SET_COOKIE].to_str().unwrap().split(';').next().unwrap();
+        let (status, _, body) = send(&r, get("/s/claude-code:s1?view=dialogue")
+            .header(header::COOKIE, token_cookie).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
     });
 }
@@ -174,7 +182,7 @@ fn failure_pages_show_the_suggested_shorter_period() {
     .with_suggestion(command_surface::Suggestion::Query(
         "sessions since:7d".into(),
     ));
-    let answer = Answer::error(failure);
+    let answer = Answer::<Value>::error(failure);
     let response = answer_page(&[(&answer, "polylogue sessions")], String::new);
     rt().block_on(async {
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
