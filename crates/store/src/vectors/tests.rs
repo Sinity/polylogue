@@ -677,8 +677,15 @@ fn similar_scores_only_the_selected_rows_vectors() {
             if text.starts_with("sessions") {
                 assert_eq!(ids, ["test:many-3"], "{text}");
             } else {
-                assert_eq!(ids.first().map(String::as_str), Some("many-3-2"), "{text}");
-                assert!(ids.iter().all(|id| id.starts_with("many-3-")), "{ids:?}");
+                assert_eq!(
+                    ids.first().map(String::as_str),
+                    Some("test:many-3-2"),
+                    "{text}"
+                );
+                assert!(
+                    ids.iter().all(|id| id.starts_with("test:many-3-")),
+                    "{ids:?}"
+                );
             }
             assert_eq!(
                 similarity.vectors_scored(),
@@ -725,7 +732,7 @@ fn the_f32_rescore_orders_what_int8_misorders() {
     drop(pool);
     let similarity = loaded_similarity(&f, &[1.0, 0.0]);
     let ids = ranked_ids(&f, "messages where similar:\"near\"", &similarity);
-    assert_eq!(ids[..2], ["many-7-2", "many-4-2"], "{ids:?}");
+    assert_eq!(ids[..2], ["test:many-7-2", "test:many-4-2"], "{ids:?}");
 }
 
 #[test]

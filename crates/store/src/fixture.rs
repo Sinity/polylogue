@@ -485,6 +485,19 @@ impl Fixture {
             rusqlite::TransactionBehavior::Immediate,
         )?;
         let mut pks = Vec::with_capacity(spec.sessions);
+        // As a build does, the rows are loaded first and the message
+        // table's indexes created after them, a sort each instead of a
+        // million inserts into each.
+        let indexes: Vec<(String, String)> = tx
+            .prepare(
+                "SELECT name, sql FROM sqlite_master
+                 WHERE type = 'index' AND tbl_name = 'message' AND sql IS NOT NULL",
+            )?
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?;
+        for (name, _) in &indexes {
+            tx.execute_batch(&format!("DROP INDEX \"{name}\""))?;
+        }
         {
             let mut session = tx.prepare(
                 "INSERT INTO session(id, origin, native_id, kind, cwd, cwd_json, started_at,
@@ -526,7 +539,7 @@ impl Fixture {
                     // The last message is always a model answer.
                     let model = (spec.messages - 1 - m).is_multiple_of(2);
                     self.seq += 1;
-                    let id = format!("many-{n}-{m}");
+                    let id = format!("test:many-{n}-{m}");
                     message.execute(params![
                         id,
                         pk,
@@ -555,6 +568,9 @@ impl Fixture {
                 }
                 pks.push(pk);
             }
+        }
+        for (_, sql) in &indexes {
+            tx.execute_batch(sql)?;
         }
         for &pk in &pks {
             crate::derive::counts::apply_values(
