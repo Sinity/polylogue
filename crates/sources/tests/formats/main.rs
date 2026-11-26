@@ -10,6 +10,7 @@ mod claude_code_wire;
 mod codex_compaction;
 mod codex_database_titles;
 mod codex_rollout;
+mod facts;
 mod gemini_cli_tool_output;
 mod golden;
 mod hermes_exports;

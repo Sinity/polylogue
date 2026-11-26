@@ -20,6 +20,11 @@ Morrow is a synthetic archive: a week of work (2026-10-01 to 10-07) on a fiction
 
 A golden is the expected parse of an input, written by hand from knowledge of the format, never produced by running the parser and saving its output, and never re-blessed when the parser changes. A changed format gets a new input and a new golden; the old pair stays, since old formats stay readable. End-to-end goldens of CLI and MCP replies follow the same rule.
 
+Each parser case is a directory `examples/sources/<origin>/<case>/` with the input (`input.*`), the path it would have under the home (`path`) and two files of expectations:
+
+- `facts.json` is the golden: what a reader of the archive sees in the input, written by hand from the input and the docs, never from the parser. Per session its ID, kind, title and messages; per message in order its ID (`null` when the message is named by its content), role, time exactly as the input writes it, parent (by ID, or by position for a content-named parent), text (text parts joined by a blank line) and thinking; per tool call its name, command or path and its result's outcome and text, paired by the call ID wherever the result is written; links between sessions with kind and both ends; documents with title and text; repository lookups; and, for inputs without messages, their records as events (session, kind, time). It holds no hashes, offsets or counts. `each_case_matches_its_hand_written_facts` compares the parse, projected to these fields, with it for equality and names every differing field.
+- `expected.json` is the parser's whole output for the input, kept so that an unintended change in any origin's parse shows (`golden_cases`). It is edited together with the parser, so it is a record of the parse, not a check of it.
+
 ## Test layout
 
 - A module's unit tests are in `name/tests.rs` (more files in `name/tests/`), declared last with `#[cfg(test)] mod tests;`.

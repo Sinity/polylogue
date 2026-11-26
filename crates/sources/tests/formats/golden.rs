@@ -1,9 +1,10 @@
 //! Golden cases: `examples/sources/<origin>/<case>/` holds an input file
 //! (`input.jsonl`, `input.json`),
 //! the path it would have under the home directory (`path`), and the
-//! expected rows and accounting (`expected.json`). A parser bug is fixed by
-//! adding its input as a case. Expectations are edited from format knowledge;
-//! this harness only reads them.
+//! parser's whole output for it (`expected.json`), kept so that an unintended
+//! change in any origin's parse shows. The facts a person wrote from the
+//! input alone are `facts.json`, compared in `facts`. A parser bug is fixed
+//! by adding its input as a case; this harness only reads the files.
 
 use polylogue_sources::origin::by_name;
 use std::fs;
@@ -13,7 +14,22 @@ fn examples() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/sources")
 }
 
-fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
+/// Every case directory, with its origin's name, in a fixed order.
+pub fn cases() -> Vec<(String, PathBuf)> {
+    let mut cases = Vec::new();
+    for origin in fs::read_dir(examples()).expect("examples/sources exists") {
+        let origin = origin.unwrap().path();
+        let name = origin.file_name().unwrap().to_str().unwrap().to_owned();
+        for case in fs::read_dir(&origin).unwrap() {
+            cases.push((name.clone(), case.unwrap().path()));
+        }
+    }
+    cases.sort();
+    cases
+}
+
+/// Parses a case's input as its origin would at the case's recorded path.
+pub fn parse_case(origin: &str, dir: &Path) -> Result<polylogue_sources::Step, String> {
     let spec = by_name(origin).ok_or_else(|| format!("unknown origin {origin}"))?;
     let path = fs::read_to_string(dir.join("path")).map_err(|e| format!("path: {e}"))?;
     let path = Path::new(path.trim());
@@ -37,6 +53,11 @@ fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
             input.len()
         ));
     }
+    Ok(step)
+}
+
+fn run_case(origin: &str, dir: &Path) -> Result<(), String> {
+    let step = parse_case(origin, dir)?;
     // Wire observations have their own independent shape/count tests. Historical
     // conversation goldens keep their public record-accounting view.
     let mut counts = serde_json::to_value(step.counts).map_err(|error| error.to_string())?;
@@ -97,19 +118,13 @@ fn goldens_hand_written_invalid_expectation_is_preserved() {
 #[test]
 fn golden_cases() {
     let mut failures = Vec::new();
-    let mut ran = 0;
-    for origin in fs::read_dir(examples()).expect("examples/sources exists") {
-        let origin = origin.unwrap().path();
-        let name = origin.file_name().unwrap().to_str().unwrap().to_owned();
-        for case in fs::read_dir(&origin).unwrap() {
-            let case = case.unwrap().path();
-            ran += 1;
-            if let Err(e) = run_case(&name, &case) {
-                failures.push(format!("{}: {e}", case.display()));
-            }
+    let cases = cases();
+    for (origin, case) in &cases {
+        if let Err(e) = run_case(origin, case) {
+            failures.push(format!("{}: {e}", case.display()));
         }
     }
-    assert!(ran > 0, "no golden cases found");
+    assert!(!cases.is_empty(), "no golden cases found");
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
 
