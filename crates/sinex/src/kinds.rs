@@ -70,16 +70,5 @@ pub fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> {
     declarations
 }
 
-/// The adapter declaration the operator installs; the producer never registers
-/// it from its own requested permissions.
-#[cfg(any(test, feature = "fixture"))]
-pub fn source_declaration() -> sinex_model::SourceDeclaration {
-    sinex_model::SourceDeclaration {
-        source: crate::source_reference(),
-        family: "polylogue".into(),
-        kinds: declarations("polylogue"),
-    }
-}
-
 #[cfg(test)]
 mod tests;

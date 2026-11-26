@@ -157,7 +157,6 @@ fn header(status: &Answer, notes: &[&String], view: &View<'_>) -> Vec<String> {
     };
     let mode = match &status.mode {
         Mode::Standalone => "standalone",
-        Mode::Primary => "primary",
         Mode::Blocked { .. } => "blocked",
     };
     let mut parts = vec![
@@ -543,30 +542,6 @@ fn primary(status: &Answer, view: &View<'_>) -> Vec<String> {
         if let Some(error) = error {
             lines.push(view.error(error));
         }
-    }
-    #[cfg(feature = "sinex")]
-    match &status.primary {
-        Some(crate::protocol::status::Primary::Observed {
-            refused_events,
-            last_refused,
-            position_error,
-            ..
-        }) => {
-            if let Some(refused) = refused_events.filter(|n| *n > 0) {
-                let mut line = format!("{} refused events stay in Sinex", count(refused));
-                if let Some(last) = last_refused {
-                    line.push_str(&format!("; last: {last}"));
-                }
-                lines.push(view.warning(&line));
-            }
-            if let Some(error) = position_error {
-                lines.push(view.error(error));
-            }
-        }
-        Some(crate::protocol::status::Primary::Unavailable { error }) => {
-            lines.push(view.error(&format!("unavailable: {error}")));
-        }
-        None => {}
     }
     lines
 }

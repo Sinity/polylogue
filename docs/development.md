@@ -23,7 +23,7 @@ input. Change the compiler version in common and both products together.
 
 `cargo xtask check` also builds the flake's `nix-fmt`, `settings` and `modules` checks (formatting, deployment-file rendering and module evaluation) when every test runs, and when the changes touch `nix/`, `flake.nix` or `flake.lock`. A diff confined to those files runs them instead of Clippy and the Rust tests.
 
-The Nix package includes the Sinex adapter (the Cargo feature `sinex`, off in a plain `cargo build`). `packages.polylogue-extension`
+The Nix package is built with the Cargo feature `sinex` (off in a plain `cargo build`), which holds Polylogue's Sinex event kinds; primary mode is not built in this version ([primary-mode.md](primary-mode.md)). `packages.polylogue-extension`
 builds the Chrome and Firefox archives with the extension's Node builder and
 provides an unpacked Chrome extension; the overlay adds both packages. Package
 builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
@@ -47,7 +47,7 @@ execution rather than resolving a separate dependency feature union. Named
 `--bin` and `--test` targets build only matching targets; `--lib` builds the
 workspace's library test targets. Without a target flag, all test
 targets are built. The required check and warm command keep that full graph;
-Clippy covers all targets both with and without the Sinex client. For an
+Clippy covers all targets both with and without the `sinex` feature. For an
 intentional isolated dependency investigation, invoke Cargo directly with its
 own package and feature flags; that creates a separate compilation graph.
 
@@ -64,12 +64,7 @@ Clippy checks the primary and standalone configurations separately. The
 nextest check runs the standalone workspace with the same engine and store
 fault features as `cargo xtask test`, without the real-process
 `polylogue::e2e` cases that need the operating system's machine identity. Its
-offline shell-completion cases remain included;
-`cargo xtask check` also runs the real Sinex rebuild and paired backup fixtures.
-It obtains the daemon and PostgreSQL with extensions from the Sinex revision
-in `Cargo.lock` through Nix, with local builds disabled. The check needs Nix
-and access to the Sinex package cache. `check --changed` skips these two
-real-stack fixtures for local edits. Hosted checks run them. The behavior VM
+offline shell-completion cases remain included. The behavior VM
 runs the packaged daemon, CLI status, MCP initialization and a native-messaging
 exchange in a guest with private XDG and archive paths. Formatting, extension packaging, deployment-file rendering and Nix formatting
 are flake checks too. The `modules` check evaluates both deployment modules,

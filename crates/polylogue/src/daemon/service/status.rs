@@ -6,8 +6,6 @@ use polylogue_model::LockExt as _;
 fn mode(d: &Daemon) -> crate::protocol::status::Mode {
     match &d.mode {
         super::ModeState::Standalone => crate::protocol::status::Mode::Standalone,
-        #[cfg(feature = "sinex")]
-        super::ModeState::Primary { .. } => crate::protocol::status::Mode::Primary,
         super::ModeState::Blocked {
             configured,
             path,
@@ -25,9 +23,6 @@ fn mode(d: &Daemon) -> crate::protocol::status::Mode {
 /// status request reads only memory and never waits for a reader, the
 /// writer's lock or a query whose cost grows with the archive.
 struct Snapshot {
-    /// When it was read, for the times it reports relative to now.
-    #[cfg(feature = "sinex")]
-    taken: std::time::Instant,
     store: Result<polylogue_store::Status, String>,
     notices: Result<crate::protocol::status::Notices, String>,
     running: Result<polylogue_store::RunningCandidates, String>,
@@ -37,15 +32,6 @@ struct Snapshot {
         polylogue_model::freshness::ReadCompleteness,
         super::state::Applied,
     )>,
-    #[cfg(feature = "sinex")]
-    primary: Option<PrimarySnapshot>,
-}
-
-#[cfg(feature = "sinex")]
-struct PrimarySnapshot {
-    producer: Result<polylogue_sinex::Status, String>,
-    applied_position: Result<Option<i64>, String>,
-    refusals: Result<(u64, Option<String>), String>,
 }
 
 impl Snapshot {
@@ -55,8 +41,6 @@ impl Snapshot {
             .completeness(&polylogue_engine::reading_contracts())
             .and_then(|local| Ok((local, d.applied(reader)?)));
         Self {
-            #[cfg(feature = "sinex")]
-            taken: std::time::Instant::now(),
             store: reader.status().map_err(|error| error.to_string()),
             notices: serde_json::from_value(crate::signals::recent(reader, now))
                 .map_err(|problem| problem.to_string()),
@@ -64,19 +48,6 @@ impl Snapshot {
                 .running_candidates(now)
                 .map_err(|error| error.to_string()),
             reading,
-            #[cfg(feature = "sinex")]
-            primary: match &d.mode {
-                super::ModeState::Primary { connection } => Some(PrimarySnapshot {
-                    producer: connection.status().map_err(|error| error.to_string()),
-                    applied_position: reader
-                        .confirmed_checkpoint()
-                        .map_err(|error| error.to_string()),
-                    refusals: reader
-                        .confirmed_refusals()
-                        .map_err(|error| error.to_string()),
-                }),
-                _ => None,
-            },
         }
     }
 }
@@ -187,12 +158,6 @@ pub(super) fn answer(
     if let crate::protocol::status::Notices::Unavailable { error } = &notices {
         missing.push(format!("notices: {error}"));
     }
-    #[cfg(feature = "sinex")]
-    let primary = primary(d, &snapshot, &freshness);
-    #[cfg(feature = "sinex")]
-    if let Some(crate::protocol::status::Primary::Unavailable { error }) = &primary {
-        missing.push(format!("primary status: {error}"));
-    }
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
@@ -213,8 +178,6 @@ pub(super) fn answer(
         warm: d.warm.summary(),
         mode: mode(d),
         freshness: freshness.clone(),
-        #[cfg(feature = "sinex")]
-        primary,
         recent_log: recent_log(whole_log),
         threads: polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER),
     };
@@ -302,12 +265,7 @@ fn unread(
             kept_chains: 0,
             raw_only_chains: 0,
         },
-        sinex: match &mode {
-            crate::protocol::status::Mode::Primary => {
-                IndexFreshness::primary(None, None, None, None, None)
-            }
-            _ => IndexFreshness::Standalone,
-        },
+        sinex: IndexFreshness::Standalone,
     };
     let (vectors, vectors_error) = match vectors {
         Some(Ok(vectors)) => (Some(vectors), None),
@@ -338,8 +296,6 @@ fn unread(
         warm: d.warm.summary(),
         mode: mode.clone(),
         freshness: freshness.clone(),
-        #[cfg(feature = "sinex")]
-        primary: None,
         recent_log: recent_log(whole_log),
         threads: polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER),
     };
@@ -353,60 +309,6 @@ fn unread(
         }
     }
     capture_note(d, answer)
-}
-
-#[cfg(feature = "sinex")]
-fn primary(
-    d: &Daemon,
-    snapshot: &Snapshot,
-    freshness: &polylogue_model::freshness::ReadFreshness,
-) -> Option<crate::protocol::status::Primary> {
-    use crate::protocol::status::Primary;
-    let super::ModeState::Primary { connection } = &d.mode else {
-        return None;
-    };
-    let read = snapshot.primary.as_ref()?;
-    Some(match &read.producer {
-        Ok(producer) => {
-            // The spool's counts as the snapshot read them; the connection's
-            // health and the acknowledgment's age as they are now.
-            let mut producer = producer.clone();
-            connection.observe(&mut producer);
-            producer.last_ack_seconds_ago = producer
-                .last_ack_seconds_ago
-                .map(|seconds| seconds + snapshot.taken.elapsed().as_secs_f64());
-            let (applied_position, mut position_error) = match &read.applied_position {
-                Ok(position) => (*position, None),
-                Err(error) => (None, Some(error.clone())),
-            };
-            let (refused_events, last_refused) = match &read.refusals {
-                Ok((count, last)) => (Some(*count), last.clone()),
-                Err(error) => {
-                    position_error.get_or_insert(error.clone());
-                    (None, None)
-                }
-            };
-            // The lag the answer's freshness reports, which is known only
-            // while Sinex is reachable and recently observed.
-            let lag_positions = match &freshness.sinex {
-                polylogue_model::freshness::IndexFreshness::Primary { lag_positions, .. } => {
-                    *lag_positions
-                }
-                _ => None,
-            };
-            Primary::Observed {
-                producer: Box::new(producer),
-                applied_position,
-                lag_positions,
-                position_error,
-                refused_events,
-                last_refused,
-            }
-        }
-        Err(error) => Primary::Unavailable {
-            error: error.clone(),
-        },
-    })
 }
 
 fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {

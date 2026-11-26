@@ -1,6 +1,5 @@
 mod bench;
 mod common_link;
-mod native_sinex;
 mod nix;
 
 use clap::Parser;
@@ -10,8 +9,8 @@ use std::process::ExitCode;
 /// Checks, warm builds and focused tests share the primary workspace graph.
 /// Package predicates select execution; Cargo target flags bound compilation.
 /// The standalone Clippy pass also covers `cfg(not(feature = "sinex"))`.
-const FEATURES: &str = "polylogue/sinex,polylogue-sinex/fixture,polylogue-model/fixture,polylogue-query/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
-/// The standalone Clippy pass: the same features without the Sinex client.
+const FEATURES: &str = "polylogue/sinex,polylogue-model/fixture,polylogue-query/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
+/// The standalone Clippy pass: the same features without `sinex`.
 const STANDALONE_FEATURES: &str = "polylogue-model/fixture,polylogue-query/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
 
 #[derive(Parser)]
@@ -89,7 +88,7 @@ fn clippy(run: &mut Run) -> devkit::Result {
             "warnings",
         ],
     )?;
-    // Only the code that the Sinex client replaces differs; the units below
+    // Only the code behind the `sinex` feature differs; the units below
     // the application are the ones the first pass checked.
     run.cargo(
         "clippy-standalone",
@@ -325,9 +324,6 @@ fn main() -> ExitCode {
                     clippy(run)?;
                     let arguments = test_arguments(&args, None).expect("the selection is valid");
                     run.nextest("test", &nextest(arguments))?;
-                }
-                if !changed {
-                    native_sinex::check(run)?;
                 }
                 Ok(())
             })

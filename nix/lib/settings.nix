@@ -45,14 +45,8 @@ let
           "standalone"
           "primary"
         ];
-        description = "Archive storage mode.";
+        description = "Archive storage mode. Primary mode is not built in this version: Polylogue refuses to start with it.";
       };
-      nats = nullableOption types.str "Credential-free NATS URL. Required in primary mode.";
-      password_file = nullableOption absolutePath "File containing the producer password.";
-      subject_root = nullableOption types.str "Sinex subject root.";
-      producer = nullableOption types.str "Declared Sinex producer identity.";
-      upload_root = nullableOption absolutePath "Local upload scratch when Sinex runs on another host.";
-      store = nullableOption absolutePath "Sinex store root on this host. Required in primary mode.";
     };
   };
   signalsType = types.submodule {
@@ -98,11 +92,6 @@ let
     assert lib.assertMsg (
       archive.sinex == null || archive.sinex.mode != "primary" || archive.settings.day == null
     ) "Primary Polylogue archives obtain their logical day from Sinex; omit settings.day.";
-    assert lib.assertMsg (
-      archive.sinex == null
-      || archive.sinex.mode != "primary"
-      || (archive.sinex.nats != null && archive.sinex.store != null)
-    ) "Primary Polylogue archives need sinex.nats and sinex.store.";
     stripNulls (
       {
         polylogue = archive.settings // {

@@ -60,43 +60,6 @@ fn explicit_configuration_selects_its_auxiliary_files_without_changing_xdg_paths
     assert!(Startup::load(&process, options()).is_err());
 }
 
-#[cfg(feature = "sinex")]
-#[test]
-fn explicit_primary_configuration_resolves_credentials_beside_its_own_file() {
-    let root = tempfile::tempdir().unwrap();
-    deployment(root.path(), "invalid = [");
-    let selected = root.path().join("deployment");
-    std::fs::create_dir(&selected).unwrap();
-    std::fs::write(selected.join("polylogue.toml"), "").unwrap();
-    std::fs::write(selected.join("sinex.toml"), "mode='primary'\nnats='nats://127.0.0.1:1'\nstore='store'\npassword_file='producer-password'\n").unwrap();
-    std::fs::write(
-        selected.join("producer-password"),
-        "synthetic-producer-password\n",
-    )
-    .unwrap();
-    let startup = Startup::load(
-        &process(root.path()),
-        Overrides {
-            config_file: Some("deployment/polylogue.toml".into()),
-            ..Overrides::default()
-        },
-    )
-    .unwrap();
-    let crate::daemon::service::ArchiveMode::Primary { config } = startup.mode else {
-        panic!("explicit primary deployment was not selected");
-    };
-    assert_eq!(config.store, selected.join("store"));
-    assert_eq!(
-        config.password_file,
-        Some(selected.join("producer-password"))
-    );
-    let polylogue_sinex::Authentication::Password(password) = &startup.config.primary_auth else {
-        panic!("primary password was not resolved");
-    };
-    // The file's trailing newline is not part of the password.
-    assert_eq!(password, "synthetic-producer-password");
-}
-
 /// The day's zone and start when the deployment names no zone, loaded in a
 /// process whose host zone is `POLYLOGUE_TEST_HOST_ZONE`.
 #[test]
@@ -313,42 +276,6 @@ fn outlets_use_typed_arguments_and_stable_resolved_identity() {
     std::fs::write(&path, "[value_targets.answer]\npath=''\n").unwrap();
     assert!(SignalDeployment::load(&path).is_err());
 }
-#[cfg(feature = "sinex")]
-#[test]
-fn primary_mode_keeps_unavailable_credentials_and_never_supplies_a_local_day() {
-    let root = tempfile::tempdir().unwrap();
-    deployment(root.path(), "");
-    let path = root.path().join("home/.local/share/polylogue/sinex.toml");
-    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-    std::fs::write(&path, "mode='primary'\nnats='nats://127.0.0.1:1'\nstore='store'\npassword_file='missing-password'\n").unwrap();
-    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
-    assert!(matches!(
-        startup.mode,
-        crate::daemon::service::ArchiveMode::Primary { .. }
-    ));
-    assert!(matches!(
-        startup.config.primary_auth,
-        polylogue_sinex::Authentication::Unavailable { .. }
-    ));
-    assert!(matches!(
-        startup.config.standalone_day(),
-        Err(Error::SinexDay)
-    ));
-    deployment(root.path(), "[day]\nzone='UTC'\nstart='04:00:00'\n");
-    assert!(matches!(
-        Startup::load(&process(root.path()), Overrides::default()),
-        Err(Error::SinexDay)
-    ));
-    std::fs::write(path, "broken = [").unwrap();
-    let startup = Startup::load(&process(root.path()), Overrides::default()).unwrap();
-    assert!(matches!(
-        startup.mode,
-        crate::daemon::service::ArchiveMode::Blocked { .. }
-    ));
-    assert!(startup.config.standalone_day().is_err());
-}
-
-#[cfg(feature = "sinex")]
 #[test]
 fn unreadable_primary_deployment_stays_blocked_without_local_day() {
     let root = tempfile::tempdir().unwrap();

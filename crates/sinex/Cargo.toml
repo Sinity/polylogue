@@ -1,54 +1,27 @@
 [package]
 name = "polylogue-sinex"
-description = "Polylogue on Sinex: spooled capture, Sinex events and a confirmed read index"
+description = "Polylogue's event kinds in Sinex: kind declarations and event encoders"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-[features]
-fixture = ["polylogue-store/fixture"]
-
 [dependencies]
 schemars.workspace = true
-base64.workspace = true
-tempfile.workspace = true
 blake3.workspace = true
 polylogue-store.workspace = true
 polylogue-model.workspace = true
-hashed-blobs.workspace = true
-query-language.workspace = true
-shared-signals.workspace = true
-jiff.workspace = true
 sinex-protocol = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806b4725a3e8e455d7d4d18d668" }
-sinex-transport = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806b4725a3e8e455d7d4d18d668" }
 sinex-model = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806b4725a3e8e455d7d4d18d668" }
-# The same features as Sinex: JetStream over ring TLS. Leaving out NKeys,
-# WebSockets, key-value, object store and service keeps their signing and
-# socket crates out of the build.
-async-nats = { version = "0.47", default-features = false, features = ["jetstream", "ring", "nuid", "server_2_10", "server_2_11", "server_2_12"] }
-tokio.workspace = true
-futures-util = "0.3"
-uuid.workspace = true
 serde.workspace = true
-canonical-json.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-toml = "1.1"
 
 [dev-dependencies]
 crossbeam-channel.workspace = true
 sinex-query = { git = "https://github.com/Sinity/sinex", rev = "b912c48fee5d9806b4725a3e8e455d7d4d18d668" }
-polylogue-store = { workspace = true, features = ["fixture", "faults"] }
 jsonschema = { version = "0.42", default-features = false }
-polylogue-testkit.workspace = true
-polylogue-engine.workspace = true
-devkit = { workspace = true, features = ["pg", "nats"] }
-
-[[test]]
-name = "rebuild"
-path = "tests/rebuild/main.rs"
-required-features = ["fixture"]
+polylogue-store = { workspace = true, features = ["fixture"] }
 
 [lints]
 workspace = true

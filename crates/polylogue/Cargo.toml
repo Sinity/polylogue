@@ -7,8 +7,8 @@ license.workspace = true
 publish.workspace = true
 
 [features]
-# Polylogue on Sinex (primary mode); off in the default build, which then
-# has no NATS dependency.
+# Polylogue's Sinex event kinds. Primary mode is not built in this version:
+# with the feature, a primary archive or configuration is refused at start.
 sinex = ["dep:polylogue-sinex"]
 
 [dependencies]

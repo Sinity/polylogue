@@ -66,8 +66,6 @@ pub struct Answer {
     pub warm: Warm,
     pub mode: Mode,
     pub freshness: polylogue_model::freshness::ReadFreshness,
-    #[cfg(feature = "sinex")]
-    pub primary: Option<Primary>,
     /// The daemon's latest log records, oldest first: the last
     /// [`RECENT_LOG`], or every kept one with `--log`.
     #[serde(default)]
@@ -90,7 +88,6 @@ pub struct PendingWrites {
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Mode {
     Standalone,
-    Primary,
     Blocked {
         configured: Option<String>,
         path: PathBuf,
@@ -169,26 +166,6 @@ pub struct Warm {
 pub struct Vectors {
     pub key: String,
     pub vectors: usize,
-}
-
-#[cfg(feature = "sinex")]
-#[derive(Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
-pub enum Primary {
-    Observed {
-        #[serde(flatten)]
-        producer: Box<polylogue_sinex::Status>,
-        applied_position: Option<i64>,
-        lag_positions: Option<i64>,
-        position_error: Option<String>,
-        /// Confirmed events Polylogue could not read; they stay in Sinex.
-        /// None when the count could not be read (`position_error` says why).
-        refused_events: Option<u64>,
-        last_refused: Option<String>,
-    },
-    Unavailable {
-        error: String,
-    },
 }
 
 #[cfg(test)]

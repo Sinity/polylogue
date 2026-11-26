@@ -331,6 +331,9 @@ reasons! {
         "archive {archive} is {recorded}, but configuration requests {requested}; select its recorded mode or another archive";
     ArchiveModeMissing "archive_mode_missing" => Refused { archive: String }
         "archive {archive} has no recorded mode; fix its configuration before creating it";
+    /// A storage mode this version of Polylogue does not build.
+    ModeNotBuilt "mode_not_built" => NotBuilt { mode: String }
+        "{mode} mode is not built in this version of Polylogue";
     BadQueryHash "bad_query_hash" => BadValue { prefix: String }
         "a query hash takes 8 to 64 hexadecimal characters, not `{prefix}`";
     SeenMarkNeedsItem "seen_mark_needs_item" => BadRequest {}

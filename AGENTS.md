@@ -91,7 +91,7 @@ copy.
 | `crates/render` | text, markdown and HTML over typed replies |
 | `crates/reading` | reading stored sessions and records as pages and streams: composition, paging both ways, the links walk, layout facts, the invocation context. No SQL |
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
-| `crates/sinex` | primary mode: the hand-over of bytes, the shipper, the reader of Sinex's log, Polylogue's kind declarations (behind the `sinex` feature) |
+| `crates/sinex` | Polylogue's kind declarations and its event encoders and decoders for Sinex (behind the `sinex` feature); primary mode's shipper and reader of Sinex's log are written here |
 | `crates/polylogue` | daemon, CLI, MCP, web, browser host and brief builder |
 | `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
 | `clients/python/` | standard-library Python client and real-daemon contract tests |

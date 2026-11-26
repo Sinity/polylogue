@@ -64,8 +64,6 @@ fn answer() -> Answer {
             local: ReadCompleteness::empty(),
             sinex: IndexFreshness::Standalone,
         },
-        #[cfg(feature = "sinex")]
-        primary: None,
         recent_log: Vec::new(),
         threads: Vec::new(),
     }

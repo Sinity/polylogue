@@ -179,7 +179,6 @@ in
       pkgs.gcc
       pkgs.pkg-config
       pkgs.zstd
-      pkgs.nats-server
       pkgs.dbus
       pkgs.sqlite
       pkgs.zsh
