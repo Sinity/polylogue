@@ -312,7 +312,7 @@ fn an_annotation_applied_before_its_rubric_occupies_one_slot() {
     apply(&conn, std::slice::from_ref(&annotation), 1).unwrap();
     let slots: i64 = conn
         .query_row(
-            "SELECT count(*) FROM annotation_slot WHERE id='answer'",
+            "SELECT count(*) FROM annotation_unique_key WHERE id='answer'",
             [],
             |row| row.get(0),
         )
@@ -333,7 +333,7 @@ fn annotation_links_store_and_read_their_reference_text() {
     apply(&conn, &[fact], 1).unwrap();
     let stored: String = conn
         .query_row(
-            "SELECT ref FROM annotation_link WHERE record='note'",
+            "SELECT ref FROM annotation_link WHERE annotation='note'",
             [],
             |row| row.get(0),
         )

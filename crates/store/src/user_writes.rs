@@ -448,7 +448,7 @@ pub(crate) fn apply_using(
                 return Err(StoreError::NotFound(format!("delivery {delivery}")));
             }
             tx.execute(
-                &source.sql("INSERT OR IGNORE INTO @source.delivery_event(delivery, what, at, detail, request, commit_seq)
+                &source.sql("INSERT OR IGNORE INTO @source.delivery_event(delivery, outcome, at, detail, request, commit_seq)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)"),
                 params![delivery, what.as_str(), at, detail, r.id, seq],
             )?;

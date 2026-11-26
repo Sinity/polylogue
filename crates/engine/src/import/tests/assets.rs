@@ -111,7 +111,7 @@ fn directory_import_keeps_attachment_bytes_after_the_source_file_is_removed() {
     std::fs::remove_file(&path).unwrap();
     let reader = engine.reads.reader().unwrap();
     let id = blake3::hash(bytes).to_hex().to_string();
-    let progress = reader.input_progress(&id).unwrap();
+    let progress = reader.latest_chain(&id).unwrap();
     assert!(
         progress.is_some(),
         "directory attachment bytes were not stored"
@@ -119,7 +119,7 @@ fn directory_import_keeps_attachment_bytes_after_the_source_file_is_removed() {
     let progress = progress.unwrap();
     assert_eq!(
         reader
-            .stored_range(&id, progress.chain, 0, progress.length, &engine.blobs)
+            .stored_range(&id, progress.chain, 0, progress.stored, &engine.blobs)
             .unwrap(),
         bytes
     );
@@ -161,7 +161,7 @@ fn duplicate_zip_member_content_keeps_each_member_association() {
         assert_eq!(
             w.count(&format!(
                 "SELECT count(*) AS n FROM a.observation_container \
-                 WHERE member_index = {index} AND path_bytes = CAST('{name}' AS BLOB)"
+                 WHERE member_position = {index} AND path_bytes = CAST('{name}' AS BLOB)"
             )),
             1,
             "{name}"

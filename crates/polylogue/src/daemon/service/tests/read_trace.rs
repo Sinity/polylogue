@@ -144,7 +144,9 @@ fn trace_pages_keep_every_source_after_restart() {
             .unwrap()
             .iter()
             .filter(|input| {
-                input.format == "claude-code" && input.parsed && input.parsed_upto == input.stored
+                input.format == "claude-code"
+                    && input.state.parsed_to() == input.stored
+                    && input.stored > 0
             })
             .count()
             == 9

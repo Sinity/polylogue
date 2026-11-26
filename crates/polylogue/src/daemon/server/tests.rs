@@ -808,12 +808,14 @@ fn idle_listener_makes_no_wakeups() {
     assert_eq!(timeout, 0, "the idle listener must wait without a timeout");
 }
 
-/// The JSON of each `record` event a follow sends, as they arrive.
+/// The JSON of each `record` event a follow sends, as they arrive, up to
+/// the reply's final frame: the connection stays open for the next request.
 fn follow_records(stream: UnixStream) -> impl Iterator<Item = serde_json::Value> {
     let mut event = String::new();
     BufReader::new(stream)
         .lines()
         .map_while(Result::ok)
+        .take_while(|line| !matches!(line.strip_prefix("event: "), Some("answer" | "complete")))
         .filter_map(move |line| {
             if let Some(name) = line.strip_prefix("event: ") {
                 event = name.to_owned();

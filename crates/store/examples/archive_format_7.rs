@@ -1,13 +1,25 @@
 //! One-time operation: brings an `archive.db` of format 6 to the current
-//! format (8) in place, beside its segment log. Not part of the product; it is run on a
+//! format (9) in place, beside its segment log. Not part of the product; it is run on a
 //! reflinked copy first and once on the operator's archive, then deleted.
 //!
 //! `cargo run -p polylogue-store --example archive_format_7 -- <archive root>`
 //!
-//! The format-7 file is created by the store's own schema code, filled from
-//! the format-6 file row by row, and checked before it replaces it: every
-//! revision's bytes read through its chain hash the same before and after.
-//! The format-6 file is kept beside it as `archive.db.format-6`.
+//! The new file is created by the store's own schema code, filled from the
+//! format-6 file row by row, and checked before it replaces it:
+//! - every `extent` and `blob` row is carried over exactly (inputs renamed
+//!   through the rename table, nothing else different), and every revision
+//!   keeps its input, number, chain and length. The conversion never writes
+//!   the segment log, so a revision's bytes, which these rows determine
+//!   entirely, read back as they did;
+//! - each table whose stored names changed holds as many rows as before;
+//! - no row names a row that is missing;
+//! - the file opens as this build's format (version and schema text).
+//!
+//! Not checked: whether the segment log is readable and its bytes match their
+//! hashes. That is `polylogue verify`'s question, asked of the archive
+//! itself. The chain step reads the prefixes it compares, and nothing else is
+//! read from the segments. The format-6 file is kept beside the new one as
+//! `archive.db.format-6`.
 //!
 //! What changes:
 //! - `meta.archive_id` is written (the new file's own);
@@ -28,16 +40,21 @@
 //! Format 8, in place on the new file: a read's run record keeps its reading
 //! options as the caller wrote them (`show` and `hide` words, `neutral_names`,
 //! one `alternate`), and its hashes and its completion's follow.
+//!
+//! Format 9 renames stored names without rewriting a value (`RENAMED`):
+//! `kept_result` is `saved_rows` and `annotation_slot` is
+//! `annotation_unique_key`, and columns take the words for what they hold (a
+//! place in an order is a `position`, a time ends in `_at`, which tool a file
+//! comes from is its `origin`). The format-6 rows are copied under the new
+//! names, so every later step reads and writes them under those names, and
+//! each renamed table holds as many rows after as before.
 use polylogue_store::archive::writer::agreement::Chains;
 use polylogue_store::blobs::{ChainSource, StoredChain};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 type Error = Box<dyn std::error::Error>;
-
-/// Each revision's length and the BLAKE3 of its bytes, by input and number.
-type Manifest = BTreeMap<(String, i64), (u64, String)>;
 
 fn main() -> Result<(), Error> {
     let root = PathBuf::from(
@@ -45,6 +62,12 @@ fn main() -> Result<(), Error> {
             .nth(1)
             .ok_or("usage: archive_format_7 <archive root>")?,
     );
+    convert(&root)
+}
+
+/// Converts the archive at `root`, printing what each step did.
+fn convert(root: &Path) -> Result<(), Error> {
+    let root = root.to_path_buf();
     let old = root.join("archive.db");
     let new = root.join("archive.db.format-7");
     let kept = root.join("archive.db.format-6");
@@ -61,7 +84,6 @@ fn main() -> Result<(), Error> {
         conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
     }
     let before = counts(&Connection::open(&old)?)?;
-    let manifest_before = manifest(&root)?;
 
     let conn = Connection::open(&new)?;
     conn.pragma_update(None, "journal_mode", "wal")?;
@@ -123,6 +145,7 @@ fn main() -> Result<(), Error> {
     if violations != 0 {
         return Err(format!("{violations} rows name rows that are not there").into());
     }
+    let carried = carried_over(&conn)?;
     conn.execute("DETACH DATABASE old", [])?;
     conn.pragma_update(
         None,
@@ -131,6 +154,17 @@ fn main() -> Result<(), Error> {
     )?;
     conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
     let after = counts(&conn)?;
+    // A table whose stored names changed keeps every row; only the
+    // container links of dropped observations go with them.
+    for (earlier, now, _) in RENAMED {
+        let (was, is) = (before.get(*earlier), after.get(*now));
+        if *now != "observation_container" && was != is {
+            return Err(format!("{earlier} held {was:?} rows, {now} holds {is:?}").into());
+        }
+    }
+    // The converted file opens as this build's format: its version and its
+    // schema text equal those of a file this build creates.
+    polylogue_store::schema::ensure_archive(&conn)?;
     drop(conn);
 
     std::fs::rename(&old, &kept)?;
@@ -145,36 +179,38 @@ fn main() -> Result<(), Error> {
         from.push(suffix);
         let _ = std::fs::remove_file(from);
     }
-    let expected: Manifest = manifest_before
-        .into_iter()
-        .map(|((input, number), value)| {
-            (
-                (renamed.get(&input).cloned().unwrap_or(input), number),
-                value,
-            )
-        })
-        .collect();
-    let manifest_after = manifest(&root)?;
-    if expected != manifest_after {
-        // The format-6 file goes back; the converted one stays beside it.
-        std::fs::rename(&old, &new)?;
-        std::fs::rename(&kept, &old)?;
-        return Err("a revision's bytes read back differently after the conversion".into());
-    }
     println!("all tables\ttable\tbefore\tafter");
     for (table, n) in &after {
+        let earlier = earlier_table(table);
+        let name = if earlier == table {
+            table.clone()
+        } else {
+            format!("{earlier} -> {table}")
+        };
         println!(
-            "all\t{table}\t{}\t{n}",
-            before.get(table).map_or("-".into(), |n| n.to_string())
+            "all\t{name}\t{}\t{n}",
+            before.get(earlier).map_or("-".into(), |n| n.to_string())
         );
     }
     for (table, n) in &before {
-        if !after.contains_key(table) {
+        let now = RENAMED
+            .iter()
+            .find(|(earlier, _, _)| earlier == table)
+            .map_or(table.as_str(), |(_, now, _)| now);
+        if !after.contains_key(now) {
             println!("all\t{table}\t{n}\t-");
         }
     }
+    for (earlier, now, columns) in RENAMED {
+        for (was, is) in *columns {
+            println!("renamed\t{earlier}.{was}\t{now}.{is}");
+        }
+    }
     println!("rollout inputs named with their machine\t{}", renamed.len());
-    println!("revisions read back equal\t{}", expected.len());
+    println!(
+        "carried over exactly\textents {}\tblobs {}\trevisions {}",
+        carried.extents, carried.blobs, carried.revisions
+    );
     Ok(())
 }
 
@@ -195,37 +231,66 @@ fn counts(conn: &Connection) -> Result<BTreeMap<String, i64>, Error> {
     Ok(counts)
 }
 
-/// Every revision's length and the BLAKE3 of its bytes, read through its
-/// chain, from the archive's `archive.db`.
-fn manifest(root: &Path) -> Result<Manifest, Error> {
-    let db = root.join("archive.db");
-    let conn = Connection::open(&db)?;
-    let store = std::sync::Arc::new(polylogue_store::Archive::at(root).blobs()?);
-    let source = ChainSource {
-        path: db.clone(),
-        table_prefix: "",
+/// How many rows [`carried_over`] found equal in both files.
+struct Carried {
+    extents: i64,
+    blobs: i64,
+    revisions: i64,
+}
+
+/// Refuses the conversion unless the rows that place each revision's bytes
+/// came over exactly: every `extent` and `blob` row of the format-6 file
+/// (attached as `old`) is in the new one and the new one has no other, with
+/// inputs renamed through `temp.renamed`, and every revision keeps its input,
+/// number, chain and length. Names the first row that differs.
+fn carried_over(conn: &Connection) -> Result<Carried, Error> {
+    let renamed = |column: &str| {
+        format!("coalesce((SELECT new FROM temp.renamed WHERE old = {column}), {column})")
     };
-    let mut out = BTreeMap::new();
-    let mut statement =
-        conn.prepare("SELECT input, number, chain, length FROM revision ORDER BY input, number")?;
-    let rows: Vec<(String, i64, i64, i64)> = statement
-        .query_map([], |r| <(_, _, _, _)>::try_from(r))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (input, number, chain, length) in rows {
-        let length = u64::try_from(length)?;
-        let stored = StoredChain::load(&source, &input, chain, length)?;
-        let mut reader = stored.reader(std::sync::Arc::clone(&store));
-        let mut hash = blake3::Hasher::new();
-        let read = std::io::copy(&mut reader, &mut hash)?;
-        if read != length {
-            return Err(format!("{input} revision {number} reads {read} of {length} bytes").into());
+    let compare = |what: &str, old: String, new: &str| -> Result<i64, Error> {
+        for (side, from, to) in [
+            ("missing from", &old, new),
+            ("added to", &new.to_owned(), old.as_str()),
+        ] {
+            let first: Option<String> = conn
+                .query_row(
+                    &format!("SELECT quote(t.k) FROM (SELECT * FROM ({from}) EXCEPT SELECT * FROM ({to})) t LIMIT 1"),
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(first) = first {
+                return Err(format!("{what} row {side} the new file: {first}").into());
+            }
         }
-        out.insert(
-            (input, number),
-            (length, hash.finalize().to_hex().to_string()),
-        );
-    }
-    Ok(out)
+        Ok(conn.query_row(&format!("SELECT count(*) FROM ({new})"), [], |r| r.get(0))?)
+    };
+    let extents = compare(
+        "extent",
+        format!(
+            "SELECT json_array({}, chain, offset, length, hex(blob), blob_offset, commit_seq) AS k FROM old.extent",
+            renamed("input")
+        ),
+        "SELECT json_array(input, chain, offset, length, hex(blob), blob_offset, commit_seq) AS k FROM main.extent",
+    )?;
+    let blobs = compare(
+        "blob",
+        "SELECT json_array(hex(hash), size, stored_size, hex(storage)) AS k FROM old.blob".into(),
+        "SELECT json_array(hex(hash), size, stored_size, hex(storage)) AS k FROM main.blob",
+    )?;
+    let revisions = compare(
+        "revision",
+        format!(
+            "SELECT json_array({}, number, chain, length) AS k FROM old.revision",
+            renamed("input")
+        ),
+        "SELECT json_array(input, number, chain, length) AS k FROM main.revision",
+    )?;
+    Ok(Carried {
+        extents,
+        blobs,
+        revisions,
+    })
 }
 
 /// The new name of each Codex rollout input named without its machine.
@@ -336,7 +401,7 @@ fn identity(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
 fn inputs_and_revisions(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
     tx.execute(
         &format!(
-            "INSERT INTO main.input(id, format) SELECT {}, format FROM old.input",
+            "INSERT INTO main.input(id, origin) SELECT {}, format FROM old.input",
             name("id")
         ),
         [],
@@ -423,7 +488,7 @@ fn observations(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
     }
     tx.execute(
         &format!(
-            "INSERT INTO main.observation_container(observation_id, container_input, member_index, kind, path_bytes)
+            "INSERT INTO main.observation_container(observation_id, container_input, member_position, kind, path_bytes)
              SELECT c.observation_id, {}, c.member_index, c.kind, c.path_bytes
              FROM old.observation_container c
              WHERE EXISTS (SELECT 1 FROM main.observation o WHERE o.id = c.observation_id)",
@@ -434,7 +499,81 @@ fn observations(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Every table this change leaves as it is, copied as it is.
+/// Column names, each as (earlier, now).
+type Columns = &'static [(&'static str, &'static str)];
+
+/// The stored names format 8 changed: each table's name in format 6 and 7,
+/// its name now, and its columns whose names changed (earlier, now). Nothing
+/// else about these tables changed, so their rows are copied column by
+/// column under the new names.
+const RENAMED: &[(&str, &str, Columns)] = &[
+    ("machine", "machine", &[("first_seen", "first_seen_at")]),
+    ("input", "input", &[("format", "origin")]),
+    ("kept_result", "saved_rows", &[("read_at", "read_position")]),
+    ("delivery_event", "delivery_event", &[("what", "outcome")]),
+    (
+        "chat_action_event",
+        "chat_action_event",
+        &[("n", "position")],
+    ),
+    (
+        "import_job_event",
+        "import_job_event",
+        &[("n", "position"), ("position", "provider_position")],
+    ),
+    (
+        "observation_container",
+        "observation_container",
+        &[("member_index", "member_position")],
+    ),
+    (
+        "annotation_link",
+        "annotation_link",
+        &[("record", "annotation")],
+    ),
+    (
+        "annotation_slot",
+        "annotation_unique_key",
+        &[("slot", "key_hash")],
+    ),
+    (
+        "alternate_part",
+        "alternate_part",
+        &[
+            ("n", "position"),
+            ("of", "source"),
+            ("of_hash", "source_hash"),
+        ],
+    ),
+    ("query_edge", "query_edge", &[("how", "kind")]),
+    (
+        "signal_event",
+        "signal_event",
+        &[("ordinal", "request_position")],
+    ),
+    ("row_count", "row_count", &[("n", "count")]),
+    ("query_run", "query_run", &[("read_at", "read_position")]),
+];
+
+/// A table's name in the format-6 file.
+fn earlier_table(table: &str) -> &str {
+    RENAMED
+        .iter()
+        .find(|(_, now, _)| *now == table)
+        .map_or(table, |(earlier, _, _)| earlier)
+}
+
+/// A column's name in the format-6 file.
+fn earlier_column<'a>(table: &str, column: &'a str) -> &'a str {
+    RENAMED
+        .iter()
+        .find(|(_, now, _)| *now == table)
+        .and_then(|(_, _, columns)| columns.iter().find(|(_, now)| *now == column))
+        .map_or(column, |(earlier, _)| earlier)
+}
+
+/// Every table this change leaves as it is, copied as it is, under the
+/// names format 8 gives it.
 fn other_tables(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
     let changed = [
         "meta",
@@ -455,28 +594,46 @@ fn other_tables(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
         .iter()
         .filter(|table| !changed.contains(&table.as_str()))
     {
+        let earlier = earlier_table(table);
         let columns: Vec<String> = tx
             .prepare(&format!(
-                "SELECT name FROM main.pragma_table_info('{table}') ORDER BY cid"
+                "SELECT name FROM pragma_table_info('{table}', 'main') ORDER BY cid"
             ))?
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         let old_columns: Vec<String> = tx
             .prepare(&format!(
-                "SELECT name FROM old.pragma_table_info('{table}') ORDER BY cid"
+                "SELECT name FROM pragma_table_info('{earlier}', 'old') ORDER BY cid"
             ))?
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
-        if columns != old_columns {
-            return Err(format!("table {table} changed shape; it needs its own copy").into());
+        // A table added since starts empty.
+        if old_columns.is_empty() {
+            continue;
         }
-        let list = columns
+        // Each column the earlier file holds is copied under its current
+        // name; a column added since is left at its default.
+        let (to, from): (Vec<&str>, Vec<&str>) = columns
             .iter()
-            .map(|c| format!("\"{c}\""))
-            .collect::<Vec<_>>()
-            .join(",");
+            .map(|column| (column.as_str(), earlier_column(table, column)))
+            .filter(|(_, earlier)| old_columns.iter().any(|old| old == earlier))
+            .unzip();
+        if from.len() != old_columns.len() {
+            return Err(format!("table {table} lost a column; it needs its own copy").into());
+        }
+        let quoted = |names: &[&str]| {
+            names
+                .iter()
+                .map(|c| format!("\"{c}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         tx.execute(
-            &format!("INSERT INTO main.\"{table}\"({list}) SELECT {list} FROM old.\"{table}\""),
+            &format!(
+                "INSERT INTO main.\"{table}\"({}) SELECT {} FROM old.\"{earlier}\"",
+                quoted(&to),
+                quoted(&from)
+            ),
             [],
         )?;
     }
@@ -1138,3 +1295,11 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "archive_format_7/stored_names.rs"]
+mod stored_names;
+
+#[cfg(test)]
+#[path = "archive_format_7/carried_over.rs"]
+mod carried_over;

@@ -180,6 +180,7 @@ fn write(w: &TestArchive, batches: impl IntoIterator<Item = Batch>) {
 
 #[test]
 fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
+    use polylogue_model::chain::Due;
     let w = test_archive();
     write(
         &w,
@@ -204,11 +205,11 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
     let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     index
         .execute_batch(
-            "UPDATE parse_state SET status='waiting',parsed_upto=40,at_length=100
+            "UPDATE parse_state SET parsed_to=40,waiting=60
             WHERE input_pk=(SELECT pk FROM input_ref WHERE id='waiting');
-         UPDATE parse_state SET status='parsing',parsed_upto=40
+         UPDATE parse_state SET parsed_to=40,waiting=0
             WHERE input_pk=(SELECT pk FROM input_ref WHERE id='partial');
-         UPDATE parse_state SET parse_version='older'
+         UPDATE parse_state SET parser_version='older'
             WHERE input_pk=(SELECT pk FROM input_ref WHERE id='changed');
          DELETE FROM parse_state WHERE input_pk=(SELECT pk FROM input_ref WHERE id='unparsed');",
         )
@@ -222,34 +223,28 @@ fn chain_selection_keeps_changed_readings_and_incomplete_stored_bytes() {
         let mut chains: Vec<_> = pool
             .reader()
             .unwrap()
-            .chains_behind_index(
-                &versions,
-                crate::StoppedChains::Finished,
-                crate::RevisionChains::All,
-                None,
-            )
+            .chains_behind_index(&versions, crate::RevisionChains::All, None)
             .unwrap()
             .into_iter()
-            .map(|c| (c.input, c.reading_changed))
+            .map(|c| (c.input, c.due))
             .collect();
-        chains.sort();
+        chains.sort_by(|a, b| a.0.cmp(&b.0));
         chains
     };
     assert_eq!(
         selected(Some("synthetic=1")),
         [
-            ("changed".into(), true),
-            ("partial".into(), false),
-            ("unparsed".into(), true)
+            ("changed".into(), Due::Whole),
+            ("partial".into(), Due::Whole),
+            ("unparsed".into(), Due::Whole)
         ]
     );
-    assert_eq!(
-        selected(None),
-        [("partial".into(), false), ("unparsed".into(), false)]
-    );
+    // An origin with no parser is never due.
+    assert_eq!(selected(None), []);
     assert_eq!(
         selected(Some("synthetic=2")),
-        ["changed", "current", "partial", "unparsed", "waiting"].map(|input| (input.into(), true))
+        ["changed", "current", "partial", "unparsed", "waiting"]
+            .map(|input| (input.into(), Due::Whole))
     );
 }
 
@@ -281,7 +276,7 @@ fn natural_rows(w: &TestArchive) -> Json {
     for (name, sql) in [
         (
             "sources",
-            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex(s.hash) AS version FROM message_parse s JOIN message m ON m.id=s.message_id JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
+            "SELECT m.id,i.id AS input,s.chain,s.source_start,s.source_start+s.source_length AS source_end,(s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,hex(s.hash) AS version FROM message_parse s JOIN message m ON m.id=s.message_id JOIN input_ref i ON i.pk=s.input_pk ORDER BY m.id,i.id,s.chain",
         ),
         (
             "order",
@@ -309,7 +304,7 @@ fn natural_rows(w: &TestArchive) -> Json {
         ),
         (
             "parse",
-            "SELECT i.id,p.chain,p.parse_version,p.records,p.parsed_upto,p.status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk ORDER BY i.id,p.chain",
+            "SELECT i.id,p.chain,p.parser_version AS parse_version,p.used+p.skipped+p.unreadable AS records,p.parsed_to AS parsed_upto,CASE WHEN p.state='failed' AND p.failure_kind='refused' THEN 'refused' WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' ELSE 'done' END AS status FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk ORDER BY i.id,p.chain",
         ),
     ] {
         result.insert(name.into(), json!(r.query(sql, &[]).unwrap()));
@@ -927,15 +922,31 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert!(changed() > before);
 }
 
-/// The totals `status` reads, counted again from the rows.
+/// The totals `status` reads, counted again from the rows once the
+/// session summaries, which message and tool call totals are summed from,
+/// have caught up.
 fn assert_totals_equal_a_recount(w: &TestArchive) {
+    w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
-    let status = r.status().unwrap();
+    let status = r.status(&crate::fixture::synthetic_contracts()).unwrap();
     let count = |sql: &str| r.query(sql, &[]).unwrap()[0]["n"].as_u64().unwrap();
+    // Each chain shown by the rules of `docs/archive.md` (parse versions).
     let parse_states: std::collections::BTreeMap<String, u64> = r
         .query(
-            "SELECT status, count(*) AS n FROM parse_state GROUP BY status",
+            "SELECT CASE WHEN s.origin <> 'claude-code' THEN 'no_parser'
+                    WHEN p.input_pk IS NULL OR p.parser_version <> 'synthetic=1'
+                      OR p.parsed_to + p.waiting <> c.length THEN 'parsing'
+                    WHEN p.state = 'failed' AND p.failure_kind = 'refused' THEN 'refused'
+                    WHEN p.state = 'failed' THEN 'failed'
+                    WHEN p.waiting > 0 THEN 'waiting' ELSE 'done' END AS status,
+                count(*) AS n
+             FROM (SELECT input, chain, max(length) AS length FROM source_revision
+                   GROUP BY input, chain) c
+             JOIN source_input s ON s.id = c.input
+             LEFT JOIN input_ref i ON i.id = c.input
+             LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = c.chain
+             GROUP BY 1",
             &[],
         )
         .unwrap()

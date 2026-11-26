@@ -40,10 +40,10 @@ pub(crate) fn schema(n: usize) -> String {
 }
 
 /// The archive root of an index file: index files live in the root or in
-/// its build directory.
+/// its rebuild's directory.
 fn root_of(index: &Path) -> Option<&Path> {
     let parent = index.parent()?;
-    if parent.file_name() == Some(std::ffi::OsStr::new(crate::archive::index_build::DIR)) {
+    if parent.file_name() == Some(std::ffi::OsStr::new(crate::index::file::DIR)) {
         parent.parent()
     } else {
         Some(parent)
@@ -215,10 +215,7 @@ fn name_on_disk(index: &Path) -> Option<String> {
 /// is opened. Nothing is removed when an index file cannot be read.
 pub(crate) fn sweep(root: &Path) -> Result<()> {
     let mut named = std::collections::HashSet::new();
-    for dir in [
-        root.to_path_buf(),
-        root.join(crate::archive::index_build::DIR),
-    ] {
+    for dir in [root.to_path_buf(), root.join(crate::index::file::DIR)] {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,

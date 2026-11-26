@@ -43,11 +43,8 @@ impl ParseStep {
             self.order_from,
             self.reset,
             self.repeats_whole_conversations,
-            matches!(
-                &self.progress,
-                polylogue_model::batch::StepProgress::NoParserYet { .. }
-            ),
-            &self.checkpoint,
+            &self.failure,
+            &self.resume,
         );
         let hash = canonical_json::canonical_hash("polylogue.export-delivery.body.v1", &body)
             .map_err(crate::encoding::identity_encoding)?;

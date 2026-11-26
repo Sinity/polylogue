@@ -418,5 +418,5 @@ fn from_start(tx: &rusqlite::Transaction<'_>, pk: i64) {
     let folded = crate::summary::fold::Run { conn: tx }
         .session(pk, &crate::summary::Key::start())
         .unwrap();
-    super::apply(tx, pk, folded.output.links.as_ref().unwrap()).unwrap();
+    super::apply(tx, pk, &folded.after, folded.output.links.as_ref().unwrap()).unwrap();
 }

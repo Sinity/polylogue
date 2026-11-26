@@ -87,7 +87,7 @@ fn a_failing_worker_waits_for_a_commit() {
             || {},
             || {
                 sent.send(()).unwrap();
-                Err(StoreError::ReadIndexReplaced)
+                Err(StoreError::ScopeChanged)
             },
         )
     });

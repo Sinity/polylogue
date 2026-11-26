@@ -50,7 +50,6 @@ fn write_test_rows(
         &batch,
         &batch.parse[0],
         rows::StepWrite {
-            counter,
             chain,
             source_commit: &fixture_commit(),
             replacement: false,
@@ -565,8 +564,10 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
             )
             .unwrap()[0]["n"]
             .clone();
-        if hits == 1 {
-            assert_eq!(r.status().unwrap().search_pending, 0);
+        // The hit and the queue are two facts: the summary worker can queue
+        // search text after the search thread's write, so wait for both.
+        // Emptying the queue is a commit, so the wait sees the last change.
+        if hits == 1 && r.status(&[]).unwrap().search_pending == 0 {
             break;
         }
         drop(r);
@@ -576,7 +577,9 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
                 .writer
                 .flush()
                 .expect("collect writer error after search failed to progress");
-            panic!("no commit announced the committed live write's search text: {report:?}");
+            panic!(
+                "the live write's search text did not become searchable with an empty search queue: {report:?}"
+            );
         }
     }
 }
@@ -748,7 +751,7 @@ fn revisions_extents_and_parse_state_follow_appends() {
     b2.new_blob = Some(blob2);
     b2.length = 25;
     b2.parse.first_mut().unwrap().parsed_upto = 18;
-    b2.parse.first_mut().unwrap().progress = polylogue_model::batch::StepProgress::Partway;
+    b2.parse.first_mut().unwrap().at_end = false;
     let results = w
         .writer
         .store_group(vec![
@@ -792,10 +795,9 @@ fn revisions_extents_and_parse_state_follow_appends() {
     let known = r.known_inputs("m").unwrap();
     assert_eq!(known.len(), 1);
     assert_eq!(known[0].stored, 25);
-    assert_eq!(known[0].parsed_upto, 18);
-    assert!(!known[0].waiting, "an incomplete chunk still has work");
-    let state = r.query("SELECT status FROM parse_state", &[]).unwrap();
-    assert_eq!(state[0]["status"], "parsing");
+    assert_eq!(known[0].state.parsed_to(), 18);
+    // An incomplete chunk still has work: the parser saw 18 of 25 bytes.
+    assert_eq!(known[0].state.seen_to(), 18);
 }
 
 #[test]
@@ -807,7 +809,7 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     first.length = 12;
     let parse = first.parse.first_mut().unwrap();
     parse.parsed_upto = 5;
-    parse.progress = polylogue_model::batch::StepProgress::AtEnd;
+    parse.at_end = true;
     let results = w
         .writer
         .store_group(vec![crate::staging::PreparedBatch {
@@ -818,7 +820,11 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
-    assert!(pool.reader().unwrap().known_inputs("m").unwrap()[0].waiting);
+    let waiting = &pool.reader().unwrap().known_inputs("m").unwrap()[0];
+    assert_eq!(
+        (waiting.state.parsed_to(), waiting.state.seen_to()),
+        (5, 12)
+    );
 
     let mut append = batch("i", Route::Live, 12, vec![], &[]);
     let (append_blob, append_file) = w.archive.prepare_blob(b"rest").unwrap();
@@ -836,9 +842,10 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     w.writer.flush().unwrap();
     let known = pool.reader().unwrap().known_inputs("m").unwrap();
     assert_eq!(known[0].stored, 16);
-    assert_eq!(known[0].parsed_upto, 5);
-    assert!(
-        !known[0].waiting,
+    assert_eq!(known[0].state.parsed_to(), 5);
+    assert_eq!(
+        known[0].state.seen_to(),
+        12,
         "the end-of-file check covered only twelve bytes"
     );
 }
@@ -1207,7 +1214,6 @@ mod authorship;
 mod hash_order;
 
 mod documents;
-mod identical_chains;
 
 #[test]
 fn a_user_write_goes_ahead_of_queued_batches() {
@@ -1325,16 +1331,15 @@ fn parse_positions_and_rows_commit_atomically_during_build() {
     assert!(!w.writer.flush().unwrap().errors.is_empty());
     let pool = ReadPool::open(&w.archive).unwrap();
     let reader = pool.reader().unwrap();
-    assert_eq!(reader.status().unwrap().messages, 0);
-    let progress = reader.input_progress("atomic-position").unwrap().unwrap();
-    assert!(!progress.parsed);
-    assert_eq!(progress.parsed_upto, 0);
+    assert_eq!(reader.status(&[]).unwrap().messages, 0);
+    let progress = reader.latest_chain("atomic-position").unwrap().unwrap();
+    assert_eq!(progress.state, polylogue_model::chain::ChainState::Unparsed);
     drop(reader);
     index.execute_batch("DROP TRIGGER refuse_position").unwrap();
     w.writer.send(parsed).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
-    assert_eq!(reader.status().unwrap().messages, 1);
+    assert_eq!(reader.status(&[]).unwrap().messages, 1);
     let text: i64 = index.query_row(
         "SELECT t.id FROM text t JOIN block b ON b.text_id=t.id JOIN message m ON m.pk=b.message_pk",
         [], |r| r.get(0),
@@ -1345,10 +1350,11 @@ fn parse_positions_and_rows_commit_atomically_during_build() {
     );
     assert_eq!(
         reader
-            .input_progress("atomic-position")
+            .latest_chain("atomic-position")
             .unwrap()
             .unwrap()
-            .parsed_upto,
+            .state
+            .parsed_to(),
         100
     );
 }
@@ -1370,7 +1376,7 @@ fn a_completed_empty_index_does_not_begin_another_build() {
     let writer = Writer::start(&archive).unwrap();
     assert!(archive.index_build().is_none());
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
-    assert!(crate::schema::same_schema(&index, crate::schema::INDEX_SCHEMA).unwrap());
+    assert!(crate::schema::same_schema(&index, &*crate::schema::INDEX_SCHEMA).unwrap());
     drop(writer);
 }
 

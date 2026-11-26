@@ -114,11 +114,11 @@ fn queued_import_checks_its_parent_before_committing() {
         assert_eq!(messages.len(), 1);
         assert_eq!(messages[0].text(), "queued native body");
         let input = BlobHash::of(&bytes).to_string();
-        let progress = reader.input_progress(&input).unwrap().unwrap();
-        assert_eq!(progress.length, bytes.len() as u64);
+        let progress = reader.latest_chain(&input).unwrap().unwrap();
+        assert_eq!(progress.stored, bytes.len() as u64);
         let mut actual = Vec::new();
         reader
-            .stored_chain(&input, progress.chain, progress.length)
+            .stored_chain(&input, progress.chain, progress.stored)
             .unwrap()
             .reader(Arc::new(reader.blob_reader().unwrap()))
             .read_to_end(&mut actual)
