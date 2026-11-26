@@ -238,97 +238,12 @@ pub fn settle<E>(
     out: &mut Output,
     earlier: &mut dyn EarlierRows<Error = E>,
 ) -> Result<Numbers, SettleError<E>> {
-    sidechains(out, earlier)?;
     let written = number_content(out, earlier)?;
     join(out, earlier)?;
     let mut seen = std::collections::HashSet::new();
     out.links.retain(|link| seen.insert(link.clone()));
     dedup(&mut out.prefix_copies);
     Ok(written)
-}
-
-/// Sidechain records name their own session until their parent's rows
-/// supply the root's name. Earlier rows belong to this file version only.
-fn sidechains<E>(
-    out: &mut Output,
-    earlier: &mut dyn EarlierRows<Error = E>,
-) -> Result<(), SettleError<E>> {
-    let sidechains: std::collections::HashSet<_> = out
-        .sessions
-        .iter()
-        .filter(|session| {
-            session.kind == polylogue_model::SessionKind::Sidechain
-                && session.id.origin().as_str() == "claude-code"
-        })
-        .map(|session| session.id.clone())
-        .collect();
-    if sidechains.is_empty() {
-        return Ok(());
-    }
-    let aliases: HashMap<_, _> = out
-        .aliases
-        .iter()
-        .map(|alias| (alias.name.clone(), alias.target.clone()))
-        .collect();
-    let mut sessions: HashMap<MessageId, SessionId> = HashMap::new();
-    let mut given = HashMap::new();
-    for row in &out.messages {
-        let written = &row.message.session;
-        let mut session = written.clone();
-        if sidechains.contains(written)
-            && let Some(parent) = row.message.parent.clone()
-            && let Some(parent) = resolve(&aliases, earlier, parent)?
-        {
-            let parent_session = match sessions.get(&parent) {
-                Some(session) => Some(session.clone()),
-                None => earlier.session_of(&parent).map_err(SettleError::Lookup)?,
-            };
-            if let Some(parent_session) = parent_session
-                && let Some((base, _)) = written.native().as_str().rsplit_once("~side-")
-                && parent_session
-                    .native()
-                    .as_str()
-                    .starts_with(&format!("{base}~side-"))
-                && parent_session.origin() == written.origin()
-            {
-                session = parent_session;
-            }
-            given.insert(written.clone(), session.clone());
-        }
-        sessions.insert(row.message.id.clone(), session);
-    }
-    let rename = |session: &mut SessionId| {
-        if let Some(name) = given.get(session) {
-            *session = name.clone();
-        }
-    };
-    for row in &mut out.messages {
-        rename(&mut row.message.session);
-    }
-    for event in &mut out.events {
-        if let Some(session) = &mut event.session {
-            rename(session);
-        }
-    }
-    for link in &mut out.links {
-        rename(&mut link.parent);
-        rename(&mut link.child);
-    }
-    for update in &mut out.background {
-        rename(&mut update.session);
-    }
-    let mut sessions: Vec<polylogue_model::Session> = Vec::new();
-    for mut session in std::mem::take(&mut out.sessions) {
-        rename(&mut session.id);
-        if let Some(stated) = sessions.iter_mut().find(|stated| stated.id == session.id) {
-            stated.merge(&session);
-        } else {
-            sessions.push(session);
-        }
-    }
-    sessions.sort_by(|a, b| a.id.cmp(&b.id));
-    out.sessions = sessions;
-    Ok(())
 }
 
 /// Gives each content-named message its number and rewrites every

@@ -918,3 +918,42 @@ fn morrows_older_sidechain_uses_its_first_record_uuid() {
         1
     );
 }
+
+#[test]
+fn sidechain_identity_follows_source_records_before_message_aliases() {
+    let records = vec![
+        json!({"type":"system","subtype":"notice","uuid":"side-root","sessionId":"s1",
+            "isSidechain":true,"parentUuid":"absent",
+            "content":"Starting the task."}),
+        json!({"type":"assistant","uuid":"side-answer","sessionId":"s1","isSidechain":true,
+            "parentUuid":"side-root","message":{"role":"assistant","content":"First answer."}}),
+        json!({"type":"system","subtype":"notice","uuid":"main-notice","sessionId":"s1",
+            "parentUuid":"side-answer","content":"Main session notice."}),
+        json!({"type":"assistant","uuid":"new-side","sessionId":"s1","isSidechain":true,
+            "parentUuid":"main-notice","message":{"role":"assistant","content":"Another task."}}),
+    ];
+    let step = run(
+        &main_file("s1"),
+        &mut ParserState::default(),
+        &jsonl(&records),
+        0,
+    )
+    .unwrap();
+    let messages = final_messages(&[step]);
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message.session.native().as_str())
+            .collect::<Vec<_>>(),
+        ["s1~side-side-root", "s1~side-new-side"]
+    );
+}
+
+#[test]
+fn an_older_sidechain_cannot_be_resumed_as_a_main_session() {
+    assert_eq!(resume("s1~side-first"), None);
+    assert_eq!(
+        resume("s1"),
+        Some(vec!["claude".into(), "--resume".into(), "s1".into()])
+    );
+}

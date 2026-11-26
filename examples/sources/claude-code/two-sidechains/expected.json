@@ -43,7 +43,8 @@
               "text": "Review two files."
             }
           ],
-          "prompt_kind": "prose"
+          "prompt_kind": "prose",
+          "at_quality": "unknown"
         }
       },
       {
@@ -64,7 +65,8 @@
               }
             }
           ],
-          "parent": "claude-code:main-user"
+          "parent": "claude-code:main-user",
+          "at_quality": "unknown"
         }
       },
       {
@@ -81,7 +83,8 @@
             }
           ],
           "parent": "claude-code:task-one",
-          "prompt_kind": "prose"
+          "prompt_kind": "prose",
+          "at_quality": "unknown"
         }
       },
       {
@@ -102,7 +105,8 @@
               }
             }
           ],
-          "parent": "claude-code:task-one"
+          "parent": "claude-code:task-one",
+          "at_quality": "unknown"
         }
       },
       {
@@ -119,7 +123,8 @@
             }
           ],
           "parent": "claude-code:task-two",
-          "prompt_kind": "prose"
+          "prompt_kind": "prose",
+          "at_quality": "unknown"
         }
       },
       {
@@ -135,7 +140,8 @@
               "text": "First file is correct."
             }
           ],
-          "parent": "claude-code:11111111-1111-4111-8111-111111111111"
+          "parent": "claude-code:11111111-1111-4111-8111-111111111111",
+          "at_quality": "unknown"
         }
       },
       {
@@ -151,7 +157,8 @@
               "text": "Both reviews are running."
             }
           ],
-          "parent": "claude-code:task-two"
+          "parent": "claude-code:task-two",
+          "at_quality": "unknown"
         }
       },
       {
@@ -167,22 +174,26 @@
               "text": "Second file needs a test."
             }
           ],
-          "parent": "claude-code:22222222-2222-4222-8222-222222222222"
+          "parent": "claude-code:22222222-2222-4222-8222-222222222222",
+          "at_quality": "unknown"
         }
       }
     ],
     "sessions": [
       {
         "id": "claude-code:two-sidechains",
-        "kind": "main"
+        "kind": "main",
+        "started_quality": "unknown"
       },
       {
         "id": "claude-code:two-sidechains~side-11111111-1111-4111-8111-111111111111",
-        "kind": "sidechain"
+        "kind": "sidechain",
+        "started_quality": "unknown"
       },
       {
         "id": "claude-code:two-sidechains~side-22222222-2222-4222-8222-222222222222",
-        "kind": "sidechain"
+        "kind": "sidechain",
+        "started_quality": "unknown"
       }
     ]
   }
