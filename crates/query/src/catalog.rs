@@ -9,7 +9,7 @@ pub const MEASURE: &str = "measure";
 /// Words that name a session by position; a saved name cannot be one.
 pub const REFERENCE_WORDS: [&str; 3] = ["self", "here", "latest"];
 
-fn field(value: &fields::Field, name: String) -> Field {
+fn field(value: &fields::Field, name: String, origins: &[String]) -> Field {
     use fields::Kind;
     let target = fields::reference_target(value.unit, value.name);
     let kind = if value.value_kind == Some(crate::ColKind::Ids) {
@@ -36,12 +36,16 @@ fn field(value: &fields::Field, name: String) -> Field {
     Field {
         name,
         kind,
-        values: value
-            .values
-            .into_iter()
-            .flatten()
-            .map(|v| (*v).to_owned())
-            .collect(),
+        values: if value.origin_values {
+            origins.to_vec()
+        } else {
+            value
+                .values
+                .into_iter()
+                .flatten()
+                .map(|v| (*v).to_owned())
+                .collect()
+        },
         unknown: value
             .stored_unknown
             .map_or(UnknownRule::Unknown, |v| UnknownRule::Word(v.into())),
@@ -96,7 +100,7 @@ fn build(origins: &[String]) -> Catalog {
             let mut declarations: Vec<Field> = fields::FIELDS
                 .iter()
                 .filter(|f| f.unit == unit)
-                .map(|f| field(f, f.name.into()))
+                .map(|f| field(f, f.name.into(), origins))
                 .collect();
             if fields::has_session(unit) {
                 if !declarations.iter().any(|field| field.name == "session") {
@@ -111,18 +115,13 @@ fn build(origins: &[String]) -> Catalog {
                 }
                 for f in fields::FIELDS.iter().filter(|f| f.unit == Unit::Sessions) {
                     if !declarations.iter().any(|d| d.name == f.name) {
-                        declarations.push(field(f, f.name.into()));
+                        declarations.push(field(f, f.name.into(), origins));
                     }
                 }
             }
             for relation in spec.relations {
                 for f in fields::FIELDS.iter().filter(|f| f.unit == relation.target) {
-                    declarations.push(field(f, format!("{}.{}", relation.prefix, f.name)));
-                }
-            }
-            for field in &mut declarations {
-                if field.name.rsplit('.').next() == Some("origin") {
-                    field.values = origins.to_vec();
+                    declarations.push(field(f, format!("{}.{}", relation.prefix, f.name), origins));
                 }
             }
             query_language::catalog::Unit {
