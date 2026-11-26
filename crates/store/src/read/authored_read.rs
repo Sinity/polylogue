@@ -244,7 +244,7 @@ impl Reader<'_> {
 
             Reference::Result { id, .. } => {
                 if !conn
-                    .prepare_cached("SELECT 1 FROM source_kept_result WHERE id=?1")?
+                    .prepare_cached("SELECT 1 FROM source_saved_rows WHERE id=?1")?
                     .exists([id])?
                 {
                     return Ok(Ok(None));

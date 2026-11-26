@@ -678,7 +678,7 @@ fn due_a_build(root: &std::path::Path) -> (Archive, crate::ArchiveLock) {
         open_write(&archive.archive_db(), cache::SETUP)
             .unwrap()
             .execute(
-                "INSERT INTO input(id,format) VALUES ('synthetic','claude-code')",
+                "INSERT INTO input(id,origin) VALUES ('synthetic','claude-code')",
                 [],
             )
             .unwrap();

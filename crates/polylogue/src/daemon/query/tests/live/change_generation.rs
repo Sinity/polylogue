@@ -228,7 +228,7 @@ fn save_refuses_a_stale_change_cursor_without_keeping_a_result() {
         pool.reader()
             .unwrap()
             .query(
-                "SELECT count(*) AS n FROM a.kept_result WHERE id='stale-keep-1'",
+                "SELECT count(*) AS n FROM a.saved_rows WHERE id='stale-keep-1'",
                 &[]
             )
             .unwrap()[0]["n"],

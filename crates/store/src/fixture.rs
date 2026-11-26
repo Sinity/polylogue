@@ -816,7 +816,7 @@ impl Fixture {
     pub fn kept_result(&mut self, id: &str, query: &str, rows_json: &str) -> Result<()> {
         crate::kept::validate_body(id, rows_json)?;
         self.archive_conn.execute(
-            "INSERT INTO kept_result(id, query, ran_at, read_at, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
+            "INSERT INTO saved_rows(id, query, ran_at, read_position, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
             params![id, query, rows_json],
         )?;
         Ok(())
@@ -825,7 +825,7 @@ impl Fixture {
     /// Replace a stored kept body with deliberately damaged bytes for read tests.
     pub fn corrupt_kept_body(&mut self, id: &str, body: &str) -> Result<()> {
         self.archive_conn.execute(
-            "UPDATE kept_result SET rows_json=?1 WHERE id=?2",
+            "UPDATE saved_rows SET rows_json=?1 WHERE id=?2",
             params![body, id],
         )?;
         Ok(())

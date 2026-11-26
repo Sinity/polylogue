@@ -931,7 +931,7 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
     // Each chain shown by the rules of `docs/archive.md` (parse versions).
     let parse_states: std::collections::BTreeMap<String, u64> = r
         .query(
-            "SELECT CASE WHEN s.format <> 'claude-code' THEN 'no_parser'
+            "SELECT CASE WHEN s.origin <> 'claude-code' THEN 'no_parser'
                     WHEN p.input_pk IS NULL OR p.parser_version <> 'synthetic=1'
                       OR p.parsed_to + p.waiting <> c.length THEN 'parsing'
                     WHEN p.state = 'failed' AND p.failure_kind = 'refused' THEN 'refused'
