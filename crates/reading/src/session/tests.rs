@@ -79,3 +79,32 @@ fn a_link_that_copies_nothing_is_never_the_unstored_copy_marker() {
         [ParentIssue::MissingBranchPoint { .. }]
     ));
 }
+
+#[test]
+fn a_conflicting_parent_whose_id_does_not_parse_is_reported() {
+    let (_root, fixture) = child_with(|fixture| {
+        fixture
+            .copying_link("test:parent", "test:child", "fork")
+            .unwrap();
+        fixture
+            .copying_link("malformed", "test:child", "fork")
+            .unwrap();
+    });
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut found = composed();
+    prefix(
+        &reader,
+        &SessionId::parse("test:child").unwrap(),
+        &mut found,
+    )
+    .unwrap();
+    assert!(found.parts.is_empty());
+    assert_eq!(
+        found.issues,
+        vec![ParentIssue::InvalidParent {
+            child: SessionId::parse("test:child").unwrap(),
+            parent: "malformed".into(),
+        }]
+    );
+}

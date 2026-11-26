@@ -1015,3 +1015,37 @@ fn live_append_writes_only_observed_paths() {
     assert_eq!(at(&report, "/a").types["string"].count, 2);
     assert_eq!(at(&report, "/b").types["number"].count, 1);
 }
+/// An input recognised again under another format keeps its earlier
+/// observations, declared only under the format they were read as.
+#[test]
+fn observations_without_a_declaration_under_the_present_format_read_as_a_report() {
+    let mut conn = database();
+    store(
+        &mut conn,
+        source(1, 1, 10, 1),
+        &step(
+            "v1",
+            0..10,
+            true,
+            vec![root(), shape("/kept", "string", &["string"])],
+        ),
+    );
+    conn.execute_batch(
+        "INSERT INTO parse_state VALUES(1,1,'v1','done',10);
+         UPDATE input_ref SET format='other' WHERE pk=1;",
+    )
+    .unwrap();
+    let tx = conn.transaction().unwrap();
+    unobserved(&tx, 1, 1).unwrap();
+    tx.commit().unwrap();
+    for scope in [Scope::current(None), Scope::history(None, None)] {
+        let report = read(&conn, scope).unwrap();
+        assert!(report.shapes.iter().all(|shape| shape.format == "fixture"));
+        assert!(
+            report
+                .coverage
+                .iter()
+                .any(|coverage| coverage.format == "other" && coverage.readings == 1)
+        );
+    }
+}

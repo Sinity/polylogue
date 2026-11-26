@@ -649,3 +649,57 @@ fn saved_plan_metadata_survives_cache_serialization() {
             .any(|text| text.ends_with("outcome"))
     );
 }
+
+#[test]
+fn origin_scoped_session_completion_offers_only_that_origins_sessions() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let metadata = Metadata {
+        archive: "synthetic".into(),
+        position: ChangePosition {
+            generation: "g".into(),
+            index: 1,
+            archive: 1,
+        },
+        written_at: 100,
+    };
+    let session = |id: &str, native_id: &str, origin: &str, title: &str| Session {
+        id: id.into(),
+        native_id: native_id.into(),
+        prefix: String::new(),
+        title: title.into(),
+        origin: origin.into(),
+        repo: None,
+        last_activity: Some(100),
+        first_prompt: None,
+        values: BTreeMap::new(),
+    };
+    CatalogWriter::fixture(&path, &metadata, |writer| {
+        writer.put_catalog(&base_catalog())?;
+        writer.put_session(&session("codex:abc123", "abc123", "codex", "Plain words"))?;
+        writer.put_session(&session(
+            "claude-code:zz9",
+            "zz9",
+            "claude-code",
+            "codex:review notes",
+        ))
+    })
+    .unwrap();
+    for text in ["codex:rev", "session:codex:rev", "codex:revi"] {
+        let candidates = complete_file(&path, "synthetic", text, text.len());
+        assert!(
+            candidates
+                .iter()
+                .all(|candidate| !candidate.value.contains("zz9")
+                    && !candidate.help.contains("review notes")),
+            "{text}: {candidates:?}"
+        );
+    }
+    let candidates = complete_file(&path, "synthetic", "codex:a", 7);
+    assert!(
+        candidates
+            .iter()
+            .any(|candidate| candidate.value == "a" && candidate.help.contains("Plain words")),
+        "{candidates:?}"
+    );
+}

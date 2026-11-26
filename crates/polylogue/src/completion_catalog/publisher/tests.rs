@@ -928,3 +928,50 @@ fn full_standalone_restart_retains_publication_and_applies_deltas_without_a_snap
         "{error}"
     );
 }
+
+#[test]
+fn probe_dropped_writer_with_old_position_keeps_saved_names() {
+    use polylogue_model::user::UserWrite;
+    let archive = polylogue_store::fixture::writer::WriterArchive::new();
+    let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("catalog");
+    let mut state = State::new(false, super::super::tests::request_metadata());
+    let save = |id: &str, name: &str| {
+        archive
+            .writer
+            .user(polylogue_store::writer::UserSubmission {
+                request: polylogue_store::fixture::authored::operator_request(
+                    id.into(),
+                    UserWrite::Save(Box::new(polylogue_model::user::Save {
+                        name: Some(name.into()),
+                        query: "sessions | group by origin | count".into(),
+                        denominator: Some("sessions".into()),
+                        rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
+                        read_at: "{}".into(),
+                        watch: None,
+                        outcomes: None,
+                    })),
+                ),
+                scope: None,
+                preparation: Some(crate::daemon::service::authored_preparation()),
+                parent: None,
+            })
+            .unwrap()
+    };
+    save("definition-a", "alpha");
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    // The state a failed session visit leaves: writer taken, position kept.
+    state.writer = None;
+    save("definition-b", "beta");
+    state
+        .refresh(&reads.reader().unwrap(), &path, "synthetic")
+        .unwrap();
+    let cache = completion::CatalogReader::open(&path, "synthetic")
+        .unwrap()
+        .unwrap();
+    assert_eq!(cache.saved("alpha").unwrap().len(), 1);
+    assert_eq!(cache.saved("beta").unwrap().len(), 1);
+}
