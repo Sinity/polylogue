@@ -442,7 +442,15 @@ impl<'a> Compiler<'a> {
             "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
             similarity.unwrap_or("1")
         ));
-        let (hidden, keys) = self.selection_order(&order, ranking);
+        let (hidden, mut keys) = self.selection_order(&order, ranking);
+        // A unit whose rows are an aggregate is computed whole, so its page
+        // is not read as two parts, which would compute it twice.
+        if matches!(units::spec(parts.scope.unit).from, fields::Expr::Template(t) if t.starts_with('('))
+        {
+            for key in &mut keys {
+                key.partition = false;
+            }
+        }
         let keyed = parts.measure.is_none().then(|| {
             (
                 self.keys_statement(ctes, (&from, &wh), &pk, &hidden, ranking),

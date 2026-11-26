@@ -91,10 +91,13 @@ fn default_pages_read_in_index_order() {
         let Ok(program) = crate::query::compile(text, &options()) else {
             continue;
         };
+        // A derived relation, and a unit whose rows are an aggregate
+        // (`files`), is computed whole before its page.
         if !matches!(
             program.statements,
             crate::query::compile::Statements::Keyed(_)
-        ) {
+        ) || unit == polylogue_query::units::Unit::Files
+        {
             continue;
         }
         let steps = page_steps(&f, text);
