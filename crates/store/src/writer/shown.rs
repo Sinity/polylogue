@@ -131,6 +131,27 @@ pub(super) fn compose(context: &Context<'_>, touched: Touched) -> Result<u64> {
     Ok(work.written)
 }
 
+/// Where a reading's content is stored: its content group and its start in
+/// the group's decoded bytes.
+type Place = (i64, i64);
+
+/// Records `place` for `id` unless an earlier one is recorded.
+fn earliest(places: &mut HashMap<String, Place>, id: &str, place: Place) {
+    places
+        .entry(id.to_owned())
+        .and_modify(|held| *held = (*held).min(place))
+        .or_insert(place);
+}
+
+/// `ids` in the order their content is stored, so that consecutive ones
+/// read the same content group; those with no known place come last, by ID.
+fn in_stored_order(ids: BTreeSet<String>, places: &HashMap<String, Place>) -> Vec<String> {
+    let mut ordered: Vec<String> = ids.into_iter().collect();
+    // Stable, so IDs with equal places keep their ID order.
+    ordered.sort_by_key(|id| places.get(id).copied().unwrap_or((i64::MAX, i64::MAX)));
+    ordered
+}
+
 /// Each input's reading of a shown message: that of the newest of its
 /// chains holding it, without a content-named message an input's newer
 /// chain, read to its end, no longer holds (`gone` says whether it does).
@@ -424,6 +445,11 @@ impl<'c> Work<'_, 'c> {
             shown_whole.insert(self.ids.session(stated)?);
         }
         let mut message_ids = BTreeSet::new();
+        // Where a reading of each message and event of a whole session is
+        // stored. Their IDs are in no order, and composing in ID order
+        // would decode a content group for nearly every row.
+        let mut message_places = HashMap::<String, Place>::new();
+        let mut event_places = HashMap::<String, Place>::new();
         let mut event_work = events;
         let mut link_work = links;
         for (_, message) in &messages {
@@ -433,21 +459,32 @@ impl<'c> Work<'_, 'c> {
         for session in &shown_whole {
             let stated = self.ids.stated(session)?;
             for id in &stated {
-                for message in self
+                for row in self
                     .tx()
-                    .prepare_cached("SELECT message_id FROM message_parse WHERE session_id=?1")?
-                    .query_map([id], |row| row.get::<_, String>(0))?
+                    .prepare_cached(
+                        "SELECT message_id,content_group,content_start FROM message_parse
+                         WHERE session_id=?1",
+                    )?
+                    .query_map([id], |row| <(String, i64, i64)>::try_from(row))?
                 {
-                    message_ids.insert(self.ids.message(&message?)?);
+                    let (message, group, start) = row?;
+                    let shown = self.ids.message(&message)?;
+                    earliest(&mut message_places, &shown, (group, start));
+                    message_ids.insert(shown);
                 }
                 for row in self
                     .tx()
                     .prepare_cached(
-                        "SELECT session_id,event_id FROM event_parse WHERE session_id=?1",
+                        "SELECT session_id,event_id,content_group,content_start FROM event_parse
+                         WHERE session_id=?1",
                     )?
-                    .query_map([id], |row| <(Option<String>, String)>::try_from(row))?
+                    .query_map([id], |row| {
+                        <(Option<String>, String, i64, i64)>::try_from(row)
+                    })?
                 {
-                    event_work.insert(row?);
+                    let (session, event, group, start) = row?;
+                    earliest(&mut event_places, &event, (group, start));
+                    event_work.insert((session, event));
                 }
                 for row in self
                     .tx()
@@ -475,18 +512,22 @@ impl<'c> Work<'_, 'c> {
             session_work.insert(self.ids.session(stated)?);
             session_work.insert(stated.clone());
         }
-        for message in &message_ids {
-            if let Some(session) = self.compose_message(message)? {
+        for message in in_stored_order(message_ids, &message_places) {
+            if let Some(session) = self.compose_message(&message)? {
                 session_work.insert(session);
             }
         }
         self.pair_calls(calls)?;
         event_work.append(&mut std::mem::take(&mut self.events));
         let mut shown_events = BTreeMap::<String, BTreeSet<String>>::new();
+        let mut shown_places = HashMap::<String, Place>::new();
         for (session, event) in event_work {
             let (shown, stated) = self.shown_event_id(&event)?;
             if let Some(session) = session {
                 session_work.insert(self.ids.session(&session)?);
+            }
+            if let Some(place) = event_places.get(&event) {
+                earliest(&mut shown_places, &shown, *place);
             }
             shown_events.entry(shown).or_default().extend(stated);
         }
@@ -503,8 +544,8 @@ impl<'c> Work<'_, 'c> {
                 shown_events.entry(id.clone()).or_default().insert(id);
             }
         }
-        for (shown, stated) in shown_events {
-            self.compose_event(&shown, &stated)?;
+        for shown in in_stored_order(shown_events.keys().cloned().collect(), &shown_places) {
+            self.compose_event(&shown, &shown_events[&shown])?;
         }
         let mut shown_links = BTreeMap::<Vec<u8>, BTreeSet<Vec<u8>>>::new();
         for statement in link_work {
@@ -1506,27 +1547,35 @@ impl<'c> Work<'_, 'c> {
     /// show it.
     fn shown_event_id(&mut self, stated: &str) -> Result<(String, BTreeSet<String>)> {
         let mut ids = BTreeSet::from([stated.to_owned()]);
-        let piece = match &self.stream {
-            Some(stream) => stream
-                .events
-                .iter()
-                .find(|r| r.event_id == stated)
-                .map(|r| r.piece),
-            None => self
-                .tx()
-                .prepare_cached(
-                    "SELECT content_group,content_start,content_length,data_length FROM event_parse
-                     WHERE event_id=?1 LIMIT 1",
-                )?
-                .query_row([stated], |r| crate::content::Piece::of(r, 0))
-                .optional()?,
-        };
-        let event = piece
-            .map(|piece| readings::read_event(self.tx(), &mut self.reader, piece))
-            .transpose()?;
-        let Some(event) = event else {
+        // A session's stream holds its events' readings itself.
+        if self.stream.is_some() {
+            return Ok((stated.to_owned(), ids));
+        }
+        type Reading = (Option<String>, Option<String>, crate::content::Piece);
+        let reading: Option<Reading> = self
+            .tx()
+            .prepare_cached(
+                "SELECT session_id,after_message_id,content_group,content_start,content_length,data_length
+                 FROM event_parse WHERE event_id=?1 LIMIT 1",
+            )?
+            .query_row([stated], |r| {
+                Ok((r.get(0)?, r.get(1)?, crate::content::Piece::of(r, 2)?))
+            })
+            .optional()?;
+        // Its session and the message it follows are columns of the
+        // reading: an event shown where it is stated keeps its ID, and its
+        // content is not read to learn that.
+        let Some((Some(session), after, piece)) = reading else {
             return Ok((stated.to_owned(), ids));
         };
+        let after_shown = after
+            .as_deref()
+            .map(|after| self.ids.message(after))
+            .transpose()?;
+        if self.ids.session(&session)? == session && after_shown == after {
+            return Ok((stated.to_owned(), ids));
+        }
+        let event = readings::read_event(self.tx(), &mut self.reader, piece)?;
         let (_, shown) = self.ids.event(&event, stated)?;
         ids.insert(shown.clone());
         Ok((shown, ids))
