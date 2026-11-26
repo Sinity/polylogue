@@ -193,6 +193,92 @@ fn stale_alias_keeps_old_revision_and_the_input() {
 }
 
 #[test]
+fn a_stale_copy_ending_between_revisions_is_observed_and_never_replaces_the_chain() {
+    let w = ClaudeHome::new();
+    let sessions = w.home.join(".codex/sessions");
+    let archived = w.home.join(".codex/archived_sessions");
+    std::fs::create_dir_all(&sessions).unwrap();
+    std::fs::create_dir_all(&archived).unwrap();
+    let path = sessions.join("rollout-live.jsonl");
+    let first = rollout("between-native");
+    std::fs::write(&path, &first).unwrap();
+    let (mut e, _lock) = engine(&w, 64);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let second=b"{\"type\":\"response_item\",\"payload\":{\"id\":\"m2\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"second turn\"}]}}\n";
+    let third=b"{\"type\":\"response_item\",\"payload\":{\"id\":\"m3\",\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"third turn\"}]}}\n";
+    let mut live = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    live.write_all(second).unwrap();
+    live.write_all(third).unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let whole: Vec<u8> = [first.as_bytes(), second, third].concat();
+    // The copy ends inside the stored chain, at no revision's length.
+    let stale: Vec<u8> = [first.as_bytes(), second].concat();
+    std::fs::write(
+        archived.join("rollout-stale.jsonl.zst"),
+        zstd::stream::encode_all(stale.as_slice(), 1).unwrap(),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let input = "codex:rollout:between-native";
+    let revisions = e
+        .reads
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT number,produced,chain,length FROM a.revision WHERE input='codex:rollout:between-native' ORDER BY number",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(
+        revisions
+            .iter()
+            .map(|r| (
+                r["number"].as_i64().unwrap(),
+                r["produced"].as_str().unwrap().to_owned(),
+                r["chain"].as_i64().unwrap(),
+                r["length"].as_u64().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        [
+            (1, "first".to_owned(), 1, first.len() as u64),
+            (2, "appended".to_owned(), 1, whole.len() as u64)
+        ]
+    );
+    let observed = e
+        .reads
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT class,revision,chain,length FROM a.observation WHERE input='codex:rollout:between-native' ORDER BY rowid DESC LIMIT 1",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(observed[0]["class"], "back");
+    assert_eq!(observed[0]["revision"], serde_json::Value::Null);
+    assert_eq!(observed[0]["chain"], 1);
+    assert_eq!(observed[0]["length"], stale.len() as u64);
+    assert_eq!(captured(&e, input), whole);
+    let id = polylogue_model::SessionId::parse("codex:between-native").unwrap();
+    assert_eq!(
+        e.reads
+            .reader()
+            .unwrap()
+            .messages(&id, false)
+            .unwrap()
+            .iter()
+            .map(polylogue_model::Message::text)
+            .collect::<Vec<_>>(),
+        ["independent payload", "second turn", "third turn"]
+    );
+}
+
+#[test]
 fn equal_decoded_read_keeps_its_body_without_a_revision() {
     let w = ClaudeHome::new();
     let dir = w.home.join(".codex/sessions");
