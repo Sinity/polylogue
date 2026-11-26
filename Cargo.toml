@@ -81,6 +81,7 @@ unimplemented = "deny"
 [profile.dev]
 opt-level = 0
 debug = "line-tables-only"
+split-debuginfo = "unpacked"
 incremental = false
 codegen-units = 256
 

@@ -86,7 +86,7 @@ jobs:
           readelf -SW "deps/$big" | sed -n 's/^ *\[ *[0-9]*\] //p' | while read -r name type addr off size rest; do echo "$((16#$size)) $name"; done | sort -n | tail -8
           find deps -name '*.dwo' -printf '%s\n' | awk '{s+=$1; n++} END {print "dwo files", n, "bytes", s}'
           t=$(newest | grep ' polylogue_testkit-' | cut -d' ' -f2)
-          RUST_BACKTRACE=1 "deps/$t" --exact experiment_backtrace --ignored 2>&1 | grep -A12 'panicked' | head -30 || true
+          RUST_BACKTRACE=1 "deps/$t" --exact process::tests::experiment_backtrace --ignored 2>&1 | grep -A12 'panicked' | head -30 || true
       - uses: actions/upload-artifact@v4
         if: ${{ !cancelled() && matrix.shard == 1 }}
         with:
