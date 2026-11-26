@@ -1139,7 +1139,7 @@ fn session_start(
             let delivered = |id: &str| {
                 pending.iter().any(|request| {
                     matches!(&request.request.write, UserWrite::DeliveryEvent {
-                        delivery, what: polylogue_model::DeliveryOutcome::Delivered, ..
+                        delivery, outcome: polylogue_model::DeliveryOutcome::Delivered, ..
                     } if delivery == id)
                 })
             };
