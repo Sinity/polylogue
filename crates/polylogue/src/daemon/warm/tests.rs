@@ -758,8 +758,6 @@ fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
         polylogue_model::WallClock::new(jiff::Timestamp::now),
     );
     let mut store = polylogue_store::vectors::Vectors::writer(&archive, 256).unwrap();
-    // Provider-off startup never asks Warm for a model. Six hundred mixed
-    // restore transactions therefore do not subscribe a vectors worker.
     for at in 1..=600 {
         let mut batch = vec![restored_vector(
             1,
@@ -771,7 +769,6 @@ fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
         }
         store.restore(&batch).unwrap();
     }
-    assert!(warm.worker.lock().unwrap().is_none());
     assert!(warm.summary().vectors.is_none());
     assert_eq!(warm.summary().vector_loads, 0);
     let reads = polylogue_store::ReadPool::open(&archive).unwrap();

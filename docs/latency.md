@@ -57,7 +57,8 @@ The daemon keeps derived state warm so the classes hold. Each item is keyed by w
 | compiled plans, the shipped saved queries' precompiled | every query | normal form, definitions and options | on definition change |
 | first pages, next pages and counts | repeated listings, page turns, footers, the count preview, `--dry-run` counts | question hash and read position | evicted on write; a live page cell's result stays until the change feed touches one of its sources ([pages.md](pages.md#queries-on-pages)) |
 | saved-query names and kept-result shapes | compiling | write position | on user write |
-| loaded vectors (int8 in memory, f32 on disk) and stored query vectors | `similar:` | model and snapshot revision | when a request needs that revision |
+| loaded vectors (int8 in memory, f32 on disk) | `similar:` | model and snapshot revision | when a request needs that revision |
+| query vectors | `similar:TEXT` | model and NFC text | on first use |
 | search vocabulary | fuzzy matching in the brief of a search | write position | batch delta |
 | scope index and session summaries | `brief` | write position and live-state change | batch delta and each hook event |
 | rendered overviews of recent sessions | the picker preview | session, read position, width | evicted on write to that session |
