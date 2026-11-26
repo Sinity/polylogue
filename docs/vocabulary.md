@@ -502,6 +502,12 @@ generated page of the thing they belong to, or on the area page that owns them.
   what it would do, running nothing.
 - **failure kind**: a stable name for why an operation failed, mapped to an
   exit code and an HTTP status.
+- **cause**: what would end a failure: `transient` (passes by itself),
+  `content` (these bytes under this reading version), `request` (the caller
+  changes it), `environment` (the machine), `stored_data` (stored data this
+  build cannot read back), `bug` or `stopping`. A pass reports each
+  **failure** with its subject, cause, code and message; only a `content`
+  failure is recorded as a chain's failed parse state.
 - **orientation screen**: what bare `polylogue` shows.
 - **cheatsheet**: the one screen `polylogue help` prints.
 - **status**: figures and a verdict about the daemon and archive.
