@@ -117,8 +117,8 @@ local overrides and build graphs. Enter with `nix develop`. While writing,
 type-check with `cargo check --locked -p <package> --tests` (the `compile`
 operation) and run only the tests being written or changed, scoped to their
 package and target, with `cargo xtask test -p <package> --lib -E
-'test(<name>)'` (the `focused` operation). The suite runs in the hosted check
-on the pull request. A test run builds only the
+'test(<name>)'` (the `focused` operation). The hosted check selects affected tests for
+pull requests and runs the suite on master. A test run builds only the
 selected packages' test targets, with the units the full test build uses;
 Cargo target flags such as `--lib` or `--bin NAME` bound it further. After
 changing a dependency or its features, run `cargo hakari generate`.
@@ -169,8 +169,8 @@ that.
 
 **Verify scoped to the change.** Commit first, so a result belongs to a
 commit. Locally, run only the tests the change writes or changes: the
-development host's build queue is shared, while the hosted check runs the
-suite in four parallel shards in about ten minutes. A pull request is
+development host's build queue is shared, while the hosted check runs
+the selected tests in four parallel shards. A pull request is
 verified by GitHub Actions, which runs the parts of `cargo xtask check` as
 parallel jobs for its head (affected tests only); every test runs again on
 master after the merge. Run a full local `cargo xtask check` only to

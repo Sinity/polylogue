@@ -1,339 +1,79 @@
 # Development
 
-`rust-toolchain.toml` selects Rust and its components for rustup, the Nix
-shell and the packages; the flake reads it through its pinned rust-overlay
-input. Change the compiler version in common and both products together.
+## Set up
 
-| Command | Does |
-|---|---|
-| `cargo xtask check --changed` | formatting, the workspace-hack verification, Clippy (unchanged crates reuse their result), the Nix checks when their inputs changed, and the tests your changes since the merge base with `origin/master` can affect |
-| `cargo xtask check [--base <ref>]` | the same with every test, or with the parts and tests the changes since the merge base with `<ref>` can affect |
-| `dev/land [--dry-run] <n>` | land pull request `n` once its required check is green against a base still current for the packages it changes ([landing](#landing)) |
-| `dev/land --queue [--once] [--dry-run]` | land every ready pull request, in passes a minute apart ([landing](#landing)) |
-| `cargo xtask fast` | formatting, the workspace-hack verification and both Clippy configurations, without tests |
-| `cargo xtask test -p <crate> --lib -E 'test(<name>)'` | the selected tests under nextest, building only that crate's library test target and what it depends on |
-| `cargo xtask test --changed`, `--base <ref>` | the tests the changes since the merge base with `origin/master` (or `<ref>`) can affect: changed packages and their dependents |
-| `cargo xtask test --partition hash:<k>/<n>` | part `k` of `n` of the selected tests; a part that holds none passes |
-| `cargo xtask test --junit <path>` | also write nextest's JUnit report there, whether or not tests fail |
-| `cargo xtask test --no-run` | build every test binary without running tests |
-| `cargo xtask nix [--base <ref>]` | the flake's `nix-fmt`, `settings` and `modules` checks; with `--base`, only when the changes touch `nix/`, `flake.nix` or `flake.lock` |
-| `cargo xtask warm` | build every test binary and both Clippy configurations without running tests |
-| `cargo xtask prune-build` | remove from the target directory every artifact that both Clippy configurations, the test build and xtask's build no longer use |
-| `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
-| `cargo xtask run [--root <dir>] [--watch \| --binary <path>]` | the checkout's daemon in a sandbox on a scratch root, until stopped ([below](#a-daemon-to-probe)) |
-| `cargo xtask bench ...` | corpus builds and interactive read measurements |
-| `cargo xtask extension-providers` | rewrite the browser extension's provider table (`extension/src/background/providers.js`) from the origin registry; a sources test fails while the checked-in table differs |
-| `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
-| `cargo hakari generate` | rewrite the workspace-hack crate after a dependency or feature change |
-| `cargo fmt --all` | format |
-| `nix flake check` | the package, extension, formatting, settings, module and VM checks |
-| `nix build` | the package |
+Enter with `nix develop`, or run `direnv allow` to load the same shell. Keep local settings in the ignored `.envrc.local`. Cargo uses `target/` unless `CARGO_TARGET_DIR` is set or the shell selects a per-checkout target through `sinnix-cargo-target`. The shell supplies the check tools, SQLite, the time zone database, and coverage and fuzzing tools. `nix develop .#format` supplies just the pinned toolchain, Git and diff. Both shells select `.githooks` if Git has no hooks path. Rustup, the shells and the package take Rust and its components from `rust-toolchain.toml`. Change the compiler in polylogue-sinex-common and both products together.
 
-A diff confined to `nix/`, `flake.nix` and `flake.lock` runs the Nix checks
-instead of Clippy and the Rust tests.
+With `SCCACHE_DIR` and `XDG_RUNTIME_DIR` set and no custom Rust compiler wrapper, the development shell uses sccache. The host target helper can set the cache location beside the checkout targets. Set `SCCACHE_CACHE_SIZE` to override the 4 GB default. Checkouts share cached compilations and have separate server sockets. Look for hits, misses and uncacheable compilations in the xtask summary.
 
-## Test selection and builds
+## While writing
 
-`xtask test` interprets packages (`-p`, names or globs), exclusions,
-filtersets (`-E`), the base, the partition and Cargo's target flags; the
-arguments after them (test-name filters, other nextest options) pass to
-`cargo nextest run` unchanged, so xtask's own options come first. Packages
-and exclusions choose the packages whose tests run, intersected with the
-packages a base selects; filtersets choose among their tests. Without a
-package or a base every package's tests run.
+Type-check a package and its tests with `cargo check --locked -p PACKAGE --tests` (`compile` on a job runner). Run the tests you write or change with `cargo xtask test -p PACKAGE --lib -E 'test(NAME)'` (`focused`). Use `--test NAME` for an integration target or `--bin polylogue` for the application's unit tests. The default targets are those marked for testing, including opted-in examples. A scoped build compiles the selected targets and their dependencies with the same features as the workspace test build. Declare shared dependency features in `[workspace.dependencies]` and run `cargo hakari generate` after changing dependencies or features.
 
-A run builds only the selected packages' test targets and what they depend
-on: one store test compiles the store's test harness and the store's
-dependencies, not the crates downstream of it. Target flags bound it further:
-`--lib` for library unit tests, `--test NAME` for an integration target,
-`--bin NAME` for a binary's unit tests; without one, the targets marked
-`test = true` build, including opted-in examples. The `polylogue` package is
-binary-only: its daemon, CLI, MCP and web unit tests live in
-`--bin polylogue`, for example
-`cargo xtask test -p polylogue --bin polylogue -E 'test(daemon::query::tests::references)'`.
+Use `-p` and `--exclude` with package names or quoted globs. This package selection intersects the packages selected by `--changed` (against `origin/master`) or `--base REF`. Both compare against the merge base and include local changes. Use `-E` to choose tests within those packages. Without package or base filters, every package is selected. Put xtask options before test-name filters and other nextest arguments. Use `--partition hash:K/N` to run one shard, and `--junit PATH` for results even when tests fail. Empty shards pass. `cargo xtask scenarios` selects the real-daemon integration target. See [Testing](testing.md) for fixtures and test design.
 
-Every selection compiles the units the whole workspace's test build compiles,
-so changing the selection recompiles nothing that is already built. Two
-things make that hold. The `workspace-hack` crate, generated by
-[cargo-hakari](https://docs.rs/cargo-hakari), depends on every third-party
-crate with the features the whole workspace enables, and every workspace
-package (xtask too) depends on it; `cargo xtask fast` runs
-`cargo hakari verify`, and `cargo hakari generate` rewrites it after a
-dependency change; devkit, which only xtask uses, stays out of it. Each workspace package's test
-features (the fixture, fault and `sinex` features listed in `FEATURES` in
-`xtask/src/main.rs`) reach it through the selected packages: xtask passes
-the entries for the selected packages and their direct dependencies, the
-store's `fixture` forwards the model's and the query catalog's, and the
-testkit enables the test features of what it builds on. xtask uses the
-testkit without its default `archives` feature, so an xtask build compiles
-the model and the sources, whose units the test build shares, but not the
-engine or the store. Shared dependency features are declared once in the root
-manifest's `[workspace.dependencies]`. For an isolated dependency
-investigation, invoke Cargo directly with its own package and feature flags;
-that creates a separate compilation graph.
-
-## A daemon to probe
-
-`cargo xtask run` builds the checkout's `polylogue` and starts its daemon,
-standalone, in the testkit's sandbox on a scratch root: `--root <dir>`, or a
-new directory under `$TMPDIR` that is removed at the stop. It prints the
-daemon's process, its web reader's address, the archive, the home the daemon
-watches (write session files there to give it something to find) and the
-path of a CLI script, `<root>/polylogue`, that reaches this daemon and no
-other (`<root>/polylogue status`). An archive already under the root is
-reopened. `--watch` rebuilds when the sources change and restarts the
-daemon on the new build; a failed build keeps the running daemon.
-`--binary <path>` serves with a binary already built, an installed one for
-instance, and builds nothing. Stopping the command (Ctrl-C or SIGTERM)
-stops the daemon's process group, and a killed command takes the daemon
-with it. One checkout runs one such daemon at a time while it builds its
-own (devkit's development lock). The run is standalone only; it starts no
-Sinex stack.
-
-The sandbox is the environment every daemon a test or xtask spawns runs in
-(`polylogue_testkit::Sandbox`). Nothing of the caller's environment reaches
-it but `PATH`: `HOME`, every XDG directory, every root variable the sources
-declare (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME` and the rest) and
-`TMPDIR` lie under the root, and `POLYLOGUE_LISTEN` names a port that was
-free when the sandbox was made, so the daemon neither finds the caller's
-files nor competes for the default web port 8765. A probe started by hand
-follows the same recipe: an explicit environment from `env -i`, a scratch
-root, and a free port.
-
-```sh
-root=$(mktemp -d)
-mkdir -p "$root"/home "$root"/runtime && chmod 700 "$root"/runtime
-env -i PATH="$PATH" HOME="$root/home" XDG_CONFIG_HOME="$root/config" \
-  XDG_DATA_HOME="$root/data" XDG_STATE_HOME="$root/state" \
-  XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/runtime" \
-  POLYLOGUE_LISTEN=127.0.0.1:<free port> \
-  polylogue --archive "$root/archive" daemon
-```
-
-With `HOME` under the root and the tools' root variables unset, every
-source location resolves under the scratch home. The CLI reaches that
-daemon under the same environment with the same `--archive`.
-
-## Compiler cache
-
-On a host that names a compiler cache in `SCCACHE_DIR`, or that provides
-per-checkout targets through `sinnix-cargo-target` (the cache then lives
-beside those targets), the development shell routes compilations through
-[sccache](https://github.com/mozilla/sccache) with a 4 GB local cache (one
-full test build stores about 0.4 GB; `SCCACHE_CACHE_SIZE` overrides it).
-Each checkout has its own server socket under `XDG_RUNTIME_DIR`. A job lasts
-until its last process exits, so an xtask run starts the server, keeps it
-through the run and stops it, and a server started by any other compilation
-stops 10 s after its last one; a server that is gone costs a compilation a
-cache lookup, not a failure. `CARGO_TARGET_DIR` is withheld from sccache,
-which hashes every `CARGO_*` variable. Third-party crates hit from any
-checkout; crates that link (test harnesses, the `polylogue` binary, proc
-macros) are never cached. A run's summary line `compiler cache: H hits, M
-misses, N not cacheable` counts the run's compilations. Elsewhere, including
-the hosted check, nothing changes.
-
-The Nix package is built with the Cargo feature `sinex` (off in a plain `cargo build`), which holds Polylogue's Sinex event kinds; primary mode is not built in this version ([primary-mode.md](primary-mode.md)). `packages.polylogue-extension`
-builds the Chrome and Firefox archives with the extension's Node builder and
-provides an unpacked Chrome extension; the overlay adds both packages. Package
-builds set `POLYLOGUE_REVISION` at compile time, and `--version` shows it.
-`--version` and `--help` load no deployment file.
-
-Extension packaging reads the committed registration in `extension/manifest.json` and the explicit runtime inputs in `extension/scripts/package.mjs`. `npm --prefix extension run build -- --out DIR` writes Chrome ZIP and Firefox XPI archives plus `build-manifest.json`; it never rewrites source versions. `--version VERSION` changes only the artifact version, stripping development suffixes while rejecting malformed browser versions. The packager derives the Firefox background scripts and Gecko identity from that manifest. Artifact checks do not qualify execution in a real browser.
-
-To change the source release version, run `npm --prefix extension version VERSION --no-git-tag-version`, update the committed manifest version to its browser version, then review the package, lock and manifest together. `npm --prefix extension run check` runs lint, manifest validation and the JS suite, including real zip/Python archive generation, the released members and source-byte preservation. The required hosted check runs it too. The declared AgentCTL `extension` operation runs these npm commands without a Rust test build. `nix build .#polylogue-extension` checks packaging from read-only Nix source and provides the unpacked Chrome files. The declared `extension_package` operation builds that output and the Nix-format check only.
-
-The package builds on a Crane dependency build made with the package's own
-package, feature and profile arguments and no test targets, so a change to
-Polylogue's own source recompiles only workspace crates. The
-`polylogue-dependencies` package exposes those compiler artifacts for the
-package cache. The binary runs the `git` it finds on its PATH for repository
-identity and commit capture, and the package carries no git: without one, a
-session start records `git identity: git could not be started` in place of the
-identity. The deployment modules' commands supply a fallback
-([below](#deployment-modules)).
-
-The flake checks are the package (`polylogue`), extension packaging
-(`extension`), Rust formatting (`fmt`), Nix formatting (`nix-fmt`),
-deployment-file rendering (`settings`), module evaluation (`modules`) and two
-VMs. Clippy and the Rust tests run only through `cargo xtask`. The `behavior`
-VM runs the packaged daemon, CLI status, MCP initialization and a
-native-messaging exchange in a guest with private XDG and archive paths. The
-`modules` check evaluates both deployment modules. The `services` VM starts the
-Home Manager user service and reaches its daemon through every installed alias
-and MCP. Its regular account home lets Home Manager activate; literal spaces,
-dollar signs and percent signs in the archive and XDG data, state and cache
-paths are checked against the running daemon's arguments and environment.
-Module evaluation separately checks those characters in the Home Manager
-profile command path. The guest has no git, and the installed session-start
-hook, run in a repository, still records its root commit, branch and remote
-through the fallback git.
-
-The development shell installs the check tools and points Git at `.githooks`
-when no other hooks path is configured; it builds no VM. It carries coverage and
-fuzzing tools, LLVM tools matching the compiler, SQLite, jq and the time zone
-database. The formatting shell, `nix develop .#format`, uses the same pinned
-Rust toolchain with Git and diff, without the check inputs and other development
-tools. It installs the same Git hooks.
-
-The commit hook checks staged whitespace and refuses staged Rust that rustfmt would
-change (format it and stage again), including partial staging and renames. It enters the formatting shell once for
-the complete staged Rust set; the declared `fmt` operation uses that shell too.
-Formatting supplies an unused local target directory and selects no compiler
-cache. The lock operation likewise supplies an unused local target before shell
-entry because dependency resolution uses no compiler artifacts. There is no push
-hook.
-
-`direnv allow` loads the same shell through `.envrc`, which reloads when the
-toolchain or Nix files change. The git-ignored `.envrc.local` holds personal
-settings such as build-output placement, job counts and compiler wrappers.
-Cargo's output directory is `target/` unless `CARGO_TARGET_DIR` is set.
-
-A host may queue these commands through its own job runner; the operations
-AgentCTL runs are declared in `.agentctl/project.toml`. They clear an ambient
-`CARGO_TARGET_DIR` before entering the workspace's shell, which then selects
-the checkout's own host target and seeds its dependency artifacts through
-`sinnix-cargo-target` where the host has it. While writing, an agent runs
-`compile` (a type-check) and `focused` for the tests it writes or changes,
-with `-p <package>` and a target flag; the suite runs in the hosted check,
-and a local `check` only reproduces a failure the hosted check reported.
-`fast` and `compile` share the one-slot `compile` queue; `focused` runs in
-the `normal` queue beside them, and full checks and Nix checks in `bulk`.
-`measure` is the one operation for
-benchmarks, archive rebuilds and measurement drivers: it runs one at a time,
-waits until 10 GiB of memory is free rather than starting a run its memory
-limit would end, runs at low CPU and I/O priority, and never sees the paid
-embedding key. Coordinate runs that use the same disk before comparing
-timings. For an explicit target experiment, pass
-`exec -- env CARGO_TARGET_DIR=... cargo ...`; this assignment runs after shell
-selection. Keep the experimental target exclusive to the same checkout.
-
-To build against a local checkout of the shared crates, run
-`cargo xtask link-common PATH`, and `cargo xtask unlink-common` before
-committing a lock file. New common commits arrive as a pull request on the
-`update-polylogue-sinex-common` branch, opened by common's `Update product
-locks` workflow once Sinex's master has adopted them; it moves the Sinex
-revision and the common lock together. The shared
-[dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
-describes the route.
-
-A type-check of one package, `cargo check --locked -p polylogue-sinex
---tests`, checks its library and test targets without compiling a test
-executable. The declared AgentCTL `compile` operation accepts those Cargo check
-arguments.
-
-The `package` operation runs all locked Nix checks; `nix build` builds the
-package alone.
+Run `cargo fmt --all` (`fmt`) and stage the formatted files. The commit hook checks staged whitespace and Rust formatting, including partial staging and renames. When the origin registry changes, use `cargo xtask extension-providers` to regenerate `extension/src/background/providers.js`. A sources test compares the table with the registry.
 
 ## Hosted check
 
-GitHub Actions runs the `check` workflow for every pull request, master push
-and manual run. Its jobs run in parallel, each one xtask command that
-`cargo xtask check` also runs in sequence:
+GitHub runs these jobs in parallel for pull requests, pushes to master and manual runs. The required `check` job requires success from every job below.
 
 | Job | Command |
 |---|---|
-| `lint` | `cargo xtask fast` |
-| `test` (four shards) | `cargo xtask test --partition hash:<k>/4` |
-| `nix` | `cargo xtask nix` |
-| `browser` | `npm --prefix extension run check` |
+| `lint` | `cargo xtask fast` checks formatting, the workspace-hack crate and Clippy with and without the application's `sinex` feature. |
+| `test` | `cargo xtask test --partition hash:K/4` runs one of four nextest shards. |
+| `nix` | `cargo xtask nix` checks Nix formatting, settings rendering and module evaluation. |
+| `browser` | `npm --prefix extension run check` runs lint, manifest validation and the JavaScript suite, including generating and checking release archives. |
 
-A pull request passes `--base HEAD^1`, the base branch's tip under its merge
-commit, so it builds and runs the tests its changes can affect and runs the
-Nix checks only when their inputs changed; master pushes and manual runs pass
-no base and run everything. The `check` job is the one required status and
-fails unless every other job succeeded. Each Rust job takes the toolchain
-from `rust-toolchain.toml` through rustup, and nextest, cargo-hakari, zsh,
-fish, zip and Node from the flake's `check-tools` package, the development
-shell's versions. A test job lists its failed tests and the tests that took
-10 s or longer in the job summary, and uploads nextest's JUnit report
-(`--junit PATH`) as the artifact `junit-<k>`, so a test that fails now and
-then on master can be traced through recorded runs.
+On a pull request, the test and Nix jobs add `--base HEAD^1` to compare GitHub's merge commit with the base branch tip it was tested against. Rust tests cover changed packages and their dependents, with narrower selection where the changed files or test functions allow it. Workspace-wide inputs can select every test. Markdown outside packages selects tests only when a test declares it as an input. Nix checks run when changes touch `nix/`, `flake.nix` or `flake.lock`. Master pushes and exact-revision manual runs check everything.
 
-Every Rust job restores master's saved build and dates source files against
-its recorded commit, so Cargo rebuilds only the packages that changed and
-their dependents. Only the `lint` job of a master push saves the build: after
-Clippy it builds every test binary, so the one saved target serves every job.
-Before saving, `cargo xtask prune-build` removes every artifact that neither
-Clippy configuration, the test build nor xtask's own build names (Cargo lists
-them, fresh ones included, in its JSON messages). Cargo never deletes an
-artifact it no longer needs, and a dependency's new version gives every unit
-above it a new name, so without this each saved build kept the copies of all
-earlier ones. A manual run may reuse that build but never replaces it.
+Read the test job summary for failed tests and tests taking at least 10 s. Logs include failure output, and artifacts `junit-K` record outcomes and durations when nextest writes a report. Use `gh run view RUN --log-failed` to open the failing logs and compare with the same test on master. For local results use `cargo xtask status` and `cargo xtask history runs`.
 
-### Landing
+Use `cargo xtask check` locally to reproduce a hosted failure. It runs formatting, workspace-hack verification, Nix checks, Clippy and Rust tests in sequence. Add `--changed` or `--base REF` to narrow the Nix checks and tests. With either flag a diff confined to Nix inputs selects the Nix checks in place of Clippy and Rust tests.
 
-A pull request's run checks GitHub's merge of its head with master at that
-moment, and its `check` job records that master commit as the notice
-annotation `tested base` on its check run. `dev/land` (git, gh and awk;
-nothing to build) compares the packages a pull request changes with those
-master changed since the tested base. A package is a directory with a
-`Cargo.toml`; another path counts as its top-level directory; the root
-manifest, `Cargo.lock`, `rust-toolchain.toml`, the flake, `.cargo/`,
-`.config/` and `.github/` count as every package; Markdown counts as none.
-When the two sets meet, or the run recorded no tested base and the pull
-request changes more than Markdown, the pull request is stale: master is
-merged into its branch with GitHub's update-branch and the check runs again.
-Otherwise it is squash-merged with `--match-head-commit`. Master can still
-move in the second or two between the last comparison and the merge. The
-comparison does not see a break across packages, such as a new caller in one
-crate of an API master removed from another; master's own run after the
-merge finds it.
+Hosted Rust jobs use rustup and the flake's `check-tools` package for nextest, cargo-hakari, zsh, fish, zip and Node. They can reuse master's saved build for unchanged packages. Only `lint` on a master push saves it, after `cargo xtask test --no-run` builds the test binaries and `cargo xtask prune-build` removes artifacts unused by Clippy, tests and xtask. Use `cargo xtask warm` to prepare a target with both Clippy configurations and the test binaries.
 
-A pull request is ready when it is open, not a draft, not labelled `hold`,
-has no unresolved review threads and its required check is green on its head.
-The owner's part is to make it ready: resolving a review thread, once the
-finding is answered, is what releases it. `hold`, with the reason in a
-comment, parks a finished pull request.
+## Landing
 
-`dev/land --queue` runs as the declared `land_queue` operation, in passes a
-minute apart. Each pass reads every open pull request with two GraphQL calls,
-merges the ready ones that are current, oldest first, deciding each against
-master's tip after the merge before it, and then updates the stale ones
-without waiting for their checks. Of the pull requests whose package sets
-overlap, at most one is in flight at a time, since each merge makes its
-overlapping siblings stale again. In flight means updated in this pass, or
-with jobs of its check queued or running on its head, whoever pushed it; each
-pass reads this afresh, so when that check goes red or the pull request
-becomes a draft, held or conflicting, the next pass updates the next stale
-one. A head with no check job yet holds nothing back. A pass prints a block when it merged or updated something, and every
-ten minutes otherwise: merged, updated, waiting (with the reason), waiting on
-review threads, red (with the failed jobs), conflicting, held and draft pull
-requests, with numbers and titles. A red check or a conflict never stops the
-queue, and it never reruns a check; a conflict needs the owner or a new
-worker. `--once` runs one pass and exits 0 unless a pull request is red or
-conflicting. The queue keeps nothing beyond what GitHub holds, so stopping
-and restarting it is always safe.
+Resolve review threads after answering their findings, then mark the pull request ready. Apply `hold` and comment with the reason to keep it open. `dev/land --queue` considers open pull requests targeting master that are ready for review and clear of holds, conflicts and unresolved threads. It merges eligible green heads oldest first, checking each against master's tip after the previous merge.
 
-`dev/land <n>` lands one pull request by hand: it waits for the required
-check, polling once a minute, updates the branch and waits again while it is
-stale, and prints the head, tested base, master's tip, both package sets and
-the runs it waited for. It stops on a draft, `hold`, unresolved threads, a
-conflict, or a red check, naming the failed jobs. `--dry-run`, with either
-form, prints the decisions without updating or merging; for one pull request
-it exits 0 only when it would merge now.
+The required check records the `tested base`. If master and the pull request changed any of the same packages, the script merges master into the branch and requires a fresh check. A missing `tested base` also requires an update for changes beyond Markdown. Directories with a `Cargo.toml` count as packages, other files count by top-level directory, and Markdown is ignored. The root manifest, lockfile, toolchain, flake, `.cargo/`, `.config/` and `.github/` count as touching every package. Master can move again before the squash merge, and the post-merge check also covers interactions across packages.
 
-## Published package
+The queue runs one pass a minute. It updates branches after merging, one per set of overlapping packages. A branch waits if another pull request touching those packages has check jobs queued or running or was just updated. It reports actions and reasons for waiting after merges and updates or every ten minutes. Failed checks and conflicts stay visible while the queue continues. Add `--once` for one pass, which exits unsuccessfully on a failed check or conflict. Restart the queue as needed using GitHub's current state.
 
-The `package` workflow builds `.#default` for every master commit and pushes
-its runtime closure and production compiler artifacts to `sinity.cachix.org`.
-The next source-only package build reuses those compiler artifacts.
-The release profile (`[profile.release]` in `Cargo.toml`) builds with whole-program
-optimisation, one code generation unit and stripped symbols: the binary is 73 MB
-instead of 115 MB, and a hosted release build takes about 15 to 25 minutes
-instead of 10. Panics stay unwinding because the build and the engine catch a
-failed worker. Sinnix deploys a revision only
-after fetching that package, so its switches never compile Polylogue. To
-deploy a revision master does not contain, such as a deployment branch's head,
-qualify that tree with `gh workflow run check -f rev=<full-commit-sha>`,
-then publish it with `gh workflow run package -f rev=<full-commit-sha>`. The manual
-check records and asserts its checked commit and runs the full check. The package
-log records the fetched flake source path, revision and NAR hash before building,
-and the published runtime closure's size after.
+Use `dev/land NUMBER` to wait for and land one pull request. It stops on a draft, a hold, unresolved review, conflicts or failed checks and names failing jobs. It reports the head, tested base, base tip, changed package sets and check runs at the landing decision. With either form, `--dry-run` reports planned actions. For a single pull request it exits successfully only when it would merge. Both forms squash-merge the tested head. The script uses Git with `origin`, gh and awk.
+
+## A daemon to probe
+
+`cargo xtask run` builds and starts a standalone daemon on a scratch root under `$TMPDIR` and removes the temporary root at shutdown. Give `--root DIR` to reuse a root and reopen its archive. Put session files in the printed home, open the printed web address, or use the printed CLI script with `status`. The testkit sandbox passes through `PATH`, sets home, XDG, source and temporary directories under the root, and chooses a free web port.
+
+Use `--watch` to rebuild on source changes and restart on success. A failed build leaves the previous daemon serving. Each checkout builds and serves one development daemon at a time from its own sources. Use `--binary PATH` instead of `--watch` to serve a prebuilt binary. Stopping the command stops the daemon, including on Ctrl-C or SIGTERM.
+
+## Measuring
+
+Use paired benchmarks on the same host and sample. Draw with `cargo xtask bench sample`, measure the first build with `cargo xtask bench run` and add `--incremental` to measure appends. Use `cargo xtask bench pair --a BASE=PATH --b CHANGE=PATH` with two prebuilt `first_build` executables. Use `cargo xtask bench estimate` to fit results from multiple sample sizes and `cargo xtask bench validate RESULT` to compare a prediction with a full result.
+
+Use `cargo xtask bench tails` for the last pages of archived sessions or `cargo xtask bench reads` for synthetic cold and warm reads. Choose where to keep benchmark manifests, sample copies, archives and reports with `--root DIR`. By default the location comes from `POLYLOGUE_BENCH_HOME` or the `polylogue-bench` directory under XDG data. See [Testing](testing.md#benchmarks) for figures to report.
+
+On the host runner, use `measure` for benchmarks, index rebuilds with a prebuilt binary and measurement drivers. It admits one job at a time with 10 GiB free, runs at low CPU and I/O priority and removes the paid embedding key. Coordinate runs sharing a disk before comparing timings.
+
+Set `POLYLOGUE_TIMING_WORKERS` to print pipeline stage and worker CPU times at daemon exit. On GNU/Linux this also prints C allocator statistics.
+
+## Shared crates
+
+Start shared changes in polylogue-sinex-common. Use `cargo xtask link-common PATH` to build Polylogue against that checkout. With no path it uses `POLYLOGUE_SINEX_COMMON` or the sibling checkout. Run `cargo xtask unlink-common` before committing locks. Common's `products` checks exercise the products with the proposed revision. After common merges and Sinex adopts the revision, the `Update product locks` workflow opens or updates Polylogue's `update-polylogue-sinex-common` pull request. It moves the Sinex pin and the common lock together. Convert callers there. See the [shared dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository).
+
+## Package
+
+`nix build` builds the release package with the `sinex` feature for event kinds. The packaged daemon opens standalone archives. `polylogue --version` reports the package revision, and version and help work before deployment. `nix flake check` also checks extension packaging, Rust and Nix formatting, settings and both modules. Its `behavior` VM exercises the packaged daemon, CLI, MCP and native messaging. Its `services` VM exercises the Home Manager service and aliases, literal paths and Git discovery.
+
+`nix build .#polylogue-extension` produces Chrome and Firefox archives and an unpacked Chrome extension. The overlay exports both packages. Standalone setups using the bare package need Git on `PATH` for repository identity and commit capture. For a local artifact use `npm --prefix extension run build -- --out DIR`, with `--version VERSION` after the separator to override the artifact version only. The builder strips development suffixes and validates the browser version. Output includes `build-manifest.json`. For a source release use `npm --prefix extension version VERSION --no-git-tag-version`, then update `extension/manifest.json` to the browser version and review it with the package and lock. Test the unpacked extension in a browser to qualify runtime behaviour.
+
+The `package` workflow publishes each master commit's runtime closure and the `polylogue-dependencies` compiler artifacts to `sinity.cachix.org` for deployment and subsequent builds. For a separate revision use `gh workflow run check -f rev=SHA` with its full commit hash, then `gh workflow run package -f rev=SHA`. The check verifies the requested commit. Deploy a revision after its package is published. The package log records the source path, revision, Nix archive hash and closure size.
 
 ## Deployment modules
 
-Import `homeModules.polylogue` into Home Manager or `nixosModules.polylogue`
-into NixOS. Both take the same settings:
+Import `homeModules.polylogue` or `nixosModules.polylogue` and declare the archive in `services.polylogue`.
 
 ```nix
 services.polylogue = {
@@ -345,35 +85,10 @@ services.polylogue = {
 };
 ```
 
-Every archive has its own `polylogue-NAME` command and service. With several
-archives, `defaultArchive` names the one also installed as `polylogue`, `plg`
-and `plog`. The command, the daemon and its clients share explicit archive and
-XDG paths. Each command appends a minimal git after the caller's PATH, so a
-service, whose PATH holds no git, and a shell without one still read
-repository identity and commits; a git on the caller's PATH comes first.
-The NixOS module also needs `user`, an existing account, and its
-client commands take that account's home and XDG directories (which can be set)
-whoever runs them.
+Each archive gets a `polylogue-NAME` command and service sharing explicit archive and XDG paths. With several archives, set `defaultArchive` for the `polylogue`, `plg` and `plog` aliases. NixOS also requires an existing `user` and runs its commands with that account's home and configured XDG paths. Wrappers put the caller's Git first and supply their own when needed.
 
-`settings`, `sinex` and `signals` render the files described in
-[installing](installing.md#configuration). Omitted values keep the binary's
-defaults. Credentials are file paths, never Nix strings holding their contents.
-Primary mode refuses a local `settings.day`.
+Set `settings`, `sinex` and `signals` as described in [configuration](installing.md#configuration). Omitted settings use the binary defaults. Supply credential file paths. For deployments on Sinex the module requires the day setting to come from Sinex. Activation restarts services on a package change. Restart after a configuration-only change to apply it. Services use readiness notification, a watchdog and CPU and I/O weights below interactive work. After a storage failure or archive refusal the service stays stopped. Register hooks, MCP, the browser host and shell completion separately with [`polylogue install TARGET`](installing.md#installing).
 
-Activation restarts a service when the package changes; a configuration-only
-change takes effect at the next service restart. The units use notify
-readiness, a watchdog, no restart after a storage failure or a refused
-archive ([operations.md](operations.md#the-daemon)), and CPU and I/O weights below interactive work, with no memory cap.
+## Host job runner
 
-The Home Manager module also installs the harness hooks and MCP registration,
-the browser extension's host manifest, and each archive command's shell
-completion with its Alt-p key. Each is the output of
-`polylogue install TARGET --dry-run` for that command
-([installing](installing.md#installing)), so the module writes exactly what
-`install` would.
-
-The `POLYLOGUE_TIMING_WORKERS` profiling environment variable records pipeline
-stage times and completed worker CPU times. The daemon prints them at exit
-with SQLite's peak memory in bytes and, on GNU/Linux, the C allocator's
-statistics. `MIMALLOC_SHOW_STATS=1` separately prints Rust allocator statistics;
-allocation totals require building mimalloc with `MI_STAT` enabled.
+[AgentCTL operations](../.agentctl/project.toml) clear the inherited `CARGO_TARGET_DIR` so the shell can select and seed the checkout's target. `fast` and `compile` share the compile queue, `focused` uses the normal queue, and `check` and `package` use the bulk queue. `package` runs the full flake checks. `fmt` uses the formatting shell, and `lock` updates selected lock entries. Use `extension` for npm commands, `extension_package` for the extension build and Nix formatting, and `land_queue` for the landing queue. For a separate build target use `exec` with `env CARGO_TARGET_DIR=DIR` before the command, and use that directory exclusively for this checkout.
