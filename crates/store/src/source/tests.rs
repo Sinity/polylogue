@@ -83,31 +83,6 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
 }
 
 #[test]
-fn primary_opens_one_source_cache_that_starts_empty() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = directory.path().join("polylogue");
-    let sinex = directory.path().join("sinex");
-    let (archive, lock) = crate::Archive::open_primary(&root, &sinex).unwrap();
-    assert!(archive.index_db().exists());
-    assert!(archive.embeddings_db().exists());
-    let reads = crate::ReadPool::open(&archive).unwrap();
-    assert_eq!(reads.reader().unwrap().status().unwrap().inputs, 0);
-    drop(reads);
-    drop(lock);
-    let (archive, _lock) = crate::Archive::open_primary(&root, &sinex).unwrap();
-    assert_eq!(
-        crate::ReadPool::open(&archive)
-            .unwrap()
-            .reader()
-            .unwrap()
-            .status()
-            .unwrap()
-            .stored_bytes,
-        0
-    );
-}
-
-#[test]
 fn later_chunks_keep_their_commit_when_a_revision_grows() {
     for primary in [false, true] {
         let conn = Connection::open_in_memory().unwrap();
@@ -220,7 +195,6 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: Batch {
-                    required_outcome: None,
                     input: InputKey {
                         id: "native".into(),
                         format: "synthetic".into(),
@@ -244,7 +218,6 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
                     length: 8,
                     parse: Vec::new(),
                     capture_read: None,
-                    base: None,
                     release: Default::default(),
                 },
                 files: prepared.into_iter().collect(),

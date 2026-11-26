@@ -64,7 +64,6 @@ pub(crate) fn prepare_query_plan_on(
     text: &str,
     supplied: &Bindings,
     self_session: Option<&str>,
-    pending: Option<&dyn crate::primary::Sinex>,
     provisional: Option<&ProvisionalQueries>,
 ) -> Result<Plan, SelectionError> {
     if original.is_autocommit() || authored.is_autocommit() {
@@ -75,29 +74,24 @@ pub(crate) fn prepare_query_plan_on(
     }
     if let Ok(Reference::Run(id)) = Reference::parse(text) {
         let source = crate::source::Source::reading(original)?;
-        let run =
-            crate::query_objects::lookup_run(original, source, &id, pending)?.ok_or_else(|| {
-                SelectionError::invalid(
-                    polylogue_model::Code::NotFound,
-                    format!("no saved run {id}"),
-                )
-            })?;
+        let run = crate::query_objects::lookup_run(original, source, &id)?.ok_or_else(|| {
+            SelectionError::invalid(
+                polylogue_model::Code::NotFound,
+                format!("no saved run {id}"),
+            )
+        })?;
         let question = run.question.ok_or_else(|| {
             SelectionError::invalid(
                 polylogue_model::Code::BadRequest,
                 "this run read an object and has no query question to run again",
             )
         })?;
-        let object = crate::query_objects::query_object_on(
-            original,
-            source,
-            &question.to_string(),
-            pending,
-        )?
-        .or_else(|| provisional.and_then(|prepared| prepared.object(question).cloned()))
-        .ok_or_else(|| QueryError::Unavailable {
-            reason: format!("run:{id} question query:{question} is unavailable"),
-        })?;
+        let object =
+            crate::query_objects::query_object_on(original, source, &question.to_string())?
+                .or_else(|| provisional.and_then(|prepared| prepared.object(question).cloned()))
+                .ok_or_else(|| QueryError::Unavailable {
+                    reason: format!("run:{id} question query:{question} is unavailable"),
+                })?;
         // Only the immutable question is reused. Lowering resolves time, here
         // and private reading marks with this invocation's execution options.
         return Ok(polylogue_query::plan::replay(
@@ -105,14 +99,7 @@ pub(crate) fn prepare_query_plan_on(
             polylogue_query::plan::catalog_fingerprint(),
         )?);
     }
-    let bindings = named_definitions(
-        original,
-        authored,
-        text,
-        &supplied.origins,
-        pending,
-        provisional,
-    )?;
+    let bindings = named_definitions(original, authored, text, &supplied.origins, provisional)?;
     Ok(polylogue_query::plan::prepare(
         text,
         &bindings,
@@ -171,7 +158,6 @@ pub(crate) fn named_definitions(
     authored: &Connection,
     text: &str,
     origins: &[String],
-    pending: Option<&dyn crate::primary::Sinex>,
     provisional: Option<&ProvisionalQueries>,
 ) -> Result<Bindings, SelectionError> {
     let mut bindings = Bindings {
@@ -218,7 +204,7 @@ pub(crate) fn named_definitions(
             definitions.insert(name.clone(), vec![definition]);
         }
     }
-    bindings.saved = saved_queries_from(original, authored, pending, provisional, definitions)?;
+    bindings.saved = saved_queries_from(original, authored, provisional, definitions)?;
     let shipped = super::shipped_bindings(origins)?;
     for name in &names {
         if !bindings.saved.contains_key(name)
@@ -248,7 +234,6 @@ pub(crate) fn named_definitions(
             original,
             crate::source::Source::reading(original)?,
             name,
-            pending,
         )?
         .map(|found| found.id);
         let found = match stored {
@@ -261,9 +246,11 @@ pub(crate) fn named_definitions(
         .ok_or_else(|| QueryError::Unavailable {
             reason: format!("saved query:{name} is unavailable"),
         })?;
-        let mut saved_nodes = stored_bindings(original, authored, pending, provisional, found)?
-            .ok_or_else(|| QueryError::Unavailable {
-                reason: format!("the stored body of saved query:{found} is unavailable"),
+        let mut saved_nodes =
+            stored_bindings(original, authored, provisional, found)?.ok_or_else(|| {
+                QueryError::Unavailable {
+                    reason: format!("the stored body of saved query:{found} is unavailable"),
+                }
             })?;
         let definition = saved_nodes[&found.to_string()].clone();
         saved_nodes.insert(name.clone(), definition);
@@ -273,9 +260,11 @@ pub(crate) fn named_definitions(
         if bindings.saved.contains_key(&id.to_string()) {
             continue;
         }
-        let saved_nodes = stored_bindings(original, authored, pending, provisional, id)?
-            .ok_or_else(|| QueryError::Unavailable {
-                reason: format!("the stored body of saved query:{id} is unavailable"),
+        let saved_nodes =
+            stored_bindings(original, authored, provisional, id)?.ok_or_else(|| {
+                QueryError::Unavailable {
+                    reason: format!("the stored body of saved query:{id} is unavailable"),
+                }
             })?;
         keep_missing(&mut bindings.saved, saved_nodes);
     }
@@ -361,14 +350,13 @@ pub(super) fn saved_queries_for_family(
         .collect();
     Ok(SavedFamily {
         names,
-        queries: saved_queries_from(conn, conn, None, None, family)?,
+        queries: saved_queries_from(conn, conn, None, family)?,
     })
 }
 
 fn saved_queries_from(
     original: &Connection,
     conn: &Connection,
-    pending: Option<&dyn crate::primary::Sinex>,
     provisional: Option<&ProvisionalQueries>,
     definitions: BTreeMap<String, Vec<crate::annotations::CurrentSavedDefinition>>,
 ) -> Result<BTreeMap<String, Vec<SavedQuery>>, SelectionError> {
@@ -402,7 +390,7 @@ fn saved_queries_from(
                 },
             };
             if value.conflicts.is_empty() {
-                match stored_bindings(original, conn, pending, provisional, hash) {
+                match stored_bindings(original, conn, provisional, hash) {
                     Ok(Some(saved_nodes)) => {
                         value.body = saved_nodes[&hash.to_string()][0].body.clone();
                         keep_missing(&mut saved, saved_nodes);
@@ -441,7 +429,6 @@ fn saved_queries_from(
 fn stored_bindings(
     original: &Connection,
     authored: &Connection,
-    pending: Option<&dyn crate::primary::Sinex>,
     provisional: Option<&ProvisionalQueries>,
     hash: QuestionId,
 ) -> Result<Option<BTreeMap<String, Vec<SavedQuery>>>, SelectionError> {
@@ -449,7 +436,6 @@ fn stored_bindings(
         original,
         crate::source::Source::reading(original)?,
         &hash.to_string(),
-        pending,
     )?
     .or_else(|| provisional.and_then(|prepared| prepared.object(hash).cloned()));
     let Some(object) = object else {

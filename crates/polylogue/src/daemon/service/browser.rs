@@ -269,16 +269,11 @@ pub(super) fn unreadable_request(error: &serde_json::Error) -> Failure {
     )
 }
 
-pub(super) enum PreparedFiles {
-    Complete(Vec<polylogue_model::user::ChatAttachment>),
-    Pending(protocol::PendingCapture),
-}
-
 /// Stores each file's bytes as a blob and makes its attachment row.
 pub(super) fn store_files(
     d: &Daemon,
     files: &[actions::ChatFile],
-) -> Result<PreparedFiles, Failure> {
+) -> Result<Vec<polylogue_model::user::ChatAttachment>, Failure> {
     let writes = writer(d)?;
     let mut attachments = Vec::with_capacity(files.len());
     for file in files {
@@ -286,17 +281,9 @@ pub(super) fn store_files(
             .archive
             .prepare_blob(&file.bytes)
             .and_then(|(new_blob, prepared)| writes.store_blob(new_blob, prepared));
-        match result {
-            Ok(blob) => attachments.push(actions::attachment(file, blob)),
-            Err(StoreError::PrimaryPending { identity }) => {
-                return Ok(PreparedFiles::Pending(protocol::PendingCapture {
-                    identity,
-                }));
-            }
-            Err(error) => return Err(Failure::from(error)),
-        }
+        attachments.push(actions::attachment(file, result.map_err(Failure::from)?));
     }
-    Ok(PreparedFiles::Complete(attachments))
+    Ok(attachments)
 }
 
 /// The browser handlers: each answers with the JSON view the extension reads.

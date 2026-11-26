@@ -1,6 +1,5 @@
-//! Input bytes use one encoded preparation in both modes. The standalone
-//! writer appends it to its segment; the primary producer sends the stored
-//! encoding.
+//! Input bytes are encoded once, off the writer thread; the writer appends
+//! that encoding to its segment.
 use crate::ConnExt as _;
 use crate::{Result, StoreError};
 use polylogue_model::BlobHash;
@@ -39,12 +38,10 @@ impl PreparedBytes {
             hashed_blobs::ReadLimits::default(),
         )?)
     }
-    pub(crate) fn body(&self) -> Result<crate::primary::PreparedBody> {
-        Ok(crate::primary::PreparedBody {
-            file: std::fs::File::open(self.temporary.as_ref())?,
-            descriptor: self.descriptor.clone(),
-            path: Some(self.temporary.to_path_buf()),
-        })
+    /// Where the encoding is staged, for tests that damage it.
+    #[cfg(test)]
+    pub(crate) fn staged_path(&self) -> &std::path::Path {
+        self.temporary.as_ref()
     }
     /// The encoding to append, reopened from its staged name: prepared files
     /// stay closed until their append, so a group of any size holds no
@@ -61,7 +58,7 @@ impl PreparedBytes {
 
 impl crate::Archive {
     /// Prepare frames off the writer thread. The bytes reach disk when
-    /// a group append syncs them, or when the primary producer accepts them.
+    /// a group append syncs them.
     pub fn prepare_blob(&self, bytes: &[u8]) -> Result<(crate::NewBlob, Option<PreparedBytes>)> {
         let prepared = self.prepare_bytes(bytes)?;
         Ok((
@@ -73,7 +70,7 @@ impl crate::Archive {
     /// Prepare bytes an input's source rewrites whole as content-defined
     /// chunks (the shared chunker's default sizes), so a revision that changes
     /// one place stores only the chunks around it: the segment writer skips
-    /// chunks the archive holds, and Sinex skips chunks it holds. Every chunk
+    /// chunks the archive holds. Every chunk
     /// is prepared, held or not, so the bytes never depend on a chunk that is
     /// removed before they are stored. Bytes that are one chunk are one blob.
     pub fn prepare_chunked(
@@ -118,8 +115,7 @@ impl crate::Archive {
         Ok((prepared, facts))
     }
 
-    /// The same prepared encoding serves standalone storage and the primary
-    /// producer.
+    /// Encodes bytes for the writer to append.
     pub fn prepare_bytes(&self, mut reader: impl std::io::Read) -> Result<PreparedBytes> {
         self.prepare_write(|output| {
             std::io::copy(&mut reader, output)?;

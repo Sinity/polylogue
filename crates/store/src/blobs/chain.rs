@@ -21,9 +21,8 @@ pub struct StoredChain {
     single: Option<BlobHash>,
 }
 
-/// Where chains' extents are stored: archive.db (`extent`, `blob`) or, in
-/// primary mode, the index's copy of Sinex's records (`source_extent`,
-/// `source_blob`).
+/// Where chains' extents are stored: archive.db (`extent`, `blob`), or the
+/// same tables seen through an index connection's views (`source_`).
 #[derive(Debug, Clone)]
 pub struct ChainSource {
     pub path: PathBuf,
@@ -32,16 +31,9 @@ pub struct ChainSource {
 
 impl ChainSource {
     pub fn of(archive: &crate::Archive) -> Self {
-        if archive.is_primary() {
-            Self {
-                path: archive.index_db(),
-                table_prefix: "source_",
-            }
-        } else {
-            Self {
-                path: archive.archive_db(),
-                table_prefix: "",
-            }
+        Self {
+            path: archive.archive_db(),
+            table_prefix: "",
         }
     }
 }

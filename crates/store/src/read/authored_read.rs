@@ -146,8 +146,7 @@ impl Reader<'_> {
             let Some(request) = self.user_request(&id)? else {
                 continue;
             };
-            let Some(prepared) = crate::primary::authored::stored_request(conn, &request.id)?
-            else {
+            let Some(prepared) = crate::authored_records::stored_request(conn, &request.id)? else {
                 continue;
             };
             if target.matches(&prepared) {
@@ -205,7 +204,7 @@ impl Reader<'_> {
         }
         let selected = Reference::Request(id.into());
         let reference = selected.to_string();
-        let Some(prepared) = crate::primary::authored::stored_request(conn, id)? else {
+        let Some(prepared) = crate::authored_records::stored_request(conn, id)? else {
             return Ok(Some(AuthoredRead::Incomplete {
                 issue: AuthoredReadIssue::MissingContent,
             }));
@@ -315,7 +314,7 @@ fn prepare_membership(conn: &Connection, check: &mut dyn FnMut() -> Result<()>) 
     }
     conn.execute("DELETE FROM temp.authored_effect_request", [])?;
     let mut insert=conn.prepare_cached("INSERT OR IGNORE INTO temp.authored_effect_request(kind,id,member,request) VALUES(?1,?2,?3,?4)")?;
-    crate::primary::authored::visit(conn, &mut |prepared| {
+    crate::authored_records::visit(conn, &mut |prepared| {
         index_effect(&mut insert, &prepared.request.id, &prepared.effect, check)
     })?;
     check()?;

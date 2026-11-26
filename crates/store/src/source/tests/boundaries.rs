@@ -1,6 +1,6 @@
 use super::super::*;
+use crate::capture_read::SourceStatus;
 use crate::input_rows::{Extent, InputRows, ObservationRow, Revision};
-use crate::primary::SourceStatus;
 
 // These rows model source commits; byte comparison belongs to the sampler.
 fn append(conn: &Connection, input: &str, id: &str, seq: i64, from: i64, end: i64) {
@@ -57,54 +57,6 @@ fn append(conn: &Connection, input: &str, id: &str, seq: i64, from: i64, end: i6
 }
 
 #[test]
-fn pre_io_boundary_excludes_later_commits() {
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = crate::Archive::open_or_create(&dir.path().join("archive")).unwrap();
-    let conn = Connection::open(archive.archive_db()).unwrap();
-    let pool = crate::ReadPool::open(&archive).unwrap();
-    let empty = pool.reader().unwrap().source_boundary().unwrap().unwrap();
-    append(&conn, "native", "first", 1, 0, 4);
-    let boundary = pool.reader().unwrap().source_boundary().unwrap().unwrap();
-    append(&conn, "unrelated", "other", 2, 0, 4);
-    {
-        let reader = pool.reader().unwrap();
-        assert!(
-            reader
-                .source_subject_at(&empty, "native")
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            reader
-                .source_subject_at(&boundary, "native")
-                .unwrap()
-                .unwrap()
-                .observation,
-            "first"
-        );
-    }
-    append(&conn, "native", "later", 3, 4, 8);
-    {
-        let reader = pool.reader().unwrap();
-        assert_eq!(
-            reader
-                .source_subject_at(&boundary, "native")
-                .unwrap()
-                .unwrap()
-                .observation,
-            "first"
-        );
-    }
-    archive.advance_generation_for_test().unwrap();
-    assert!(matches!(
-        pool.reader()
-            .unwrap()
-            .source_subject_at(&boundary, "native"),
-        Err(crate::StoreError::ScopeChanged)
-    ));
-}
-
-#[test]
 fn source_rows_without_a_commit_position_stay_unknown() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = crate::Archive::open_or_create(&dir.path().join("archive")).unwrap();
@@ -114,9 +66,8 @@ fn source_rows_without_a_commit_position_stay_unknown() {
         .unwrap();
     let pool = crate::ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
-    assert!(reader.source_boundary().unwrap().is_none());
     let (status, observation) = reader
-        .source_observation(&crate::primary::SourceSelector {
+        .source_observation(&crate::capture_read::SourceSelector {
             origin: "synthetic".into(),
             machine: "machine".into(),
             path_bytes: b"native".to_vec(),

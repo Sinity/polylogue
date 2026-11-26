@@ -4,7 +4,7 @@ use std::sync::mpsc;
 
 /// The thread that hands out parse work prepares each file read and decides
 /// plans from the file's source state. With the writer stopped in the middle
-/// of a write, both still come, and the state equals the writer's own answer
+/// of a write, both still come, and the state equals what a read answers
 /// once the write is done.
 #[test]
 fn sampling_a_source_does_not_wait_for_a_busy_writer() {
@@ -39,7 +39,11 @@ fn sampling_a_source_does_not_wait_for_a_busy_writer() {
         }
         timed_out
     });
-    let context = engine.sampling_context(&path, "claude-code").unwrap();
+    let context = engine.source_read_context(
+        &path,
+        "claude-code",
+        polylogue_store::capture_read::ReadRoute::NativeCapture,
+    );
     let state = engine.source_snapshot(context.source.clone()).unwrap();
     let still_held = fault::held();
     // The guard is gone once it has released the writer.
@@ -53,14 +57,11 @@ fn sampling_a_source_does_not_wait_for_a_busy_writer() {
         "the source state was answered only after the writer finished"
     );
 
-    let written = engine
-        .writer
-        .source_snapshot(context.source.clone())
-        .unwrap();
+    let written = engine.source_snapshot(context.source.clone()).unwrap();
     assert_eq!(state, written);
     assert_eq!(
-        state.base.status,
-        polylogue_store::primary::SourceStatus::Ready
+        state.status,
+        polylogue_store::capture_read::SourceStatus::Ready
     );
-    assert!(state.base.confirmed.is_some(), "{state:?}");
+    assert!(state.confirmed.is_some(), "{state:?}");
 }

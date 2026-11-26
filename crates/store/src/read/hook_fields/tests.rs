@@ -58,15 +58,15 @@ fn capture(
     batch.parse[0].parsed_upto = batch.length;
     // Even a kept capture-read record of the harness file cannot authenticate
     // who sent the field.
-    batch.capture_read = Some(crate::primary::CaptureRead {
-        version: crate::primary::CaptureRead::VERSION,
-        route: crate::primary::ReadRoute::NativeCapture,
-        source: crate::primary::SourceSelector {
+    batch.capture_read = Some(crate::capture_read::CaptureRead {
+        version: crate::capture_read::CaptureRead::VERSION,
+        route: crate::capture_read::ReadRoute::NativeCapture,
+        source: crate::capture_read::SourceSelector {
             origin: "claude-code".into(),
             machine: "m".into(),
             path_bytes: b"/p/hook.jsonl".to_vec(),
         },
-        range: crate::primary::RawRange {
+        range: crate::capture_read::RawRange {
             start: 0,
             end: batch.length,
         },

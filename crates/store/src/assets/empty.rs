@@ -1,7 +1,7 @@
 //! Empty members are backed by a receiving observation and encoded body.
 use super::*;
 use crate::OptionExt as _;
-use crate::primary::{CaptureRead, RawRange, ReadRoute};
+use crate::capture_read::{CaptureRead, RawRange, ReadRoute};
 use polylogue_model::BlobHash;
 
 pub(crate) fn source(

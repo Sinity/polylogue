@@ -143,7 +143,6 @@ impl Engine {
                     None,
                 );
                 let batch = polylogue_store::Batch {
-                    required_outcome: None,
                     input: InputKey {
                         id,
                         format: origin.name.into(),
@@ -164,7 +163,6 @@ impl Engine {
                         origin.parse_version(),
                     )],
                     capture_read: None,
-                    base: None,
                     release: Default::default(),
                 };
                 self.writer
@@ -189,7 +187,11 @@ impl Engine {
     ) -> Result<Option<String>, EngineError> {
         let origin =
             polylogue_sources::origin::by_name("codex-local-file").expect("declared origin");
-        let context = self.sampling_context(path, origin.name)?;
+        let context = self.source_read_context(
+            path,
+            origin.name,
+            polylogue_store::capture_read::ReadRoute::NativeCapture,
+        );
         // A FIFO can block during open, before metadata can reject it. Check
         // the opened descriptor so replacing the path cannot bypass the check.
         let mut file = match std::fs::OpenOptions::new()
@@ -226,14 +228,13 @@ impl Engine {
         let exists = self.reads.reader()?.input_progress(&id)?.is_some();
         let observation = self.observation(path, Some(facts));
         let source_read = context.finish(
-            polylogue_store::primary::RawRange {
+            polylogue_store::capture_read::RawRange {
                 start: 0,
                 end: prepared.len(),
             },
             prepared.hash(),
         );
         let batch = polylogue_store::Batch {
-            required_outcome: None,
             input: InputKey {
                 id: id.clone(),
                 format: origin.name.into(),
@@ -251,7 +252,6 @@ impl Engine {
             length: prepared.len(),
             parse: Vec::new(),
             capture_read: Some(source_read),
-            base: context.base,
             release: Default::default(),
         };
         if !exists {

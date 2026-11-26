@@ -134,9 +134,7 @@ async fn drive(
     }
     let (requests, receiver) = mpsc::unbounded_channel();
     let (updates, mut returned) = mpsc::unbounded_channel();
-    let worker = if d.archive.is_primary() {
-        None
-    } else {
+    let worker = {
         let restored = loop {
             let restored = (|| -> polylogue_store::Result<NotificationState> {
                 let state = load(d)?.and_then(|c| c.notifications).unwrap_or_default();

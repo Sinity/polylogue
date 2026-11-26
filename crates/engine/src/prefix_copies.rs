@@ -176,10 +176,8 @@ impl ChainComparison<'_> {
 
 /// Whether a plan's parse can stop for copies: a parser reading ranges in
 /// order (lines or capture frames) over the stored bytes of a known chain.
-fn copies_from(engine: &Engine, plan: &Plan) -> Option<i64> {
-    if engine.archive.is_primary()
-        || plan.replace
-        || plan.byte_read.is_some()
+fn copies_from(plan: &Plan) -> Option<i64> {
+    if plan.replace
         || plan.storing_only
         || !crate::has_reading(plan.origin)
         || plan.origin.is_row_dump(&plan.path)
@@ -204,7 +202,7 @@ impl Engine {
     /// as its parse passes their stops.
     pub(crate) fn plan_prefix_copies(&self, plan: &mut Plan) -> Result<(), EngineError> {
         plan.prefix_copies = None;
-        let Some(chain) = copies_from(self, plan) else {
+        let Some(chain) = copies_from(plan) else {
             return Ok(());
         };
         let Some(layouts) = self.reads.reader()?.chain_layouts(&plan.input.id)? else {

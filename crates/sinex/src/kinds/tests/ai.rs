@@ -185,7 +185,7 @@ fn session_identity_and_time_accuracy_are_declared() {
 
 #[test]
 fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context() {
-    use polylogue_store::primary::{ProductWrite, SourceLocation};
+    use crate::products::{ProductWrite, SourceLocation};
     let mut output = polylogue_model::Output::default();
     output.messages.push(serde_json::from_value(json!({
         "offset":50,"end":150,
@@ -202,8 +202,7 @@ fn tool_facts_keep_original_coordinates_and_only_their_sessions_observed_context
     step.parse_version = "reader-3".into();
     step.prepare();
     let input = reading("input-a", 0).input;
-    let mut products =
-        polylogue_store::primary::products::parse(&input, 1, Some(150), &step).unwrap();
+    let mut products = crate::products::parse(&input, 1, Some(150), &step).unwrap();
     let context = |session, process, window| {
         Product::Event {
         id: format!("context-{process}"),

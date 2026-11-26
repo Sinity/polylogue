@@ -10,7 +10,7 @@ pub(super) struct DatabaseInput {
     pub path: PathBuf,
     pub input: InputKey,
     pub observation: Observation,
-    pub source_read: crate::source_read::SourceReadContext,
+    pub source_read: crate::capture_read::SourceReadContext,
 }
 #[derive(Default)]
 pub(super) struct Completed {
@@ -19,7 +19,6 @@ pub(super) struct Completed {
     pub changed: bool,
     pub inputs_seen: u64,
     pub bytes_stored: u64,
-    pub primary_pending: bool,
 }
 struct Worker {
     thread: JoinHandle<()>,
@@ -147,7 +146,7 @@ impl Databases {
             }
             for (source, mut queue) in pending {
                 match queue.finish() {
-                    Ok(pending) => completed.primary_pending |= pending,
+                    Ok(()) => {}
                     Err(error) => {
                         reader.forget(&source.path);
                         completed.changed = true;
@@ -286,7 +285,7 @@ impl<'a> InputWriter<'a> {
         };
         let source_read = new_blob.as_ref().map(|blob| {
             self.source.source_read.finish(
-                polylogue_store::primary::RawRange {
+                polylogue_store::capture_read::RawRange {
                     start: self.length - size,
                     end: self.length,
                 },
@@ -294,7 +293,6 @@ impl<'a> InputWriter<'a> {
             )
         });
         let batch = Batch {
-            required_outcome: None,
             input: self.source.input.clone(),
             change: if !self.exists {
                 Change::First
@@ -312,7 +310,6 @@ impl<'a> InputWriter<'a> {
             length: self.length,
             parse: vec![],
             capture_read: source_read,
-            base: self.source.source_read.base.clone(),
             release: Default::default(),
         };
         self.exists = true;
@@ -324,7 +321,7 @@ impl<'a> InputWriter<'a> {
     }
     fn enqueue_staged(
         &mut self,
-        snapshot: Option<polylogue_store::primary::DatabaseSnapshotToken>,
+        snapshot: Option<polylogue_store::capture_read::DatabaseSnapshotToken>,
     ) -> Result<(), DatabaseError> {
         if self.staged.is_empty() {
             return Ok(());
@@ -339,18 +336,18 @@ impl<'a> InputWriter<'a> {
                 .map(|source_read| source_read.range.start)
         });
         if let Some(start) = start {
-            let window = polylogue_store::primary::RawRange {
+            let window = polylogue_store::capture_read::RawRange {
                 start,
                 end: self.length,
             };
             for part in &mut self.staged {
                 if let Some(source_read) = &mut part.batch.capture_read {
                     source_read.generation =
-                        Some(polylogue_store::primary::ObservedState::Database {
-                            stream: polylogue_store::primary::RawStream {
+                        Some(polylogue_store::capture_read::ObservedState::Database {
+                            stream: polylogue_store::capture_read::RawStream {
                                 source: source_read.source.clone(),
                                 input: part.batch.input.clone(),
-                                role: polylogue_store::primary::RawStreamRole::DatabaseDump,
+                                role: polylogue_store::capture_read::RawStreamRole::DatabaseDump,
                                 namespace: None,
                             },
                             snapshot: snapshot.clone(),
@@ -358,34 +355,25 @@ impl<'a> InputWriter<'a> {
                         });
                     source_read.raw_total =
                         (source_read.range.end == window.end).then_some(window.end);
-                    // Sibling body addresses are assigned when the group is
-                    // spooled as one unit; no operation ID is inferred from its ordinal,
-                    // so no predecessor is set.
                 }
             }
         }
-        // The read transaction has completed successfully before one SDK group
-        // can accept any of its members. The base read before IO is unchanged.
+        // The read transaction has completed before the group is written.
         self.acknowledgment = Some(
             self.writer
                 .enqueue_group(std::mem::take(&mut self.staged), Arc::clone(&self.blobs))?,
         );
         Ok(())
     }
-    fn finish(&mut self) -> Result<bool, DatabaseError> {
+    fn finish(&mut self) -> Result<(), DatabaseError> {
         let Some(ack) = self.acknowledgment.take() else {
-            return Ok(false);
+            return Ok(());
         };
         let results = ack
             .recv()
             .map_err(|_| polylogue_store::StoreError::WriterGone)?;
-        let mut pending = false;
         for result in results {
-            match result {
-                Ok(_) => {}
-                Err(polylogue_store::StoreError::PrimaryPending { .. }) => pending = true,
-                Err(error) => return Err(error.into()),
-            }
+            result?;
         }
         self.captured
             .fetch_add(self.bytes, std::sync::atomic::Ordering::Relaxed);
@@ -394,7 +382,7 @@ impl<'a> InputWriter<'a> {
         {
             let _ = wake.send(LoopMsg::Changed);
         }
-        Ok(pending)
+        Ok(())
     }
 }
 
@@ -434,26 +422,9 @@ impl Engine {
         for f in found.iter().filter(|f| f.origin.is_row_dump(&f.path)) {
             new_database |= self.databases.insert(f.path.clone(), f.origin).is_none();
         }
-        if self.archive.is_primary() {
-            // The database worker can finish before Sinex confirms its spooled
-            // read. Keep those spooled bytes visible on later
-            // turns, even when unchanged file facts need no new worker.
-            for (path, origin) in &self.databases {
-                let source = self
-                    .source_read_context(
-                        path,
-                        origin.name,
-                        polylogue_store::primary::ReadRoute::NativeCapture,
-                    )
-                    .source;
-                let snapshot = self.source_snapshot(source)?;
-                pass.capture_pending |= snapshot.pending.head.is_some();
-            }
-        }
         let completed = self.captures.completed(false);
         pass.inputs_seen += completed.inputs_seen;
         pass.bytes_stored += completed.bytes_stored;
-        pass.capture_pending |= completed.primary_pending;
         pass.errors.extend(completed.errors);
         if completed.finished && self.capture_checked.is_some() {
             self.capture_checked = Some(Instant::now());
@@ -485,7 +456,11 @@ impl Engine {
                 .collect();
             let mut databases = Vec::with_capacity(sources.len());
             for (path, origin) in sources {
-                let source_read = self.sampling_context(&path, origin.name)?;
+                let source_read = self.source_read_context(
+                    &path,
+                    origin.name,
+                    polylogue_store::capture_read::ReadRoute::NativeCapture,
+                );
                 databases.push(databases::DatabaseInput {
                     input: InputKey {
                         id: self.database_input_id(&path, origin),

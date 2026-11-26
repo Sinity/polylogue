@@ -20,7 +20,7 @@ impl WriterSender {
 /// is a conflict.
 fn stored(conn: &Connection, restoration: &Restoration) -> Result<bool> {
     let Some(known) =
-        crate::primary::authored::stored_request(conn, &restoration.prepared.request.id)?
+        crate::authored_records::stored_request(conn, &restoration.prepared.request.id)?
     else {
         return Ok(false);
     };
@@ -48,25 +48,6 @@ impl Inner {
     }
 
     pub(super) fn restore_authored(&mut self, restoration: Restoration) -> Result<UserOutcome> {
-        if let Some(sinex) = self.sinex.as_ref().map(Arc::clone) {
-            self.primary_cache_ready()?;
-            let mut outcome = restoration.prepared.outcome.clone();
-            if stored(&self.index, &restoration)? {
-                outcome.repeat = true;
-                return Ok(outcome);
-            }
-            let product = crate::primary::Product::RestoredRequest {
-                prepared: restoration.prepared.clone(),
-            };
-            let writes = self.product_writes(vec![product])?;
-            let identity = format!(
-                "authored-restore:{}",
-                blake3::hash(&serde_json::to_vec(&restoration.prepared)?).to_hex()
-            );
-            sinex.prepare_named_products(&identity, &writes)?;
-            outcome.pending = true;
-            return Ok(outcome);
-        }
         if stored(&self.archive, &restoration)? {
             self.project_alternate_text()?;
             let mut outcome = restoration.prepared.outcome;
@@ -75,7 +56,7 @@ impl Inner {
         }
         let tx = self.archive.transaction()?;
         let counter = bump_counter(&tx)?;
-        let outcome = crate::primary::authored::restore(&tx, &restoration.prepared, counter)?;
+        let outcome = crate::authored_records::restore(&tx, &restoration.prepared, counter)?;
         crate::write_lock::commit(tx)?;
         self.commits
             .committed(crate::completion::Committed::AUTHORED);

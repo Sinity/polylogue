@@ -248,6 +248,6 @@ fn rename_schema_field(schema: &mut serde_json::Value, from: &str, to: &str) {
 #[derive(Serialize, JsonSchema)]
 pub(super) struct ToolFields<'a> {
     #[serde(flatten)]
-    pub call: &'a polylogue_store::primary::products::ToolCall,
+    pub call: &'a super::ToolCall,
     pub context: crate::attribution::Facts,
 }

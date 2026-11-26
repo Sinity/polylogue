@@ -1,11 +1,9 @@
-//! Source rows have one schema, in the standalone archive or the primary cache.
+//! Source rows have one schema, read through views over the attached archive.
 use crate::ConnExt as _;
 use crate::OptionExt as _;
 use crate::{Result, StoreError};
 use rusqlite::{Connection, OptionalExtension};
 use std::sync::OnceLock;
-mod boundary;
-pub use boundary::SourceBoundary;
 mod confirmed;
 
 /// The link made by the native SQLite decoder after storing its row stream.
@@ -124,48 +122,44 @@ pub(crate) fn from_archive(archive: &str) -> Result<SourceSchema> {
     Ok(SourceSchema { ddl, views })
 }
 
-/// Read SQL uses these logical names in both modes. Primary tables live in main.
+/// Read SQL uses these logical names: views over the attached archive.
 pub(crate) fn views(conn: &Connection) -> Result<()> {
     conn.execute_batch(&schema()?.views)?;
     Ok(())
 }
 
-/// The source state a capture read samples before provider I/O: the confirmed
-/// observation at `source`, the boundary it was read at, and the capture held
-/// in the spool (`pending`, which only primary mode's writer has).
+/// The source state a capture read samples before provider I/O: the stored
+/// observation at `source`. Rows with no commit position leave it unknown.
 pub(crate) fn snapshot(
-    index: &Connection,
     conn: &Connection,
-    archive: &crate::Archive,
-    source: crate::primary::SourceSelector,
-    pending: crate::primary::PendingSource,
-) -> Result<crate::primary::SourceSnapshot> {
-    use crate::primary::SourceStatus;
-    let (mut status, confirmed) = Source::confirmed_source(conn, &source)?;
-    let boundary = SourceBoundary::read(index, conn, archive)?;
-    if boundary.is_none() && status == SourceStatus::Ready {
+    source: &crate::capture_read::SourceSelector,
+) -> Result<crate::capture_read::SourceSnapshot> {
+    use crate::capture_read::SourceStatus;
+    let (mut status, confirmed) = Source::confirmed_source(conn, source)?;
+    if commit_position(conn)?.is_none() && status == SourceStatus::Ready {
         status = SourceStatus::MissingEvidence;
     }
-    status = match (status, pending.status) {
-        (SourceStatus::Ambiguous, _) | (_, SourceStatus::Ambiguous) => SourceStatus::Ambiguous,
-        (SourceStatus::MissingEvidence, _) | (_, SourceStatus::MissingEvidence) => {
-            SourceStatus::MissingEvidence
-        }
-        _ => SourceStatus::Ready,
-    };
-    let base = crate::primary::SourceBase {
-        boundary,
-        resolved: None,
-        source,
-        status,
-        confirmed: confirmed.as_ref().map(|value| value.observation.id.clone()),
-        pending: pending.head.as_ref().map(|value| value.identity.clone()),
-    };
-    Ok(crate::primary::SourceSnapshot {
-        base,
-        confirmed,
-        pending,
-    })
+    Ok(crate::capture_read::SourceSnapshot { status, confirmed })
+}
+
+/// The archive's commit position: its write counter, or 0 when it holds no
+/// input yet; none when rows hold no position.
+fn commit_position(conn: &Connection) -> Result<Option<u64>> {
+    let source = Source::reading(conn)?;
+    let position: Option<String> = conn.scalar_optional(
+        &source.sql("SELECT value FROM @source.meta WHERE key='write_counter'"),
+        [],
+    )?;
+    if let Some(position) = position {
+        return position.parse::<u64>().map(Some).map_err(|_| {
+            StoreError::stored_data("source commit position is not a nonnegative integer")
+        });
+    }
+    let empty: bool = conn.scalar(
+        &source.sql("SELECT NOT EXISTS(SELECT 1 FROM @source.input)"),
+        [],
+    )?;
+    Ok(empty.then_some(0))
 }
 
 /// Explicit source markers distinguish table names from identically named columns.

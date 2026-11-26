@@ -77,8 +77,8 @@ impl Reader<'_> {
                 None => return Err(StoreError::NotFound(reference.to_string())),
             },
             Reference::Run(id) => {
-                let run = self.query_run(id, None)?;
-                let outcome = self.query_run_outcome(id, None)?;
+                let run = self.query_run(id)?;
+                let outcome = self.query_run_outcome(id)?;
                 if outcome.as_ref().is_some_and(|outcome| &outcome.run != id) {
                     return Err(StoreError::stored_data(
                         "stored run completion names another run",

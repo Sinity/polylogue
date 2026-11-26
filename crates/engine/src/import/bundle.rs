@@ -36,7 +36,7 @@ fn stage_record(
         if authored.prepared.outcome.pending {
             return Err("a bundle cannot contain an unconfirmed authored outcome".into());
         }
-        polylogue_store::primary::authored::validate(&authored.prepared)
+        polylogue_store::authored_records::validate(&authored.prepared)
             .map_err(|error| error.to_string())?;
     }
     let Some(reference) = record.reference() else {

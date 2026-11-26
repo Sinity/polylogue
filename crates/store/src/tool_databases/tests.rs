@@ -76,7 +76,6 @@ impl Test {
                     (Some(blob), file.into_iter().collect())
                 };
                 let batch = Batch {
-                    required_outcome: None,
                     input: input.clone(),
                     change: if first {
                         Change::First
@@ -94,7 +93,6 @@ impl Test {
                     length,
                     parse: vec![parse],
                     capture_read: None,
-                    base: None,
                     release: Default::default(),
                 };
                 for done in writer.store_group(

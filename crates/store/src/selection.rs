@@ -203,7 +203,6 @@ impl Reader<'_> {
             &options.bindings(),
             options.self_session.as_deref(),
             None,
-            None,
         );
         self.conn()?;
         plan
@@ -367,9 +366,6 @@ impl Reader<'_> {
             ),
             ("definitions".into(), plan.question_id().to_string()),
         ]);
-        if let Some(scope) = self.query_scope_fingerprint()? {
-            versions.insert("scope".into(), scope);
-        }
         if program.near.is_some() {
             versions.insert("ranking".into(), crate::vectors::writes().to_string());
         }
@@ -815,7 +811,7 @@ impl Reader<'_> {
         origins: &[String],
     ) -> Result<polylogue_query::Bindings, SelectionError> {
         let conn = self.conn()?;
-        let values = prepare::named_definitions(conn, conn, text, origins, None, None);
+        let values = prepare::named_definitions(conn, conn, text, origins, None);
         self.conn()?;
         values
     }

@@ -495,7 +495,7 @@ fn source_range_binds_opened_file_and_rejects_swaps() {
     let (bytes, observed) = read_source_range(&path, 0, facts.size, Some(facts), None).unwrap();
     assert_eq!(bytes, b"original body");
     {
-        use polylogue_store::primary::{FileSnapshot, FileTime};
+        use polylogue_store::capture_read::{FileSnapshot, FileTime};
         use std::os::unix::fs::MetadataExt;
         assert_eq!(
             observed,
@@ -593,7 +593,7 @@ fn new_empty_file_has_body_and_eof_without_progress() {
     home.append("empty.jsonl", "");
     let path = home.home.join(".claude/projects/-proj/empty.jsonl");
     let facts = polylogue_store::FileFacts::of(&std::fs::metadata(&path).unwrap());
-    let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
+    let (engine, _lock) = crate::import::tests::engine(&home, 64);
     let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
     let input = polylogue_store::InputKey {
         id: "empty-native".into(),
@@ -620,7 +620,11 @@ fn new_empty_file_has_body_and_eof_without_progress() {
     );
     let mut job = plan.next_job(&polylogue_testkit::stopped_attempt());
     assert_eq!(job.store_from, Some(0));
-    let mut context = engine.sampling_context(&path, origin.name).unwrap();
+    let mut context = engine.source_read_context(
+        &path,
+        origin.name,
+        polylogue_store::capture_read::ReadRoute::NativeCapture,
+    );
     context.facts = Some(facts);
     job.source_read = Some(context);
     let (prepared, done) = crate::pool::run(job, &engine.archive, &engine.blobs, true, None);
@@ -631,11 +635,11 @@ fn new_empty_file_has_body_and_eof_without_progress() {
     let source_read = prepared.batch.capture_read.as_ref().unwrap();
     assert_eq!(
         source_read.range,
-        polylogue_store::primary::RawRange { start: 0, end: 0 }
+        polylogue_store::capture_read::RawRange { start: 0, end: 0 }
     );
     assert_eq!(source_read.raw_total, Some(0));
     assert!(
-        matches!(&source_read.generation, Some(polylogue_store::primary::ObservedState::File { observed, .. }) if observed.size == 0)
+        matches!(&source_read.generation, Some(polylogue_store::capture_read::ObservedState::File { observed, .. }) if observed.size == 0)
     );
     let results = engine
         .writer

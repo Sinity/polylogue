@@ -498,15 +498,11 @@ fn failed_standalone_open_revokes_the_previous_catalog() {
 }
 
 #[test]
-fn primary_cache_and_blocked_startup_revoke_the_previous_catalog() {
-    for mode in ["primary", "cache", "blocked"] {
+fn blocked_startup_revokes_the_previous_catalog() {
+    {
         let directory = tempfile::tempdir().unwrap();
         let root = directory.path().join("archive");
-        let (archive, lock) = if mode == "blocked" {
-            Archive::open_or_create(&root).unwrap()
-        } else {
-            Archive::open_primary(&root, &root.join("bytes")).unwrap()
-        };
+        let (archive, lock) = Archive::open_or_create(&root).unwrap();
         let pointer = Arc::new(CatalogPointer::new(directory.path().join("catalog")));
         let writer = build(&pointer, "generation", "cached");
         pointer
@@ -517,14 +513,8 @@ fn primary_cache_and_blocked_startup_revoke_the_previous_catalog() {
         drop(archive);
         let invalidator = Arc::clone(&pointer);
         let invalidate = move || invalidator.invalidate();
-        let opened = match mode {
-            "primary" => {
-                Archive::open_primary_with_invalidator(&root, &root.join("bytes"), invalidate)
-            }
-            "cache" => Archive::open_primary_cache_with_invalidator(&root, invalidate),
-            _ => Archive::open_blocked_with_invalidator(&root, invalidate),
-        };
-        assert!(opened.is_ok(), "{mode}");
-        assert!(!pointer.path.exists(), "{mode}");
+        let opened = Archive::open_blocked_with_invalidator(&root, invalidate);
+        assert!(opened.is_ok());
+        assert!(!pointer.path.exists());
     }
 }

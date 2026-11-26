@@ -2,7 +2,6 @@
 //! Provisional objects provide syntax only; final acceptance requires the stored object.
 use super::*;
 use crate::{
-    primary::Sinex,
     selection::{Plan, ProvisionalQueries, SelectionError},
     user_writes::{Preparation, PreparationContext},
 };
@@ -15,7 +14,6 @@ pub(crate) struct SavedPreparation<'a> {
     authored: &'a Connection,
     request: &'a UserRequest,
     context: Option<&'a PreparationContext>,
-    pending: Option<&'a dyn Sinex>,
     provisional: Option<&'a mut ProvisionalQueries>,
 }
 impl<'a> SavedPreparation<'a> {
@@ -30,7 +28,6 @@ impl<'a> SavedPreparation<'a> {
             authored,
             request,
             context: preparation.context,
-            pending: preparation.pending,
             provisional: preparation.provisional,
         }
     }
@@ -60,7 +57,6 @@ impl<'a> SavedPreparation<'a> {
             text,
             context.bindings(),
             session.as_deref(),
-            self.pending,
             self.provisional.as_deref(),
         )
         .map_err(SelectionError::into_store_error)?;
@@ -72,7 +68,6 @@ impl<'a> SavedPreparation<'a> {
             self.original,
             Source::reading(self.original)?,
             &hash.to_string(),
-            self.pending,
         )? {
             return Ok(found);
         }

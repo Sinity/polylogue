@@ -8,8 +8,6 @@ pub struct ChainParse {
     path: tempfile::TempPath,
     first: bool,
     decoded: Vec<crate::staging::PreparedBatch>,
-    /// In primary mode, its parsed events are in the producer spool.
-    spooled: bool,
 }
 
 impl ChainParse {
@@ -20,7 +18,6 @@ impl ChainParse {
             path,
             first: true,
             decoded: Vec::new(),
-            spooled: false,
         })
     }
     pub fn push(&mut self, step: &mut ParseStep) -> Result<()> {
@@ -56,10 +53,6 @@ impl ChainParse {
         self.decoded.push(batch);
     }
 
-    pub(super) fn take_decoded(&mut self) -> Vec<crate::staging::PreparedBatch> {
-        std::mem::take(&mut self.decoded)
-    }
-
     /// Complete parse steps are read without resolving local cache keys first.
     pub(crate) fn visit_source(
         &mut self,
@@ -71,11 +64,6 @@ impl ChainParse {
             apply(&step)?;
         }
         Ok(())
-    }
-
-    /// Its parsed events were prepared in the producer spool.
-    pub(super) fn mark_spooled(&mut self) {
-        self.spooled = true;
     }
 
     /// A replacement names a valid chain and holds a reading whose events
@@ -166,14 +154,6 @@ impl Inner {
         length: u64,
         mut reading: ChainParse,
     ) -> Result<u64> {
-        if self.sinex.is_some() {
-            if !reading.spooled {
-                return Err(StoreError::Invalid(
-                    "a primary replacement must spool its parsed events first".into(),
-                ));
-            }
-            return self.replace_index(input, chain, length, reading);
-        }
         let exists: bool = self.archive.exists(
             "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
             params![input.id, chain, length as i64],
@@ -261,7 +241,6 @@ impl Inner {
             ReadingWrite {
                 register: &self.archive,
                 counter,
-                primary: self.sinex.is_some(),
                 changes: &changes,
             },
             &input,
@@ -288,7 +267,6 @@ pub(super) struct ReadingWrite<'a> {
     /// Answers which attachment bytes the archive holds.
     pub register: &'a Connection,
     pub counter: i64,
-    pub primary: bool,
     pub changes: &'a crate::change_summary::ChangeSummary,
 }
 
@@ -328,7 +306,6 @@ impl ChainSteps {
     pub(super) fn new(input: &InputKey, chain: i64, length: u64) -> Self {
         Self {
             batch: Batch {
-                required_outcome: None,
                 input: input.clone(),
                 change: Change::Reparse { chain },
                 observation: None,
@@ -338,7 +315,6 @@ impl ChainSteps {
                 length,
                 parse: Vec::new(),
                 capture_read: None,
-                base: None,
                 release: Default::default(),
             },
             chain,
@@ -389,10 +365,8 @@ impl ChainSteps {
             rows::StepWrite {
                 counter: w.counter,
                 chain: self.chain,
-                source_commit: Some(&source_commit),
+                source_commit: &source_commit,
                 replacement,
-                retraction: false,
-                primary: w.primary,
                 changes: w.changes,
             },
             touched,

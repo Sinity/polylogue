@@ -1,8 +1,6 @@
 use super::*;
-use crate::primary::authored::{apply, prepare, restore};
-use polylogue_model::{
-    Author, Timestamp, authored::PendingAuthored, signal::Event, user::UserWrite,
-};
+use crate::authored_records::{apply, restore};
+use polylogue_model::{Author, Timestamp, signal::Event, user::UserWrite};
 use shared_signals::{Calendar, DeliveryOutcome, DeliveryReceipt, Evaluator};
 
 struct CalendarFixture;
@@ -52,21 +50,22 @@ fn prepare_pending(
     r: &UserRequest,
     pending: &[polylogue_model::authored::PreparedRequest],
 ) -> Result<polylogue_model::authored::PreparedRequest> {
-    prepare(
-        conn,
-        r,
-        None,
-        None,
-        |visit| {
-            for p in pending {
-                visit(&PendingAuthored::Live {
-                    prepared: p.clone(),
-                })?;
-            }
-            Ok(())
-        },
-        |_| Ok(()),
-    )
+    // The request is resolved in a private copy holding the earlier
+    // requests, as a saved query's preflight resolves one.
+    crate::authored_records::with_overlay(conn, |tx| {
+        for p in pending {
+            apply(tx, p, 0)?;
+        }
+        crate::user_writes::apply_resolving(
+            tx,
+            conn,
+            r,
+            1,
+            crate::user_writes::Preparation::plain(None),
+        )?;
+        crate::authored_records::known_request(tx, r)?
+            .ok_or_else(|| crate::StoreError::internal("the request was not recorded"))
+    })
 }
 fn initial() -> Commit {
     Commit {

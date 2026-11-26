@@ -31,7 +31,6 @@ impl DeriveThread {
     pub(super) fn start(
         index_db: std::path::PathBuf,
         queue: WriterQueue,
-        primary_build: Option<Arc<crate::archive::index_build::State>>,
         stopping: crate::cancellation::Cancellation,
         cache_mib: i64,
     ) -> Result<Self> {
@@ -41,7 +40,6 @@ impl DeriveThread {
             index_db,
             cache_mib,
             queue,
-            primary_build,
             stopping: stopping.clone(),
             interrupt: Arc::clone(&interrupt),
             conn: None,
@@ -102,7 +100,6 @@ struct Worker {
     index_db: std::path::PathBuf,
     cache_mib: i64,
     queue: WriterQueue,
-    primary_build: Option<Arc<crate::archive::index_build::State>>,
     stopping: crate::cancellation::Cancellation,
     interrupt: Arc<Mutex<Option<rusqlite::InterruptHandle>>>,
     /// Opened at the first pass: a first build's index has one connection.
@@ -145,20 +142,7 @@ impl Worker {
             // starts after all of them were made.
             let mut waiting = vec![first];
             waiting.extend(requests.try_iter());
-            let result = crate::timing::time(crate::timing::Stage::Derive, || self.pass())
-                .and_then(|derived| {
-                    if self
-                        .primary_build
-                        .as_ref()
-                        .is_some_and(|build| build.building())
-                        && waiting
-                            .iter()
-                            .any(|request| !matches!(request, Waiting::Nobody))
-                    {
-                        self.queue.ask(Msg::FinishPrimaryRebuild)?;
-                    }
-                    Ok(derived)
-                });
+            let result = crate::timing::time(crate::timing::Stage::Derive, || self.pass());
             for waiting in waiting {
                 match waiting {
                     Waiting::Derive(reply) => {

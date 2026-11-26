@@ -813,8 +813,6 @@ fn capture_only(home: &Path, root: &Path) -> polylogue_store::Result<()> {
             parse: Vec::new(),
             release: Default::default(),
             capture_read: None,
-            base: None,
-            required_outcome: None,
         };
         writer.store_bytes(prepared, batch)?;
         inputs += 1;

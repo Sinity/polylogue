@@ -1,7 +1,7 @@
 //! Questions and their executions, shared by the writer and the confirmed stream.
 
 use crate::ConnExt as _;
-use crate::{Reader, Result, StoreError, primary::Product, source::Source};
+use crate::{Reader, Result, StoreError, source::Source};
 use polylogue_model::query_objects::{
     ExecutionBinding, QueryEdge, QueryObject, QueryRun, QueryRunOutcome, RunBinding,
 };
@@ -218,39 +218,6 @@ pub(crate) fn known_object(conn: &Connection, object: &QueryObject) -> Result<bo
     Ok(true)
 }
 
-pub(crate) fn known_run(conn: &Connection, run: &QueryRun) -> Result<bool> {
-    let source = Source::of(conn)?;
-    let integrity: Option<(String, String)> = conn
-        .query_row(
-            &source.sql("SELECT binding_hash,run_hash FROM @source.query_run WHERE id=?1"),
-            [run.id.as_str()],
-            |row| <(_, _)>::try_from(row),
-        )
-        .optional()?;
-    if let Some((action, intent)) = integrity
-        && (run.binding_hash()?.to_string() != action || run.record_hash()?.to_string() != intent)
-    {
-        return Err(StoreError::Conflict(format!("run:{}", run.id)));
-    }
-    let Some(existing) = lookup_run(conn, source, &run.id, None)? else {
-        return Ok(false);
-    };
-    if existing != *run {
-        return Err(StoreError::Conflict(format!("run:{}", run.id)));
-    }
-    Ok(true)
-}
-
-pub(crate) fn known_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) -> Result<bool> {
-    let Some(existing) = stored_run_outcome(conn, Source::of(conn)?, &outcome.run)? else {
-        return Ok(false);
-    };
-    if existing != *outcome {
-        return Err(StoreError::Conflict(format!("run outcome:{}", outcome.run)));
-    }
-    Ok(true)
-}
-
 /// The outcome stored for a run in `source`, checked against its recorded
 /// action and invocation hashes.
 fn stored_run_outcome(
@@ -463,14 +430,6 @@ pub(crate) fn apply_run_outcome(conn: &Connection, outcome: &QueryRunOutcome) ->
     Ok(())
 }
 
-pub(crate) fn clear(conn: &Connection) -> Result<()> {
-    let source = Source::of(conn)?;
-    for table in ["query_run", "query_edge", "query"] {
-        conn.execute(&source.sql(&format!("DELETE FROM @source.{table}")), [])?;
-    }
-    Ok(())
-}
-
 fn prefix(prefix: &str) -> Result<String> {
     if !(8..=64).contains(&prefix.len()) || !prefix.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(polylogue_model::Reason::BadQueryHash {
@@ -485,13 +444,12 @@ pub(crate) fn lookup_run(
     conn: &Connection,
     source: Source,
     id: &polylogue_model::RunId,
-    pending: Option<&dyn crate::primary::Sinex>,
 ) -> Result<Option<QueryRun>> {
     let stored:Option<(Vec<u8>,String,String)>=conn.query_row(
         &source.sql("SELECT run,binding_hash,run_hash FROM @source.query_run WHERE id=?1 AND run IS NOT NULL"),
         [id.as_str()],|row| <(_, _, _)>::try_from(row),
     ).optional()?;
-    let mut found = stored
+    let found = stored
         .map(|(body, action, intent)| -> Result<QueryRun> {
             let value: QueryRun = crate::encoding::unpack_json(&body)?;
             if &value.id != id
@@ -505,36 +463,15 @@ pub(crate) fn lookup_run(
             Ok(value)
         })
         .transpose()?;
-    if let Some(pending) = pending {
-        pending.visit_named_products(
-            &crate::primary::NamedProductSelector::Exact(format!("query-run:{id}")),
-            &mut |product| {
-                if let Product::QueryRun { run } = product
-                    && &run.id == id
-                {
-                    validate_run(run)?;
-                    if let Some(existing) = &found {
-                        if *existing != **run {
-                            return Err(StoreError::Conflict(format!("run:{id}")));
-                        }
-                    } else {
-                        found = Some(*run.clone());
-                    }
-                }
-                Ok(())
-            },
-        )?;
-    }
     Ok(found)
 }
 
-/// One lookup over the index and this host's spooled writes serves readers and
+/// One lookup over the stored query objects serves readers and
 /// accepting original/scratch preparation. The caller keeps its scope guard.
 pub(crate) fn query_object_on(
     conn: &Connection,
     source: Source,
     key: &str,
-    pending: Option<&dyn crate::primary::Sinex>,
 ) -> Result<Option<QueryObject>> {
     let key = prefix(key)?;
     let mut found = BTreeMap::<String, QueryObject>::new();
@@ -553,30 +490,6 @@ pub(crate) fn query_object_on(
         }
         found.insert(object.id.to_string(), object);
     }
-    if let Some(pending) = pending {
-        let name = format!("query:{key}");
-        let selector = if key.len() == 64 {
-            crate::primary::NamedProductSelector::Exact(name)
-        } else {
-            crate::primary::NamedProductSelector::Prefix(name)
-        };
-        pending.visit_named_products(&selector, &mut |product| {
-            if let Product::Query { object } = product
-                && object.id.to_string().starts_with(&key)
-            {
-                validate_integrity(object)?;
-                let id = object.id.to_string();
-                if let Some(existing) = found.get(&id) {
-                    if !equivalent(existing, object) {
-                        return Err(StoreError::Conflict(format!("query:{id}")));
-                    }
-                } else if found.len() < 2 {
-                    found.insert(id, *object.clone());
-                }
-            }
-            Ok(())
-        })?;
-    }
     if found.len() > 1 {
         return Err(crate::StoreError::Ambiguous {
             reference: format!("query:{key}"),
@@ -587,23 +500,14 @@ pub(crate) fn query_object_on(
 }
 
 impl Reader<'_> {
-    /// A pending primary body is already saved, but Sinex has not accepted it.
-    pub fn query_object(
-        &self,
-        key: &str,
-        pending: Option<&dyn crate::primary::Sinex>,
-    ) -> Result<Option<QueryObject>> {
-        let found = query_object_on(self.conn()?, Source::Cache, key, pending)?;
+    pub fn query_object(&self, key: &str) -> Result<Option<QueryObject>> {
+        let found = query_object_on(self.conn()?, Source::Cache, key)?;
         self.conn()?;
         Ok(found)
     }
 
-    pub fn query_run(
-        &self,
-        id: &polylogue_model::RunId,
-        pending: Option<&dyn crate::primary::Sinex>,
-    ) -> Result<Option<QueryRun>> {
-        let found = lookup_run(self.conn()?, Source::Cache, id, pending)?;
+    pub fn query_run(&self, id: &polylogue_model::RunId) -> Result<Option<QueryRun>> {
+        let found = lookup_run(self.conn()?, Source::Cache, id)?;
         self.conn()?;
         Ok(found)
     }
@@ -611,33 +515,8 @@ impl Reader<'_> {
     pub fn query_run_outcome(
         &self,
         id: &polylogue_model::RunId,
-        pending: Option<&dyn crate::primary::Sinex>,
     ) -> Result<Option<QueryRunOutcome>> {
-        let mut found = stored_run_outcome(self.conn()?, Source::Cache, id)?;
-        if let Some(pending) = pending {
-            // Plain reads hand over a completed run group. Saved-object
-            // executions acknowledge Begin first and finish in a later group.
-            for name in [format!("query-run:{id}"), format!("query-run-outcome:{id}")] {
-                pending.visit_named_products(
-                    &crate::primary::NamedProductSelector::Exact(name),
-                    &mut |product| {
-                        if let Product::QueryRunOutcome { outcome } = product
-                            && &outcome.run == id
-                        {
-                            validate_run_outcome(outcome)?;
-                            if let Some(existing) = &found {
-                                if *existing != **outcome {
-                                    return Err(StoreError::Conflict(format!("run outcome:{id}")));
-                                }
-                            } else {
-                                found = Some(*outcome.clone());
-                            }
-                        }
-                        Ok(())
-                    },
-                )?;
-            }
-        }
+        let found = stored_run_outcome(self.conn()?, Source::Cache, id)?;
         self.conn()?;
         Ok(found)
     }

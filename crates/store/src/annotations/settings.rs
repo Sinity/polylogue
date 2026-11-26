@@ -120,19 +120,6 @@ impl crate::Reader<'_> {
     pub fn setting_current(&self, key: &str, machine: &str) -> Result<settings::Current> {
         let spec = settings::declaration(key).map_err(polylogue_model::Reason::from)?;
         let conn = self.conn()?;
-        let primary = matches!(Source::of(conn)?, Source::Cache);
-        if primary && spec.standalone_only {
-            return Ok(settings::Current {
-                key: key.into(),
-                kind: spec.kind,
-                scope: spec.scope,
-                supplier: "sinex".into(),
-                default: None,
-                value: None,
-                authored: None,
-                conflicts: Vec::new(),
-            });
-        }
         let target =
             settings::target_machine(key, None, machine).map_err(polylogue_model::Reason::from)?;
         let (mut candidates, conflicts) =

@@ -19,14 +19,6 @@ use crate::{ReadPool, Result};
 use rusqlite::{Connection, params};
 use std::path::Path;
 
-/// Create a prior-format synthetic primary index at an unused fixture path.
-/// Original bodies are not decoded by this schema-only constructor.
-pub fn primary_previous_index(path: &Path) -> Result<()> {
-    let conn = crate::schema::primary_previous_index()?;
-    conn.execute("VACUUM INTO ?1", [path.to_string_lossy().as_ref()])?;
-    Ok(())
-}
-
 pub struct Fixture {
     pub archive: Archive,
     _lock: ArchiveLock,
@@ -807,7 +799,7 @@ impl Fixture {
             &original,
             &request,
             self.commit_seq,
-            crate::user_writes::Preparation::plain(None, None),
+            crate::user_writes::Preparation::plain(None),
         )?;
         tx.commit()?;
         Ok(id)
@@ -927,7 +919,7 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
         [archive.archive_db().to_string_lossy().as_ref()],
     )?;
     crate::source::views(&conn)?;
-    crate::chain_progress::install_triggers(&conn, false)?;
+    crate::chain_progress::install_triggers(&conn)?;
     let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
         FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
     conn.execute("UPDATE parse_state SET parse_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;

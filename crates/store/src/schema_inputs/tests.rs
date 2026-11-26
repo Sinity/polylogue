@@ -1,4 +1,4 @@
-use crate::{Archive, ReadPool, fixture::Fixture};
+use crate::fixture::Fixture;
 
 #[test]
 fn exact_revisions_are_distinguishable_and_missing_selection_stays_empty() {
@@ -31,36 +31,6 @@ fn exact_revisions_are_distinguishable_and_missing_selection_stays_empty() {
             .unwrap()
             .is_none()
     );
-}
-
-#[test]
-fn primary_selection_uses_the_typed_store_without_a_standalone_archive() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("primary");
-    let (archive, _lock) = Archive::open_primary(&root, &dir.path().join("sinex")).unwrap();
-    let conn = crate::archive::open_write(&archive.index_db(), 1).unwrap();
-    conn.execute_batch(
-        "INSERT INTO source_input VALUES ('primary-input','claude-code');
-        INSERT INTO source_revision VALUES ('primary-input',1,'first',1,0,1);",
-    )
-    .unwrap();
-    drop(conn);
-    let pool = ReadPool::open(&archive).unwrap();
-    let reader = pool.reader().unwrap();
-    assert_eq!(
-        reader
-            .schema_input("primary-input", None)
-            .unwrap()
-            .unwrap()
-            .revision,
-        1
-    );
-    let page = reader
-        .schema_inputs_page(None, None, None, None, 1)
-        .unwrap();
-    assert_eq!(page.inputs[0].input, "primary-input");
-    assert_eq!(page.unknown_time_inputs, Some(1));
-    assert!(page.next.is_none());
 }
 
 #[test]

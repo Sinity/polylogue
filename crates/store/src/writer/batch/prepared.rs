@@ -296,7 +296,7 @@ impl ParseStep {
 }
 
 impl ParseStep {
-    /// Restores complete domain rows for the primary producer from the worker's codecs.
+    /// Restores complete domain rows from the worker's codecs.
     pub fn complete_output(&self) -> Result<Output> {
         self.prepared.validate(&self.output)?;
         let mut output = self.output.clone();
@@ -322,9 +322,6 @@ impl ParseStep {
     /// An event about its input, not a session, is that input's record: it
     /// has the record's byte range and follows no message.
     pub(crate) fn check_events(&self, input: &str) -> Result<()> {
-        if self.confirmed_event_ids.is_some() {
-            return Ok(());
-        }
         for (index, event) in self.output.events.iter().enumerate() {
             // An identity the source supplies is kept as given.
             if self.output.event_ids.contains_key(&index)
@@ -348,30 +345,10 @@ impl ParseStep {
         Ok(())
     }
 
-    /// Event identities are derived once from the complete reading. Subsets of
-    /// confirmed events and portable imports keep the IDs they were given.
-    pub(crate) fn event_identities(&self, input: &str, chain: i64) -> Result<Vec<String>> {
+    /// Event identities are derived once from the complete reading. Portable
+    /// imports keep the IDs they were given.
+    pub fn event_identities(&self, input: &str, chain: i64) -> Result<Vec<String>> {
         self.prepared.validate(&self.output)?;
-        if let Some(ids) = &self.confirmed_event_ids {
-            if ids.len() != self.output.events.len()
-                || ids.iter().any(String::is_empty)
-                || self
-                    .output
-                    .event_ids
-                    .iter()
-                    .any(|(&index, id)| ids.get(index) != Some(id))
-                || self
-                    .output
-                    .imported_events
-                    .iter()
-                    .any(|(&index, identity)| ids.get(index) != Some(&identity.id))
-            {
-                return Err(StoreError::Invalid(
-                    "confirmed event identities do not match their stored events".into(),
-                ));
-            }
-            return Ok(ids.clone());
-        }
         let mut occurrences = std::collections::BTreeMap::<(u64, u64), u64>::new();
         self.output
             .events

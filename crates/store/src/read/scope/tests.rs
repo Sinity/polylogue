@@ -170,8 +170,8 @@ fn a_preopen_registration_shares_the_later_archive_scope_and_retires_with_its_gu
 #[test]
 fn a_second_starter_cannot_invalidate_the_active_daemons_pointer() {
     let root = tempfile::tempdir().unwrap();
-    for mode in ["standalone", "primary", "cache"] {
-        let path = root.path().join(mode);
+    {
+        let path = root.path().join("standalone");
         let probe = crate::Archive::at(&path);
         let available = Arc::new(AtomicBool::new(true));
         let pointer = Arc::clone(&available);
@@ -184,16 +184,8 @@ fn a_second_starter_cannot_invalidate_the_active_daemons_pointer() {
             pointer.store(false, Ordering::SeqCst);
             Ok(())
         };
-        let (archive, _lock, _registration) = match mode {
-            "standalone" => crate::Archive::open_or_create_with_invalidator(&path, invalidate),
-            "primary" => crate::Archive::open_primary_with_invalidator(
-                &path,
-                &path.join("bytes"),
-                invalidate,
-            ),
-            _ => crate::Archive::open_primary_cache_with_invalidator(&path, invalidate),
-        }
-        .unwrap();
+        let (archive, _lock, _registration) =
+            crate::Archive::open_or_create_with_invalidator(&path, invalidate).unwrap();
         let current = archive.scope_token().unwrap();
         current
             .with_current(|| {
@@ -206,13 +198,7 @@ fn a_second_starter_cannot_invalidate_the_active_daemons_pointer() {
             contender.store(false, Ordering::SeqCst);
             Ok(())
         };
-        let second = match mode {
-            "standalone" => crate::Archive::open_or_create_with_invalidator(&path, attempted),
-            "primary" => {
-                crate::Archive::open_primary_with_invalidator(&path, &path.join("bytes"), attempted)
-            }
-            _ => crate::Archive::open_primary_cache_with_invalidator(&path, attempted),
-        };
+        let second = crate::Archive::open_or_create_with_invalidator(&path, attempted);
         assert!(matches!(second, Err(StoreError::Locked { .. })));
         assert!(available.load(Ordering::SeqCst));
         assert!(current.check().is_ok());

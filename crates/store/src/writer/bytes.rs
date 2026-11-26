@@ -78,22 +78,6 @@ fn input_rows(tx: &Connection, b: &Batch, seq: i64) -> Result<(Option<i64>, Inpu
     input_rows_at(tx, b, seq, latest, &std::collections::BTreeSet::new())
 }
 
-/// Computes producer metadata without changing the confirmed source cache.
-pub(super) fn capture_rows(
-    tx: &Connection,
-    b: &Batch,
-    latest: Option<Revision>,
-    staged: &std::collections::BTreeSet<String>,
-) -> Result<(Option<i64>, InputRows)> {
-    input_rows_at(
-        tx,
-        b,
-        0,
-        latest.map(|r| (r.number, r.chain, r.length, r.produced)),
-        staged,
-    )
-}
-
 fn input_rows_at(
     tx: &Connection,
     b: &Batch,

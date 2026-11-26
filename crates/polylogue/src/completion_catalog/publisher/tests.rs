@@ -30,7 +30,7 @@ fn an_unpublished_old_generation_is_rebuilt_before_the_next_activation() {
             )
         })
         .unwrap();
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     // A build may finish before its activation is rejected by the scope fence.
     state.writer = Some((old.position.generation, writer));
     assert!(state.position.is_none());
@@ -75,7 +75,7 @@ fn publication_uses_the_captured_clock_and_machine_scoped_setting() {
             .unwrap();
     }
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
-    let mut state = State::new(false, requests);
+    let mut state = State::new(requests);
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -135,7 +135,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     // This is a genuine historical annotation whose saved body arrives later.
     let plan = polylogue_query::compile(
         "sessions | group by origin | count",
@@ -200,7 +200,7 @@ fn saved_metadata_follows_committed_families_and_late_query_bodies() {
     assert!(cached.saved("historical").unwrap()[0].schema.is_none());
     drop(cached);
     drop(state);
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     archive.writer.query_object(object.clone(), None).unwrap();
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
@@ -309,7 +309,7 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     let save = |id: &str, name: &str| {
         archive
             .writer
@@ -361,7 +361,7 @@ fn failed_catalog_transaction_retries_the_same_committed_definition_delta() {
     assert_eq!(cache.saved("alpha").unwrap().len(), 1);
     drop(cache);
     drop(state);
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -464,12 +464,12 @@ fn late_kept_result_refreshes_inline_dependency() {
         reads
             .reader()
             .unwrap()
-            .query_object(&child_id.to_string(), None)
+            .query_object(&child_id.to_string())
             .unwrap()
             .is_none()
     );
     let path = directory.path().join("catalog");
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -484,7 +484,7 @@ fn late_kept_result_refreshes_inline_dependency() {
     );
     let before = state.position.clone().unwrap();
     drop(state);
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     writer
         .user(polylogue_store::writer::UserSubmission {
             request: keep(),
@@ -529,7 +529,7 @@ fn a_commit_without_catalog_changes_writes_nothing() {
     let mut archive = WriterArchive::new();
     archive.write("first", prose("first", 1, 100, "The first prompt"));
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -607,7 +607,7 @@ fn historical_drive_intent_is_removed_from_initial_and_incremental_completions()
             .unwrap();
     };
     set("old-off", "off");
-    let mut state = State::new(false, requests.clone());
+    let mut state = State::new(requests.clone());
     {
         let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
         let reader = reads.reader().unwrap();
@@ -682,7 +682,7 @@ fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_c
     }
     archive.write("first", messages);
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -705,7 +705,7 @@ fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_c
         0,
         1,
     );
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -733,7 +733,7 @@ fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_c
     archive.write("second", messages);
     // A restart behind the source uses the committed delta, not another snapshot.
     drop(state);
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -757,7 +757,7 @@ fn reopened_publication_skips_the_source_snapshot_and_keeps_offline_completion_c
     assert_eq!(cache.values("model", "retained").unwrap()[0].count, 3);
     assert_eq!(cache.values("model", "new").unwrap()[0].count, 1);
     // Prove the same armed source-read boundary rejects a real fresh publication.
-    let error = State::new(false, super::super::tests::request_metadata())
+    let error = State::new(super::super::tests::request_metadata())
         .refresh(
             &reads.reader().unwrap(),
             &directory.path().join("fresh"),
@@ -781,7 +781,7 @@ fn damaged_or_missing_catalog_is_rebuilt_for_the_offline_consumer() {
     archive.write("source", messages);
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let refresh = || {
-        State::new(false, super::super::tests::request_metadata())
+        State::new(super::super::tests::request_metadata())
             .refresh(&reads.reader().unwrap(), &path, "synthetic")
             .unwrap();
         let text = "model:source";
@@ -832,14 +832,14 @@ fn reopening_keeps_typed_result_bindings_for_new_saved_definitions() {
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("catalog");
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
     let binding = state.vocabulary.kept["retained-kept"].clone();
     drop(state);
     save("later-definition", Some("later"), "result:retained-kept");
-    let mut state = State::new(false, super::super::tests::request_metadata());
+    let mut state = State::new(super::super::tests::request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -916,7 +916,7 @@ fn full_standalone_restart_retains_publication_and_applies_deltas_without_a_snap
     assert_eq!(current.generation, saved.generation);
     assert!(current.index > saved.index || current.archive > saved.archive);
     // The untouched fault proves the real restarted worker never read all sessions.
-    let error = State::new(false, daemon.daemon.config.requests.clone())
+    let error = State::new(daemon.daemon.config.requests.clone())
         .refresh(
             &daemon.daemon.reads.reader().unwrap(),
             &path.with_file_name("fresh"),

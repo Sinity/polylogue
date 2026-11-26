@@ -124,14 +124,14 @@ fn query_objects_keep_one_body_and_reject_forged_identity() {
     let read = pool
         .reader()
         .unwrap()
-        .query_object(&first.id.to_string()[..8], None)
+        .query_object(&first.id.to_string()[..8])
         .unwrap()
         .unwrap();
     assert_eq!(read, first);
     assert!(
         pool.reader()
             .unwrap()
-            .query_object(&first.id.to_string()[..7], None)
+            .query_object(&first.id.to_string()[..7])
             .is_err()
     );
     let equivalent = question("sessions  where title:focus | limit 5");
@@ -144,7 +144,7 @@ fn query_objects_keep_one_body_and_reject_forged_identity() {
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query_object(&first.id.to_string(), None)
+            .query_object(&first.id.to_string())
             .unwrap()
             .unwrap(),
         first
@@ -168,16 +168,8 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
         .begin_query_run(expected.clone(), None)
         .unwrap();
     let reader = pool.reader().unwrap();
-    assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap(),
-        expected
-    );
-    assert!(
-        reader
-            .query_run_outcome(&expected.id, None)
-            .unwrap()
-            .is_none()
-    );
+    assert_eq!(reader.query_run(&expected.id).unwrap().unwrap(), expected);
+    assert!(reader.query_run_outcome(&expected.id).unwrap().is_none());
     let position = reader.change_position().unwrap();
     drop(reader);
     archive
@@ -200,16 +192,10 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
     assert_eq!(
-        reader
-            .query_run_outcome(&expected.id, None)
-            .unwrap()
-            .unwrap(),
+        reader.query_run_outcome(&expected.id).unwrap().unwrap(),
         completed
     );
-    assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap(),
-        expected
-    );
+    assert_eq!(reader.query_run(&expected.id).unwrap().unwrap(), expected);
     drop(reader);
     let mut contradictory = expected.clone();
     contradictory.id = run_id("contradictory-context");
@@ -303,18 +289,13 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader
-            .query_object(&object.id.to_string(), None)
+            .query_object(&object.id.to_string())
             .unwrap()
             .unwrap(),
         object
     );
-    assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap(),
-        expected
-    );
+    assert_eq!(reader.query_run(&expected.id).unwrap().unwrap(), expected);
 }
-
-mod pending;
 
 #[test]
 fn result_output_schemas_require_the_kept_columns() {
@@ -369,7 +350,7 @@ fn result_output_schemas_require_the_kept_columns() {
     assert_eq!(
         pool.reader()
             .unwrap()
-            .query_object(&genuine.id.to_string(), None)
+            .query_object(&genuine.id.to_string())
             .unwrap()
             .unwrap(),
         genuine
@@ -442,10 +423,7 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
             binding.replay.context.read_positions,
             context.read_positions
         );
-        assert_eq!(
-            binding.replay.scope_fingerprint,
-            reader.query_scope_fingerprint().unwrap()
-        );
+        assert_eq!(binding.replay.scope_fingerprint, None);
         assert_eq!(binding.replay.original_text, text);
         let restored = polylogue_query::plan::replay_binding(&binding.replay).unwrap();
         assert_eq!(restored.question_id(), object.id);
@@ -486,7 +464,7 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
     let stored = pool
         .reader()
         .unwrap()
-        .query_run(&expected.id, None)
+        .query_run(&expected.id)
         .unwrap()
         .unwrap();
     assert_eq!(stored, expected);
@@ -565,7 +543,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
     let stored = pool
         .reader()
         .unwrap()
-        .query_run(&execution.id, None)
+        .query_run(&execution.id)
         .unwrap()
         .unwrap();
     assert_eq!(stored, execution);
@@ -601,7 +579,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
     assert!(
         pool.reader()
             .unwrap()
-            .query_run(&detached.id, None)
+            .query_run(&detached.id)
             .unwrap()
             .is_none()
     );
@@ -656,7 +634,7 @@ fn object_run_has_no_question_and_query_run_cannot_omit_one() {
     let mut invalid = object_run.clone();
     invalid.question = Some(object.id);
     assert!(validate_run(&invalid).is_err());
-    let fetched = lookup_run(&conn, Source::Standalone, &object_run.id, None)
+    let fetched = lookup_run(&conn, Source::Standalone, &object_run.id)
         .unwrap()
         .unwrap();
     assert_eq!(fetched, object_run);
@@ -780,7 +758,7 @@ fn composition_edges_are_read_from_the_stored_source() {
     let mut stored = pool
         .reader()
         .unwrap()
-        .query_object(&object.id.to_string(), None)
+        .query_object(&object.id.to_string())
         .unwrap()
         .unwrap()
         .edges;

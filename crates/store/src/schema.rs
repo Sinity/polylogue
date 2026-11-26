@@ -68,10 +68,6 @@ const NAMED_SETS: &[(&str, &[&str])] = &[
         "QueryEdgeKind",
         polylogue_model::query_objects::QueryEdgeKind::NAMES,
     ),
-    (
-        "ConfirmedState",
-        crate::primary::confirmed::ConfirmedState::NAMES,
-    ),
 ];
 
 /// Schema text with each `@names(Type)` replaced by that type's names.
@@ -101,15 +97,6 @@ pub(crate) fn with_names(sql: &str) -> String {
 /// shown rows. A build file is created without them; the build creates them
 /// once its composition and search entries are written.
 pub(crate) const SEARCH_TRIGGERS: &str = include_str!("schema/search_triggers.sql");
-
-/// Drops the [`SEARCH_TRIGGERS`], for a transaction that clears every shown
-/// row and search entry at once and creates them again after.
-pub(crate) fn drop_search_triggers(conn: &Connection) -> Result<()> {
-    for name in search_trigger_names() {
-        conn.execute_batch(&format!("DROP TRIGGER {name}"))?;
-    }
-    Ok(())
-}
 
 fn search_trigger_names() -> impl Iterator<Item = &'static str> {
     SEARCH_TRIGGERS
@@ -179,16 +166,6 @@ pub const ARCHIVE_VERSION: u32 = 6;
 
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 15;
-/// The primary cache's schema and row encoding version.
-pub const PRIMARY_INDEX_VERSION: u32 = 18;
-
-pub const fn index_version(primary: bool) -> u32 {
-    if primary {
-        PRIMARY_INDEX_VERSION
-    } else {
-        INDEX_VERSION
-    }
-}
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A versioned file without it was written by an
@@ -275,14 +252,8 @@ pub(crate) fn built_at_end_sql() -> Result<Vec<String>> {
 /// Creates the index in an empty database outside a transaction, with its
 /// full-text files attached.
 pub fn create_index(conn: &Connection) -> Result<()> {
-    create_index_in(conn, false, false)?;
+    create_index_in(conn, false)?;
     crate::search::files::attach(conn)
-}
-
-fn add_primary(conn: &Connection) -> Result<()> {
-    conn.execute_batch(&crate::source::schema()?.ddl)?;
-    conn.execute_batch(&crate::primary::confirmed::SCHEMA)?;
-    Ok(())
 }
 
 fn base_index(conn: &Connection) -> Result<()> {
@@ -299,19 +270,12 @@ fn base_index_in(conn: &Connection, deferring: bool) -> Result<()> {
     Ok(())
 }
 
-fn create_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<()> {
+fn create_index_in(conn: &Connection, deferring: bool) -> Result<()> {
     base_index_in(conn, deferring)?;
     crate::search::files::create(conn, deferring)?;
     execute_index_sql(conn, OPEN_INDEXES, deferring)?;
-    if primary {
-        add_primary(conn)?;
-        conn.execute(
-            "INSERT INTO meta(key,value) VALUES ('primary_cache',?1)",
-            [uuid::Uuid::now_v7().to_string()],
-        )?;
-    }
     crate::archive::generation::create(conn)?;
-    set_version(conn, index_version(primary))?;
+    set_version(conn, INDEX_VERSION)?;
     conn.pragma_update(None, "application_id", FORMAT_ID)?;
     Ok(())
 }
@@ -321,33 +285,30 @@ fn create_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<
 /// refused unchanged; the archive's open builds a new one in its place
 /// ([`crate::archive::index_build`]).
 pub fn ensure_index(conn: &Connection) -> Result<()> {
-    ensure_index_in(conn, false, false)
+    ensure_index_in(conn, false)
 }
-/// [`ensure_index`] for a standalone build in progress, which leaves out the
+/// [`ensure_index`] for a build in progress, which leaves out the
 /// indexes it builds when it ends ([`crate::archive::index_build`]).
 pub fn ensure_build_index(conn: &Connection) -> Result<()> {
-    ensure_index_in(conn, false, true)
-}
-pub fn ensure_primary_index(conn: &Connection) -> Result<()> {
-    ensure_index_in(conn, true, false)
+    ensure_index_in(conn, true)
 }
 /// The version of an index this build can open (0 for an empty file), or
 /// the refusal of one from another format or version.
-fn index_version_of(conn: &Connection, primary: bool) -> Result<u32> {
+fn index_version_of(conn: &Connection) -> Result<u32> {
     check_format(conn, "index")?;
     let found = version(conn)?;
-    let wanted = index_version(primary);
+    let wanted = INDEX_VERSION;
     if found != 0 && found != wanted {
         return Err(StoreError::IndexVersion { found, wanted });
     }
     Ok(found)
 }
 
-/// What [`ensure_index`] refuses in a standalone index, checked without
-/// changing the file: for an index a build set aside, why it was.
+/// What [`ensure_index`] refuses in an index, checked without changing the
+/// file: for an index a build set aside, why it was.
 pub(crate) fn check_standalone_index(conn: &Connection) -> Result<()> {
-    let found = index_version_of(conn, false)?;
-    if found != 0 && !same_index_schema_in(conn, false)? {
+    let found = index_version_of(conn)?;
+    if found != 0 && !same_index_schema_in(conn)? {
         return Err(StoreError::OtherFormat {
             database: "index",
             found,
@@ -356,13 +317,13 @@ pub(crate) fn check_standalone_index(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<()> {
+fn ensure_index_in(conn: &Connection, deferring: bool) -> Result<()> {
     // ALTER TABLE validates views that read packed bodies through these functions.
     crate::sql_functions::register(conn)?;
-    let found = index_version_of(conn, primary)?;
+    let found = index_version_of(conn)?;
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     if found == 0 {
-        create_index_in(&tx, primary, deferring)?;
+        create_index_in(&tx, deferring)?;
     } else {
         // Read indexes are added before the shape check, so an index missing
         // only those is completed rather than refused. A build file is always
@@ -373,10 +334,7 @@ fn ensure_index_in(conn: &Connection, primary: bool, deferring: bool) -> Result<
             ));
         }
         execute_index_sql(&tx, OPEN_INDEXES, false)?;
-        if primary {
-            tx.execute_batch(include_str!("primary/confirmed/read_indexes.sql"))?;
-        }
-        if !same_index_schema_in(&tx, primary)? {
+        if !same_index_schema_in(&tx)? {
             return Err(StoreError::OtherFormat {
                 database: "index",
                 found,
@@ -411,30 +369,13 @@ pub(crate) fn index_identity(conn: &Connection) -> Result<String> {
 }
 
 /// The schema identity of the index this build creates.
-pub(crate) fn build_index_identity(primary: bool) -> Result<String> {
+pub(crate) fn build_index_identity() -> Result<String> {
     let expected = Connection::open_in_memory()?;
     crate::sql_functions::register(&expected)?;
     base_index(&expected)?;
-    if primary {
-        add_primary(&expected)?;
-    }
-    set_version(&expected, index_version(primary))?;
+    set_version(&expected, INDEX_VERSION)?;
     expected.pragma_update(None, "application_id", FORMAT_ID)?;
     index_identity(&expected)
-}
-
-#[cfg(any(test, feature = "fixture"))]
-pub(crate) fn primary_previous_index() -> Result<Connection> {
-    let conn = Connection::open_in_memory()?;
-    conn.execute_batch(
-        "CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL) STRICT;
-        CREATE TABLE message_version(version_hash BLOB NOT NULL UNIQUE,body BLOB NOT NULL) STRICT;
-        INSERT INTO message_version VALUES(x'010203',x'040506');",
-    )?;
-    set_version(&conn, 3)?;
-    conn.pragma_update(None, "application_id", FORMAT_ID)?;
-    crate::archive::generation::create(&conn)?;
-    Ok(conn)
 }
 
 /// Creates the register in an empty file, or opens one at this version with
@@ -563,12 +504,9 @@ pub(crate) fn same_schema(conn: &Connection, sql: &[&str]) -> Result<bool> {
 }
 
 /// Indexes created at open do not change the parsed table format.
-fn same_index_schema_in(conn: &Connection, primary: bool) -> Result<bool> {
+fn same_index_schema_in(conn: &Connection) -> Result<bool> {
     let expected = Connection::open_in_memory()?;
     base_index(&expected)?;
-    if primary {
-        add_primary(&expected)?;
-    }
     let base = schema_rows(&expected)?;
     expected.execute_batch(OPEN_INDEXES)?;
     let expected = schema_rows(&expected)?;

@@ -1,17 +1,12 @@
-//! Parsed events sent to Sinex, and authored records.
-use crate::input_rows::InputRows;
-use crate::writer::InputKey;
+//! Polylogue's records as Sinex events: the event value each record
+//! becomes, its source identity, and the events one parser step yields.
+use crate::{Error, Result};
 use polylogue_model::authored::PreparedRequest;
 use polylogue_model::{
     BackgroundUpdate, BlobHash, DocumentRow, Event, Link, MessageRow, RecordCounts, RepoLookup,
     Session,
 };
 use serde::{Deserialize, Serialize};
-mod source_record;
-pub use source_record::SourceRecord;
-pub(crate) use source_record::{needs_sending, previous_reading_bound};
-mod export;
-pub use export::ExportReadingKey;
 
 /// The parser reading and exact source chain that produced a fact.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -20,7 +15,7 @@ pub struct Reading {
     pub source_length: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub delivery: Option<polylogue_model::batch::ExportDelivery>,
-    pub input: InputKey,
+    pub input: polylogue_store::InputKey,
     pub chain: i64,
     pub parse_version: String,
     pub start: u64,
@@ -29,11 +24,11 @@ pub struct Reading {
 }
 
 impl Reading {
-    pub(crate) fn from_step(
-        input: &InputKey,
+    pub fn from_step(
+        input: &polylogue_store::InputKey,
         chain: i64,
         source_length: Option<u64>,
-        step: &crate::ParseStep,
+        step: &polylogue_store::ParseStep,
     ) -> Self {
         Self {
             source_length,
@@ -46,13 +41,6 @@ impl Reading {
             progress: step.progress.clone(),
         }
     }
-}
-
-/// The original chain and parser range one frame of parsed events comes from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ParsedSource {
-    pub root_material: String,
-    pub reading: Reading,
 }
 
 /// A tool invocation as its source stated it, independent of local block rows.
@@ -86,72 +74,8 @@ pub struct Material {
     pub extents: Vec<Vec<u8>>,
 }
 
-impl Material {
-    /// The committed blobs that hold the material's bytes, in order. Sinex
-    /// records a chunk list only after the chunks read back as the material,
-    /// so several descriptors need only add up to its length.
-    pub fn descriptors(&self) -> crate::Result<Vec<hashed_blobs::Extent>> {
-        let descriptors = self
-            .extents
-            .iter()
-            .map(|bytes| hashed_blobs::Extent::decode(bytes))
-            .collect::<hashed_blobs::Result<Vec<_>>>()?;
-        let named = match descriptors.as_slice() {
-            [] => false,
-            [one] => one.hash.0 == self.hash.0 && one.decoded_len == self.length,
-            several => several.iter().map(|d| d.decoded_len).sum::<u64>() == self.length,
-        };
-        if !named || descriptors.iter().any(|descriptor| descriptor.len == 0) {
-            return Err(crate::StoreError::internal(
-                "a material differs from its committed blobs",
-            ));
-        }
-        Ok(descriptors)
-    }
-
-    /// Where the bytes of one input step's `extents` begin in this material.
-    /// The extents name its blobs in order: a captured step covers the whole
-    /// material, and a step trimmed to the confirmed prefix keeps its end, so
-    /// they are the material's last blobs, the first possibly entered part
-    /// way.
-    pub fn offset_of(&self, extents: &[crate::input_rows::Extent]) -> crate::Result<u64> {
-        let inconsistent =
-            || crate::StoreError::internal("input extents differ from their material");
-        let descriptors = self.descriptors()?;
-        let first = descriptors
-            .len()
-            .checked_sub(extents.len())
-            .filter(|_| !extents.is_empty())
-            .ok_or_else(inconsistent)?;
-        let last = extents.len() - 1;
-        for (index, (extent, blob)) in extents.iter().zip(&descriptors[first..]).enumerate() {
-            let (Ok(offset), Ok(length)) = (
-                u64::try_from(extent.blob_offset),
-                u64::try_from(extent.length),
-            ) else {
-                return Err(inconsistent());
-            };
-            let end = offset.checked_add(length).ok_or_else(inconsistent)?;
-            if extent.blob.0 != blob.hash.0
-                || extent.offset < 0
-                || end > blob.decoded_len
-                || index > 0 && offset != 0
-                || index < last && end != blob.decoded_len
-                || index > 0
-                    && extents[index - 1].offset + extents[index - 1].length != extent.offset
-            {
-                return Err(inconsistent());
-            }
-        }
-        Ok(descriptors[..first]
-            .iter()
-            .map(|blob| blob.decoded_len)
-            .sum::<u64>()
-            + extents[0].blob_offset as u64)
-    }
-}
-
-/// Interpretation writes and confirmed source or authored records.
+/// One Polylogue record as a Sinex event: a parsed fact with the reading
+/// that produced it, an input, a blob, or an authored record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "product", rename_all = "snake_case")]
 pub enum Product {
@@ -162,7 +86,7 @@ pub enum Product {
     },
 
     Input {
-        rows: Box<InputRows>,
+        rows: Box<polylogue_store::input_rows::InputRows>,
         material: Option<Material>,
     },
     Blob(Material),
@@ -228,7 +152,7 @@ pub enum Product {
         stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     },
     AttachmentBinding {
-        record: Box<crate::assets::bindings::AttachmentBindingRecord>,
+        record: Box<polylogue_store::assets::bindings::AttachmentBindingRecord>,
     },
     Query {
         object: Box<polylogue_model::query_objects::QueryObject>,
@@ -280,93 +204,6 @@ impl Product {
     }
 }
 
-/// One change from Sinex's ordered confirmed stream.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct Confirmed {
-    pub position: i64,
-    pub output_index: u64,
-    pub event: String,
-    pub change: ConfirmedChange,
-    /// The kind, payload hash and origin Sinex recorded for the event.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sinex_context: Option<super::SinexEventContext>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "state", content = "facts", rename_all = "snake_case")]
-pub enum ConfirmedChange {
-    Live(Box<Product>),
-    Archived,
-    Restored,
-    Tombstoned,
-    /// Polylogue could not read the event (an unknown kind, a refused fetch).
-    /// It stays in Sinex and is read again by a rebuild; the index records
-    /// the refusal and continues with the next event.
-    Refused {
-        kind: String,
-        reason: String,
-        /// True when this unreadable event may carry source input.
-        unreadable_input: bool,
-    },
-    Control(Box<super::ReplayControl>),
-}
-
-/// A source capture waiting in the producer spool, before cache application.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CapturedInput {
-    pub input: super::InputName,
-    pub rows: InputRows,
-    pub index: u32,
-    pub previous: Option<String>,
-    pub hash: BlobHash,
-    pub length: u64,
-    pub group: Option<CaptureGroup>,
-    pub route: polylogue_model::Route,
-    /// The byte range the capture read covered, independent of tentative
-    /// source coordinates.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_range: Option<super::RawRange>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub generation: Option<super::ObservedState>,
-    /// The checked end of the source, independent of reaching the last group
-    /// header.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_total: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub previous_revision: Option<String>,
-    /// None means an older record with an unknown source base, never a freshly
-    /// observed source.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub base: Option<super::SourceBase>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct CaptureGroup {
-    pub identity: String,
-    /// Stable content intent; an older record without one cannot show a retry.
-    #[serde(default)]
-    pub intent: String,
-    pub ordinal: u64,
-    pub count: u64,
-}
-
-#[derive(Debug, Clone)]
-pub enum PreparedInput {
-    Confirmed {
-        stored: crate::staging::StoredInput,
-        material: Material,
-    },
-    Pending {
-        identity: String,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PreparedWrite {
-    pub identity: String,
-    pub pending: bool,
-}
-
 /// An outgoing event with its record offset in a material and its parent
 /// readings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -384,68 +221,155 @@ pub struct SourceLocation {
     pub anchor: u64,
 }
 
-/// Select message values whose exact confirmed fact is no longer live.
-pub(crate) fn hidden_messages(
-    index: &rusqlite::Connection,
-    input: &InputKey,
-    chain: i64,
-    step: &crate::ParseStep,
-) -> crate::Result<std::collections::BTreeSet<usize>> {
-    use crate::ConnExt as _;
-    let mut hidden = std::collections::BTreeSet::new();
-    if step.output.messages.is_empty() || step.delivery.is_some() {
-        return Ok(hidden);
-    }
-    if !index.exists(
-        "SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE input=?1 AND chain=?2
-          AND parse_version=?3 AND state!='live' AND reference GLOB 'message:*')",
-        rusqlite::params![input.id, chain, step.parse_version],
-    )? {
-        return Ok(hidden);
-    }
-    let mut state = index.prepare_cached(
-        "SELECT count(*)>0 AND count(*) FILTER (WHERE state='live')=0
-         FROM confirmed_event WHERE input=?1 AND chain=?2 AND parse_version=?3
-          AND reference=?4 AND value_hash=?5",
-    )?;
-    let messages = parse(input, chain, None, step)?
-        .into_iter()
-        .filter(|product| matches!(product, Product::Message { .. }));
-    for (i, product) in messages.enumerate() {
-        let record = SourceRecord::of(&product)?.expect("a message has a source record");
-        let suppressed = state.query_row(
-            rusqlite::params![
-                input.id,
-                chain,
-                step.parse_version,
-                record.reference,
-                &record.value_hash.0[..]
-            ],
-            |row| row.get::<_, bool>(0),
-        )?;
-        if suppressed {
-            hidden.insert(i);
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SourceRecord {
+    pub family: String,
+    pub reference: String,
+    pub value_hash: BlobHash,
+    pub start: u64,
+    pub end: u64,
+    pub session: Option<String>,
+    pub blobs: Vec<BlobHash>,
+}
+
+impl SourceRecord {
+    pub fn of(product: &Product) -> Result<Option<Self>> {
+        if let Product::Interpreted { record, .. } = product {
+            return Ok(Some(record.clone()));
         }
+        let Some(reading) = product.reading() else {
+            return Ok(None);
+        };
+        let (family, reference, range, session, blocks) = match product {
+            Product::Session { facts, .. } => (
+                "session",
+                format!("session:{}", facts.id),
+                None,
+                Some(facts.id.to_string()),
+                &[][..],
+            ),
+            Product::Message { facts, .. } => (
+                "message",
+                format!("message:{}:{}", facts.message.id, facts.offset),
+                Some((facts.offset, facts.end.max(facts.offset))),
+                Some(facts.message.session.to_string()),
+                facts.message.blocks.as_slice(),
+            ),
+            Product::ToolCall { facts, .. } => (
+                "tool_call",
+                format!("call:{}:{}", facts.message, facts.block),
+                Some((facts.source_start, facts.source_end)),
+                Some(facts.session.to_string()),
+                &[][..],
+            ),
+            Product::Document { facts, .. } => (
+                "document",
+                format!("document:{}:{}", facts.document.id, facts.offset),
+                Some((facts.offset, facts.end.max(facts.offset))),
+                None,
+                facts.document.blocks.as_slice(),
+            ),
+            Product::Fragment { facts, .. } => (
+                "fragment",
+                format!("fragment:{}:{}", facts.record.reference, facts.offset),
+                Some((facts.offset, facts.end.max(facts.offset))),
+                None,
+                &[][..],
+            ),
+            Product::Event { id, facts, .. } => (
+                "event",
+                format!("event:{id}"),
+                None,
+                facts.session.as_ref().map(ToString::to_string),
+                &[][..],
+            ),
+            Product::Link { facts, .. } => (
+                "link",
+                facts.selection_tag(),
+                None,
+                Some(facts.child.to_string()),
+                &[][..],
+            ),
+            Product::PrefixCopy { facts, .. } => (
+                "prefix_copy",
+                format!("prefix:{}:{}", facts.parent, facts.child),
+                None,
+                Some(facts.child.to_string()),
+                &[][..],
+            ),
+            Product::PrefixMember { facts, .. } => (
+                "prefix_member",
+                format!("member:{}:{}:{}", facts.parent, facts.child, facts.message),
+                None,
+                Some(facts.child.to_string()),
+                &[][..],
+            ),
+            Product::Background { facts, .. } => (
+                "background",
+                format!(
+                    "background:{}",
+                    serde_json::to_string(&(&facts.session, &facts.call_id, &facts.task_id))?
+                ),
+                None,
+                Some(facts.session.to_string()),
+                &[][..],
+            ),
+            Product::Repository { facts, .. } => (
+                "repository",
+                format!("repository:{}", facts.path),
+                None,
+                None,
+                &[][..],
+            ),
+            Product::ParseProgress { .. } => (
+                "parse_progress",
+                format!("progress:{}:{}", reading.start, reading.parsed_upto),
+                None,
+                None,
+                &[][..],
+            ),
+            _ => unreachable!("all source interpretations listed above"),
+        };
+        let mut value = serde_json::to_value(product)?;
+        value
+            .as_object_mut()
+            .expect("tagged product object")
+            .remove("reading");
+        let value_hash = BlobHash::of(&serde_json::to_vec(&value)?);
+        let mut blobs = std::collections::BTreeSet::new();
+        for block in blocks {
+            let attachments = block.attachments();
+            blobs.extend(attachments.iter().filter_map(|value| value.blob));
+        }
+        let (start, end) = range.unwrap_or((reading.start, reading.parsed_upto));
+        Ok(Some(Self {
+            family: family.into(),
+            reference,
+            value_hash,
+            start,
+            end,
+            session,
+            blobs: blobs.into_iter().collect(),
+        }))
     }
-    Ok(hidden)
 }
 
 /// Creates complete outbound products from one parser step, before any index write.
 pub fn parse(
-    input: &InputKey,
+    input: &polylogue_store::InputKey,
     chain: i64,
     source_length: Option<u64>,
-    step: &crate::ParseStep,
-) -> crate::Result<Vec<Product>> {
+    step: &polylogue_store::ParseStep,
+) -> Result<Vec<Product>> {
     if step.delivery.is_some() && source_length.is_none() {
-        return Err(crate::StoreError::internal(
+        return Err(Error::invalid(
             "export products need their stored source length",
         ));
     }
     let event_ids = step.event_identities(&input.id, chain)?;
     let output = step.complete_output()?;
     if !output.blobs.is_empty() {
-        return Err(crate::StoreError::internal(
+        return Err(Error::invalid(
             "decoded bytes must be prepared before their products",
         ));
     }
@@ -582,20 +506,3 @@ pub fn parse(
     });
     Ok(products)
 }
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "capture", rename_all = "snake_case")]
-pub enum Capture {
-    Input(Box<CapturedInput>),
-    Blob { hash: BlobHash, length: u64 },
-}
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct PendingCapture {
-    pub identity: String,
-    pub captured: Capture,
-    pub material: Option<Material>,
-    pub anchor: Option<SourceLocation>,
-}
-
-#[cfg(test)]
-mod tests;

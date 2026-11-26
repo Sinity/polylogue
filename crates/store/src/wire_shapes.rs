@@ -8,24 +8,15 @@ use crate::{ParseStep, Result, StoreError};
 use polylogue_model::WireShape;
 use polylogue_model::batch::{ExportCursor, ExportDeliverySource, ReadRange, StepProgress};
 mod export;
-pub(crate) use export::{admit_export, is_refusal};
+pub(crate) use export::admit_export;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// Kept facts without their reading occurrence cannot establish current coverage.
-pub(crate) fn unobserved(tx: &Transaction<'_>, input_pk: i64, chain: i64) -> Result<()> {
-    tx.execute(
-        "UPDATE wire_reading SET active=0 WHERE input_pk=?1 AND chain=?2",
-        params![input_pk, chain],
-    )?;
-    Ok(())
-}
-
 pub const SCHEMA: &str = include_str!("schema/wire_shapes.sql");
 
-/// The commit that confirmed the reading's source. Sequence is the
-/// standalone archive commit order or the primary confirmed event order.
+/// The commit that confirmed the reading's source. Sequence is the archive
+/// commit order.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ReadingCommit {
     pub sequence: i64,
@@ -438,11 +429,7 @@ fn apply_inner(
     }
     if duplicate {
         if let Some(mut old) = previous {
-            let prefix_missing = if step.reset {
-                step.source_prefix_missing
-            } else {
-                old.prefix_missing || step.source_prefix_missing
-            };
+            let prefix_missing = !step.reset && old.prefix_missing;
             let coverage_changed = prefix_missing != old.prefix_missing;
             old.prefix_missing = prefix_missing;
             let reaches_end = step.progress.reached_end() && step.parsed_upto >= source.length;
@@ -470,14 +457,13 @@ fn apply_inner(
         parsed_upto: step.parsed_upto,
         length: source.length,
         progress: step.progress.clone(),
-        prefix_missing: step.source_prefix_missing
-            || if reset {
-                false
-            } else {
-                previous.as_ref().is_none_or(|old| {
-                    old.prefix_missing || (!export_delivery && step.start != old.parsed_upto)
-                })
-            },
+        prefix_missing: if reset {
+            false
+        } else {
+            previous.as_ref().is_none_or(|old| {
+                old.prefix_missing || (!export_delivery && step.start != old.parsed_upto)
+            })
+        },
         unreadable: step
             .counts
             .unreadable

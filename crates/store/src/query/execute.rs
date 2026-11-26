@@ -153,7 +153,6 @@ impl Reader<'_> {
                 &program.incomplete,
                 crate::sql_functions::similarity_count_inputs(),
                 self.index_identity()?,
-                self.query_scope_fingerprint()?,
             ))
             .map_err(crate::StoreError::from)?,
         );

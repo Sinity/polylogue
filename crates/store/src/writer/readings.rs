@@ -245,13 +245,12 @@ pub(super) fn write(
     chain: &Chain<'_>,
     batch: &Batch,
     step: &ParseStep,
-    hidden: &BTreeSet<usize>,
     touched: &mut Touched,
 ) -> Result<()> {
     let key = params![chain.input_pk, chain.chain];
     let mut groups = crate::content::Stored::new(&step.prepared.content);
     write_sessions(tx, chain, step, touched)?;
-    write_messages(tx, chain, step, &mut groups, hidden, touched)?;
+    write_messages(tx, chain, step, &mut groups, touched)?;
     write_documents(tx, chain, step, touched)?;
     write_events(tx, chain, step, &mut groups, touched)?;
     for alias in &step.output.aliases {
@@ -485,7 +484,6 @@ fn write_messages(
     chain: &Chain<'_>,
     step: &ParseStep,
     groups: &mut crate::content::Stored<'_>,
-    hidden: &BTreeSet<usize>,
     touched: &mut Touched,
 ) -> Result<()> {
     // Messages one record holds share its offset; their order in the record
@@ -500,9 +498,6 @@ fn write_messages(
         .zip(&step.prepared.messages)
         .enumerate()
     {
-        if hidden.contains(&i) {
-            continue;
-        }
         let id = row.message.id.to_string();
         let session = row.message.session.to_string();
         let place = match step.message_position(i)? {

@@ -29,11 +29,6 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **previous index**: the index a build replaces, kept as
   `index-build/previous.db` until the new one is installed, and read
   meanwhile when its schema identity is the build's.
-- **set-aside cache**: primary mode, where an index from another schema is not
-  built over but renamed beside `index.db` as `index-set-aside-<schema
-  identity>.db` (with its write-ahead files) while the new index is rebuilt
-  from the stream; status shows it until the rebuild reaches the stream's
-  latest position.
 - **embeddings store**: message and annotation vectors for semantic ranking, kept apart
   because vectors cost money or time to make.
 - **segment log**: append-only files of compressed frames holding every blob;

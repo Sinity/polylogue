@@ -358,7 +358,7 @@ fn withdrawal_of_conflicted_or_already_withdrawn_root_needs_no_text_winner() {
         };
         let tx = conn.transaction().unwrap();
         crate::user_writes::apply(&tx, &r, seq).unwrap();
-        let prepared = crate::primary::authored::known_request(&tx, &r)
+        let prepared = crate::authored_records::known_request(&tx, &r)
             .unwrap()
             .unwrap();
         assert_eq!(prepared.effect.annotations.len(), 1);

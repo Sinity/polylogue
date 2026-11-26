@@ -243,7 +243,7 @@ fn saved_query_record_keeps_history_kept_watch_and_dependent_identities() {
     watch.kind = AnnotationKind::Signal;
     watch.value = Some(serde_json::json!({"name":"focus","query":"query:focus@1"}));
     super::super::apply(&conn, &[first, watch], 5).unwrap();
-    crate::primary::authored::insert_kept(
+    crate::authored_records::insert_kept(
         &conn,
         &polylogue_model::authored::KeptResult {
             id: "kept-original".into(),

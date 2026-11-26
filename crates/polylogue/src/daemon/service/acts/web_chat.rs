@@ -4,7 +4,7 @@
 //! which the popup's Allow and Deny also give. Each turn is a chat action
 //! row that the browser extension claims and carries out
 //! ([`polylogue_store::chat_actions`]); its reply comes back as a capture.
-use super::super::browser::{self as chat, PreparedFiles};
+use super::super::browser as chat;
 use super::{Failure, error};
 use crate::browser::actions::{self, ChatFile, ChatRequest};
 use crate::commands::Surface;
@@ -114,15 +114,7 @@ fn queue(
     if let Err(refusal) = actions::new_action(call.request_id, &request, vec![], held) {
         return Ok(super::super::browser_refusal(refusal));
     }
-    let stored = match chat::store_files(call.daemon, &files)? {
-        PreparedFiles::Complete(stored) => stored,
-        PreparedFiles::Pending(pending) => {
-            return Ok(as_value(crate::protocol::written(
-                crate::protocol::browser::ChatAnswer::Capture(pending),
-                true,
-            )));
-        }
-    };
+    let stored = chat::store_files(call.daemon, &files)?;
     Ok(
         match actions::new_action(call.request_id, &request, stored, held) {
             Ok(new) => as_value(chat::chat_then_view(

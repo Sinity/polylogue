@@ -217,7 +217,9 @@ fn save_with_rows(
     references: Option<&[polylogue_model::Reference]>,
     captured: Option<CapturedRows>,
 ) -> Result<Value, Failure> {
-    if reader.query_scope_fingerprint()? != retained.binding.replay.scope_fingerprint {
+    // A line accepted under a read scope (primary mode's grant) is from a
+    // scope this archive does not have.
+    if retained.binding.replay.scope_fingerprint.is_some() {
         return Err(Failure::new(
             polylogue_model::Code::ScopeChanged,
             "the accepted line's read scope changed",
@@ -795,9 +797,6 @@ pub fn prepare<'read, 'pool>(
             "ranking_identity".into(),
             blake3::hash(identity.as_bytes()).to_hex().to_string(),
         );
-    }
-    if let Some(scope) = reader.query_scope_fingerprint()? {
-        operation_versions.insert("scope".into(), scope);
     }
     if let Some(cursor) = &cursor {
         for key in ["operation_context", "catalog", "scope", "ranking_identity"] {

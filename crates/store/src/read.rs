@@ -372,30 +372,21 @@ impl ReadPool {
 
     /// Whether this pool reads a build in progress.
     pub(crate) fn reads_build(&self) -> bool {
-        self.reads == Reads::Pipeline
-            && !self.archive.is_primary()
-            && self.archive.index_build.building()
+        self.reads == Reads::Pipeline && self.archive.index_build.building()
     }
 
     fn connect(&self, path: &Path) -> Result<Connection> {
         let conn = self.archive.open_index_connection(path, self.reads)?;
-        if self.archive.is_primary() {
-            crate::primary::scope::require_readable(&conn)?;
-        }
         // Set temp storage before creating views: changing it drops TEMP objects.
         conn.pragma_update(None, "temp_store", "file")?;
         conn.pragma_update(Some("temp"), "cache_size", -1024)?;
-        if !self.archive.is_primary() {
-            let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
-            conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
-        }
+        let uri = format!("file:{}?mode=ro", self.archive.archive_db().display());
+        conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
         // Each view is a write to the temporary schema: one transaction per
         // connection instead of one per view.
         conn.execute_batch("BEGIN")?;
         let created = (|| {
-            if !self.archive.is_primary() {
-                crate::source::views(&conn)?;
-            }
+            crate::source::views(&conn)?;
             crate::sql_views::create(&conn)?;
             Ok::<_, StoreError>(())
         })();
@@ -406,11 +397,7 @@ impl ReadPool {
                 return Err(error);
             }
         }
-        for &schema in if self.archive.is_primary() {
-            &["main"][..]
-        } else {
-            &["main", "a"][..]
-        } {
+        for schema in ["main", "a"] {
             conn.pragma_update(Some(schema), "cache_size", -self.cache_kib)?;
             conn.pragma_update(Some(schema), "mmap_size", 0)?;
         }
@@ -864,53 +851,6 @@ impl Reader<'_> {
             }
         }
         Ok(conn)
-    }
-
-    pub fn confirmed_position(&self) -> Result<i64> {
-        crate::primary::confirmed::position(self.conn()?)
-    }
-
-    pub fn confirmed_checkpoint(&self) -> Result<Option<i64>> {
-        crate::primary::confirmed::checkpoint(self.conn()?)
-    }
-
-    /// How many confirmed events Polylogue could not read, and the reason
-    /// for the latest of them.
-    pub fn confirmed_refusals(&self) -> Result<(u64, Option<String>)> {
-        let conn = self.conn()?;
-        let count: i64 =
-            conn.scalar("SELECT count(*) FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live'", [])?;
-        let latest = conn
-            .query_row(
-                "SELECT r.kind,r.position,r.reason FROM primary_refused r LEFT JOIN confirmed_event f ON f.event=r.event WHERE f.event IS NULL OR f.state='live' ORDER BY r.position DESC LIMIT 1",
-                [],
-                |row| {
-                    Ok(format!(
-                        "{} at {}: {}",
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?
-                    ))
-                },
-            )
-            .optional()?;
-        Ok((u64::try_from(count).unwrap_or_default(), latest))
-    }
-
-    #[cfg(any(test, feature = "fixture"))]
-    pub fn confirmed_replay_state(&self) -> Result<crate::primary::ReplayState> {
-        crate::primary::confirmed::replay_state(self.conn()?)
-    }
-
-    pub fn confirmed_scope(&self) -> Result<Option<String>> {
-        crate::primary::scope::current(self.conn()?)
-    }
-
-    /// Sinex decides this grant identity; standalone reads have no grant scope.
-    pub fn query_scope_fingerprint(&self) -> Result<Option<String>> {
-        let scope = crate::primary::scope::current(self.conn()?)?;
-        self.conn()?;
-        Ok(scope)
     }
 
     /// The index file this reader's read transaction started on.
@@ -1541,15 +1481,7 @@ impl Reader<'_> {
     /// Use the byte catalog belonging to this reader's index snapshot.
     pub fn blob_reader(&self) -> Result<crate::blobs::Blobs> {
         self.conn()?;
-        let archive = &self.pool.archive;
-        if !archive.is_primary() {
-            return archive.blob_reader();
-        }
-        let (path, _, _) = self
-            .index_identity
-            .as_ref()
-            .expect("the reader has an index");
-        archive.blob_reader_at(path)
+        self.pool.archive.blob_reader()
     }
 
     /// Reads a range of the selected stored attachment in this reader's read.

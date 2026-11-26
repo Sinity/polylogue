@@ -35,7 +35,6 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
             .store_group(
                 vec![crate::staging::PreparedBatch {
                     batch: Batch {
-                        required_outcome: None,
                         input: input.clone(),
                         change: Change::First,
                         observation: Some(observation.clone()),
@@ -45,7 +44,6 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
                         length: end as u64,
                         parse: vec![],
                         capture_read: None,
-                        base: None,
                         release: Default::default(),
                     },
                     files: file.into_iter().collect(),
@@ -99,7 +97,6 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
         .store_group(
             vec![crate::staging::PreparedBatch {
                 batch: Batch {
-                    required_outcome: None,
                     input: input.clone(),
                     change: Change::Rewritten,
                     observation: Some(Observation {
@@ -112,7 +109,6 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
                     length: replacement.len() as u64,
                     parse: vec![],
                     capture_read: None,
-                    base: None,
                     release: Default::default(),
                 },
                 files: file.into_iter().collect(),

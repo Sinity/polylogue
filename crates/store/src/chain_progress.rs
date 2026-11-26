@@ -6,10 +6,8 @@
 //! A chain's row follows from its stored length and its input's origin
 //! (`archive.db`) and its parse state (`index.db`). On the writer's index
 //! connection, temporary triggers recompute a chain's row whenever its parse
-//! state changes, and in primary mode, where the source rows live in
-//! `index.db`, whenever its revisions change or an imported observation of
-//! its input arrives, all in the transaction of the change. A standalone
-//! archive is written on another connection; temporary triggers there
+//! state changes, in the transaction of the change. The archive is written
+//! on another connection; temporary triggers there
 //! record the chains and inputs a transaction changed ([`recorded`]), and
 //! the writer recomputes them in its next index transaction ([`refresh`])
 //! and then forgets them ([`forget`]). A writer that stops without doing so
@@ -78,8 +76,7 @@ fn one_chain(input: &str, chain: &str) -> String {
 /// Statements that bring the rows of `chains` (from [`chains_of`] or
 /// [`one_chain`]) of input `input` up to date, writing only rows whose
 /// values differ, and remove rows in `scope` (an SQL condition on
-/// `chain_progress`) whose chain the source no longer holds (a primary
-/// scope reset). Table names are unqualified because the statements also
+/// `chain_progress`) whose chain the source no longer holds. Table names are unqualified because the statements also
 /// run inside triggers.
 fn refresh_sql(chains: &str, scope: &str) -> [String; 2] {
     [
@@ -121,14 +118,11 @@ fn input_sql(input: &str) -> [String; 2] {
 
 /// Installs the triggers on the writer's index connection (see the module
 /// documentation) and, when the rows may be behind the source, recomputes
-/// every chain. `standalone`: the source is written on another connection,
-/// so the rows are marked not kept until [`mark_current`].
-pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
-    install_triggers(index, !standalone)?;
+/// every chain. The source is written on another connection, so the rows
+/// are marked not kept until [`mark_current`].
+pub(crate) fn open(index: &Connection) -> Result<()> {
+    install_triggers(index)?;
     let kept = crate::meta_get(index, PROGRESS)?;
-    if kept.as_deref() == Some(CURRENT) && !standalone {
-        return Ok(());
-    }
     // The mark must reach the disk before the archive changes: an index
     // commit lost with the machine must never leave an earlier `kept`.
     let synchronous: i64 = index.pragma_query_value(None, "synchronous", |r| r.get(0))?;
@@ -141,24 +135,23 @@ pub(crate) fn open(index: &Connection, standalone: bool) -> Result<()> {
             chain_rows(&chain_lengths(""))
         ))?;
     }
-    crate::meta_set(&tx, PROGRESS, if standalone { "open" } else { CURRENT })?;
+    crate::meta_set(&tx, PROGRESS, "open")?;
     tx.commit()?;
     index.pragma_update(None, "synchronous", synchronous)?;
     Ok(())
 }
 
-/// Marks counts current after committed source changes or an empty cache reset.
+/// Marks counts current after committed source changes.
 pub(crate) fn mark_current(index: &Connection) -> Result<()> {
     crate::meta_set(index, PROGRESS, CURRENT)
 }
 
 /// Temporary triggers on `index` that recompute a chain's row when its
-/// parse state changes, and with `source` also when its source rows in
-/// `index.db` change. Test and benchmark setup that edits parse states on
+/// parse state changes. Test and benchmark setup that edits parse states on
 /// a connection of its own installs them too.
-pub(crate) fn install_triggers(index: &Connection, source: bool) -> Result<()> {
+pub(crate) fn install_triggers(index: &Connection) -> Result<()> {
     let parse_input = |row: &str| format!("(SELECT id FROM input_ref WHERE pk = {row}.input_pk)");
-    let mut triggers = vec![
+    let triggers = vec![
         (
             "parse_added",
             "INSERT ON main.parse_state",
@@ -175,35 +168,6 @@ pub(crate) fn install_triggers(index: &Connection, source: bool) -> Result<()> {
             chain_sql(&parse_input("OLD"), "OLD.chain"),
         ),
     ];
-    if source {
-        triggers.extend([
-            (
-                "revision_added",
-                "INSERT ON main.source_revision",
-                chain_sql("NEW.input", "NEW.chain"),
-            ),
-            (
-                "revision_grown",
-                "UPDATE OF length ON main.source_revision",
-                chain_sql("NEW.input", "NEW.chain"),
-            ),
-            (
-                "revision_removed",
-                "DELETE ON main.source_revision",
-                chain_sql("OLD.input", "OLD.chain"),
-            ),
-            (
-                "import_added",
-                "INSERT ON main.source_observation WHEN NEW.class = 'imported'",
-                input_sql("NEW.input"),
-            ),
-            (
-                "import_removed",
-                "DELETE ON main.source_observation WHEN OLD.class = 'imported'",
-                input_sql("OLD.input"),
-            ),
-        ]);
-    }
     let mut sql = String::new();
     for (name, event, [upsert, stale]) in triggers {
         sql.push_str(&format!(
@@ -211,22 +175,11 @@ pub(crate) fn install_triggers(index: &Connection, source: bool) -> Result<()> {
              BEGIN {upsert}; {stale}; END;\n"
         ));
     }
-    if source {
-        for (action, row) in [("INSERT", "NEW"), ("DELETE", "OLD")] {
-            let member = crate::source::database_rows(row);
-            let [upsert, stale] = input_sql(&format!("{row}.container_input"));
-            sql.push_str(&format!(
-                "CREATE TEMP TRIGGER IF NOT EXISTS chain_progress_database_{action}
-                 AFTER {action} ON main.source_observation_container WHEN {member}
-                 BEGIN {upsert}; {stale}; END;\n"
-            ));
-        }
-    }
     index.execute_batch(&sql)?;
     Ok(())
 }
 
-/// Temporary triggers on the standalone writer's `archive.db` connection
+/// Temporary triggers on the writer's `archive.db` connection
 /// that record the chains whose revisions a transaction changed, and the
 /// inputs an imported observation names; a rolled-back transaction records
 /// nothing. The inserts use `ON CONFLICT DO NOTHING`: an `OR IGNORE` in a

@@ -1,6 +1,6 @@
 use super::*;
 use crate::products;
-use polylogue_store::primary::{Product, Reading};
+use crate::products::{Product, Reading};
 use serde_json::json;
 mod ai;
 
@@ -27,9 +27,7 @@ fn message(input: &str, start: u64) -> Product {
 fn interpreted_record(product: &Product) -> Product {
     Product::Interpreted {
         reading: product.reading().unwrap().clone(),
-        record: polylogue_store::primary::SourceRecord::of(product)
-            .unwrap()
-            .unwrap(),
+        record: crate::products::SourceRecord::of(product).unwrap().unwrap(),
     }
 }
 

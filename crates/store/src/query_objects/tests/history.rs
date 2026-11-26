@@ -26,37 +26,26 @@ fn completed_history_returns_before_the_writer_and_commits_as_one_record() {
     let reader = pool.reader().unwrap();
     assert!(
         reader
-            .query_object(&object.id.to_string(), None)
+            .query_object(&object.id.to_string())
             .unwrap()
             .is_none()
     );
-    assert!(reader.query_run(&expected.id, None).unwrap().is_none());
-    assert!(
-        reader
-            .query_run_outcome(&expected.id, None)
-            .unwrap()
-            .is_none()
-    );
+    assert!(reader.query_run(&expected.id).unwrap().is_none());
+    assert!(reader.query_run_outcome(&expected.id).unwrap().is_none());
     drop(reader);
     pause.release();
     assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader
-            .query_object(&object.id.to_string(), None)
+            .query_object(&object.id.to_string())
             .unwrap()
             .unwrap(),
         object
     );
+    assert_eq!(reader.query_run(&expected.id).unwrap().unwrap(), expected);
     assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap(),
-        expected
-    );
-    assert_eq!(
-        reader
-            .query_run_outcome(&expected.id, None)
-            .unwrap()
-            .unwrap(),
+        reader.query_run_outcome(&expected.id).unwrap().unwrap(),
         completed
     );
 }
@@ -100,16 +89,13 @@ fn conflicting_history_rolls_back_its_question_and_run() {
     let reader = pool.reader().unwrap();
     assert!(
         reader
-            .query_object(&object.id.to_string(), None)
+            .query_object(&object.id.to_string())
             .unwrap()
             .is_none()
     );
-    assert!(reader.query_run(&expected.id, None).unwrap().is_none());
+    assert!(reader.query_run(&expected.id).unwrap().is_none());
     assert_eq!(
-        reader
-            .query_run_outcome(&expected.id, None)
-            .unwrap()
-            .unwrap(),
+        reader.query_run_outcome(&expected.id).unwrap().unwrap(),
         previous
     );
 }

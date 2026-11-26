@@ -133,22 +133,16 @@ fn a_deliberately_replaced_index_establishes_its_boot_before_restart() {
 }
 
 #[test]
-fn a_boot_generation_change_fences_publishers_in_both_archive_modes() {
+fn a_boot_generation_change_fences_publishers() {
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
     let dir = tempfile::tempdir().unwrap();
-    for primary in [false, true] {
-        let root = dir
-            .path()
-            .join(if primary { "primary" } else { "standalone" });
+    {
+        let root = dir.path().join("standalone");
         std::fs::create_dir(&root).unwrap();
-        let archive = if primary {
-            crate::Archive::on_sinex(&root, &root.join("bytes"))
-        } else {
-            crate::Archive::at(&root)
-        };
+        let archive = crate::Archive::at(&root);
         let calls = Arc::new(AtomicUsize::new(0));
         let callback = Arc::clone(&calls);
         let _registration = crate::Archive::register_scope_invalidator(&root, move || {

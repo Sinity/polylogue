@@ -323,7 +323,6 @@ fn missing_stored_export_prefix_captures_a_full_rewrite() {
     fs::write(&path, full).unwrap();
     let facts = FileFacts::of(&fs::metadata(&path).unwrap());
     let origin = polylogue_sources::origin::by_name("ai-studio").unwrap();
-    let context = e.sampling_context(&path, origin.name).unwrap();
     let mut plan = Plan::stored(
         path.clone(),
         origin,
@@ -341,7 +340,6 @@ fn missing_stored_export_prefix_captures_a_full_rewrite() {
         true,
     );
     plan.stored_upto = old_length;
-    plan.base = context.base;
     plan.observation = Some(e.observation(&path, Some(facts)));
     fs::rename(&segment, &held).unwrap();
     let mut pass = Pass::default();

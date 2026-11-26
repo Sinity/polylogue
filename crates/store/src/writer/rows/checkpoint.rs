@@ -63,8 +63,6 @@ impl Update {
         step: &ParseStep,
         previous: Option<&Stored>,
         counter: i64,
-        retraction: bool,
-        source_commit: Option<&crate::wire_shapes::ReadingCommit>,
     ) -> Result<Self> {
         let counts = [
             step.counts.records,
@@ -84,9 +82,7 @@ impl Update {
                 .checked_add(value)
                 .ok_or_else(|| StoreError::invalid(RECORD_ACCOUNTING_RANGE))?;
         }
-        let progress = if step.source_prefix_missing {
-            ParseProgress::Partial
-        } else if matches!(
+        let progress = if matches!(
             step.progress,
             StepProgress::Refused { .. } | StepProgress::Failed { .. }
         ) {
@@ -143,12 +139,7 @@ impl Update {
                 (None, _, _) => None,
             },
         };
-        let commit = if retraction {
-            source_commit
-                .or(step.source_commit.as_ref())
-                .map(|r| r.sequence)
-                .filter(|n| *n > 0)
-        } else if let Some(prior) = previous.filter(|prior| prior.state == state) {
+        let commit = if let Some(prior) = previous.filter(|prior| prior.state == state) {
             prior.commit
         } else {
             Some(counter).filter(|n| *n > 0)

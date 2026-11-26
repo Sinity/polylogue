@@ -1,7 +1,6 @@
 //! Bounded catalog rows from one read, consumed by the catalog publisher.
 use super::catalog::Session;
 use crate::ConnExt as _;
-use crate::source::Source;
 use crate::{Reader, Result, StoreError};
 use polylogue_model::ChangePosition;
 use std::collections::{BTreeMap, BTreeSet};
@@ -197,8 +196,10 @@ impl Reader<'_> {
         })
     }
 
-    /// A rebuild of authored records from Sinex replaces that whole category.
-    /// First-commit positions stay as they were, so they cannot describe its removals.
+    /// Whether the authored category was replaced since `after`: only a
+    /// rebuild of authored records from Sinex does that, and primary mode is
+    /// not built in this version, so the answer is no once `after` is a
+    /// position of the current generation.
     pub fn completion_authored_replaced(&self, after: Option<&ChangePosition>) -> Result<bool> {
         let Some(after) = after else { return Ok(false) };
         let current = self.change_position()?;
@@ -208,29 +209,19 @@ impl Reader<'_> {
         {
             return Err(StoreError::internal("completion generation changed"));
         }
-        if matches!(Source::of(self.conn()?)?, Source::Standalone) {
-            return Ok(false);
-        }
-        self.conn()?.exists("SELECT EXISTS(SELECT 1 FROM confirmed_event WHERE kind='request' AND changed!=committed AND changed>?1)", [after.archive])
+        Ok(false)
     }
 
     /// Changed objects and their saved dependents, not current names.
     /// Older rows with no commit position belong to the startup snapshot, never to a guessed position.
     pub fn completion_changed_queries(&self, after: i64) -> Result<BTreeSet<String>> {
-        let lifecycle = if matches!(Source::of(self.conn()?)?, Source::Cache) {
-            "UNION SELECT substr(reference,7) FROM confirmed_event WHERE kind='query' AND changed!=committed AND changed>?1 AND reference GLOB 'query:*'"
-        } else {
-            ""
-        };
-        let sql = format!(
-            "WITH RECURSIVE affected(hash) AS (
-            SELECT hash FROM source_query WHERE commit_seq>?1 {lifecycle}
+        let sql = "WITH RECURSIVE affected(hash) AS (
+            SELECT hash FROM source_query WHERE commit_seq>?1
             UNION SELECT e.query FROM source_query_edge e JOIN affected a ON e.uses='query:'||a.hash
-        ) SELECT hash FROM affected"
-        );
+        ) SELECT hash FROM affected";
         let values = self
             .conn()?
-            .prepare(&sql)?
+            .prepare(sql)?
             .query_map([after], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         self.check()?;

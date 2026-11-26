@@ -25,7 +25,7 @@ fn a_parent_cancelled_after_queueing_cannot_store_the_question_or_begin() {
     assert!(
         pool.reader()
             .unwrap()
-            .query_object(&object.id.to_string(), None)
+            .query_object(&object.id.to_string())
             .unwrap()
             .is_none()
     );
@@ -52,13 +52,8 @@ fn a_parent_cancelled_after_queueing_cannot_store_the_question_or_begin() {
         Err(StoreError::ReadCancelled)
     ));
     let reader = pool.reader().unwrap();
-    assert!(reader.query_run(&expected.id, None).unwrap().is_none());
-    assert!(
-        reader
-            .query_run_outcome(&expected.id, None)
-            .unwrap()
-            .is_none()
-    );
+    assert!(reader.query_run(&expected.id).unwrap().is_none());
+    assert!(reader.query_run_outcome(&expected.id).unwrap().is_none());
 }
 
 #[test]
@@ -93,15 +88,9 @@ fn checked_begin_finishes_after_parent_cancellation() {
         .unwrap()
         .unwrap();
     let reader = pool.reader().unwrap();
+    assert_eq!(reader.query_run(&expected.id).unwrap().unwrap(), expected);
     assert_eq!(
-        reader.query_run(&expected.id, None).unwrap().unwrap(),
-        expected
-    );
-    assert_eq!(
-        reader
-            .query_run_outcome(&expected.id, None)
-            .unwrap()
-            .unwrap(),
+        reader.query_run_outcome(&expected.id).unwrap().unwrap(),
         completed
     );
 }

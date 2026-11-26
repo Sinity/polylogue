@@ -209,17 +209,11 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         use std::io::{Read, Seek, SeekFrom};
-        let context = if let Some(basis) = &plan.base {
-            let mut context = self.source_read_context(
-                &plan.path,
-                plan.origin.name,
-                polylogue_store::primary::ReadRoute::NativeCapture,
-            );
-            context.base = Some(basis.clone());
-            context
-        } else {
-            self.sampling_context(&plan.path, plan.origin.name)?
-        };
+        let context = self.source_read_context(
+            &plan.path,
+            plan.origin.name,
+            polylogue_store::capture_read::ReadRoute::NativeCapture,
+        );
         let mut file = std::fs::File::open(&plan.path)?;
         let before = FileFacts::of(&file.metadata()?);
         if Some(before) != plan.facts
@@ -233,7 +227,7 @@ impl Engine {
         }
         if matches!(plan.change, Change::Appended { .. }) {
             // Capture kept descriptors in a short source snapshot, then
-            // release it before provider IO. The original base still decides what is spooled.
+            // release it before provider IO.
             let prior = {
                 let reader = self.reads.reader()?;
                 match reader.input_progress(&plan.input.id)? {
@@ -291,7 +285,7 @@ impl Engine {
             .into());
         }
         let source_read = context.finish(
-            polylogue_store::primary::RawRange {
+            polylogue_store::capture_read::RawRange {
                 start: plan.stored_upto,
                 end: plan.size,
             },
@@ -300,7 +294,6 @@ impl Engine {
         self.writer.store_bytes(
             prepared,
             Batch {
-                required_outcome: None,
                 input: plan.input.clone(),
                 change: plan.change.clone(),
                 observation: Some(
@@ -314,7 +307,6 @@ impl Engine {
                 length: plan.size,
                 parse: Vec::new(),
                 capture_read: Some(source_read),
-                base: context.base,
                 release: Default::default(),
             },
         )?;
@@ -341,8 +333,8 @@ impl Engine {
                 && let Some(state) = self.inputs.get_mut(&plan.path)
                 && state.input_id == plan.input.id
             {
-                // Confirmed spooled bytes survive a parse refusal. It is not a
-                // parser checkpoint, and cannot replace a newer source position.
+                // Stored bytes survive a parse refusal. It is not a parser
+                // checkpoint, and cannot replace a newer source position.
                 state.facts = known.facts;
                 state.stored = known.stored;
                 state.chain = known.chain;
@@ -416,7 +408,6 @@ impl Engine {
     ) -> Result<(), EngineError> {
         self.export_batch_committed(pass)?;
         let batch = Batch {
-            required_outcome: None,
             input: plan.input.clone(),
             change: plan.change.clone(),
             observation: None,
@@ -426,7 +417,6 @@ impl Engine {
             length: plan.size,
             parse: pending.steps,
             capture_read: None,
-            base: None,
             release: Default::default(),
         };
         if pending.files.is_empty() {

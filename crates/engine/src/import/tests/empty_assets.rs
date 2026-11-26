@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::{BlobHash, MessageId};
 use polylogue_store::Batch;
 use polylogue_store::assets::{AssetMatch, AttachmentState, ObservedMember};
-use polylogue_store::primary::{RawRange, ReadRoute};
+use polylogue_store::capture_read::{RawRange, ReadRoute};
 use polylogue_testkit::ClaudeHome;
 use std::io::{Read, Seek, SeekFrom, Write};
 
@@ -281,7 +281,6 @@ fn mismatched_source_reads_cannot_borrow_an_empty_body() {
         let result = engine.writer.store_bytes(
             prepared,
             Batch {
-                required_outcome: None,
                 input: InputKey {
                     id: BlobHash::of(b"").to_string(),
                     format: "export-file".into(),
@@ -295,7 +294,6 @@ fn mismatched_source_reads_cannot_borrow_an_empty_body() {
                 length: 0,
                 parse: vec![],
                 capture_read: (invalid != "absent").then_some(source_read),
-                base: None,
                 release: Default::default(),
             },
         );
@@ -339,7 +337,6 @@ fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
         .store_bytes(
             prepared,
             Batch {
-                required_outcome: None,
                 input: InputKey {
                     id: asset.input.clone(),
                     format: "export-file".into(),
@@ -353,7 +350,6 @@ fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
                 length: b"replacement bytes".len() as u64,
                 parse: vec![],
                 capture_read: None,
-                base: None,
                 release: Default::default(),
             },
         )

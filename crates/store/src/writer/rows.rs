@@ -7,7 +7,6 @@
 use super::readings::{self, Touched};
 use super::*;
 use crate::change_summary::ChangeSummary;
-use std::collections::BTreeSet;
 
 mod checkpoint;
 
@@ -16,16 +15,11 @@ pub(super) struct StepWrite<'a> {
     pub counter: i64,
     /// The chain the step's bytes were stored in.
     pub chain: i64,
-    /// The record commit that holds the step's bytes; `None` for a
-    /// retraction, which keeps no position.
-    pub source_commit: Option<&'a crate::wire_shapes::ReadingCommit>,
+    /// The record commit that holds the step's bytes.
+    pub source_commit: &'a crate::wire_shapes::ReadingCommit,
     /// The first step of a complete replacement replaces the chain's wire
     /// shapes rather than adding to them.
     pub replacement: bool,
-    /// A Sinex lifecycle change removing the chain's reading.
-    pub retraction: bool,
-    /// In primary mode, the messages of the step Sinex hides.
-    pub primary: bool,
     pub changes: &'a ChangeSummary,
 }
 
@@ -39,11 +33,8 @@ pub(super) fn write_step(
     touched: &mut Touched,
 ) -> Result<()> {
     p.counts.check()?;
-    // A retraction states no rows: it only removes the chain's reading.
-    if !w.retraction {
-        p.prepared.validate(&p.output)?;
-        super::hook_fields::validate(&p.output, &p.prepared.messages)?;
-    }
+    p.prepared.validate(&p.output)?;
+    super::hook_fields::validate(&p.output, &p.prepared.messages)?;
     let chain = w.chain;
     validate_range(b, p)?;
     if !crate::wire_shapes::admit_export(tx, &b.input.id, chain, b.length, p)? {
@@ -59,21 +50,14 @@ pub(super) fn write_step(
         .prepare_cached("SELECT pk FROM input_ref WHERE id=?1")?
         .query_row([&b.input.id], |row| row.get(0))?;
     let previous = checkpoint::read(tx, input_pk, chain)?;
-    if p.delivery.is_none() && !w.retraction && !accept_step(previous.as_ref(), p)? {
+    if p.delivery.is_none() && !accept_step(previous.as_ref(), p)? {
         return Ok(());
     }
     if let Some(update) = &p.comparison {
         update.write(tx, input_pk)?;
     }
-    let source_commit = w.source_commit.or(p.source_commit.as_ref());
-    let checkpoint = checkpoint::Update::new(
-        b,
-        p,
-        previous.as_ref(),
-        w.counter,
-        w.retraction,
-        w.source_commit,
-    )?;
+    let source_commit = w.source_commit;
+    let checkpoint = checkpoint::Update::new(b, p, previous.as_ref(), w.counter)?;
     if p.reset {
         // A chain read again starts its sessions' live facts afresh.
         tx.execute(
@@ -83,16 +67,7 @@ pub(super) fn write_step(
         )?;
         readings::delete(tx, w.changes, input_pk, chain, touched)?;
     }
-    let committed = if w.retraction {
-        None
-    } else {
-        source_commit.map(|r| r.sequence).filter(|n| *n > 0)
-    };
-    let hidden: BTreeSet<usize> = if w.primary {
-        crate::primary::products::hidden_messages(tx, &b.input, chain, p)?
-    } else {
-        BTreeSet::new()
-    };
+    let committed = Some(source_commit.sequence).filter(|n| *n > 0);
     readings::write(
         tx,
         &readings::Chain {
@@ -105,18 +80,8 @@ pub(super) fn write_step(
         },
         b,
         p,
-        &hidden,
         touched,
     )?;
-    if w.retraction && source_commit.is_none() {
-        crate::wire_shapes::unobserved(tx, input_pk, chain)?;
-        tx.execute(
-            "DELETE FROM parse_state WHERE input_pk=?1 AND chain=?2",
-            params![input_pk, chain],
-        )?;
-        return Ok(());
-    }
-    let source_commit = source_commit.or_invalid("an indexed reading has no source commit")?;
     let apply_wire = if w.replacement {
         crate::wire_shapes::replace
     } else {

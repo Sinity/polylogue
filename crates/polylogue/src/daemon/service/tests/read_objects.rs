@@ -115,12 +115,12 @@ fn assert_single_object_run(d: &Daemon, reference: &str, begin: &ReadBegin) {
     let Reference::Run(id) = Reference::parse(&begin.snapshot.query).unwrap() else {
         panic!("object reading must cite its real Run, not a question")
     };
-    let run = reader.query_run(&id, None).unwrap().unwrap();
+    let run = reader.query_run(&id).unwrap().unwrap();
     assert_eq!(run.question, None);
     assert!(
         matches!(run.binding, RunBinding::OriginalObject { execution } if execution.reference.to_string() == reference)
     );
-    let outcome = reader.query_run_outcome(&id, None).unwrap().unwrap();
+    let outcome = reader.query_run_outcome(&id).unwrap().unwrap();
     assert_eq!(outcome.outcome, RunOutcome::Ok);
     assert_eq!(outcome.count, Some(1));
     assert!(outcome.exact);
@@ -254,12 +254,12 @@ fn assert_object_page_run(daemon: &Daemon, page: &ReadPage) {
         panic!("an object page names its committed run")
     };
     let reader = daemon.reads.reader().unwrap();
-    let run = reader.query_run(&id, None).unwrap().unwrap();
+    let run = reader.query_run(&id).unwrap().unwrap();
     assert!(
         matches!(run.binding, RunBinding::OriginalObject { execution }
         if execution.reference == Reference::Request("large-object".into()))
     );
-    let outcome = reader.query_run_outcome(&id, None).unwrap().unwrap();
+    let outcome = reader.query_run_outcome(&id).unwrap().unwrap();
     assert_eq!(outcome.outcome, RunOutcome::Ok);
     assert_eq!(outcome.count, Some(1));
     assert!(outcome.exact);

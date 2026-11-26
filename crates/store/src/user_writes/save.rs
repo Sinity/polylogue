@@ -256,7 +256,7 @@ pub(super) fn apply(
             part.new_rule = !parts[index].repeat;
         }
     }
-    crate::primary::authored::insert_kept(
+    crate::authored_records::insert_kept(
         conn,
         &polylogue_model::authored::KeptResult {
             id: request.id.clone(),

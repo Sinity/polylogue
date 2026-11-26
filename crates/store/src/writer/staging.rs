@@ -27,26 +27,13 @@ pub(super) fn is_atomic_capture_group(items: &[PreparedBatch]) -> bool {
                 .capture_read
                 .as_ref()
                 .is_some_and(|capture_read| {
-                    capture_read.route == crate::primary::ReadRoute::ExplicitImport
+                    capture_read.route == crate::capture_read::ReadRoute::ExplicitImport
                         || matches!(
                             capture_read.generation,
-                            Some(crate::primary::ObservedState::Database { .. })
+                            Some(crate::capture_read::ObservedState::Database { .. })
                         )
                 })
     })
-}
-
-pub(super) fn independent_files(items: &[PreparedBatch]) -> bool {
-    items.len() > 1
-        && !is_atomic_capture_group(items)
-        && items.iter().any(|item| {
-            item.batch
-                .capture_read
-                .as_ref()
-                .is_some_and(|capture_read| {
-                    capture_read.route == crate::primary::ReadRoute::NativeCapture
-                })
-        })
 }
 
 impl Inner {
@@ -83,13 +70,11 @@ impl Inner {
 
     /// Stores the groups that were waiting together, so their files and
     /// rows share syncs and commits ([`Self::store_group`]), and answers
-    /// each. Package and database groups keep the caller's boundary. In
-    /// primary mode each caller's group also stays whole before its file
-    /// samples receive their separate capture outcomes.
+    /// each. Package and database groups keep the caller's boundary.
     pub(super) fn store_groups(&mut self, groups: Vec<WaitingGroup>) {
         let (alone, together): (Vec<WaitingGroup>, Vec<WaitingGroup>) = groups
             .into_iter()
-            .partition(|(items, _, _)| self.sinex.is_some() || is_atomic_capture_group(items));
+            .partition(|(items, _, _)| is_atomic_capture_group(items));
         for (items, store, reply) in alone {
             let _ = reply.send(self.store_group(items, store));
         }
@@ -136,9 +121,6 @@ impl Inner {
     ) -> Vec<Result<StoredInput>> {
         if group.is_empty() {
             return Vec::new();
-        }
-        if self.sinex.is_some() {
-            return self.primary_store_group(group);
         }
         let independent = !is_atomic_capture_group(&group);
         let replay = group.iter().all(|item| replayed_input(&item.batch));
@@ -485,8 +467,6 @@ fn stored_readings(
             && item.files.is_empty()
             && item.batch.blobs.is_empty()
             && item.batch.capture_read.is_none()
-            && item.batch.base.is_none()
-            && item.batch.required_outcome.is_none()
     }) {
         return Ok(None);
     }

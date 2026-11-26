@@ -26,20 +26,14 @@ struct Snapshot {
     store: Result<polylogue_store::Status, String>,
     notices: Result<crate::protocol::status::Notices, String>,
     running: Result<polylogue_store::RunningCandidates, String>,
-    /// The index's completeness and the applied stream position, which
-    /// freshness compares with the Sinex observations held when answering.
-    reading: polylogue_store::Result<(
-        polylogue_model::freshness::ReadCompleteness,
-        super::state::Applied,
-    )>,
+    /// The index's completeness.
+    reading: polylogue_store::Result<polylogue_model::freshness::ReadCompleteness>,
 }
 
 impl Snapshot {
     fn read(d: &Daemon, reader: &polylogue_store::Reader<'_>) -> Self {
         let now = d.clock.now_ms();
-        let reading = reader
-            .completeness(&polylogue_engine::reading_contracts())
-            .and_then(|local| Ok((local, d.applied(reader)?)));
+        let reading = reader.completeness(&polylogue_engine::reading_contracts());
         Self {
             store: reader.status().map_err(|error| error.to_string()),
             notices: serde_json::from_value(crate::signals::recent(reader, now))
@@ -132,12 +126,8 @@ pub(super) fn answer(
         },
     };
     let freshness = match &snapshot.reading {
-        Ok((local, applied)) => d.freshness_of(local.clone(), applied),
+        Ok(local) => super::state::freshness_of(local.clone()),
         Err(error) => return store_error(error),
-    };
-    let freshness = match freshness {
-        Ok(freshness) => freshness,
-        Err(error) => return store_error(&error),
     };
     let mut missing: Vec<String> = freshness.notes().into_iter().map(str::to_owned).collect();
     let blocked = if let super::ModeState::Blocked { path, error, .. } = &d.mode {
@@ -255,13 +245,7 @@ fn unread(
             parsing: dimension(reasons.clone()),
             derivation,
             search: dimension(reasons.clone()),
-            // Primary mode cannot say what the stream has applied before
-            // the index is read.
-            confirmed_stream: if d.archive.is_primary() {
-                CompletenessDimension::Unknown(reasons)
-            } else {
-                CompletenessDimension::NotApplicable
-            },
+            confirmed_stream: CompletenessDimension::NotApplicable,
             kept_chains: 0,
             raw_only_chains: 0,
         },

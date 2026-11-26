@@ -441,13 +441,6 @@ fn every_reason_has_one_code_and_one_text() {
             "path-x has no file name",
         ),
         (
-            Reason::ProducerQueueFormat {
-                path: "path-x".into(),
-            },
-            Code::Refused,
-            "producer queue path-x has format 1; let the earlier build send and confirm every operation, then set the empty queue aside",
-        ),
-        (
             Reason::ArchiveModeMismatch {
                 archive: "archive-x".into(),
                 recorded: "recorded-x".into(),
@@ -493,14 +486,6 @@ fn every_reason_has_one_code_and_one_text() {
             },
             Code::BadRequest,
             "the capture coverage is refused: problem-x",
-        ),
-        (
-            Reason::SinexRefused {
-                name: "name-x".into(),
-                reason: "reason-x".into(),
-            },
-            Code::Refused,
-            "Sinex refused name-x: reason-x",
         ),
         (
             Reason::BudgetTooSmall {
