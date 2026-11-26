@@ -535,17 +535,17 @@ fn brief_page_reads(sessions: usize, messages: usize) -> Vec<(&'static str, u64)
             );
             continue;
         }
-        let newest = if cwd == "/work/dense/d5" {
-            // The newest session in d5 is the highest n with n % 97 == 5.
-            (0..sessions).rev().find(|n| n % 97 == 5).unwrap()
-        } else {
-            sessions - 1
-        };
+        // Session n works in d<n mod 97>, so d5 holds every n with
+        // n % 97 == 5; the other directories hold every session.
+        let here: Vec<usize> = (0..sessions)
+            .filter(|n| cwd != "/work/dense/d5" || n % 97 == 5)
+            .collect();
+        let newest = *here.last().unwrap();
         for expected in [
             "Recent sessions here, and what they did:".to_owned(),
             format!("test:many-{newest}"),
             format!("{messages} messages"),
-            format!("omitted; expand: `polylogue 'cwd:\"{cwd}\"'"),
+            "Entry map".to_owned(),
         ] {
             assert!(
                 p.text.contains(&expected),
@@ -553,16 +553,25 @@ fn brief_page_reads(sessions: usize, messages: usize) -> Vec<(&'static str, u64)
                 p.text
             );
         }
-        assert!(p.text.contains("Entry map"), "{}", p.text);
-        assert!(
-            p.refs
-                .iter()
-                .filter(|reference| reference.starts_with("session:test:many-"))
-                .count()
-                > 5,
-            "{}",
-            p.text
-        );
+        let shown = p
+            .refs
+            .iter()
+            .filter(|reference| reference.starts_with("session:test:many-"))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        assert!(shown > 5, "{cwd}: {shown} sessions in\n{}", p.text);
+        // Sessions that did not fit are counted with the line that lists
+        // them all.
+        if shown < here.len() {
+            let pointer = format!("omitted; expand: `polylogue 'cwd:\"{cwd}\"'");
+            assert!(
+                p.text.contains(&pointer),
+                "{cwd}: missing {pointer:?} in\n{}",
+                p.text
+            );
+        } else {
+            assert_eq!(shown, here.len(), "{cwd}: {}", p.text);
+        }
     }
     reads
 }
