@@ -560,7 +560,7 @@ const CODEX_ANSWER: Duration = Duration::from_secs(2);
 pub(crate) struct CodexConnection {
     pub(crate) child: std::process::Child,
     input: std::process::ChildStdin,
-    lines: Receiver<Value>,
+    lines: crossbeam_channel::Receiver<Value>,
     next_id: u64,
     /// Notifications and server requests that arrived while an answer was
     /// awaited, in arrival order.
@@ -582,7 +582,7 @@ impl CodexConnection {
             .spawn()?;
         let input = child.stdin.take().expect("piped stdin");
         let output = child.stdout.take().expect("piped stdout");
-        let (sender, lines) = std::sync::mpsc::channel();
+        let (sender, lines) = crossbeam_channel::unbounded();
         polylogue_model::spawn_named("polylogue-codex", move || {
             for line in std::io::BufReader::new(output).lines() {
                 let Ok(line) = line else { return };
@@ -655,16 +655,23 @@ impl CodexConnection {
         self.send(&json!({"jsonrpc": "2.0", "id": id, "result": result}))
     }
 
-    /// The next notification or server request, waiting up to `timeout`;
-    /// `Err` once the app-server closed the connection.
-    pub(crate) fn next(&mut self, timeout: Duration) -> Result<Option<Value>, ()> {
+    /// The next notification or server request, waiting up to `timeout`
+    /// or until `stop` fires.
+    pub(crate) fn next(
+        &mut self,
+        timeout: Duration,
+        stop: &crossbeam_channel::Receiver<()>,
+    ) -> Next<Value> {
         if !self.pending.is_empty() {
-            return Ok(Some(self.pending.remove(0)));
+            return Next::Arrived(self.pending.remove(0));
         }
-        match self.lines.recv_timeout(timeout) {
-            Ok(message) => Ok(Some(message)),
-            Err(RecvTimeoutError::Timeout) => Ok(None),
-            Err(RecvTimeoutError::Disconnected) => Err(()),
+        crossbeam_channel::select! {
+            recv(self.lines) -> message => match message {
+                Ok(message) => Next::Arrived(message),
+                Err(_) => Next::Closed,
+            },
+            recv(stop) -> _ => Next::Stopped,
+            default(timeout) => Next::Quiet,
         }
     }
 
@@ -705,6 +712,18 @@ pub(crate) fn codex_status_word(status: &Value) -> Option<String> {
 /// exists, it lists the loaded threads and their statuses and writes one
 /// registry line per thread whose status changed, the status object whole.
 /// A thread that leaves the loaded list is written `notLoaded`.
+/// What a wait on the Codex app-server ended with.
+#[derive(Debug, PartialEq)]
+pub(crate) enum Next<T> {
+    Arrived(T),
+    /// Nothing within the wait.
+    Quiet,
+    /// The app-server closed the connection.
+    Closed,
+    /// The reader's stop signal fired.
+    Stopped,
+}
+
 pub(crate) struct CodexStatus {
     program: PathBuf,
     socket: PathBuf,
@@ -799,15 +818,35 @@ impl CodexStatus {
 
     /// Waits up to `timeout` for a `thread/status/changed` notification and
     /// returns its line when the status changed.
-    pub(crate) fn next_change(&mut self, timeout: Duration, now: jiff::Timestamp) -> Option<Value> {
-        let connection = self.connection.as_mut()?;
-        let message = match connection.next(timeout) {
-            Ok(message) => message?,
-            Err(()) => {
-                self.connection = None;
-                return None;
-            }
+    /// Waits up to `timeout`, or until `stop` fires, for a status change;
+    /// without a connection it waits only for `stop`.
+    pub(crate) fn next_change(
+        &mut self,
+        timeout: Duration,
+        now: jiff::Timestamp,
+        stop: &crossbeam_channel::Receiver<()>,
+    ) -> Next<Value> {
+        let Some(connection) = self.connection.as_mut() else {
+            return match stop.recv_timeout(timeout) {
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => Next::Quiet,
+                Ok(()) | Err(crossbeam_channel::RecvTimeoutError::Disconnected) => Next::Stopped,
+            };
         };
+        let message = match connection.next(timeout, stop) {
+            Next::Arrived(message) => message,
+            Next::Closed => {
+                self.connection = None;
+                return Next::Closed;
+            }
+            other @ (Next::Quiet | Next::Stopped) => return other,
+        };
+        self.status_change(&message, now)
+            .map_or(Next::Quiet, Next::Arrived)
+    }
+
+    /// The line for a `thread/status/changed` notification whose status
+    /// differs from the one already seen.
+    fn status_change(&mut self, message: &Value, now: jiff::Timestamp) -> Option<Value> {
         if message.str("method") != Some("thread/status/changed") {
             return None;
         }
@@ -1057,35 +1096,28 @@ fn run_codex(
     spool: PathBuf,
     boot: String,
     clock: polylogue_model::WallClock,
-    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    stop: crossbeam_channel::Receiver<()>,
     status: SharedStatus,
 ) -> std::io::Result<()> {
-    use std::sync::atomic::Ordering;
     let mut pending = PendingLines::new("registry", "codex-status", status);
-    while !stop.load(Ordering::Acquire) {
+    loop {
         let lines = codex.read(clock.now());
         let _ = pending.append(&spool, &boot, &lines);
         let deadline = Instant::now() + SAMPLE_OPEN_CALL;
         loop {
-            if stop.load(Ordering::Acquire) {
-                return pending.append(&spool, &boot, &[]);
-            }
             let left = deadline.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 break;
             }
-            match codex.next_change(left.min(SAMPLE_OPEN_CALL), clock.now()) {
-                Some(line) => {
+            match codex.next_change(left, clock.now(), &stop) {
+                Next::Arrived(line) => {
                     let _ = pending.append(&spool, &boot, &[line]);
                 }
-                None if codex.connection.is_none() => {
-                    std::thread::sleep(left.min(SAMPLE_OPEN_CALL));
-                }
-                None => {}
+                Next::Stopped => return pending.append(&spool, &boot, &[]),
+                Next::Quiet | Next::Closed => {}
             }
         }
     }
-    pending.append(&spool, &boot, &[])
 }
 
 /// Runs the writers and the live clock until `stop` fires.
@@ -1100,14 +1132,16 @@ pub(crate) fn run(
             "cannot read boot identity for live event recording",
         ));
     };
-    let codex_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // Dropping the sender stops the Codex status reader at once, wherever
+    // it is waiting.
+    let (codex_stop, codex_stopped) = crossbeam_channel::bounded::<()>(0);
     let codex = {
         let reader = CodexStatus::new(paths.codex_program.clone(), paths.codex_socket.clone());
         let (spool, boot, clock, stop) = (
             paths.spool.clone(),
             boot.clone(),
             clock.clone(),
-            std::sync::Arc::clone(&codex_stop),
+            codex_stopped,
         );
         let status = std::sync::Arc::clone(&daemon.live_spool);
         polylogue_model::spawn_named("polylogue-codex-status", move || {
@@ -1194,7 +1228,7 @@ pub(crate) fn run(
         match stop.recv_timeout(if polled { Duration::ZERO } else { wake }) {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(()) | Err(RecvTimeoutError::Disconnected) => {
-                codex_stop.store(true, std::sync::atomic::Ordering::Release);
+                drop(codex_stop);
                 let mut failure = codex
                     .join()
                     .unwrap_or_else(|_| Err(std::io::Error::other("Codex status worker panicked")))

@@ -520,20 +520,43 @@ fn the_codex_reader_turns_status_notifications_into_lines() {
     let mut reader = CodexStatus::new(program.clone(), socket.clone());
     reader.connection = Some(CodexConnection::open(&program, &socket).unwrap());
     let wait = Duration::from_secs(5);
-    let line = reader.next_change(wait, now()).unwrap();
+    let running = crossbeam_channel::never();
+    let Next::Arrived(line) = reader.next_change(wait, now(), &running) else {
+        panic!("the status change is a line");
+    };
     assert_eq!(line["event"], "ThreadStatus");
     assert_eq!(line["session_id"], thread);
     assert_eq!(line["payload"]["status"], "waitingOnUserInput");
-    assert!(
-        reader.next_change(wait, now()).is_none(),
+    assert_eq!(
+        reader.next_change(wait, now(), &running),
+        Next::Quiet,
         "same status again"
     );
-    assert!(reader.next_change(wait, now()).is_none(), "another method");
-    assert!(
-        reader
-            .next_change(Duration::from_millis(50), now())
-            .is_none()
+    assert_eq!(
+        reader.next_change(wait, now(), &running),
+        Next::Quiet,
+        "another method"
     );
+    assert_eq!(
+        reader.next_change(Duration::from_millis(50), now(), &running),
+        Next::Quiet
+    );
+}
+
+/// A stop ends the reader's wait for a status change at once, connected or
+/// not: the wait is given an hour and the stop is already signalled.
+#[test]
+fn a_stop_ends_the_codex_readers_wait() {
+    let dir = tempfile::tempdir().unwrap();
+    let program = fake_codex(dir.path());
+    let socket = dir.path().join("app-server-control.sock");
+    let hour = Duration::from_secs(3600);
+    let (stop, stopped) = crossbeam_channel::bounded::<()>(0);
+    drop(stop);
+    let mut reader = CodexStatus::new(program.clone(), socket.clone());
+    assert_eq!(reader.next_change(hour, now(), &stopped), Next::Stopped);
+    reader.connection = Some(CodexConnection::open(&program, &socket).unwrap());
+    assert_eq!(reader.next_change(hour, now(), &stopped), Next::Stopped);
 }
 
 /// The live clock announces a session once its instant from the previous
