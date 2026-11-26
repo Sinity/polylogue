@@ -650,7 +650,7 @@ impl Rows {
         let mut m = self.messages.rows.pop_front().expect("looked at");
         m.blocks = conn
             .prepare_cached(
-                "SELECT pk, kind, text_id IS NOT NULL FROM block WHERE message_pk = ?1 ORDER BY idx",
+                "SELECT pk, kind, text_id IS NOT NULL FROM block WHERE message_pk = ?1 ORDER BY position",
             )?
             .query_map([m.pk], |r| {
                 Ok(BlockRow {
@@ -671,7 +671,7 @@ impl Rows {
                  FROM block b CROSS JOIN tool_call t ON t.call_block_pk = b.pk
                  LEFT JOIN message rm ON rm.id = t.result_message_id
                  WHERE b.message_pk = ?1 AND t.session_pk = ?3
-                 ORDER BY b.idx, t.call_id, t.command_norm, t.tool",
+                 ORDER BY b.position, t.call_id, t.command_norm, t.tool",
             )?
             .query_map(params![m.pk, m.at, self.session_pk], |r| {
                 let order: Option<Vec<u8>> = r.get(10)?;

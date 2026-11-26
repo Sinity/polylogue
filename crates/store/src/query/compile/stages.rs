@@ -310,7 +310,7 @@ impl<'a> Compiler<'a> {
             let (expr, kind) = if unit == Unit::Messages && lower == "text" {
                 (
                     format!(
-                        "(SELECT group_concat(pl_text_at(xg.body, tx.start, tx.length), char(10)) FROM (SELECT xb.text_id FROM block xb WHERE xb.message_pk = {}.pk AND xb.kind = 'text' ORDER BY xb.idx) xbs JOIN text tx ON tx.id = xbs.text_id JOIN content_group xg ON xg.id = tx.group_id)",
+                        "(SELECT group_concat(pl_text_at(xg.body, tx.start, tx.length), char(10)) FROM (SELECT xb.text_id FROM block xb WHERE xb.message_pk = {}.pk AND xb.kind = 'text' ORDER BY xb.position) xbs JOIN text tx ON tx.id = xbs.text_id JOIN content_group xg ON xg.id = tx.group_id)",
                         sc.a.m
                     ),
                     ColKind::Text,

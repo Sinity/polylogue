@@ -237,7 +237,7 @@ fn natural_key(table: &str, column: &str) -> Option<String> {
         "message_pk" => "(SELECT x.id FROM message x WHERE x.pk=t.message_pk)".to_owned(),
         "text_id" => "(SELECT hex(x.hash) FROM text x WHERE x.id=t.text_id)".to_owned(),
         "input_pk" => "(SELECT x.id FROM input_ref x WHERE x.pk=t.input_pk)".to_owned(),
-        "call_block_pk" => "(SELECT m.id||'/'||b.idx FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.pk=t.call_block_pk)".to_owned(),
+        "call_block_pk" => "(SELECT m.id||'/'||b.position FROM block b JOIN message m ON m.pk=b.message_pk WHERE b.pk=t.call_block_pk)".to_owned(),
         "event_pk" => "(SELECT x.id FROM event x WHERE x.pk=t.event_pk)".to_owned(),
         "document_pk" => "(SELECT x.id FROM document x WHERE x.pk=t.document_pk)".to_owned(),
         _ => return None,

@@ -124,7 +124,7 @@ fn document_pages_preserve_prefix_and_refuse_cross_content_stale_and_tampered_co
     assert_eq!(continued.document.header, before_unrelated.document.header);
     eprintln!("document pages: corrupt body and preserve readable prefix");
     let index = rusqlite::Connection::open(archive.join("index.db")).unwrap();
-    index.execute("UPDATE document_block SET body=x'00' WHERE idx=2 AND document_pk=(SELECT pk FROM document WHERE id='claude-ai:manual')",[]).unwrap();
+    index.execute("UPDATE document_block SET body=x'00' WHERE position=2 AND document_pk=(SELECT pk FROM document WHERE id='claude-ai:manual')",[]).unwrap();
     drop(index);
     let prefix = reading(&env, reference, &["--budget", "1"]);
     assert!(!prefix.document.items.is_empty());

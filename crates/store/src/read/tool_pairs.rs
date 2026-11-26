@@ -49,14 +49,14 @@ macro_rules! block_columns {
             $as,
             "pk, ",
             $block,
-            ".idx AS ",
+            ".position AS ",
             $as,
-            "idx, ",
+            "position, ",
             "coalesce(",
             $block,
-            ".ordinal, cast(",
+            ".source_position, cast(",
             $block,
-            ".idx AS TEXT)) AS ",
+            ".position AS TEXT)) AS ",
             $as,
             "ordinal, ",
             $message,
@@ -92,7 +92,7 @@ row! {
     /// A shown block at an original position.
     struct BlockAt {
         pk: BlockPk,
-        idx: usize,
+        position: usize,
         ordinal: String,
         message: MessageId,
         session: SessionId,
@@ -107,7 +107,7 @@ row! {
             block_columns!("b", "m", "s", ""),
             " FROM message m JOIN session s ON s.pk=m.session_pk
             JOIN block b ON b.message_pk=m.pk AND b.session_pk=m.session_pk
-            WHERE m.id=?1 AND m.duplicate_of IS NULL AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2"
+            WHERE m.id=?1 AND m.duplicate_of IS NULL AND coalesce(b.source_position,cast(b.position AS TEXT))=?2"
         );
     }
 }
@@ -117,7 +117,7 @@ row! {
     /// belong together.
     struct CallAndResult {
         pk: BlockPk,
-        idx: usize,
+        position: usize,
         ordinal: String,
         message: MessageId,
         session: SessionId,
@@ -126,7 +126,7 @@ row! {
         layout: Option<Vec<u8>>,
         blocks: usize,
         result_pk: Option<BlockPk>,
-        result_idx: Option<usize>,
+        result_position: Option<usize>,
         result_ordinal: Option<String>,
         result_message: Option<MessageId>,
         result_session: Option<SessionId>,
@@ -149,10 +149,10 @@ row! {
             JOIN message cm ON cm.pk=cb.message_pk AND cm.session_pk=t.session_pk
             JOIN session cs ON cs.pk=cm.session_pk
             LEFT JOIN message rm ON rm.id=t.result_message_id
-            LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.idx=t.result_idx
+            LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.position=t.result_position
             LEFT JOIN session rs ON rs.pk=rm.session_pk
             WHERE (t.call_block_pk=?1 OR t.pk IN (SELECT t2.pk FROM block b2 JOIN message m2 ON m2.pk=b2.message_pk
-                JOIN tool_call t2 ON t2.result_message_id=m2.id AND t2.result_idx=b2.idx WHERE b2.pk=?1))
+                JOIN tool_call t2 ON t2.result_message_id=m2.id AND t2.result_position=b2.position WHERE b2.pk=?1))
               AND cm.duplicate_of IS NULL AND t.call_id IS cb.call_id"
         );
     }
@@ -174,7 +174,7 @@ impl BlockFact {
         let ordinal = &block.ordinal;
         Ok(Self {
             pk: block.pk,
-            index: block.idx,
+            index: block.position,
             ordinal: ordinal.parse().map_err(|_| {
                 StoreError::stored_data(format!("block ordinal {ordinal:?} is not a number"))
             })?,
@@ -424,7 +424,7 @@ impl Reader<'_> {
         let matched_row = pair.matched.unwrap_or(false);
         let result = match (
             pair.result_pk,
-            pair.result_idx,
+            pair.result_position,
             pair.result_ordinal,
             pair.result_message,
             pair.result_session,
@@ -432,7 +432,7 @@ impl Reader<'_> {
             (Some(pk), Some(idx), Some(ordinal), Some(message), Some(session)) => {
                 Some(BlockFact::of(BlockAt {
                     pk,
-                    idx,
+                    position: idx,
                     ordinal,
                     message,
                     session,
@@ -446,7 +446,7 @@ impl Reader<'_> {
         };
         let call = BlockFact::of(BlockAt {
             pk: pair.pk,
-            idx: pair.idx,
+            position: pair.position,
             ordinal: pair.ordinal,
             message: pair.message,
             session: pair.session,

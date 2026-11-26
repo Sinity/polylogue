@@ -231,9 +231,9 @@ CREATE TABLE parse_text (
   chain             INTEGER NOT NULL,
   document          INTEGER NOT NULL CHECK (document IN (0,1)),  -- 1: item names a document
   item              TEXT NOT NULL,          -- the message or document ID as the chain names it
-  idx               INTEGER NOT NULL,       -- the block's position in the body
+  position               INTEGER NOT NULL,       -- the block's position in the body
   text_id           INTEGER NOT NULL REFERENCES text(id),
-  PRIMARY KEY (input_pk, chain, document, item, idx)
+  PRIMARY KEY (input_pk, chain, document, item, position)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX parse_text_id ON parse_text(text_id);
 
@@ -381,7 +381,7 @@ CREATE TABLE block (
   pk                INTEGER PRIMARY KEY,
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
   session_pk        INTEGER NOT NULL,       -- its message's session, for block_call
-  idx               INTEGER,                -- compact position among the stored blocks, used for ordering
+  position               INTEGER,                -- compact position among the stored blocks, used for ordering
   kind              TEXT NOT NULL CHECK (kind IN (@names(BlockKind))),
   text_id           INTEGER REFERENCES text(id),
   content_group     INTEGER NOT NULL,       -- the model Block as JSON, with its prose or output text moved to
@@ -398,11 +398,11 @@ CREATE TABLE block (
   url               TEXT,                   -- image/file downloaded from a link
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
-  ordinal           TEXT                    -- original u64 source position; NULL means the dense index the source implies
+  source_position           TEXT                    -- original u64 source position; NULL means the dense index the source implies
 ) STRICT;
 CREATE UNIQUE INDEX text_hash ON text(hash);
 CREATE INDEX text_group_member ON text(group_id);  -- whether a group still holds a text
-CREATE UNIQUE INDEX block_message ON block(message_pk, idx);
+CREATE UNIQUE INDEX block_message ON block(message_pk, position);
 CREATE INDEX block_text   ON block(text_id) WHERE text_id IS NOT NULL;   -- search hit -> blocks
 
 -- Full-text entries are not in this file: they live in the full-text files
@@ -433,7 +433,7 @@ CREATE TABLE tool_call (
   result_at         INTEGER,
   reported_duration_ms INTEGER,
   result_message_id TEXT,                   -- the result's message and block position, NULL while no
-  result_idx        INTEGER,                --   result is shown: the first tool_result block with the
+  result_position        INTEGER,                --   result is shown: the first tool_result block with the
                                             --   call's ID in session order
   at                INTEGER,
   tool              TEXT NOT NULL,
@@ -755,13 +755,13 @@ CREATE TABLE document (
 ) STRICT;
 CREATE TABLE document_block (
   document_pk INTEGER NOT NULL REFERENCES document(pk) ON DELETE CASCADE,
-  idx INTEGER NOT NULL,
+  position INTEGER NOT NULL,
   kind TEXT NOT NULL,
   body BLOB NOT NULL,
   text_id INTEGER REFERENCES text(id),
   blob_hash BLOB,
   data BLOB,                                -- as block.data
-  PRIMARY KEY(document_pk,idx)
+  PRIMARY KEY(document_pk,position)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
 
@@ -786,12 +786,12 @@ CREATE INDEX import_member_sidecar ON import_member(input) WHERE sidecar IS NOT 
 CREATE TABLE import_asset_metadata (
   input TEXT NOT NULL,
   sidecar TEXT NOT NULL,
-  ordinal INTEGER NOT NULL,
+  position INTEGER NOT NULL,
   source_id TEXT NOT NULL,
   name TEXT,
   media_type TEXT,
   size TEXT,
-  PRIMARY KEY(input,sidecar,ordinal)
+  PRIMARY KEY(input,sidecar,position)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX import_asset_metadata_id ON import_asset_metadata(input,sidecar,source_id);
 CREATE TABLE import_asset_sidecar (
@@ -811,10 +811,10 @@ CREATE INDEX tool_call_script ON tool_call(session_pk) WHERE run_by_script = 1;
 -- Recomputed comparison state for tool-database inputs.
 CREATE TABLE tool_row (
     input_pk INTEGER NOT NULL REFERENCES input_ref(pk) ON DELETE CASCADE,
-    tbl TEXT NOT NULL,
+    table_name TEXT NOT NULL,
     key TEXT NOT NULL,
     hash BLOB NOT NULL,
-    PRIMARY KEY(input_pk,tbl,key)
+    PRIMARY KEY(input_pk,table_name,key)
 ) WITHOUT ROWID;
 CREATE TABLE tool_database (
     input_pk INTEGER PRIMARY KEY REFERENCES input_ref(pk) ON DELETE CASCADE,
@@ -829,13 +829,13 @@ CREATE TABLE live_interval (
   session_pk INTEGER NOT NULL REFERENCES session(pk),
   aspect     TEXT NOT NULL,                 -- activity | waiting_on | stall
   value      TEXT NOT NULL,
-  start_at   INTEGER NOT NULL,
-  end_at     INTEGER NOT NULL,
+  started_at   INTEGER NOT NULL,
+  ended_at     INTEGER NOT NULL,
   closed_by  TEXT NOT NULL,                 -- the kind of the live event that closed it
   closed     BLOB NOT NULL,                 -- that event's place in the live summary (summary/live.rs)
-  PRIMARY KEY (session_pk, aspect, start_at)
+  PRIMARY KEY (session_pk, aspect, started_at)
 ) STRICT;
-CREATE INDEX live_interval_end ON live_interval(end_at);
+CREATE INDEX live_interval_end ON live_interval(ended_at);
 CREATE INDEX live_interval_closed ON live_interval(session_pk, closed);
 
 -- Processes of live sessions from the process watcher's lines: the harness

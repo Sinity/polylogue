@@ -347,7 +347,7 @@ impl WriterArchive {
         assert_eq!(
             index
                 .execute(
-                    "UPDATE document_block SET body=x'00' WHERE idx=?1",
+                    "UPDATE document_block SET body=x'00' WHERE position=?1",
                     [i64::try_from(ordinal).unwrap()],
                 )
                 .unwrap(),

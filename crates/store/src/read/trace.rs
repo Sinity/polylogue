@@ -56,7 +56,7 @@ impl Reader<'_> {
                     conn.scalar_optional("SELECT pk FROM message WHERE id=?1", [id.to_string()])?;
                 let Some(pk) = pk else { return Ok(None) };
                 if let Reference::Block { n, .. } = reference {
-                    let present = conn.exists("SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2)", params![pk, n.to_string()])?;
+                    let present = conn.exists("SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND coalesce(source_position,cast(position AS TEXT))=?2)", params![pk, n.to_string()])?;
                     if !present {
                         return Err(StoreError::ReferenceUnavailable {
                             reference: reference.to_string(),

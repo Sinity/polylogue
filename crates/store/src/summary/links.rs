@@ -92,7 +92,7 @@ fn result(conn: &Connection, call_pk: i64) -> Result<Option<String>> {
             "SELECT rg.body, rt.start, rt.length, rb.content_group, rb.content_start,
                  rb.content_length, rb.data_length FROM tool_call t
              LEFT JOIN message rm ON rm.id = t.result_message_id
-             LEFT JOIN block rb ON rb.message_pk = rm.pk AND rb.idx = t.result_idx
+             LEFT JOIN block rb ON rb.message_pk = rm.pk AND rb.position = t.result_position
              LEFT JOIN text rt ON rt.id = rb.text_id
              LEFT JOIN content_group rg ON rg.id = rt.group_id WHERE t.pk = ?1",
         )?

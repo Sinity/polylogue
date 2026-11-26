@@ -926,11 +926,11 @@ fn move_out(
         // A message's text rows also carry the key of its reading in the
         // composition stream, which the load gives each its text key under.
         let mut statement = tx.prepare_cached(
-            "SELECT p.chain,p.document,p.item,p.idx,t.hash,m.session_id FROM parse_text p
+            "SELECT p.chain,p.document,p.item,p.position,t.hash,m.session_id FROM parse_text p
              JOIN text t ON t.id=p.text_id
              LEFT JOIN message_parse m ON p.document=0 AND m.input_pk=p.input_pk AND m.chain=p.chain
                  AND m.message_id=p.item
-             ORDER BY p.document,p.item,p.idx",
+             ORDER BY p.document,p.item,p.position",
         )?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
@@ -1650,9 +1650,11 @@ impl Inner {
                         composing,
                         table: Table::new(
                             "parse_text".into(),
-                            ["input_pk", "chain", "document", "item", "idx", "text_id"]
-                                .map(String::from)
-                                .to_vec(),
+                            [
+                                "input_pk", "chain", "document", "item", "position", "text_id",
+                            ]
+                            .map(String::from)
+                            .to_vec(),
                             "",
                         ),
                     }))

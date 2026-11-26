@@ -333,7 +333,7 @@ fn summaries(w: &WriterArchive) -> Json {
         ),
         (
             "values",
-            "SELECT s.id, field, value, n FROM session_value v JOIN session s ON s.pk = v.session_pk
+            "SELECT s.id, field, value, count FROM session_value v JOIN session s ON s.pk = v.session_pk
              WHERE n > 0 ORDER BY s.id, field, value",
         ),
         (
@@ -360,8 +360,8 @@ fn summaries(w: &WriterArchive) -> Json {
         ),
         (
             "intervals",
-            "SELECT s.id, aspect, value, start_at, end_at, closed_by FROM live_interval i
-             JOIN session s ON s.pk = i.session_pk ORDER BY s.id, aspect, start_at",
+            "SELECT s.id, aspect, value, started_at, ended_at, closed_by FROM live_interval i
+             JOIN session s ON s.pk = i.session_pk ORDER BY s.id, aspect, started_at",
         ),
         (
             "lines",

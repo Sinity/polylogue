@@ -545,8 +545,8 @@ const MESSAGE_COLUMNS: &str = "m.pk, m.id, m.session_order,
     m.on_active_path, m.at,
     EXISTS(SELECT 1 FROM message c WHERE c.session_pk = m.session_pk AND c.parent_id = m.id
            AND c.duplicate_of IS NULL LIMIT 1 OFFSET 1),
-    (SELECT group_concat(o, ',') FROM (SELECT coalesce(CAST(b.ordinal AS INTEGER), b.idx) AS o
-                                      FROM block b WHERE b.message_pk = m.pk ORDER BY b.idx)),
+    (SELECT group_concat(o, ',') FROM (SELECT coalesce(CAST(b.source_position AS INTEGER), b.position) AS o
+                                      FROM block b WHERE b.message_pk = m.pk ORDER BY b.position)),
     m.model";
 
 /// The columns an event is read with. The data a line needs is read only
@@ -1237,8 +1237,8 @@ fn message_body(conn: &Connection, pk: i64) -> Result<(Message, Vec<u64>)> {
     let mut blocks = Vec::new();
     let mut ordinals = Vec::new();
     let mut statement = conn.prepare_cached(&format!(
-        "SELECT b.pk, coalesce(CAST(b.ordinal AS INTEGER), b.idx), {}
-         FROM block b {} WHERE b.message_pk = ?1 ORDER BY b.idx",
+        "SELECT b.pk, coalesce(CAST(b.source_position AS INTEGER), b.position), {}
+         FROM block b {} WHERE b.message_pk = ?1 ORDER BY b.position",
         crate::ordered_blocks::COLUMNS,
         crate::ordered_blocks::TEXT_JOIN
     ))?;

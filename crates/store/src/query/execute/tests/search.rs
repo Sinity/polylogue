@@ -408,7 +408,7 @@ fn shared_body_outside_scope(fixture: &mut Fixture, message: &str, count: usize)
     let write = crate::archive::open_write(&fixture.archive.index_db(), 1024).unwrap();
     write
         .execute(
-            "INSERT INTO block(message_pk,session_pk,idx,kind,text_id,content_group,content_start,content_length,data_length) \
+            "INSERT INTO block(message_pk,session_pk,position,kind,text_id,content_group,content_start,content_length,data_length) \
          SELECT m.pk,m.session_pk,0,source.kind,source.text_id,source.content_group,source.content_start,source.content_length,source.data_length \
          FROM message m JOIN session s ON s.pk=m.session_pk \
          CROSS JOIN block source JOIN message source_message ON source_message.pk=source.message_pk \

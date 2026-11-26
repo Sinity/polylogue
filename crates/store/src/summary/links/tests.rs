@@ -208,7 +208,7 @@ fn compound_commands_keep_text_and_result_source() {
                 &json!({"type":"tool_result", "outcome":{"kind":"ok"}, "output":output}),
             )
             .unwrap();
-            let result: i64 = index.query_row("SELECT b.pk FROM tool_call t JOIN message m ON m.id=t.result_message_id JOIN block b ON b.message_pk=m.pk AND b.idx=t.result_idx", [], |r| r.get(0)).unwrap();
+            let result: i64 = index.query_row("SELECT b.pk FROM tool_call t JOIN message m ON m.id=t.result_message_id JOIN block b ON b.message_pk=m.pk AND b.position=t.result_position", [], |r| r.get(0)).unwrap();
             index
                 .execute("UPDATE block SET text_id=NULL WHERE pk=?1", [result])
                 .unwrap();

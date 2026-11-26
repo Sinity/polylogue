@@ -473,7 +473,7 @@ fn write_texts(
         let Some(hash) = hash else { continue };
         let id = crate::text_rows::resolve(tx, hash, packed.get(hash))?;
         tx.prepare_cached(
-            "INSERT INTO parse_text(input_pk,chain,document,item,idx,text_id) VALUES (?1,?2,?3,?4,?5,?6)",
+            "INSERT INTO parse_text(input_pk,chain,document,item,position,text_id) VALUES (?1,?2,?3,?4,?5,?6)",
         )?
         .execute(params![chain.input_pk, chain.chain, document, item, idx as i64, id])?;
     }
@@ -1103,7 +1103,7 @@ pub(crate) fn text_ids(
 ) -> Result<BTreeMap<usize, i64>> {
     Ok(conn
         .prepare_cached(
-            "SELECT idx,text_id FROM parse_text WHERE input_pk=?1 AND chain=?2 AND document=?3 AND item=?4",
+            "SELECT position,text_id FROM parse_text WHERE input_pk=?1 AND chain=?2 AND document=?3 AND item=?4",
         )?
         .query_map(params![input_pk, chain, document, item], |row| {
             Ok((row.get::<_, i64>(0)? as usize, row.get(1)?))
@@ -1120,9 +1120,9 @@ fn restore_texts(
     blocks: &mut [Block],
 ) -> Result<()> {
     let mut statement = conn.prepare_cached(
-        "SELECT r.idx,g.body,t.start,t.length FROM parse_text r JOIN text t ON t.id=r.text_id
+        "SELECT r.position,g.body,t.start,t.length FROM parse_text r JOIN text t ON t.id=r.text_id
          JOIN content_group g ON g.id=t.group_id
-         WHERE r.input_pk=?1 AND r.chain=?2 AND r.document=?3 AND r.item=?4 ORDER BY r.idx",
+         WHERE r.input_pk=?1 AND r.chain=?2 AND r.document=?3 AND r.item=?4 ORDER BY r.position",
     )?;
     let mut rows = statement.query(params![input_pk, chain, document, item])?;
     while let Some(row) = rows.next()? {

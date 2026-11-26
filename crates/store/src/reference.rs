@@ -314,7 +314,7 @@ impl<'a> ReferenceText<'a> {
         while let Some(row) = rows.next()? {
             self.require_complete_message(row.get(0)?, &reference)?;
         }
-        let mut statement = conn.prepare_cached(&format!("SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE {RANGE} AND b.kind IN ('text','thinking','tool_result') ORDER BY m.session_order,m.id,b.idx"))?;
+        let mut statement = conn.prepare_cached(&format!("SELECT b.pk FROM message m JOIN block b ON b.message_pk=m.pk WHERE {RANGE} AND b.kind IN ('text','thinking','tool_result') ORDER BY m.session_order,m.id,b.position"))?;
         let mut rows = statement.query(params![first.0, first.1, first.2, last.1, last.2])?;
         let mut text = Text {
             visit,

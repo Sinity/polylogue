@@ -321,7 +321,7 @@ fn tool_call_hits(a: &Aliases, h: &Hits<'_>) -> Option<HitRelation> {
         return None;
     }
     let from = format!(
-        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk = {t}.call_block_pk OR (xb.idx = {t}.result_idx AND xb.message_pk = (SELECT xr.pk FROM message xr WHERE xr.id = {t}.result_message_id))",
+        "FROM {cte} h JOIN block xb ON xb.text_id = h.text_id WHERE xb.pk = {t}.call_block_pk OR (xb.position = {t}.result_position AND xb.message_pk = (SELECT xr.pk FROM message xr WHERE xr.id = {t}.result_message_id))",
         cte = h.cte,
         t = a.t
     );
@@ -451,7 +451,7 @@ fn turns_from(a: &Aliases) -> String {
 pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
     let cmp = if previous { "<" } else { ">" };
     let dir = if previous { " DESC" } else { "" };
-    let order = ["qm.session_order", "qm.id", "qb.idx"];
+    let order = ["qm.session_order", "qm.id", "qb.position"];
     format!(
         "SELECT tq.pk FROM tool_call tq JOIN block qb ON qb.pk = tq.call_block_pk JOIN message qm ON qm.pk = qb.message_pk WHERE tq.session_pk = {}.session_pk AND {} AND {} AND ({}) {cmp} ({}) ORDER BY {} LIMIT 1",
         a.t,
@@ -461,7 +461,7 @@ pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
         [
             format!("{}.session_order", a.m),
             format!("{}.id", a.m),
-            format!("{}.idx", a.cb)
+            format!("{}.position", a.cb)
         ]
         .join(", "),
         order
@@ -475,7 +475,7 @@ pub fn adjacent_call(a: &Aliases, previous: bool) -> String {
 /// Position in the complete counted-call scope, before query filtering.
 pub fn call_position(a: &Aliases) -> String {
     format!(
-        "(SELECT count(*) FROM tool_call pt JOIN block pb ON pb.pk=pt.call_block_pk JOIN message pm ON pm.pk=pb.message_pk WHERE pt.session_pk={}.session_pk AND {} AND {} AND (pm.session_order,pm.id,pb.idx) <= ({}.session_order,{}.id,{}.idx))",
+        "(SELECT count(*) FROM tool_call pt JOIN block pb ON pb.pk=pt.call_block_pk JOIN message pm ON pm.pk=pb.message_pk WHERE pt.session_pk={}.session_pk AND {} AND {} AND (pm.session_order,pm.id,pb.position) <= ({}.session_order,{}.id,{}.position))",
         a.t,
         fields::own_messages("pm", None),
         fields::counts_as_action("pt"),
@@ -573,12 +573,12 @@ static BLOCKS: UnitSpec = UnitSpec {
         "message {m} CROSS JOIN block {b} ON {b}.message_pk = {m}.pk JOIN session {s} ON {s}.pk = {b}.session_pk",
     ),
     key: "{b}.pk",
-    identity: &["{m}.id", "{b}.idx"],
+    identity: &["{m}.id", "{b}.position"],
     columns: &[
         ("session", Expr::Template("{s}.id"), Text),
         ("message", T("{m}.id"), Text),
         ("kind", T("{b}.kind"), Text),
-        ("idx", T("{b}.idx"), Number),
+        ("idx", T("{b}.position"), Number),
         ("at", T("{m}.at"), Time),
     ],
     time: "{m}.at",
@@ -596,7 +596,7 @@ static BLOCKS: UnitSpec = UnitSpec {
             "call",
             Unit::ToolCalls,
             Via::Exists {
-                cond: "EXISTS (SELECT 1 FROM {from} WHERE ({nt}.call_block_pk = {b}.pk OR ({nt}.result_idx = {b}.idx AND {nt}.result_message_id = (SELECT xr.id FROM message xr WHERE xr.pk = {b}.message_pk))) AND {cond})",
+                cond: "EXISTS (SELECT 1 FROM {from} WHERE ({nt}.call_block_pk = {b}.pk OR ({nt}.result_position = {b}.position AND {nt}.result_message_id = (SELECT xr.id FROM message xr WHERE xr.pk = {b}.message_pk))) AND {cond})",
                 value: None,
             },
         ),
@@ -610,7 +610,7 @@ static TOOL_CALLS: UnitSpec = UnitSpec {
          JOIN message {m} ON {m}.pk = {cb}.message_pk JOIN session {s} ON {s}.pk = {t}.session_pk",
     ),
     key: "{t}.pk",
-    identity: &["{m}.id", "{cb}.idx"],
+    identity: &["{m}.id", "{cb}.position"],
     columns: &[
         ("session", Expr::Template("{s}.id"), Text),
         ("message", T("{m}.id"), Text),
@@ -884,21 +884,21 @@ static DELIVERIES: UnitSpec = UnitSpec {
 static LIVE_INTERVALS: UnitSpec = UnitSpec {
     from: Expr::Template("live_interval {r} JOIN session {s} ON {s}.pk = {r}.session_pk"),
     key: "{r}.rowid",
-    identity: &["{s}.id", "{r}.aspect", "{r}.start_at"],
+    identity: &["{s}.id", "{r}.aspect", "{r}.started_at"],
     columns: &[
         ("session", Expr::Template("{s}.id"), Text),
         ("aspect", T("{r}.aspect"), Text),
         ("value", T("{r}.value"), Text),
-        ("start", T("{r}.start_at"), Time),
-        ("end", T("{r}.end_at"), Time),
-        ("duration_ms", T("({r}.end_at - {r}.start_at)"), Number),
+        ("start", T("{r}.started_at"), Time),
+        ("end", T("{r}.ended_at"), Time),
+        ("duration_ms", T("({r}.ended_at - {r}.started_at)"), Number),
         ("closed_by", T("{r}.closed_by"), Text),
     ],
-    time: "{r}.start_at",
+    time: "{r}.started_at",
     newest_first: false,
     session_order: false,
-    since: Some("{r}.end_at >= {v}"),
-    until: Some("{r}.start_at < {v}"),
+    since: Some("{r}.ended_at >= {v}"),
+    until: Some("{r}.started_at < {v}"),
     session_pk: "{r}.session_pk",
     session_scope: None,
     search: Search::None,

@@ -197,7 +197,7 @@ fn composed_rows(w: &TestArchive) -> Vec<String> {
                 m.input_tokens,m.output_tokens,m.stop_reason,m.attrs_json,m.words,m.cost_nusd
          FROM message m JOIN session s ON s.pk=m.session_pk JOIN input_ref i ON i.pk=m.input_pk",
         "SELECT r.field_group,i.id,r.chain FROM message_route r JOIN input_ref i ON i.pk=r.input_pk",
-        "SELECT b.idx,b.kind,(SELECT pl_text_at(g.body,b.content_start,b.content_length) FROM content_group g WHERE g.id=b.content_group),t.id IS NOT NULL FROM block b LEFT JOIN text t ON t.id=b.text_id",
+        "SELECT b.position,b.kind,(SELECT pl_text_at(g.body,b.content_start,b.content_length) FROM content_group g WHERE g.id=b.content_group),t.id IS NOT NULL FROM block b LEFT JOIN text t ON t.id=b.text_id",
         "SELECT i.id,s.chain,s.route,s.completion,hex(s.hash) FROM message_parse s
          JOIN input_ref i ON i.pk=s.input_pk",
     ] {

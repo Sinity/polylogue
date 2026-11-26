@@ -607,7 +607,7 @@ pub fn rule(id: FieldId) -> Rule {
         BlocksSince => Rule::NONE.custom(custom::since),
         BlocksUntil => Rule::NONE.custom(custom::until),
         ToolCallsMessage => Rule::NONE.sql("{m}.id"),
-        ToolCallsIdx => Rule::NONE.sql("{cb}.idx"),
+        ToolCallsIdx => Rule::NONE.sql("{cb}.position"),
         ToolCallsPosition => Rule::NONE.sql_fn(super::units::call_position),
         ToolCallsTool => Rule::NONE.sql("{t}.tool"),
         ToolCallsMcpServer => Rule::NONE.custom(custom::mcp_server).sql(

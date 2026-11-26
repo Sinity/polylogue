@@ -1000,8 +1000,8 @@ impl<'c> Work<'_, 'c> {
         let stored = self
             .tx()
             .prepare_cached(
-                "SELECT idx,content_group,content_start,content_length,data_length FROM block
-                 WHERE message_pk=?1 ORDER BY idx",
+                "SELECT position,content_group,content_start,content_length,data_length FROM block
+                 WHERE message_pk=?1 ORDER BY position",
             )?
             .query_map([message_pk], |r| {
                 Ok((r.get::<_, i64>(0)?, crate::content::Piece::of(r, 1)?))
@@ -1016,7 +1016,7 @@ impl<'c> Work<'_, 'c> {
                 self.tx()
                     .prepare_cached(
                         "UPDATE block SET content_group=?3,content_start=?4,content_length=?5,data_length=?6
-                         WHERE message_pk=?1 AND idx=?2",
+                         WHERE message_pk=?1 AND position=?2",
                     )?
                     .execute(params![
                         message_pk,
@@ -1133,7 +1133,7 @@ impl<'c> Work<'_, 'c> {
         let origin = m.session.origin().as_str().to_owned();
         let at = m.at.map(Timestamp::unix_ms);
         let mut insert = self.tx().prepare_cached(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+            "INSERT INTO block(message_pk, session_pk, position, kind, text_id, content_group,
                  content_start, content_length, data_length, call_id, blob_hash, media_type,
                  file_name, size, url, direction, encrypted, other_type, ordinal)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
@@ -1252,7 +1252,7 @@ impl<'c> Work<'_, 'c> {
             .prepare_cached(
                 "INSERT INTO tool_call(session_pk, call_block_pk, call_id, at, tool, action,
                      command, path, outcome, outcome_reason, run_by_script, command_norm,
-                     result_message_id, result_idx, exit_code, result_at, reported_duration_ms)
+                     result_message_id, result_position, exit_code, result_at, reported_duration_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
             )?
             .execute(params![
@@ -1326,10 +1326,10 @@ impl<'c> Work<'_, 'c> {
             let result: Option<(String, i64, crate::content::Piece, Option<i64>)> = self
                 .tx()
                 .prepare_cached(
-                    "SELECT m.id,b.idx,b.content_group,b.content_start,b.content_length,b.data_length,m.at
+                    "SELECT m.id,b.position,b.content_group,b.content_start,b.content_length,b.data_length,m.at
                      FROM block b JOIN message m ON m.pk=b.message_pk
                      WHERE b.session_pk=?1 AND b.call_id=?2 AND b.kind='tool_result'
-                     ORDER BY m.session_order,m.id,b.idx LIMIT 1",
+                     ORDER BY m.session_order,m.id,b.position LIMIT 1",
                 )?
                 .query_row(params![session_pk, call_id], |r| {
                     Ok((r.get(0)?, r.get(1)?, crate::content::Piece::of(r, 2)?, r.get(6)?))
@@ -1346,7 +1346,7 @@ impl<'c> Work<'_, 'c> {
             let columns = Pairing::of(result, background.as_ref());
             let same = self.tx().exists(
                 "SELECT NOT EXISTS(SELECT 1 FROM tool_call WHERE session_pk=?1 AND call_id=?2 AND NOT (
-                     result_message_id IS ?3 AND result_idx IS ?4 AND outcome IS ?5 AND outcome_reason IS ?6
+                     result_message_id IS ?3 AND result_position IS ?4 AND outcome IS ?5 AND outcome_reason IS ?6
                      AND exit_code IS ?7 AND result_at IS ?8 AND reported_duration_ms IS ?9))",
                 params![session_pk, call_id, columns.message, columns.idx, columns.outcome, columns.reason, columns.exit, columns.result_at, columns.duration],
             )?;
@@ -1359,7 +1359,7 @@ impl<'c> Work<'_, 'c> {
             self.context.changes.session(session_pk);
             self.tx()
                 .prepare_cached(
-                    "UPDATE tool_call SET result_message_id=?3,result_idx=?4,outcome=?5,outcome_reason=?6,
+                    "UPDATE tool_call SET result_message_id=?3,result_position=?4,outcome=?5,outcome_reason=?6,
                          exit_code=?7,result_at=?8,reported_duration_ms=?9
                      WHERE session_pk=?1 AND call_id=?2",
                 )?
@@ -2049,7 +2049,7 @@ impl<'c> Work<'_, 'c> {
                 _ => None,
             };
             self.tx().execute(
-                "INSERT INTO document_block(document_pk,idx,kind,body,text_id,blob_hash,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                "INSERT INTO document_block(document_pk,position,kind,body,text_id,blob_hash,data) VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 params![pk, idx as i64, block.kind().as_str(), body, text, blob, data],
             )?;
         }

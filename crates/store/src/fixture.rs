@@ -417,7 +417,7 @@ impl Fixture {
     ) -> Result<i64> {
         let piece = crate::content::store_piece(&self.index, &serde_json::to_vec(&body)?, None)?;
         self.index.execute(
-            "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+            "INSERT INTO block(message_pk, session_pk, position, kind, text_id, content_group,
                  content_start, content_length)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
@@ -509,7 +509,7 @@ impl Fixture {
     /// result block when `output` is given.
     pub fn tool_call(&mut self, session_pk: i64, message_pk: i64, t: CallFacts<'_>) -> Result<i64> {
         let idx: i64 = self.index.scalar(
-            "SELECT COALESCE(max(idx), -1) + 1 FROM block WHERE message_pk = ?1",
+            "SELECT COALESCE(max(position), -1) + 1 FROM block WHERE message_pk = ?1",
             [message_pk],
         )?;
         let call = self.block(
@@ -536,7 +536,7 @@ impl Fixture {
             None => None,
         };
         self.index.execute(
-            "INSERT INTO tool_call(session_pk, call_block_pk, call_id, result_message_id, result_idx, at, tool,
+            "INSERT INTO tool_call(session_pk, call_block_pk, call_id, result_message_id, result_position, at, tool,
                  action, command, command_norm, path, outcome, exit_code)
              VALUES (?1, ?2, ?3, (SELECT id FROM message WHERE pk=?4), ?12, ?5, ?6, ?7, ?8, ?8, ?9, ?10, ?11)",
             params![
@@ -610,7 +610,7 @@ impl Fixture {
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1, 3, 'instant')",
             )?;
             let mut block = tx.prepare(
-                "INSERT INTO block(message_pk, session_pk, idx, kind, text_id, content_group,
+                "INSERT INTO block(message_pk, session_pk, position, kind, text_id, content_group,
                      content_start, content_length)
                  VALUES (?1, ?2, 0, 'text', ?3, ?4, ?5, ?6)",
             )?;

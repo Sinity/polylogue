@@ -101,7 +101,7 @@ impl<'a> Compiler<'a> {
         if !self.ctes.iter().any(|c| c.starts_with(ord_cte)) {
             self.ctes.push(format!(
                 "{ord_cte} AS (SELECT t.pk AS pk, t.session_pk AS session_pk, t.at AS at, \
-                 row_number() OVER (PARTITION BY t.session_pk ORDER BY m.session_order, m.id, cb.idx) AS n \
+                 row_number() OVER (PARTITION BY t.session_pk ORDER BY m.session_order, m.id, cb.position) AS n \
                  FROM tool_call t JOIN block cb ON cb.pk = t.call_block_pk JOIN message m ON m.pk = cb.message_pk \
                  WHERE {} AND {})",
                 fields::own_messages("m", None), fields::counts_as_action("t")
@@ -426,8 +426,8 @@ fn row_reference(scope: &RowContext) -> Result<String, QueryError> {
     Ok(match scope.unit {
         Unit::Sessions => format!("'session:' || {}.id", a.s),
         Unit::Messages => format!("'message:' || {}.id", a.m),
-        Unit::Blocks => format!("'block:' || {}.id || '#' || {}.idx", a.m, a.b),
-        Unit::ToolCalls => format!("'block:' || {}.id || '#' || {}.idx", a.m, a.cb),
+        Unit::Blocks => format!("'block:' || {}.id || '#' || {}.position", a.m, a.b),
+        Unit::ToolCalls => format!("'block:' || {}.id || '#' || {}.position", a.m, a.cb),
         Unit::Documents => format!("'document:' || {}.id", a.row),
         Unit::Events => format!("'event:' || {}.id", a.row),
         Unit::Annotations => format!("'annotation:' || {}.id", a.row),
