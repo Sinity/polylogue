@@ -415,8 +415,6 @@ pub struct Server {
     thread: Option<JoinHandle<std::io::Result<()>>>,
     socket: Option<PathBuf>,
     listener_stopped: Option<tokio::sync::oneshot::Receiver<()>>,
-    #[cfg(test)]
-    wakeups: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Server {
@@ -429,22 +427,13 @@ impl Server {
             hangups: super::hangup::Watcher::start()?,
             clients: Clients::default(),
         });
-        #[cfg(test)]
-        let wakeups = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut server = Self {
             stop: Some(stop),
             thread: None,
             socket: Some(daemon.archive.socket()),
             listener_stopped: Some(listener_stopped),
-            #[cfg(test)]
-            wakeups: Arc::clone(&wakeups),
         };
-        let accept = Accept {
-            listener,
-            stopped,
-            #[cfg(test)]
-            wakeups,
-        };
+        let accept = Accept { listener, stopped };
         server.thread = Some(polylogue_model::spawn_named(
             "polylogue-socket",
             move || listen(accept, shared, stopped_sender),
@@ -487,12 +476,6 @@ impl Server {
             .take()
             .ok_or_else(|| std::io::Error::other("socket lifecycle already observed"))
     }
-
-    /// How often the listener thread has woken.
-    #[cfg(test)]
-    pub(crate) fn wakeups(&self) -> u64 {
-        self.wakeups.load(std::sync::atomic::Ordering::Relaxed)
-    }
 }
 
 impl Drop for Server {
@@ -514,8 +497,6 @@ pub fn bind(daemon: &Daemon) -> std::io::Result<UnixListener> {
 struct Accept {
     listener: UnixListener,
     stopped: UnixStream,
-    #[cfg(test)]
-    wakeups: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Accept {
@@ -533,9 +514,6 @@ impl Accept {
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(error) => return Err(error.into()),
             }
-            #[cfg(test)]
-            self.wakeups
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if !events[1].revents().is_empty() {
                 return Ok(None);
             }

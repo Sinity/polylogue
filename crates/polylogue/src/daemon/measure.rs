@@ -171,13 +171,7 @@ pub static MEASURES: &[Measure] = &[
         paging: None,
         argument: None,
         metrics: &[],
-        run: |r, x| {
-            let known: Vec<_> = polylogue_sources::ORIGINS
-                .iter()
-                .filter_map(|origin| Some((origin.name, origin.quota?)))
-                .collect();
-            json(quota::quota(r, x.now, &known))
-        },
+        run: |r, x| json(quota::quota(r, x.now, &quota_limits())),
         text: |data, _| text::quota(data),
     },
     Measure {
@@ -365,6 +359,15 @@ pub fn find_checked(what: &str) -> Result<(&'static Measure, &str), Failure> {
         return Err(bad_request(format!("{} takes no arguments", m.name)));
     }
     Ok((m, metric))
+}
+
+/// The origins that run under a subscription quota, with the limits each
+/// always has.
+pub(crate) fn quota_limits() -> Vec<(&'static str, &'static [polylogue_model::QuotaLimit])> {
+    polylogue_sources::ORIGINS
+        .iter()
+        .filter_map(|origin| Some((origin.name, origin.quota?)))
+        .collect()
 }
 
 #[cfg(test)]

@@ -200,7 +200,7 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
     for step in announced.try_iter() {
         archive.record_build_step(step, polylogue_model::Timestamp::from_unix_ms(1).unwrap());
     }
-    let progress = archive.build_progress().unwrap();
+    let (_, progress) = archive.build_progress().unwrap();
     crate::fault::release();
     built.recv().unwrap().unwrap();
     crate::fault::clear();

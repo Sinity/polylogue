@@ -88,9 +88,7 @@ impl SharedScopeIndex {
     }
 }
 
-/// The worker that keeps [`SharedScopeIndex`] and the status snapshot
-/// current and, after each commit, hands delivery records that found the
-/// writer's queue full to the writer.
+/// The worker that keeps [`SharedScopeIndex`] and the status snapshot current.
 pub(crate) struct ScopeWorker {
     stop: Arc<AtomicBool>,
     expected_exit: Arc<AtomicBool>,
@@ -140,11 +138,6 @@ impl ScopeWorker {
                         daemon.status_snapshot.clear(&daemon);
                     }
                     result?;
-                    if let Some(writes) = &daemon.writes
-                        && let Err(error) = daemon.queued_deliveries.hand_over(writes)
-                    {
-                        polylogue_store::log!(warning, "queued deliveries: {error}");
-                    }
                     Ok(())
                 },
             );

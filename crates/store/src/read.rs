@@ -426,14 +426,17 @@ pub struct Status {
     pub tool_calls: u64,
     pub inputs: u64,
     pub revisions: u64,
-    /// Bytes of input content stored (uncompressed).
+    /// Bytes of input content stored, decoded: what the inputs hold, not
+    /// what the segment log takes on disk.
     pub stored_bytes: u64,
     /// Input chains by how they are shown (`model::chain::ChainStatusName`:
     /// `parsing`, `repeated`, `no_parser`, `done`, `waiting`, `refused`,
     /// `failed`).
     pub parse_states: BTreeMap<String, u64>,
-    /// The most frequent record kinds and fields parsers did not read.
+    /// The 20 record kinds and fields parsers did not read most often.
     pub unused: Vec<(String, u64)>,
+    /// How many record kinds and fields parsers did not read, all of them.
+    pub unused_fields: u64,
     /// Texts stored but not yet in the search index: how far search lags
     /// the writer.
     pub search_pending: u64,
@@ -1463,6 +1466,7 @@ impl Reader<'_> {
             stored_bytes: count("SELECT n FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
             unused,
+            unused_fields: count("SELECT count(*) FROM unused_count WHERE n > 0")?,
             search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
             capture_coverage: self.all_capture_coverage()?,
             index_rebuild: crate::archive::index_rebuild::status(c, &self.pool.archive)?,
