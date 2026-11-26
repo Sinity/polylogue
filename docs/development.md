@@ -125,8 +125,7 @@ the complete staged Rust set; the declared `fmt` operation uses that shell too.
 Formatting supplies an unused local target directory and selects no compiler
 cache. The lock operation likewise supplies an unused local target before shell
 entry because dependency resolution uses no compiler artifacts. There is no push
-hook. GitHub Actions runs `cargo xtask check --base HEAD^1` for every pull request
-(affected tests) and `cargo xtask check` for every master push.
+hook.
 
 `direnv allow` loads the same shell through `.envrc`, which reloads when the
 toolchain or Nix files change. The git-ignored `.envrc.local` holds personal
@@ -164,6 +163,35 @@ builds do not overlap a metadata check. Full checks and Nix checks keep
 their `bulk` queue. The `package` operation runs all locked Nix checks;
 `nix build` builds the package alone.
 
+## Hosted check
+
+GitHub Actions runs the `check` workflow for every pull request, master push
+and manual run. Its jobs run in parallel, each one xtask command that
+`cargo xtask check` also runs in sequence:
+
+| Job | Command |
+|---|---|
+| `lint` | `cargo xtask fast` |
+| `test` (four shards) | `cargo xtask test --partition hash:<k>/4` |
+| `nix` | `cargo xtask nix` |
+| `browser` | `npm --prefix extension run check` |
+
+A pull request passes `--base HEAD^1`, the base branch's tip under its merge
+commit, so it builds and runs the tests its changes can affect and runs the
+Nix checks only when their inputs changed; master pushes and manual runs pass
+no base and run everything. The `check` job is the one required status and
+fails unless every other job succeeded. Each Rust job takes the toolchain
+from `rust-toolchain.toml` through rustup, and nextest, cargo-hakari, zsh,
+fish, zip and Node from the flake's `check-tools` package, the development
+shell's versions. A test job lists its failed tests and the tests that took
+10 s or longer in the job summary.
+
+Every Rust job restores master's saved build and dates source files against
+its recorded commit, so Cargo rebuilds only the packages that changed and
+their dependents. Only the `lint` job of a master push saves the build: after
+Clippy it builds every test binary, so the one saved target serves every job.
+A manual run may reuse that build but never replaces it.
+
 ## Published package
 
 The `package` workflow builds `.#default` for every master commit and pushes
@@ -173,12 +201,7 @@ after fetching that package, so its switches never compile Polylogue. To
 deploy a revision master does not contain, such as a deployment branch's head,
 qualify that tree with `gh workflow run check -f rev=<full-commit-sha>`,
 then publish it with `gh workflow run package -f rev=<full-commit-sha>`. The manual
-check records and asserts its checked commit and runs the full check. Pull requests
-continue to check their merge with the default branch. Manual checks may reuse
-master's build cache but never replace it or its recorded source commit. Master pushes
-also restore that cache and date source files against its recorded commit, so
-Cargo rebuilds changed units while the full test suite still runs. Only master
-pushes save the target directory, labeled with the checked source commit. The package
+check records and asserts its checked commit and runs the full check. The package
 log records the fetched flake source path, revision and NAR hash before building.
 
 ## Deployment modules

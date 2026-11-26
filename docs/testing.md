@@ -96,7 +96,7 @@ What is measured: the first build per stage; incremental updates; interactive re
 
 **Reads.** The read benchmark generates one 16 MiB session and eight small ones with the testkit builders, checks that a complete read holds every message once in order, that windows at the first, middle and last positions match it, and that repeated windows render the same bytes, then reports daemon start, the first request after each restart and later requests (median and p95), page counts and daemon memory.
 
-The target is a whole suite under 10 minutes, measured per stage (compile, setup, run). Recorded CI results give the measured duration.
+The hosted check runs the whole suite as four nextest shards in parallel; its stages (setup, build, run) are recorded per job in the run's summary lines. A pull request whose changes select every test took 8.8 minutes end to end on 26 November 2026, each shard 2 to 3 minutes of setup, 2 to 3.5 minutes of building and 2 to 3 minutes of running. Selected tests take less; recorded runs give the current figures (`gh run list --workflow check`).
 
 ## Row dictionary
 

@@ -32,7 +32,21 @@
       };
     in
     {
-      packages.${system} = build.packages;
+      packages.${system} = build.packages // {
+        # The programs the hosted check's Rust jobs run beside the toolchain,
+        # at the versions the development shell has.
+        check-tools = pkgs.buildEnv {
+          name = "polylogue-check-tools";
+          paths = [
+            pkgs.cargo-nextest
+            pkgs.cargo-hakari
+            pkgs.zsh
+            pkgs.fish
+            pkgs.zip
+            pkgs.nodejs_22
+          ];
+        };
+      };
       checks.${system} = build.checks // {
         modules = import ./nix/checks/modules.nix {
           inherit pkgs nixpkgs;
