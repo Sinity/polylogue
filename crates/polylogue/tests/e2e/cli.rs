@@ -921,8 +921,8 @@ fn terminal_resume_without_recorded_directory_is_refused_with_exit_3() {
         .unwrap();
     drop(master);
     // docs/interfaces.md#exit-codes: no way to reopen the session is `refused`.
-    assert_eq!(out.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(3), "{stderr}");
     assert!(stderr.contains("directory_unknown"), "{stderr}");
     let fallback = stderr
         .lines()
