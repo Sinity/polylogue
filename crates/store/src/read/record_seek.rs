@@ -1,14 +1,27 @@
 //! Record-family cardinalities in the same pinned physical session scope as
 //! the event and link ordinal visitors. Payloads are never selected.
+use crate::row::{Rows as _, row};
 use crate::{Reader, Result};
 use polylogue_model::SessionId;
-use rusqlite::OptionalExtension;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PhysicalRecordCounts {
     pub events: u64,
     pub links: u64,
 }
+row! {
+    /// How many events and links a session has.
+    struct RecordCounts {
+        events: u64,
+        links: u64,
+    }
+    statements {
+        const OF_SESSION = "SELECT (SELECT count(*) FROM event e WHERE e.session_pk=s.pk) AS events,
+            (SELECT count(*) FROM session_link_identity l WHERE l.parent_id=s.id OR l.child_id=s.id) AS links
+            FROM session s WHERE s.id=?1";
+    }
+}
+
 impl Reader<'_> {
     /// None names an absent session; a present empty session has zero counts.
     /// Message counts belong to MessageSelection because inheritance changes
@@ -17,30 +30,20 @@ impl Reader<'_> {
         &self,
         session: &SessionId,
     ) -> Result<Option<PhysicalRecordCounts>> {
-        let counts = self
+        Ok(self
             .conn()?
-            .query_row(
-                "SELECT (SELECT count(*) FROM event e WHERE e.session_pk=s.pk),
-                    (SELECT count(*) FROM session_link_identity l WHERE l.parent_id=s.id OR l.child_id=s.id)
-             FROM session s WHERE s.id=?1",
-                [session.to_string()],
-                |row| <(i64, i64)>::try_from(row),
-            )
-            .optional()?;
-        counts
-            .map(|(events, links)| {
-                let checked = |count, column| {
-                    u64::try_from(count).map_err(|_| {
-                        crate::StoreError::stored(column, "negative physical record count")
-                    })
-                };
-                Ok(PhysicalRecordCounts {
-                    events: checked(events, 0)?,
-                    links: checked(links, 1)?,
-                })
-            })
-            .transpose()
+            .maybe(&RecordCounts::OF_SESSION, [session.to_string()])?
+            .map(|counts| PhysicalRecordCounts {
+                events: counts.events,
+                links: counts.links,
+            }))
     }
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<RecordCounts>();
 }
 
 #[cfg(test)]

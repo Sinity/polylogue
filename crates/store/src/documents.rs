@@ -1,12 +1,12 @@
 //! Text documents: one shown version each, with source time before route
 //! precedence, and reads in the reader's read transaction.
 use crate::ConnExt as _;
-use crate::ResultExt as _;
 use crate::encoding::{restore_text, unpack_block, unpack_json};
+use crate::row::{Rows as _, Statement, row};
 use crate::{Reader, Result};
 use polylogue_model::hex;
 use polylogue_model::{Block, Document, DocumentId, Json};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::params;
 use serde::Serialize;
 
 use std::ops::ControlFlow;
@@ -20,25 +20,76 @@ pub struct DocumentRead<'r, 'a> {
     hash: Vec<u8>,
 }
 
+row! {
+    /// A shown document's key, version and packed fields.
+    struct DocumentHead {
+        pk: i64,
+        version_hash: Vec<u8>,
+        fields: Vec<u8>,
+    }
+    statements {
+        const OF_ID = "SELECT pk, version_hash, fields FROM document WHERE id=?1";
+    }
+}
+
+row! {
+    /// A reading of a document: its input, byte range and version, and
+    /// whether it is the shown one.
+    struct DocumentReading {
+        input: String,
+        chain: i64,
+        source_start: i64,
+        source_end: i64,
+        hash: Vec<u8>,
+        shown: bool,
+    }
+    statements {
+        const OF_DOCUMENT = "SELECT r.id AS input, s.chain, s.source_start, s.source_end, s.hash,
+            (s.input_pk=d.input_pk AND s.chain=d.source_chain) AS shown
+            FROM document d JOIN document_parse s ON s.document_id=d.id JOIN input_ref r ON r.pk=s.input_pk
+            WHERE d.pk=?1 ORDER BY r.id, s.chain, s.source_start, s.hash";
+    }
+}
+
+row! {
+    /// Where and when a machine saw an input.
+    struct InputLocation {
+        machine: String,
+        path: String,
+        seen_at: i64,
+    }
+    statements {
+        const OF_INPUT = "SELECT machine, path, seen_at FROM source_observation WHERE input=?1
+            ORDER BY seen_at, machine, path";
+    }
+}
+
+row! {
+    /// A document block's packed body, its text's group body and place, its
+    /// packed data and its position.
+    struct DocumentBlockRow {
+        body: Vec<u8>,
+        group_body: Option<Vec<u8>>,
+        start: Option<i64>,
+        length: Option<i64>,
+        data: Option<Vec<u8>>,
+        idx: u64,
+    }
+}
+
 impl<'a> Reader<'a> {
     pub fn select_document<'r>(&'r self, id: &DocumentId) -> Result<Option<DocumentRead<'r, 'a>>> {
-        let row: Option<(i64, Vec<u8>, Vec<u8>)> = self
-            .conn()?
-            .query_row(
-                "SELECT pk,version_hash,fields FROM document WHERE id=?1",
-                [id.to_string()],
-                |r| <(_, _, _)>::try_from(r),
-            )
-            .optional()?;
-        row.map(|(pk, hash, fields)| {
-            Ok(DocumentRead {
-                reader: self,
-                pk,
-                fields: unpack_json(&fields)?,
-                hash,
+        self.conn()?
+            .maybe(&DocumentHead::OF_ID, [id.to_string()])?
+            .map(|head| {
+                Ok(DocumentRead {
+                    reader: self,
+                    pk: head.pk,
+                    fields: unpack_json(&head.fields)?,
+                    hash: head.version_hash,
+                })
             })
-        })
-        .transpose()
+            .transpose()
     }
 
     pub fn document(&self, id: &DocumentId) -> Result<Option<Document>> {
@@ -111,19 +162,23 @@ impl DocumentRead<'_, '_> {
     }
 
     pub fn sources(&self) -> Result<Vec<DocumentSource>> {
-        let mut statement=self.reader.conn()?.prepare("SELECT r.id,s.chain,s.source_start,s.source_end,s.hash,(s.input_pk=d.input_pk AND s.chain=d.source_chain) FROM document d JOIN document_parse s ON s.document_id=d.id JOIN input_ref r ON r.pk=s.input_pk WHERE d.pk=?1 ORDER BY r.id,s.chain,s.source_start,s.hash")?;
-        let mut rows = statement.query([self.pk])?;
+        let conn = self.reader.conn()?;
         let mut out = Vec::new();
-        while let Some(row) = rows.next()? {
-            let input: String = row.get(0)?;
-            let locations=self.reader.conn()?.prepare("SELECT machine,path,seen_at FROM source_observation WHERE input=?1 ORDER BY seen_at,machine,path")?.query_map([&input],|r|Ok(serde_json::json!({"machine":r.get::<_,String>(0)?,"path":r.get::<_,String>(1)?,"seen_at_ms":r.get::<_,i64>(2)?})))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        for reading in conn.all(&DocumentReading::OF_DOCUMENT, [self.pk])? {
+            let locations = conn
+                .all(&InputLocation::OF_INPUT, [&reading.input])?
+                .into_iter()
+                .map(|seen| {
+                    serde_json::json!({"machine": seen.machine, "path": seen.path, "seen_at_ms": seen.seen_at})
+                })
+                .collect();
             out.push(DocumentSource {
-                input,
-                chain: row.get(1)?,
-                start: row.get(2)?,
-                end: row.get(3)?,
-                version: hex(&row.get::<_, Vec<u8>>(4)?),
-                shown: row.get(5)?,
+                input: reading.input,
+                chain: reading.chain,
+                start: reading.source_start,
+                end: reading.source_end,
+                version: hex(&reading.hash),
+                shown: reading.shown,
                 locations,
             });
         }
@@ -131,12 +186,17 @@ impl DocumentRead<'_, '_> {
     }
 }
 
-fn decoded_block(row: &rusqlite::Row<'_>) -> Result<Block> {
-    let mut block = unpack_block(&row.get::<_, Vec<u8>>(0)?)?;
-    if let Some(text) = crate::text_rows::column(row, 1)? {
+fn decoded_block(row: DocumentBlockRow) -> Result<Block> {
+    let mut block = unpack_block(&row.body)?;
+    if let Some(body) = row.group_body {
+        let text = crate::text_rows::slice(
+            &body,
+            row.start.unwrap_or_default(),
+            row.length.unwrap_or_default(),
+        )?;
         restore_text(&mut block, text);
     }
-    if let Some(data) = row.get::<_, Option<Vec<u8>>>(4)? {
+    if let Some(data) = row.data {
         crate::encoding::set_data(&mut block, unpack_json(&data)?);
     }
     Ok(block)
@@ -200,27 +260,30 @@ fn visit_blocks_selected_from(
     };
     let data = if text_only { "NULL" } else { "b.data" };
     let order = if backwards { "DESC" } else { "ASC" };
-    let sql = format!(
-        "SELECT b.body,g.body,t.start,t.length,{data},b.idx FROM document_block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN content_group g ON g.id=t.group_id WHERE b.document_pk=?1 AND b.idx>=?2 {bound} {kinds} ORDER BY b.idx {order}"
-    );
-    let mut statement = conn.prepare_cached(&sql)?;
-    let mut rows = if let Some(end) = end {
-        statement.query(params![pk, from, end])?
-    } else {
-        statement.query(params![pk, from])?
-    };
-    while let Some(row) = rows.next()? {
+    let statement = Statement::<DocumentBlockRow>::built(format!(
+        "SELECT b.body, g.body AS group_body, t.start, t.length, {data} AS data, b.idx FROM document_block b LEFT JOIN text t ON t.id=b.text_id LEFT JOIN content_group g ON g.id=t.group_id WHERE b.document_pk=?1 AND b.idx>=?2 {bound} {kinds} ORDER BY b.idx {order}"
+    ));
+    let mut each = |row: DocumentBlockRow| {
         if let Some(reader) = reader {
             reader.check()?;
         }
         if let Some(limit) = crate::read::limit::ReadLimit::current() {
             limit.check()?;
         }
-        let ordinal =
-            u64::try_from(row.get::<_, i64>(5)?).or_invalid("negative document block ordinal")?;
-        if visit(ordinal, decoded_block(row)?).is_break() {
-            break;
-        }
-    }
+        let ordinal = row.idx;
+        Ok(visit(ordinal, decoded_block(row)?))
+    };
+    let _ = match end {
+        Some(end) => conn.each(&statement, params![pk, from, end], &mut each)?,
+        None => conn.each(&statement, params![pk, from], &mut each)?,
+    };
     Ok(())
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<DocumentHead>();
+    check.row::<DocumentReading>();
+    check.row::<InputLocation>();
 }

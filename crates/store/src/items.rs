@@ -1884,7 +1884,7 @@ impl Reader<'_> {
     /// A session's whole item index, or `None` when the session is not
     /// stored. One range scan.
     pub fn item_index(&self, id: &SessionId) -> Result<Option<StoredItems>> {
-        let Some(pk) = self.session_pk(id)? else {
+        let Some(crate::row::SessionPk(pk)) = self.session_pk(id)? else {
             return Ok(None);
         };
         let Some(versions) = self.item_versions_of(pk)? else {
@@ -1903,7 +1903,7 @@ impl Reader<'_> {
     /// What a session reading needs of a session before reading any of its
     /// entries, or `None` when the session is not stored.
     pub fn item_state(&self, id: &SessionId) -> Result<Option<ItemState>> {
-        let Some(pk) = self.session_pk(id)? else {
+        let Some(crate::row::SessionPk(pk)) = self.session_pk(id)? else {
             return Ok(None);
         };
         let state: Option<(i64, i64, i64, Vec<u8>)> = self

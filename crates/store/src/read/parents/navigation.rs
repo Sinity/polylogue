@@ -6,6 +6,14 @@ fn message_count(count: i64) -> Result<usize> {
     usize::try_from(count).or_internal("the message count exceeds address space")
 }
 
+row! {
+    /// A message that may be the latest visible one.
+    struct Candidate {
+        pk: MessagePk,
+        id: polylogue_model::MessageId,
+    }
+}
+
 impl MessageSelection<'_, '_> {
     /// Seek this selection's metadata order without hydrating skipped bodies.
     /// Physical selections share the session order used by message bundles.
@@ -26,15 +34,13 @@ impl MessageSelection<'_, '_> {
         let Ok(ordinal) = i64::try_from(ordinal) else {
             return Ok(None);
         };
-        let sql = format!(
-            "WITH ordered AS ({}) SELECT pk FROM ordered WHERE record_order=?2",
-            super::super::order::session_record_rows("?1")
-        );
-        let key = self
-            .reader
-            .conn()?
-            .query_row(&sql, params![session, ordinal], |row| row.get::<_, i64>(0))
-            .optional()?;
+        let key: Option<MessagePk> = self.reader.conn()?.value(
+            concat!(
+                super::super::order::record_ranks!(),
+                "SELECT pk FROM record_ranks WHERE record_order=?2"
+            ),
+            params![session, ordinal],
+        )?;
         Ok(key.map(|key| MessagePosition {
             message,
             key: Some(key),
@@ -46,10 +52,9 @@ impl MessageSelection<'_, '_> {
             return Ok(keys.len());
         }
         match &self.own {
-            Some((pk, _)) => message_count(self.reader.conn()?.query_row(
+            Some((pk, _)) => message_count(self.reader.conn()?.scalar(
                 "SELECT count(*) FROM message WHERE session_pk=?1 AND duplicate_of IS NULL",
                 [pk],
-                |r| r.get::<_, i64>(0),
             )?),
             None => Ok(0),
         }
@@ -59,7 +64,7 @@ impl MessageSelection<'_, '_> {
         Ok(self.len()? == 0)
     }
 
-    pub fn message_key(&self, id: &polylogue_model::MessageId) -> Result<Option<i64>> {
+    pub fn message_key(&self, id: &polylogue_model::MessageId) -> Result<Option<MessagePk>> {
         let id = crate::chain_names::resolved_message(self.reader.conn()?, id)?.to_string();
         if let Some(keys) = &self.with_parents {
             return Ok(keys
@@ -102,7 +107,7 @@ impl MessageSelection<'_, '_> {
         let conn = self.reader.conn()?;
         let key=match id {
             Some(id)=>self.message_key(id)?,
-            None=>conn.scalar_optional::<i64>("SELECT pk FROM message WHERE session_pk=?1 AND duplicate_of IS NULL ORDER BY session_order DESC,id DESC LIMIT 1",[pk])?,
+            None=>conn.scalar_optional::<MessagePk>("SELECT pk FROM message WHERE session_pk=?1 AND duplicate_of IS NULL ORDER BY session_order DESC,id DESC LIMIT 1",[pk])?,
         };
         let Some(key) = key else {
             return Ok(None);
@@ -136,22 +141,22 @@ impl MessageSelection<'_, '_> {
             AND EXISTS(SELECT 1 FROM block b WHERE b.message_pk=m.pk AND b.kind IN ({kinds}))
             ORDER BY m.session_order DESC,m.id DESC"
         );
+        let statement = Statement::<Candidate>::built(sql);
         let conn = self.reader.conn()?;
-        let mut statement = conn.prepare_cached(&sql)?;
         for (session, members) in self.sessions().into_iter().rev() {
             let members = members.map(|keys| keys.into_iter().collect::<HashSet<_>>());
-            let mut rows = statement.query(params![session, prompts])?;
-            while let Some(row) = rows.next()? {
-                let pk: i64 = row.get(0)?;
+            let mut found = None;
+            let _ = conn.each(&statement, params![session, prompts], |candidate| {
                 if members
                     .as_ref()
-                    .is_some_and(|members| !members.contains(&pk))
+                    .is_some_and(|members| !members.contains(&candidate.pk))
                 {
-                    continue;
+                    return Ok(ControlFlow::Continue(()));
                 }
-                let id: String = row.get(1)?;
-                let id = polylogue_model::MessageId::parse(&id)
-                    .map_err(crate::StoreError::stored_data)?;
+                found = Some(candidate.id);
+                Ok(ControlFlow::Break(()))
+            })?;
+            if let Some(id) = found {
                 return self.locate(Some(&id));
             }
         }
@@ -190,7 +195,7 @@ impl MessageSelection<'_, '_> {
             AND EXISTS(SELECT 1 FROM block WHERE message_pk=m.pk AND kind IN ({kinds}))
             ORDER BY m.session_order DESC,m.id DESC LIMIT 1"
         );
-        let previous = conn.scalar_optional::<i64>(&sql, params![session, key, prompts])?;
+        let previous = conn.scalar_optional::<MessagePk>(&sql, params![session, key, prompts])?;
         previous
             .map(|previous| {
                 let stepped: i64 = conn.scalar(
@@ -208,7 +213,7 @@ impl MessageSelection<'_, '_> {
             .transpose()
     }
 
-    fn visible_key(&self, key: i64, kinds: &str, prompts: bool) -> Result<bool> {
+    fn visible_key(&self, key: MessagePk, kinds: &str, prompts: bool) -> Result<bool> {
         self.reader.conn()?.exists(&format!("SELECT EXISTS(SELECT 1 FROM message m JOIN block b ON b.message_pk=m.pk WHERE m.pk=?1 AND b.kind IN ({kinds}) AND (?2=0 OR (pl_is_prompt(m.role,m.prompt_kind))))"), params![key,prompts])
     }
 }

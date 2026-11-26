@@ -1,13 +1,14 @@
 //! One selected call and its recorded counterpart, inside the Reader snapshot.
 //! The indexed foreign-key relation decides pairing; neither arrival order nor
 //! a matching name elsewhere in the archive supplies a result.
+use crate::row::{BlockPk, Rows as _, row};
 use crate::{Reader, Result, StoreError};
 use polylogue_model::{
     Block, ErrorReason, MessageId, SessionId, ToolOutcome,
     bundle::ShownBlocks,
     read::{Source, SourceBlock, ToolPair, ValueState},
 };
-use rusqlite::{Row, params};
+use rusqlite::params;
 
 /// The line beneath a failed call: the first output line that names the
 /// failure (error, failed, failure, fatal, panicked, exception or denied, in
@@ -39,8 +40,126 @@ fn failure_line(output: &str) -> Option<String> {
             .to_owned(),
     )
 }
+/// The columns of one shown block of a pair, before `matched`.
+macro_rules! block_columns {
+    ($block:literal, $message:literal, $session:literal, $as:literal) => {
+        concat!(
+            $block,
+            ".pk AS ",
+            $as,
+            "pk, ",
+            $block,
+            ".idx AS ",
+            $as,
+            "idx, ",
+            "coalesce(",
+            $block,
+            ".ordinal, cast(",
+            $block,
+            ".idx AS TEXT)) AS ",
+            $as,
+            "ordinal, ",
+            $message,
+            ".id AS ",
+            $as,
+            "message, ",
+            $session,
+            ".id AS ",
+            $as,
+            "session, ",
+            $block,
+            ".call_id AS ",
+            $as,
+            "call_id, ",
+            $message,
+            ".version_hash AS ",
+            $as,
+            "version, ",
+            $message,
+            ".layout AS ",
+            $as,
+            "layout, ",
+            "(SELECT count(*) FROM block WHERE message_pk=",
+            $message,
+            ".pk) AS ",
+            $as,
+            "blocks"
+        )
+    };
+}
+
+row! {
+    /// A shown block at an original position.
+    struct BlockAt {
+        pk: BlockPk,
+        idx: usize,
+        ordinal: String,
+        message: MessageId,
+        session: SessionId,
+        call_id: Option<String>,
+        version: Option<Vec<u8>>,
+        layout: Option<Vec<u8>>,
+        blocks: usize,
+    }
+    statements {
+        const OF_MESSAGE = concat!(
+            "SELECT ",
+            block_columns!("b", "m", "s", ""),
+            " FROM message m JOIN session s ON s.pk=m.session_pk
+            JOIN block b ON b.message_pk=m.pk AND b.session_pk=m.session_pk
+            WHERE m.id=?1 AND m.duplicate_of IS NULL AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2"
+        );
+    }
+}
+
+row! {
+    /// A recorded call, the block its result names, and whether the two
+    /// belong together.
+    struct CallAndResult {
+        pk: BlockPk,
+        idx: usize,
+        ordinal: String,
+        message: MessageId,
+        session: SessionId,
+        call_id: Option<String>,
+        version: Option<Vec<u8>>,
+        layout: Option<Vec<u8>>,
+        blocks: usize,
+        result_pk: Option<BlockPk>,
+        result_idx: Option<usize>,
+        result_ordinal: Option<String>,
+        result_message: Option<MessageId>,
+        result_session: Option<SessionId>,
+        result_call_id: Option<String>,
+        result_version: Option<Vec<u8>>,
+        result_layout: Option<Vec<u8>>,
+        result_blocks: usize,
+        matched: Option<bool>,
+    }
+    statements {
+        const OF_BLOCK = concat!(
+            "SELECT ",
+            block_columns!("cb", "cm", "cs", ""),
+            ", ",
+            block_columns!("rb", "rm", "rs", "result_"),
+            ", rb.kind='tool_result' AND rb.session_pk=t.session_pk AND rm.session_pk=t.session_pk
+              AND rm.duplicate_of IS NULL AND cb.call_id IS NOT NULL AND rb.call_id=cb.call_id AS matched
+            FROM tool_call t
+            JOIN block cb ON cb.pk=t.call_block_pk AND cb.session_pk=t.session_pk AND cb.kind='tool_call'
+            JOIN message cm ON cm.pk=cb.message_pk AND cm.session_pk=t.session_pk
+            JOIN session cs ON cs.pk=cm.session_pk
+            LEFT JOIN message rm ON rm.id=t.result_message_id
+            LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.idx=t.result_idx
+            LEFT JOIN session rs ON rs.pk=rm.session_pk
+            WHERE (t.call_block_pk=?1 OR t.pk IN (SELECT t2.pk FROM block b2 JOIN message m2 ON m2.pk=b2.message_pk
+                JOIN tool_call t2 ON t2.result_message_id=m2.id AND t2.result_idx=b2.idx WHERE b2.pk=?1))
+              AND cm.duplicate_of IS NULL AND t.call_id IS cb.call_id"
+        );
+    }
+}
+
 struct BlockFact {
-    pk: i64,
+    pk: BlockPk,
     index: usize,
     ordinal: u64,
     message: MessageId,
@@ -51,23 +170,20 @@ struct BlockFact {
     blocks: usize,
 }
 impl BlockFact {
-    fn read(row: &Row<'_>, offset: usize) -> Result<Self> {
-        let ordinal: String = row.get(offset + 2)?;
+    fn of(block: BlockAt) -> Result<Self> {
+        let ordinal = &block.ordinal;
         Ok(Self {
-            pk: row.get(offset)?,
-            index: row.get(offset + 1)?,
+            pk: block.pk,
+            index: block.idx,
             ordinal: ordinal.parse().map_err(|_| {
-                StoreError::stored(
-                    offset + 2,
-                    format!("block ordinal {ordinal:?} is not a number"),
-                )
+                StoreError::stored_data(format!("block ordinal {ordinal:?} is not a number"))
             })?,
-            message: crate::encoding::Columns::id(row, offset + 3)?,
-            session: crate::encoding::Columns::id(row, offset + 4)?,
-            call_id: row.get(offset + 5)?,
-            version: row.get(offset + 6)?,
-            layout: row.get(offset + 7)?,
-            blocks: row.get(offset + 8)?,
+            message: block.message,
+            session: block.session,
+            call_id: block.call_id,
+            version: block.version,
+            layout: block.layout,
+            blocks: block.blocks,
         })
     }
     fn block_selection(&self) -> Result<Option<ShownBlocks>> {
@@ -251,7 +367,7 @@ impl Reader<'_> {
                 let output = if full {
                     output.clone()
                 } else {
-                    match crate::ordered_blocks::one(self.conn()?, result_fact.pk)? {
+                    match crate::ordered_blocks::one(self.conn()?, result_fact.pk.0)? {
                         Block::ToolResult { output, .. } => output,
                         _ => None,
                     }
@@ -281,19 +397,17 @@ impl Reader<'_> {
         let message = &resolved;
 
         let conn = self.conn()?;
-        let mut input = conn.prepare_cached(
-            "SELECT b.pk,b.idx,coalesce(b.ordinal,cast(b.idx AS TEXT)),m.id,s.id,b.call_id,
-                    m.version_hash,m.layout,(SELECT count(*) FROM block WHERE message_pk=m.pk)
-             FROM message m JOIN session s ON s.pk=m.session_pk
-             JOIN block b ON b.message_pk=m.pk AND b.session_pk=m.session_pk
-             WHERE m.id=?1 AND m.duplicate_of IS NULL AND coalesce(b.ordinal,cast(b.idx AS TEXT))=?2",
-        )?;
-        let mut rows = input.query(params![message.to_string(), ordinal.to_string()])?;
-        let Some(row) = rows.next()? else {
+        let mut blocks = conn
+            .all(
+                &BlockAt::OF_MESSAGE,
+                params![message.to_string(), ordinal.to_string()],
+            )?
+            .into_iter();
+        let Some(input) = blocks.next() else {
             return Ok(None);
         };
-        let input = BlockFact::read(row, 0)?;
-        if rows.next()?.is_some() {
+        let input = BlockFact::of(input)?;
+        if blocks.next().is_some() {
             return Err(crate::StoreError::stored(
                 0,
                 "one original block ordinal has conflicting current rows",
@@ -303,44 +417,51 @@ impl Reader<'_> {
             return Ok(None);
         }
         self.check()?;
-        let mut statement = conn.prepare_cached(
-            "SELECT cb.pk,cb.idx,coalesce(cb.ordinal,cast(cb.idx AS TEXT)),cm.id,cs.id,cb.call_id,
-                    cm.version_hash,cm.layout,(SELECT count(*) FROM block WHERE message_pk=cm.pk),
-                    rb.pk,rb.idx,coalesce(rb.ordinal,cast(rb.idx AS TEXT)),rm.id,rs.id,rb.call_id,
-                    rm.version_hash,rm.layout,(SELECT count(*) FROM block WHERE message_pk=rm.pk),
-                    rb.kind='tool_result' AND rb.session_pk=t.session_pk AND rm.session_pk=t.session_pk
-                      AND rm.duplicate_of IS NULL AND cb.call_id IS NOT NULL AND rb.call_id=cb.call_id AS matched
-             FROM tool_call t
-             JOIN block cb ON cb.pk=t.call_block_pk AND cb.session_pk=t.session_pk AND cb.kind='tool_call'
-             JOIN message cm ON cm.pk=cb.message_pk AND cm.session_pk=t.session_pk
-             JOIN session cs ON cs.pk=cm.session_pk
-             LEFT JOIN message rm ON rm.id=t.result_message_id
-             LEFT JOIN block rb ON rb.message_pk=rm.pk AND rb.idx=t.result_idx
-             LEFT JOIN session rs ON rs.pk=rm.session_pk
-             WHERE (t.call_block_pk=?1 OR t.pk IN (SELECT t2.pk FROM block b2 JOIN message m2 ON m2.pk=b2.message_pk
-                 JOIN tool_call t2 ON t2.result_message_id=m2.id AND t2.result_idx=b2.idx WHERE b2.pk=?1))
-               AND cm.duplicate_of IS NULL AND t.call_id IS cb.call_id",
-        )?;
-        let mut rows = statement.query([input.pk])?;
-        let Some(row) = rows.next()? else {
+        let mut pairs = conn.all(&CallAndResult::OF_BLOCK, [input.pk])?.into_iter();
+        let Some(pair) = pairs.next() else {
             return Ok(None);
         };
-        let call = BlockFact::read(row, 0)?;
-        let result = if row.get::<_, Option<i64>>(9)?.is_some()
-            && row.get::<_, Option<String>>(12)?.is_some()
-            && row.get::<_, Option<String>>(13)?.is_some()
-        {
-            Some(BlockFact::read(row, 9)?)
-        } else {
-            None
+        let matched_row = pair.matched.unwrap_or(false);
+        let result = match (
+            pair.result_pk,
+            pair.result_idx,
+            pair.result_ordinal,
+            pair.result_message,
+            pair.result_session,
+        ) {
+            (Some(pk), Some(idx), Some(ordinal), Some(message), Some(session)) => {
+                Some(BlockFact::of(BlockAt {
+                    pk,
+                    idx,
+                    ordinal,
+                    message,
+                    session,
+                    call_id: pair.result_call_id,
+                    version: pair.result_version,
+                    layout: pair.result_layout,
+                    blocks: pair.result_blocks,
+                })?)
+            }
+            _ => None,
         };
-        let matched = row.get::<_, Option<bool>>(18)?.unwrap_or(false)
+        let call = BlockFact::of(BlockAt {
+            pk: pair.pk,
+            idx: pair.idx,
+            ordinal: pair.ordinal,
+            message: pair.message,
+            session: pair.session,
+            call_id: pair.call_id,
+            version: pair.version,
+            layout: pair.layout,
+            blocks: pair.blocks,
+        })?;
+        let matched = matched_row
             && result
                 .as_ref()
                 .map(BlockFact::visible)
                 .transpose()?
                 .unwrap_or(false);
-        if rows.next()?.is_some() {
+        if pairs.next().is_some() {
             return Err(crate::StoreError::stored(
                 0,
                 "one source block has conflicting current tool relations",
@@ -358,7 +479,7 @@ impl Reader<'_> {
         self.check()?;
         let conn = self.conn()?;
         let mut block = if full {
-            crate::ordered_blocks::one_with(conn, fact.pk, true)?
+            crate::ordered_blocks::one_with(conn, fact.pk.0, true)?
         } else {
             let piece = block_piece(conn, fact.pk)?;
             crate::ordered_blocks::body(conn, &mut crate::content::Reader::default(), piece, false)?
@@ -387,12 +508,19 @@ impl Reader<'_> {
     }
 }
 
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<BlockAt>();
+    check.row::<CallAndResult>();
+}
+
 #[cfg(test)]
 #[path = "tool_pairs/tests.rs"]
 mod tests;
 
 /// Where a block's piece is stored.
-fn block_piece(conn: &rusqlite::Connection, block: i64) -> Result<crate::content::Piece> {
+fn block_piece(conn: &rusqlite::Connection, block: BlockPk) -> Result<crate::content::Piece> {
     Ok(conn.query_row(
         "SELECT content_group,content_start,content_length,data_length FROM block WHERE pk=?1",
         [block],

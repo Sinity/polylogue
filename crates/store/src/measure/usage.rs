@@ -336,7 +336,7 @@ pub(super) fn per_session(reader: &Reader<'_>, selection: &Selection) -> Result<
         let keys = reader.message_keys_with_parents(&sid)?;
         let list = keys
             .iter()
-            .map(i64::to_string)
+            .map(ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
         let mut with_parents = totals(reader, &format!("m.pk IN ({list})"))?;

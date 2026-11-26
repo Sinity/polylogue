@@ -23,6 +23,19 @@ pub struct StoredFile {
     pub size: Option<u64>,
 }
 
+row! {
+    /// A session's message count and its latest capture.
+    struct CaptureState {
+        messages: u64,
+        last_captured_at: Option<i64>,
+    }
+    statements {
+        const OF_SESSION = "SELECT (SELECT count(*) FROM message m WHERE m.session_pk = s.pk) AS messages,
+            (SELECT max(e.at) FROM event e WHERE e.session_pk = s.pk AND e.kind = 'browser_capture') AS last_captured_at
+            FROM session s WHERE s.id = ?1";
+    }
+}
+
 impl Reader<'_> {
     /// Each session's state, in the order given; `None` for a session the
     /// index does not hold.
@@ -30,24 +43,17 @@ impl Reader<'_> {
         &self,
         sessions: &[polylogue_model::SessionId],
     ) -> Result<Vec<Option<CapturedSession>>> {
-        let mut stmt = self.conn()?.prepare_cached(
-            "SELECT (SELECT count(*) FROM message m WHERE m.session_pk = s.pk),
-                    (SELECT max(e.at) FROM event e
-                     WHERE e.session_pk = s.pk AND e.kind = 'browser_capture')
-             FROM session s WHERE s.id = ?1",
-        )?;
         sessions
             .iter()
             .map(|id| {
-                let mut held = stmt
-                    .query_row([id.to_string()], |r| {
-                        Ok(CapturedSession {
-                            messages: u64::try_from(r.get::<_, i64>(0)?).unwrap_or(0),
-                            last_captured_at: r.get(1)?,
-                            downloading: false,
-                        })
-                    })
-                    .optional()?;
+                let mut held = self
+                    .conn()?
+                    .maybe(&CaptureState::OF_SESSION, [id.to_string()])?
+                    .map(|state| CapturedSession {
+                        messages: state.messages,
+                        last_captured_at: state.last_captured_at,
+                        downloading: false,
+                    });
                 if let Some(held) = &mut held {
                     held.downloading = self.downloading_files(id)?;
                 }
@@ -106,4 +112,10 @@ impl Reader<'_> {
         }
         Ok(found.into_values().collect())
     }
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<CaptureState>();
 }

@@ -1,4 +1,5 @@
 use super::Reader;
+use crate::row::Rows as _;
 use crate::{Result, source::Source};
 use polylogue_model::signal::{Checkpoint, StoredPendingDelivery};
 
@@ -13,13 +14,12 @@ impl Reader<'_> {
         mut visit: impl FnMut(StoredPendingDelivery) -> Result<()>,
     ) -> Result<()> {
         let conn = self.conn()?;
-        let mut query =
-            conn.prepare("SELECT id FROM source_delivery WHERE signal IS NOT NULL ORDER BY at,id")?;
-        let mut rows = query.query([])?;
-        while let Some(row) = rows.next()? {
-            let id: String = row.get(0)?;
-            let pending = crate::authored_records::pending_delivery(conn, &id)?;
-            visit(pending)?;
+        let ids: Vec<String> = conn.values(
+            "SELECT id FROM source_delivery WHERE signal IS NOT NULL ORDER BY at,id",
+            [],
+        )?;
+        for id in ids {
+            visit(crate::authored_records::pending_delivery(conn, &id)?)?;
         }
         Ok(())
     }
@@ -28,10 +28,10 @@ impl Reader<'_> {
     /// firing time in the stored deliveries.
     pub fn last_firings(&self) -> Result<std::collections::BTreeMap<String, i64>> {
         let conn = self.conn()?;
-        let mut query = conn.prepare("SELECT id FROM source_delivery WHERE signal IS NOT NULL")?;
-        let ids = query
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let ids: Vec<String> = conn.values(
+            "SELECT id FROM source_delivery WHERE signal IS NOT NULL",
+            [],
+        )?;
         let mut last = std::collections::BTreeMap::new();
         for id in ids {
             let Some(metadata) = crate::signals::metadata(conn, Source::Cache, &id)? else {

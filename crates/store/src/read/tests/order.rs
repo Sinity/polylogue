@@ -71,7 +71,7 @@ fn tied_source_positions_use_ids_in_physical_logical_and_prompt_reads() {
                 key_ids.push(
                     r.query(
                         "SELECT id FROM message WHERE pk=?1",
-                        &[crate::read::SqlValue::Int(pk)],
+                        &[crate::read::SqlValue::Int(pk.0)],
                     )
                     .unwrap()[0]["id"]
                         .as_str()

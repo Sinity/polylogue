@@ -569,6 +569,9 @@ generated page of the thing they belong to, or on the area page that owns them.
   **hold** a write or a read; a held point blocks until the test releases it.
 - **scenario**: an end-to-end test against the real daemon, CLI and MCP.
 - **paired run**: a base and a change benchmarked together on one sample.
+- **row struct**: a store row declared with `row!`: its fields are its
+  columns, its statements are declared beside it, and its byte form is what
+  sorted files hold ([store boundary](architecture.md#store-boundary)).
 
 ## Removed words
 

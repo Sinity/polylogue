@@ -5,6 +5,7 @@
 //! texts compressed one by one lose; reading one text decodes its group.
 //! Groups are made on the parse workers, before the writer.
 use crate::content::{Group, Packer};
+use crate::row::{Rows as _, row};
 use crate::{Result, StoreError};
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -105,29 +106,37 @@ impl<'de> serde::Deserialize<'de> for PreparedTexts {
     }
 }
 
+row! {
+    /// A text row as it is inserted; `id` and `indexed` take their defaults.
+    struct NewText {
+        hash: [u8; 32],
+        normalized_hash: [u8; 32],
+        group_id: i64,
+        start: i64,
+        length: i64,
+    }
+    statements {
+        const INSERT = "INSERT INTO text(hash, normalized_hash, group_id, start, length) VALUES (?1, ?2, ?3, ?4, ?5)";
+    }
+}
+
 /// Inserts a prepared text and returns its key. Its group is stored once
 /// ([`crate::content::store`]).
 pub(crate) fn insert(conn: &Connection, hash: &[u8; 32], prepared: Prepared<'_>) -> Result<i64> {
-    let group = crate::content::store(conn, prepared.group)?;
-    conn.prepare_cached(
-        "INSERT INTO text(hash,normalized_hash,group_id,start,length) VALUES (?1,?2,?3,?4,?5)",
-    )?
-    .execute(rusqlite::params![
-        hash.as_slice(),
-        prepared.text.normalized_hash.as_slice(),
-        group,
-        prepared.text.start as i64,
-        prepared.text.length as i64
-    ])?;
+    let row = NewText {
+        hash: *hash,
+        normalized_hash: prepared.text.normalized_hash,
+        group_id: crate::content::store(conn, prepared.group)?,
+        start: prepared.text.start as i64,
+        length: prepared.text.length as i64,
+    };
+    conn.insert(&NewText::INSERT, &row)?;
     Ok(conn.last_insert_rowid())
 }
 
 /// Removes a text row, and its group once nothing names it.
 pub(crate) fn delete(conn: &Connection, id: i64) -> Result<()> {
-    let group: Option<i64> = rusqlite::OptionalExtension::optional(
-        conn.prepare_cached("DELETE FROM text WHERE id=?1 RETURNING group_id")?
-            .query_row([id], |r| r.get(0)),
-    )?;
+    let group: Option<i64> = conn.value("DELETE FROM text WHERE id=?1 RETURNING group_id", [id])?;
     if let Some(group) = group {
         crate::content::release(conn, group)?;
     }
@@ -158,15 +167,23 @@ pub(crate) fn joined(row: &rusqlite::Row<'_>, at: usize) -> Result<String> {
     column(row, at)?.ok_or_else(|| StoreError::stored(at, "a text row has no group"))
 }
 
+row! {
+    /// A text's group body and its place there.
+    struct StoredText {
+        body: Vec<u8>,
+        start: i64,
+        length: i64,
+    }
+    statements {
+        const OF_ID = "SELECT g.body, t.start, t.length FROM text t JOIN content_group g ON g.id=t.group_id
+            WHERE t.id=?1";
+    }
+}
+
 /// One stored text.
 pub(crate) fn read(conn: &Connection, id: i64) -> Result<String> {
-    let (body, start, length) = conn
-        .prepare_cached(
-            "SELECT g.body,t.start,t.length FROM text t JOIN content_group g ON g.id=t.group_id
-             WHERE t.id=?1",
-        )?
-        .query_row([id], |r| <(Vec<u8>, _, _)>::try_from(r))?;
-    slice(&body, start, length)
+    let text = conn.one(&StoredText::OF_ID, [id])?;
+    slice(&text.body, text.start, text.length)
 }
 
 /// The text at `start..start + length` of the group `body`. Consecutive reads
@@ -189,3 +206,10 @@ pub(super) fn slice_decoded(group: &[u8], start: i64, length: i64) -> Result<Str
 
 #[cfg(test)]
 mod tests;
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<StoredText>();
+    check.row::<NewText>();
+}

@@ -5,6 +5,47 @@ use polylogue_model::{
     read::{ChainStep, TraceCard},
 };
 
+row! {
+    /// A reading of a message: its input and byte range, whether it is the
+    /// shown one, and its chain's parse standing.
+    struct TraceSource {
+        input: String,
+        chain: i64,
+        source_start: u64,
+        source_end: u64,
+        route: Route,
+        shown: bool,
+        parse_version: Option<String>,
+        status: Option<String>,
+        parsed_upto: Option<u64>,
+    }
+    statements {
+        const OF_MESSAGE = "SELECT i.id AS input, s.chain, s.source_start, s.source_end, s.route,
+            (s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown, p.parse_version, p.status, p.parsed_upto
+            FROM message m JOIN shown_message_parse s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk
+            LEFT JOIN parse_state p ON p.input_pk=s.input_pk AND p.chain=s.chain
+            WHERE m.id=?1 ORDER BY 6 DESC, i.id, s.chain";
+    }
+}
+
+row! {
+    /// A stored extent under a byte range of a chain, and its blob's size.
+    struct TraceExtent {
+        blob: [u8; 32],
+        size: u64,
+        offset: u64,
+        length: u64,
+        blob_offset: u64,
+    }
+    statements {
+        const COVERING = "SELECT e.blob, b.size, e.offset, e.length, e.blob_offset
+            FROM source_extent e JOIN source_blob b ON b.hash=e.blob
+            WHERE e.input=?1 AND e.chain=?2 AND e.offset<?3 AND e.offset+e.length>?4
+              AND e.offset>=coalesce((SELECT max(prior.offset) FROM source_extent prior WHERE prior.input=?1 AND prior.chain=?2 AND prior.offset<=?4),?4)
+            ORDER BY e.offset";
+    }
+}
+
 impl Reader<'_> {
     /// The concrete message containing a traceable item. Unsupported families
     /// remain outside this API rather than masquerading as missing records.
@@ -13,16 +54,11 @@ impl Reader<'_> {
             Reference::Message(id) | Reference::Block { message: id, .. } => {
                 let conn = self.conn()?;
                 let id = crate::chain_names::resolved_message(conn, id)?;
-                let pk: Option<i64> = conn
-                    .query_row(
-                        "SELECT pk FROM message WHERE id=?1",
-                        [id.to_string()],
-                        |row| row.get(0),
-                    )
-                    .optional()?;
+                let pk: Option<MessagePk> =
+                    conn.scalar_optional("SELECT pk FROM message WHERE id=?1", [id.to_string()])?;
                 let Some(pk) = pk else { return Ok(None) };
                 if let Reference::Block { n, .. } = reference {
-                    let present:bool=conn.query_row("SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2)",params![pk,n.to_string()],|row|row.get(0))?;
+                    let present = conn.exists("SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND coalesce(ordinal,cast(idx AS TEXT))=?2)", params![pk, n.to_string()])?;
                     if !present {
                         return Err(StoreError::ReferenceUnavailable {
                             reference: reference.to_string(),
@@ -41,22 +77,14 @@ impl Reader<'_> {
             }
             Reference::ToolCall(session, call) => {
                 let conn = self.conn()?;
-                let mut statement=conn.prepare("SELECT m.id FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=t.session_pk WHERE s.id=?1 AND t.call_id=?2 ORDER BY t.pk LIMIT 2")?;
-                let ids = statement
-                    .query_map(params![session.to_string(), call], |row| {
-                        row.get::<_, String>(0)
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let ids: Vec<MessageId> = conn.values("SELECT m.id FROM tool_call t JOIN block b ON b.pk=t.call_block_pk JOIN message m ON m.pk=b.message_pk JOIN session s ON s.pk=t.session_pk WHERE s.id=?1 AND t.call_id=?2 ORDER BY t.pk LIMIT 2", params![session.to_string(), call])?;
                 if ids.len() > 1 {
                     return Err(StoreError::Ambiguous {
                         reference: reference.to_string(),
                         candidates: ids.into_iter().map(|id| format!("message:{id}")).collect(),
                     });
                 }
-                ids.into_iter()
-                    .next()
-                    .map(|id| MessageId::parse(&id).map_err(StoreError::stored_data))
-                    .transpose()
+                Ok(ids.into_iter().next())
             }
             _ => Err(polylogue_model::Reason::TraceTarget {}.into()),
         }
@@ -87,37 +115,29 @@ impl Reader<'_> {
             });
         }
         let message = crate::chain_names::resolved_message(conn, &message)?;
-        let mut statement=conn.prepare("SELECT i.id,s.chain,s.source_start,s.source_end,s.route,(s.input_pk=m.input_pk AND s.chain=m.source_chain),p.parse_version,p.status,p.parsed_upto FROM message m JOIN shown_message_parse s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk LEFT JOIN parse_state p ON p.input_pk=s.input_pk AND p.chain=s.chain WHERE m.id=?1 ORDER BY 6 DESC,i.id,s.chain")?;
-        let sources = statement
-            .query_map([message.to_string()], |row| {
-                <(
-                    String,
-                    i64,
-                    i64,
-                    i64,
-                    String,
-                    bool,
-                    Option<String>,
-                    Option<String>,
-                    Option<u64>,
-                )>::try_from(row)
-            })?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let sources = conn.all(&TraceSource::OF_MESSAGE, [message.to_string()])?;
         if sources.is_empty() {
             card.chain.push(ChainStep::Unavailable {
                 reason: "record source is unavailable".into(),
             });
         }
-        for (input, chain, start, end, route, shown, version, status, parsed_upto) in sources {
-            let start = u64::try_from(start).map_err(StoreError::stored_data)?;
-            let end = u64::try_from(end).map_err(StoreError::stored_data)?;
+        for TraceSource {
+            input,
+            chain,
+            source_start: start,
+            source_end: end,
+            route,
+            shown,
+            parse_version: version,
+            status,
+            parsed_upto,
+        } in sources
+        {
             if end < start {
                 return Err(StoreError::stored_data(
                     "record source byte end precedes its start",
                 ));
             }
-            let route = Route::from_name(&route)
-                .ok_or_else(|| StoreError::stored_data("unknown source route"))?;
             card.chain.push(ChainStep::InputRecord {
                 input: input.clone(),
                 chain,
@@ -132,15 +152,13 @@ impl Reader<'_> {
                 });
             } else {
                 self.check_bytes_present(&input, chain, start..end)?;
-                let mut extents=conn.prepare("SELECT e.blob,b.size,e.offset,e.length,e.blob_offset FROM source_extent e JOIN source_blob b ON b.hash=e.blob WHERE e.input=?1 AND e.chain=?2 AND e.offset<?3 AND e.offset+e.length>?4 AND e.offset>=coalesce((SELECT max(prior.offset) FROM source_extent prior WHERE prior.input=?1 AND prior.chain=?2 AND prior.offset<=?4),?4) ORDER BY e.offset")?;
-                let mut rows = extents.query(params![input, chain, end, start])?;
-                while let Some(row) = rows.next()? {
+                for extent in conn.all(&TraceExtent::COVERING, params![input, chain, end, start])? {
                     card.chain.push(ChainStep::StoredBytes {
-                        blob: polylogue_model::BlobHash(row.hash(0)?),
-                        size: row.get(1)?,
-                        offset: row.get(2)?,
-                        length: row.get(3)?,
-                        blob_offset: row.get(4)?,
+                        blob: polylogue_model::BlobHash(extent.blob),
+                        size: extent.size,
+                        offset: extent.offset,
+                        length: extent.length,
+                        blob_offset: extent.blob_offset,
                     });
                 }
             }
@@ -164,6 +182,13 @@ impl Reader<'_> {
         }
         Ok(Some(card))
     }
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<TraceSource>();
+    check.row::<TraceExtent>();
 }
 
 #[cfg(test)]

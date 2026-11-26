@@ -10,11 +10,11 @@ pub struct ImportCounts {
 impl Reader<'_> {
     pub fn import_counts(&self, inputs: &[String]) -> Result<ImportCounts> {
         let ids = serde_json::to_string(inputs)?;
-        let sessions=self.conn()?.query_row("SELECT COUNT(DISTINCT x.session_pk) FROM session_record s JOIN session_stated x ON x.stated_id=s.session_id JOIN input_ref i ON i.pk=s.input_pk WHERE i.id IN (SELECT value FROM json_each(?1))",[&ids],|row|row.get::<_,i64>(0))?;
-        let documents=self.conn()?.query_row("SELECT COUNT(DISTINCT s.document_id) FROM document_parse s JOIN input_ref i ON i.pk=s.input_pk WHERE i.id IN (SELECT value FROM json_each(?1))",[&ids],|row|row.get::<_,i64>(0))?;
+        let sessions: u64 = self.conn()?.scalar("SELECT COUNT(DISTINCT x.session_pk) FROM session_record s JOIN session_stated x ON x.stated_id=s.session_id JOIN input_ref i ON i.pk=s.input_pk WHERE i.id IN (SELECT value FROM json_each(?1))",[&ids])?;
+        let documents: u64 = self.conn()?.scalar("SELECT COUNT(DISTINCT s.document_id) FROM document_parse s JOIN input_ref i ON i.pk=s.input_pk WHERE i.id IN (SELECT value FROM json_each(?1))",[&ids])?;
         Ok(ImportCounts {
-            sessions: sessions as u64,
-            documents: documents as u64,
+            sessions,
+            documents,
         })
     }
 }

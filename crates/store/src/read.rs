@@ -6,7 +6,7 @@ use crate::ConnExt as _;
 use crate::archive::Archive;
 use crate::archive::index_build::Reads;
 use crate::blobs::FileFacts;
-use crate::encoding::Columns;
+use crate::row::{Json, MessagePk, Rows as _, SessionPk, Statement, row};
 use crate::{Result, StoreError};
 use polylogue_model::LockExt;
 use polylogue_model::{
@@ -103,6 +103,208 @@ impl MessageArrival {
         let end = u64::try_from(end)
             .map_err(|_| StoreError::stored(0, "negative message source endpoint"))?;
         crate::source::Source::committed_through(conn, &input, chain, end)
+    }
+}
+
+row! {
+    /// Both write counters and the index generation.
+    struct ChangePosition {
+        generation: String,
+        index: i64,
+        archive: i64,
+    }
+    statements {
+        const CURRENT = "SELECT (SELECT value FROM main.meta WHERE key='generation') AS generation,
+            COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0) AS \"index\",
+            COALESCE((SELECT CAST(value AS INTEGER) FROM source_meta WHERE key='write_counter'),0) AS archive";
+    }
+}
+
+row! {
+    /// The shown message and the input and chain its reading came from.
+    struct ShownSource {
+        pk: MessagePk,
+        input: String,
+        source_chain: Option<i64>,
+    }
+    statements {
+        const OF_MESSAGE = "SELECT m.pk, i.id AS input, m.source_chain FROM message m
+            JOIN input_ref i ON i.pk=m.input_pk WHERE m.id=?1";
+    }
+}
+
+row! {
+    /// The commit facts of a shown message's reading.
+    struct MessageCommit {
+        committed: Option<i64>,
+        input: String,
+        source_chain: i64,
+        source_end: i64,
+    }
+    statements {
+        const OF_MESSAGE = "SELECT (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash) AS committed,
+            i.id AS input, m.source_chain, m.source_end
+            FROM message m JOIN input_ref i ON i.pk=m.input_pk WHERE m.id=?1 AND m.version_hash IS NOT NULL";
+    }
+}
+
+row! {
+    /// Where a visit from a message starts in its session's order.
+    struct MessageStart {
+        session_order: String,
+        id: String,
+    }
+    statements {
+        const OF_MESSAGE = "SELECT session_order, id FROM message WHERE pk = ?1 AND session_pk = ?2";
+    }
+}
+
+/// The columns of [`MessageRow`] before `record_order`.
+macro_rules! message_columns {
+    () => {
+        "SELECT m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
+            m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
+            m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
+            m.cache_write_1h_tokens, m.speed, m.version_hash, m.layout,
+            CASE WHEN m.layout IS NULL THEN
+                (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END AS stored_block_count,
+            (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash) AS committed,
+            CASE WHEN m.version_hash IS NOT NULL THEN source_input.id END AS source_input,
+            CASE WHEN m.version_hash IS NOT NULL THEN m.source_chain END AS source_chain,
+            CASE WHEN m.version_hash IS NOT NULL THEN m.source_end END AS source_end, "
+    };
+}
+
+row! {
+    /// A shown message's stored columns, read in session order.
+    struct MessageRow {
+        pk: MessagePk,
+        id: MessageId,
+        role: Role,
+        prompt_kind: Option<PromptKind>,
+        model: Option<String>,
+        at_time: Json<(Option<polylogue_model::Timestamp>, polylogue_model::TimeAccuracy)>,
+        parent_id: Option<MessageId>,
+        input_tokens: Option<u64>,
+        cache_read_tokens: Option<u64>,
+        cache_write_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+        reasoning_tokens: Option<u64>,
+        service_tier: Option<String>,
+        stop_reason: Option<String>,
+        duration_ms: Option<u64>,
+        attrs_json: Option<Json<serde_json::Value>>,
+        cache_write_1h_tokens: Option<u64>,
+        speed: Option<String>,
+        version_hash: Option<Vec<u8>>,
+        layout: Option<Vec<u8>>,
+        stored_block_count: i64,
+        committed: Option<i64>,
+        source_input: Option<String>,
+        source_chain: Option<i64>,
+        source_end: Option<i64>,
+        record_order: Option<i64>,
+    }
+    statements {
+        // Session key ?1; a start message's order and ID ?2 and ?3; a given
+        // reading position the last parameter.
+        const GIVEN_ORDER = concat!(
+            message_columns!(),
+            "?2 AS record_order
+            FROM message m LEFT JOIN input_ref source_input ON source_input.pk=m.input_pk
+            WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL ORDER BY m.session_order, m.id"
+        );
+        const GIVEN_ORDER_FROM = concat!(
+            message_columns!(),
+            "?4 AS record_order
+            FROM message m LEFT JOIN input_ref source_input ON source_input.pk=m.input_pk
+            WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL AND (m.session_order, m.id) >= (?2, ?3)
+            ORDER BY m.session_order, m.id"
+        );
+        const OWN_ORDER = concat!(
+            order::record_ranks!(),
+            message_columns!(),
+            "record_ranks.record_order
+            FROM message m LEFT JOIN input_ref source_input ON source_input.pk=m.input_pk
+            JOIN record_ranks ON record_ranks.pk=m.pk
+            WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL ORDER BY m.session_order, m.id"
+        );
+        const OWN_ORDER_FROM = concat!(
+            order::record_ranks!(),
+            message_columns!(),
+            "record_ranks.record_order
+            FROM message m LEFT JOIN input_ref source_input ON source_input.pk=m.input_pk
+            JOIN record_ranks ON record_ranks.pk=m.pk
+            WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL AND (m.session_order, m.id) >= (?2, ?3)
+            ORDER BY m.session_order, m.id"
+        );
+    }
+}
+
+row! {
+    /// A count kept under a name.
+    struct NamedCount {
+        name: String,
+        n: u64,
+    }
+    statements {
+        const PARSE_STATES = "SELECT status AS name, n FROM parse_status_count WHERE n > 0";
+        const UNUSED = "SELECT what AS name, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20";
+    }
+}
+
+row! {
+    /// An input's latest revision.
+    struct LatestRevision {
+        chain: i64,
+        length: i64,
+    }
+    statements {
+        const OF_INPUT = "SELECT chain, length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1";
+    }
+}
+
+row! {
+    /// A path's latest observation, its input's format and latest revision.
+    struct Observation {
+        path: String,
+        input: String,
+        format: String,
+        class: String,
+        device: Option<i64>,
+        inode: Option<i64>,
+        size: Option<i64>,
+        mtime_ns: Option<i64>,
+        ctime_ns: Option<i64>,
+        chain: Option<i64>,
+        length: Option<i64>,
+        path_bytes: Option<Vec<u8>>,
+    }
+}
+
+row! {
+    /// A chain's parse standing.
+    struct ParseProgressRow {
+        parsed_upto: i64,
+        status: String,
+        at_length: Option<i64>,
+        reason: Option<String>,
+    }
+    statements {
+        const OF_CHAIN = "SELECT p.parsed_upto, p.status, p.at_length, p.reason FROM parse_state p
+            JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2";
+    }
+}
+
+row! {
+    /// An input's latest revision and its chain's parse progress.
+    struct InputProgress {
+        length: i64,
+        parsed_upto: i64,
+        parsed: bool,
+        produced: String,
+        waiting: bool,
+        chain: i64,
     }
 }
 
@@ -899,19 +1101,12 @@ impl Reader<'_> {
 
     /// Both counters and the index identity from this reader's read.
     pub fn change_position(&self) -> Result<polylogue_model::ChangePosition> {
-        Ok(self.conn()?.query_row(
-            "SELECT (SELECT value FROM main.meta WHERE key='generation'),
-             COALESCE((SELECT CAST(value AS INTEGER) FROM main.meta WHERE key='write_counter'),0),
-             COALESCE((SELECT CAST(value AS INTEGER) FROM source_meta WHERE key='write_counter'),0)",
-            [],
-            |r| {
-                Ok(polylogue_model::ChangePosition {
-                    generation: r.get(0)?,
-                    index: r.get(1)?,
-                    archive: r.get(2)?,
-                })
-            },
-        )?)
+        let position = self.conn()?.one(&ChangePosition::CURRENT, [])?;
+        Ok(polylogue_model::ChangePosition {
+            generation: position.generation,
+            index: position.index,
+            archive: position.archive,
+        })
     }
 
     pub fn session(&self, id: &SessionId) -> Result<Option<Session>> {
@@ -962,18 +1157,15 @@ impl Reader<'_> {
     ) -> Result<Option<(Message, ShownBlocks)>> {
         let conn = self.conn()?;
         let id = crate::chain_names::resolved_message(conn, id)?;
-        let shown: Option<(i64, String, Option<i64>)> = conn
-            .query_row(
-                "SELECT m.pk,i.id,m.source_chain FROM message m JOIN input_ref i ON i.pk=m.input_pk
-                 WHERE m.id=?1",
-                [id.to_string()],
-                |row| <(i64, String, Option<i64>)>::try_from(row),
-            )
-            .optional()?;
-        let Some((pk, input, chain)) = shown else {
+        let Some(ShownSource {
+            pk,
+            input,
+            source_chain: chain,
+        }) = conn.maybe(&ShownSource::OF_MESSAGE, [id.to_string()])?
+        else {
             return Ok(None);
         };
-        let (mut message, selection) = crate::writer::shown_message(conn, pk)?
+        let (mut message, selection) = crate::writer::shown_message(conn, pk.0)?
             .ok_or_else(|| StoreError::stored(0, "the message has no source reading"))?;
         // A message read whole shows what its reading left in the stored
         // bytes. Reading a message does not depend on those bytes being at
@@ -996,22 +1188,13 @@ impl Reader<'_> {
     pub fn message_commit(&self, id: &MessageId) -> Result<Option<u64>> {
         let conn = self.conn()?;
         let id = crate::chain_names::resolved_message(conn, id)?;
-        let commit = conn
-            .query_row(
-                "SELECT (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash),i.id,m.source_chain,m.source_end
-             FROM message m JOIN input_ref i ON i.pk=m.input_pk WHERE m.id=?1 AND m.version_hash IS NOT NULL",
-                [id.to_string()],
-                |row| {
-                    Ok(MessageArrival {
-                        order: None,
-                        fact: row.get(0)?,
-                        source: Some((row.get(1)?, row.get(2)?, row.get(3)?)),
-                    })
-                },
-            )
-            .optional()?;
-        match commit {
-            Some(commit) => commit.resolve(conn),
+        match conn.maybe(&MessageCommit::OF_MESSAGE, [id.to_string()])? {
+            Some(commit) => MessageArrival {
+                order: None,
+                fact: commit.committed,
+                source: Some((commit.input, commit.source_chain, commit.source_end)),
+            }
+            .resolve(conn),
             None => Ok(None),
         }
     }
@@ -1033,187 +1216,100 @@ impl Reader<'_> {
     /// The keys of the messages a session shows with its parents, each once.
     /// Totals with parents refuse a missing parent rather than count what is
     /// stored as complete.
-    pub fn message_keys_with_parents(&self, id: &SessionId) -> Result<Vec<i64>> {
+    pub fn message_keys_with_parents(&self, id: &SessionId) -> Result<Vec<MessagePk>> {
         let selected = self.select_messages(id, true)?;
         selected.require_complete()?;
         selected.keys()
     }
 
-    pub(crate) fn session_pk(&self, id: &SessionId) -> Result<Option<i64>> {
-        Ok(self
-            .conn()?
-            .prepare_cached("SELECT pk FROM session WHERE id = ?1")?
-            .query_row([id.to_string()], |r| r.get(0))
-            .optional()?)
+    pub(crate) fn session_pk(&self, id: &SessionId) -> Result<Option<SessionPk>> {
+        self.conn()?
+            .value("SELECT pk FROM session WHERE id = ?1", [id.to_string()])
     }
 
     /// A session's own message keys and IDs in reading order.
-    fn own_keys(&self, session_pk: i64) -> Result<Vec<(i64, String, i64)>> {
-        parents::own_keys(self.conn()?, session_pk)
+    fn own_keys(&self, session: SessionPk) -> Result<Vec<parents::OwnKey>> {
+        parents::own_keys(self.conn()?, session)
     }
 
     /// A message's blocks; without `structured`, tool results lack their
     /// structured data (`block.data`), which is then neither read nor decoded.
-    fn message_blocks(&self, message_pk: i64, structured: bool) -> Result<Vec<Block>> {
-        crate::ordered_blocks::of_message(self.conn()?, message_pk, structured)
+    fn message_blocks(&self, message: MessagePk, structured: bool) -> Result<Vec<Block>> {
+        crate::ordered_blocks::of_message(self.conn()?, message.0, structured)
     }
 
     /// Visits the session's messages in order, from message `from` (a key)
     /// when given, without reading the messages before it.
     fn visit_messages_where(
         &self,
-        session_pk: i64,
+        session_pk: SessionPk,
         session: &SessionId,
-        from: Option<i64>,
+        from: Option<MessagePk>,
         content: MessageContent<'_>,
-        mut keep: impl FnMut(i64) -> bool,
+        mut keep: impl FnMut(MessagePk) -> bool,
         visit: &mut impl FnMut(
-            i64,
+            MessagePk,
             Message,
             Option<ShownBlocks>,
             MessageArrival,
         ) -> std::ops::ControlFlow<()>,
     ) -> Result<std::ops::ControlFlow<()>> {
-        const COLUMNS: &str = "m.pk, m.id, m.role, m.prompt_kind, m.model, m.at_time, m.parent_id,
-            m.input_tokens, m.cache_read_tokens, m.cache_write_tokens, m.output_tokens,
-            m.reasoning_tokens, m.service_tier, m.stop_reason, m.duration_ms, m.attrs_json,
-            m.cache_write_1h_tokens, m.speed, m.version_hash, m.layout,
-            CASE WHEN m.layout IS NULL THEN
-                (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END,
-            (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash),
-            CASE WHEN m.version_hash IS NOT NULL THEN source_input.id END,
-            CASE WHEN m.version_hash IS NOT NULL THEN m.source_chain END,
-            CASE WHEN m.version_hash IS NOT NULL THEN m.source_end END";
-        const SOURCE: &str =
-            "FROM message m LEFT JOIN input_ref source_input ON source_input.pk=m.input_pk";
-        const ORDER: &str = "ORDER BY m.session_order, m.id";
-        let start: Option<(String, String)> = match from {
+        use rusqlite::types::Value;
+        let start = match from {
             Some(pk) => self
                 .conn()?
-                .prepare_cached(
-                    "SELECT session_order, id FROM message
-                     WHERE pk = ?1 AND session_pk = ?2",
-                )?
-                .query_row(rusqlite::params![pk, session_pk], |r| <(_, _)>::try_from(r))
-                .optional()?,
+                .maybe(&MessageStart::OF_MESSAGE, params![pk, session_pk])?,
             None => None,
         };
         if from.is_some() && start.is_none() {
             return Err(polylogue_model::Reason::ReadStartOutsideSession {}.into());
         }
-        let (prefix, join, ordinal) = match content.order {
-            RecordOrder::Skip => (String::new(), "", "NULL".to_owned()),
-            RecordOrder::Known(value) => (String::new(), "", value.to_string()),
-            RecordOrder::OwnSession => (
-                format!(
-                    "WITH record_ranks AS ({}) ",
-                    order::session_record_rows("?1")
-                ),
-                " JOIN record_ranks ON record_ranks.pk=m.pk",
-                "record_ranks.record_order".to_owned(),
-            ),
+        let ordinal = match content.order {
+            RecordOrder::Skip => Some(Value::Null),
+            RecordOrder::Known(value) => Some(Value::Integer(value)),
+            RecordOrder::OwnSession => None,
         };
-        let mut stmt = match &start {
-            None => self.conn()?.prepare_cached(&format!(
-                "{prefix}SELECT {COLUMNS},{ordinal} AS record_order {SOURCE}{join}
-                 WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL {ORDER}"
-            ))?,
-            // Index order from the start message: its key or a later one.
-            Some(_) => self.conn()?.prepare_cached(&format!(
-                "{prefix}SELECT {COLUMNS},{ordinal} AS record_order {SOURCE}{join}
-                 WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-                   AND (m.session_order, m.id) >= (?2, ?3)
-                 {ORDER}"
-            ))?,
-        };
-        let parameters: Vec<rusqlite::types::Value> = match start {
-            None => vec![session_pk.into()],
-            Some((order, id)) => vec![session_pk.into(), order.into(), id.into()],
-        };
-        let rows = stmt.query_map(rusqlite::params_from_iter(parameters), |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.name::<Role>(2)?,
-                r.optional_name::<PromptKind>(3)?,
-                r.get::<_, Option<String>>(4)?,
-                crate::encoding::read_time(r, 5)?,
-                r.get::<_, Option<String>>(6)?,
-                [
-                    r.get::<_, Option<u64>>(7)?,
-                    r.get::<_, Option<u64>>(8)?,
-                    r.get::<_, Option<u64>>(9)?,
-                    r.get::<_, Option<u64>>(10)?,
-                    r.get::<_, Option<u64>>(11)?,
-                ],
-                r.get::<_, Option<String>>(12)?,
-                r.get::<_, Option<String>>(13)?,
-                r.get::<_, Option<u64>>(14)?,
-                r.get::<_, Option<String>>(15)?,
-                (
-                    r.get::<_, Option<u64>>(16)?,
-                    r.get::<_, Option<String>>(17)?,
-                ),
-                r.get::<_, Option<Vec<u8>>>(18)?,
-                r.get::<_, Option<Vec<u8>>>(19)?,
-                r.get::<_, i64>(20)?,
-                r.get::<_, Option<i64>>(21)?,
-                r.get::<_, Option<String>>(22)?,
-                r.get::<_, Option<i64>>(23)?,
-                r.get::<_, Option<i64>>(24)?,
-                r.get::<_, Option<i64>>("record_order")?,
-            ))
-        })?;
-        for row in rows {
-            let (
-                pk,
-                id,
-                role,
-                kind,
-                model,
-                at,
-                parent,
-                tokens,
-                tier,
-                stop,
-                duration,
-                attrs,
-                (w1h, speed),
-                hash,
-                layout,
-                stored_block_count,
-                committed,
-                source_input,
-                source_chain,
-                source_end,
-                record_order,
-            ) = row?;
-            let id = MessageId::parse(&id).map_err(|_| {
-                StoreError::stored(1, format!("message row {pk} has an invalid ID"))
-            })?;
-            if !keep(pk) {
-                continue;
+        let mut parameters = vec![Value::Integer(session_pk.0)];
+        if let Some(start) = &start {
+            parameters.push(Value::Text(start.session_order.clone()));
+            parameters.push(Value::Text(start.id.clone()));
+        }
+        let statement = match (&start, ordinal) {
+            (None, None) => &MessageRow::OWN_ORDER,
+            (Some(_), None) => &MessageRow::OWN_ORDER_FROM,
+            (None, Some(ordinal)) => {
+                parameters.push(ordinal);
+                &MessageRow::GIVEN_ORDER
             }
-            let named = id.to_string();
+            (Some(_), Some(ordinal)) => {
+                parameters.push(ordinal);
+                &MessageRow::GIVEN_ORDER_FROM
+            }
+        };
+        self.conn()?.each(statement, rusqlite::params_from_iter(parameters), |row| {
+            let pk = row.pk;
+            if !keep(pk) {
+                return Ok(std::ops::ControlFlow::Continue(()));
+            }
+            let named = row.id.to_string();
             let unreadable =
                 |what: &str| StoreError::stored(0, format!("message {named} has {what}"));
-            let attrs: Option<serde_json::Value> = attrs
-                .map(|a| serde_json::from_str(&a))
-                .transpose()
-                .map_err(|_| unreadable("unparseable attributes"))?;
+            let attrs = row.attrs_json.map(|Json(attrs)| attrs);
+            let (role, kind) = (row.role, row.prompt_kind);
             let visible = match content.visibility {
                 None => true,
                 Some(filter) if filter.prompts && !polylogue_model::is_prompt(role, kind) => false,
                 Some(filter) if filter.kinds.is_empty() => false,
-                Some(filter) => {
-                    let sql = format!(
-                        "SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND kind IN ({}))",
-                        filter.kinds
-                    );
-                    self.conn()?
-                        .prepare_cached(&sql)?
-                        .query_row([pk], |row| row.get::<_, bool>(0))?
-                }
+                Some(filter) => self
+                    .conn()?
+                    .value(
+                        &format!(
+                            "SELECT EXISTS(SELECT 1 FROM block WHERE message_pk=?1 AND kind IN ({}))",
+                            filter.kinds
+                        ),
+                        [pk],
+                    )?
+                    .unwrap_or(false),
             };
             let mut blocks = if visible {
                 self.message_blocks(pk, content.structured)?
@@ -1223,42 +1319,40 @@ impl Reader<'_> {
             // A read of whole values shows what the reading left in the
             // stored bytes.
             if content.structured
-                && let (Some(input), Some(chain)) = (&source_input, source_chain)
+                && let (Some(input), Some(chain)) = (&row.source_input, row.source_chain)
             {
                 self.resolve_stored_blocks(input, chain, &mut blocks)?;
             }
+            let Json((at, accuracy)) = row.at_time;
             let message = Message {
-                id,
+                id: row.id,
                 session: session.clone(),
-                parent: parent
-                    .map(|p| MessageId::parse(&p))
-                    .transpose()
-                    .map_err(|_| unreadable("an invalid parent ID"))?,
+                parent: row.parent_id,
                 role,
-                at: at.0,
-                at_quality: at.1.quality,
-                at_precision: at.1.precision,
-                at_until: at.1.until,
-                model,
+                at,
+                at_quality: accuracy.quality,
+                at_precision: accuracy.precision,
+                at_until: accuracy.until,
+                model: row.model,
                 prompt_kind: kind,
                 blocks,
                 usage: Usage {
-                    input: tokens[0],
-                    cached_input: tokens[1],
-                    cache_write: tokens[2],
-                    output: tokens[3],
-                    reasoning: tokens[4],
-                    cache_write_1h: w1h,
-                    service_tier: tier,
-                    speed,
+                    input: row.input_tokens,
+                    cached_input: row.cache_read_tokens,
+                    cache_write: row.cache_write_tokens,
+                    output: row.output_tokens,
+                    reasoning: row.reasoning_tokens,
+                    cache_write_1h: row.cache_write_1h_tokens,
+                    service_tier: row.service_tier,
+                    speed: row.speed,
                 },
-                stop_reason: stop,
+                stop_reason: row.stop_reason,
                 reported_cost_usd: attrs
                     .as_ref()
                     .and_then(|a| a.get("reported_cost_usd"))
                     .and_then(serde_json::Value::as_number)
                     .cloned(),
-                duration_ms: duration,
+                duration_ms: row.duration_ms,
                 attrs: match attrs.as_ref().and_then(|value| value.get("attrs")) {
                     None => Default::default(),
                     Some(serde_json::Value::Object(map)) => map.clone(),
@@ -1272,15 +1366,16 @@ impl Reader<'_> {
                     .map_err(|_| unreadable("an unparseable production record"))?
                     .unwrap_or_default(),
             };
-            let block_selection = hash
+            let block_selection = row
+                .version_hash
                 .map(|hash| {
                     let mut block_selection = crate::encoding::message_block_selection(
                         &hash,
-                        layout.as_deref(),
+                        row.layout.as_deref(),
                         if visible {
                             message.blocks.len()
                         } else {
-                            usize::try_from(stored_block_count).map_err(|_| {
+                            usize::try_from(row.stored_block_count).map_err(|_| {
                                 StoreError::stored(0, "a message has an invalid stored block count")
                             })?
                         },
@@ -1294,38 +1389,32 @@ impl Reader<'_> {
                 })
                 .transpose()?;
             let commit = MessageArrival {
-                order: record_order,
-                fact: committed,
-                source: source_input
-                    .zip(source_chain)
-                    .zip(source_end)
+                order: row.record_order,
+                fact: row.committed,
+                source: row
+                    .source_input
+                    .zip(row.source_chain)
+                    .zip(row.source_end)
                     .map(|((input, chain), end)| (input, chain, end)),
             };
-            if visit(pk, message, block_selection, commit).is_break() {
-                return Ok(std::ops::ControlFlow::Break(()));
-            }
-        }
-        Ok(std::ops::ControlFlow::Continue(()))
+            Ok(visit(pk, message, block_selection, commit))
+        })
     }
 
     pub fn status(&self) -> Result<Status> {
         limit::ReadLimit::set_stage("status counts");
         let c = self.conn()?;
         let count = |sql: &str| -> Result<u64> { Ok(c.scalar::<i64>(sql, [])? as u64) };
-        let mut parse_states = BTreeMap::new();
-        let mut stmt = c.prepare_cached("SELECT status, n FROM parse_status_count WHERE n > 0")?;
-        for row in stmt.query_map([], |r| <(String, i64)>::try_from(r))? {
-            let (s, n) = row?;
-            parse_states.insert(s, n as u64);
-        }
-        let mut unused = Vec::new();
-        let mut stmt = c.prepare_cached(
-            "SELECT what, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20",
-        )?;
-        for row in stmt.query_map([], |r| <(String, i64)>::try_from(r))? {
-            let (w, n) = row?;
-            unused.push((w, n as u64));
-        }
+        let parse_states = c
+            .all(&NamedCount::PARSE_STATES, [])?
+            .into_iter()
+            .map(|count| (count.name, count.n))
+            .collect();
+        let unused = c
+            .all(&NamedCount::UNUSED, [])?
+            .into_iter()
+            .map(|count| (count.name, count.n))
+            .collect();
         Ok(Status {
             sessions: count("SELECT n FROM main.row_count WHERE name = 'session'")?,
             messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
@@ -1441,8 +1530,15 @@ impl Reader<'_> {
 
     fn current_attachment(&self, asset: &crate::assets::AssetMatch) -> Result<()> {
         let current = if asset.size == 0 {
-            let latest: Option<(i64,i64)> = self.conn()?.query_row("SELECT chain,length FROM source_revision WHERE input=?1 ORDER BY number DESC LIMIT 1", [&asset.input], |row| <(_, _)>::try_from(row)).optional()?;
-            if latest != Some((asset.chain,0)) {
+            let latest = self
+                .conn()?
+                .maybe(&LatestRevision::OF_INPUT, [&asset.input])?;
+            if latest
+                != Some(LatestRevision {
+                    chain: asset.chain,
+                    length: 0,
+                })
+            {
                 return Err(polylogue_model::Reason::AttachmentChanged {
                     input: asset.input.clone(),
                 }
@@ -1592,8 +1688,8 @@ impl Reader<'_> {
         let sql = format!(
             "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
                     o.ctime_ns,
-                    (SELECT chain FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
-                    (SELECT length FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1),
+                    (SELECT chain FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1) AS chain,
+                    (SELECT length FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1) AS length,
                     o.path_bytes
              FROM (
                  SELECT MAX(x.rowid) AS latest FROM source_observation x
@@ -1604,29 +1700,16 @@ impl Reader<'_> {
              JOIN source_observation o ON o.rowid = latest.latest
              JOIN source_input i ON i.id = o.input"
         );
-        let mut stmt = self.conn()?.prepare_cached(&sql)?;
-        let rows = stmt.query_map(params![machine, path, include_imported], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-                r.get::<_, String>(3)?,
-                [
-                    r.get::<_, Option<i64>>(4)?,
-                    r.get::<_, Option<i64>>(5)?,
-                    r.get::<_, Option<i64>>(6)?,
-                    r.get::<_, Option<i64>>(7)?,
-                    r.get::<_, Option<i64>>(8)?,
-                ],
-                r.get::<_, Option<i64>>(9)?,
-                r.get::<_, Option<i64>>(10)?,
-                r.get::<_, Option<Vec<u8>>>(11)?,
-            ))
-        })?;
+        let observed = self.conn()?.all(
+            &Statement::<Observation>::built(sql),
+            params![machine, path, include_imported],
+        )?;
         let mut out = Vec::new();
-        for row in rows {
-            let (path, input_id, format, class, f, chain, length, path_bytes) = row?;
-            let facts = match (class.as_str(), f) {
+        for o in observed {
+            let f = [o.device, o.inode, o.size, o.mtime_ns, o.ctime_ns];
+            let (path, input_id, format, chain, length, path_bytes) =
+                (o.path, o.input, o.format, o.chain, o.length, o.path_bytes);
+            let facts = match (o.class.as_str(), f) {
                 ("deleted", _) => None,
                 (_, [Some(d), Some(i), Some(s), Some(m), Some(c)]) => Some(FileFacts {
                     device: d as u64,
@@ -1650,21 +1733,16 @@ impl Reader<'_> {
                 waiting: false,
             });
         }
-        let mut stmt = self.conn()?.prepare_cached(
-            "SELECT p.parsed_upto, p.status, p.at_length, p.reason FROM parse_state p
-             JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2",
-        )?;
         for k in &mut out {
             if let Some(chain) = k.chain
-                && let Some((upto, status, at_length, reason)) = stmt
-                    .query_row(params![k.input_id, chain], |r| {
-                        <(i64, String, Option<i64>, Option<String>)>::try_from(r)
-                    })
-                    .optional()?
+                && let Some(state) = self
+                    .conn()?
+                    .maybe(&ParseProgressRow::OF_CHAIN, params![k.input_id, chain])?
             {
-                k.parsed_upto = upto as u64;
+                k.parsed_upto = state.parsed_upto as u64;
                 k.parsed = true;
-                k.waiting = stored_parse_progress(&status, at_length, reason)?.at_length()
+                k.waiting = stored_parse_progress(&state.status, state.at_length, state.reason)?
+                    .at_length()
                     == Some(k.stored);
             }
         }
@@ -1674,18 +1752,25 @@ impl Reader<'_> {
     /// The input's latest revision and its chain's parser progress.
     pub fn input_progress(&self, id: &str) -> Result<Option<ChainProgress>> {
         let database = crate::source::database_original("r.input");
-        let row = self
-            .conn()?
-            .prepare_cached(
-                &format!("SELECT r.length, COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, r.produced, COALESCE(p.status IN ('waiting','refused','failed') AND p.at_length = r.length, 0), r.chain
+        let statement = Statement::<InputProgress>::built(format!(
+            "SELECT r.length, COALESCE(p.parsed_upto, 0) AS parsed_upto, p.input_pk IS NOT NULL AS parsed,
+                r.produced,
+                COALESCE(p.status IN ('waiting','refused','failed') AND p.at_length = r.length, 0) AS waiting,
+                r.chain
              FROM source_revision r
              LEFT JOIN input_ref i ON i.id = r.input
              LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain AND NOT {database}
-             WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1"),
-            )?
-            .query_row([id], |r| <(i64, i64, bool, String, bool, i64)>::try_from(r))
-            .optional()?;
-        let Some((length, parsed_upto, parsed, produced, waiting, chain)) = row else {
+             WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1"
+        ));
+        let Some(InputProgress {
+            length,
+            parsed_upto,
+            parsed,
+            produced,
+            waiting,
+            chain,
+        }) = self.conn()?.maybe(&statement, [id])?
+        else {
             return Ok(None);
         };
         let imported = match produced.as_str() {
@@ -1742,6 +1827,27 @@ impl StoredRecords {
     }
 }
 
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<ChangePosition>();
+    check.row::<ShownSource>();
+    check.row::<MessageCommit>();
+    check.row::<MessageStart>();
+    check.row::<MessageRow>();
+    check.row::<NamedCount>();
+    check.row::<LatestRevision>();
+    check.row::<ParseProgressRow>();
+    parents::declared_rows(check);
+    trace::declared_rows(check);
+    revisions::declared_rows(check);
+    record_seek::declared_rows(check);
+    tool_outcomes::declared_rows(check);
+    captured::declared_rows(check);
+    hook_fields::declared_rows(check);
+    tool_pairs::declared_rows(check);
+}
+
 #[cfg(test)]
 mod tests;
 
@@ -1761,15 +1867,13 @@ pub(crate) fn retitled_sessions(
     after: i64,
 ) -> Result<std::collections::BTreeSet<String>> {
     let mut sessions = std::collections::BTreeSet::new();
-    let mut statement = conn.prepare_cached(
-        "SELECT DISTINCT substr(l.ref, 9) FROM source_annotation a \
-         JOIN source_annotation_link l ON l.record = a.id AND l.role = 'about' \
-         WHERE a.root = ?1 AND a.kind = 'title' AND l.ref LIKE 'session:%'",
-    )?;
     for root in crate::annotations::changed_roots(conn, after)? {
-        for id in statement.query_map([&root], |r| r.get::<_, String>(0))? {
-            sessions.insert(id?);
-        }
+        sessions.extend(conn.values::<String>(
+            "SELECT DISTINCT substr(l.ref, 9) FROM source_annotation a \
+             JOIN source_annotation_link l ON l.record = a.id AND l.role = 'about' \
+             WHERE a.root = ?1 AND a.kind = 'title' AND l.ref LIKE 'session:%'",
+            [&root],
+        )?);
     }
     Ok(sessions)
 }

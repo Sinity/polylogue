@@ -9,8 +9,9 @@
 use crate::{Result, StoreError};
 mod groups;
 mod search_fill;
+use crate::row::{Rows as _, row};
 pub(crate) use groups::{PreparedTexts, column, joined, read, slice};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, TransactionBehavior, params};
 pub(crate) use search_fill::SearchFill;
 
 /// The row of a complete text hash: the stored one, or a new row holding
@@ -20,10 +21,7 @@ pub(crate) fn resolve(
     hash: &[u8; 32],
     prepared: Option<groups::Prepared<'_>>,
 ) -> Result<i64> {
-    let stored = conn
-        .prepare_cached("SELECT id FROM text WHERE hash=?1")?
-        .query_row([hash.as_slice()], |row| row.get::<_, i64>(0))
-        .optional()?;
+    let stored: Option<i64> = conn.value("SELECT id FROM text WHERE hash=?1", [hash.as_slice()])?;
     if let Some(id) = stored {
         return Ok(id);
     }
@@ -93,6 +91,17 @@ impl SearchEntries {
     }
 }
 
+row! {
+    /// A queued change to a text's full-text entry.
+    struct PendingEntry {
+        text_id: i64,
+        fts_table: i64,
+    }
+    statements {
+        const NEXT = "SELECT text_id, fts_table FROM search_pending ORDER BY text_id, fts_table LIMIT ?1";
+    }
+}
+
 /// Reads the next queued changes to search entries and the folded text of
 /// those that enter, up to `byte_limit` of text, in one read transaction.
 /// Writes nothing.
@@ -102,19 +111,14 @@ pub(crate) fn pending_entries(conn: &Connection, byte_limit: usize) -> Result<Se
     // texts and sort on every batch. Finish the cursor before reading
     // bodies, which are fetched individually, so the row limit does not
     // multiply text held.
-    let ids: Vec<(i64, i64)> = tx
-        .prepare_cached(
-            "SELECT text_id, fts_table FROM search_pending ORDER BY text_id, fts_table LIMIT ?1",
-        )?
-        .query_map([SEARCH_ROWS], |r| <(_, _)>::try_from(r))?
-        .collect::<rusqlite::Result<_>>()?;
+    let pending = tx.all(&PendingEntry::NEXT, [SEARCH_ROWS])?;
     let mut entries = Vec::new();
     let mut bytes = 0;
-    for (text_id, fts_table) in ids {
-        let member: Option<Vec<u8>> = tx
-            .prepare_cached("SELECT hash FROM text WHERE id = ?1 AND indexed & ?2 <> 0")?
-            .query_row([text_id, fts_table], |r| r.get(0))
-            .optional()?;
+    for PendingEntry { text_id, fts_table } in pending {
+        let member: Option<Vec<u8>> = tx.value(
+            "SELECT hash FROM text WHERE id = ?1 AND indexed & ?2 <> 0",
+            [text_id, fts_table],
+        )?;
         let text = match member {
             Some(hash) => {
                 let (folded, length) = folded_text(read(&tx, text_id)?);
@@ -154,24 +158,18 @@ pub(crate) fn apply_entries(conn: &Connection, computed: &SearchEntries) -> Resu
     let mut applied = Vec::new();
     for entry in &computed.entries {
         let current = match &entry.text {
-            Some(text) => tx
-                .prepare_cached(
-                    "SELECT EXISTS(SELECT 1 FROM search_pending WHERE text_id = ?1 AND fts_table = ?2)
-                     AND EXISTS(SELECT 1 FROM text WHERE id = ?1 AND indexed & ?2 <> 0 AND hash = ?3)",
-                )?
-                .query_row(params![entry.text_id, entry.fts_table, text.hash], |r| {
-                    r.get::<_, bool>(0)
-                })?,
-            None => tx
-                .prepare_cached(
-                    "SELECT EXISTS(SELECT 1 FROM search_pending WHERE text_id = ?1 AND fts_table = ?2)
-                     AND NOT EXISTS(SELECT 1 FROM text WHERE id = ?1 AND indexed & ?2 <> 0)",
-                )?
-                .query_row(params![entry.text_id, entry.fts_table], |r| {
-                    r.get::<_, bool>(0)
-                })?,
+            Some(text) => tx.value(
+                "SELECT EXISTS(SELECT 1 FROM search_pending WHERE text_id = ?1 AND fts_table = ?2)
+                 AND EXISTS(SELECT 1 FROM text WHERE id = ?1 AND indexed & ?2 <> 0 AND hash = ?3)",
+                params![entry.text_id, entry.fts_table, text.hash],
+            )?,
+            None => tx.value(
+                "SELECT EXISTS(SELECT 1 FROM search_pending WHERE text_id = ?1 AND fts_table = ?2)
+                 AND NOT EXISTS(SELECT 1 FROM text WHERE id = ?1 AND indexed & ?2 <> 0)",
+                params![entry.text_id, entry.fts_table],
+            )?,
         };
-        if current {
+        if current == Some(true) {
             set_entry(
                 &tx,
                 entry.text_id,
@@ -245,12 +243,10 @@ pub(crate) fn write_entry(
     folded: Option<&str>,
 ) -> Result<()> {
     let length = |conn: &Connection| -> Result<Option<i64>> {
-        let size: Option<Vec<u8>> = conn
-            .prepare_cached(&format!(
-                "SELECT sz FROM {file}.{table}_docsize WHERE id = ?1"
-            ))?
-            .query_row([id], |r| r.get(0))
-            .optional()?;
+        let size: Option<Vec<u8>> = conn.value(
+            &format!("SELECT sz FROM {file}.{table}_docsize WHERE id = ?1"),
+            [id],
+        )?;
         size.map(|size| {
             entry_length(&size)
                 .ok_or_else(|| StoreError::stored(0, "a full-text entry has no length"))
@@ -325,10 +321,10 @@ fn alone_group(conn: &Connection, text: &str) -> i64 {
         params![hash.as_bytes().as_slice(), body],
     )
     .unwrap();
-    conn.query_row(
+    crate::ConnExt::scalar(
+        conn,
         "SELECT id FROM content_group WHERE hash=?1",
         [hash.as_bytes().as_slice()],
-        |r| r.get(0),
     )
     .unwrap()
 }
@@ -377,6 +373,14 @@ pub(crate) fn replace_group_body(conn: &Connection, id: i64, body: &[u8]) {
         )
         .unwrap();
     assert_eq!(changed, 1);
+}
+
+/// The rows this module declares statements for, for the every-statement test.
+#[cfg(test)]
+pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
+    check.row::<PendingEntry>();
+    groups::declared_rows(check);
+    search_fill::declared_rows(check);
 }
 
 #[cfg(test)]
