@@ -1,9 +1,9 @@
 //! The Morrow archive built through the real loop and import path holds
 //! the sessions `FACTS.md` lists, with their kinds and own message counts.
 
+use crate::{Morrow, Set, session};
 use polylogue_model::SessionKind;
 use polylogue_store::{Reader, SqlValue};
-use polylogue_testkit::{Morrow, Set, session};
 
 /// `FACTS.md`, "Sessions": own messages and human prompts per session.
 /// #7 counts every node of its tree (6 on the active path, 2 on the

@@ -30,8 +30,8 @@ pub(crate) fn prune(root: &Path, target: &Path, builds: &[&[&str]]) -> Result<()
         };
         for entry in entries {
             let entry = entry.map_err(|e| format!("{}: {e}", dir.display()))?;
-            let name = entry.file_name();
-            let Some(hash) = unit_hash(&name.to_string_lossy()) else {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(hash) = unit_hash(&name) else {
                 continue;
             };
             let path = entry.path();
