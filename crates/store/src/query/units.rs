@@ -378,6 +378,21 @@ pub fn expand_pair(template: &str, a: &Aliases, n: &Aliases) -> String {
 
 /// How the store reads each unit; exhaustive, so a declared unit fails the
 /// build until it has rows here.
+impl UnitSpec {
+    /// The unit's rows are a table's rows, read in an index's order, not
+    /// computed from other rows.
+    pub(crate) fn reads_a_table(&self) -> bool {
+        matches!(self.from, Expr::Template(t) if !t.starts_with('('))
+    }
+
+    /// The unit's rows are the archive's (authored records, deliveries,
+    /// jobs), whose indexes the archive format owns.
+    #[cfg(test)]
+    pub(crate) fn reads_the_archive(&self) -> bool {
+        matches!(self.from, Expr::Template(t) if t.starts_with("source_"))
+    }
+}
+
 pub fn spec(unit: Unit) -> &'static UnitSpec {
     match unit {
         Unit::Sessions => &SESSIONS,

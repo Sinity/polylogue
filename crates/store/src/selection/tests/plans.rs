@@ -91,22 +91,21 @@ fn default_pages_read_in_index_order() {
         let Ok(program) = crate::query::compile(text, &options()) else {
             continue;
         };
-        // A derived relation, and a unit whose rows are an aggregate
-        // (`files`), is computed whole before its page. Annotations are
-        // rows of the archive that people and agents write by hand, few
-        // enough that sorting them at read is cheap, and the archive format
-        // owns their indexes. Links between sessions are ordered by their
-        // parent's latest activity, which no link row holds; there are few
-        // per session, and the archive's are sorted at read.
+        // A derived relation, and a unit whose rows are computed (`files`,
+        // `turns`), is computed whole before its page. The archive's units
+        // (annotations, deliveries, jobs) hold what people, agents and the
+        // extension write, few enough that sorting them at read is cheap,
+        // and the archive format owns their indexes. Links between sessions
+        // are ordered by their parent's latest activity, which no link row
+        // holds.
+        let spec = crate::query::units::spec(unit);
         if !matches!(
             program.statements,
             crate::query::compile::Statements::Keyed(_)
-        ) || matches!(
-            unit,
-            polylogue_query::units::Unit::Files
-                | polylogue_query::units::Unit::Annotations
-                | polylogue_query::units::Unit::SessionLinks
-        ) {
+        ) || !spec.reads_a_table()
+            || spec.reads_the_archive()
+            || unit == polylogue_query::units::Unit::SessionLinks
+        {
             continue;
         }
         let steps = page_steps(&f, text);
