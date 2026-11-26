@@ -238,7 +238,7 @@ fn facets_use_the_selection_units_default_population() {
             .unwrap()
             > ordinary["count"].as_u64().unwrap()
     );
-    let empty = q(&archive, "sessions where origin:absent | measure facets");
+    let empty = q(&archive, "sessions where id:absent | measure facets");
     assert_eq!(empty["data"]["summary"]["outcome"], "empty");
     assert!(
         empty["data"]["values"]

@@ -346,7 +346,7 @@ fn usage_and_kept_rows_share_the_ranked_selection() {
     assert_eq!(usage["data"], named["data"], "{usage}");
     let mut unranked = ask("similar:dates | limit 1 | measure usage");
     unranked.embeddings = true;
-    assert_eq!(run_q(&w, unranked).unwrap_err().code(), "embed");
+    assert_eq!(run_q(&w, unranked).unwrap_err().code(), "embeddings_off");
 }
 
 #[test]

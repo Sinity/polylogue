@@ -585,8 +585,7 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
     let path = morrow.root.join("embeddings.db");
     std::fs::rename(&path, morrow.root.join("unreadable-embeddings.db")).unwrap();
     std::fs::create_dir(&path).unwrap();
-    check_missing(&format!(
-        "the embeddings store cannot be read: unable to open database file: {}; rows are ordered by time and unranked",
-        path.display()
-    ));
+    check_missing(
+        "the embeddings store cannot be read: disk I/O error; rows are ordered by time and unranked",
+    );
 }

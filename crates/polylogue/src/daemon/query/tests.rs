@@ -1649,7 +1649,7 @@ mod metadata;
 fn a_query_document_carries_its_kind_in_its_fields_and_no_outcome() {
     let mut w = morrow();
     w.fx.derive().unwrap();
-    let empty = document(&w, "origin:absent");
+    let empty = document(&w, "id:absent");
     assert!(empty.get("outcome").is_none(), "{empty}");
     let typed: crate::protocol::query::Answer = serde_json::from_value(empty).unwrap();
     assert_eq!(typed.rows().unwrap().len(), 0);

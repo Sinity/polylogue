@@ -78,27 +78,7 @@ pub(crate) fn ranking_similarity(
             .into());
         }
     };
-    let vectors = warm.vectors(reader, provider);
-    reader.check()?;
-    match vectors {
-        Ok(Some(_)) => {}
-        Ok(None) => {
-            return Err(Reason::NoVectors {
-                model: provider.model.clone(),
-            }
-            .into());
-        }
-        Err(problem) => return Err(Reason::EmbeddingStore { problem }.into()),
-    }
-    let result = warm.similarity(reader, provider, text);
-    reader.check()?;
-    result.map_err(|problem| {
-        if problem == crate::embeddings::CALLS_OFF {
-            Reason::EmbeddingCallsOff {}.into()
-        } else {
-            Reason::EmbeddingProvider { problem }.into()
-        }
-    })
+    warm.similarity(reader, provider, text)
 }
 
 /// Asks the provider for the query vector the validated `query` ranks by,

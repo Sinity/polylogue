@@ -301,19 +301,6 @@ pub fn find(what: &str) -> Option<(&'static Measure, &str)> {
         .map(|m| (m, metric))
 }
 
-/// Every measure as `| measure` takes it, for help and errors.
-pub fn names() -> String {
-    MEASURES
-        .iter()
-        .map(|m| match (m.argument, m.metrics) {
-            (Some(argument), _) => format!("{}[:{}]", m.name, argument),
-            (None, []) => m.name.to_owned(),
-            (None, metrics) => format!("{}:<{}>", m.name, metrics.join("|")),
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 pub fn run(
     reader: &Reader<'_>,
     what: &str,
