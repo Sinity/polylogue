@@ -569,7 +569,8 @@ static MESSAGES: UnitSpec = UnitSpec {
 
 static BLOCKS: UnitSpec = UnitSpec {
     from: Expr::Template(
-        "block {b} JOIN message {m} ON {m}.pk = {b}.message_pk JOIN session {s} ON {s}.pk = {b}.session_pk",
+        // Messages drive, so a page reads blocks in message time order.
+        "message {m} CROSS JOIN block {b} ON {b}.message_pk = {m}.pk JOIN session {s} ON {s}.pk = {b}.session_pk",
     ),
     key: "{b}.pk",
     identity: &["{m}.id", "{b}.idx"],
