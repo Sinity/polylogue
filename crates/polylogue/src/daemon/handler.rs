@@ -283,6 +283,8 @@ impl Events for Transport<'_> {
 pub(crate) trait Row: Sync {
     fn operation(&self) -> TypeId;
     fn declare(&self, declarations: &mut DeclarationsBuilder, row: &'static Command);
+    /// The schema of the operation's request type.
+    fn arguments(&self) -> schemars::Schema;
     /// Decodes the arguments and states how they are treated.
     fn policy(&self, arguments: &Value, channel: Channel) -> Result<Policy, Failure>;
     /// The request answered as one reply, when it would stream.
@@ -318,6 +320,10 @@ impl<O: Operation> Row for Handled<O> {
                 O::PRINT,
             )
             .expect("declared command is unique");
+    }
+
+    fn arguments(&self) -> schemars::Schema {
+        schemars::schema_for!(O::Arguments)
     }
 
     fn policy(&self, arguments: &Value, channel: Channel) -> Result<Policy, Failure> {

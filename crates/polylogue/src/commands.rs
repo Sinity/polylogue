@@ -76,7 +76,7 @@ impl Tool {
     /// generated from the declarations: the signature of each verb this
     /// tool adds, with the first sentence of the verb's help, and of each
     /// operation whose home it is.
-    pub fn description(self, declarations: &command_surface::OperationDeclarations) -> String {
+    pub fn description(self, steps: &command_surface::StepDeclarations) -> String {
         let (opening, closing, example) = match self {
             Tool::Read => (
                 "Read the archive. A call is {operation, arguments}; operation defaults to rows.\n\
@@ -97,7 +97,7 @@ impl Tool {
         };
         let mut text = format!("{opening}\n");
         let offered = crate::daemon::verbs::offered_over_mcp();
-        for verb in crate::daemon::verbs::declarations().verbs() {
+        for verb in steps.verbs() {
             if offered.contains(&(verb.verb(), self.access())) {
                 text.push_str(&format!("  {} {}\n", verb.signature(), verb_sentence(verb)));
             }
@@ -105,10 +105,12 @@ impl Tool {
         let mut operations: Vec<String> = COMMANDS
             .iter()
             .filter(|command| command.tool == Some(self) && command.operation().is_some())
-            .map(|command| signature(declarations, command.name, None))
+            .map(|command| signature(command, None))
             .collect();
-        if self == Tool::Read {
-            operations.push(signature(declarations, "set", Some(SETTING_READ)));
+        if self == Tool::Read
+            && let Some(set) = command("set")
+        {
+            operations.push(signature(set, Some(SETTING_READ)));
         }
         text.push_str(&format!("Operations: {}\n", operations.join(" | ")));
         if !closing.is_empty() {
@@ -133,36 +135,27 @@ impl Tool {
 /// tool offers; writing a value is the write tool's.
 pub const SETTING_READ: &[&str] = &["key", "machine"];
 
-/// `name(argument, optional?)`: the operation's arguments the tool list
-/// offers, or only `only` of them.
-fn signature(
-    declarations: &command_surface::OperationDeclarations,
-    name: &str,
-    only: Option<&[&str]>,
-) -> String {
-    let Some(description) = declarations
-        .descriptions()
-        .iter()
-        .find(|description| description.spec.name == name)
-    else {
-        return format!("{name}()");
+/// `name(argument, optional?)`: the arguments of a row's request type that
+/// the tool list offers, or only `only` of them.
+fn signature(command: &Command, only: Option<&[&str]>) -> String {
+    let Some(row) = command.operation() else {
+        return format!("{}()", command.name);
     };
-    let required = description.input_schema["required"]
+    let schema = row.arguments();
+    let required = schema.as_value()["required"]
         .as_array()
         .cloned()
         .unwrap_or_default();
-    let arguments: Vec<String> = description
-        .spec
-        .arguments
-        .iter()
-        .filter(|argument| argument.listed && !argument.calling_process)
+    let arguments: Vec<String> = arguments::from_schema(&schema, false)
+        .into_iter()
+        .filter(|argument| argument.listed)
         .filter(|argument| only.is_none_or(|only| only.contains(&argument.name.as_str())))
         .map(|argument| {
             let optional = !required.contains(&Value::from(argument.name.as_str()));
             format!("{}{}", argument.name, if optional { "?" } else { "" })
         })
         .collect();
-    format!("{name}({})", arguments.join(", "))
+    format!("{}({})", command.name, arguments.join(", "))
 }
 
 /// The first sentence of a verb's help: its step type's doc comment after
@@ -806,60 +799,51 @@ pub(crate) fn specification<A: command_surface::JsonSchema>(
 pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDeclarations> {
     static DECLARATIONS: LazyLock<std::sync::Arc<command_surface::OperationDeclarations>> =
         LazyLock::new(|| {
-            // A tool's description is generated from the declared rows and
-            // steps, and a row names its tool when declared: the rows are
-            // declared once to describe the tools, then with the tools.
-            let described = build(|_| "described from the rows".into());
-            build(|tool| tool.description(&described))
+            let steps = crate::daemon::verbs::declarations();
+            let mut declarations =
+                command_surface::OperationDeclarations::builder(PRODUCT, deadlines());
+            declarations.accept(command_surface::RequestOption::Cursor);
+            declarations.accept(command_surface::RequestOption::BudgetTokens);
+            declarations.accept(command_surface::RequestOption::Format);
+            for code in polylogue_model::Code::ALL {
+                declarations
+                    .register_failure_code(code.as_str(), crate::protocol::kind(*code))
+                    .expect("failure classification is unique");
+            }
+            for tool in Tool::ALL {
+                if COMMANDS
+                    .iter()
+                    .any(|command| command.tool == Some(tool) && command.operation().is_some())
+                {
+                    declarations
+                        .declare_tool(command_surface::ToolFamily {
+                            name: tool.family().into(),
+                            description: tool.description(&steps),
+                            open_world: tool.open_world(),
+                            idempotent: tool.idempotent(),
+                        })
+                        .expect("declared tool is unique");
+                }
+            }
+            for command in COMMANDS.iter() {
+                match command.run {
+                    Run::Local(_, declare, _)
+                    | Run::ConfiguredLocal(_, declare, _)
+                    | Run::ClientLocal(_, declare, _) => declare(&mut declarations, command),
+                    Run::Daemon(operation) => operation.declare(&mut declarations, command),
+                }
+                if command.cli == Cli::Line {
+                    declarations
+                        .declare_steps(command.name, "steps", steps.clone())
+                        .expect("the line's steps are declared once");
+                }
+            }
+            declarations
+                .set_tool_default("read", "rows")
+                .expect("rows belongs to the read tool");
+            declarations.finish()
         });
     &DECLARATIONS
-}
-
-/// The declarations with each tool described by `describe`.
-fn build(
-    describe: impl Fn(Tool) -> String,
-) -> std::sync::Arc<command_surface::OperationDeclarations> {
-    let mut declarations = command_surface::OperationDeclarations::builder(PRODUCT, deadlines());
-    declarations.accept(command_surface::RequestOption::Cursor);
-    declarations.accept(command_surface::RequestOption::BudgetTokens);
-    declarations.accept(command_surface::RequestOption::Format);
-    for code in polylogue_model::Code::ALL {
-        declarations
-            .register_failure_code(code.as_str(), crate::protocol::kind(*code))
-            .expect("failure classification is unique");
-    }
-    for tool in Tool::ALL {
-        if COMMANDS
-            .iter()
-            .any(|command| command.tool == Some(tool) && command.operation().is_some())
-        {
-            declarations
-                .declare_tool(command_surface::ToolFamily {
-                    name: tool.family().into(),
-                    description: describe(tool),
-                    open_world: tool.open_world(),
-                    idempotent: tool.idempotent(),
-                })
-                .expect("declared tool is unique");
-        }
-    }
-    for command in COMMANDS.iter() {
-        match command.run {
-            Run::Local(_, declare, _)
-            | Run::ConfiguredLocal(_, declare, _)
-            | Run::ClientLocal(_, declare, _) => declare(&mut declarations, command),
-            Run::Daemon(operation) => operation.declare(&mut declarations, command),
-        }
-        if command.cli == Cli::Line {
-            declarations
-                .declare_steps(command.name, "steps", crate::daemon::verbs::declarations())
-                .expect("the line's steps are declared once");
-        }
-    }
-    declarations
-        .set_tool_default("read", "rows")
-        .expect("rows belongs to the read tool");
-    declarations.finish()
 }
 
 #[cfg(test)]

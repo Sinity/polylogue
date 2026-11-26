@@ -857,16 +857,19 @@ fn typed_acceptance_failure_answers_without_a_daemon() {
 /// each row's typed arguments; `operation` is never required.
 #[test]
 fn tool_schema_from_operation_table() {
+    tools_follow_the_operation_table(&tools());
+}
+
+fn tools_follow_the_operation_table(listed: &[Value]) {
     let declarations = crate::commands::declarations();
     let declared = declarations.mcp_tools();
-    let listed = tools();
     let names = |tools: &[Value]| -> Vec<String> {
         tools
             .iter()
             .map(|tool| tool["name"].as_str().unwrap().to_owned())
             .collect()
     };
-    assert_eq!(names(&listed), names(&declared));
+    assert_eq!(names(listed), names(&declared));
     let offered = crate::daemon::verbs::offered_over_mcp();
     for (entry, home) in listed.iter().zip(&declared) {
         assert_eq!(entry["description"], home["description"]);
