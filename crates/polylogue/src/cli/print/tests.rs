@@ -206,7 +206,9 @@ fn deadline_failure_prints_the_hint_next_line_and_notes() {
     let request = command_surface::RunnableRequest::new(
         "rows",
         json!({
-            "selection":"session:claude-code:ID", "steps":[{"verb":"read"}]
+            "selection":"session:claude-code:ID", "steps":[{"verb":"read"}],
+            "references":[], "all":false, "dry_run":false, "explain":false,
+            "page_size":null, "fields":[], "why":false, "wait":null
         }),
         "test-request",
     );
@@ -222,7 +224,7 @@ fn deadline_failure_prints_the_hint_next_line_and_notes() {
         concat!(
             "polylogue: deadline_exceeded: the read deadline was exceeded\n",
             "polylogue: hint: rerun with `--deadline none`, or narrow to one session\n",
-            "polylogue: complete without a deadline: polylogue --request-id test-request --deadline none -- session:claude-code:ID read\n",
+            "polylogue: complete without a deadline: polylogue --why=false --all=false --dry-run=false --explain=false --request-id test-request --deadline none -- session:claude-code:ID read\n",
             "polylogue: note: stopped during reading\n"
         )
     );

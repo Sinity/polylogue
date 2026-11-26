@@ -1014,14 +1014,16 @@ fn verb_alone_refused_off_terminal_with_lines() {
         .expect("a verb without a choice is refused off terminal");
     assert_eq!(output.status.code(), Some(i32::from(answer.exit_code())));
     assert_eq!(failure.code.as_deref(), Some("ambiguous"));
-    let hint = failure.hint.as_deref().unwrap();
-    assert!(
-        hint.lines().any(|line| line == "polylogue latest read"),
-        "{hint}"
-    );
-    assert!(
-        hint.lines().any(|line| line == "polylogue SESSION read"),
-        "{hint}"
+    let mut candidates = failure.candidates().to_vec();
+    candidates.sort();
+    assert_eq!(
+        candidates,
+        [
+            "polylogue SESSION read",
+            "polylogue latest read",
+            "polylogue session:claude-code:s1 read",
+            "polylogue session:claude-code:s2 read"
+        ]
     );
     let output = cli(&env, &["--json", "sessions | sort by id", "pick", "read"]);
     let answer: command_surface::Answer<serde_json::Value> =
@@ -1814,6 +1816,8 @@ fn streamed_read_deadline_prints_its_hint_and_next_command() {
             "--follow",
             "--deadline",
             "200",
+            "--request-id",
+            "follow-deadline",
         ],
     );
     assert_eq!(output.status.code(), Some(7));
@@ -1827,17 +1831,8 @@ fn streamed_read_deadline_prints_its_hint_and_next_command() {
         .lines()
         .find_map(|line| line.strip_prefix("polylogue: complete without a deadline: "))
         .unwrap();
-    let words: Vec<_> = next.split_whitespace().collect();
-    assert_eq!(&words[..2], &["polylogue", "--request-id"]);
     assert_eq!(
-        &words[3..],
-        &[
-            "--deadline",
-            "none",
-            "--",
-            "session:claude-code:s1",
-            "read",
-            "--follow"
-        ]
+        next,
+        "polylogue --why=false --all=false --dry-run=false --explain=false --request-id follow-deadline --deadline none -- session:claude-code:s1 read --follow"
     );
 }
