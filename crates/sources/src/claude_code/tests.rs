@@ -857,14 +857,14 @@ fn a_sidechain_with_a_missing_parent_starts_its_own_session() {
         json!({"type":"assistant","uuid":"answer","sessionId":"s1","isSidechain":true,
             "parentUuid":"second","message":{"role":"assistant","content":"Second answer."}}),
     ];
-    let step = run(
+    let piece = run(
         &main_file("s1"),
         &mut ParserState::default(),
         &jsonl(&records),
         0,
     )
     .unwrap();
-    let messages = final_messages(&[step]);
+    let messages = final_messages(&[piece]);
     assert_eq!(
         messages
             .iter()
@@ -881,15 +881,15 @@ fn morrows_older_sidechain_uses_its_first_record_uuid() {
     let bytes = include_bytes!(
         "../../../../examples/morrow/claude-code-only/claude-code/projects/-home-op-morrow/7f3a2c10-0101-4000-8000-000000000101.jsonl"
     );
-    let step = run(
+    let piece = run(
         &main_file("7f3a2c10-0101-4000-8000-000000000101"),
         &mut ParserState::default(),
         bytes,
         0,
     )
     .unwrap();
-    let steps = crate::chain_names::tests::settled(&[step]);
-    let out = &steps[0].output;
+    let pieces = crate::chain_names::tests::settled(&[piece]);
+    let out = &pieces[0].output;
     let side = "7f3a2c10-0101-4000-8000-000000000101~side-d1500000-0000-4000-8000-000000000001";
     assert_eq!(
         out.sessions
@@ -932,14 +932,14 @@ fn sidechain_identity_follows_source_records_before_message_aliases() {
         json!({"type":"assistant","uuid":"new-side","sessionId":"s1","isSidechain":true,
             "parentUuid":"main-notice","message":{"role":"assistant","content":"Another task."}}),
     ];
-    let step = run(
+    let piece = run(
         &main_file("s1"),
         &mut ParserState::default(),
         &jsonl(&records),
         0,
     )
     .unwrap();
-    let messages = final_messages(&[step]);
+    let messages = final_messages(&[piece]);
     assert_eq!(
         messages
             .iter()
@@ -976,14 +976,14 @@ fn a_background_task_launch_keeps_its_sidechain_open() {
         json!({"type":"assistant","uuid":"answer","sessionId":"s1","isSidechain":true,
             "parentUuid":"root","message":{"role":"assistant","content":"File reviewed."}}),
     ];
-    let step = run(
+    let piece = run(
         &main_file("s1"),
         &mut ParserState::default(),
         &jsonl(&records),
         0,
     )
     .unwrap();
-    let messages = final_messages(&[step]);
+    let messages = final_messages(&[piece]);
     assert_eq!(
         messages
             .iter()
@@ -991,5 +991,45 @@ fn a_background_task_launch_keeps_its_sidechain_open() {
             .map(|message| message.id.native().as_str())
             .collect::<Vec<_>>(),
         ["root", "answer"]
+    );
+}
+
+#[test]
+fn a_task_result_only_closes_sidechains_in_its_session() {
+    let records = vec![
+        assistant(
+            "task-one",
+            "task-message-one",
+            json!({"type":"tool_use","id":"shared-call",
+            "name":"Task","input":{"prompt":"First review."}}),
+        ),
+        json!({"type":"user","uuid":"root-one","sessionId":"s1","isSidechain":true,
+            "parentUuid":"task-one","message":{"role":"user","content":"First review."}}),
+        json!({"type":"assistant","uuid":"task-two","sessionId":"s2",
+            "message":{"role":"assistant","content":[{"type":"tool_use","id":"shared-call",
+                "name":"Task","input":{"prompt":"Second review."}}]}}),
+        json!({"type":"user","uuid":"root-two","sessionId":"s2","isSidechain":true,
+            "parentUuid":"task-two","message":{"role":"user","content":"Second review."}}),
+        json!({"type":"user","uuid":"result-one","sessionId":"s1","parentUuid":"task-one",
+            "message":{"role":"user","content":[{"type":"tool_result",
+                "tool_use_id":"shared-call","content":"Done.","is_error":false}]}}),
+        json!({"type":"assistant","uuid":"answer-two","sessionId":"s2","isSidechain":true,
+            "parentUuid":"root-two","message":{"role":"assistant","content":"Still working."}}),
+    ];
+    let piece = run(
+        &main_file("s1"),
+        &mut ParserState::default(),
+        &jsonl(&records),
+        0,
+    )
+    .unwrap();
+    let messages = final_messages(&[piece]);
+    assert_eq!(
+        messages
+            .iter()
+            .filter(|message| message.session.native().as_str() == "s2~side-root-two")
+            .map(|message| message.id.native().as_str())
+            .collect::<Vec<_>>(),
+        ["root-two", "answer-two"]
     );
 }

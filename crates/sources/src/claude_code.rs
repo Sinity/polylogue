@@ -171,16 +171,23 @@ pub struct ParserState {
     /// record that started it. Task results close these names together.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     sidechains: BTreeMap<String, (String, Option<String>)>,
-    /// Open Task calls, by call ID, with the record that made the call.
+    /// Call IDs belong to one session. Each open call names its record.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    task_calls: BTreeMap<String, String>,
+    task_calls: BTreeMap<SessionId, BTreeMap<String, String>>,
 }
 
 impl ParserState {
-    fn finish_task(&mut self, call: &str) {
-        if let Some(parent) = self.task_calls.remove(call)
-            && !self.task_calls.values().any(|open| *open == parent)
-        {
+    fn finish_task(&mut self, session: &SessionId, call: &str) {
+        let Some(calls) = self.task_calls.get_mut(session) else {
+            return;
+        };
+        let parent = calls
+            .remove(call)
+            .filter(|parent| !calls.values().any(|open| open == parent));
+        if calls.is_empty() {
+            self.task_calls.remove(session);
+        }
+        if let Some(parent) = parent {
             let cwd = &mut self.cwd;
             self.sidechains.retain(|_, (session, caller)| {
                 if caller.as_deref() == Some(parent.as_str()) {
@@ -740,6 +747,8 @@ impl ClaudeCode {
                     } => {
                         parser_state
                             .task_calls
+                            .entry(message.session.clone())
+                            .or_default()
                             .insert(call.clone(), id.native().as_str().to_owned());
                     }
                     Block::ToolResult {
@@ -754,7 +763,7 @@ impl ClaudeCode {
                     ) && v.pointer("/toolUseResult/isAsync").and_then(Json::as_bool)
                         != Some(true) =>
                     {
-                        parser_state.finish_task(call);
+                        parser_state.finish_task(&message.session, call);
                     }
                     _ => {}
                 }
@@ -1413,7 +1422,7 @@ impl Parser for ClaudeCode {
                     let (result_at, result_at_evidence) =
                         crate::time::parts(v.get("timestamp").and_then(time::rfc3339));
                     if let Some(call) = call_id.as_deref() {
-                        parser_state.finish_task(call);
+                        parser_state.finish_task(&session, call);
                     }
                     out.background.push(BackgroundUpdate {
                         result_at,
