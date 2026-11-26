@@ -99,8 +99,10 @@ pub struct ObservationRow {
 impl InputRows {
     /// Inserts the rows of one step at write counter `seq`. A revision already
     /// present takes the incoming length: a later chunk of the same read grew
-    /// it. Extents are new: the writer places a step's bytes at its chain's
-    /// stored end, so an extent that is already present is refused.
+    /// it. A stored extent never changes: the writer places a step's bytes at
+    /// its chain's stored end, so an extent at a stored place is either the
+    /// one stored there, which keeps its first commit, or is refused.
+    /// Inserting the rows twice changes nothing.
     pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
         self.insert_rows(tx, seq, false)
     }
@@ -139,10 +141,15 @@ impl InputRows {
                  capture_read=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN coalesce(capture_read,excluded.capture_read) ELSE excluded.capture_read END,
                  length=excluded.length,blob=excluded.blob,blob_offset=excluded.blob_offset"
         } else {
-            ""
+            // Only the extent already stored there matches; any other
+            // changes no row, which is refused below.
+            "ON CONFLICT(input,chain,offset) DO UPDATE SET
+                 commit_seq=min(commit_seq,excluded.commit_seq),
+                 capture_read=coalesce(capture_read,excluded.capture_read)
+             WHERE length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset"
         };
         for e in &self.extents {
-            tx.prepare_cached(
+            let written = tx.prepare_cached(
                 &source.sql(&format!("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, capture_read)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) {replace}")),
             )?
@@ -154,6 +161,11 @@ impl InputRows {
                 &e.blob.0[..],e.blob_offset,seq,
                 self.capture_read.as_ref().map(crate::encoding::pack_json).transpose()?
             ])?;
+            if written == 0 {
+                return Err(crate::StoreError::Invalid(
+                    "a stored extent cannot be replaced".into(),
+                ));
+            }
         }
         if let Some(o) = &self.observation {
             let details = self.observation_details(o)?;
