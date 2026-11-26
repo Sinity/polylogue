@@ -37,9 +37,10 @@ say() { echo "land #$number: $*"; }
 
 read -r owner name < <(gh repo view --json owner,name --jq '"\(.owner.login) \(.name)"')
 
-# One GraphQL call: state, base branch and its tip, head, and the required
-# check runs on the head as name|status|conclusion|check-run id|details URL,
-# separated by semicolons.
+# One GraphQL call: state, base branch and its tip, head, the number of
+# checks reported on the head, and the required check runs on it as
+# name|status|conclusion|check-run id|details URL, separated by semicolons.
+# A job waiting for other jobs reports nothing until they finish.
 pull_request_state() {
     gh api graphql -F owner="$owner" -F name="$name" -F number="$number" -f query='
 query($owner: String!, $name: String!, $number: Int!) {
@@ -47,18 +48,19 @@ query($owner: String!, $name: String!, $number: Int!) {
     pullRequest(number: $number) {
       state baseRefName headRefOid
       baseRef { target { oid } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+      commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { totalCount nodes {
         ... on CheckRun { name status conclusion databaseId detailsUrl isRequired(pullRequestNumber: $number) }
       } } } } } }
     }
   }
 }' --jq '.data.repository.pullRequest as $p | [$p.state, $p.baseRefName, $p.baseRef.target.oid, $p.headRefOid,
+  ($p.commits.nodes[0].commit.statusCheckRollup.contexts.totalCount // 0),
   ([$p.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | select(.isRequired)
     | "\(.name)|\(.status)|\(.conclusion)|\(.databaseId)|\(.detailsUrl)"] | join(";"))] | @tsv'
 }
 
 refresh() {
-    IFS=$'\t' read -r state base_branch tip head checks < <(pull_request_state)
+    IFS=$'\t' read -r state base_branch tip head reported checks < <(pull_request_state)
     [ "$state" = OPEN ] || die "the pull request is $state"
 }
 
@@ -71,14 +73,16 @@ note_run() {
 }
 
 # Polls once a minute (every agent shares one hourly API limit) until the
-# head differs from $1 and a required check has reported on it.
-await_new_checks() {
+# head differs from $1 and the required check has reported on it.
+await_required_check() {
     local previous=$1 polls=0
     while sleep 60; do
         refresh
         [ "$head" != "$previous" ] && [ -n "$checks" ] && return
         polls=$((polls + 1))
-        [ $polls -lt 15 ] || die "no required check reported on head ${head:0:10} within 15 minutes"
+        [ "$reported" -gt 0 ] || [ $polls -lt 15 ] ||
+            die "no check reported on head ${head:0:10} within 15 minutes; a pull request that conflicts with $base_branch gets no run"
+        [ $polls -lt 120 ] || die "the required check did not report on head ${head:0:10} within two hours"
     done
 }
 
@@ -113,9 +117,9 @@ list() { [ -n "$1" ] && echo "$1" | paste -sd' ' || echo "(none)"; }
 while true; do
     refresh
     if [ -z "$checks" ]; then
-        $dry_run && die "no required check has reported on head ${head:0:10} yet"
+        $dry_run && die "the required check has not reported on head ${head:0:10} yet"
         say "waiting for the required check to report on head ${head:0:10}"
-        await_new_checks ""
+        await_required_check ""
         continue
     fi
     pending=false failed=false check_run= details=
@@ -187,5 +191,5 @@ while true; do
     report
     gh pr update-branch "$number" -R "$owner/$name" ||
         die "the branch could not be updated with $base_branch; resolve the conflict by rebasing, push, and run dev/land again"
-    await_new_checks "$head"
+    await_required_check "$head"
 done
