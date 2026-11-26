@@ -60,7 +60,9 @@ unit_properties = ["MemoryHigh=8G"]
 description = "Run selected tests on the workspace feature graph; Cargo target flags bound compilation"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
-pool = "compile"
+# Test builds run beside type checks (compile pool); admission holds
+# either while the job plane lacks memory for it.
+pool = "normal"
 result = "exit"
 timeout_seconds = 3600
 scratch = "tmpfs"
