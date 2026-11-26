@@ -182,20 +182,17 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
         1,
     );
     let original = data.clone();
-    for (stdout, stderr, no_color, term) in [
-        (false, false, false, Some("xterm")),
-        (true, false, false, Some("xterm")),
-        (false, true, false, Some("xterm")),
-        (true, true, false, Some("xterm")),
-        (true, true, true, Some("xterm")),
-        (true, true, false, Some("dumb")),
+    // Colour is decided for each sink, as specified in terminal.md.
+    for (stdout, stderr, no_color, term, stdout_color, stderr_color) in [
+        (false, false, false, Some("xterm"), false, false),
+        (true, false, false, Some("xterm"), true, false),
+        (false, true, false, Some("xterm"), false, true),
+        (true, true, false, Some("xterm"), true, true),
+        (true, true, true, Some("xterm"), false, false),
+        (true, true, false, Some("dumb"), false, false),
     ] {
         let output = OutputConfig::new(stdout, stderr, no_color, term);
-        let style = if output.stdout_color() {
-            command_surface::TextStyle::Ansi
-        } else {
-            command_surface::TextStyle::Plain
-        };
+        let style = style(output);
         let text = crate::commands::declarations()
             .render_text(
                 "rows",
@@ -205,7 +202,7 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
                 style,
             )
             .unwrap();
-        assert_eq!(text.contains("\x1b[1m"), output.stdout_color());
+        assert_eq!(text.contains("\x1b[1m"), stdout_color, "stdout: {output:?}");
         assert!(
             !text.contains("\x1b[31m"),
             "archived ANSI must remain inert"
@@ -217,7 +214,11 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
             Some("query λ"),
             output.stderr_color(),
         );
-        assert_eq!(error.contains("\x1b[1m"), output.stderr_color());
+        assert_eq!(
+            error.contains("\x1b[1m"),
+            stderr_color,
+            "stderr: {output:?}"
+        );
         assert!(!error.contains("\x1b[31m"));
         assert!(error.contains("\\x1b[31m"));
         assert!(error.ends_with("polylogue: try: query λ\n"));
@@ -243,21 +244,25 @@ fn help_and_parse_errors_use_captured_stdout_and_stderr_policies() {
     // The parser produces plain text before the displaying client's styling.
     assert!(!help.render().ansi().to_string().contains('\x1b'));
     assert!(!error.render().ansi().to_string().contains('\x1b'));
-    for (stdout, stderr, no_color, term) in [
-        (true, false, false, Some("xterm")),
-        (false, true, false, Some("xterm")),
-        (false, false, false, Some("xterm")),
-        (true, true, true, Some("xterm")),
-        (true, true, false, Some("dumb")),
+    // Colour is decided for each sink, as specified in terminal.md.
+    for (stdout, stderr, no_color, term, stdout_color, stderr_color) in [
+        (true, false, false, Some("xterm"), true, false),
+        (false, true, false, Some("xterm"), false, true),
+        (false, false, false, Some("xterm"), false, false),
+        (true, true, false, Some("xterm"), true, true),
+        (true, true, true, Some("xterm"), false, false),
+        (true, true, false, Some("dumb"), false, false),
     ] {
         let output = crate::config::OutputConfig::new(stdout, stderr, no_color, term);
         assert_eq!(
             parse_text(&help, output).contains("\x1b[1m"),
-            output.stdout_color()
+            stdout_color,
+            "stdout: {output:?}"
         );
         assert_eq!(
             parse_text(&error, output).contains("\x1b[1m"),
-            output.stderr_color()
+            stderr_color,
+            "stderr: {output:?}"
         );
     }
 }
@@ -409,10 +414,9 @@ fn status_exit_code_is_degraded_when_answer_is_degraded() {
         let (_, values) = parse(&argv).unwrap();
         assert_eq!(
             status_output(&values, &degraded, &startup.client, true),
-            ExitCode::from(degraded.exit_code()),
+            ExitCode::from(5),
             "line: {line}"
         );
-        assert_ne!(degraded.exit_code(), 0);
         assert_eq!(
             status_output(
                 &values,
