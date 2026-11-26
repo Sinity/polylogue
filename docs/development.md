@@ -12,6 +12,7 @@ input. Change the compiler version in common and both products together.
 | `cargo xtask test -p <crate> --lib -E 'test(<name>)'` | the selected tests under nextest, building only that crate's library test target and what it depends on |
 | `cargo xtask test --changed`, `--base <ref>` | the tests the changes since the merge base with `origin/master` (or `<ref>`) can affect: changed packages and their dependents |
 | `cargo xtask test --partition hash:<k>/<n>` | part `k` of `n` of the selected tests; a part that holds none passes |
+| `cargo xtask test --junit <path>` | also write nextest's JUnit report there, whether or not tests fail |
 | `cargo xtask test --no-run` | build every test binary without running tests |
 | `cargo xtask nix [--base <ref>]` | the flake's `nix-fmt`, `settings` and `modules` checks; with `--base`, only when the changes touch `nix/`, `flake.nix` or `flake.lock` |
 | `cargo xtask warm` | build every test binary and both Clippy configurations without running tests |
@@ -132,16 +133,18 @@ toolchain or Nix files change. The git-ignored `.envrc.local` holds personal
 settings such as build-output placement, job counts and compiler wrappers.
 Cargo's output directory is `target/` unless `CARGO_TARGET_DIR` is set.
 
-Declared AgentCTL operations clear an ambient `CARGO_TARGET_DIR` before entering
-the target workspace's shell. The `measure_run` operation sets an unused local
-target so a prebuilt measurement skips compiler cache selection and seeding.
-Untimed `import_preserved` runs share the measurement queue with benchmarks,
-so these memory-heavy operations run one at a time. Their memory budget is
-admitted before they start; the parent job-plane protections remain in force.
-Coordinate runs that use the same disk before comparing timings.
-When the operation leaves the target unset, the shell can select that checkout's
-isolated host target and seed its dependency artifacts through `sinnix-cargo-target`.
-For an explicit target experiment, pass
+A host may queue these commands through its own job runner; the operations
+AgentCTL runs are declared in `.agentctl/project.toml`. They clear an ambient
+`CARGO_TARGET_DIR` before entering the workspace's shell, which then selects
+the checkout's own host target and seeds its dependency artifacts through
+`sinnix-cargo-target` where the host has it. `fast` and `compile` share the
+one-slot `compile` queue; `focused` runs in the `normal` queue beside them,
+and full checks and Nix checks in `bulk`. `measure` is the one operation for
+benchmarks, archive rebuilds and measurement drivers: it runs one at a time,
+waits until 10 GiB of memory is free rather than starting a run its memory
+limit would end, runs at low CPU and I/O priority, and never sees the paid
+embedding key. Coordinate runs that use the same disk before comparing
+timings. For an explicit target experiment, pass
 `exec -- env CARGO_TARGET_DIR=... cargo ...`; this assignment runs after shell
 selection. Keep the experimental target exclusive to the same checkout.
 
@@ -154,14 +157,10 @@ describes.
 For an early type-check of one package, `cargo check --locked -p
 polylogue-sinex --tests` checks its library target without compiling a test
 executable. The declared AgentCTL `compile` operation accepts those Cargo check
-arguments in the same one-slot compile queue.
+arguments.
 
-A host may queue these commands through its own job runner. AgentCTL routes
-`fast` and `focused` through the same one-slot `compile` queue. Selected tests
-therefore wait for source checks rather than long runtime checks, and their
-builds do not overlap a metadata check. Full checks and Nix checks keep
-their `bulk` queue. The `package` operation runs all locked Nix checks;
-`nix build` builds the package alone.
+The `package` operation runs all locked Nix checks; `nix build` builds the
+package alone.
 
 ## Hosted check
 
@@ -184,7 +183,9 @@ fails unless every other job succeeded. Each Rust job takes the toolchain
 from `rust-toolchain.toml` through rustup, and nextest, cargo-hakari, zsh,
 fish, zip and Node from the flake's `check-tools` package, the development
 shell's versions. A test job lists its failed tests and the tests that took
-10 s or longer in the job summary.
+10 s or longer in the job summary, and uploads nextest's JUnit report
+(`--junit PATH`) as the artifact `junit-<k>`, so a test that fails now and
+then on master can be traced through recorded runs.
 
 Every Rust job restores master's saved build and dates source files against
 its recorded commit, so Cargo rebuilds only the packages that changed and

@@ -128,6 +128,9 @@ pub(crate) struct Selection {
     /// or `count:K/N`. A part that holds no tests passes.
     #[arg(long, value_name = "PART")]
     partition: Option<String>,
+    /// Write nextest's JUnit report here, also when tests fail.
+    #[arg(long, value_name = "PATH")]
+    junit: Option<std::path::PathBuf>,
     #[command(flatten)]
     targets: Targets,
     /// Cargo's spelling of the default: every package's tests.
@@ -169,6 +172,10 @@ impl Selection {
     /// Arguments that pass to nextest after the ones xtask interprets.
     pub(crate) fn pass_through(&mut self, arguments: Vec<String>) {
         self.rest.extend(arguments);
+    }
+
+    pub(crate) fn junit(&self) -> Option<std::path::PathBuf> {
+        self.junit.clone()
     }
 
     pub(crate) fn is_partitioned(&self) -> bool {
@@ -343,23 +350,6 @@ impl Workspace {
             })
             .collect()
     }
-
-    /// The packages that depend on any of these, with these.
-    fn with_dependents(&self, packages: impl IntoIterator<Item = String>) -> BTreeSet<String> {
-        let mut selected = BTreeSet::new();
-        let mut pending: Vec<String> = packages.into_iter().collect();
-        while let Some(package) = pending.pop() {
-            if selected.insert(package.clone()) {
-                pending.extend(
-                    self.members
-                        .iter()
-                        .filter(|(_, dependencies)| dependencies.contains(&package))
-                        .map(|(name, _)| name.clone()),
-                );
-            }
-        }
-        selected
-    }
 }
 
 fn glob_matches(pattern: &[u8], name: &[u8]) -> bool {
@@ -399,23 +389,12 @@ pub(crate) fn separate_short_values(args: Vec<String>) -> Vec<String> {
 }
 
 /// The workspace packages whose tests the changes since `base` select, or
-/// `None` for every package: the changed packages and their reverse
-/// dependencies, as devkit selects them.
+/// `None` for every package: devkit's selection and the packages it builds.
 pub(crate) fn changed_packages(
     root: &Path,
-    workspace: &Workspace,
     base: &str,
 ) -> Result<Option<BTreeSet<String>>, String> {
-    use devkit::select::Selection as Changed;
-    let tests = match devkit::select::changed(root, base)? {
-        Changed::Workspace => return Ok(None),
-        Changed::Tests(tests) => tests,
-    };
-    // A package whose own tests run (its test-only source, an integration
-    // binary or test functions changed) runs without its dependents.
-    let mut selected = workspace.with_dependents(tests.with_dependents);
-    selected.extend(tests.packages);
-    selected.extend(tests.binaries.into_iter().map(|(package, _)| package));
-    selected.extend(tests.functions.into_keys());
-    Ok(Some(selected))
+    let workspace = devkit::select::Workspace::read(root)?;
+    let selection = workspace.changed(base)?;
+    Ok(workspace.packages_to_build(&selection))
 }

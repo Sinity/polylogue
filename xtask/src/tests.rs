@@ -478,9 +478,8 @@ fn selections_build_their_packages_with_their_test_features() {
     );
     // The packages the change selects: the helper and everything that
     // depends on it, through normal and test-only dependencies.
-    let workspace = selection::Workspace::load(root).unwrap();
     assert_eq!(
-        selection::changed_packages(root, &workspace, "HEAD")
+        selection::changed_packages(root, "HEAD")
             .unwrap()
             .unwrap()
             .into_iter()

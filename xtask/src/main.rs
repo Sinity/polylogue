@@ -153,7 +153,7 @@ fn test_options(
 ) -> Result<Option<Nextest>, String> {
     let workspace = selection::Workspace::load(root)?;
     let changed = match base {
-        Some(base) => selection::changed_packages(root, &workspace, base)?,
+        Some(base) => selection::changed_packages(root, base)?,
         None => None,
     };
     let Some(arguments) = selection.nextest_arguments(&workspace, base, changed.as_ref())? else {
@@ -161,6 +161,7 @@ fn test_options(
     };
     let mut options = nextest(arguments);
     options.allow_no_tests = selection.is_partitioned();
+    options.junit = selection.junit();
     Ok(Some(options))
 }
 
