@@ -48,7 +48,6 @@ impl Test {
         reader: &mut DatabaseReader,
     ) -> Result<Option<ReadReport>, DatabaseError> {
         let archive = &self.archive;
-        let blobs = std::sync::Arc::new(archive.blobs().unwrap());
         let input = &self.input;
         let observation = &self.observation;
         let writer = &self.writer;
@@ -95,10 +94,7 @@ impl Test {
                     capture_read: None,
                     release: Default::default(),
                 };
-                for done in writer.store_group(
-                    vec![PreparedBatch { batch, files }],
-                    std::sync::Arc::clone(&blobs),
-                )? {
+                for done in writer.store_group(vec![PreparedBatch { batch, files }])? {
                     done?;
                 }
                 Ok(())

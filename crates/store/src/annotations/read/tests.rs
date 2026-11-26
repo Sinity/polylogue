@@ -44,15 +44,19 @@ fn annotations_are_written_once_per_request_and_revised_in_families() {
             annotations: vec![statement(AnnotationKind::Lesson, target, "run nextest")],
         },
     );
-    let out = writer.user(first.clone()).unwrap();
+    let out = writer.archive().user(first.clone()).unwrap();
     assert!(!out.repeat);
-    assert!(writer.user(first.clone()).unwrap().repeat);
+    assert!(writer.archive().user(first.clone()).unwrap().repeat);
     let mut other = first.clone();
     other.write = UserWrite::Assert {
         annotations: vec![statement(AnnotationKind::Lesson, target, "something else")],
     };
-    assert!(matches!(writer.user(other), Err(StoreError::Conflict(_))));
+    assert!(matches!(
+        writer.archive().user(other),
+        Err(StoreError::Conflict(_))
+    ));
     let second = writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "018f0000-0000-7000-8000-000000000002".into(),
             UserWrite::ReviseAnnotations {
@@ -93,6 +97,7 @@ fn annotations_are_written_once_per_request_and_revised_in_families() {
 fn withdrawal_names_its_family_and_keeps_facts_readable() {
     let (_dir, _a, _lock, writer, reads) = setup();
     let lesson = writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "018f0000-0000-7000-8000-00000000000a".into(),
             UserWrite::Assert {
@@ -109,6 +114,7 @@ fn withdrawal_names_its_family_and_keeps_facts_readable() {
         revision: None,
     };
     let withdrawal = writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "018f0000-0000-7000-8000-00000000000c".into(),
             UserWrite::WithdrawAnnotations {
@@ -165,27 +171,31 @@ fn an_annotation_needs_a_target_and_a_revision_needs_its_family() {
     let mut annotation = statement(AnnotationKind::Note, "repo:synthetic", "x");
     annotation.links.clear();
     assert!(matches!(
-        writer.user(crate::fixture::authored::operator_request(
-            "018f0000-0000-7000-8000-000000000010".into(),
-            UserWrite::Assert {
-                annotations: vec![annotation]
-            },
-        )),
+        writer
+            .archive()
+            .user(crate::fixture::authored::operator_request(
+                "018f0000-0000-7000-8000-000000000010".into(),
+                UserWrite::Assert {
+                    annotations: vec![annotation]
+                },
+            )),
         Err(StoreError::Refused(
             polylogue_model::Reason::BadAnnotationLinks { .. }
         ))
     ));
     assert!(matches!(
-        writer.user(crate::fixture::authored::operator_request(
-            "018f0000-0000-7000-8000-000000000011".into(),
-            UserWrite::ReviseAnnotations {
-                bases: vec![RevisionReference::exact("missing".into(), "missing".into())],
-                patch: AnnotationPatch {
-                    value: Change::Set(Json::String("x".into())),
-                    ..Default::default()
+        writer
+            .archive()
+            .user(crate::fixture::authored::operator_request(
+                "018f0000-0000-7000-8000-000000000011".into(),
+                UserWrite::ReviseAnnotations {
+                    bases: vec![RevisionReference::exact("missing".into(), "missing".into())],
+                    patch: AnnotationPatch {
+                        value: Change::Set(Json::String("x".into())),
+                        ..Default::default()
+                    },
                 },
-            },
-        )),
+            )),
         Err(StoreError::NotFound(_))
     ));
 }
@@ -194,6 +204,7 @@ fn an_annotation_needs_a_target_and_a_revision_needs_its_family() {
 fn unsupported_annotation_metadata_returns_an_error_instead_of_invented_facts() {
     let (_dir, archive, _lock, writer, reads) = setup();
     let created = writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "unsupported-annotation".into(),
             UserWrite::Assert {
@@ -246,7 +257,7 @@ fn query_annotation_retries_and_replay_keep_the_original_resolved_targets() {
             resolved: vec![original.clone()],
         },
     );
-    writer.user(request.clone()).unwrap();
+    writer.archive().user(request.clone()).unwrap();
     assert_eq!(
         reads.reader().unwrap().user_request("annotated").unwrap(),
         Some(request.clone())
@@ -255,7 +266,7 @@ fn query_annotation_retries_and_replay_keep_the_original_resolved_targets() {
     if let UserWrite::AssertQuery { resolved, .. } = &mut changed.write {
         *resolved = vec![Reference::parse("repo:other").unwrap()];
     }
-    assert!(writer.user(changed).unwrap().repeat);
+    assert!(writer.archive().user(changed).unwrap().repeat);
     let exact = RevisionReference::exact("annotated".into(), "annotated".into());
     let recorded = reads.reader().unwrap().annotation(&exact).unwrap().unwrap();
     assert_eq!(
@@ -267,11 +278,11 @@ fn query_annotation_retries_and_replay_keep_the_original_resolved_targets() {
         *query = "messages".into();
     }
     assert!(matches!(
-        writer.user(changed_query),
+        writer.archive().user(changed_query),
         Err(StoreError::Conflict(_))
     ));
     let (_replay_dir, _replay_archive, _replay_lock, replay_writer, replay_reads) = setup();
-    replay_writer.user(request).unwrap();
+    replay_writer.archive().user(request).unwrap();
     assert_eq!(
         replay_reads
             .reader()
@@ -299,6 +310,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
         })),
     );
     writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: request.clone(),
             scope: None,
@@ -313,7 +325,7 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
         save.rows_json = "[{\"id\":\"new\"}]".into();
         save.read_at = "{\"now\":2}".into();
     }
-    assert!(writer.user(changed.clone()).unwrap().repeat);
+    assert!(writer.archive().user(changed.clone()).unwrap().repeat);
     // The retry's rows and read time do not replace the original request.
     let stored = reads
         .reader()
@@ -332,7 +344,10 @@ fn kept_result_retries_ignore_resolved_rows_and_time_but_preserve_intent() {
     if let UserWrite::Save(save) = &mut changed.write {
         save.query = "sessions".into();
     }
-    assert!(matches!(writer.user(changed), Err(StoreError::Conflict(_))));
+    assert!(matches!(
+        writer.archive().user(changed),
+        Err(StoreError::Conflict(_))
+    ));
 }
 
 #[test]
@@ -355,6 +370,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         )
     };
     writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: save("first", "sessions"),
             scope: None,
@@ -364,6 +380,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         .unwrap();
     let resolved = save("resolved", "messages");
     writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: resolved.clone(),
             scope: None,
@@ -401,6 +418,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         },
     );
     writer
+        .archive()
         .user(crate::writer::UserSubmission {
             request: explicit.clone(),
             scope: None,
@@ -409,12 +427,15 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         })
         .unwrap();
     // A recorded retry remains available without a new preparation context.
-    assert!(writer.user(resolved.clone()).unwrap().repeat);
+    assert!(writer.archive().user(resolved.clone()).unwrap().repeat);
     let mut changed = explicit.clone();
     if let UserWrite::ReviseAnnotations { bases, .. } = &mut changed.write {
         bases[0].revision = Some("first".into());
     }
-    assert!(matches!(writer.user(changed), Err(StoreError::Conflict(_))));
+    assert!(matches!(
+        writer.archive().user(changed),
+        Err(StoreError::Conflict(_))
+    ));
     let mut recorded = resolved;
     let UserWrite::Save(save) = &mut recorded.write else {
         unreachable!()
@@ -499,7 +520,7 @@ fn a_missing_request_is_absent_and_request_content_cannot_be_removed() {
             annotations: vec![statement(AnnotationKind::Note, "repo:morrow", "body")],
         },
     );
-    writer.user(request).unwrap();
+    writer.archive().user(request).unwrap();
     let refusal = rusqlite::Connection::open(archive.archive_db())
         .unwrap()
         .execute(
@@ -529,6 +550,7 @@ fn expiry_check_does_not_load_the_annotation_body() {
     let mut note = statement(AnnotationKind::Note, "repo:morrow", "synthetic body");
     note.valid_until = Some(polylogue_model::Timestamp::from_unix_ms(10).unwrap());
     let created = writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "expiry-metadata".into(),
             UserWrite::Assert {
@@ -597,6 +619,7 @@ fn tagged_reads_only_the_current_revision_of_a_tag() {
     tag.key = Some("status".into());
     tag.value = Some(serde_json::json!({"value":"ready"}));
     let saved = writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "tag-ready".into(),
             UserWrite::Assert {
@@ -605,6 +628,7 @@ fn tagged_reads_only_the_current_revision_of_a_tag() {
         ))
         .unwrap();
     writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "tag-done".into(),
             UserWrite::ReviseAnnotations {
@@ -652,6 +676,7 @@ fn tagged_reads_current_name_and_value_with_confidence_outside_identity() {
     tag.key = Some("status".into());
     tag.value = Some(serde_json::json!({"value":"ready", "confidence":0.9}));
     let saved = writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "tag-valued".into(),
             UserWrite::Assert {
@@ -663,6 +688,7 @@ fn tagged_reads_current_name_and_value_with_confidence_outside_identity() {
     bare.key = Some("status".into());
     bare.value = None;
     writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "tag-bare".into(),
             UserWrite::Assert {
@@ -714,6 +740,7 @@ fn tagged_reads_current_name_and_value_with_confidence_outside_identity() {
         );
     }
     writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "withdraw-valued-tag".into(),
             UserWrite::WithdrawAnnotations {

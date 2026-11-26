@@ -134,10 +134,7 @@ impl TestArchive {
             Vec::new()
         };
         self.writer
-            .store_group(
-                vec![crate::staging::PreparedBatch { batch, files }],
-                std::sync::Arc::new(self.archive.blobs()?),
-            )?
+            .store_group(vec![crate::staging::PreparedBatch { batch, files }])?
             .into_iter()
             .next()
             .expect("one source reading")
@@ -737,7 +734,6 @@ fn a_step_whose_counts_do_not_add_up_is_refused_alone() {
 #[test]
 fn revisions_extents_and_parse_state_follow_appends() {
     let w = test_archive();
-    let store = Arc::new(w.archive.blobs().unwrap());
     let mut b1 = batch("i", Route::Live, 0, vec![], &[]);
     let (blob1, file1) = w.archive.prepare_blob(b"line one\n").unwrap();
     b1.new_blob = Some(blob1);
@@ -751,19 +747,16 @@ fn revisions_extents_and_parse_state_follow_appends() {
     b2.parse.first_mut().unwrap().progress = polylogue_model::batch::StepProgress::Partway;
     let results = w
         .writer
-        .store_group(
-            vec![
-                crate::staging::PreparedBatch {
-                    batch: b1,
-                    files: file1.into_iter().collect(),
-                },
-                crate::staging::PreparedBatch {
-                    batch: b2,
-                    files: file2.into_iter().collect(),
-                },
-            ],
-            store,
-        )
+        .store_group(vec![
+            crate::staging::PreparedBatch {
+                batch: b1,
+                files: file1.into_iter().collect(),
+            },
+            crate::staging::PreparedBatch {
+                batch: b2,
+                files: file2.into_iter().collect(),
+            },
+        ])
         .unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
@@ -804,7 +797,6 @@ fn revisions_extents_and_parse_state_follow_appends() {
 #[test]
 fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     let w = test_archive();
-    let store = Arc::new(w.archive.blobs().unwrap());
     let mut first = batch("i", Route::Live, 0, vec![], &[]);
     let (first_blob, first_file) = w.archive.prepare_blob(b"line\npartial").unwrap();
     first.new_blob = Some(first_blob);
@@ -814,13 +806,10 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     parse.progress = polylogue_model::batch::StepProgress::AtEnd;
     let results = w
         .writer
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch: first,
-                files: first_file.into_iter().collect(),
-            }],
-            Arc::clone(&store),
-        )
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch: first,
+            files: first_file.into_iter().collect(),
+        }])
         .unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
@@ -834,13 +823,10 @@ fn waiting_at_eof_does_not_hide_a_stored_append_without_parse_progress() {
     append.parse.clear();
     let results = w
         .writer
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch: append,
-                files: append_file.into_iter().collect(),
-            }],
-            store,
-        )
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch: append,
+            files: append_file.into_iter().collect(),
+        }])
         .unwrap();
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     w.writer.flush().unwrap();
@@ -1088,26 +1074,25 @@ fn dropping_the_writer_drains_accepted_work_with_sender_clones_alive() {
     } = w;
     let sender = writer.sender();
     sender.send(queued).unwrap();
-    let (reply, received) = sync_channel(1);
-    sender
-        .0
-        .send_user(UserMsg::Request(
-            Box::new(crate::writer::UserSubmission {
-                request: crate::fixture::authored::operator_request(
-                    crate::user_writes::new_request_id(),
-                    polylogue_model::user::UserWrite::SetSetting {
-                        key: "browser.actions".into(),
-                        value: "on".into(),
-                        machine: None,
-                    },
-                ),
-                scope: None,
-                preparation: None,
-                parent: None,
-            }),
-            reply,
-        ))
-        .unwrap();
+    let crate::writer::Queued::Committing(received) = sender
+        .archive()
+        .try_submit(crate::writer::UserSubmission {
+            request: crate::fixture::authored::operator_request(
+                crate::user_writes::new_request_id(),
+                polylogue_model::user::UserWrite::SetSetting {
+                    key: "browser.actions".into(),
+                    value: "on".into(),
+                    machine: None,
+                },
+            ),
+            scope: None,
+            preparation: None,
+            parent: None,
+        })
+        .unwrap()
+    else {
+        panic!("the user queue has room")
+    };
     let (done, stopped) = sync_channel(1);
     let thread = std::thread::spawn(move || {
         drop(writer);
@@ -1273,14 +1258,16 @@ fn a_user_write_goes_ahead_of_queued_batches() {
     let user = std::thread::spawn({
         let sender = sender.clone();
         move || {
-            sender.user(crate::fixture::authored::operator_request(
-                crate::user_writes::new_request_id(),
-                polylogue_model::user::UserWrite::SetSetting {
-                    key: "browser.actions".into(),
-                    value: "on".into(),
-                    machine: None,
-                },
-            ))
+            sender
+                .archive()
+                .user(crate::fixture::authored::operator_request(
+                    crate::user_writes::new_request_id(),
+                    polylogue_model::user::UserWrite::SetSetting {
+                        key: "browser.actions".into(),
+                        value: "on".into(),
+                        machine: None,
+                    },
+                ))
         }
     });
     std::thread::sleep(std::time::Duration::from_millis(100));
@@ -1482,10 +1469,7 @@ fn a_refused_reading_in_a_group_of_independent_inputs_costs_only_itself() {
         0,
         64,
     );
-    let results = w
-        .writer
-        .store_group(group, std::sync::Arc::new(w.archive.blobs().unwrap()))
-        .unwrap();
+    let results = w.writer.store_group(group).unwrap();
     assert_eq!(results.len(), 2);
     assert!(
         matches!(&results[0], Err(error) if error.to_string().contains("injected fault at write.input")),
@@ -1512,14 +1496,16 @@ fn a_user_write_wakes_an_idle_writer_while_the_bulk_queue_lock_is_held() {
     std::thread::spawn({
         let sender = sender.clone();
         move || {
-            let outcome = sender.user(crate::fixture::authored::operator_request(
-                crate::user_writes::new_request_id(),
-                polylogue_model::user::UserWrite::SetSetting {
-                    key: "browser.actions".into(),
-                    value: "on".into(),
-                    machine: None,
-                },
-            ));
+            let outcome = sender
+                .archive()
+                .user(crate::fixture::authored::operator_request(
+                    crate::user_writes::new_request_id(),
+                    polylogue_model::user::UserWrite::SetSetting {
+                        key: "browser.actions".into(),
+                        value: "on".into(),
+                        machine: None,
+                    },
+                ));
             let _ = done.send(outcome.is_ok());
         }
     });

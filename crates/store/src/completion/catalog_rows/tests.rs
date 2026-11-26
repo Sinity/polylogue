@@ -190,6 +190,7 @@ fn authored_deltas_follow_only_affected_families_and_setting_keys() {
     let write = |id: &str, value| {
         archive
             .writer
+            .archive()
             .user(crate::writer::UserSubmission {
                 request: crate::fixture::authored::operator_request(id.into(), value),
                 scope: None,

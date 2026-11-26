@@ -449,12 +449,18 @@ pub(crate) fn submit_result<T>(
     };
     let request = invocation.request(request_id, w);
     let preparation = authored_preparation();
-    let result = writes.user_receipt(polylogue_store::writer::UserSubmission {
-        request,
-        scope: selected_scope,
-        preparation: Some(preparation),
-        parent: invocation.parent_lifetime(),
-    });
+    let result = writes
+        .archive()
+        .submit(
+            polylogue_store::writer::UserSubmission {
+                request,
+                scope: selected_scope,
+                preparation: Some(preparation),
+                parent: invocation.parent_lifetime(),
+            },
+            None,
+        )
+        .map(|committed| committed.outcome);
     match result {
         Ok(outcome) => {
             let pending = outcome.outcome.pending;
@@ -633,7 +639,9 @@ pub(crate) fn query_targets_in(
             let hash = run.binding_hash().map_err(Failure::internal)?;
             let writes = writer(d)?;
             operation.check_parent_lifetime()?;
-            writes.query_object(object, operation.parent_lifetime())?;
+            writes
+                .archive()
+                .query_object(object, operation.parent_lifetime())?;
             polylogue_reading::execution::record(
                 writes,
                 operation.parent_lifetime(),

@@ -425,6 +425,7 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
     ] {
         archive
             .writer
+            .archive()
             .user(crate::fixture::authored::operator_request(
                 id.into(),
                 UserWrite::Deliver(Delivery {

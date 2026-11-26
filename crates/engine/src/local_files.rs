@@ -166,13 +166,10 @@ impl Engine {
                     release: Default::default(),
                 };
                 self.writer
-                    .store_group(
-                        vec![polylogue_store::staging::PreparedBatch {
-                            batch,
-                            files: vec![prepared],
-                        }],
-                        Arc::clone(&self.blobs),
-                    )?
+                    .store_group(vec![polylogue_store::staging::PreparedBatch {
+                        batch,
+                        files: vec![prepared],
+                    }])?
                     .pop()
                     .expect("coverage result")?;
             }
@@ -260,13 +257,10 @@ impl Engine {
         // Equal content may have another observed source path.
         if exists {
             self.writer
-                .store_group(
-                    vec![polylogue_store::staging::PreparedBatch {
-                        batch,
-                        files: Vec::new(),
-                    }],
-                    Arc::clone(&self.blobs),
-                )?
+                .store_group(vec![polylogue_store::staging::PreparedBatch {
+                    batch,
+                    files: Vec::new(),
+                }])?
                 .pop()
                 .expect("one local result")?;
         } else {

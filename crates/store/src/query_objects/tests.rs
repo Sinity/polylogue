@@ -116,10 +116,18 @@ fn outcome(run: &QueryRun, count: u64) -> QueryRunOutcome {
 fn query_objects_keep_one_body_and_reject_forged_identity() {
     let archive = WriterArchive::new();
     let first = question("sessions where title:focus | limit 5");
-    archive.writer.query_object(first.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(first.clone(), None)
+        .unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let position = pool.reader().unwrap().change_position().unwrap();
-    archive.writer.query_object(first.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(first.clone(), None)
+        .unwrap();
     assert_eq!(pool.reader().unwrap().change_position().unwrap(), position);
     let read = pool
         .reader()
@@ -136,11 +144,15 @@ fn query_objects_keep_one_body_and_reject_forged_identity() {
     );
     let equivalent = question("sessions  where title:focus | limit 5");
     assert_eq!(equivalent.id, first.id);
-    archive.writer.query_object(equivalent, None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(equivalent, None)
+        .unwrap();
     assert_eq!(pool.reader().unwrap().change_position().unwrap(), position);
     let mut forged = question("sessions where title:focus | limit 6");
     forged.id = first.id;
-    assert!(archive.writer.query_object(forged, None).is_err());
+    assert!(archive.writer.archive().query_object(forged, None).is_err());
     assert_eq!(
         pool.reader()
             .unwrap()
@@ -155,7 +167,11 @@ fn query_objects_keep_one_body_and_reject_forged_identity() {
 fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     let archive = WriterArchive::new();
     let object = question("sessions where since:7d");
-    archive.writer.query_object(object.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(object.clone(), None)
+        .unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let expected = run(
         &object,
@@ -165,6 +181,7 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     );
     archive
         .writer
+        .archive()
         .begin_query_run(expected.clone(), None)
         .unwrap();
     let reader = pool.reader().unwrap();
@@ -174,6 +191,7 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     drop(reader);
     archive
         .writer
+        .archive()
         .begin_query_run(expected.clone(), None)
         .unwrap();
     assert_eq!(pool.reader().unwrap().change_position().unwrap(), position);
@@ -188,7 +206,13 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     reordered.accepted_request = Some(serde_json::Value::Object(envelope));
     assert_eq!(reordered.hash().unwrap(), expected.binding_hash().unwrap());
     let completed = outcome(&expected, 3);
-    drop(archive.writer.finish_query_run(completed.clone()).unwrap());
+    drop(
+        archive
+            .writer
+            .archive()
+            .finish_query_run(completed.clone())
+            .unwrap(),
+    );
     assert!(archive.writer.flush_rows().unwrap().errors.is_empty());
     let reader = pool.reader().unwrap();
     assert_eq!(
@@ -207,7 +231,13 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
         .context
         .read_positions
         .insert("archive".into(), "999".into());
-    assert!(archive.writer.begin_query_run(contradictory, None).is_err());
+    assert!(
+        archive
+            .writer
+            .archive()
+            .begin_query_run(contradictory, None)
+            .is_err()
+    );
     let mut conflicting = expected.clone();
     conflicting
         .binding
@@ -216,12 +246,19 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
         .query_options
         .fields
         .push("changed".into());
-    assert!(archive.writer.begin_query_run(conflicting, None).is_err());
+    assert!(
+        archive
+            .writer
+            .archive()
+            .begin_query_run(conflicting, None)
+            .is_err()
+    );
     let mut conflicting = completed.clone();
     conflicting.count = Some(4);
     assert!(
         archive
             .writer
+            .archive()
             .finish_query_run(conflicting)
             .unwrap()
             .recv()
@@ -233,6 +270,7 @@ fn run_begin_is_visible_before_completion_and_both_facts_are_immutable() {
     assert!(
         archive
             .writer
+            .archive()
             .finish_query_run(mismatched)
             .unwrap()
             .recv()
@@ -255,7 +293,7 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
     {
         let (archive, _lock) = crate::Archive::open_or_create(&path).unwrap();
         let writer = crate::Writer::start(&archive).unwrap();
-        writer.query_object(object.clone(), None).unwrap();
+        writer.archive().query_object(object.clone(), None).unwrap();
         let pool = crate::ReadPool::open(&archive).unwrap();
         let mut binding = run(
             &object,
@@ -281,7 +319,10 @@ fn a_large_question_and_replay_body_survive_writer_restart_whole() {
         binding.binding.original_mut().unwrap().accepted_request = Some(
             serde_json::json!({"id":"caller".repeat(10000),"operation":"read","arguments":{"target":text}}),
         );
-        writer.begin_query_run(binding.clone(), None).unwrap();
+        writer
+            .archive()
+            .begin_query_run(binding.clone(), None)
+            .unwrap();
         expected = binding;
     }
     let (archive, _lock) = crate::Archive::open_or_create(&path).unwrap();
@@ -320,7 +361,7 @@ fn result_output_schemas_require_the_kept_columns() {
             outcomes: None,
         })),
     };
-    archive.writer.user(request).unwrap();
+    archive.writer.archive().user(request).unwrap();
     let mut bindings = polylogue_query::Bindings::default();
     bindings.kept.insert(
         "kept".into(),
@@ -343,9 +384,19 @@ fn result_output_schemas_require_the_kept_columns() {
         .query_object()
         .unwrap();
     assert_eq!(forged.id, genuine.id);
-    assert!(archive.writer.query_object(forged.clone(), None).is_err());
-    archive.writer.query_object(genuine.clone(), None).unwrap();
-    assert!(archive.writer.query_object(forged, None).is_err());
+    assert!(
+        archive
+            .writer
+            .archive()
+            .query_object(forged.clone(), None)
+            .is_err()
+    );
+    archive
+        .writer
+        .archive()
+        .query_object(genuine.clone(), None)
+        .unwrap();
+    assert!(archive.writer.archive().query_object(forged, None).is_err());
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     assert_eq!(
         pool.reader()
@@ -389,7 +440,11 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
         let selection = reader.prepare_selection(text, &options).unwrap();
         let object = selection.query_object().unwrap();
         let read_at = reader.change_position().unwrap();
-        archive.writer.query_object(object.clone(), None).unwrap();
+        archive
+            .writer
+            .archive()
+            .query_object(object.clone(), None)
+            .unwrap();
         let mut count = 0;
         reader
             .visit_selection::<crate::selection::SelectionError>(
@@ -450,10 +505,12 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
         };
         archive
             .writer
+            .archive()
             .begin_query_run(execution.clone(), None)
             .unwrap();
         archive
             .writer
+            .archive()
             .finish_query_run(outcome(&execution, count))
             .unwrap()
             .recv()
@@ -481,7 +538,11 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
     use polylogue_model::query_objects::NormalizedReadSpan;
     let archive = WriterArchive::new();
     let object = question("messages");
-    archive.writer.query_object(object.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(object.clone(), None)
+        .unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let original = polylogue_model::Reference::parse("span:message:codex:synthetic#c=1-3").unwrap();
     let span = NormalizedReadSpan::new(
@@ -538,6 +599,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
     let hash = execution.binding_hash().unwrap();
     archive
         .writer
+        .archive()
         .begin_query_run(execution.clone(), None)
         .unwrap();
     let stored = pool
@@ -561,7 +623,13 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
     };
     span.seek.start.byte += 1;
     assert_ne!(conflicting.binding_hash().unwrap(), hash);
-    assert!(archive.writer.begin_query_run(conflicting, None).is_err());
+    assert!(
+        archive
+            .writer
+            .archive()
+            .begin_query_run(conflicting, None)
+            .is_err()
+    );
     let mut detached = execution;
     detached.id = run_id("detached-span-storage");
     detached
@@ -573,6 +641,7 @@ fn writer_keeps_normalized_span_metadata_bound_to_the_accepted_direct_target() {
     assert!(
         archive
             .writer
+            .archive()
             .begin_query_run(detached.clone(), None)
             .is_err()
     );
@@ -647,7 +716,11 @@ fn query_commit_positions_share_the_source_cursor() {
     let subscription = archive.writer.completion_commits();
     let first = question("sessions");
     let before = reads.reader().unwrap().change_position().unwrap();
-    archive.writer.query_object(first.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(first.clone(), None)
+        .unwrap();
     subscription.try_recv().unwrap();
     let reader = reads.reader().unwrap();
     let after = reader.change_position().unwrap();
@@ -658,7 +731,11 @@ fn query_commit_positions_share_the_source_cursor() {
     );
     drop(reader);
     // A repeat keeps its first position and emits no new commit cue.
-    archive.writer.query_object(first.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(first.clone(), None)
+        .unwrap();
     assert!(matches!(
         subscription.try_recv(),
         Err(std::sync::mpsc::TryRecvError::Empty)
@@ -678,7 +755,11 @@ fn query_commit_positions_share_the_source_cursor() {
         [first.id.to_string()],
     )
     .unwrap();
-    archive.writer.query_object(first.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(first.clone(), None)
+        .unwrap();
     assert_eq!(
         conn.query_row(
             "SELECT commit_seq FROM query WHERE hash=?1",
@@ -701,6 +782,7 @@ fn query_commit_positions_share_the_source_cursor() {
     let second = question("messages");
     let error = archive
         .writer
+        .archive()
         .query_object(second.clone(), None)
         .unwrap_err();
     assert!(
@@ -713,7 +795,11 @@ fn query_commit_positions_share_the_source_cursor() {
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
     conn.execute_batch("DROP TRIGGER stop_query").unwrap();
-    archive.writer.query_object(second.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(second.clone(), None)
+        .unwrap();
     subscription.try_recv().unwrap();
     let reader = reads.reader().unwrap();
     assert_eq!(
@@ -751,7 +837,11 @@ fn composition_edges_are_read_from_the_stored_source() {
             .iter()
             .any(|edge| matches!(edge, QueryEdge::Saved { .. }))
     );
-    archive.writer.query_object(object.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(object.clone(), None)
+        .unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let mut expected = object.edges.clone();
     expected.sort_by_key(|edge| serde_json::to_string(edge).unwrap());

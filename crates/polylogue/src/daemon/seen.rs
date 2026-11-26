@@ -16,7 +16,7 @@ pub fn record(daemon: &Daemon, invocation: &Invocation, marks: Vec<SeenMark>) {
         polylogue_store::user_writes::new_request_id(),
         UserWrite::MarkSeen { marks },
     );
-    match writes.try_enqueue_user(request) {
+    match writes.archive().try_submit(request) {
         // A dropped receiver leaves commit ownership with the writer, which records a failure.
         Ok(Queued::Committing(_)) => {}
         Ok(Queued::Full(_)) => polylogue_store::log!(warning, "seen marks: writer queue is full"),

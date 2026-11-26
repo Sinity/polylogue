@@ -149,6 +149,7 @@ fn run_cards_keep_pending_missing_and_incomplete_states_distinct() {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .begin_query_run(run.clone(), None)
         .unwrap();
     let pending = crate::test_answers::read(call(&run, "transcript", 100_000).answer(&d.daemon));
@@ -168,6 +169,7 @@ fn run_cards_keep_pending_missing_and_incomplete_states_distinct() {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .finish_query_run(outcome)
         .unwrap()
         .recv()
@@ -202,6 +204,7 @@ fn run_card_suppresses_an_unresolved_question_until_its_object_arrives() {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .begin_query_run(run.clone(), None)
         .unwrap();
     let unavailable =
@@ -218,6 +221,7 @@ fn run_card_suppresses_an_unresolved_question_until_its_object_arrives() {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .query_object(object, None)
         .unwrap();
     let available = crate::test_answers::read(call(&run, "transcript", 100_000).answer(&d.daemon));
@@ -240,6 +244,7 @@ fn raw_run_pages_replay_after_restart_and_reject_changed_completion() {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .begin_query_run(run.clone(), None)
         .unwrap();
     let first = crate::test_answers::read(call(&run, "raw", 512).answer(&d.daemon));
@@ -282,6 +287,7 @@ fn raw_run_pages_replay_after_restart_and_reject_changed_completion() {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .finish_query_run(completion)
         .unwrap()
         .recv()
@@ -320,7 +326,13 @@ fn object_read_runs_have_no_invented_question_or_followup() {
             }],
         },
     );
-    d.daemon.writes.as_ref().unwrap().user(request).unwrap();
+    d.daemon
+        .writes
+        .as_ref()
+        .unwrap()
+        .archive()
+        .user(request)
+        .unwrap();
     let original = crate::test_answers::read(Call::new("rows",json!({"selection":"request:no-query-object","steps":[{"verb":"read","budget":100_000}]})).answer(&d.daemon));
     assert_eq!(original.document.header.target, original.snapshot.query);
     let Reference::Run(id) = Reference::parse(&original.snapshot.query).unwrap() else {

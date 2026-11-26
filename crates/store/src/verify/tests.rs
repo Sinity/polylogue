@@ -57,13 +57,10 @@ impl Stored {
             release: InFlight::default(),
         };
         self.writer
-            .store_group(
-                vec![PreparedBatch {
-                    batch,
-                    files: file.into_iter().collect(),
-                }],
-                Arc::new(self.archive.blobs().unwrap()),
-            )
+            .store_group(vec![PreparedBatch {
+                batch,
+                files: file.into_iter().collect(),
+            }])
             .unwrap()
             .pop()
             .unwrap()

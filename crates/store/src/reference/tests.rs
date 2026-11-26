@@ -413,6 +413,7 @@ fn structured_annotations_remain_readable_with_unavailable_text_and_not_applicab
     let archive = WriterArchive::new();
     archive
         .writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "structured".into(),
             UserWrite::SetSetting {
@@ -459,6 +460,7 @@ fn structured_annotations_remain_readable_with_unavailable_text_and_not_applicab
     }
     archive
         .writer
+        .archive()
         .user(crate::fixture::authored::operator_request(
             "empty".into(),
             UserWrite::Assert {

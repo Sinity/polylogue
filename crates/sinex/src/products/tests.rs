@@ -237,7 +237,7 @@ fn live_markdown_links_validate_and_decode_through_the_authored_kind() {
             }],
         },
     );
-    archive.writer.user(request).unwrap();
+    archive.writer.archive().user(request).unwrap();
     let pool = polylogue_store::ReadPool::open(&archive.archive).unwrap();
     let mut prepared = vec![];
     pool.reader()

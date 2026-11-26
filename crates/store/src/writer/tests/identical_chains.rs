@@ -393,20 +393,19 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
             machine: None,
         },
     );
-    let (reply, accepted) = sync_channel(1);
-    w.writer
-        .sender()
-        .0
-        .send_user(UserMsg::Request(
-            Box::new(crate::writer::UserSubmission {
-                request: request.clone(),
-                scope: None,
-                preparation: None,
-                parent: None,
-            }),
-            reply,
-        ))
-        .unwrap();
+    let crate::writer::Queued::Committing(accepted) = w
+        .writer
+        .archive()
+        .try_submit(crate::writer::UserSubmission {
+            request: request.clone(),
+            scope: None,
+            preparation: None,
+            parent: None,
+        })
+        .unwrap()
+    else {
+        panic!("the user queue has room")
+    };
     w.archive.stop().cancel();
     crate::fault::release();
     assert!(matches!(
@@ -430,8 +429,8 @@ fn stopping_a_later_copy_keeps_the_completed_chain_and_rolls_back_its_own_readin
         .recv_timeout(std::time::Duration::from_secs(5))
         .unwrap()
         .unwrap();
-    let repeat = w.writer.user(request).unwrap();
-    assert_eq!(repeat.id, first.outcome.id);
+    let repeat = w.writer.archive().user(request).unwrap();
+    assert_eq!(repeat.id, first.outcome.outcome.id);
     assert!(repeat.repeat && !repeat.pending);
 
     let TestArchive {

@@ -8,7 +8,7 @@ fn observe(tx: &Transaction<'_>, b: &Batch, seq: i64) {
         origin: b.input.format.clone(),
         revision: None,
         extents: Vec::new(),
-        observation: bytes::observation(
+        observation: crate::archive::writer::captured::observation(
             tx,
             b,
             "deleted",

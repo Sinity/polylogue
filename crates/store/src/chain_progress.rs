@@ -4,15 +4,16 @@
 //! those counts rather than a walk of every chain.
 //!
 //! A chain's row follows from its stored length and its input's origin
-//! (`archive.db`) and its parse state (`index.db`). On the writer's index
+//! (`archive.db`) and its parse state (`index.db`). On the index writer's
 //! connection, temporary triggers recompute a chain's row whenever its parse
 //! state changes, in the transaction of the change. The archive is written
-//! on another connection; temporary triggers there
-//! record the chains and inputs a transaction changed ([`recorded`]), and
-//! the writer recomputes them in its next index transaction ([`refresh`])
-//! and then forgets them ([`forget`]). A writer that stops without doing so
-//! leaves `meta.chain_progress` open, and the next writer
-//! start recomputes every chain ([`open`]).
+//! by the archive writer on its own connection; temporary triggers there
+//! record the chains and inputs a transaction changed ([`recorded`]), which
+//! it hands to the index writer with the commit and forgets ([`forget`]);
+//! the index writer recomputes them in its next index transaction
+//! ([`refresh`]). A writer that stops without doing so leaves
+//! `meta.chain_progress` open, and the next writer start recomputes every
+//! chain ([`open`]).
 use crate::Result;
 use rusqlite::{Connection, params};
 
@@ -207,8 +208,8 @@ pub(crate) fn record_source_changes(archive: &Connection) -> Result<()> {
 /// What [`record_source_changes`] recorded on `archive`.
 #[derive(Default)]
 pub(crate) struct SourceChanges {
-    chains: Vec<(String, i64)>,
-    inputs: Vec<String>,
+    chains: std::collections::BTreeSet<(String, i64)>,
+    inputs: std::collections::BTreeSet<String>,
 }
 
 /// The chains and inputs recorded on `archive`.
@@ -227,6 +228,12 @@ pub(crate) fn recorded(archive: &Connection) -> Result<SourceChanges> {
 impl SourceChanges {
     pub(crate) fn is_empty(&self) -> bool {
         self.chains.is_empty() && self.inputs.is_empty()
+    }
+
+    /// Adds what `other` names.
+    pub(crate) fn merge(&mut self, other: &Self) {
+        self.chains.extend(other.chains.iter().cloned());
+        self.inputs.extend(other.inputs.iter().cloned());
     }
 }
 

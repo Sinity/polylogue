@@ -26,7 +26,7 @@ fn exactly_stored(w: &ClaudeHome, file: &str) {
 fn a_new_input_retries_without_a_source_change_or_restart() {
     for point in [
         "write.archive_commit",
-        "segment.after_commit",
+        "capture.after_commit",
         "write.index_commit",
     ] {
         fault::clear();

@@ -139,12 +139,14 @@ pub(super) fn author(
     let writes = writer(d)?;
     invocation.check_parent_lifetime()?;
     let request = invocation.request(request_id, write);
-    Ok(writes.user(polylogue_store::writer::UserSubmission {
-        request,
-        scope: None,
-        preparation: Some(authored_preparation()),
-        parent: None,
-    })?)
+    Ok(writes
+        .archive()
+        .user(polylogue_store::writer::UserSubmission {
+            request,
+            scope: None,
+            preparation: Some(authored_preparation()),
+            parent: None,
+        })?)
 }
 
 fn outcome_event(

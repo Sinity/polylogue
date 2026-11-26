@@ -33,10 +33,7 @@ fn send(archive: &Archive, writer: &Writer, mut b: Batch) {
         file.into_iter().collect()
     };
     let mut stored = writer
-        .store_group(
-            vec![crate::staging::PreparedBatch { batch: b, files }],
-            std::sync::Arc::new(archive.blobs().unwrap()),
-        )
+        .store_group(vec![crate::staging::PreparedBatch { batch: b, files }])
         .unwrap();
     stored.pop().expect("one source reading").unwrap();
     assert!(writer.flush().unwrap().errors.is_empty());

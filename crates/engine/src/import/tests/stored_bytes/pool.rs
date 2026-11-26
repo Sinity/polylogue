@@ -1,7 +1,9 @@
 use super::*;
 
 #[test]
-fn refused_watched_bytes_commit_no_catalogued_extent() {
+/// Refused watched bytes commit no source rows; the blob their put
+/// recorded stays.
+fn refused_watched_bytes_commit_no_source_rows() {
     for image in [false, true] {
         let home = ClaudeHome::new();
         let path = home.file("pool-stored.jsonl");
@@ -23,8 +25,8 @@ fn refused_watched_bytes_commit_no_catalogued_extent() {
         conn.execute_batch(&format!("CREATE TRIGGER reject_pool BEFORE INSERT ON input WHEN NEW.id='{input}' BEGIN SELECT RAISE(ABORT,'synthetic pool first write rejection'); END;")).unwrap();
         let pass = engine.run_pass().unwrap();
         assert!(!pass.errors.is_empty());
-        assert_catalogued(&engine, &raw, false);
-        assert_eq!(home.count("SELECT count(*) AS n FROM a.blob"), 0);
+        assert_catalogued(&engine, &raw, true);
+        assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 0);
         conn.execute_batch("DROP TRIGGER reject_pool").unwrap();
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);

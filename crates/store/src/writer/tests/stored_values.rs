@@ -81,12 +81,7 @@ fn stored_batch(w: &TestArchive) -> crate::staging::PreparedBatch {
 #[test]
 fn encrypted_reasoning_and_restated_history_are_read_from_the_record_when_shown() {
     let w = test_archive();
-    let store = Arc::new(w.archive.blobs().unwrap());
-    for result in w
-        .writer
-        .store_group(vec![stored_batch(&w)], Arc::clone(&store))
-        .unwrap()
-    {
+    for result in w.writer.store_group(vec![stored_batch(&w)]).unwrap() {
         result.unwrap();
     }
     w.writer.flush().unwrap();
@@ -197,12 +192,7 @@ fn a_prepared_step_gives_complete_rows_with_the_values_the_index_leaves_out() {
 #[test]
 fn a_message_reads_while_the_record_holding_its_value_is_not_at_hand() {
     let w = test_archive();
-    let store = Arc::new(w.archive.blobs().unwrap());
-    for result in w
-        .writer
-        .store_group(vec![stored_batch(&w)], Arc::clone(&store))
-        .unwrap()
-    {
+    for result in w.writer.store_group(vec![stored_batch(&w)]).unwrap() {
         result.unwrap();
     }
     w.writer.flush().unwrap();

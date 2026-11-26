@@ -120,11 +120,7 @@ fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
         let (batch, done) = pool::run(job, &engine.archive, &engine.blobs, true, None);
         assert!(done.error.is_none(), "{done:?}");
         assert_eq!(done.parsed_upto, cursor);
-        for result in engine
-            .writer
-            .store_group(vec![batch.unwrap()], Arc::clone(&engine.blobs))
-            .unwrap()
-        {
+        for result in engine.writer.store_group(vec![batch.unwrap()]).unwrap() {
             result.unwrap();
         }
         let reader = engine.reads.reader().unwrap();

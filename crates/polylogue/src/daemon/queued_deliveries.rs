@@ -15,7 +15,10 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, TryRecvError};
 
-type WriteAnswer = Result<polylogue_store::user_writes::WriteResult, StoreError>;
+type WriteAnswer = Result<
+    polylogue_store::archive::writer::Committed<polylogue_store::user_writes::WriteResult>,
+    StoreError,
+>;
 
 /// The writer's answer for one handed-over request, kept once received so
 /// that reading it never consumes it.
@@ -295,12 +298,14 @@ fn hand_over(state: &mut State, writes: &WriterSender) -> Result<(), StoreError>
             scope: next.scope.clone(),
             recipient: None,
         });
-        let queued = writes.try_enqueue_user(polylogue_store::writer::UserSubmission {
-            request: next.request,
-            scope: next.scope,
-            preparation: None,
-            parent: None,
-        });
+        let queued = writes
+            .archive()
+            .try_submit(polylogue_store::writer::UserSubmission {
+                request: next.request,
+                scope: next.scope,
+                preparation: None,
+                parent: None,
+            });
         match queued {
             Err(error) => {
                 if let Some(outcome) = outcome {
@@ -380,7 +385,7 @@ fn prune(state: &mut State) {
             // A failed acknowledgment cannot establish stored history. Keep
             // that uncertain pair; it is never permission to prepare it again.
             Some(committed) => {
-                !matches!(committed.answer(), Some(Ok(outcome)) if !outcome.outcome.pending)
+                !matches!(committed.answer(), Some(Ok(outcome)) if !outcome.outcome.outcome.pending)
             }
         });
     state

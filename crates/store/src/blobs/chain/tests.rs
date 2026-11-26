@@ -42,7 +42,22 @@ impl Fixture {
             .iter()
             .map(|(_, _, _, bytes)| preparation.plain(*bytes, crate::blobs::LEVEL).unwrap())
             .collect::<Vec<_>>();
-        let mut writer = crate::blobs::open_writer(&self.conn, self._dir.path()).unwrap();
+        let end: i64 = self
+            .conn
+            .query_row(
+                "SELECT coalesce(max(committed_end), 0) FROM segment",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut writer = hashed_blobs::SegmentWriter::open(
+            self._dir.path(),
+            "segments/current.hb",
+            end as u64,
+            &[],
+            0o600,
+        )
+        .unwrap();
         let group = writer
             .append_group(prepared.into_iter().map(Ok), |hash| {
                 crate::blobs::load_extent(&self.conn, "", hash)

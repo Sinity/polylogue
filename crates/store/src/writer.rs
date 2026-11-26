@@ -1,18 +1,27 @@
-//! The one writer. It runs on its own thread, owns
-//! the only writing connections to `archive.db` and `index.db`, and writes
-//! batches from the parse pool in large transactions: first the bytes'
-//! rows in `archive.db` (inputs, revisions, extents, observations, inline
-//! blobs), then everything parsed from them in `index.db` (sessions,
-//! messages and their versions, blocks, search entries, tool calls,
-//! events, links) together with the parse position they cover.
+//! The index writer. It runs on its own thread, owns the only writing
+//! connection to `index.db`, and writes what is parsed from stored bytes in
+//! large transactions: sessions, messages and their versions, blocks, search
+//! entries, tool calls, events and links, together with the parse position
+//! they cover. It never writes `archive.db`, which it reads attached
+//! read-only.
 //!
-//! `archive.db` commits before `index.db`, so an index row never refers to
-//! bytes that are not stored. A crash between the two leaves the index
-//! behind its bytes; the loop parses them again, and every write here is an
-//! upsert, so that changes nothing.
+//! The index follows the archive: it receives only parses of bytes the
+//! archive has already committed. Captured bytes are put
+//! ([`crate::bytes`]) and their rows committed by the archive writer
+//! ([`crate::archive::writer`]) before their parsed rows reach this writer
+//! ([`WriterSender::store_group`] does both in order). A crash between the
+//! two leaves the index behind its bytes; the loop parses them again, and
+//! every write here is an upsert, so that changes nothing. What follows from
+//! archive commits alone (chain progress of stored chains, alternate text)
+//! is applied here from what the archive writer hands over with each commit,
+//! up to the position kept in the index's `meta` as `archive_position`.
 
 use crate::ConnExt as _;
 use crate::OptionExt as _;
+pub use crate::archive::writer::HistorySlot;
+#[cfg(any(test, feature = "fixture"))]
+pub use crate::archive::writer::{DispatchPause, DispatchPhase};
+pub use crate::archive::writer::{ParentLifetime, Queued, UserSubmission};
 use crate::archive::{Archive, bump_counter, open_runtime_writer};
 use crate::blobs::{Change, FileFacts, NewBlob};
 use crate::{Result, StoreError};
@@ -26,58 +35,32 @@ use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-mod annotations;
 mod assets;
-mod dispatch;
-pub use dispatch::ParentLifetime;
-#[cfg(any(test, feature = "fixture"))]
-pub use dispatch::{DispatchPause, DispatchPhase};
 mod attachments;
-mod authored;
 mod batch;
 pub mod build;
-mod bytes;
+mod capture;
 mod chain;
 mod compose;
 mod derive_thread;
-mod query_objects;
-pub use query_objects::HistorySlot;
 mod hook_fields;
 pub(crate) mod identity;
-mod saved;
-mod scoped;
 pub(crate) use readings::{read_message, shown_message};
 pub(crate) mod readings;
 mod rows;
 mod search;
 mod shown;
-mod staging;
-mod user_queue;
 pub use chain::{ChainParse, ChainSink};
 
+use crate::archive::writer::captured::stored_reading_chain;
 use crate::encoding::{PreparedDocument, PreparedMessage, block_text, unpack_block};
 pub use batch::{
     Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep,
     WriteReport,
 };
-use bytes::*;
 use search::*;
 
-enum StoreGroup {
-    Prepared(
-        Vec<crate::staging::PreparedBatch>,
-        Arc<crate::blobs::Blobs>,
-        SyncSender<Vec<Result<crate::staging::StoredInput>>>,
-    ),
-}
-
 enum Msg {
-    StoreBytes(
-        Box<crate::staging::PreparedBytes>,
-        Box<Batch>,
-        SyncSender<Result<crate::staging::StoredInput>>,
-    ),
-    StoreGroup(StoreGroup),
     Assets(
         Box<crate::export_items::ExportItems>,
         SyncSender<Result<()>>,
@@ -89,11 +72,6 @@ enum Msg {
     /// Sessions whose live state changed with the clock alone: each gets a
     /// new change counter, so the change feed carries the transition.
     LiveClock(Vec<String>, SyncSender<Result<()>>),
-    /// Bytes no input holds (a chat action's attachment), as one blob.
-    StoreBlob(
-        Box<(crate::NewBlob, Option<crate::staging::PreparedBytes>)>,
-        SyncSender<Result<BlobHash>>,
-    ),
     /// Load a build's runs, compose (on this many threads), index and
     /// install the build file.
     Build(
@@ -106,18 +84,12 @@ enum Msg {
     /// Record one older chain's reading from a newer chain of the same
     /// input holding the same bytes.
     CopyReading(crate::ReadingCopy, SyncSender<Result<Result<bool>>>),
-    RestoreAuthored(
-        Box<authored::Restoration>,
-        SyncSender<Result<polylogue_model::user::UserOutcome>>,
-    ),
-    RestoreAnnotation(
-        Box<annotations::Restoration>,
-        SyncSender<Result<polylogue_model::user::UserOutcome>>,
-    ),
     Stop,
-    /// A user write is waiting in its own queue.
+    /// The archive committed: what follows from it in the index is applied.
     Wake,
-    Batch(Box<Batch>),
+    /// Parsed rows of stored bytes, answered once committed when a caller
+    /// waits for them.
+    Batch(capture::Parsed),
     Flush(SyncSender<Result<WriteReport>>, bool),
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
@@ -134,10 +106,14 @@ enum Msg {
     ),
 }
 
-/// Handle to the writer thread. Dropping it stops the thread after the
-/// batches already sent are written.
+/// The two writers of an archive and its byte home. Dropping it stops the
+/// archive writer after the writes already accepted, then the index writer
+/// after the batches already sent.
 pub struct Writer {
     sender: WriterSender,
+    archive: Option<crate::archive::writer::ArchiveWriter>,
+    /// Kept so that archive commits wake the index writer.
+    _follow: crate::completion::CommitSubscription,
     /// The archive's stop request ([`Archive::stop`]). It ends the writer's
     /// long work early: a derive pass after the transaction in progress, a
     /// first build's ending (its deferred indexes) at its next step, replay
@@ -152,93 +128,23 @@ pub struct Writer {
 /// Orders new work against shutdown. Once the stop message is queued,
 /// every remaining sender refuses new work rather than acknowledging a
 /// message that the receiver will never process.
-///
-/// User writes have a queue of their own, which the writer serves before
-/// its next piece of bulk work: a note, setting, delivery or browser
-/// request waits for at most the transaction being written, not behind a
-/// first build's queued batches.
 #[derive(Clone)]
 struct WriterQueue {
     bulk: Arc<Mutex<Option<SyncSender<Msg>>>>,
-    /// A second sender into the bulk queue that only wakes the writer for a
-    /// user write. Its lock is held only for one `try_send`, never while a
-    /// bulk sender waits for room, so a user write always sends its wake.
+    /// A second sender into the queue that only wakes the writer to follow
+    /// the archive. Its lock is held only for one `try_send`, never while a
+    /// sender waits for room.
     wake: Arc<Mutex<Option<SyncSender<Msg>>>>,
-    users: Arc<user_queue::UserQueue>,
     location: Archive,
     commits: crate::completion::CommitEvents,
-    #[cfg(any(test, feature = "fixture"))]
-    dispatch: dispatch::DispatchPauses,
+    /// The archive writer and the byte home the parsed rows' bytes go to first.
+    archive: crate::archive::writer::ArchiveSender,
+    bytes: Arc<dyn crate::bytes::Bytes>,
 }
-
-/// A user request and what the writer checks before committing it.
-pub struct UserSubmission {
-    pub request: polylogue_model::user::UserRequest,
-    /// The pinned read that selected the request.
-    pub scope: Option<crate::ReadScopeToken>,
-    /// Trusted catalog context.
-    pub preparation: Option<crate::user_writes::PreparationContext>,
-    /// The caller's deadline and cancellation.
-    pub parent: Option<Arc<ParentLifetime>>,
-}
-
-impl From<polylogue_model::user::UserRequest> for UserSubmission {
-    fn from(request: polylogue_model::user::UserRequest) -> Self {
-        Self {
-            request,
-            scope: None,
-            preparation: None,
-            parent: None,
-        }
-    }
-}
-
-enum UserMsg {
-    Request(
-        Box<UserSubmission>,
-        SyncSender<Result<crate::user_writes::WriteResult>>,
-    ),
-    QueryObject(
-        Box<polylogue_model::query_objects::QueryObject>,
-        Option<Arc<ParentLifetime>>,
-        SyncSender<Result<()>>,
-    ),
-    QueryRun(
-        Box<polylogue_model::query_objects::QueryRun>,
-        Option<Arc<ParentLifetime>>,
-        SyncSender<Result<()>>,
-    ),
-    QueryRunOutcome(
-        Box<polylogue_model::query_objects::QueryRunOutcome>,
-        SyncSender<Result<()>>,
-    ),
-    History(Box<query_objects::History>),
-}
-
-/// User writes waiting before their senders block.
-const USER_QUEUE: usize = 64;
 
 impl WriterQueue {
-    fn new(
-        bulk: SyncSender<Msg>,
-        users: Arc<user_queue::UserQueue>,
-        location: Archive,
-        commits: crate::completion::CommitEvents,
-        #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::DispatchPauses,
-    ) -> Self {
-        Self {
-            wake: Arc::new(Mutex::new(Some(bulk.clone()))),
-            bulk: Arc::new(Mutex::new(Some(bulk))),
-            users,
-            location,
-            commits,
-            #[cfg(any(test, feature = "fixture"))]
-            dispatch,
-        }
-    }
-
     fn send(&self, message: Msg) -> std::result::Result<(), ()> {
-        let counted = matches!(&message, Msg::StoreGroup(..) | Msg::Batch(..));
+        let counted = matches!(&message, Msg::Batch(..));
         if counted {
             crate::timing::queue(crate::timing::Queue::Writer, 1);
         }
@@ -264,33 +170,7 @@ impl WriterQueue {
         wait.recv().map_err(|_| StoreError::WriterGone)?
     }
 
-    fn send_user(&self, message: UserMsg) -> std::result::Result<(), ()> {
-        self.users.push_wait(message).map_err(|_| ())?;
-        self.wake();
-        Ok(())
-    }
-
-    /// Wakes a writer that may be waiting for bulk work. A full bulk queue
-    /// refuses the wake, and needs none: the writer has messages to take
-    /// and serves user writes before each one.
-    fn wake(&self) {
-        if let Ok(wake) = self.wake.lock()
-            && let Some(wake) = wake.as_ref()
-        {
-            let _ = wake.try_send(Msg::Wake);
-        }
-    }
-
-    /// As [`Self::send_user`], but a full queue hands the message back
-    /// instead of waiting for room.
-    fn try_send_user(&self, message: UserMsg) -> std::result::Result<(), Option<UserMsg>> {
-        self.users.try_push(message)?;
-        self.wake();
-        Ok(())
-    }
-
     fn stop(&self) {
-        self.users.close();
         if let Ok(mut wake) = self.wake.lock() {
             wake.take();
         }
@@ -326,7 +206,7 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 pub(crate) const WRITER_THREAD: &str = "polylogue-writer";
 
 /// The writer's index connection: the private build file while a build runs,
-/// otherwise `index.db`, with the archive's register attached.
+/// otherwise `index.db`, with the archive attached read-only.
 fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
     let index = if building {
         crate::archive::index_build::open_writer(archive)?
@@ -343,44 +223,61 @@ fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
 }
 
 impl Writer {
-    /// Starts the writer thread on `archive`, which the caller has locked.
-    /// A build writes the private index file and defers search and secondary
-    /// indexes; a stop keeps its committed rows and positions for the next
-    /// start, and a crash discards it ([`crate::archive::index_build`]).
+    /// Starts the writers of `archive`, which the caller has locked, with
+    /// its segment log as the byte home.
     pub fn start(archive: &Archive) -> Result<Self> {
+        Self::start_with(archive, Arc::new(crate::bytes::Segments::start(archive)?))
+    }
+
+    /// Starts the archive writer and the index writer of `archive` with
+    /// `bytes` as its byte home. A build writes the private index file and
+    /// defers search and secondary indexes; a stop keeps its committed rows
+    /// and positions for the next start, and a crash discards it
+    /// ([`crate::archive::index_build`]).
+    pub fn start_with(archive: &Archive, bytes: Arc<dyn crate::bytes::Bytes>) -> Result<Self> {
         // A build writes its private file ([`crate::archive::index_build`]).
         let building = archive.index_build.building();
         let index = open_index_writer(archive, building)?;
         let installed = archive.root.join("index.db");
-        let archive_conn = crate::archive::open_archive_writer(archive)?;
-        crate::write_lock::sync_register(archive)?;
-        crate::chain_progress::record_source_changes(&archive_conn)?;
         crate::chain_progress::open(&index)?;
-        let segment = crate::blobs::open_writer(&archive_conn, &archive.root)?;
         let commits = crate::completion::CommitEvents::default();
-        #[cfg(any(test, feature = "fixture"))]
-        let dispatch = dispatch::DispatchPauses::default();
+        let archive_writer =
+            crate::archive::writer::ArchiveWriter::start(archive, commits.clone())?;
+        let archive_reads = crate::archive::open_read(&archive.archive_db())?;
         let (tx, rx) = sync_channel::<Msg>(QUEUE);
-        let users = Arc::new(user_queue::UserQueue::default());
         let stop = archive.stop().clone();
-        let queue = WriterQueue::new(
-            tx,
-            Arc::clone(&users),
-            archive.clone(),
-            commits.clone(),
-            #[cfg(any(test, feature = "fixture"))]
-            dispatch.clone(),
-        );
+        let queue = WriterQueue {
+            wake: Arc::new(Mutex::new(Some(tx.clone()))),
+            bulk: Arc::new(Mutex::new(Some(tx))),
+            location: archive.clone(),
+            commits: commits.clone(),
+            archive: archive_writer.sender(),
+            bytes,
+        };
+        let follow = {
+            let wake = queue.wake.clone();
+            commits.subscribe_with_wake(
+                crate::completion::Committed {
+                    content: true,
+                    authored: true,
+                    query_records: false,
+                },
+                move || {
+                    if let Ok(wake) = wake.lock()
+                        && let Some(wake) = wake.as_ref()
+                    {
+                        let _ = wake.try_send(Msg::Wake);
+                    }
+                },
+            )
+        };
         let mut inner = Inner {
-            #[cfg(any(test, feature = "fixture"))]
-            dispatch: dispatch.clone(),
             stop: stop.clone(),
             commits: commits.clone(),
-            segment: Some(segment),
-            archive: archive_conn,
+            followed: archive_writer.sender(),
+            archive: archive_reads,
             index,
             report: WriteReport::default(),
-            users,
             // Both read the installed index, once a build has ended.
             search: Search::start(
                 installed.clone(),
@@ -401,6 +298,8 @@ impl Writer {
         let handle = polylogue_model::spawn_named(WRITER_THREAD, move || inner.run(&rx))?;
         Ok(Self {
             sender: WriterSender(queue),
+            archive: Some(archive_writer),
+            _follow: follow,
             stop,
             handle: Some(handle),
         })
@@ -427,18 +326,23 @@ impl Drop for Writer {
 }
 
 impl Writer {
-    /// Ends the writer thread after what it was sent; later calls fail with
-    /// [`StoreError::WriterGone`].
+    /// Ends the archive writer after the writes it accepted, then the index
+    /// writer after what it was sent, so the index takes in every archive
+    /// commit before it stops; later calls fail with [`StoreError::WriterGone`].
     pub fn stop(&mut self) {
         let started =
             (self.handle.is_some() && self.stop.is_cancelled()).then(std::time::Instant::now);
         if started.is_some() {
             crate::log!(info, "shutdown writer drain started");
         }
+        if let Some(mut archive) = self.archive.take() {
+            archive.stop();
+        }
         self.sender.0.stop();
         if let Some(h) = self.handle.take() {
             let _ = h.join();
         }
+        self.sender.0.bytes.close();
         if let Some(started) = started {
             crate::log!(
                 info,
@@ -449,19 +353,22 @@ impl Writer {
     }
 }
 
-/// Where [`WriterSender::try_enqueue_user`] left a request.
-pub enum Queued {
-    /// In the queue; the receiver gets its outcome once committed.
-    Committing(Receiver<Result<crate::user_writes::WriteResult>>),
-    /// The queue was full: the complete submission, handed back.
-    Full(Box<UserSubmission>),
-}
-
 /// A clonable sender into the writer, for worker threads.
 #[derive(Clone)]
 pub struct WriterSender(WriterQueue);
 
 impl WriterSender {
+    /// The archive writer: user writes, restorations and the groups the
+    /// archive commits.
+    pub fn archive(&self) -> &crate::archive::writer::ArchiveSender {
+        &self.0.archive
+    }
+
+    /// The byte home captured bytes are put into.
+    pub fn bytes(&self) -> &Arc<dyn crate::bytes::Bytes> {
+        &self.0.bytes
+    }
+
     pub fn completion_commits(&self) -> crate::completion::CommitSubscription {
         self.0.commits.subscribe()
     }
@@ -474,38 +381,6 @@ impl WriterSender {
         wake: impl Fn() + Send + Sync + 'static,
     ) -> crate::completion::CommitSubscription {
         self.0.commits.subscribe_with_wake(interests, wake)
-    }
-
-    pub fn store_group(
-        &self,
-        group: Vec<crate::staging::PreparedBatch>,
-        store: std::sync::Arc<crate::blobs::Blobs>,
-    ) -> Result<Vec<Result<crate::staging::StoredInput>>> {
-        self.enqueue_group(group, store)?
-            .recv()
-            .map_err(|_| StoreError::WriterGone)
-    }
-
-    /// Queue a group; parsing can continue while the writer commits it.
-    pub fn enqueue_group(
-        &self,
-        mut group: Vec<crate::staging::PreparedBatch>,
-        store: std::sync::Arc<crate::blobs::Blobs>,
-    ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
-        let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
-        prepare_batches(&self.0.location, &mut batches)?;
-        let (reply, wait) = sync_channel(1);
-        self.0
-            .send(Msg::StoreGroup(StoreGroup::Prepared(group, store, reply)))
-            .map_err(|_| StoreError::WriterGone)?;
-        Ok(wait)
-    }
-
-    pub fn send(&self, mut batch: Batch) -> Result<()> {
-        prepare_batches(&self.0.location, &mut [&mut batch])?;
-        self.0
-            .send(Msg::Batch(Box::new(batch)))
-            .map_err(|_| StoreError::WriterGone)
     }
 
     /// Replaces one chain's parsed rows in one index transaction.
@@ -556,6 +431,13 @@ impl WriterSender {
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
         reading.check(&input.id, chain)?;
+        // Bytes the reading decoded (inline images) are stored first: the
+        // index receives parses of stored bytes only.
+        if !reading.decoded.is_empty() {
+            for result in self.store_group(std::mem::take(&mut reading.decoded))? {
+                result?;
+            }
+        }
         let (reply, wait) = sync_channel(1);
         if self
             .0
@@ -571,62 +453,6 @@ impl WriterSender {
             return Err(StoreError::WriterGone);
         }
         Ok(wait)
-    }
-
-    /// Writes one user request and waits for its source commit.
-    /// It goes ahead of batches still queued.
-    pub fn user(
-        &self,
-        submission: impl Into<UserSubmission>,
-    ) -> Result<polylogue_model::user::UserOutcome> {
-        self.user_receipt(submission).map(|receipt| receipt.outcome)
-    }
-
-    /// Return the accepting transaction's exact resolved part outcomes too.
-    pub fn user_receipt(
-        &self,
-        submission: impl Into<UserSubmission>,
-    ) -> Result<crate::user_writes::WriteResult> {
-        let (reply, wait) = sync_channel(1);
-        self.0
-            .send_user(UserMsg::Request(Box::new(submission.into()), reply))
-            .map_err(|_| StoreError::WriterGone)?;
-        wait.recv().map_err(|_| StoreError::WriterGone)?
-    }
-
-    /// Queues a user request without waiting for its commit or for room.
-    /// A full queue hands the complete submission back as [`Queued::Full`].
-    pub fn try_enqueue_user(&self, submission: impl Into<UserSubmission>) -> Result<Queued> {
-        let (reply, wait) = sync_channel(1);
-        match self
-            .0
-            .try_send_user(UserMsg::Request(Box::new(submission.into()), reply))
-        {
-            Ok(()) => Ok(Queued::Committing(wait)),
-            Err(Some(UserMsg::Request(submission, _))) => Ok(Queued::Full(submission)),
-            Err(_) => Err(StoreError::WriterGone),
-        }
-    }
-
-    /// Stores one import's bytes. The batch carries the observation, never parsed rows.
-    pub fn store_bytes(
-        &self,
-        prepared: crate::staging::PreparedBytes,
-        batch: Batch,
-    ) -> Result<crate::staging::StoredInput> {
-        self.0
-            .ask(|reply| Msg::StoreBytes(Box::new(prepared), Box::new(batch), reply))
-    }
-
-    /// Stores bytes no input holds as one blob; `file` is the private file
-    /// [`crate::Archive::prepare_blob`] wrote for a blob too large to keep inline.
-    pub fn store_blob(
-        &self,
-        new_blob: crate::NewBlob,
-        file: Option<crate::staging::PreparedBytes>,
-    ) -> Result<BlobHash> {
-        self.0
-            .ask(|reply| Msg::StoreBlob(Box::new((new_blob, file)), reply))
     }
 
     /// Accepts one completed discovery walk; it is visible once its index
@@ -683,7 +509,10 @@ impl WriterSender {
         self.flush_with_derivation(false)
     }
 
+    /// The archive's queued groups commit first, so a report covers every
+    /// write handed over before the flush.
     fn flush_with_derivation(&self, derive: bool) -> Result<WriteReport> {
+        self.0.archive.flush()?;
         self.0.ask(|reply| Msg::Flush(reply, derive))
     }
 }
@@ -691,15 +520,13 @@ impl WriterSender {
 struct Inner {
     /// Ends a derive pass or a first build's ending early.
     stop: crate::cancellation::Cancellation,
-    #[cfg(any(test, feature = "fixture"))]
-    dispatch: dispatch::DispatchPauses,
     commits: crate::completion::CommitEvents,
-    segment: Option<hashed_blobs::SegmentWriter>,
+    /// Hands over what archive commits changed, and their reports.
+    followed: crate::archive::writer::ArchiveSender,
+    /// `archive.db`, read only.
     archive: Connection,
     index: Connection,
     report: WriteReport,
-    /// User requests, served between the writer's transactions.
-    users: Arc<user_queue::UserQueue>,
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
     search: Search,
@@ -711,91 +538,11 @@ struct Inner {
     build_job: Option<build::BuildJob>,
 }
 
-impl Drop for Inner {
-    fn drop(&mut self) {
-        self.users.disconnect();
-    }
-}
-
 impl Inner {
     /// A build is in progress: the build file holds no rows until the batch
     /// build loads them ([`build`]).
     fn building(&self) -> bool {
         self.location.index_build.building()
-    }
-
-    /// Writes every waiting user request, each answered once committed.
-    fn serve_users(&mut self) {
-        // New arrivals wake the next turn; this turn finishes its existing
-        // user requests before bulk work, even under a continuous read load.
-        for _ in 0..self.users.waiting() {
-            let Some(message) = self.users.pop() else {
-                break;
-            };
-            match message {
-                UserMsg::Request(submission, reply) => {
-                    let UserSubmission {
-                        request,
-                        scope,
-                        preparation,
-                        parent,
-                    } = *submission;
-                    let result = self
-                        .check_user_parent(&request.id, parent.as_deref())
-                        .and_then(|()| {
-                            self.write_user(&request, scope.as_ref(), preparation.as_ref())
-                        });
-                    // A queued request nobody waits for still reports its failure.
-                    if let Err(std::sync::mpsc::SendError(Err(error))) = reply.send(result) {
-                        self.report.errors.push(polylogue_model::Failure::new(
-                            format_args!("user request {}", request.id),
-                            &error,
-                        ));
-                    }
-                }
-                UserMsg::QueryObject(object, parent, reply) => {
-                    let result = self
-                        .check_user_parent(&object.id.to_string(), parent.as_deref())
-                        .and_then(|()| self.write_query_object(&object));
-                    let _ = reply.send(result);
-                }
-                UserMsg::QueryRun(run, parent, reply) => {
-                    if let Err(error) = self.check_user_parent(run.id.as_str(), parent.as_deref()) {
-                        let _ = reply.send(Err(error));
-                        continue;
-                    }
-                    let result = self.write_query_run(&run);
-                    if let Err(error) = &result {
-                        self.report.errors.push(polylogue_model::Failure::new(
-                            format_args!("query run {}", run.id),
-                            error,
-                        ));
-                    }
-                    let _ = reply.send(result);
-                }
-                UserMsg::QueryRunOutcome(outcome, reply) => {
-                    let result = self.write_query_run_outcome(&outcome);
-                    if let Err(error) = &result {
-                        self.report.errors.push(polylogue_model::Failure::new(
-                            format_args!("query run outcome {}", outcome.run),
-                            error,
-                        ));
-                    }
-                    let _ = reply.send(result);
-                }
-                UserMsg::History(history) => {
-                    if let Err(error) = self
-                        .check_user_parent(history.run.id.as_str(), None)
-                        .and_then(|()| self.write_history(&history))
-                    {
-                        self.report.errors.push(polylogue_model::Failure::new(
-                            format_args!("query history {}", history.run.id),
-                            &error,
-                        ));
-                    }
-                }
-            }
-        }
     }
 
     fn run(&mut self, rx: &Receiver<Msg>) {
@@ -805,17 +552,15 @@ impl Inner {
         let mut background_derives = Vec::new();
         let mut derive_writes = Vec::new();
         let mut search_writes = Vec::new();
-        let mut single_files = Vec::new();
-        let mut file_groups = Vec::new();
         let mut assets = Vec::new();
         let mut coverage = Vec::new();
         let mut live_clock = Vec::new();
         let mut copies = Vec::new();
-        let mut restorations = Vec::new();
-        let mut annotation_restorations = Vec::new();
         let mut replacements = Vec::new();
         let mut builds = Vec::new();
-        let mut blobs = Vec::new();
+        // An archive commit woke the writer and what it handed over may not
+        // be applied yet.
+        let mut following = false;
         loop {
             // While a build runs, the writer takes a waiting message or else
             // goes on with the build's next step.
@@ -830,6 +575,24 @@ impl Inner {
                     }
                     Err(TryRecvError::Disconnected) => break,
                 }
+            } else if following {
+                // What archive commits hand over goes into the next batch's
+                // transaction when one follows at once, as it does after a
+                // capture; otherwise it is applied in a transaction of its own.
+                match rx.recv_timeout(FOLLOW_AFTER) {
+                    Ok(first) => first,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        following = false;
+                        if let Err(error) = self.follow_archive() {
+                            self.report.errors.push(polylogue_model::Failure::new(
+                                "following the archive",
+                                &error,
+                            ));
+                        }
+                        continue;
+                    }
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                }
             } else {
                 match rx.recv() {
                     Ok(first) => first,
@@ -838,96 +601,77 @@ impl Inner {
             };
             let _busy = crate::timing::start_stage(crate::timing::Stage::Writer);
             let _doing = crate::activity::doing("writing");
-            self.serve_users();
             let mut stopping = false;
             let mut group = Vec::new();
             let mut rows = 0;
             let mut bytes = 0;
-            let mut push =
-                |m: Msg, group: &mut Vec<Box<Batch>>, rows: &mut usize, bytes: &mut u64| match m {
-                    Msg::StoreBytes(prepared, batch, reply) => {
-                        single_files.push((prepared, batch, reply));
-                        false
+            let mut push = |m: Msg,
+                            group: &mut Vec<capture::Parsed>,
+                            rows: &mut usize,
+                            bytes: &mut u64| match m {
+                Msg::Assets(staged, reply) => {
+                    assets.push((staged, reply));
+                    false
+                }
+                Msg::Coverage(fact, reply) => {
+                    coverage.push((fact, reply));
+                    false
+                }
+                Msg::LiveClock(sessions, reply) => {
+                    live_clock.push((sessions, reply));
+                    false
+                }
+                Msg::CopyReading(copy, reply) => {
+                    copies.push((copy, reply));
+                    false
+                }
+                Msg::ReplaceChain(input, chain, length, reading, reply) => {
+                    replacements.push((input, chain, length, *reading, reply));
+                    false
+                }
+                Msg::Build(runs, composers, announce, reply) => {
+                    builds.push((runs, composers, announce, reply));
+                    false
+                }
+                Msg::Stop => {
+                    stopping = true;
+                    false
+                }
+                Msg::Wake => {
+                    following = true;
+                    false
+                }
+                Msg::Batch(parsed) => {
+                    crate::timing::queue(crate::timing::Queue::Writer, -1);
+                    for b in &parsed.batches {
+                        *rows += weight(b);
+                        *bytes += input_bytes(b);
                     }
-                    Msg::StoreGroup(StoreGroup::Prepared(items, store, reply)) => {
-                        crate::timing::queue(crate::timing::Queue::Writer, -1);
-                        for item in &items {
-                            *rows += weight(&item.batch);
-                            *bytes += input_bytes(&item.batch);
-                        }
-                        file_groups.push((items, store, reply));
-                        true
-                    }
-                    Msg::Assets(staged, reply) => {
-                        assets.push((staged, reply));
-                        false
-                    }
-                    Msg::Coverage(fact, reply) => {
-                        coverage.push((fact, reply));
-                        false
-                    }
-                    Msg::LiveClock(sessions, reply) => {
-                        live_clock.push((sessions, reply));
-                        false
-                    }
-                    Msg::CopyReading(copy, reply) => {
-                        copies.push((copy, reply));
-                        false
-                    }
-                    Msg::StoreBlob(blob, reply) => {
-                        blobs.push((blob, reply));
-                        false
-                    }
-                    Msg::ReplaceChain(input, chain, length, reading, reply) => {
-                        replacements.push((input, chain, length, *reading, reply));
-                        false
-                    }
-                    Msg::Build(runs, composers, announce, reply) => {
-                        builds.push((runs, composers, announce, reply));
-                        false
-                    }
-                    Msg::RestoreAuthored(restoration, reply) => {
-                        restorations.push((restoration, reply));
-                        false
-                    }
-                    Msg::RestoreAnnotation(restoration, reply) => {
-                        annotation_restorations.push((restoration, reply));
-                        false
-                    }
-                    Msg::Stop => {
-                        stopping = true;
-                        false
-                    }
-                    Msg::Wake => false,
-                    Msg::Batch(b) => {
-                        crate::timing::queue(crate::timing::Queue::Writer, -1);
-                        *rows += weight(&b);
-                        *bytes += input_bytes(&b);
-                        group.push(b);
-                        true
-                    }
-                    Msg::Flush(reply, derive) => {
-                        flushes.push((reply, derive));
-                        false
-                    }
+                    group.push(parsed);
+                    true
+                }
+                Msg::Flush(reply, derive) => {
+                    flushes.push((reply, derive));
+                    false
+                }
 
-                    Msg::Derive(reply) => {
-                        derives.push(reply);
-                        false
-                    }
-                    Msg::DeriveInBackground(reply) => {
-                        background_derives.push(reply);
-                        false
-                    }
-                    Msg::DeriveWrite(write, reply) => {
-                        derive_writes.push((write, reply));
-                        false
-                    }
-                    Msg::SearchWrite(entries, reply) => {
-                        search_writes.push((entries, reply));
-                        false
-                    }
-                };
+                Msg::Derive(reply) => {
+                    derives.push(reply);
+                    false
+                }
+                Msg::DeriveInBackground(reply) => {
+                    background_derives.push(reply);
+                    false
+                }
+                Msg::DeriveWrite(write, reply) => {
+                    derive_writes.push((write, reply));
+                    false
+                }
+                Msg::SearchWrite(entries, reply) => {
+                    search_writes.push((entries, reply));
+                    false
+                }
+            };
             if push(first, &mut group, &mut rows, &mut bytes) {
                 while rows < ROWS_PER_TRANSACTION && bytes < BYTES_PER_TRANSACTION {
                     match rx.try_recv() {
@@ -941,11 +685,8 @@ impl Inner {
                 }
             }
             if !group.is_empty() {
-                crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
+                crate::timing::time(crate::timing::Stage::Rows, || self.write_group(group));
             }
-            // Later queue replies also observe release of the parsed batches'
-            // memory charges, not only their committed database rows.
-            drop(group);
             for (write, reply) in derive_writes.drain(..) {
                 let result = crate::derive::apply(&self.index, &write);
                 if result.is_ok() {
@@ -957,15 +698,10 @@ impl Inner {
             for (entries, reply) in search_writes.drain(..) {
                 let _ = reply.send(crate::text_rows::apply_entries(&self.index, &entries));
             }
-            for (prepared, batch, reply) in single_files.drain(..) {
-                let _ = reply.send(self.store_bytes(*prepared, *batch));
-            }
-            self.store_groups(std::mem::take(&mut file_groups));
             for (input, chain, length, reading, reply) in replacements.drain(..) {
                 let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
                     self.replace_chain(input, chain, length, reading)
                 }));
-                self.serve_users();
             }
             for (runs, composers, announce, reply) in builds.drain(..) {
                 if self.build_job.is_some() {
@@ -976,17 +712,6 @@ impl Inner {
                     self.build_job = Some(build::BuildJob::new(runs, composers, announce, reply));
                 }
             }
-            for (blob, reply) in blobs.drain(..) {
-                let (new_blob, file) = *blob;
-                let _ = reply.send(self.store_blob(new_blob, file));
-            }
-            for (restoration, reply) in restorations.drain(..) {
-                let _ = reply.send(self.restore_authored(*restoration));
-            }
-            for (restoration, reply) in annotation_restorations.drain(..) {
-                let _ = reply.send(self.restore_annotation(*restoration));
-            }
-            self.serve_users();
 
             for reply in derives.drain(..) {
                 // A build in progress holds no rows to derive from until it
@@ -1025,13 +750,18 @@ impl Inner {
             for (copy, reply) in copies.drain(..) {
                 let _ = reply.send(self.write_copy_reading(&copy));
             }
-            if let Err(error) = self.refresh_chain_progress() {
-                self.report
-                    .errors
-                    .push(polylogue_model::Failure::new("chain progress", &error));
+            if !flushes.is_empty() || self.build_job.is_some() {
+                following = false;
+                if let Err(error) = self.follow_archive() {
+                    self.report.errors.push(polylogue_model::Failure::new(
+                        "following the archive",
+                        &error,
+                    ));
+                }
             }
             for (reply, derive) in flushes.drain(..) {
-                let report = std::mem::take(&mut self.report);
+                let mut report = std::mem::take(&mut self.report);
+                merge_report(&mut report, self.followed.take_report());
                 // Whatever a flush reports written is also derived, once the
                 // index is out of a build.
                 if derive && !self.building() {
@@ -1055,32 +785,75 @@ impl Inner {
         self.derive.stop();
         self.search.stop();
         let closed = self
-            .refresh_chain_progress()
+            .follow_archive()
             .and_then(|()| crate::chain_progress::mark_current(&self.index));
         if let Err(error) = closed {
             crate::log!(error, "writer: chain progress: {error}");
         }
     }
 
-    /// Recomputes, in an index transaction of their own, the chain progress
-    /// of inputs whose source rows an archive transaction changed
-    /// with no index transaction after it (bytes stored without parsed rows,
-    /// a restored older archive, a write whose index transaction failed).
-    fn refresh_chain_progress(&mut self) -> Result<()> {
-        let source_changed = crate::chain_progress::recorded(&self.archive)?;
-        if source_changed.is_empty() {
+    /// Applies, in an index transaction of its own, what archive commits
+    /// with no index transaction after them changed: the chain progress of
+    /// the chains and inputs they stored (bytes stored without parsed rows,
+    /// a write whose index transaction failed), and the text of alternates
+    /// committed after the index's `archive_position`, which it advances.
+    fn follow_archive(&mut self) -> Result<()> {
+        let followed = self.followed.take_followed();
+        let result = self.apply_followed(&followed);
+        if result.is_err() {
+            self.followed.give_back(followed);
+        }
+        result
+    }
+
+    fn apply_followed(&mut self, followed: &crate::archive::writer::Handover) -> Result<()> {
+        let position = followed.position.0.to_string();
+        let kept = crate::meta_get(&self.index, ARCHIVE_POSITION)?;
+        if followed.changes.is_empty() && kept.as_deref() == Some(position.as_str()) {
             return Ok(());
         }
+        let after: i64 = kept.and_then(|kept| kept.parse().ok()).unwrap_or(-1);
         let tx = self
             .index
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        bump_counter(&tx)?;
-        crate::chain_progress::refresh(&tx, &source_changed)?;
+        let before = tx.total_changes();
+        crate::chain_progress::refresh(&tx, &followed.changes)?;
+        let alternates: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM source_alternate WHERE commit_seq > ?1)",
+            [after],
+            |row| row.get(0),
+        )?;
+        if alternates {
+            crate::alternates::project(&tx)?;
+        }
+        let changed = tx.total_changes() != before;
+        if changed {
+            bump_counter(&tx)?;
+        }
+        crate::meta_set(&tx, ARCHIVE_POSITION, &position)?;
         tx.commit()?;
-        crate::chain_progress::forget(&self.archive, &source_changed)?;
-        self.commits
-            .committed(crate::completion::Committed::CONTENT);
-        self.report.transactions += 1;
+        if changed {
+            self.commits
+                .committed(crate::completion::Committed::CONTENT);
+            self.report.transactions += 1;
+        }
+        Ok(())
+    }
+
+    /// Projects every alternate's text into the index.
+    fn project_alternate_text(&mut self) -> Result<()> {
+        let before = self.index.total_changes();
+        let tx = self.index.transaction()?;
+        crate::alternates::project(&tx)?;
+        let changed = tx.total_changes() != before;
+        if changed {
+            bump_counter(&tx)?;
+        }
+        tx.commit()?;
+        if changed {
+            self.commits
+                .committed(crate::completion::Committed::AUTHORED);
+        }
         Ok(())
     }
 
@@ -1115,15 +888,6 @@ impl Inner {
                     ));
                 }
             }
-        }
-        if !self.stop.is_cancelled() {
-            results.push(crate::archive::restart_full_log(
-                &self.archive,
-                "main",
-                &self.location.archive_db(),
-                limit,
-                wait,
-            ));
         }
         // A failed checkpoint loses nothing: the log stays and is copied by
         // a later one.
@@ -1335,153 +1099,78 @@ impl Inner {
 
     /// Writes a group in one transaction per database. If it fails, each
     /// batch is retried alone, so one bad batch costs only itself.
-    fn write_group(&mut self, group: &[Box<Batch>]) {
-        let replay = group.iter().all(|batch| replayed_input(batch))
-            && group.iter().any(|batch| cancellable_replay(batch));
-        if group.len() > 1 && self.write(group.iter().map(|b| &**b), replay).is_ok() {
-            return;
-        }
-        if group.len() == 1 && self.write(std::iter::once(&*group[0]), replay).is_ok() {
-            return;
-        }
-        for b in group {
-            if let Err(e) = self.write(std::iter::once(&**b), cancellable_replay(b)) {
-                if matches!(e, StoreError::Stopped) {
-                    continue;
-                }
-                self.report.errors.push(polylogue_model::Failure::new(
-                    format_args!("input {}", b.input.id),
-                    &e,
-                ));
-            }
-        }
-    }
-
-    /// Standalone bytes without an input, such as a chat attachment, follow
-    /// the same append, sync and catalog commit order as captured inputs.
-    fn store_blob(
-        &mut self,
-        new_blob: crate::NewBlob,
-        file: Option<crate::staging::PreparedBytes>,
-    ) -> Result<BlobHash> {
-        if crate::blobs::load_extent(&self.archive, "", &hashed_blobs::Hash(new_blob.hash.0))?
-            .is_some()
+    fn write_group(&mut self, group: Vec<capture::Parsed>) {
+        if group.iter().any(|parsed| parsed.batches.is_empty())
+            && let Err(error) = self.follow_archive()
         {
-            return Ok(new_blob.hash);
-        }
-        let file = file.or_invalid("new blob has no prepared bytes")?;
-        if file.owner != self.location.root
-            || file.hash() != new_blob.hash
-            || file.len() != new_blob.size
-        {
-            return Err(StoreError::Invalid(
-                "prepared bytes do not match the new blob".into(),
+            self.report.errors.push(polylogue_model::Failure::new(
+                "following the archive",
+                &error,
             ));
         }
-        let prepared = file.into_prepared()?;
-        if self.segment.is_none() {
-            self.segment = Some(crate::blobs::open_writer(
-                &self.archive,
-                &self.location.root,
-            )?);
-        }
-        let writer = self.segment.as_mut().expect("opened segment writer");
-        let pending = match writer.append_group(std::iter::once(Ok(prepared)), |_| Ok(None)) {
-            Ok(pending) => pending,
-            Err(error) => {
-                self.segment.take();
-                return Err(error.into());
+        let batches = || group.iter().flat_map(|parsed| &parsed.batches);
+        let replay = group.iter().all(|parsed| parsed.replay) && batches().any(cancellable_replay);
+        let together = batches().count() > 1 && self.write(batches(), replay).is_ok();
+        let mut answers: Vec<Vec<Result<()>>> = Vec::with_capacity(group.len());
+        for parsed in &group {
+            if parsed.batches.is_empty() {
+                answers.push(Vec::new());
+            } else if together {
+                answers.push(parsed.batches.iter().map(|_| Ok(())).collect());
+            } else if parsed.atomic || parsed.batches.len() == 1 {
+                let replay = parsed.replay && parsed.batches.iter().all(cancellable_replay);
+                let answer = self.write(parsed.batches.iter(), replay);
+                answers.push(match answer {
+                    Ok(()) => parsed.batches.iter().map(|_| Ok(())).collect(),
+                    Err(error) => {
+                        let mut answer: Vec<Result<()>> = (1..parsed.batches.len())
+                            .map(|_| Err(error.for_group_member()))
+                            .collect();
+                        answer.insert(0, Err(error));
+                        answer
+                    }
+                });
+            } else {
+                let answer = parsed
+                    .batches
+                    .iter()
+                    .map(|b| self.write(std::iter::once(b), parsed.replay && cancellable_replay(b)))
+                    .collect();
+                answers.push(answer);
             }
-        };
-        let synced = match pending.wait() {
-            Ok(synced) => synced,
-            Err(error) => {
-                self.segment.take();
-                return Err(error.into());
+        }
+        for (parsed, answer) in group.into_iter().zip(answers) {
+            let capture::Parsed {
+                batches,
+                atomic,
+                reply,
+                ..
+            } = parsed;
+            let inputs: Vec<String> = batches.iter().map(|b| b.input.id.clone()).collect();
+            // A reply also observes the release of the batches' memory
+            // charges, not only their committed rows.
+            drop(batches);
+            match reply {
+                capture::Reply::Stored {
+                    stored,
+                    positions,
+                    reply,
+                } => {
+                    let _ = reply.send(capture::stored_answer(stored, &positions, answer, atomic));
+                }
+                capture::Reply::Nobody => {
+                    for (input, answer) in inputs.iter().zip(answer) {
+                        match answer {
+                            Err(StoreError::Stopped) | Ok(()) => {}
+                            Err(error) => self.report.errors.push(polylogue_model::Failure::new(
+                                format_args!("input {input}"),
+                                &error,
+                            )),
+                        }
+                    }
+                }
             }
-        };
-        let result = (|| {
-            let tx = self.archive.transaction()?;
-            for extent in &synced.extents {
-                crate::blobs::insert_extent(&tx, extent)?;
-            }
-            crate::blobs::record_committed_end(&tx, synced.end)?;
-            crate::write_lock::commit(tx)?;
-            self.commits
-                .committed(crate::completion::Committed::CONTENT);
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.segment.take();
-            return Err(error);
         }
-        self.report.segment_syncs += synced.metrics.syncs;
-        self.report.segment_bytes_written += synced.metrics.appended_bytes;
-        self.report.blobs_appended += synced.metrics.appended_materials;
-        self.report.blobs_deduplicated += synced.metrics.deduplicated_materials;
-        self.segment
-            .as_mut()
-            .expect("appended writer")
-            .acknowledge(&synced)?;
-        Ok(new_blob.hash)
-    }
-
-    fn write_user(
-        &mut self,
-        request: &polylogue_model::user::UserRequest,
-        scope: Option<&crate::ReadScopeToken>,
-        preparation: Option<&crate::user_writes::PreparationContext>,
-    ) -> Result<crate::user_writes::WriteResult> {
-        crate::fault::check("write.user", &request.id)?;
-        scoped::require_current(&self.location, scope)?;
-        let prepared_scope = self.preflight_saved(request, preparation, scope)?;
-        let scope = scope.or(prepared_scope.as_ref());
-        let tx = self.archive.transaction()?;
-        scoped::require_current(&self.location, scope)?;
-        let known: bool = tx.exists(
-            "SELECT EXISTS(SELECT 1 FROM client_request WHERE id=?1)",
-            [&request.id],
-        )?;
-        let seq = if known {
-            crate::session_values::write_counter(&tx)?
-        } else {
-            bump_counter(&tx)?
-        };
-        let outcome = {
-            let source_snapshot = rusqlite::Transaction::new_unchecked(
-                &self.index,
-                rusqlite::TransactionBehavior::Deferred,
-            )?;
-            crate::user_writes::apply_resolving(
-                &tx,
-                &source_snapshot,
-                request,
-                seq,
-                crate::user_writes::Preparation::plain(preparation),
-            )?
-        };
-        scoped::require_current(&self.location, scope)?;
-        if known
-            || (matches!(
-                request.write,
-                polylogue_model::user::UserWrite::MarkSeen { .. }
-            ) && outcome.outcome.repeat)
-        {
-            tx.rollback()?;
-        } else {
-            crate::write_lock::commit(tx)?;
-            self.commits
-                .committed(crate::completion::Committed::AUTHORED);
-        }
-        if !matches!(
-            request.write,
-            polylogue_model::user::UserWrite::Deliver(_)
-                | polylogue_model::user::UserWrite::DeliveredAdvice(_)
-                | polylogue_model::user::UserWrite::MarkSeen { .. }
-        ) {
-            self.project_alternate_text()?;
-        }
-        Ok(outcome)
     }
 
     fn write<'a>(
@@ -1501,6 +1190,7 @@ impl Inner {
         &mut self,
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
+        let mut chains = Vec::new();
         for b in batches.clone() {
             if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
@@ -1511,75 +1201,38 @@ impl Inner {
             for p in &b.parse {
                 p.counts.check()?;
             }
-        }
-        let mut parsed_only = true;
-        for batch in batches.clone() {
-            if !matches!(batch.change, Change::Reparse { .. })
-                || batch.new_blob.is_some()
-                || batch.observation.is_some()
+            if !matches!(b.change, Change::Reparse { .. })
+                || b.new_blob.is_some()
+                || b.observation.is_some()
             {
-                parsed_only = false;
-                break;
+                return Err(StoreError::internal(
+                    "the index writer takes parsed rows of bytes the archive has committed",
+                ));
             }
-            for blob in &batch.blobs {
-                let size = i64::try_from(blob.size).map_err(|_| {
-                    StoreError::Invalid("decoded body exceeds the source catalog range".into())
-                })?;
-                if !self.archive.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM blob WHERE hash=?1 AND size=?2)",
-                    params![blob.hash.0.as_slice(), size],
-                    |row| row.get::<_, bool>(0),
-                )? {
-                    parsed_only = false;
-                    break;
+            chains.push(stored_reading_chain(&self.archive, b)?);
+        }
+        let mut has_step = false;
+        let mut all_replayed = true;
+        'batches: for (batch, chain) in batches.clone().zip(&chains) {
+            for step in &batch.parse {
+                has_step = true;
+                if step.delivery.is_none()
+                    || crate::wire_shapes::admit_export(
+                        &self.index,
+                        &batch.input.id,
+                        *chain,
+                        batch.length,
+                        step,
+                    )?
+                {
+                    all_replayed = false;
+                    break 'batches;
                 }
             }
         }
-        let mut chains = Vec::new();
-        if parsed_only {
-            for batch in batches.clone() {
-                chains.push(Some(stored_reading_chain(&self.archive, batch)?));
-            }
-            let mut has_step = false;
-            let mut all_replayed = true;
-            'batches: for batch in batches.clone() {
-                let Change::Reparse { chain } = batch.change else {
-                    unreachable!()
-                };
-                for step in &batch.parse {
-                    has_step = true;
-                    if step.delivery.is_none()
-                        || crate::wire_shapes::admit_export(
-                            &self.index,
-                            &batch.input.id,
-                            chain,
-                            batch.length,
-                            step,
-                        )?
-                    {
-                        all_replayed = false;
-                        break 'batches;
-                    }
-                }
-            }
-            if has_step && all_replayed {
-                return Ok(());
-            }
+        if has_step && all_replayed {
+            return Ok(());
         }
-        if !parsed_only {
-            let atx = self.archive.transaction()?;
-            let seq = bump_counter(&atx)?;
-            for batch in batches.clone() {
-                let (chain, _) = write_bytes(&atx, batch, seq)?;
-                chains.push(chain);
-            }
-            crate::fault::check("write.archive_commit", "")?;
-            crate::write_lock::commit(atx)?;
-            self.commits
-                .committed(crate::completion::Committed::CONTENT);
-            crate::fault::check("write.between_commits", "")?;
-        }
-
         let indexed = batches.collect::<Vec<_>>();
         // While a build's load and composition run, the build file has no
         // indexes to write rows by: the bytes are stored, and upkeep reads
@@ -1594,7 +1247,7 @@ impl Inner {
         let mut touched = readings::Touched::default();
         let mut batches = 0u64;
         for (b, chain) in indexed.iter().zip(chains) {
-            if let Some(chain) = chain.filter(|_| reads) {
+            if reads {
                 for p in &b.parse {
                     let source_commit = crate::source::Source::reading_commit(
                         &itx,
@@ -1621,11 +1274,15 @@ impl Inner {
         }
         let (messages, read) = rows::finish_upkeep(&itx, touched, &changes, counter)?;
         self.report.item_units_read += read;
-        let source_changed = crate::chain_progress::recorded(&self.archive)?;
-        crate::chain_progress::refresh(&itx, &source_changed)?;
-        crate::fault::check("write.index_commit", "")?;
-        itx.commit()?;
-        crate::chain_progress::forget(&self.archive, &source_changed)?;
+        let followed = self.followed.take_followed();
+        let committed = crate::chain_progress::refresh(&itx, &followed.changes)
+            .and_then(|()| crate::fault::check("write.index_commit", ""))
+            .and_then(|()| Ok(itx.commit()?));
+        if let Err(error) = committed {
+            // What the archive handed over is applied by a later transaction.
+            self.followed.give_back(followed);
+            return Err(error);
+        }
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();
@@ -1705,4 +1362,24 @@ fn prepare_batches(location: &Archive, batches: &mut [&mut Batch]) -> Result<()>
         attachments::normalize(batch, &archive, &pending)?;
     }
     Ok(())
+}
+
+/// How long what archive commits handed over waits for a batch whose
+/// transaction it can join.
+const FOLLOW_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// The meta key of the archive position the index has followed to.
+const ARCHIVE_POSITION: &str = "archive_position";
+
+/// Adds `other`'s figures to `report`.
+fn merge_report(report: &mut WriteReport, other: WriteReport) {
+    report.batches += other.batches;
+    report.messages += other.messages;
+    report.transactions += other.transactions;
+    report.segment_syncs += other.segment_syncs;
+    report.segment_bytes_written += other.segment_bytes_written;
+    report.blobs_appended += other.blobs_appended;
+    report.blobs_deduplicated += other.blobs_deduplicated;
+    report.item_units_read += other.item_units_read;
+    report.errors.extend(other.errors);
 }

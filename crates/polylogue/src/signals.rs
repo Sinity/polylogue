@@ -185,7 +185,7 @@ fn persist(
             request: id.clone(),
         },
     );
-    let outcome = writes.user(request).map_err(|e| e.to_string())?;
+    let outcome = writes.archive().user(request).map_err(|e| e.to_string())?;
     #[cfg(test)]
     observations::emit(
         d,

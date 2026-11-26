@@ -6,7 +6,11 @@ use polylogue_model::Reference;
 fn run_objects_distinguish_missing_pending_and_complete_records() {
     let archive = WriterArchive::new();
     let object = question("sessions");
-    archive.writer.query_object(object.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(object.clone(), None)
+        .unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let position = pool.reader().unwrap().change_position().unwrap();
     let beginning = run(&object, "object-run", 1, position);
@@ -17,6 +21,7 @@ fn run_objects_distinguish_missing_pending_and_complete_records() {
     ));
     archive
         .writer
+        .archive()
         .begin_query_run(beginning.clone(), None)
         .unwrap();
     let pending_hash = {
@@ -32,6 +37,7 @@ fn run_objects_distinguish_missing_pending_and_complete_records() {
     let completed = outcome(&beginning, 0);
     archive
         .writer
+        .archive()
         .finish_query_run(completed.clone())
         .unwrap()
         .recv()
@@ -56,6 +62,7 @@ fn run_completion_without_its_beginning_is_incomplete() {
     let beginning = run(&object, "completion-before-begin", 1, position);
     archive
         .writer
+        .archive()
         .finish_query_run(outcome(&beginning, 7))
         .unwrap()
         .recv()
@@ -71,17 +78,23 @@ fn run_completion_without_its_beginning_is_incomplete() {
 fn run_object_read_checks_the_completion_identity() {
     let archive = WriterArchive::new();
     let object = question("sessions");
-    archive.writer.query_object(object.clone(), None).unwrap();
+    archive
+        .writer
+        .archive()
+        .query_object(object.clone(), None)
+        .unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let position = pool.reader().unwrap().change_position().unwrap();
     let beginning = run(&object, "checked-object", 1, position);
     archive
         .writer
+        .archive()
         .begin_query_run(beginning.clone(), None)
         .unwrap();
     let mut completion = outcome(&beginning, 1);
     archive
         .writer
+        .archive()
         .finish_query_run(completion.clone())
         .unwrap()
         .recv()

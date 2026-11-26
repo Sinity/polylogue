@@ -15,6 +15,7 @@ fn prepared_outcome(daemon: &crate::test_daemon::TestDaemon, prefix: &str) -> Us
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .user(invocation.request(
             id.clone(),
             UserWrite::Deliver(Delivery {
@@ -58,11 +59,11 @@ fn a_queued_outcome_survives_loop_stop_and_writer_queue_pressure() {
         },
     );
     let writes = daemon.daemon.writes.as_ref().unwrap();
-    writes.user(barrier.clone()).unwrap();
+    writes.archive().user(barrier.clone()).unwrap();
     fault::arm("write.user", "stop-outcome-barrier", Action::Hold, 0, 1);
     let _release = daemon.daemon.archive.stop().on_cancel(fault::release);
     assert!(matches!(
-        writes.try_enqueue_user(barrier.clone()).unwrap(),
+        writes.archive().try_submit(barrier.clone()).unwrap(),
         Queued::Committing(_)
     ));
     assert!(
@@ -71,7 +72,7 @@ fn a_queued_outcome_survives_loop_stop_and_writer_queue_pressure() {
     );
     // Fill the bounded public writer queue with repeats that change no user state.
     while matches!(
-        writes.try_enqueue_user(barrier.clone()).unwrap(),
+        writes.archive().try_submit(barrier.clone()).unwrap(),
         Queued::Committing(_)
     ) {}
     daemon

@@ -71,7 +71,6 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
             None
         };
         let sender = w.writer.sender();
-        let store = Arc::new(w.archive.blobs().unwrap());
         let stop = w.archive.stop().clone();
         crate::fault::arm("write.replay_rows", "", crate::fault::Action::Hold, 0, 1);
         let (done, finished) = sync_channel(1);
@@ -89,10 +88,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
                     }
                 }
                 "staged" | "existing_asset" | "new_asset" => sender
-                    .store_group(
-                        vec![crate::staging::PreparedBatch { batch: b, files }],
-                        store,
-                    )
+                    .store_group(vec![crate::staging::PreparedBatch { batch: b, files }])
                     .unwrap()
                     .into_iter()
                     .all(|result| matches!(result, Err(StoreError::Stopped))),
@@ -291,24 +287,20 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
         };
         crate::fault::arm("write.replay_rows", "", crate::fault::Action::Hold, 0, 1);
         let sender = w.writer.sender();
-        let store = Arc::new(w.archive.blobs().unwrap());
         let (done, finished) = sync_channel(1);
         let worker = std::thread::spawn(move || {
             let clean = if staged {
                 let results = sender
-                    .store_group(
-                        vec![
-                            crate::staging::PreparedBatch {
-                                batch: normal,
-                                files: Vec::new(),
-                            },
-                            crate::staging::PreparedBatch {
-                                batch: diagnosis,
-                                files: Vec::new(),
-                            },
-                        ],
-                        store,
-                    )
+                    .store_group(vec![
+                        crate::staging::PreparedBatch {
+                            batch: normal,
+                            files: Vec::new(),
+                        },
+                        crate::staging::PreparedBatch {
+                            batch: diagnosis,
+                            files: Vec::new(),
+                        },
+                    ])
                     .unwrap();
                 matches!(results.first(), Some(Err(StoreError::Stopped)))
                     && matches!(results.get(1), Some(Ok(_)))

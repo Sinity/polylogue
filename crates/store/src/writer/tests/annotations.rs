@@ -29,7 +29,11 @@ fn fact(root: &str, id: &str, kind: AnnotationKind, links: &[(LinkRole, &str)]) 
 }
 
 fn restore(archive: &TestArchive, fact: AnnotationFact) {
-    archive.writer.restore_annotation(fact, None).unwrap();
+    archive
+        .writer
+        .archive()
+        .restore_annotation(fact, None)
+        .unwrap();
 }
 
 fn selected(reader: &crate::Reader<'_>, text: &str) -> Vec<String> {
@@ -174,9 +178,9 @@ fn no_effect_request_exports_its_outcome_and_source() {
             }],
         },
     };
-    archive.writer.user(request("tag-base")).unwrap();
+    archive.writer.archive().user(request("tag-base")).unwrap();
     let original = request("no:effect@#..request");
-    archive.writer.user(original.clone()).unwrap();
+    archive.writer.archive().user(original.clone()).unwrap();
     let pool = ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let reference = Reference::Request(original.id.clone());
@@ -197,6 +201,7 @@ fn no_effect_request_exports_its_outcome_and_source() {
     let other = test_archive();
     other
         .writer
+        .archive()
         .restore_authored(record.prepared.clone())
         .unwrap();
     let pool = ReadPool::open(&other.archive).unwrap();
@@ -230,6 +235,7 @@ fn unknown_authored_time_keeps_current_revision_queries() {
     assert!(
         !archive
             .writer
+            .archive()
             .restore_annotation(undated.clone(), Some(ingress("input-one", 50)))
             .unwrap()
             .repeat
@@ -237,6 +243,7 @@ fn unknown_authored_time_keeps_current_revision_queries() {
     assert!(
         archive
             .writer
+            .archive()
             .restore_annotation(undated.clone(), Some(ingress("input-two", 60)))
             .unwrap()
             .repeat
@@ -244,6 +251,7 @@ fn unknown_authored_time_keeps_current_revision_queries() {
     assert!(
         archive
             .writer
+            .archive()
             .restore_annotation(undated.clone(), Some(ingress("input-one", 70)))
             .unwrap()
             .repeat
@@ -254,12 +262,13 @@ fn unknown_authored_time_keeps_current_revision_queries() {
     dated.created_at = Timestamp::from_unix_ms(5);
     archive
         .writer
+        .archive()
         .restore_annotation(dated.clone(), None)
         .unwrap();
     let mut conflicting = dated.clone();
     conflicting.created_at = None;
     assert!(matches!(
-        archive.writer.restore_annotation(conflicting, None),
+        archive.writer.archive().restore_annotation(conflicting, None),
         Err(StoreError::Conflict(id)) if id == "dated"
     ));
     let reads = ReadPool::open(&archive.archive).unwrap();

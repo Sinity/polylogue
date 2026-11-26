@@ -255,6 +255,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     let write_as = |w: UserWrite, author: Author| {
         n.set(n.get() + 1);
         writes
+            .archive()
             .user(polylogue_store::writer::UserSubmission {
                 request: request(n.get(), w, author),
                 scope: None,

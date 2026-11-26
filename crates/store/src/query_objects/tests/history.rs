@@ -18,6 +18,7 @@ fn completed_history_returns_before_the_writer_and_commits_as_one_record() {
         crate::writer::DispatchPhase::BeforeParentCheck,
     );
     sender
+        .archive()
         .reserve_history()
         .unwrap()
         .record(object.clone(), expected.clone(), completed.clone())
@@ -66,6 +67,7 @@ fn conflicting_history_rolls_back_its_question_and_run() {
     previous.binding_hash = polylogue_model::BlobHash::of(b"a different accepted binding");
     archive
         .writer
+        .archive()
         .finish_query_run(previous.clone())
         .unwrap()
         .recv()
@@ -73,6 +75,7 @@ fn conflicting_history_rolls_back_its_question_and_run() {
         .unwrap();
     archive
         .writer
+        .archive()
         .reserve_history()
         .unwrap()
         .record(object.clone(), expected.clone(), completed)

@@ -38,11 +38,13 @@ fn repeat_write_with_no_effect(d: &Daemon, id: &str) {
     d.writes
         .as_ref()
         .unwrap()
+        .archive()
         .user(invocation.request("tag-base".into(), write()))
         .unwrap();
     d.writes
         .as_ref()
         .unwrap()
+        .archive()
         .user(invocation.request(id.into(), write()))
         .unwrap();
 }
@@ -294,6 +296,7 @@ fn object_read_pages_past_its_budget() {
         .writes
         .as_ref()
         .unwrap()
+        .archive()
         .user(request.clone())
         .unwrap();
     let reference = Reference::Request(request.id.clone());

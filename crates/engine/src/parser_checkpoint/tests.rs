@@ -116,10 +116,7 @@ fn missing_parser_state_reads_the_chain_again_from_its_start() {
         let mut batch = batch.unwrap();
         // A stored source reading whose parser control is unavailable.
         batch.batch.parse.last_mut().unwrap().checkpoint = None;
-        let result = engine
-            .writer
-            .store_group(vec![batch], std::sync::Arc::clone(&engine.blobs))
-            .unwrap();
+        let result = engine.writer.store_group(vec![batch]).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].is_ok());
     }
@@ -425,6 +422,7 @@ fn an_append_continues_an_earlier_response_and_resolves_its_alias() {
     drop(reader);
     engine
         .writer
+        .archive()
         .user(polylogue_model::user::UserRequest {
             id: "0199d8a0-0000-7000-8000-000000000991".into(),
             machine: "synthetic-machine".into(),

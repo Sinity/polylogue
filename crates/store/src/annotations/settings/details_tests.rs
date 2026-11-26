@@ -106,7 +106,11 @@ fn setting_details_follow_declared_choices_and_keep_unknown_time_and_withdrawn_r
             &[],
         ),
     ] {
-        archive.writer.restore_annotation(fact, None).unwrap();
+        archive
+            .writer
+            .archive()
+            .restore_annotation(fact, None)
+            .unwrap();
     }
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -129,6 +133,7 @@ fn setting_details_follow_declared_choices_and_keep_unknown_time_and_withdrawn_r
     drop(reader);
     archive
         .writer
+        .archive()
         .restore_annotation(
             AnnotationFact {
                 id: "withdraw".into(),
@@ -182,7 +187,11 @@ fn setting_details_select_the_target_host_not_the_recording_host() {
             &[],
         );
         fact.machine = writer.into();
-        archive.writer.restore_annotation(fact, None).unwrap();
+        archive
+            .writer
+            .archive()
+            .restore_annotation(fact, None)
+            .unwrap();
     }
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
@@ -241,7 +250,11 @@ fn setting_history_order_never_picks_a_clock_winner_for_a_fork() {
             &[("setting", "parent")],
         ),
     ] {
-        archive.writer.restore_annotation(fact, None).unwrap();
+        archive
+            .writer
+            .archive()
+            .restore_annotation(fact, None)
+            .unwrap();
     }
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let details = pool

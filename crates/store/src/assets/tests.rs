@@ -2,7 +2,6 @@
 use super::*;
 use crate::{Archive, Batch, Change, InputKey, Observation, ReadPool, Writer};
 use polylogue_model::BlobHash;
-use std::sync::Arc;
 
 #[test]
 fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() {
@@ -15,7 +14,6 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
         route: polylogue_model::Route::Live,
     };
     let sender = writer.sender();
-    let store = Arc::new(archive.blobs().unwrap());
     let observation = Observation {
         machine: "synthetic".into(),
         host: "synthetic".into(),
@@ -32,24 +30,21 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
     for (start, end, continues) in [(0, split, false), (split, original.len(), true)] {
         let (new_blob, file) = archive.prepare_blob(&original[start..end]).unwrap();
         let mut stored = sender
-            .store_group(
-                vec![crate::staging::PreparedBatch {
-                    batch: Batch {
-                        input: input.clone(),
-                        change: Change::First,
-                        observation: Some(observation.clone()),
-                        continues,
-                        new_blob: Some(new_blob),
-                        blobs: vec![],
-                        length: end as u64,
-                        parse: vec![],
-                        capture_read: None,
-                        release: Default::default(),
-                    },
-                    files: file.into_iter().collect(),
-                }],
-                Arc::clone(&store),
-            )
+            .store_group(vec![crate::staging::PreparedBatch {
+                batch: Batch {
+                    input: input.clone(),
+                    change: Change::First,
+                    observation: Some(observation.clone()),
+                    continues,
+                    new_blob: Some(new_blob),
+                    blobs: vec![],
+                    length: end as u64,
+                    parse: vec![],
+                    capture_read: None,
+                    release: Default::default(),
+                },
+                files: file.into_iter().collect(),
+            }])
             .unwrap();
         stored.pop().expect("one captured source chunk").unwrap();
     }
@@ -94,27 +89,24 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
     let replacement = b"replacement body";
     let (new_blob, file) = archive.prepare_blob(replacement).unwrap();
     let mut stored = sender
-        .store_group(
-            vec![crate::staging::PreparedBatch {
-                batch: Batch {
-                    input: input.clone(),
-                    change: Change::Rewritten,
-                    observation: Some(Observation {
-                        seen_at_ms: 2,
-                        ..observation
-                    }),
-                    continues: false,
-                    new_blob: Some(new_blob),
-                    blobs: vec![],
-                    length: replacement.len() as u64,
-                    parse: vec![],
-                    capture_read: None,
-                    release: Default::default(),
-                },
-                files: file.into_iter().collect(),
-            }],
-            Arc::clone(&store),
-        )
+        .store_group(vec![crate::staging::PreparedBatch {
+            batch: Batch {
+                input: input.clone(),
+                change: Change::Rewritten,
+                observation: Some(Observation {
+                    seen_at_ms: 2,
+                    ..observation
+                }),
+                continues: false,
+                new_blob: Some(new_blob),
+                blobs: vec![],
+                length: replacement.len() as u64,
+                parse: vec![],
+                capture_read: None,
+                release: Default::default(),
+            },
+            files: file.into_iter().collect(),
+        }])
         .unwrap();
     stored.pop().expect("one captured rewrite").unwrap();
     assert!(writer.flush().unwrap().errors.is_empty());
