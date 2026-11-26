@@ -9,21 +9,17 @@ impl Engine {
         cursor: u64,
         version: &str,
     ) -> Result<Option<polylogue_model::Json>, EngineError> {
-        let Some(stored) = reader.parser_checkpoint(input, chain, version)? else {
-            return Ok(None);
-        };
-        if stored.parse_version != version || stored.parsed_upto != cursor {
+        let state = reader.chain_state(input, chain)?;
+        if state.version() != Some(version) || state.parsed_to() != cursor {
             return Ok(None);
         }
-        let Some(checkpoint) = stored.checkpoint else {
+        let Some(resume) = state.resume() else {
             return Ok(None);
         };
         // Metadata validates the existing byte prefix without rereading it.
         reader.stored_chain(input, chain, cursor)?;
         Ok(Some(
-            checkpoint
-                .parser_state
-                .unwrap_or(polylogue_model::Json::Null),
+            resume.0.clone().unwrap_or(polylogue_model::Json::Null),
         ))
     }
 }

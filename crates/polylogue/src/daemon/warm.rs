@@ -385,8 +385,8 @@ impl Warm {
         }
     }
 
-    /// What `status` shows.
-    pub fn summary(&self) -> crate::protocol::status::Warm {
+    /// What `status` shows, with whether the scope index is loaded.
+    pub fn summary(&self, scope_index_loaded: bool) -> crate::protocol::status::Warm {
         use crate::protocol::status::{Vectors, Warm};
         let vectors = self.vectors.lock().ok().and_then(|vectors| {
             vectors.sets.last().map(|loaded| Vectors {
@@ -395,6 +395,7 @@ impl Warm {
             })
         });
         Warm {
+            scope_index_loaded,
             vectors,
             vector_loads: self.counts.vector_loads.load(Ordering::Relaxed),
             query_vectors_reused: self.counts.query_vectors_reused.load(Ordering::Relaxed),

@@ -475,7 +475,7 @@ pub(super) fn page(
             session_read: None,
             target: target.clone(),
             digest: digest.clone(),
-            alternates: request.options.alternates.clone(),
+            alternates: request.alternates.clone(),
             versions: graph_version,
             position: PagePosition::Links {
                 place: place.clone(),

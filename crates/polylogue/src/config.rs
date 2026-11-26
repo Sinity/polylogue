@@ -455,8 +455,6 @@ struct DeploymentFile {
 /// A client's configuration extended with what only the daemon and the
 /// commands that run the engine here need.
 pub struct Startup {
-    /// Executable bytes supplied by main only for a command that starts an Engine.
-    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub client: Client,
     pub config: Arc<Config>,
     pub engine: polylogue_engine::Config,
@@ -719,7 +717,6 @@ impl Startup {
                 .transpose()?,
         });
         Ok(Self {
-            stopped_attempt: None,
             config,
             engine,
             mode,
@@ -816,7 +813,6 @@ impl Startup {
     pub(crate) fn for_test(engine: polylogue_engine::Config, archive: &Path) -> Self {
         let config = Config::for_test(&engine, archive);
         Self {
-            stopped_attempt: Some(polylogue_testkit::stopped_attempt()),
             client: Client::for_test(&config, engine.clock.clone()),
             config,
             engine,

@@ -20,7 +20,11 @@ pub struct Reading {
     pub parse_version: String,
     pub start: u64,
     pub parsed_upto: u64,
-    pub progress: polylogue_model::batch::StepProgress,
+    /// The step read through the end of the stored bytes.
+    pub at_end: bool,
+    /// The parser could not go on at `parsed_upto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<polylogue_model::ChainFailure>,
 }
 
 impl Reading {
@@ -38,7 +42,8 @@ impl Reading {
             parse_version: step.parse_version.clone(),
             start: step.start,
             parsed_upto: step.parsed_upto,
-            progress: step.progress.clone(),
+            at_end: step.at_end,
+            failure: step.failure.clone(),
         }
     }
 }
@@ -148,8 +153,6 @@ pub enum Product {
     ParseProgress {
         reading: Reading,
         counts: RecordCounts,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     },
     AttachmentBinding {
         record: Box<polylogue_store::assets::bindings::AttachmentBindingRecord>,
@@ -502,7 +505,6 @@ pub fn parse(
     products.push(Product::ParseProgress {
         reading,
         counts: step.counts.clone(),
-        stopped_attempt: step.stopped_attempt,
     });
     Ok(products)
 }

@@ -38,7 +38,7 @@ fn session() -> SessionId {
 
 #[test]
 fn terminal_printers_escape_archived_text() {
-    let context_answer = protocol::context::Answer {
+    let context_answer = crate::brief::BriefReply {
         delivery: None,
         prepared: crate::brief::Prepared {
             event: polylogue_model::DeliveryEvent::SessionBrief,
@@ -50,7 +50,7 @@ fn terminal_printers_escape_archived_text() {
             next: None,
         },
     };
-    assert_eq!(context(&context_answer, TextStyle::Plain), HOSTILE_ESCAPED);
+    assert_eq!(brief(&context_answer, TextStyle::Plain), HOSTILE_ESCAPED);
     let plan_answer = protocol::resume::Answer::Plan(Plan {
         session: session(),
         harness_command: Some(hostile_command()),

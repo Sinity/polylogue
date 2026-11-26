@@ -179,14 +179,14 @@ fn pasted_and_search_briefs_use_rows() {
     let recipient = SessionId::parse("codex:receiving-session").unwrap();
     for (ask, expected) in [
         (
-            Ask::Takeover {
+            Ask::Session {
                 session: SessionId::parse("claude-code:parser-session").unwrap(),
                 for_session: Some(recipient.clone()),
             },
             json!({"selection":"session:claude-code:parser-session", "steps":[{"verb":"brief", "for":"codex:receiving-session"}]}),
         ),
         (
-            Ask::Recall {
+            Ask::Words {
                 text: "date parser".into(),
                 cwd: Some("/synthetic/project".into()),
                 for_session: Some(recipient.clone()),
@@ -1020,7 +1020,7 @@ fn three_pasted_sessions_give_one_index() {
         let mut rest = String::new();
         assert_eq!(BufReader::new(&stream).read_line(&mut rest).unwrap_or(0), 0);
     });
-    let reply = takeovers(
+    let reply = pasted_sessions(
         Harness::Codex,
         &json!({"session_id": "receiving"}),
         "compare claude-code:s1, claude-code:s2 and claude-code:s3",

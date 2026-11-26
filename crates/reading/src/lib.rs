@@ -50,17 +50,43 @@ impl ReadStart {
     }
 }
 
+/// One read: what it reads (the target, or the fixed rows a line resolved),
+/// how (the options the caller wrote), where it starts, and how it is
+/// delivered and paged.
 #[derive(Debug, Clone)]
 pub struct ReadRequest {
-    pub start: ReadStart,
     pub target: String,
     pub references: Option<Vec<polylogue_model::Reference>>,
     pub options: ReadOptions,
+    pub start: ReadStart,
     pub delivery: ReadDelivery,
-    pub format: String,
+    pub format: Format,
     pub budget: ReadBudget,
-    pub with_blobs: bool,
     pub cursor: Option<String>,
+    /// The alternates the reading renders, resolved once by
+    /// [`with_alternates`]; empty before.
+    pub alternates: Vec<String>,
+}
+impl ReadRequest {
+    /// The first page of `target` read with `options`, as JSON; `--from
+    /// seen` starts where this reader stopped.
+    pub fn new(target: impl Into<String>, options: ReadOptions) -> Self {
+        Self {
+            start: if options.from.as_deref() == Some("seen") {
+                ReadStart::Seen
+            } else {
+                ReadStart::Beginning
+            },
+            target: target.into(),
+            references: None,
+            options,
+            delivery: ReadDelivery::Page,
+            format: Format::Json,
+            budget: ReadBudget::Default,
+            cursor: None,
+            alternates: Vec::new(),
+        }
+    }
 }
 /// Resolve the authenticated session start before accepting a page or stream.
 /// Composition captures logical parts' marks against this same pinned reader.
@@ -172,35 +198,31 @@ pub struct AttachmentPlace {
     pub input: Option<String>,
 }
 
-/// The read with the alternates it renders resolved once: the request's own
-/// (`none` for the originals), else those its cursor's first page rendered,
-/// else the `reading.alternates` setting.
+/// The read with the alternates it renders resolved once: the one the
+/// caller names (`none` for the originals), else those its cursor's first
+/// page rendered, else the `reading.alternates` setting.
 pub fn with_alternates(
     reader: &Reader<'_>,
     services: &impl ReadServices,
     mut request: ReadRequest,
 ) -> Result<ReadRequest, Error> {
+    let named = request.options.alternate.as_deref();
     if request.options.view == View::Trace {
-        if !request.options.alternates.is_empty() && request.options.alternates != ["none"] {
+        if named.is_some_and(|alternate| alternate != "none") {
             return Err(Reason::TraceTakesNoAlternates {}.into());
         }
-        request.options.alternates.clear();
+        request.alternates.clear();
         return Ok(request);
     }
-    if request.options.alternates == ["none"] {
-        request.options.alternates.clear();
-        return Ok(request);
-    }
-    if !request.options.alternates.is_empty() {
-        return Ok(request);
-    }
-    request.options.alternates = match &request.cursor {
-        Some(text) => {
+    request.alternates = match (named, &request.cursor) {
+        (Some("none"), _) => Vec::new(),
+        (Some(alternate), _) => vec![alternate.to_owned()],
+        (None, Some(text)) => {
             PageCursor::open(text, &cursor_seal(reader)?)
                 .map_err(cursor_failure)?
                 .alternates
         }
-        None => reader
+        (None, None) => reader
             .settings_snapshot(services.requests().machine())?
             .reading_alternates()
             .map_err(Error::conflict)?
@@ -212,9 +234,7 @@ pub fn with_alternates(
 /// The format, page limits and options digest a continuation cursor of a
 /// session or links page must match.
 fn page_terms(request: &ReadRequest) -> Result<(Format, PageBudget, String), Error> {
-    let format = Format::parse(&request.format).ok_or_else(|| Reason::UnknownReadFormat {
-        format: request.format.clone(),
-    })?;
+    let format = request.format;
     let limits = PageBudget::default().with_tokens(request.budget);
     let digest = options_digest(&(&request.options, format));
     Ok((format, limits, digest))
@@ -234,6 +254,9 @@ fn cursor_failure(error: CursorError) -> Error {
         CursorError::Stale => {
             Error::stale_cursor("the index was rebuilt since this page was issued")
         }
+        CursorError::EarlierBuild => {
+            Error::stale_cursor("Polylogue was updated since this page was issued")
+        }
         CursorError::Invalid | CursorError::OtherReading(_) => {
             Error::InvalidQuery(error.to_string())
         }
@@ -250,6 +273,7 @@ struct RowKeys {
 /// The resolved reading of a row-path request.
 struct Reading {
     options: ReadOptions,
+    alternates: Vec<String>,
     format: Format,
     budget: Option<PageBudget>,
     target: String,
@@ -268,9 +292,7 @@ fn reading(request: &ReadRequest) -> Result<(Reading, Option<&str>), Error> {
         ..
     } = request;
     options.validate().map_err(Error::Layout)?;
-    let format = Format::parse(format).ok_or_else(|| Reason::UnknownReadFormat {
-        format: format.clone(),
-    })?;
+    let format = *format;
     let budget = if *delivery == ReadDelivery::Page {
         Some(PageBudget::default().with_tokens(*budget))
     } else {
@@ -284,6 +306,7 @@ fn reading(request: &ReadRequest) -> Result<(Reading, Option<&str>), Error> {
             digest: options_digest(&(options, format, &request.references)),
             references: request.references.clone(),
             options: options.clone(),
+            alternates: request.alternates.clone(),
             format,
             budget,
             target: target.clone(),
@@ -328,7 +351,7 @@ fn prepared<T>(
             ran_at: operation.ran_at,
             read_at: reader.change_position()?,
             freshness: services.freshness(reader)?,
-            enabled_alternates: reading.options.alternates.clone(),
+            enabled_alternates: reading.alternates.clone(),
             author: operation.authorship.author.clone(),
             notes: selection.program().notes.clone(),
             incomplete: selection.program().incomplete.clone(),
@@ -407,7 +430,7 @@ fn selected_source(
 ) -> Result<bool, Error> {
     if let (Some(ReadTarget::Session(session)), Some(message)) = (target, &source.message) {
         return Ok(reader
-            .select_messages(session, options.inherited)?
+            .select_messages(session, options.inherited())?
             .locate(Some(message))?
             .is_some());
     }
@@ -524,7 +547,7 @@ fn record_compiled(
     let mut binding = selection.execution_binding(
         query_options,
         ExecutionPresentation::Read {
-            options: reading.options.clone(),
+            options: Box::new(reading.options.clone()),
             delivery: *delivery,
             format: reading.format,
             page_budget: reading.budget,
@@ -596,47 +619,28 @@ pub fn is_object_read(request: &ReadRequest) -> bool {
 
 /// Resolve against the accepted query clock before sealing a page cursor. Ready
 /// calls carry the absolute instant, so a relative time cannot drift on replay.
+/// A word that names a message is refused with the line that selects it: the
+/// selection, not `--at`, names the message a context is read at.
 fn resolve_at<'a>(
-    reader: &Reader<'_>,
     request: &'a ReadRequest,
     operation: &Context,
 ) -> Result<std::borrow::Cow<'a, ReadRequest>, Error> {
-    if request.options.view == View::Context
-        && let Some(scope) = session::scope(reader, &request.target)?
-    {
-        let candidate = request.options.context_message_candidate();
-        let legacy = scope.range.as_ref().is_none_or(|(first, last)| {
-            first != last
-                || candidate.as_ref() == Some(first)
-                || request.options.around.is_some_and(|n| n > 0)
-        });
-        // Preserve the meaningful legacy anchor/window cases. Only overlapping
-        // time/position spellings need the pinned reader's stored-message lookup.
-        if legacy {
-            if matches!(request.options.at, Some(ReadAt::Message(_))) {
-                return Ok(std::borrow::Cow::Borrowed(request));
-            }
-            if let Some(message) = candidate
-                && reader.message_session(&message)?.is_some()
-            {
-                let mut request = request.clone();
-                request.options.at = Some(ReadAt::Message(message));
-                return Ok(std::borrow::Cow::Owned(request));
-            }
-        } else if matches!(request.options.at, Some(ReadAt::Message(_))) {
-            return Err(Reason::TwoMessageAnchors {}.into());
-        }
-    }
     let text = match request.options.at.as_ref() {
         Some(ReadAt::TimeExpression(text)) => text.clone(),
-        Some(ReadAt::Message(message)) => message.to_string(),
         Some(ReadAt::Time(at)) => at.to_string(),
         _ => return Ok(std::borrow::Cow::Borrowed(request)),
     };
     let resolved = query_language::time::resolve(&text, &operation.clock).map_err(|error| {
-        Reason::BadTime {
-            text: text.clone(),
-            problem: error.to_string(),
+        match MessageId::parse(&text) {
+            Ok(message) => Error::from(Reason::AtNamesAMessage {
+                message: message.to_string(),
+                line: message_line(&message, request.options.view),
+            }),
+            Err(_) => Reason::BadTime {
+                text: text.clone(),
+                problem: error.to_string(),
+            }
+            .into(),
         }
     })?;
     // A snapshot names one boundary. Query predicates still match the whole
@@ -648,6 +652,15 @@ fn resolve_at<'a>(
     let mut request = request.clone();
     request.options.at = Some(ReadAt::Time(at.into()));
     Ok(std::borrow::Cow::Owned(request))
+}
+
+/// The line that reads `message` in `view`.
+fn message_line(message: &MessageId, view: View) -> String {
+    let reference = polylogue_model::Reference::Message(message.clone());
+    match view {
+        View::Transcript => format!("polylogue {reference} read"),
+        view => format!("polylogue {reference} read --view {view}"),
+    }
 }
 
 fn validate_at(reader: &Reader<'_>, request: &ReadRequest) -> Result<(), Error> {
@@ -684,12 +697,9 @@ pub fn page(
     operation: &Arc<Context>,
     history: Option<HistorySlot>,
 ) -> Result<(ReadPage, Vec<polylogue_model::user::SeenMark>), Error> {
-    let resolved = resolve_at(reader, request, operation)?;
+    let resolved = resolve_at(request, operation)?;
     let request = resolved.as_ref();
     validate_at(reader, request)?;
-    if request.with_blobs {
-        return Err(Reason::BlobsNeedStream {}.into());
-    }
     if request.options.view == View::Trace {
         return trace::page(reader, services, request, operation, history)
             .map(|page| (page, vec![]));
@@ -917,7 +927,7 @@ fn rows_page(
             session_read: None,
             target: reading.target.clone(),
             digest: reading.digest.clone(),
-            alternates: reading.options.alternates.clone(),
+            alternates: reading.alternates.clone(),
             versions,
             position: PagePosition::Record {
                 start_row: row,
@@ -972,10 +982,10 @@ pub fn stream(
     operation: &Arc<Context>,
     output: &mut dyn Write,
 ) -> Result<ReadComplete, Error> {
-    let resolved = resolve_at(reader, request, operation)?;
+    let resolved = resolve_at(request, operation)?;
     let request = resolved.as_ref();
     validate_at(reader, request)?;
-    if request.delivery != ReadDelivery::Stream {
+    if !request.delivery.streams() {
         return Err(Reason::StreamNeedsStreamDelivery {}.into());
     }
     if request.options.view == View::Trace {
@@ -1066,7 +1076,7 @@ fn rows_stream(
             })],
         })?;
     }
-    let mut blobs = if request.with_blobs {
+    let mut blobs = if request.delivery == ReadDelivery::Bundle {
         Some(blobs::Blobs::new(reader)?)
     } else {
         None

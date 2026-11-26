@@ -196,7 +196,7 @@ reasons! {
     PhysicalNeedsRoot "physical_needs_root" => BadRequest {}
         "--physical applies to root:REF; a session reference is already one physical session";
     UnknownReadFormat "unknown_read_format" => BadValue { format: String }
-        "unknown read format `{format}`";
+        "unknown format `{format}`; formats are terminal, markdown, html, json and jsonl";
     FromSeenNeedsContentView "from_seen_needs_content_view" => BadRequest {}
         "read --from seen needs a session content view";
     FromSeenNeedsOneSession "from_seen_needs_one_session" => BadRequest {}
@@ -209,10 +209,56 @@ reasons! {
         "paged reads require page delivery";
     StreamNeedsStreamDelivery "stream_needs_stream_delivery" => BadRequest {}
         "streaming reads require stream delivery";
-    BlobsNeedStream "blobs_need_stream" => BadRequest {}
-        "with_blobs requires streaming delivery";
-    TwoMessageAnchors "two_message_anchors" => BadRequest {}
-        "context has two different message anchors; select one message";
+    /// `--at` given a message: the selection names the message to read at.
+    AtNamesAMessage "at_names_a_message" => BadRequest { message: String, line: String }
+        "--at takes a time or a position, not the message {message}; select the message: `{line}`";
+    FollowStreams "follow_streams" => BadRequest {}
+        "read --follow streams; it has no single answer";
+    ReadNeedsRows "read_needs_rows" => BadRequest {}
+        "read needs rows: name a selection";
+    ListingNeedsSelection "listing_needs_selection" => BadRequest {}
+        "a listing needs a selection";
+    StepNeedsRows "step_needs_rows" => BadRequest {}
+        "this step needs rows";
+    /// A verb that acts on sessions given another row.
+    ActsOnSessions "acts_on_sessions" => BadRequest { verb: String, reference: String }
+        "{verb} acts on sessions; {reference} is not one";
+    PickOnCommandLine "pick_on_command_line" => BadRequest {}
+        "pick runs on the command line; send the chosen references";
+    BudgetTooLarge "budget_too_large" => BadValue { most: u64 }
+        "brief --budget exceeds {most}";
+    /// A session word that names no session or several.
+    NotOneSession "not_one_session" => Ambiguous { text: String, rows: usize }
+        "{text:?} names {rows} rows, not one session";
+    MessageNeedsText "message_needs_text" => BadRequest {}
+        "a message needs text";
+    StartNeedsHarnessOrRole "start_needs_harness_or_role" => BadRequest {}
+        "start takes --in or --role";
+    RoleRunsAnotherHarness "role_runs_another_harness" => BadValue { role: String, runs: String, asked: String }
+        "the role {role} runs {runs}, not {asked}";
+    NotADirectory "not_a_directory" => BadValue { path: String }
+        "{path} is not a directory";
+    ResumeInNeedsSession "resume_in_needs_session" => BadRequest {}
+        "resume --in needs the session whose work it continues";
+    ResumeOptionsNeedIn "resume_options_need_in" => BadRequest {}
+        "resume --at, --cwd and --stop-source apply only with --in HARNESS";
+    /// A session whose harness has no resume command of its own.
+    NoHarnessResume "no_harness_resume" => BadRequest { session: String }
+        "{session} has no harness resume command; use resume --in HARNESS";
+    /// A session whose directory is not known, with the line that continues
+    /// it with context instead.
+    ResumeDirectoryUnknown "resume_directory_unknown" => BadRequest { line: String }
+        "directory_unknown: the session recorded no directory to resume in; continue with context instead: {line}";
+    /// An option other than those an attachment's bytes take.
+    AttachmentReadOptions "attachment_read_options" => BadRequest {}
+        "an attachment reads as its bytes; it takes only --input, --budget, --cursor and --format bytes";
+    AttachmentReadFormat "attachment_read_format" => BadValue {}
+        "an attachment reads only in the bytes format";
+    InputNeedsAttachment "input_needs_attachment" => BadRequest {}
+        "--input chooses the stored copy of an attachment; read attachment:MESSAGE#BLOCK";
+    /// A number larger than this machine can address.
+    TooLarge "too_large" => BadValue { field: String }
+        "{field} exceeds address space";
     /// A time that does not resolve.
     BadTime "bad_time" => BadRequest { text: String, problem: String }
         "`{text}` is not a time: {problem}";

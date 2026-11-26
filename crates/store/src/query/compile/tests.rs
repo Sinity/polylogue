@@ -232,8 +232,11 @@ fn changes_continue_from_a_feed_position() {
 fn deliveries_take_their_outcome_from_the_latest_event() {
     let p = c("deliveries where sender:signal | sort by at desc");
     let sql = statements(&p);
-    assert!(sql.contains("delivery_event"), "{sql}");
-    assert!(!sql.contains(".outcome"), "{sql}");
+    // The outcome is the latest event's, not a column of the delivery.
+    assert!(
+        sql.contains("SELECT e.outcome FROM source_delivery_event e"),
+        "{sql}"
+    );
 }
 
 #[test]

@@ -265,17 +265,13 @@ fn saved_query_stream_emits_history_records_before_selected_rows() {
     d.pause_signals();
     save(&d.daemon, "stream-focus", "focus", "sessions", false);
     let expected = read(&d.daemon, "query:focus");
-    let request = crate::daemon::service::read::request_of(
-        crate::daemon::verbs::read::arguments(
-            &crate::protocol::steps::ReadStep {
-                delivery: ReadDelivery::Stream,
-                format: Some("jsonl".into()),
-                ..Default::default()
-            },
-            "query:focus".into(),
-        )
-        .unwrap(),
-        None,
+    let request = crate::daemon::verbs::read::request_for(
+        crate::protocol::steps::ReadStep {
+            delivery: ReadDelivery::Stream,
+            format: Some("jsonl".into()),
+            ..Default::default()
+        },
+        "query:focus".into(),
     )
     .unwrap();
     let actor = polylogue_model::authorship::Authorship {

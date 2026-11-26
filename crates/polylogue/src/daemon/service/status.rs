@@ -23,36 +23,63 @@ fn mode(d: &Daemon) -> crate::protocol::status::Mode {
 /// status request reads only memory and never waits for a reader, the
 /// writer's lock or a query whose cost grows with the archive.
 struct Snapshot {
+    read_at: polylogue_model::Timestamp,
     /// The writer's commit count loaded before its reader opened: the
     /// snapshot shows at least those commits.
     commits_read: u64,
     store: Result<polylogue_store::Status, String>,
     notices: Result<crate::protocol::status::Notices, String>,
     running: Result<polylogue_store::RunningCandidates, String>,
+    /// Each subscription limit's current window as of `read_at`.
+    quota: Result<Vec<polylogue_store::measure::quota::CurrentWindow>, String>,
     /// The index's completeness.
     reading: polylogue_store::Result<polylogue_model::freshness::ReadCompleteness>,
 }
 
 impl Snapshot {
     fn read(d: &Daemon, reader: &polylogue_store::Reader<'_>, commits_read: u64) -> Self {
-        let now = d.clock.now_ms();
+        let read_at = d.clock.now();
+        let now = read_at.as_millisecond();
         let reading = reader.completeness(&polylogue_engine::reading_contracts());
         Self {
+            read_at: read_at.into(),
             commits_read,
-            store: reader.status().map_err(|error| error.to_string()),
+            store: reader
+                .status(&polylogue_engine::reading_contracts())
+                .map_err(|error| error.to_string()),
             notices: serde_json::from_value(crate::signals::recent(reader, now))
                 .map_err(|problem| problem.to_string()),
             running: reader
                 .running_candidates(now)
                 .map_err(|error| error.to_string()),
+            quota: polylogue_store::measure::quota::current(
+                reader,
+                now,
+                &crate::daemon::measure::quota_limits(),
+            )
+            .map_err(|error| error.to_string()),
             reading,
         }
     }
 }
 
-/// The latest [`Snapshot`], replaced whole after each commit.
-#[derive(Default)]
-pub(crate) struct StatusSnapshot(std::sync::Mutex<Option<std::sync::Arc<Snapshot>>>);
+/// The latest [`Snapshot`], or since when there is none.
+#[derive(Clone)]
+enum Latest {
+    Read(std::sync::Arc<Snapshot>),
+    NotRead(crate::protocol::status::NotReadSince),
+}
+
+/// The latest snapshot, replaced whole after each commit.
+pub(crate) struct StatusSnapshot(std::sync::Mutex<Latest>);
+
+impl Default for StatusSnapshot {
+    fn default() -> Self {
+        Self(std::sync::Mutex::new(Latest::NotRead(
+            crate::protocol::status::NotReadSince::Start,
+        )))
+    }
+}
 
 impl StatusSnapshot {
     /// Reads a new snapshot from `reader`, opened after the writer had made
@@ -65,14 +92,15 @@ impl StatusSnapshot {
         commits_read: u64,
     ) {
         let snapshot = std::sync::Arc::new(Snapshot::read(d, reader, commits_read));
-        *self.0.locked() = Some(snapshot);
+        *self.0.locked() = Latest::Read(snapshot);
         d.status.changed();
     }
 
-    /// No index can be read (one is being built): status answers from the
-    /// build's progress until the next snapshot.
+    /// No index can be read while one is built: status answers from the
+    /// build's progress, and once it is installed says its figures are not
+    /// read yet until the next snapshot.
     pub(crate) fn clear(&self, d: &Daemon) {
-        *self.0.locked() = None;
+        *self.0.locked() = Latest::NotRead(crate::protocol::status::NotReadSince::Install);
         d.status.changed();
     }
 
@@ -80,16 +108,18 @@ impl StatusSnapshot {
     /// last index build began.
     #[cfg(test)]
     pub(crate) fn is_read(&self) -> bool {
-        self.0.locked().is_some()
+        matches!(*self.0.locked(), Latest::Read(_))
     }
 
-    fn latest(&self) -> Option<std::sync::Arc<Snapshot>> {
+    fn latest(&self) -> Latest {
         self.0.locked().clone()
     }
 }
 
-/// Why status has no snapshot to answer from while no build is running.
-const WARMING: &str = "warming: the archive's status has not been read since the daemon started";
+type Build = (
+    polylogue_store::archive::index_build::IndexBuild,
+    polylogue_store::archive::build_progress::BuildProgress,
+);
 
 /// Status from the latest snapshot and the daemon's own state; degraded
 /// when the index is not current. `vectors` are the counts a deep request
@@ -99,21 +129,45 @@ pub(super) fn answer(
     vectors: Option<Result<polylogue_store::vectors::VectorStatus, String>>,
     whole_log: bool,
 ) -> command_surface::Answer<crate::protocol::status::Answer> {
+    use crate::protocol::status::AnswersFrom;
     // Counted first, so a change while the answer is composed counts after it.
     let changes = d.status.changes();
-    let Some(snapshot) = d.status_snapshot.latest() else {
-        return unread(d, d.archive.index_build(), vectors, whole_log, changes);
+    let build = d.archive.build_progress();
+    // A snapshot from before a build that serves no index is of an index
+    // that can no longer be read.
+    if build.is_some() && !d.archive.index_files().is_ok_and(|files| files.serves()) {
+        return unread(d, AnswersFrom::Build, build, vectors, whole_log, changes);
+    }
+    let snapshot = match d.status_snapshot.latest() {
+        Latest::Read(snapshot) => snapshot,
+        Latest::NotRead(since) => {
+            return unread(
+                d,
+                AnswersFrom::NotReadYet { since },
+                build,
+                vectors,
+                whole_log,
+                changes,
+            );
+        }
     };
     let now = d.clock.now_ms();
     let (store, totals_error) = match &snapshot.store {
         Ok(store) => (Some(store.clone()), None),
         Err(error) => (None, Some(error.clone())),
     };
-    let (vectors, vectors_error) = match vectors {
-        Some(Ok(vectors)) => (Some(vectors), None),
-        Some(Err(error)) => (None, Some(error)),
-        None => (None, None),
+    let (quota, quota_error) = match &snapshot.quota {
+        Ok(windows) => (
+            windows
+                .iter()
+                .cloned()
+                .map(|window| window.at(now))
+                .collect(),
+            None,
+        ),
+        Err(error) => (Vec::new(), Some(error.clone())),
     };
+    let (vectors, vectors_error) = split(vectors);
     let loop_status = d.status.get();
     let signals = d.signals.locked().clone();
     let signals = match serde_json::from_value(signals) {
@@ -143,8 +197,7 @@ pub(super) fn answer(
         Ok(local) => super::state::freshness_of(local.clone()),
         Err(error) => return store_error(error),
     };
-    let index_build = d.archive.index_build();
-    let caught_up = index_build.is_none()
+    let caught_up = build.is_none()
         && !loop_status.busy
         && !freshness.local.background_work_pending()
         && snapshot.commits_read >= d.writes.as_ref().map_or(0, |writes| writes.commits_made());
@@ -158,6 +211,16 @@ pub(super) fn answer(
     if let Some(error) = &totals_error {
         missing.push(format!("archive totals: {error}"));
     }
+    let index = d.archive.index_status().ok();
+    if let Some(failure) = index
+        .as_ref()
+        .and_then(|index| index.install_failure.as_ref())
+    {
+        missing.push(format!("{}: {}", failure.subject, failure.message));
+    }
+    if let Some(error) = &quota_error {
+        missing.push(format!("subscription quota: {error}"));
+    }
     if let Some(error) = &vectors_error {
         missing.push(format!("vector counts: {error}"));
     }
@@ -168,26 +231,32 @@ pub(super) fn answer(
         missing.push(format!("notices: {error}"));
     }
     let threads = polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER);
+    let (index_build, build_progress) = build.unzip();
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
         uptime_seconds: d.started.elapsed().as_secs(),
-        warming: !d.scope.is_loaded(),
+        answers_from: AnswersFrom::Snapshot {
+            read_at: snapshot.read_at,
+        },
         changes,
         caught_up,
         store,
         index_build,
-        build_progress: d.archive.build_progress(),
+        index,
+        build_progress,
         totals_error,
+        quota,
+        quota_error,
         vectors,
         vectors_error,
         verification: None,
         pending_writes: pending_writes(d),
         loop_status,
         signals,
-        notices,
-        running,
-        warm: d.warm.summary(),
+        notices: Some(notices),
+        running: Some(running),
+        warm: d.warm.summary(d.scope.is_loaded()),
         mode: mode(d),
         freshness: freshness.clone(),
         recent_log: recent_log(whole_log),
@@ -242,6 +311,15 @@ pub(super) fn wait(
     }
 }
 
+/// The vector counts a deep request read, or why they could not be read.
+fn split<T>(read: Option<Result<T, String>>) -> (Option<T>, Option<String>) {
+    match read {
+        Some(Ok(value)) => (Some(value), None),
+        Some(Err(error)) => (None, Some(error)),
+        None => (None, None),
+    }
+}
+
 /// The daemon's log records an answer carries.
 fn recent_log(whole: bool) -> Vec<polylogue_store::log::Record> {
     polylogue_store::log::recent(if whole {
@@ -261,13 +339,14 @@ fn capture_note(
     answer
 }
 
-/// Status before any snapshot: while `index.db` is being built and no index
-/// can be read, or before the first snapshot is read. It holds the daemon's
-/// own state and the build's progress and is degraded until a snapshot is
-/// read.
+/// Status without a snapshot: while `index.db` is being built and no index
+/// can be read, or before a snapshot is read since the daemon started or an
+/// index was installed. It holds the daemon's own state and the build's
+/// progress, has no archive figures, and is degraded.
 fn unread(
     d: &Daemon,
-    build: Option<polylogue_store::archive::index_build::IndexBuild>,
+    answers_from: crate::protocol::status::AnswersFrom,
+    build: Option<Build>,
     vectors: Option<Result<polylogue_store::vectors::VectorStatus, String>>,
     whole_log: bool,
     changes: u64,
@@ -275,9 +354,7 @@ fn unread(
     use polylogue_model::freshness::{
         CompletenessDimension, CompletenessReason, IndexFreshness, ReadCompleteness, ReadFreshness,
     };
-    let unread = build
-        .as_ref()
-        .map_or_else(|| WARMING.to_owned(), ToString::to_string);
+    let building = answers_from == crate::protocol::status::AnswersFrom::Build;
     let loop_status = d.status.get();
     let signals = d.signals.locked().clone();
     let signals = match serde_json::from_value(signals) {
@@ -285,64 +362,53 @@ fn unread(
         Err(problem) => return error(polylogue_model::Code::Internal, problem),
     };
     let mode = mode(d);
-    // While warming nothing is known yet; a build names itself, and its
+    // Before a snapshot nothing is known; a build names itself, and its
     // session figures are one of its steps.
-    let (reasons, derivation) = if build.is_some() {
-        (
-            vec![CompletenessReason::IndexBuilding],
-            CompletenessDimension::Incomplete(vec![CompletenessReason::IndexBuilding]),
-        )
-    } else {
-        (Vec::new(), CompletenessDimension::Unknown(Vec::new()))
-    };
-    let dimension = |reasons: Vec<CompletenessReason>| {
-        if build.is_some() {
-            CompletenessDimension::Incomplete(reasons)
+    let dimension = || {
+        if building {
+            CompletenessDimension::Incomplete(vec![CompletenessReason::IndexBuilding])
         } else {
-            CompletenessDimension::Unknown(reasons)
+            CompletenessDimension::Unknown(Vec::new())
         }
     };
     let freshness = ReadFreshness {
         local: ReadCompleteness {
-            parsing: dimension(reasons.clone()),
-            derivation,
-            search: dimension(reasons.clone()),
+            parsing: dimension(),
+            derivation: dimension(),
+            search: dimension(),
             confirmed_stream: CompletenessDimension::NotApplicable,
             kept_chains: 0,
             raw_only_chains: 0,
         },
         sinex: IndexFreshness::Standalone,
     };
-    let (vectors, vectors_error) = match vectors {
-        Some(Ok(vectors)) => (Some(vectors), None),
-        Some(Err(error)) => (None, Some(error)),
-        None => (None, None),
-    };
+    let (vectors, vectors_error) = split(vectors);
+    let words = answers_from.words();
+    let (index_build, build_progress) = build.unzip();
     let threads = polylogue_store::activity::threads(crate::protocol::status::STATEMENTS_AFTER);
     let status = crate::protocol::status::Answer {
         archive: Some(d.archive.root.clone()),
         pid: std::process::id(),
         uptime_seconds: d.started.elapsed().as_secs(),
-        warming: build.is_none(),
+        answers_from,
         changes,
         caught_up: false,
         store: None,
-        index_build: build.clone(),
-        build_progress: d.archive.build_progress(),
-        totals_error: Some(unread.clone()),
+        index_build,
+        index: d.archive.index_status().ok(),
+        build_progress,
+        totals_error: None,
+        quota: Vec::new(),
+        quota_error: None,
         vectors,
         vectors_error,
         verification: None,
         pending_writes: pending_writes(d),
         loop_status,
         signals,
-        notices: crate::protocol::status::Notices::Unavailable {
-            error: unread.clone(),
-        },
-        running: crate::protocol::status::Running::Unavailable {
-            error: unread.clone(),
-        },
-        warm: d.warm.summary(),
+        notices: None,
+        running: None,
+        warm: d.warm.summary(d.scope.is_loaded()),
         mode: mode.clone(),
         freshness: freshness.clone(),
         recent_log: recent_log(whole_log),
@@ -356,9 +422,7 @@ fn unread(
     let mut answer = crate::protocol::read(status, &freshness);
     if let command_surface::Outcome::Degraded { missing, .. } = &mut answer.outcome {
         missing.extend(problems);
-        if build.is_none() {
-            missing.push(unread);
-        }
+        missing.extend(words.map(str::to_owned));
         if let crate::protocol::status::Mode::Blocked { path, error, .. } = &mode {
             missing.push(format!("{}: {error}", path.display()));
         }
@@ -367,16 +431,25 @@ fn unread(
 }
 
 fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
-    let (delivery_outcomes, outcome_error) = d.queued_deliveries.pending_outcomes();
+    let delivery_outcomes = d.writes.as_ref().map_or(0, |writes| {
+        writes
+            .archive()
+            .pending_deliveries()
+            .iter()
+            .filter(|request| {
+                matches!(
+                    request.request.write,
+                    polylogue_model::user::UserWrite::DeliveryEvent { .. }
+                )
+            })
+            .count() as u64
+    });
     let spool = d.live_spool.locked().summary();
     let (live_event_lines, spool_error) = (spool.lines, spool.error);
     crate::protocol::status::PendingWrites {
         delivery_outcomes,
         live_event_lines,
-        last_error: outcome_error
-            .into_iter()
-            .chain(spool_error)
-            .reduce(|left, right| format!("{left}; {right}")),
+        last_error: spool_error,
     }
 }
 

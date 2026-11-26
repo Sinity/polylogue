@@ -108,13 +108,13 @@ fn the_operator_accepts_or_rejects_an_agents_note() {
     let brief = crate::brief::prepare(
         crate::brief::BriefContext {
             reader: &reader,
+            pending_deliveries: &[],
             delivery_id: "d1",
             context: &operation,
             ranking_identity: None,
             near: None,
         },
         &d.daemon.scope,
-        None,
         &[],
         &crate::brief::Ask::SessionStart {
             cwd: "/nonexistent/dir".into(),

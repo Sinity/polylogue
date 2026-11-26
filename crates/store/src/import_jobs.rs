@@ -52,8 +52,8 @@ pub(crate) fn read(conn: &Connection, table_prefix: &str, id: &str) -> Result<Op
     };
     let events = conn
         .prepare_cached(&format!(
-            "SELECT at, kind, by, position, listed, captured, unchanged, failed, detail, request
-             FROM {table_prefix}import_job_event WHERE job = ?1 ORDER BY n"
+            "SELECT at, kind, by, provider_position, listed, captured, unchanged, failed, detail, request
+             FROM {table_prefix}import_job_event WHERE job = ?1 ORDER BY position"
         ))?
         .query_map([id], |r| {
             Ok(ImportJobEvent {
@@ -241,9 +241,9 @@ fn add_event(tx: &Connection, id: &str, e: &ImportJobEvent, seq: i64) -> Result<
     let source = crate::source::Source::of(tx)?;
     tx.execute(
         &source.sql(
-            "INSERT INTO @source.import_job_event(job, n, at, kind, by, position, listed, captured,
+            "INSERT INTO @source.import_job_event(job, position, at, kind, by, provider_position, listed, captured,
              unchanged, failed, detail, request, commit_seq)
-         VALUES (?1, (SELECT COALESCE(max(n), 0) + 1 FROM @source.import_job_event WHERE job = ?1),
+         VALUES (?1, (SELECT COALESCE(max(position), 0) + 1 FROM @source.import_job_event WHERE job = ?1),
                  ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         ),
         params![

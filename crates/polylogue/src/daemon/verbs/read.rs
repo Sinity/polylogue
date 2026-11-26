@@ -1,16 +1,17 @@
-//! `read`: the read operation's body over the line's rows. Its next pages
-//! are `rows` calls, so a reading continues in the grammar it started in.
-use super::{
-    Given, RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use,
-};
+//! `read`: the rows' content, a page at a time, or one checked range of an
+//! attachment's bytes. Its next pages are `rows` calls carrying the same
+//! step with the next cursor, so a reading continues in the grammar it
+//! started in.
+use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, not_built, not_built_use};
+use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
 use crate::daemon::service::Daemon;
 use crate::protocol::line::{Rows, Step, StepAnswer};
 use crate::protocol::steps::ReadStep;
-use command_surface::{Deadline, RunnableRequest};
-use polylogue_model::Reference;
-use polylogue_model::read::{Format, ReadBudget, ReadDelivery, ReadyCall};
+use command_surface::{Answer, Deadline, RunnableRequest};
+use polylogue_model::read::{Format, HeaderKind, ReadBudget, ReadComplete, ReadPage, ReadyCall};
+use polylogue_model::{Reason, Reference};
 use polylogue_reading::{AttachmentPlace, Compile, Error, ReadRequest, ReadServices};
 use polylogue_store::{Reader, WriterSender};
 use std::sync::Arc;
@@ -20,15 +21,14 @@ impl Verb for Read {
     type Step = ReadStep;
     const NAME: &'static str = "read";
     const ROWS: RowRule = RowRule::Any;
+    const ACCESS: ToolAccess = ToolAccess::Read;
     fn run(
         step: ReadStep,
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         if step.follow {
-            return Err(Failure::bad_request(
-                "read --follow streams; it has no single answer",
-            ));
+            return Err(Reason::FollowStreams {}.into());
         }
         if let Given::Reference(Reference::Attachment {
             message,
@@ -38,22 +38,18 @@ impl Verb for Read {
         {
             return bytes(step, message, *block, *attachment, call);
         }
-        let arguments = arguments(&step, target(selection)?)?;
-        let call = Call {
-            cursor: step.cursor.as_deref(),
-            ..call.call.copy()
-        };
-        delegated(
-            crate::daemon::service::read::page(arguments, &call, selection.resolved.as_deref())?,
-            |page| StepAnswer::Read(Box::new(page)),
-        )
+        let displayed = step.displayed;
+        let request = request(step, selection)?;
+        Ok(page(request, displayed, &call.call)?
+            .map(|page| StepAnswer::Read(Box::new(page)))
+            .into())
     }
     fn would(step: &ReadStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
-        arguments(step, String::new())?;
+        check(step)?;
         Ok(format!(
             "would read {} in the {} view",
             selection.described(),
-            step.view
+            step.options.view
         ))
     }
 }
@@ -80,22 +76,21 @@ fn bytes(
         budget: ReadBudget::Default,
         cursor: None,
         displayed: false,
-        delivery: ReadDelivery::Page,
+        delivery: Default::default(),
         ..step
     };
     if rest != ReadStep::default() {
-        return Err(Failure::bad_request(
-            "an attachment reads as its bytes; it takes only --input, --budget, --cursor and --format bytes",
-        ));
+        return Err(Reason::AttachmentReadOptions {}.into());
     }
     if format.as_deref().is_some_and(|format| format != "bytes") {
-        return Err(Failure::bad_value(
-            "an attachment reads only in the bytes format",
-        ));
+        return Err(Reason::AttachmentReadFormat {}.into());
     }
-    let index = |value: u64, key: &str| {
-        usize::try_from(value)
-            .map_err(|_| Failure::bad_value(format!("{key} exceeds address space")))
+    let index = |value: u64, field: &str| {
+        usize::try_from(value).map_err(|_| {
+            Failure::refusal(Reason::TooLarge {
+                field: field.into(),
+            })
+        })
     };
     let length = match budget {
         ReadBudget::Tokens(tokens) => {
@@ -103,20 +98,19 @@ fn bytes(
         }
         ReadBudget::Unlimited | ReadBudget::Default => crate::daemon::attachment::PAGE_BYTES,
     };
-    delegated(
-        crate::daemon::attachment::read(
-            crate::daemon::attachment::Range {
-                message: message.clone(),
-                block: index(block, "block")?,
-                attachment: index(attachment, "attachment")?,
-                input,
-                length,
-                cursor,
-            },
-            call.call.daemon,
-        ),
-        |page| StepAnswer::Attachment(Box::new(page)),
+    Ok(crate::daemon::attachment::read(
+        crate::daemon::attachment::Range {
+            message: message.clone(),
+            block: index(block, "block")?,
+            attachment: index(attachment, "attachment")?,
+            input,
+            length,
+            cursor,
+        },
+        call.call.daemon,
     )
+    .map(|page| StepAnswer::Attachment(Box::new(page)))
+    .into())
 }
 
 /// Base64 carries three bytes in four characters, about one token.
@@ -133,49 +127,38 @@ pub(crate) fn target(selection: &Selection) -> Result<String, Failure> {
     }
     selection
         .query_text()
-        .ok_or_else(|| Failure::bad_request("read needs rows: name a selection"))
+        .ok_or_else(|| Reason::ReadNeedsRows {}.into())
 }
 
-/// The read operation's arguments for a step; an option whose body is not
-/// built yet is refused.
-pub(crate) fn arguments(
-    step: &ReadStep,
-    target: String,
-) -> Result<crate::protocol::read::Arguments, Failure> {
+/// The step's document encoding; an option whose body is not built yet is
+/// refused.
+fn check(step: &ReadStep) -> Result<Option<Format>, Failure> {
     let ReadStep {
-        view,
-        displayed,
-        show,
-        hide,
-        from,
+        displayed: _,
+        options,
         until,
         first,
         last,
-        around,
-        diff,
-        alternate,
         beside,
         blind,
         seed,
-        physical,
-        neutral_names,
         follow: _,
         until_idle,
-        at,
         align,
         format,
-        budget,
+        budget: _,
         cursor: _,
-        delivery,
+        delivery: _,
         input,
     } = step;
     if input.is_some() {
-        return Err(Failure::bad_request(
-            "--input chooses the stored copy of an attachment; read attachment:MESSAGE#BLOCK",
-        ));
+        return Err(Reason::InputNeedsAttachment {}.into());
     }
     for (given, option) in [
-        (from.as_deref().is_some_and(|from| from != "seen"), "from"),
+        (
+            options.from.as_deref().is_some_and(|from| from != "seen"),
+            "from",
+        ),
         (until.is_some(), "until"),
         (first.is_some(), "first"),
         (last.is_some(), "last"),
@@ -189,94 +172,211 @@ pub(crate) fn arguments(
             return Err(not_built("read", option));
         }
     }
-    let format = format
+    options
+        .validate()
+        .map_err(|error| Failure::from(Error::Layout(error)))?;
+    format
         .as_deref()
         .map(|name| {
             Format::parse(name).ok_or_else(|| match name {
                 // Documented formats whose encoders are not built.
                 "citation" | "bytes" => not_built_use("read", &format!("--format {name}")),
-                _ => Failure::bad_value(format!(
-                    "unknown format `{name}`; formats are terminal, markdown, html, json and jsonl"
-                )),
+                _ => Failure::refusal(Reason::UnknownReadFormat {
+                    format: name.into(),
+                }),
             })
         })
-        .transpose()?;
-    Ok(crate::protocol::read::Arguments {
-        target,
-        from: from.clone(),
-        displayed: *displayed,
-        view: *view,
-        format,
-        delivery: *delivery,
-        page_tokens: *budget,
-        show: show.clone(),
-        hide: hide.clone(),
-        output_lines: crate::protocol::read::output_lines(),
-        for_others: *neutral_names,
-        alternate: alternate.iter().cloned().collect(),
-        with_blobs: false,
-        at: at.clone(),
-        diff: diff.clone(),
-        around: *around,
-        latest: false,
-        physical: *physical,
-    })
+        .transpose()
 }
 
-/// The step that asks for the same read again, from `cursor`; the inverse
-/// of [`arguments`] on every option a step carries.
-pub(crate) fn step_of(
-    arguments: crate::protocol::read::Arguments,
-    cursor: Option<String>,
-) -> Result<ReadStep, Failure> {
-    let crate::protocol::read::Arguments {
-        target: _,
-        from,
-        displayed,
-        view,
-        format,
-        delivery,
-        page_tokens,
-        show,
-        hide,
-        output_lines: _,
-        for_others,
-        alternate,
-        with_blobs: _,
-        at,
-        diff,
-        around,
-        latest: _,
-        physical,
-    } = arguments;
-    let alternate = match alternate.as_slice() {
-        [] => None,
-        [alternate] => Some(alternate.clone()),
-        _ if cursor.is_some() => None,
-        _ => {
-            return Err(Failure::bad_request(
-                "a fresh read names one --alternate; a continuation preserves all alternates in its cursor",
-            ));
-        }
-    };
-    Ok(ReadStep {
-        from,
-        displayed,
-        at,
-        view,
-        show,
-        hide,
-        around,
-        diff,
-        alternate,
-        physical,
-        neutral_names: for_others,
-        format: format.map(|format| format.name().to_owned()),
-        budget: page_tokens,
+/// The reading a step asks for over the line's rows.
+pub(crate) fn request(step: ReadStep, selection: &Selection) -> Result<ReadRequest, Failure> {
+    let mut request = request_for(step, target(selection)?)?;
+    request.references = selection.resolved.clone();
+    Ok(request)
+}
+
+/// The reading a step asks for of `target`.
+pub(crate) fn request_for(step: ReadStep, target: String) -> Result<ReadRequest, Failure> {
+    let format = check(&step)?;
+    let mut request = ReadRequest::new(target, step.options);
+    request.delivery = step.delivery;
+    request.format = format.unwrap_or(Format::Json);
+    request.budget = step.budget;
+    request.cursor = step.cursor;
+    Ok(request)
+}
+
+/// The step that reads `request` again from `cursor`: the step it came
+/// from, with the alternates and the time it resolved kept.
+pub(crate) fn step_from(request: &ReadRequest, cursor: Option<String>) -> ReadStep {
+    ReadStep {
+        options: request.options.clone(),
+        format: Some(request.format.name().to_owned()),
+        budget: request.budget,
         cursor,
-        delivery,
+        delivery: request.delivery,
         ..ReadStep::default()
-    })
+    }
+}
+
+/// One page of a read, with ready calls bound to its accepted request; a
+/// page the caller displays advances its seen marks.
+pub(crate) fn page(
+    mut request: ReadRequest,
+    displayed: bool,
+    call: &Call<'_>,
+) -> Result<Answer<ReadPage>, Failure> {
+    let displayed = match call.caller.channel() {
+        polylogue_model::authorship::Channel::Mcp => true,
+        channel => crate::operation::command_line(channel) && displayed,
+    };
+    let history = if request.cursor.is_none() && !polylogue_reading::is_object_read(&request) {
+        call.daemon
+            .writes
+            .as_ref()
+            .map(|writer| writer.archive().reserve_history())
+            .transpose()?
+    } else {
+        None
+    };
+    let reader = call.reader()?;
+    let context = call.context()?;
+    polylogue_reading::resolve_start(&reader, &context, &mut request)
+        .map_err(|error| failure(error, &request))?;
+    let services = &LineReads {
+        daemon: call.daemon,
+        accepted: context.accepted_request(),
+    };
+    let request = polylogue_reading::with_alternates(&reader, services, request.clone())
+        .map_err(|error| failure(error, &request))?;
+    let (page, marks) = polylogue_reading::page(&reader, services, &request, &context, history)
+        .map_err(|error| failure(error, &request))?;
+    if displayed {
+        crate::daemon::seen::record(call.daemon, call.invocation, marks);
+    }
+    let freshness = page.snapshot.freshness.clone();
+    let missing = page.snapshot.incomplete.clone();
+    let empty = page.records.is_empty()
+        && page.document.footer.shown == 0
+        && page.document.footer.coverage.is_empty()
+        && matches!(&page.document.header.kind,
+            HeaderKind::Record { record_type } if record_type == "query");
+    let mut answer = crate::protocol::read(page, &freshness);
+    if !missing.is_empty() {
+        answer.outcome = match answer.outcome {
+            command_surface::Outcome::Ok(value) | command_surface::Outcome::Empty(value) => {
+                command_surface::Outcome::Degraded { value, missing }
+            }
+            command_surface::Outcome::Degraded {
+                value,
+                missing: mut notes,
+            } => {
+                notes.extend(missing);
+                command_surface::Outcome::Degraded {
+                    value,
+                    missing: notes,
+                }
+            }
+            error => error,
+        };
+    } else if empty {
+        if let command_surface::Outcome::Ok(value) = answer.outcome {
+            answer.outcome = command_surface::Outcome::Empty(value);
+        }
+        answer.envelope.notes.push("no rows matched".into());
+    }
+    Ok(answer)
+}
+
+/// A read as a stream of events; `services` make its ready calls.
+pub(crate) fn stream(
+    mut request: ReadRequest,
+    call: &Call<'_>,
+    context: &Arc<polylogue_reading::operation::Context>,
+    output: &mut dyn std::io::Write,
+    services: &impl ReadServices,
+) -> Result<Answer<ReadComplete>, Failure> {
+    crate::daemon::service::accepting(call.daemon)?;
+    let reader = call.reader()?;
+    polylogue_reading::resolve_start(&reader, context, &mut request)
+        .map_err(|error| failure(error, &request))?;
+    let request = polylogue_reading::with_alternates(&reader, services, request.clone())
+        .map_err(|error| failure(error, &request))?;
+    let freshness = services.freshness(&reader)?;
+    let complete = polylogue_reading::stream(&reader, services, &request, context, output)
+        .map_err(|error| failure(error, &request))?;
+    if complete.counts == polylogue_model::bundle::Counts::default()
+        && complete.footer.coverage.is_empty()
+        && freshness.up_to_date()
+    {
+        Ok(Answer::empty(complete))
+    } else {
+        Ok(crate::protocol::read(complete, &freshness))
+    }
+}
+
+/// A stale cursor names the reading to start again, from its beginning,
+/// as a sentence and as a ready call.
+fn failure(error: Error, request: &ReadRequest) -> Failure {
+    let stale = error.code() == polylogue_model::Code::StaleCursor;
+    let mut failure = Failure::from(error);
+    if !stale {
+        return failure;
+    }
+    failure.error.hint = None;
+    if let Some(changed) = failure
+        .error
+        .message
+        .strip_suffix("; run the query again without its cursor")
+    {
+        failure.error.message = changed.to_owned();
+    }
+    let mut target = request.target.clone();
+    if let polylogue_reading::ReadStart::Bound(bound) = &request.start
+        && bound.from_seen
+    {
+        target = if bound.logical {
+            format!("root:{}", bound.session)
+        } else {
+            Reference::Session(bound.session.clone()).to_string()
+        };
+    }
+    let view = match request.options.view {
+        polylogue_model::read::View::Transcript => String::new(),
+        view => format!(" --view {view}"),
+    };
+    failure.error.message.push_str(&format!(
+        "; run `polylogue {} read{view}` again to start over",
+        polylogue_render::shell_quote(&target)
+    ));
+    // "Start over" means the beginning, as the sentence says, not the seen
+    // mark the stale cursor read from.
+    let mut again = step_from(request, None);
+    again.options.from = None;
+    let rows = Rows {
+        selection: Some(target),
+        steps: vec![Step::Read(Box::new(again))],
+        ..Rows::default()
+    };
+    match serde_json::to_value(rows) {
+        Ok(arguments) => {
+            failure.error = failure
+                .error
+                .with_suggestion(command_surface::Suggestion::Request(
+                    crate::client::request(
+                        "rows",
+                        arguments,
+                        polylogue_store::user_writes::new_request_id(),
+                    ),
+                ));
+        }
+        Err(error) => failure
+            .error
+            .message
+            .push_str(&format!("; fresh request options: {error}")),
+    }
+    failure
 }
 
 /// The daemon's read services, whose next pages are `rows` calls.
@@ -310,8 +410,6 @@ impl ReadServices for LineReads<'_> {
         cursor: Option<String>,
         deadline: Deadline,
     ) -> Result<ReadyCall, Error> {
-        let arguments =
-            crate::daemon::service::read::arguments_of(request).map_err(Error::Internal)?;
         let original: Option<Rows> = self
             .accepted
             .filter(|accepted| accepted.operation == "rows")
@@ -326,9 +424,7 @@ impl ReadServices for LineReads<'_> {
                 .as_ref()
                 .map(|references| references.iter().map(ToString::to_string).collect())
                 .unwrap_or_default(),
-            steps: vec![Step::Read(Box::new(
-                step_of(arguments, cursor).map_err(|failure| Error::Operation(failure.error))?,
-            ))],
+            steps: vec![Step::Read(Box::new(step_from(request, cursor)))],
             ..Rows::default()
         };
         let arguments =

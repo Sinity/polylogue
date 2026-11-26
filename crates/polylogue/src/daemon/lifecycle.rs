@@ -12,13 +12,13 @@ use std::{
         net::{SocketAddr, UnixDatagram},
     },
     path::Path,
-    sync::mpsc,
+    sync::{Arc, mpsc},
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     signal::unix::{SignalKind, signal},
-    sync::oneshot,
+    sync::{oneshot, watch},
 };
 
 /// Reports termination even while unwinding; joins keep the result.
@@ -155,6 +155,185 @@ impl Notifications {
         }
         Ok(())
     }
+    /// Sends a status report. Readiness and the watchdog are the sends whose
+    /// failure stops the daemon; a lost report is replaced by the next.
+    fn report(&self, message: &str) {
+        let _ = self.send(message.as_bytes());
+    }
+}
+
+/// How often the supervisor reports a step in progress, and how long a step
+/// runs before each report names it in the journal.
+const REPORT_EVERY: Duration = Duration::from_secs(10);
+/// How long the service manager waits for the next report while the daemon
+/// opens: a long open (a large index to open, many sources to watch) keeps
+/// extending the start timeout, and a process that stops reporting fails it.
+const OPEN_EXTENSION: Duration = Duration::from_secs(60);
+
+/// Opening or stopping, the two phases whose steps are reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Phase {
+    Opening,
+    Stopping,
+}
+impl Phase {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Opening => "opening",
+            Self::Stopping => "stopping",
+        }
+    }
+    fn title(self) -> &'static str {
+        match self {
+            Self::Opening => "Opening",
+            Self::Stopping => "Stopping",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Step {
+    phase: Phase,
+    what: &'static str,
+    since: Instant,
+}
+
+/// The step the daemon is in while it opens or stops. The thread doing the
+/// work sets it ([`Steps`]); the supervisor reports it to the service
+/// manager and, while a step runs long, to the journal.
+#[derive(Clone)]
+pub(crate) struct Progress(Arc<watch::Sender<Option<Step>>>);
+impl Default for Progress {
+    fn default() -> Self {
+        Self(Arc::new(watch::channel(None).0))
+    }
+}
+impl Progress {
+    pub(crate) fn steps(&self, phase: Phase) -> Steps {
+        Steps {
+            progress: self.clone(),
+            phase,
+            current: None,
+        }
+    }
+    fn subscribe(&self) -> watch::Receiver<Option<Step>> {
+        self.0.subscribe()
+    }
+}
+
+/// One phase's steps on the thread running them. Each step's end is logged
+/// with its duration; the step is also what `status` shows the thread doing.
+pub(crate) struct Steps {
+    progress: Progress,
+    phase: Phase,
+    current: Option<(Step, polylogue_store::activity::Doing)>,
+}
+impl Steps {
+    /// Ends the step in progress and starts `what`.
+    pub(crate) fn next(&mut self, what: &'static str) {
+        self.finish();
+        let step = Step {
+            phase: self.phase,
+            what,
+            since: Instant::now(),
+        };
+        self.progress.0.send_replace(Some(step));
+        self.current = Some((step, polylogue_store::activity::doing(what)));
+    }
+    /// Ends the step in progress.
+    pub(crate) fn finish(&mut self) {
+        if let Some((step, _doing)) = self.current.take() {
+            polylogue_store::log!(
+                info,
+                "{}: {} took {}",
+                step.phase.name(),
+                step.what,
+                seconds(step.since.elapsed().as_secs_f64())
+            );
+        }
+    }
+}
+impl Drop for Steps {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+/// Every duration the lifecycle logs, in one format.
+fn seconds(value: f64) -> String {
+    format!("{value:.3} s")
+}
+
+/// The journal line for a step that has run at least [`REPORT_EVERY`]:
+/// the step, how long it has run, and what every busy thread is doing,
+/// which names what the step waits on.
+fn slow_step(
+    step: &Step,
+    now: Instant,
+    threads: &[polylogue_store::activity::Thread],
+) -> Option<String> {
+    let elapsed = now.saturating_duration_since(step.since);
+    if elapsed < REPORT_EVERY {
+        return None;
+    }
+    let mut line = format!(
+        "{}: still {} after {}",
+        step.phase.name(),
+        step.what,
+        seconds(elapsed.as_secs_f64())
+    );
+    let busy: Vec<String> = threads.iter().map(thread_activity).collect();
+    if busy.is_empty() {
+        line.push_str("; no thread reports what it is doing");
+    } else {
+        line.push_str("; waiting on ");
+        line.push_str(&busy.join("; "));
+    }
+    Some(line)
+}
+
+fn thread_activity(thread: &polylogue_store::activity::Thread) -> String {
+    let mut text = format!("{}:", thread.name);
+    if !thread.doing.is_empty() {
+        let doing: Vec<String> = thread
+            .doing
+            .iter()
+            .map(|work| match &work.subject {
+                Some(subject) => format!("{} ({subject})", work.what),
+                None => work.what.clone(),
+            })
+            .collect();
+        text.push_str(&format!(
+            " {} for {}",
+            doing.join(" > "),
+            seconds(thread.doing[0].seconds)
+        ));
+        if let Some(idle) = thread.seconds_since_progress {
+            text.push_str(&format!(", last progress {} ago", seconds(idle)));
+        }
+    }
+    for statement in &thread.statements {
+        text.push_str(&format!(
+            ", running `{}` on the {} for {}",
+            statement.sql,
+            statement.connection,
+            seconds(statement.seconds)
+        ));
+    }
+    text
+}
+
+/// What the service manager shows as the unit's status: the phase and step.
+fn step_status(step: &Step) -> String {
+    format!("STATUS={}: {}", step.phase.title(), step.what)
+}
+
+/// What the service manager shows while the daemon serves.
+fn serving_status(archive: &polylogue_store::Archive) -> String {
+    match archive.index_build() {
+        Some(build) => format!("STATUS=Serving; {build}"),
+        None => "STATUS=Serving".into(),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,10 +389,13 @@ struct Started {
 pub(crate) struct Supervisor {
     started: Option<oneshot::Sender<Started>>,
     thread: Option<JoinHandle<io::Result<()>>>,
+    progress: Progress,
 }
 impl Supervisor {
     pub(crate) fn start(inputs: &Inputs) -> io::Result<Self> {
         let inputs = inputs.clone();
+        let progress = Progress::default();
+        let reported = progress.clone();
         let (started, receive) = oneshot::channel();
         let (ready, ready_receiver) = mpsc::sync_channel(1);
         let thread = polylogue_model::spawn_named("polylogue-lifecycle", move || {
@@ -233,7 +415,13 @@ impl Supervisor {
                     if ready.send(Ok(())).is_err() {
                         return Ok(());
                     }
-                    executor.block_on(supervise(receive, signals, notifications, inputs.watchdog))
+                    executor.block_on(supervise(
+                        receive,
+                        signals,
+                        notifications,
+                        inputs.watchdog,
+                        reported,
+                    ))
                 }
                 Err(error) => {
                     let _ = ready.send(Err(error));
@@ -245,6 +433,7 @@ impl Supervisor {
             Ok(Ok(())) => Ok(Self {
                 started: Some(started),
                 thread: Some(thread),
+                progress,
             }),
             result => {
                 drop(started);
@@ -255,6 +444,10 @@ impl Supervisor {
                 }
             }
         }
+    }
+    /// Where the opening and stopping steps are set for this supervisor to report.
+    pub(crate) fn progress(&self) -> &Progress {
+        &self.progress
     }
     pub(crate) fn run(
         mut self,
@@ -308,17 +501,29 @@ async fn supervise(
     mut signals: Signals,
     notifications: Option<Notifications>,
     watchdog: Option<Duration>,
+    progress: Progress,
 ) -> io::Result<()> {
+    let mut steps = progress.subscribe();
+    let mut reports = tokio::time::interval(REPORT_EVERY);
+    reports.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut first_signal = None;
     let mut app = loop {
         tokio::select! { biased;
             signal = signals.next() => {
                 let signal = signal?;
-                if first_signal.is_some() { std::process::exit(128 + signal.number()); }
+                if first_signal.is_some() { end_at_once(signal, &steps); }
                 polylogue_store::log!(info, "stopping on {}", signal.name());
                 first_signal = Some(signal);
             }
             started = &mut receive => match started { Ok(started) => break started, Err(_) => return Ok(()) },
+            // The first tick is immediate, so the extension precedes any step.
+            _ = reports.tick() => {
+                if let Some(notifications) = &notifications {
+                    notifications.report(&format!("EXTEND_TIMEOUT_USEC={}", OPEN_EXTENSION.as_micros()));
+                }
+                log_slow_step(Phase::Opening, &steps);
+            }
+            _ = steps.changed() => report_step(notifications.as_ref(), Phase::Opening, &mut steps),
         }
     };
     let stop = match app.socket.take_listener_stopped() {
@@ -347,26 +552,73 @@ async fn supervise(
         }
         first_signal = Some(*signal);
     }
-    if let Some(notifications) = &notifications
-        && let Err(error) = notifications.send(b"STOPPING=1")
-    {
-        polylogue_store::log!(error, "service stopping notification: {error}");
+    if let Some(notifications) = &notifications {
+        if let Err(error) = notifications.send(b"STOPPING=1") {
+            polylogue_store::log!(error, "service stopping notification: {error}");
+        }
+        notifications.report("STATUS=Stopping");
     }
+    // An opening step reported after startup ended is not a stopping step.
+    steps.mark_unchanged();
+    reports.reset();
     let mut drained = tokio::task::spawn_blocking(move || drain(app));
     let result = loop {
         tokio::select! { biased;
             signal = signals.next() => {
                 let signal = signal?;
-                if first_signal.is_some() { std::process::exit(128 + signal.number()); }
+                if first_signal.is_some() { end_at_once(signal, &steps); }
                 first_signal = Some(signal);
             }
             result = &mut drained => break result.map_err(|_| io::Error::other("daemon shutdown panicked"))?,
+            _ = steps.changed() => report_step(notifications.as_ref(), Phase::Stopping, &mut steps),
+            _ = reports.tick() => log_slow_step(Phase::Stopping, &steps),
         }
     };
     result?;
     match stop {
         Stop::Failed(error) => Err(error),
         Stop::Signal(_) | Stop::Listener | Stop::Idle => Ok(()),
+    }
+}
+
+/// A second signal ends the process at once; the line says what it cut short.
+fn end_at_once(signal: Signal, steps: &watch::Receiver<Option<Step>>) -> ! {
+    match *steps.borrow() {
+        Some(step) => polylogue_store::log!(
+            warning,
+            "{} again while {} ({}); ending at once",
+            signal.name(),
+            step.phase.name(),
+            step.what
+        ),
+        None => polylogue_store::log!(warning, "{} again; ending at once", signal.name()),
+    }
+    std::process::exit(128 + signal.number());
+}
+
+fn report_step(
+    notifications: Option<&Notifications>,
+    phase: Phase,
+    steps: &mut watch::Receiver<Option<Step>>,
+) {
+    let step = *steps.borrow_and_update();
+    if let Some(notifications) = notifications
+        && let Some(step) = step.filter(|step| step.phase == phase)
+    {
+        notifications.report(&step_status(&step));
+    }
+}
+
+fn log_slow_step(phase: Phase, steps: &watch::Receiver<Option<Step>>) {
+    let step = *steps.borrow();
+    if let Some(step) = step.filter(|step| step.phase == phase)
+        && let Some(line) = slow_step(
+            &step,
+            Instant::now(),
+            &polylogue_store::activity::threads(polylogue_store::activity::SLOW_STATEMENT),
+        )
+    {
+        polylogue_store::log!(warning, "{line}");
     }
 }
 
@@ -389,6 +641,7 @@ async fn monitor(
         return Stop::Failed(io::Error::other(failure));
     }
     if let Some(notifications) = notifications {
+        notifications.report("STATUS=Opening: waiting for the socket to answer");
         let responsive = tokio::select! { biased;
             signal = signals.next() => return signal.map_or_else(Stop::Failed, Stop::Signal),
             _ = &mut *listener_ended => return Stop::Listener,
@@ -409,6 +662,12 @@ async fn monitor(
             return Stop::Failed(error);
         }
     }
+    // The status line follows the index build while the daemon serves.
+    let mut status = notifications.map(|notifications| {
+        let mut ticker = tokio::time::interval(REPORT_EVERY);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        (notifications, ticker, String::new())
+    });
     let mut ticker = watchdog.map(|period| {
         let mut ticker = tokio::time::interval(period / 2);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -431,7 +690,25 @@ async fn monitor(
                 if let Some(failure) = app.runtime.worker_failure() { return Stop::Failed(io::Error::other(failure)); }
                 if responsive && let Some(notifications) = notifications && let Err(error) = notifications.send(b"WATCHDOG=1") { return Stop::Failed(error); }
             }
+            () = report_serving(&mut status, &app.runtime.daemon.archive) => {}
         }
+    }
+}
+
+/// Sends the serving status on each report tick when it changed; pending
+/// forever without a service manager.
+async fn report_serving(
+    status: &mut Option<(&Notifications, tokio::time::Interval, String)>,
+    archive: &polylogue_store::Archive,
+) {
+    let Some((notifications, ticker, sent)) = status else {
+        return pending().await;
+    };
+    ticker.tick().await;
+    let line = serving_status(archive);
+    if *sent != line {
+        notifications.report(&line);
+        *sent = line;
     }
 }
 
@@ -476,41 +753,26 @@ async fn probe(archive: &polylogue_store::Archive, budget: Duration) -> bool {
 }
 
 fn drain(mut app: Started) -> io::Result<()> {
-    let started = std::time::Instant::now();
-    polylogue_store::log!(
-        info,
-        "shutdown started at {} ms since Unix epoch",
-        app.runtime.daemon.clock.now_ms()
-    );
+    let started = Instant::now();
+    let mut steps = app.runtime.progress.steps(Phase::Stopping);
+    steps.next("refusing new requests");
     app.runtime.stop_accepting();
-    polylogue_store::log!(
-        info,
-        "shutdown stopped accepting requests at {:?}",
-        started.elapsed()
-    );
+    steps.next("socket drain");
     let mut failure = app.socket.shutdown().err();
-    polylogue_store::log!(
-        info,
-        "shutdown socket drain finished at {:?}",
-        started.elapsed()
-    );
-    if let Some(web) = &mut app.web
-        && let Err(error) = web.shutdown()
-    {
-        failure.get_or_insert(error);
+    if let Some(web) = &mut app.web {
+        steps.next("HTTP drain");
+        if let Err(error) = web.shutdown() {
+            failure.get_or_insert(error);
+        }
     }
-    polylogue_store::log!(
-        info,
-        "shutdown HTTP drain finished at {:?}",
-        started.elapsed()
-    );
+    steps.finish();
     if let Err(error) = app.runtime.shutdown() {
         failure.get_or_insert(error);
     }
     polylogue_store::log!(
         info,
-        "shutdown runtime drain finished at {:?}",
-        started.elapsed()
+        "stopped in {}",
+        seconds(started.elapsed().as_secs_f64())
     );
     failure.map_or(Ok(()), Err)
 }

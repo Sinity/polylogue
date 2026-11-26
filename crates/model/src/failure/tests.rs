@@ -111,7 +111,7 @@ fn every_reason_has_one_code_and_one_text() {
                 format: "format-x".into(),
             },
             Code::BadValue,
-            "unknown read format `format-x`",
+            "unknown format `format-x`; formats are terminal, markdown, html, json and jsonl",
         ),
         (
             Reason::FromSeenNeedsContentView {},
@@ -144,14 +144,128 @@ fn every_reason_has_one_code_and_one_text() {
             "streaming reads require stream delivery",
         ),
         (
-            Reason::BlobsNeedStream {},
+            Reason::AtNamesAMessage {
+                message: "claude-code:u1".into(),
+                line: "polylogue message:claude-code:u1 read --view context".into(),
+            },
             Code::BadRequest,
-            "with_blobs requires streaming delivery",
+            "--at takes a time or a position, not the message claude-code:u1; select the message: `polylogue message:claude-code:u1 read --view context`",
         ),
         (
-            Reason::TwoMessageAnchors {},
+            Reason::FollowStreams {},
             Code::BadRequest,
-            "context has two different message anchors; select one message",
+            "read --follow streams; it has no single answer",
+        ),
+        (
+            Reason::ReadNeedsRows {},
+            Code::BadRequest,
+            "read needs rows: name a selection",
+        ),
+        (
+            Reason::ListingNeedsSelection {},
+            Code::BadRequest,
+            "a listing needs a selection",
+        ),
+        (
+            Reason::StepNeedsRows {},
+            Code::BadRequest,
+            "this step needs rows",
+        ),
+        (
+            Reason::ActsOnSessions {
+                verb: "send".into(),
+                reference: "page:x".into(),
+            },
+            Code::BadRequest,
+            "send acts on sessions; page:x is not one",
+        ),
+        (
+            Reason::PickOnCommandLine {},
+            Code::BadRequest,
+            "pick runs on the command line; send the chosen references",
+        ),
+        (
+            Reason::BudgetTooLarge { most: 7 },
+            Code::BadValue,
+            "brief --budget exceeds 7",
+        ),
+        (
+            Reason::NotOneSession {
+                text: "latest".into(),
+                rows: 2,
+            },
+            Code::Ambiguous,
+            "\"latest\" names 2 rows, not one session",
+        ),
+        (
+            Reason::MessageNeedsText {},
+            Code::BadRequest,
+            "a message needs text",
+        ),
+        (
+            Reason::StartNeedsHarnessOrRole {},
+            Code::BadRequest,
+            "start takes --in or --role",
+        ),
+        (
+            Reason::RoleRunsAnotherHarness {
+                role: "role-x".into(),
+                runs: "codex".into(),
+                asked: "claude-code".into(),
+            },
+            Code::BadValue,
+            "the role role-x runs codex, not claude-code",
+        ),
+        (
+            Reason::NotADirectory { path: "/x".into() },
+            Code::BadValue,
+            "/x is not a directory",
+        ),
+        (
+            Reason::ResumeInNeedsSession {},
+            Code::BadRequest,
+            "resume --in needs the session whose work it continues",
+        ),
+        (
+            Reason::ResumeOptionsNeedIn {},
+            Code::BadRequest,
+            "resume --at, --cwd and --stop-source apply only with --in HARNESS",
+        ),
+        (
+            Reason::NoHarnessResume {
+                session: "test:x".into(),
+            },
+            Code::BadRequest,
+            "test:x has no harness resume command; use resume --in HARNESS",
+        ),
+        (
+            Reason::ResumeDirectoryUnknown {
+                line: "line-x".into(),
+            },
+            Code::BadRequest,
+            "directory_unknown: the session recorded no directory to resume in; continue with context instead: line-x",
+        ),
+        (
+            Reason::AttachmentReadOptions {},
+            Code::BadRequest,
+            "an attachment reads as its bytes; it takes only --input, --budget, --cursor and --format bytes",
+        ),
+        (
+            Reason::AttachmentReadFormat {},
+            Code::BadValue,
+            "an attachment reads only in the bytes format",
+        ),
+        (
+            Reason::InputNeedsAttachment {},
+            Code::BadRequest,
+            "--input chooses the stored copy of an attachment; read attachment:MESSAGE#BLOCK",
+        ),
+        (
+            Reason::TooLarge {
+                field: "block".into(),
+            },
+            Code::BadValue,
+            "block exceeds address space",
         ),
         (
             Reason::BadTime {

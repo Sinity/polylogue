@@ -174,7 +174,7 @@ fn branches_and_harness_follow_the_options() {
     let shown = visible_entries(
         &segment,
         &ShowProfile::of(&ReadOptions {
-            branches: true,
+            show: vec!["branches".into()],
             ..ReadOptions::default()
         }),
     );
@@ -285,6 +285,19 @@ fn varied_entries() -> Vec<IndexEntry> {
     out
 }
 
+/// The word that asks for `level` of `kind`: a hidden kind is a hide word,
+/// a full one its full level (tool output at its default 100 lines), none
+/// no word.
+fn asked(options: &mut ReadOptions, kind: &str, level: Option<Expansion>) {
+    match level {
+        None => {}
+        Some(Expansion::None) => options.hide.push(kind.into()),
+        Some(Expansion::Collapsed) => options.show.push(format!("{kind}:line")),
+        Some(Expansion::Full) if kind == "tools" => options.show.push("tools:100".into()),
+        Some(Expansion::Full) => options.show.push(format!("{kind}:full")),
+    }
+}
+
 /// Every combination of the options that decide what a reading shows.
 fn every_profile() -> Vec<ShowProfile> {
     let levels = [
@@ -299,14 +312,21 @@ fn every_profile() -> Vec<ShowProfile> {
             for thinking in levels {
                 for harness in levels {
                     for branches in [false, true] {
-                        out.push(ShowProfile::of(&ReadOptions {
+                        let mut options = ReadOptions {
                             view,
-                            tools,
-                            thinking,
-                            harness,
-                            branches,
                             ..ReadOptions::default()
-                        }));
+                        };
+                        for (kind, level) in [
+                            ("tools", tools),
+                            ("thinking", thinking),
+                            ("harness", harness),
+                        ] {
+                            asked(&mut options, kind, level);
+                        }
+                        if branches {
+                            options.show.push("branches".into());
+                        }
+                        out.push(ShowProfile::of(&options));
                     }
                 }
             }
@@ -382,10 +402,8 @@ fn a_hidden_harness_shows_none_of_its_messages_and_a_collapsed_one_a_line() {
     ];
     let entries = entries_of(&messages);
     let shown = |harness| {
-        let options = ReadOptions {
-            harness: Some(harness),
-            ..ReadOptions::default()
-        };
+        let mut options = ReadOptions::default();
+        asked(&mut options, "harness", Some(harness));
         visible_entries(
             &[Segment {
                 entries: &entries,
@@ -426,10 +444,22 @@ fn a_shown_tool_result_costs_its_head_and_tail_lines() {
     let entry = entry_of_one_block(Role::Assistant, None, block);
     assert_eq!((entry.tokens_full, entry.output_lines), (80, 40));
     let cost = |tools, output_lines| {
-        ShowProfile::of(&ReadOptions {
-            tools: Some(tools),
-            output_lines,
-            ..ReadOptions::default()
+        let word = match (tools, output_lines) {
+            (Expansion::Full, 0) => "tools:full".to_owned(),
+            (Expansion::Full, lines) => format!("tools:{lines}"),
+            (Expansion::Collapsed, _) => "tools:line".to_owned(),
+            (Expansion::None, _) => String::new(),
+        };
+        ShowProfile::of(&if word.is_empty() {
+            ReadOptions {
+                hide: vec!["tools".into()],
+                ..ReadOptions::default()
+            }
+        } else {
+            ReadOptions {
+                show: vec![word],
+                ..ReadOptions::default()
+            }
         })
         .cost(&entry)
     };

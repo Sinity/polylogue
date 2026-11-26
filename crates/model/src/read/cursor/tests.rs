@@ -79,6 +79,16 @@ fn a_cursor_names_its_own_reading() {
         cursor.check("session:test:one", "other"),
         Err(CursorError::OtherReading("the reading options differ"))
     );
+    // A digest outside the current domain was written by an earlier build,
+    // which read its options another way.
+    let earlier = PageCursor {
+        digest: blake3::hash(b"{}").to_hex().to_string(),
+        ..cursor.clone()
+    };
+    assert_eq!(
+        earlier.check("session:test:one", &cursor.digest),
+        Err(CursorError::EarlierBuild)
+    );
 }
 
 #[test]

@@ -1,9 +1,8 @@
 use super::*;
-use polylogue_engine::Engine;
 use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
 #[test]
-fn an_older_chain_parse_failure_waits_across_restart_until_the_executable_changes() {
+fn an_older_chain_parse_failure_waits_across_restart_until_the_parser_version_changes() {
     {
         fault::clear();
         let w = ClaudeHome::new();
@@ -38,13 +37,13 @@ fn an_older_chain_parse_failure_waits_across_restart_until_the_executable_change
         assert_eq!(w.texts("history"), ["current sibling"]);
         assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 2);
         assert_eq!(
-            w.count("SELECT count(*) AS n FROM parse_state WHERE status<>'failed'"),
+            w.count("SELECT count(*) AS n FROM parse_state WHERE state<>'failed'"),
             1,
             "failed history is not marked parsed"
         );
         // The failure is the older chain's parse state (docs/archive.md).
         assert_eq!(
-            w.count("SELECT count(*) AS n FROM parse_state WHERE status='failed'"),
+            w.count("SELECT count(*) AS n FROM parse_state WHERE state='failed'"),
             1
         );
         // The fault was one-shot: retry would now succeed, but unchanged
@@ -61,12 +60,7 @@ fn an_older_chain_parse_failure_waits_across_restart_until_the_executable_change
         assert!(unchanged.errors.is_empty(), "{unchanged:?}");
         assert_eq!(unchanged.bytes_read, 0, "{unchanged:?}");
         assert_eq!(w.texts("history"), ["current sibling"]);
-        let config = restarted.config.clone();
-        let archive = restarted.archive.clone();
-        let mut attempt = polylogue_testkit::stopped_attempt();
-        attempt.executable = polylogue_model::BlobHash::of(b"changed historical reader executable");
-        drop(restarted);
-        let mut restarted = Engine::new(config, archive, attempt).unwrap();
+        polylogue_store::fixture::older_reading(&restarted.archive, "claude-code").unwrap();
         let after = restarted.run_pass().unwrap();
         assert!(after.errors.is_empty(), "{:?}", after.errors);
         assert_eq!(after.bytes_stored, 0, "{after:?}");

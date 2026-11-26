@@ -128,7 +128,7 @@ fn withdrawal_names_its_family_and_keeps_facts_readable() {
         .conn()
         .unwrap()
         .query_row(
-            "SELECT ref FROM a.annotation_link WHERE record=?1 AND role='withdraws'",
+            "SELECT ref FROM a.annotation_link WHERE annotation=?1 AND role='withdraws'",
             [&withdrawal.id],
             |row| row.get(0),
         )

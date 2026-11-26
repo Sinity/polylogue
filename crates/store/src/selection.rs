@@ -856,7 +856,7 @@ pub(crate) fn kept_results_named<'a>(
         return Ok(BTreeMap::new());
     }
     let sql = source.sql(&kept_sql(
-        "SELECT id,rows_json FROM @source.kept_result WHERE id IN (SELECT value FROM json_each(?1))",
+        "SELECT id,rows_json FROM @source.saved_rows WHERE id IN (SELECT value FROM json_each(?1))",
     ));
     let mut statement = conn.prepare_cached(&sql)?;
     decode_kept(statement.query([serde_json::to_string(&ids)?])?).map_err(|error| match error {
