@@ -54,7 +54,7 @@ impl ChainRows {
         let row = self
             .conn
             .prepare_cached(
-                "SELECT message_id,source_start,source_end FROM message_parse
+                "SELECT message_id,source_start,source_start+source_length FROM message_parse
                  WHERE input_pk=?1 AND chain=?2 AND response_key=?3 AND session_id=?4
                  ORDER BY source_start LIMIT 1",
             )?

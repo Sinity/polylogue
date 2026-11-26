@@ -1,6 +1,6 @@
 //! A session's own columns (kind, title, working directories, branch,
 //! tool version, start, repository named by its records) from the facts
-//! every input states about it (`session_record`), by rules that depend on
+//! every input states about it (`session_parse`), by rules that depend on
 //! the records and their times, never on which input arrived first:
 //!
 //! - an input's time is the span of the messages it holds for the session
@@ -110,7 +110,7 @@ pub(super) fn compute(conn: &Connection, session_pk: i64, out: &mut Output) -> R
     let spans = out.inputs.clone().unwrap_or_default();
     let mut statement = conn.prepare_cached(
         "SELECT r.input_pk, r.facts
-         FROM session_stated x JOIN session_record r ON r.session_id = x.stated_id
+         FROM session_stated x JOIN session_parse r ON r.session_id = x.stated_id
          WHERE x.session_pk = ?1 ORDER BY r.input_pk, r.chain",
     )?;
     let mut rows = statement.query([session_pk])?;
