@@ -635,6 +635,18 @@ fn every_reason_has_one_code_and_one_text() {
             "the note may or may not be saved; retry it with the same ID",
         ),
         (
+            Reason::NativeVersionMismatch { version: Some(1) },
+            Code::Refused,
+            "the browser host needs version 2; reload the extension",
+        ),
+        (
+            Reason::NativeMessageInvalid {
+                problem: "problem-x".into(),
+            },
+            Code::BadRequest,
+            "the browser message is invalid: problem-x",
+        ),
+        (
             Reason::CaptureNotJson {},
             Code::BadRequest,
             "a capture is one JSON object",

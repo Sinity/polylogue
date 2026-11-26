@@ -314,7 +314,12 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     assert_eq!(held["status"], "awaiting_approval");
     let held_id = held["id"].as_str().unwrap().to_owned();
     // The popup lists what waits for the operator from the unit `chat_actions`.
-    let listed = call(&host, "rows", json!({"selection":"chat_actions"})).json();
+    let listed = call(
+        &host,
+        "rows",
+        json!({"selection":"chat_actions where state:awaiting_approval"}),
+    )
+    .json();
     assert_eq!(
         listed["reply"]["rows"].as_array().unwrap().len(),
         1,
@@ -355,7 +360,12 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     assert_eq!(v["enabled"], false);
     w.set("browser.actions", "on");
     assert_eq!(claim("tab-a")["action"]["id"], held_id.as_str());
-    let listed = call(&host, "rows", json!({"selection":"chat_actions"})).json();
+    let listed = call(
+        &host,
+        "rows",
+        json!({"selection":"chat_actions where state:awaiting_approval"}),
+    )
+    .json();
     assert_eq!(listed["reply"]["rows"], json!([]));
 }
 
