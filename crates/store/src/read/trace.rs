@@ -45,6 +45,36 @@ row! {
 }
 
 impl Reader<'_> {
+    /// The other chains of `input` that hold a record of chain `chain`
+    /// ending at `end`: those the archive records agree with it through
+    /// that byte (docs/archive.md, readings), in chain order. A chain that
+    /// begins like no earlier one and that none begins like agrees with
+    /// none.
+    pub(crate) fn chains_holding(&self, input: &str, chain: i64, end: u64) -> Result<Vec<i64>> {
+        let conn = self.conn()?;
+        let chains = crate::archive::writer::agreement::recorded(conn, input)?;
+        if chains
+            .0
+            .values()
+            .all(|agreement| agreement.begins_like.is_none())
+        {
+            return Ok(Vec::new());
+        }
+        let numbers: Vec<i64> = conn.values(
+            "SELECT DISTINCT chain FROM source_revision WHERE input=?1 ORDER BY chain",
+            [input],
+        )?;
+        Ok(numbers
+            .into_iter()
+            .filter(|other| {
+                *other != chain
+                    && chains
+                        .known(*other, chain)
+                        .is_some_and(|known| known >= end)
+            })
+            .collect())
+    }
+
     /// The concrete message containing a traceable item. Unsupported families
     /// remain outside this API rather than masquerading as missing records.
     fn trace_message(&self, reference: &Reference) -> Result<Option<MessageId>> {
@@ -119,6 +149,12 @@ impl Reader<'_> {
                 reason: "record source is unavailable".into(),
             });
         }
+        // Chains with their own row are traced through it; the others that
+        // hold the record are found from the recorded agreements.
+        let own: std::collections::BTreeSet<(String, i64)> = sources
+            .iter()
+            .map(|source| (source.input.clone(), source.chain))
+            .collect();
         for TraceSource {
             input,
             chain,
@@ -135,21 +171,34 @@ impl Reader<'_> {
                     "record source byte end precedes its start",
                 ));
             }
-            card.chain.push(ChainStep::InputRecord {
-                input: input.clone(),
-                chain,
-                start,
-                end,
-                route,
-                shown,
-            });
-            if end == start {
-                card.chain.push(ChainStep::Unavailable {
-                    reason: format!("record byte end is not recorded for {input} chain {chain}"),
+            let mut holders = vec![(chain, shown)];
+            holders.extend(
+                self.chains_holding(&input, chain, end)?
+                    .into_iter()
+                    .filter(|other| !own.contains(&(input.clone(), *other)))
+                    .map(|other| (other, false)),
+            );
+            for (holder, shown) in holders {
+                card.chain.push(ChainStep::InputRecord {
+                    input: input.clone(),
+                    chain: holder,
+                    start,
+                    end,
+                    route,
+                    shown,
                 });
-            } else {
-                self.check_bytes_present(&input, chain, start..end)?;
-                for extent in conn.all(&TraceExtent::COVERING, params![input, chain, end, start])? {
+                if end == start {
+                    card.chain.push(ChainStep::Unavailable {
+                        reason: format!(
+                            "record byte end is not recorded for {input} chain {holder}"
+                        ),
+                    });
+                    continue;
+                }
+                self.check_bytes_present(&input, holder, start..end)?;
+                for extent in
+                    conn.all(&TraceExtent::COVERING, params![input, holder, end, start])?
+                {
                     card.chain.push(ChainStep::StoredBytes {
                         blob: polylogue_model::BlobHash(extent.blob),
                         size: extent.size,

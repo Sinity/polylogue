@@ -970,15 +970,39 @@ fn notes_withdrawn(a: &Aliases) -> String {
 
 pub use crate::annotations::sql::{current_annotation, withdrawn_annotation};
 
-/// When Polylogue first had message `m`'s bytes: the earliest time a
-/// revision long enough to cover its records was read, over every chain
-/// whose records hold a version of it.
+/// When Polylogue first had the record of chain `chain` of input `input`
+/// from byte `start` to `end`: the earliest time a revision long enough to
+/// cover it was read, over the chains the archive records agree with that
+/// chain through `end` (docs/archive.md, readings). Those chains form one
+/// part of the input's tree of agreements, whose top is the oldest of them
+/// and had the bytes before any other was stored, so the walk climbs from
+/// the chain to that top, one key lookup a step, and reads only its
+/// revisions.
+pub fn record_first_seen(input: &str, chain: &str, start: &str, end: &str) -> String {
+    format!(
+        "(WITH RECURSIVE held(chain, depth) AS (SELECT {chain}, 0 \
+           UNION ALL SELECT hc.begins_like, held.depth + 1 FROM held \
+             JOIN source_chain hc ON hc.input = {input} AND hc.number = held.chain \
+             WHERE hc.begins_like IS NOT NULL AND hc.agrees_to >= {end}), \
+         top(chain) AS MATERIALIZED (SELECT chain FROM held ORDER BY depth DESC LIMIT 1) \
+         SELECT min(hr.seen_at) FROM top CROSS JOIN source_revision hr \
+         WHERE hr.input = {input} AND hr.chain = top.chain \
+           AND hr.length > {start} AND hr.length >= {end})"
+    )
+}
+
+/// When Polylogue first had message `m`'s bytes: the earliest over every
+/// reading that holds a version of it.
 pub fn first_seen_of(m: &str) -> String {
     format!(
-        "(SELECT min(fr.seen_at) FROM shown_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
-         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
-         AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
-         WHERE fs.message_pk = {m}.pk)"
+        "(SELECT min({seen}) FROM shown_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
+         WHERE fs.message_pk = {m}.pk)",
+        seen = record_first_seen(
+            "fi.id",
+            "fs.chain",
+            "fs.source_start",
+            "fs.source_start + fs.source_length"
+        )
     )
 }
 
@@ -1001,23 +1025,30 @@ fn message_first_seen(a: &Aliases) -> String {
 
 fn session_first_seen(a: &Aliases) -> String {
     format!(
-        "(SELECT min(fr.seen_at) FROM message fm JOIN shown_message_parse fs ON fs.message_pk = fm.pk \
-         JOIN input_ref fi ON fi.pk = fs.input_pk \
-         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
-         AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
-         WHERE fm.session_pk = {}.pk)",
-        a.s
+        "(SELECT min({seen}) FROM message fm JOIN shown_message_parse fs ON fs.message_pk = fm.pk \
+         JOIN input_ref fi ON fi.pk = fs.input_pk WHERE fm.session_pk = {}.pk)",
+        a.s,
+        seen = record_first_seen(
+            "fi.id",
+            "fs.chain",
+            "fs.source_start",
+            "fs.source_start + fs.source_length"
+        )
     )
 }
 
-/// An event's first observation, as for a message, over its one chain.
+/// An event's first observation, as for a message, over its chain and the
+/// chains that hold its record.
 pub fn event_first_seen(a: &Aliases) -> String {
     format!(
-        "(SELECT min(fr.seen_at) FROM input_ref fi \
-         JOIN source_revision fr ON fr.input = fi.id AND fr.chain = {r}.source_chain \
-         AND fr.length > {r}.source_start AND fr.length >= coalesce({r}.source_end, {r}.source_start) \
-         WHERE fi.pk = {r}.input_pk)",
-        r = a.row
+        "(SELECT {seen} FROM input_ref fi WHERE fi.pk = {r}.input_pk)",
+        r = a.row,
+        seen = record_first_seen(
+            "fi.id",
+            &format!("{}.source_chain", a.row),
+            &format!("{}.source_start", a.row),
+            &format!("coalesce({r}.source_end, {r}.source_start)", r = a.row)
+        )
     )
 }
 
@@ -1026,6 +1057,16 @@ pub fn hidden(s: &str) -> String {
     format!(
         "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.annotation = hn.id AND ht.role = 'about' \
          WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
+        current_annotation("hn")
+    )
+}
+
+/// The IDs of the hidden sessions, read from their annotations: the few
+/// sessions [`hidden`] holds for, without visiting every session.
+pub fn hidden_session_ids() -> String {
+    format!(
+        "SELECT substr(ht.ref, 9) FROM source_annotation hn JOIN source_annotation_link ht ON ht.annotation = hn.id AND ht.role = 'about' \
+         WHERE hn.kind = 'hidden' AND ht.ref LIKE 'session:%' AND {}",
         current_annotation("hn")
     )
 }

@@ -125,9 +125,11 @@ impl ChainState {
 pub struct ChainFacts {
     /// The chain's stored length.
     pub stored: u64,
-    /// A newer chain of the input known to begin with all of this one.
+    /// A newer chain of the input known, from the agreement the archive
+    /// records, to begin with all of this one.
     pub repeated_by: Option<i64>,
-    /// Records ending at or before this byte are a newer chain's.
+    /// Records ending at or before this byte are a newer chain's: the most
+    /// any newer chain of the input is known to agree with this one.
     pub own_from: u64,
     /// The parser version of the chain's origin; `None`: it has no parser.
     pub parser: Option<String>,
@@ -146,19 +148,15 @@ pub enum Due {
     },
     /// Parse from the first byte and replace the parse whole.
     Whole,
-    /// A newer chain repeats it: its parse goes.
-    Remove,
 }
 
 /// The one answer to whether a chain is due. A chain is read when its
 /// stored length or its parser's version differs from what its state
-/// names, and for no other cause; a repeated chain has no parse.
+/// names, and for no other cause. A repeated chain is never read: the
+/// transaction that gives the newer chain its rows removes its parse.
 pub fn due(state: &ChainState, facts: &ChainFacts) -> Due {
     if facts.repeated_by.is_some() {
-        return match state {
-            ChainState::Unparsed => Due::No,
-            _ => Due::Remove,
-        };
+        return Due::No;
     }
     let Some(parser) = facts.parser.as_deref() else {
         return Due::No;
@@ -176,11 +174,13 @@ pub fn due(state: &ChainState, facts: &ChainFacts) -> Due {
         {
             Due::No
         }
+        // A chain newer ones agree with is read whole, so its rows are those
+        // a whole parse holds less the newer chains' part.
         ChainState::Parsed {
             parsed_to,
             resume: Some(_),
             ..
-        } if *parsed_to <= facts.stored => Due::Extend { from: *parsed_to },
+        } if *parsed_to <= facts.stored && facts.own_from == 0 => Due::Extend { from: *parsed_to },
         _ => Due::Whole,
     }
 }

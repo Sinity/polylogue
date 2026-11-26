@@ -28,7 +28,7 @@ pub(super) struct StepWrite<'a> {
 pub(super) fn write_step(
     tx: &Transaction<'_>,
     b: &Batch,
-    p: &ParseStep,
+    p: &ParsePart,
     w: StepWrite<'_>,
     touched: &mut Touched,
 ) -> Result<()> {
@@ -120,6 +120,18 @@ pub(super) fn write_step(
             ])?;
         }
     }
+    super::repeated::follow(
+        tx,
+        w.changes,
+        &b.input.id,
+        input_pk,
+        chain,
+        super::repeated::Seen {
+            from: if p.reset { 0 } else { previous.seen_to() },
+            to: next.seen_to(),
+        },
+        touched,
+    )?;
     Ok(())
 }
 
@@ -155,7 +167,7 @@ pub(super) fn finish_summaries(
     changes.finish_links(tx)
 }
 
-fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {
+fn validate_range(batch: &Batch, step: &ParsePart) -> Result<()> {
     if step.start > step.parsed_upto
         || step.parsed_upto > batch.length
         || i64::try_from(batch.length).is_err()

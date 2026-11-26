@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{ClaudeHome, claude_assistant, claude_user};
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::sync::Arc;
@@ -178,4 +178,117 @@ fn check_reopened_archive(fail: bool) {
             "{point}: uninterrupted view"
         );
     }
+}
+
+/// The totals `status` reports, which come from the rows and from no
+/// counter of their own.
+fn totals(w: &ClaudeHome) -> (u64, u64, u64, u64, std::collections::BTreeMap<String, u64>) {
+    let status = w.read(|reader| reader.status(&polylogue_engine::reading_contracts()));
+    (
+        status.sessions,
+        status.messages,
+        status.documents,
+        status.tool_calls,
+        status.parse_states,
+    )
+}
+
+/// A file read once, then rewritten so that it repeats the first version's
+/// first records and differs after them: the pass that reads the rewrite
+/// trims the older version in its index transaction.
+fn rewritten(w: &ClaudeHome) {
+    let first = claude_user("one", "same", "shared first prompt")
+        + &claude_assistant("two", "same", "first answer");
+    w.append("same.jsonl", &first);
+    let (mut engine, _lock) = w.engine(64 << 20);
+    assert_eq!(engine.run_pass().unwrap().errors, []);
+    drop(engine);
+    fs::write(
+        w.file("same.jsonl"),
+        claude_user("one", "same", "shared first prompt")
+            + &claude_assistant("three", "same", "edited answer"),
+    )
+    .unwrap();
+}
+
+/// The process is killed at `point` while it reads the rewrite; a restart
+/// ends with the index tables a rebuild of the same archive holds, which
+/// are those of an uninterrupted run (docs/architecture.md, durability).
+fn killed_and_restarted(point: &str) {
+    fault::clear();
+    let w = ClaudeHome::new();
+    rewritten(&w);
+    let before = totals(&w);
+    interrupt_write(&w, point, false);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert_eq!(engine.run_pass().unwrap().errors, [], "{point}");
+    }
+    assert_eq!(
+        w.count("SELECT count(*) AS n FROM parse_state"),
+        2,
+        "{point}"
+    );
+    let restarted = crate::tables::dump(&w);
+    let restarted_totals = totals(&w);
+    assert_ne!(restarted_totals, before, "{point}: the rewrite was read");
+    polylogue_testkit::delete_index(&w.root);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert_eq!(engine.run_pass().unwrap().errors, [], "{point}");
+    }
+    let differ = crate::tables::differences(&restarted, &crate::tables::dump(&w));
+    assert!(differ.is_empty(), "{point}: {differ}");
+    assert_eq!(totals(&w), restarted_totals, "{point}");
+}
+
+#[test]
+fn a_kill_between_the_archive_commit_and_the_index_commit_ends_as_a_rebuild() {
+    killed_and_restarted("capture.after_commit");
+}
+
+/// The transaction that gives the rewrite its rows also takes the older
+/// version's shared records from it; a kill before it commits leaves both
+/// as they were.
+#[test]
+fn a_kill_inside_the_index_transaction_that_trims_ends_as_a_rebuild() {
+    killed_and_restarted("write.index_commit");
+}
+
+/// No count is kept beside the rows, so a writer killed inside its index
+/// transaction leaves nothing to recompute: at the next start status
+/// reports what it reported before the transaction, and after the pass
+/// what a rebuild reports.
+#[test]
+fn status_is_correct_after_a_writer_killed_mid_transaction() {
+    fault::clear();
+    let w = ClaudeHome::new();
+    w.append("first.jsonl", &claude_user("one", "first", "first body"));
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert_eq!(engine.run_pass().unwrap().errors, []);
+    }
+    let before = totals(&w);
+    w.append("second.jsonl", &claude_user("two", "second", "second body"));
+    interrupt_write(&w, "write.index_commit", false);
+    // Opening reads nothing again and changes no row.
+    let (mut engine, lock) = w.engine(64 << 20);
+    let (sessions, messages, documents, tool_calls, mut states) = totals(&w);
+    // The new file's chain is stored and due; nothing else moved.
+    assert_eq!(states.remove("parsing"), Some(1));
+    let (b_sessions, b_messages, b_documents, b_tool_calls, b_states) = before.clone();
+    assert_eq!(
+        (sessions, messages, documents, tool_calls, states),
+        (b_sessions, b_messages, b_documents, b_tool_calls, b_states)
+    );
+    assert_eq!(engine.run_pass().unwrap().errors, []);
+    drop((engine, lock));
+    let after = totals(&w);
+    assert_eq!(after.0, 2);
+    polylogue_testkit::delete_index(&w.root);
+    {
+        let (mut engine, _lock) = w.engine(64 << 20);
+        assert_eq!(engine.run_pass().unwrap().errors, []);
+    }
+    assert_eq!(totals(&w), after);
 }

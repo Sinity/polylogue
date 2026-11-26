@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    Archive, ArchiveLock, Batch, Change, ImportMember, InputKey, Observation, ParseStep, ReadPool,
+    Archive, ArchiveLock, Batch, Change, ImportMember, InputKey, Observation, ParsePart, ReadPool,
     Writer,
     assets::AssetRow,
     capture_read::{CaptureRead, RawRange, ReadRoute, SourceSelector},
@@ -69,7 +69,7 @@ impl Fixture {
             ..Default::default()
         };
         counts.add("message", &RecordOutcome::Used);
-        let mut step = ParseStep::new(
+        let mut step = ParsePart::new(
             Output {
                 sessions: vec![Session::new(
                     record.message.session.clone(),

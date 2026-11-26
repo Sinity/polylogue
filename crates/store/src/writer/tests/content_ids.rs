@@ -26,10 +26,15 @@ fn chunks(rows: &[(&str, &str)]) -> Vec<MessageRow> {
 
 fn store(w: &TestArchive, rows: Vec<MessageRow>, rewritten: bool) {
     let mut b = batch("prompt", Route::Live, 0, rows, &["s"]);
-    if rewritten {
+    // A rewrite's bytes differ from the first version's from its first
+    // byte: bytes alike would read alike (docs/archive.md, readings).
+    let bytes = if rewritten {
         b.change = Change::Rewritten;
-    }
-    w.store_reading(b, Some(&SOURCE_RECORD)).unwrap();
+        [b'w'; 100]
+    } else {
+        SOURCE_RECORD
+    };
+    w.store_reading(b, Some(&bytes)).unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
 }
 

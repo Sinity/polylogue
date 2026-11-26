@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Batch, Change, ParseStep, ReadPool, Writer, staging::PreparedBatch};
+use crate::{Batch, Change, ParsePart, ReadPool, Writer, staging::PreparedBatch};
 
 struct Test {
     dir: tempfile::TempDir,
@@ -61,7 +61,7 @@ impl Test {
                 let first = length == 0;
                 let from = length;
                 length += bytes.len() as u64;
-                let mut parse = ParseStep::new(
+                let mut parse = ParsePart::new(
                     polylogue_model::Output::default(),
                     polylogue_model::RecordCounts::default(),
                     from..length,

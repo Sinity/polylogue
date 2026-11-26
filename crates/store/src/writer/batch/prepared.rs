@@ -11,6 +11,9 @@ pub(crate) struct PreparedRows {
     pub(in crate::writer) events: Vec<crate::encoding::PreparedEvent>,
     /// The groups holding the messages' and events' content.
     pub(in crate::writer) content: crate::content::Groups,
+    /// What the summaries read of each message and event, parallel to them.
+    pub(crate) heads: Vec<crate::parse::head::MessageHead>,
+    pub(crate) event_heads: Vec<crate::parse::head::EventHead>,
     pub(in crate::writer) released: bool,
 }
 
@@ -147,7 +150,7 @@ impl PreparedRows {
     }
 }
 
-impl ParseStep {
+impl ParsePart {
     /// Packs complete rows off the writer thread. A second call keeps the
     /// original hashes and payloads, which parsed values no longer contain.
     pub fn prepare(&mut self) {
@@ -228,6 +231,18 @@ impl ParseStep {
         ) else {
             return;
         };
+        let heads = self
+            .output
+            .messages
+            .iter()
+            .map(|r| crate::parse::head::message_head(&r.message))
+            .collect();
+        let event_heads = self
+            .output
+            .events
+            .iter()
+            .map(crate::parse::head::event_head)
+            .collect();
         self.prepared = PreparedRows {
             messages,
             documents,
@@ -235,6 +250,8 @@ impl ParseStep {
             texts,
             events,
             content,
+            heads,
+            event_heads,
             released: true,
         };
         for blocks in self
@@ -271,7 +288,7 @@ impl ParseStep {
         }
     }
 }
-impl ParseStep {
+impl ParsePart {
     pub(in crate::writer) fn message_position(&self, index: usize) -> Result<Option<i64>> {
         let order =
             match self.output.message_order.get(&index) {
@@ -295,7 +312,7 @@ impl ParseStep {
     }
 }
 
-impl ParseStep {
+impl ParsePart {
     /// Restores complete domain rows from the worker's codecs.
     pub fn complete_output(&self) -> Result<Output> {
         self.prepared.validate(&self.output)?;
@@ -318,7 +335,7 @@ impl ParseStep {
         Ok(output)
     }
 }
-impl ParseStep {
+impl ParsePart {
     /// An event about its input, not a session, is that input's record: it
     /// has the record's byte range and follows no message.
     pub(crate) fn check_events(&self, input: &str) -> Result<()> {

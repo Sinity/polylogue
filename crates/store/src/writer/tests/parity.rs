@@ -40,8 +40,12 @@ enum Row {
 struct Input {
     route: Route,
     records: Vec<Row>,
-    /// A later chain of the input: the file rewritten with these records.
+    /// A later chain of the input: the file rewritten with these records,
+    /// of which the first `shared` are the first chain's, byte for byte (a
+    /// rewrite that repeats a prefix, repeats it whole, or repeats it and
+    /// then differs).
     rewrite: Option<Vec<Row>>,
+    shared: usize,
 }
 
 impl Input {
@@ -94,13 +98,26 @@ fn input() -> impl Strategy<Value = Input> {
     (
         route(),
         prop::collection::vec(row(), 1..6),
-        prop::option::weighted(0.3, prop::collection::vec(row(), 1..4)),
+        prop::option::weighted(0.5, prop::collection::vec(row(), 0..4)),
+        0usize..7,
     )
-        .prop_map(|(route, records, rewrite)| Input {
-            route,
+        .prop_map(|(route, records, rewrite, shared)| {
             // An imported file is one commit of one chain.
-            rewrite: rewrite.filter(|_| !route.is_imported()),
-            records,
+            let rewrite = rewrite.filter(|_| !route.is_imported());
+            let shared = if rewrite.is_some() {
+                shared.min(records.len())
+            } else {
+                0
+            };
+            let rewrite = rewrite
+                .map(|own| [&records[..shared], &own[..]].concat())
+                .filter(|rows| !rows.is_empty());
+            Input {
+                route,
+                shared: if rewrite.is_some() { shared } else { 0 },
+                rewrite,
+                records,
+            }
         })
 }
 
@@ -117,14 +134,21 @@ fn input_id(n: usize, input: &Input) -> String {
 }
 
 fn input_bytes(n: usize, records: usize) -> Vec<u8> {
-    chain_bytes(n, 0, records)
+    chain_bytes(n, 0, records, 0)
 }
 
-/// A chain's bytes; a rewrite differs from the first chain at its first byte.
-fn chain_bytes(n: usize, chain: usize, records: usize) -> Vec<u8> {
-    let n = n + 13 * chain;
+/// A chain's bytes; a rewrite holds the first chain's bytes for its first
+/// `shared` records and differs from it at every byte after them.
+fn chain_bytes(n: usize, chain: usize, records: usize, shared: usize) -> Vec<u8> {
     (0..records as u64 * RECORD)
-        .map(|i| b'a' + ((i as usize + n) % 26) as u8)
+        .map(|i| {
+            let shift = if i < shared as u64 * RECORD {
+                0
+            } else {
+                13 * chain
+            };
+            b'a' + ((i as usize + n + shift) % 26) as u8
+        })
         .collect()
 }
 
@@ -327,7 +351,7 @@ fn step(n: usize, input: &Input, chain: usize, from: usize, to: usize) -> Batch 
     }
     output.sessions = sessions.into_values().collect();
     let records = (to - from) as u64;
-    let mut step = ParseStep::new(
+    let mut step = ParsePart::new(
         output,
         counts(records),
         from as u64 * RECORD..to as u64 * RECORD,
@@ -352,7 +376,8 @@ fn stored_step(
     to: usize,
 ) -> crate::staging::PreparedBatch {
     let mut batch = step(n, input, chain, from, to);
-    let bytes = chain_bytes(n, chain, input.chain(chain).len());
+    let shared = if chain > 0 { input.shared } else { 0 };
+    let bytes = chain_bytes(n, chain, input.chain(chain).len(), shared);
     let range = &bytes[from * RECORD as usize..to * RECORD as usize];
     let (blob, file) = w.archive.prepare_blob(range).unwrap();
     batch.new_blob = Some(blob);
@@ -572,10 +597,10 @@ fn build_from_record(
         let mut open = runs[i % 2]
             .begin(&sender, &batch.input, stored, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+        for step in std::mem::take(&mut batch.parse) {
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     let paths = runs
         .into_iter()
@@ -689,6 +714,7 @@ fn a_reading_two_sessions_state_is_built_once() {
             Row::Quota { session, version },
         ],
         rewrite: None,
+        shared: 0,
     };
     let inputs = vec![input(0, 0), input(1, 1)];
     let expected = reference(&inputs, &[true; 8], &[0; 6]);
@@ -717,6 +743,7 @@ fn both_prompts_in_one_batch_move_the_copy_and_its_links_back() {
             Row::Copy { n: 1, version: 1 },
         ],
         rewrite: None,
+        shared: 0,
     };
     let first = Input {
         route: Route::Capture,
@@ -729,6 +756,7 @@ fn both_prompts_in_one_batch_move_the_copy_and_its_links_back() {
             },
         ],
         rewrite: None,
+        shared: 0,
     };
     let second = Input {
         route: Route::Capture,
@@ -741,6 +769,7 @@ fn both_prompts_in_one_batch_move_the_copy_and_its_links_back() {
             },
         ],
         rewrite: None,
+        shared: 0,
     };
     let link = Input {
         route: Route::Live,
@@ -749,6 +778,7 @@ fn both_prompts_in_one_batch_move_the_copy_and_its_links_back() {
             child: 0,
         }],
         rewrite: None,
+        shared: 0,
     };
     let inputs = vec![copy, first, second, link];
     let together = reference(&inputs, &[true; 8], &[0, 1, 0, 0, 0, 0]);
@@ -787,6 +817,7 @@ fn an_absent_parent_reads_unresolved_and_its_arrival_writes_nothing_into_the_chi
             parent: Some(0),
         }],
         rewrite: None,
+        shared: 0,
     };
     let parent = Input {
         route: Route::Live,
@@ -796,6 +827,7 @@ fn an_absent_parent_reads_unresolved_and_its_arrival_writes_nothing_into_the_chi
             parent: None,
         }],
         rewrite: None,
+        shared: 0,
     };
     let w = test_archive();
     w.writer
@@ -836,6 +868,7 @@ fn a_link_stays_while_a_reading_states_it_when_the_session_it_names_leaves() {
         route: Route::Live,
         records,
         rewrite: None,
+        shared: 0,
     };
     let message = |n| Row::Message {
         n,
@@ -897,6 +930,7 @@ fn a_text_leaves_with_its_last_row_and_its_search_entries() {
             parent: None,
         }],
         rewrite: None,
+        shared: 0,
     };
     w.writer
         .store_group(vec![stored_step(&w, 0, &one, 0, 0, 1)])
@@ -925,6 +959,7 @@ fn a_text_leaves_with_its_last_row_and_its_search_entries() {
             route: Route::Live,
             records: vec![],
             rewrite: None,
+            shared: 0,
         },
         0,
         0,

@@ -753,8 +753,9 @@ pub struct OpenChain<'w> {
     out: Out<'w>,
 }
 
-impl super::chain::ChainSink for OpenChain<'_> {
-    fn step(&mut self, step: &mut ParseStep) -> Result<()> {
+impl crate::parse::ParseSink for OpenChain<'_> {
+    fn part(&mut self, mut part: ParsePart) -> Result<()> {
+        let step = &mut part;
         if step.prepared != Default::default() {
             return Err(StoreError::Invalid(
                 "a chain reading needs complete parsed values".into(),
@@ -807,12 +808,16 @@ impl super::chain::ChainSink for OpenChain<'_> {
         }
         Ok(())
     }
+
+    fn end(self: Box<Self>) -> Result<()> {
+        (*self).finish()
+    }
 }
 
 impl OpenChain<'_> {
     /// Ends the chain: moves its rows into the worker's stream and clears
     /// the scratch index.
-    pub fn finish(mut self) -> Result<()> {
+    fn finish(mut self) -> Result<()> {
         self.steps.finish()?;
         move_out(
             &self.tx,

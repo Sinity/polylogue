@@ -4,6 +4,7 @@
 //! the model's [`due`] judges each; nothing here decides by itself whether
 //! a chain is caught up.
 use super::*;
+use crate::archive::writer::agreement::{Chains, recorded_by_input};
 use polylogue_model::chain::{ChainFacts, ChainState, ChainStatusName, Due, due, status};
 use polylogue_model::freshness::CompletenessReason;
 
@@ -68,13 +69,21 @@ impl ChainCensus {
     }
 }
 
-/// The facts of a chain of `stored` bytes whose origin's parser version is
-/// `parser` (`None`: it has no parser).
-fn facts(stored: u64, parser: Option<&str>, imported: bool) -> ChainFacts {
+/// The facts of chain `chain` of `stored` bytes whose origin's parser
+/// version is `parser` (`None`: it has no parser), with what the archive's
+/// recorded agreements say of it (`chains`, its input's).
+fn facts(
+    chains: Option<&Chains>,
+    chain: i64,
+    stored: u64,
+    parser: Option<&str>,
+    imported: bool,
+) -> ChainFacts {
+    let (repeated_by, own_from) = chains.map_or((None, 0), |chains| chains.repeats(chain, stored));
     ChainFacts {
         stored,
-        repeated_by: None,
-        own_from: 0,
+        repeated_by,
+        own_from,
         parser: parser.map(str::to_owned),
         finished: imported,
     }
@@ -284,7 +293,7 @@ impl Reader<'_> {
         let state = crate::parse_state::PLANNED_COLUMNS;
         let sql = format!(
             "SELECT c.input, c.length,
-                CASE WHEN {database} THEN 'export-file' ELSE {format} END, {state}
+                CASE WHEN {database} THEN 'export-file' ELSE {format} END, c.chain, {state}
              FROM (SELECT input, chain, max(length) AS length FROM source_revision
                    GROUP BY input, chain) c
              JOIN source_input i ON i.id = c.input
@@ -292,14 +301,17 @@ impl Reader<'_> {
              LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain"
         );
         let conn = self.conn()?;
+        let agreements = recorded_by_input(conn, None)?;
         let mut statement = conn.prepare_cached(&sql)?;
         let mut rows = statement.query([])?;
         let mut census = ChainCensus::default();
         while let Some(row) = rows.next()? {
             token.check()?;
+            let input: String = row.get(0)?;
             let stored: u64 = row.get(1)?;
             let origin: String = row.get(2)?;
-            let state = crate::parse_state::ParseStateRow::planned(row, 3)?;
+            let chain: i64 = row.get(3)?;
+            let state = crate::parse_state::ParseStateRow::planned(row, 4)?;
             let parser = contracts
                 .iter()
                 .find(|c| c.origin() == origin)
@@ -307,7 +319,7 @@ impl Reader<'_> {
                     ReadingContract::Expected { version, .. } => Some(version.as_str()),
                     _ => None,
                 });
-            let facts = facts(stored, parser, false);
+            let facts = facts(agreements.get(&input), chain, stored, parser, false);
             let shown = status(&state, &facts);
             if shown.name() == ChainStatusName::Parsing {
                 let why = match state.version() {
@@ -344,16 +356,24 @@ impl Reader<'_> {
             ),
         )?;
         let connection = self.conn()?;
+        let agreements = recorded_by_input(connection, selected)?;
         let sql = planning_sql(selected.is_some(), chains);
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(params![selected_json])?;
         while let Some(row) = rows.next()? {
             token.check()?;
             let path_bytes: Option<Vec<u8>> = row.get(6)?;
+            let input: String = row.get(0)?;
+            let (number, stored): (i64, u64) = (row.get(1)?, row.get(2)?);
+            let (repeated_by, own_from) = agreements
+                .get(&input)
+                .map_or((None, 0), |chains| chains.repeats(number, stored));
             let chain = ChainRow {
-                input: row.get(0)?,
-                chain: row.get(1)?,
-                stored: row.get(2)?,
+                input,
+                chain: number,
+                stored,
+                repeated_by,
+                own_from,
                 current: row.get(3)?,
                 imported: row.get(4)?,
                 source: StoredSource {
@@ -378,6 +398,9 @@ struct ChainRow {
     input: String,
     chain: i64,
     stored: u64,
+    /// What the archive's recorded agreements say of the chain.
+    repeated_by: Option<i64>,
+    own_from: u64,
     current: bool,
     imported: bool,
     source: StoredSource,
@@ -388,11 +411,13 @@ impl ChainRow {
     fn due(&self, versions: &[(String, String)]) -> Due {
         due(
             &self.state,
-            &facts(
-                self.stored,
-                parser(versions, &self.source.format),
-                self.imported,
-            ),
+            &ChainFacts {
+                stored: self.stored,
+                repeated_by: self.repeated_by,
+                own_from: self.own_from,
+                parser: parser(versions, &self.source.format).map(str::to_owned),
+                finished: self.imported,
+            },
         )
     }
 }

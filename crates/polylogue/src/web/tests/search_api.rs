@@ -32,7 +32,7 @@ fn facet_counts_cover_the_population_beyond_the_visible_page() {
         )
         .unwrap();
     }
-    r.w.wait_for(|s| s["store"]["sessions"] == 121 && s["store"]["search_pending"] == 0);
+    r.w.wait_for(|s| s["store"]["sessions_physical"] == 121 && s["store"]["search_pending"] == 0);
     let text = "sessions where (parser OR missing) origin:claude-code";
     let counts = data(&r, &format!("{text} | group by origin | count"), None);
     assert_eq!(counts["rows"][0]["count"], 121, "{counts}");
