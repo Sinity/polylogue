@@ -467,7 +467,16 @@ fn lasting_worker_failure_is_a_status_problem() {
         let expected = format!("status failure test: {state}: synthetic worker failure");
         for reply in [
             answer(&daemon.daemon, None, false),
-            unread(&daemon.daemon, None, None, false, 0),
+            unread(
+                &daemon.daemon,
+                crate::protocol::status::AnswersFrom::NotReadYet {
+                    since: crate::protocol::status::NotReadSince::Start,
+                },
+                None,
+                None,
+                false,
+                0,
+            ),
         ] {
             let command_surface::Outcome::Degraded { value, missing } = reply.outcome else {
                 panic!("worker failure must degrade status");
