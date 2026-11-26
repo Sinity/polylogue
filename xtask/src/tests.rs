@@ -10,7 +10,7 @@ fn parse(args: &[&str]) -> Result<(Base, Selection), String> {
     match crate::parse(args.collect()) {
         Ok(Cli::Test {
             base, selection, ..
-        }) => Ok((base, selection)),
+        }) => Ok((base, *selection)),
         Ok(_) => unreachable!("the test command parses as itself"),
         Err(error) => Err(error.to_string()),
     }

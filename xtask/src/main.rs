@@ -47,7 +47,7 @@ enum Cli {
         #[command(flatten)]
         base: Base,
         #[command(flatten)]
-        selection: Selection,
+        selection: Box<Selection>,
     },
     /// The flake's formatting, settings and module checks. With a base, they
     /// run only when the changes touch `nix/`, `flake.nix` or `flake.lock`.
