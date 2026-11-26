@@ -107,7 +107,7 @@ fn daemon_continues_capture_without_a_watcher_event() {
     database(&w, 4000);
     let status = Arc::new(Mutex::new(LoopStatus::default()));
     let shared = status.clone();
-    let (tx, rx) = channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let (ready, started) = channel();
     let worker_tx = tx.clone();
     let thread = std::thread::spawn(move || {

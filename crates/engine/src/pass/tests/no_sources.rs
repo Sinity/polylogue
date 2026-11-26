@@ -1,10 +1,10 @@
 use super::*;
 use polylogue_model::authorship::{Author, Authorship, Channel};
-use std::sync::mpsc::{channel, sync_channel};
+use std::sync::mpsc::sync_channel;
 
 /// Runs the loop until it is idle, with whatever was queued before it started.
 fn until_idle(engine: &mut Engine, queued: Vec<LoopMsg>) -> RunSummary {
-    let (tx, rx) = channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     for message in queued {
         tx.send(message).unwrap();
     }

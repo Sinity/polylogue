@@ -40,7 +40,7 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
         },
     };
     let mut databases = Databases::default();
-    let (wake, changes) = channel();
+    let (wake, changes) = crossbeam_channel::unbounded();
     databases
         .start(vec![source()], archive.clone(), writer.sender(), Some(wake))
         .unwrap();

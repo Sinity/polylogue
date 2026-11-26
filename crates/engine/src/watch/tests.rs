@@ -1,6 +1,5 @@
 use super::*;
 use std::fs;
-use std::sync::mpsc::channel;
 use std::time::Duration;
 
 #[test]
@@ -11,7 +10,7 @@ fn missing_roots_advance_without_watching_unrelated_subtrees_or_reads() {
     let mut config = crate::test_config();
     config.home = home.path().to_path_buf();
     config.tool_dirs.clear();
-    let (tx, rx) = channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let mut roots = Roots::new(&config, tx).unwrap();
     fs::write(unrelated.join("ignored"), "unrelated").unwrap();
     assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
@@ -64,7 +63,7 @@ fn removing_a_watched_root_marks_it_for_rewatch_but_a_change_below_it_does_not()
     config.home = home.path().to_path_buf();
     config.tool_dirs.clear();
     fs::create_dir_all(config.spool_dir(polylogue_sources::browser_capture::ORIGIN)).unwrap();
-    let (tx, _rx) = channel();
+    let (tx, _rx) = crossbeam_channel::unbounded();
     let mut roots = Roots::new(&config, tx).unwrap();
     let root = roots.active.keys().next().cloned().expect("a watched root");
     roots.take();

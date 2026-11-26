@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::authorship::{Author, Authorship, Channel};
 use polylogue_store::fault::{self, Action};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Sender, channel, sync_channel};
+use std::sync::mpsc::sync_channel;
 
 fn histories(n: usize) -> ClaudeHome {
     let home = ClaudeHome::new();
@@ -68,7 +68,11 @@ fn pending_current_chains(engine: &Engine, inputs: &[String]) -> usize {
 
 /// A real import arrives while the next planning statement is held. Joining the
 /// enqueueing thread before rearming the fault makes both interruptions exact.
-fn interrupt(engine: &mut Engine, send: Sender<LoopMsg>, request: PathBuf) -> Pass {
+fn interrupt(
+    engine: &mut Engine,
+    send: crossbeam_channel::Sender<LoopMsg>,
+    request: PathBuf,
+) -> Pass {
     engine.load().unwrap();
     fault::arm("read.chains_behind_index", "", Action::Hold, 1, 1);
     let finished = Arc::new(AtomicBool::new(false));
@@ -140,7 +144,7 @@ fn queued_imports_resume_catchup_without_restarting_completed_pages() {
         .unwrap()
         .input_ids_after(None, IN_POOL_PER_WORKER)
         .unwrap();
-    let (send, receive) = channel();
+    let (send, receive) = crossbeam_channel::unbounded();
     engine.requests = Some(Requests::new(receive));
     fault::arm(
         "read.chains_behind_index",
@@ -293,7 +297,7 @@ fn a_scope_reset_revisits_readings_before_the_planning_bookmark() {
         .unwrap()
         .input_ids_after(None, 2 * IN_POOL_PER_WORKER)
         .unwrap();
-    let (send, receive) = channel();
+    let (send, receive) = crossbeam_channel::unbounded();
     engine.requests = Some(Requests::new(receive));
     interrupt(&mut engine, send, request);
     fault::clear();
@@ -330,7 +334,7 @@ fn the_daemon_loop_keeps_its_planning_page_when_refreshing_committed_progress() 
         u32::MAX,
     );
     fault::arm("read.chains_behind_index", "Newest:", Action::Hold, 1, 1);
-    let (send, receive) = channel();
+    let (send, receive) = crossbeam_channel::unbounded();
     let incoming = send.clone();
     let enqueue = std::thread::spawn(move || {
         assert!(

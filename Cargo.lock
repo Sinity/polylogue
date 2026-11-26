@@ -2202,6 +2202,7 @@ dependencies = [
  "base64 0.23.1",
  "blake3",
  "canonical-json",
+ "crossbeam-channel",
  "devkit",
  "futures-util",
  "hashed-blobs",

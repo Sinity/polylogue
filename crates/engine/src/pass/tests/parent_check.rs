@@ -23,7 +23,7 @@ fn queued_import_checks_its_parent_before_committing() {
         if !expired {
             parent.check().unwrap();
         }
-        let (tx, rx) = channel();
+        let (tx, rx) = crossbeam_channel::unbounded();
         let worker_tx = tx.clone();
         let (ready, started) = sync_channel(1);
         let (release, held) = sync_channel(1);

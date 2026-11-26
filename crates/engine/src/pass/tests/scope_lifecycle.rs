@@ -1,6 +1,7 @@
 use super::*;
 use polylogue_model::Json;
 use polylogue_sources::{Arrival, Capture, OriginSpec, Parse, Root, Step, StepParser};
+use std::sync::mpsc::Sender;
 
 fn source_rows(engine: &Engine, input: &str) -> Vec<Json> {
     engine.reads.reader().unwrap().query(
@@ -191,7 +192,7 @@ fn a_scope_reset_during_preparation_cannot_complete_with_stale_state_or_capture_
     });
     let (mut engine, interrupted) = std::thread::scope(|threads| {
         let work = threads.spawn(move || {
-            let (tx, rx) = channel();
+            let (tx, rx) = crossbeam_channel::unbounded();
             let status = Arc::new(Mutex::new(LoopStatus::default()));
             let result = engine.run(tx, rx, &status, Lifetime::UntilIdle, || {});
             (engine, result)
@@ -308,7 +309,7 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
             .unwrap();
             fault::clear();
             fault::arm("parse", "request-turn.jsonl", Action::Hold, 0, 1);
-            let (tx, rx) = channel();
+            let (tx, rx) = crossbeam_channel::unbounded();
             let worker_tx = tx.clone();
             let status = Arc::new(Mutex::new(LoopStatus::default()));
             let worker = std::thread::spawn(move || {
@@ -451,7 +452,7 @@ fn a_stop_keeps_the_bytes_in_hand_without_reading_the_whole_input() {
         started: entered,
         release: held,
     });
-    let (tx, rx) = channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
         let status = Arc::new(Mutex::new(LoopStatus::default()));
@@ -595,7 +596,7 @@ fn an_import_answers_before_queued_captures_start_and_the_next_turn_finishes_the
         fault::clear();
         fault::arm("parse", "queued-", Action::Hold, 0, 1);
         let stop = engine.archive.stop().clone();
-        let (tx, rx) = channel();
+        let (tx, rx) = crossbeam_channel::unbounded();
         let worker_tx = tx.clone();
         let worker = std::thread::spawn(move || {
             let status = Arc::new(Mutex::new(LoopStatus::default()));

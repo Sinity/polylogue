@@ -4,7 +4,7 @@
 use crate::plan::{InputState, Plan, span, whole};
 use crate::source_read::PlannedFile;
 use crate::*;
-use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
+use crossbeam_channel::RecvTimeoutError;
 use polylogue_sources::export::ExportParser;
 use polylogue_store::RevisionChains;
 
@@ -59,7 +59,7 @@ pub(crate) fn unread_path(origin: &OriginSpec, path: &Path) -> Option<String> {
 }
 
 impl Requests {
-    fn new(receiver: Receiver<LoopMsg>) -> Self {
+    fn new(receiver: crossbeam_channel::Receiver<LoopMsg>) -> Self {
         Self {
             receiver,
             pending: None,
@@ -117,7 +117,7 @@ impl Requests {
     }
 
     /// The channel requests arrive on, to wait on beside other work.
-    pub(crate) fn receiver(&self) -> &Receiver<LoopMsg> {
+    pub(crate) fn receiver(&self) -> &crossbeam_channel::Receiver<LoopMsg> {
         &self.receiver
     }
 
@@ -2932,8 +2932,8 @@ impl Engine {
     /// for imports.
     pub fn run(
         &mut self,
-        tx: Sender<LoopMsg>,
-        rx: Receiver<LoopMsg>,
+        tx: crossbeam_channel::Sender<LoopMsg>,
+        rx: crossbeam_channel::Receiver<LoopMsg>,
         status: &Arc<Mutex<LoopStatus>>,
         lifetime: Lifetime,
         ready: impl FnOnce(),
