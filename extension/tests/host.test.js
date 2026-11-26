@@ -1,46 +1,39 @@
 import { describe, expect, it } from "vitest";
 import { Host, HostError, exchange } from "../src/background/host.js";
+import { start } from "../src/background/main.js";
+import { IDBFactory } from "fake-indexeddb";
 import { notePayload } from "../src/background/notes.js";
 import { fakeChrome } from "./support/fake_chrome.js";
 
 describe("the native messaging host", () => {
-  it("receives a body of any size in acknowledged chunks and answers in chunks", async () => {
-    const chrome = fakeChrome({ routes: { "POST /v1/captures": (body) => ({ bytes: body }) } });
-    const big = new Uint8Array(200 * 1024).map((_, i) => i % 251);
-    const answer = await exchange(chrome.runtime, "POST", "/v1/captures", new Blob([big]));
-    expect(answer.status).toBe(200);
-    expect(new Uint8Array(await answer.body.arrayBuffer())).toEqual(big);
-    expect(chrome.calls[0].body).toEqual(big);
+  it("sends an operation by name and joins a large Unicode answer", async () => {
+    const text = "A conversation 🦀 ".repeat(70_000);
+    const chrome = fakeChrome({ operations: { "internal echo": (args) => ({ json: args }) } });
+    const answer = await new Host(chrome.runtime).call("internal echo", { text }, "caller-id");
+    expect(answer).toEqual({ text });
+    expect(chrome.calls).toEqual([{ version: 2, type: "call", operation: "internal echo", arguments: { text }, request_id: "caller-id" }]);
   });
 
-  it("turns a refusal into an error with its code", async () => {
-    const chrome = fakeChrome({ routes: { "GET /v1/reader": () => ({ status: 503, json: { error: "reader_unavailable", message: "no reader" } }) } });
-    const error = await new Host(chrome.runtime).reader().catch((e) => e);
+  it("carries a daemon refusal's code and typed reason unchanged", async () => {
+    const reason = { name: "capture_unreadable", fields: { problem: "no conversation" } };
+    const chrome = fakeChrome({ operations: { "internal capture-files": () => ({ status: 400, json: { error: "bad_request", message: "cannot read", reason } }) } });
+    const error = await new Host(chrome.runtime).call("internal capture-files", { capture: "{}" }).catch((e) => e);
     expect(error).toBeInstanceOf(HostError);
-    expect([error.code, error.status, error.message]).toEqual(["reader_unavailable", 503, "no reader"]);
+    expect([error.code, error.message, error.reason]).toEqual(["bad_request", "cannot read", reason]);
   });
 
-  it("does not take an answer that is not JSON for a success", async () => {
-    const chrome = fakeChrome({ routes: {
-      "POST /v1/captures": () => ({ bytes: new TextEncoder().encode("<html>not json"), type: "text/html" }),
-      "GET /v1/reader": () => ({ status: 502, bytes: new TextEncoder().encode("bad gateway"), type: "text/plain" }),
-    } });
-    const host = new Host(chrome.runtime);
-    expect((await host.storeCapture(new Blob(["x"])).catch((e) => e)).code).toBe("host_answer_unreadable");
-    expect((await host.reader().catch((e) => e)).code).toBe("host_http_502");
-  });
-
-  it("extension_popup_decision_uses_answer: carries the popup's Allow or Deny to the answer route", async () => {
-    const chrome = fakeChrome({ routes: { "POST /v1/chat-actions/a%2F1/answer": (body) => ({ json: { answered: JSON.parse(new TextDecoder().decode(body)) } }) } });
-    const answer = await new Host(chrome.runtime).answerChatAction("a/1", "deny");
-    expect(answer).toEqual({ answered: { value: "deny" } });
+  it("sends capture JSON without changing its bytes", async () => {
+    const body = '{ "text": "' + "x".repeat(1024 * 1024) + '" }';
+    const chrome = fakeChrome({ operations: { capture: () => ({ json: { new: true } }) } });
+    expect(await new Host(chrome.runtime).storeCapture(new Blob([body]))).toEqual({ new: true });
+    expect(chrome.calls).toEqual([{ version: 2, type: "capture", capture: body }]);
   });
 
   it("tells a missing host apart from one that stopped", async () => {
     const missing = fakeChrome({ installed: false });
-    expect((await new Host(missing.runtime).status().catch((e) => e)).code).toBe("host_missing");
-    const stopping = fakeChrome({ routes: { "GET /v1/status": () => "drop" } });
-    expect((await new Host(stopping.runtime).status().catch((e) => e)).code).toBe("host_stopped");
+    expect((await new Host(missing.runtime).call("set").catch((e) => e)).code).toBe("host_missing");
+    const stopping = fakeChrome({ operations: { set: () => "drop" } });
+    expect((await new Host(stopping.runtime).call("set").catch((e) => e)).code).toBe("host_stopped");
   });
 });
 
@@ -103,23 +96,47 @@ function scriptedPort(reply) {
   return port;
 }
 
-it("rejects a response before upload completion and an incorrect body acknowledgment", async () => {
-  const early = { connectNative: () => scriptedPort((message, emit) => {
-    if (message.type === "request") emit({ type: "response", status: 200 });
-  }) };
-  await expect(exchange(early, "POST", "/", new Blob(["x"]))).rejects.toMatchObject({ code: "host_answer_unreadable" });
-  const badAck = { connectNative: () => scriptedPort((message, emit) => {
-    if (message.type === "body") emit({ type: "body_ack", sequence: message.sequence + 1 });
-  }) };
-  await expect(exchange(badAck, "POST", "/", new Blob(["x"]))).rejects.toMatchObject({ code: "host_answer_unreadable" });
+it("rejects out-of-order parts and unreadable answers", async () => {
+  for (const frame of [
+    { version: 2, type: "part", sequence: 1, last: true, data: "e30=" },
+    { version: 2, type: "answer", answer: null },
+  ]) {
+    const runtime = { connectNative: () => scriptedPort((_message, emit) => emit(frame)) };
+    await expect(exchange(runtime, { type: "call", operation: "set", arguments: {} })).rejects.toMatchObject({ code: "host_answer_unreadable" });
+  }
 });
 
-it("rejects duplicate acknowledgments while preparing the next chunk", async () => {
-  const runtime = { connectNative: () => scriptedPort((message, emit) => {
-    if (message.type === "body") {
-      emit({ type: "body_ack", sequence: message.sequence });
-      emit({ type: "body_ack", sequence: message.sequence });
-    }
-  }) };
-  await expect(exchange(runtime, "POST", "/", new Blob([new Uint8Array(200000)]))).rejects.toMatchObject({ code: "host_answer_unreadable" });
+it("asks for an extension reload on another host version", async () => {
+  const runtime = { connectNative: () => scriptedPort((_message, emit) => emit({ version: 1, type: "answer" })) };
+  await expect(exchange(runtime, { type: "spooled", provider: "chatgpt", ids: [] }))
+    .rejects.toMatchObject({ code: "native_version_mismatch", message: "Reload the extension to use this browser host." });
+});
+
+it("joins spool and archive state while the daemon is down", async () => {
+  const chrome = fakeChrome({ operations: {
+    spooled: () => ({ json: { spooled: [true, false] } }),
+    "internal conversations": () => ({ status: 503, json: { error: "daemon_required", reason: { name: "daemon_did_not_answer", fields: {} } } }),
+  } });
+  const answer = await globalThis.polylogueCaptureState.conversations(new Host(chrome.runtime), "chatgpt", ["saved", "absent"]);
+  expect(answer).toEqual({ daemon: "no_answer", conversations: [{ id: "saved", state: "spooled" }, { id: "absent", state: "unknown" }] });
+  expect(globalThis.polylogueCaptureState.ofArchiveAnswer("chatgpt", answer)).toEqual(["stored_daemon_not_answering", "daemon_did_not_answer"]);
+});
+
+it("forwards a selection's request ID and the popup's answer by operation name", async () => {
+  const chrome = fakeChrome({ operations: {
+    "internal selection-note": () => ({ json: { id: "note-id", repeat: true } }),
+    "internal chat answer": () => ({ json: { action: { status: "denied" } } }),
+  } });
+  const { handlers } = start(chrome, { indexedDB: new IDBFactory() });
+  const source = { provider: "chatgpt", conversation_id: "c1", message_id: "m1", page_url: "https://chatgpt.com/c/c1", selected_at: "2026-10-26T00:00:00Z" };
+  const note = { request_id: "note-id", body: "my note", quote: "selected text", source };
+  const sender = { tab: { url: source.page_url }, url: source.page_url, frameId: 0 };
+  for (let i = 0; i < 2; i += 1) {
+    expect(await handlers["polylogue.note"]({ note }, sender)).toEqual({ note: { id: "note-id", repeat: true } });
+  }
+  expect(chrome.calls.slice(0, 2)).toEqual(Array.from({ length: 2 }, () => ({ version: 2, type: "call", operation: "internal selection-note",
+    arguments: { body: note.body, quote: note.quote, ...source }, request_id: "note-id" })));
+  expect(await handlers["polylogue.answer"]({ id: "a/1", value: "deny" })).toEqual({ action: { status: "denied" } });
+  expect(chrome.calls[2]).toMatchObject({ operation: "internal chat answer", arguments: { id: "a/1", value: "deny" } });
+  await expect(handlers["polylogue.reader"]()).rejects.toMatchObject({ code: "reader_unavailable" });
 });

@@ -11,19 +11,19 @@ function setup({ job, held, listing = null, conversation = null, acceptReport = 
   const reports = [];
   const problems = [];
   const stored = [];
-  const routes = {
-    "POST /v1/import_job/claim": () => ({ json: { job } }),
-    "POST /v1/import_job/j1/report": (body) => {
-      const report = json(body);
+  const operations = {
+    "internal import claim": () => ({ json: { job } }),
+    "internal import report": (body) => {
+      const report = { by: body.by, ...body.report };
       reports.push(report);
       return report.by === job.claimed_by && acceptReport(report) ? { json: { job: { ...job, status: report.kind } } } : { status: 409, json: { error: "not_the_claimant" } };
     },
-    "POST /v1/conversations": (body) => {
-      const { ids } = json(body);
+    "internal conversations": (body) => {
+      const { ids } = body;
       return { json: { daemon: "running", conversations: ids.map((id) => ({ id, ...(held[id] || { state: "missing" }) })) } };
     },
-    "POST /v1/captures/files": () => ({ json: { files: [] } }),
-    "POST /v1/captures": (body) => { stored.push(json(body)); return { json: { new: true } }; },
+    "internal capture-files": () => ({ json: { conversation: { provider: "chatgpt", id: "c1" }, files: [] } }),
+    "capture": (body) => { stored.push(json(body)); return { json: { new: true } }; },
   };
   const lists = [];
   const pages = {
@@ -47,7 +47,7 @@ function setup({ job, held, listing = null, conversation = null, acceptReport = 
       return { status: 400 };
     },
   };
-  const chrome = fakeChrome({ routes, pages, tabs: [{ id: 7, url: "https://chatgpt.com/" }] });
+  const chrome = fakeChrome({ operations, pages, tabs: [{ id: 7, url: "https://chatgpt.com/" }] });
   const host = new Host(chrome.runtime);
   const capturer = new Capturer({ chrome, host, outbox: new Outbox(new IDBFactory()), seen: chrome.storage.session });
   const importJob = new ImportJob({ chrome, host, capturer, instance: async () => job.claimed_by, log: (text) => problems.push(text), sleep: async () => {} });
@@ -193,9 +193,9 @@ it("a_resumed_import_counts_each_conversation_once", async () => {
 
 it("does not run an unconfirmed authored job receipt", async () => {
   const receipt = { id: "job-pending", repeat: false, pending: true };
-  const chrome = fakeChrome({ routes: { "POST /v1/import_job/claim": () => ({ json: receipt }) } });
+  const chrome = fakeChrome({ operations: { "internal import claim": () => ({ json: receipt }) } });
   const host = new Host(chrome.runtime);
-  expect(await host.claimImportJob("ext-1")).toEqual(receipt);
+  expect(await host.call("internal import claim", { by: "ext-1" })).toEqual(receipt);
   const importJob = new ImportJob({ chrome, host, capturer: {}, instance: async () => "ext-1" });
   await importJob.step();
   expect(chrome.tabs.list).toHaveLength(0);

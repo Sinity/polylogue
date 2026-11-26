@@ -7,11 +7,14 @@
 import { ImportJob } from "./import_job.js";
 import { Capturer } from "./capture.js";
 import { ChatActions } from "./chat_actions.js";
-import { Host } from "./host.js";
+import { Host, HostError } from "./host.js";
+import "../capture_state.js";
 import { notePayload } from "./notes.js";
 import { ProviderScheduler } from "./provider.js";
 import { Outbox } from "./outbox.js";
 import { addScripts, askPage, chatTabs, providerOf } from "./tabs.js";
+
+const captureState = globalThis.polylogueCaptureState;
 
 const TICK = "polylogue.tick";
 const SWEEP = "polylogue.sweep";
@@ -130,7 +133,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     let hostState = "ok";
     if (conversation) {
       try {
-        const answer = await host.conversations(provider, [conversation]);
+        const answer = await captureState.conversations(host, provider, [conversation]);
         held = { ...answer.conversations[0], daemon: answer.daemon };
       } catch (error) {
         hostState = error.code === "host_missing" ? "missing" : "failed";
@@ -147,13 +150,13 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     const tab = tabId ? await chrome.tabs.get(tabId).catch(() => null) : null;
     let status;
     try {
-      status = { ...(await host.status()), host: "ok" };
+      status = { ...(await captureState.status(host)), host: "ok" };
     } catch (error) {
       status = { host: error.code === "host_missing" ? "missing" : "failed", daemon: "unknown" };
     }
     const daemonUp = status.daemon === "running";
-    const jobs = daemonUp ? (await host.importJobs().catch(() => ({ jobs: [] }))).jobs : [];
-    const actions = daemonUp ? (await host.chatActions().catch(() => ({ actions: [] }))).actions : [];
+    const jobs = daemonUp ? (await host.call("rows", { selection: "import_jobs" }).catch(() => null))?.reply?.rows || [] : [];
+    const actions = daemonUp ? (await host.call("rows", { selection: "chat_actions" }).catch(() => null))?.reply?.rows || [] : [];
     const { problems } = await session.get({ problems: [] });
     return {
       status,
@@ -211,7 +214,10 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       await captureTab(tabId, "asked", true);
       return pageState(await chrome.tabs.get(tabId));
     },
-    "polylogue.note": async (message, sender) => host.saveNote(notePayload(message.note, sender)),
+    "polylogue.note": async (message, sender) => {
+      const { request_id, body, quote, source } = notePayload(message.note, sender);
+      return { note: await host.call("internal selection-note", { body, quote, ...source }, request_id) };
+    },
     "polylogue.hide-panel": async (message) => {
       const now = await settings();
       await local.set({ settings: { ...now, hidden_sites: [...new Set([...now.hidden_sites, message.site])] } });
@@ -227,11 +233,9 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       await local.set({ settings: next });
       return next;
     },
-    "polylogue.answer": async (message) => host.answerChatAction(message.id, message.value === "allow" ? "allow" : "deny"),
+    "polylogue.answer": async (message) => host.call("internal chat answer", { id: message.id, value: message.value === "allow" ? "allow" : "deny" }),
     "polylogue.reader": async () => {
-      const { url } = await host.reader();
-      await chrome.tabs.create({ url });
-      return { url };
+      throw new HostError("reader_unavailable", null, "The daemon has no operation for the reader address; open Polylogue with `polylogue web`.");
     },
   };
 

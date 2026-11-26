@@ -661,6 +661,15 @@ pub static COMMANDS: &[Command] = &[
         ..CLI
     },
     Command {
+        name: "internal capture-files",
+        reason: "The extension reads attachment names with the capture parser",
+        help: "Read the conversation and attachment names in a capture",
+        run: Run::Daemon(daemon::<browser::CaptureFiles>()),
+        cli: Cli::Hidden,
+        tool: None,
+        ..CLI
+    },
+    Command {
         name: "internal stored-files",
         reason: "The extension skips downloading files whose bytes the archive holds",
         help: "The files of a web chat's conversation whose bytes the archive holds",

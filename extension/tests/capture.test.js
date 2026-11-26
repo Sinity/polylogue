@@ -14,23 +14,24 @@ const CONVERSATION = {
 /** A host that stores captures by their bytes, as the real one does. */
 function storingHost(files = []) {
   const stored = [];
-  const routes = {
-    "POST /v1/captures/files": () => ({ json: { conversation: { id: "c1" }, files } }),
-    "POST /v1/captures": (body) => {
+  const operations = {
+    "internal capture-files": () => ({ json: { conversation: { provider: "chatgpt", id: "c1" }, files } }),
+    "internal stored-files": () => ({ json: { files: files.filter((f) => f.stored).map((f) => ({ id: f.file_id, ...f.stored })) } }),
+    "capture": (body) => {
       const text = new TextDecoder().decode(body);
       const known = stored.includes(text);
       if (!known) stored.push(text);
       return { json: { new: !known } };
     },
-    "POST /v1/conversations": () => ({ json: { daemon: "running", conversations: [{ id: "c1", state: "archived", messages: 1,
+    "internal conversations": () => ({ json: { daemon: "running", conversations: [{ id: "c1", state: "archived", messages: 1,
       downloading: stored.length > 0 && JSON.parse(stored.at(-1)).session.attachments.some((a) => a.not_fetched === "downloading"),
     }] } }),
-    "GET /v1/status": () => ({ json: { daemon: "running", chat_actions: false } }),
-    "GET /v1/import_job": () => ({ json: { jobs: [] } }),
-    "GET /v1/chat-actions": () => ({ json: { actions: [] } }),
-    "POST /v1/import_job/claim": () => ({ json: { job: null } }),
+    "set": () => ({ json: { value: { type: "boolean", value: false } } }),
+    "rows": () => ({ json: { reply: { rows: [] } } }),
+    "internal chat claim": () => ({ json: { action: null } }),
+    "internal import claim": () => ({ json: { job: null } }),
   };
-  return { stored, routes };
+  return { stored, operations };
 }
 
 function chatgptPage({ fileBytes = null } = {}) {
@@ -87,7 +88,7 @@ describe("a capture", () => {
   it("downloads and stores an empty file through the page port", async () => {
     const host = storingHost([{ id: "empty", message: "m1", inline: false }]);
     const page = chatgptPage({ fileBytes: new Uint8Array([]) });
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
     await extension.capturer.downloads();
@@ -112,7 +113,7 @@ describe("a capture", () => {
   it("is stored before its files download, then again with their bytes; an unchanged conversation is not stored again", async () => {
     const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }, { id: "inline", message: "m1", inline: true }]);
     const page = chatgptPage({ fileBytes: new Uint8Array([9, 9]) });
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
 
     const first = await extension.captureTab(1, "changed");
@@ -150,7 +151,7 @@ describe("a capture", () => {
       }
       return { status: 400, error: "unknown_request" };
     };
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
 
     expect(await extension.captureTab(1, "changed")).toBeNull();
@@ -172,7 +173,7 @@ describe("a capture", () => {
       let release;
       const held = new Promise((resolve) => { release = resolve; });
       const answer = (request) => request.type === "file" ? held.then(() => page.answer(request)) : page.answer(request);
-      const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+      const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
       const extension = start(chrome, { indexedDB: new IDBFactory() });
       await extension.captureTab(1, "changed");
       vi.setSystemTime(new Date("2026-10-28T00:00:00Z"));
@@ -189,7 +190,7 @@ describe("a capture", () => {
     const hash = "cd".repeat(32);
     const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: { blob: hash, size: 2 } }]);
     const page = chatgptPage({ fileBytes: new Uint8Array([9, 9]) });
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
     await extension.capturer.downloads();
@@ -203,18 +204,18 @@ describe("a capture", () => {
     let hang = true;
     const page = chatgptPage({ fileBytes: new Uint8Array([9, 9]) });
     const answer = (request) => (request.type === "file" && hang ? new Promise(() => {}) : page.answer(request));
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const before = start(chrome, { indexedDB: new IDBFactory() });
     expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
     expect(host.stored).toHaveLength(1);
 
     const restarted = start(chrome, { indexedDB: new IDBFactory() });
-    const listFiles = host.routes["POST /v1/captures/files"];
-    host.routes["POST /v1/captures/files"] = () => ({ status: 503, json: { error: "temporarily_unavailable" } });
+    const listFiles = host.operations["internal capture-files"];
+    host.operations["internal capture-files"] = () => ({ status: 503, json: { error: "temporarily_unavailable" } });
     expect((await restarted.captureTab(1, "sweep")).outcome).toBe("unchanged");
     expect(host.stored).toHaveLength(1);
     expect(JSON.parse(host.stored[0]).session.attachments[0].not_fetched).toBe("downloading");
-    host.routes["POST /v1/captures/files"] = listFiles;
+    host.operations["internal capture-files"] = listFiles;
     hang = false;
     expect((await restarted.captureTab(1, "sweep")).outcome).toBe("unchanged");
     await restarted.capturer.downloads();
@@ -248,7 +249,7 @@ describe("a capture", () => {
       }
       return reply;
     };
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     await extension.captureTab(1, "changed");
     await started;
@@ -281,7 +282,7 @@ describe("a capture", () => {
       if (request.type === "file") { downloading(); await held; }
       return request.type === "conversation" ? conversation(request, page) : page.answer(request);
     };
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
     await started;
@@ -336,7 +337,7 @@ describe("a capture", () => {
   it("records the provider refusal when none of its files can be downloaded", async () => {
     const host = storingHost([{ id: "file-1", message: "m1", file_id: "file-1", inline: false, stored: null }]);
     const page = chatgptPage();
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
     await extension.capturer.downloads();
@@ -357,7 +358,7 @@ describe("a capture", () => {
     const page = async (request) => (request.type === "conversation"
       ? { status: 200, info: { id: "c1", url: "https://chatgpt.com/c/c1" }, body: new Blob([JSON.stringify(versions[read++ % 3])]) }
       : { status: 200, info: { id: "c1" } });
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     const outcomes = [];
     for (let cycle = 0; cycle < 3; cycle += 1) outcomes.push((await extension.captureTab(1, "changed")).outcome);
@@ -370,11 +371,11 @@ describe("a capture", () => {
 
   it("keeps raw bytes in the outbox when file discovery and delivery are offline", async () => {
     const host = storingHost();
-    host.routes["POST /v1/captures/files"] = () => ({ status: 503, json: { error: "offline" } });
-    host.routes["POST /v1/captures"] = () => ({ status: 503, json: { error: "offline" } });
+    host.operations["internal capture-files"] = () => ({ status: 503, json: { error: "offline" } });
+    host.operations["capture"] = () => ({ status: 503, json: { error: "offline" } });
     const page = chatgptPage();
     const indexedDB = new IDBFactory();
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("waiting");
     const [waiting] = await extension.outbox.all();
@@ -393,7 +394,7 @@ describe("a capture", () => {
       }
       return reply;
     };
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
     parts = ["second", "first"];
@@ -405,10 +406,10 @@ describe("a capture", () => {
     const indexedDB = new IDBFactory();
     const host = storingHost();
     let refusing = true;
-    const store = host.routes["POST /v1/captures"];
-    host.routes["POST /v1/captures"] = (body) => (refusing ? { status: 500, json: { error: "write_failed" } } : store(body));
+    const store = host.operations["capture"];
+    host.operations["capture"] = (body) => (refusing ? { status: 500, json: { error: "write_failed" } } : store(body));
     const page = chatgptPage();
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const before = start(chrome, { indexedDB });
     expect((await before.captureTab(1, "changed")).outcome).toBe("waiting");
     expect(await before.outbox.count()).toBe(1);
@@ -419,7 +420,7 @@ describe("a capture", () => {
 
     // A new version of the extension starts over the same browser storage.
     refusing = false;
-    const restarted = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const restarted = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const after = start(restarted, { indexedDB });
     restarted.runtime.onInstalled.fire({ reason: "update" });
     await until(async () => host.stored.length >= 1, "the waiting capture stored");
@@ -431,23 +432,23 @@ describe("a capture", () => {
   it("is sent again when the host stored it but its answer was lost; the host keeps one copy", async () => {
     const indexedDB = new IDBFactory();
     const host = storingHost();
-    const store = host.routes["POST /v1/captures"];
+    const store = host.operations["capture"];
     let lose = true;
-    host.routes["POST /v1/captures"] = (body) => {
+    host.operations["capture"] = (body) => {
       const answer = store(body);
       if (lose) { lose = false; return "drop"; }
       return answer;
     };
     const page = chatgptPage();
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB });
     await extension.captureTab(1, "changed");
     expect(await extension.outbox.count()).toBe(1);
     await extension.tick();
     expect(await extension.outbox.count()).toBe(0);
-    const sends = chrome.calls.filter((c) => c.path === "/v1/captures");
+    const sends = chrome.calls.filter((c) => c.type === "capture");
     expect(sends).toHaveLength(2);
-    expect(sends[1].body).toEqual(sends[0].body);
+    expect(sends[1].capture).toEqual(sends[0].capture);
     expect(host.stored).toHaveLength(1);
   });
 
@@ -468,8 +469,8 @@ describe("a capture", () => {
 
   it("says that Polylogue did not answer when the installed host fails", async () => {
     const host = storingHost();
-    host.routes["POST /v1/conversations"] = () => ({ status: 500, json: { error: "internal" } });
-    const chrome = fakeChrome({ routes: host.routes, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }], pages: { 1: chatgptPage().answer } });
+    host.operations["internal conversations"] = () => ({ status: 500, json: { error: "internal" } });
+    const chrome = fakeChrome({ operations: host.operations, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }], pages: { 1: chatgptPage().answer } });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     const state = await extension.pageState(await chrome.tabs.get(1));
     expect(state.host).toBe("failed");
@@ -483,7 +484,7 @@ describe("a capture", () => {
     const page = chatgptPage();
     let fail = false;
     const answer = (request) => (fail && request.type === "conversation" ? { status: 404, error: "conversation_gone" } : page.answer(request));
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     expect((await extension.captureTab(1, "changed")).outcome).toBe("stored");
     fail = true;
@@ -500,13 +501,13 @@ describe("a capture", () => {
     const host = storingHost();
     const session = { provider: "gemini", provider_session_id: "g1", title: "T", turns: [{ role: "user", text: "q", ordinal: 0 }] };
     const chrome = fakeChrome({
-      routes: host.routes,
+      operations: host.operations,
       tabs: [{ id: 2, url: "https://gemini.google.com/app/g1" }],
       pages: { 2: async () => ({ status: 200, info: { id: "g1", url: "https://gemini.google.com/app/g1", temporary: false, session } }) },
     });
     const extension = start(chrome, { indexedDB: new IDBFactory() });
     expect((await extension.captureTab(2, "changed")).outcome).toBe("stored");
-    expect(chrome.calls.some((c) => c.path === "/v1/captures/files")).toBe(false);
+    expect(chrome.calls.some((c) => c.operation === "internal capture-files")).toBe(false);
     const capture = json(new TextEncoder().encode(host.stored[0]));
     expect(capture.raw_provider_payload).toBeUndefined();
     expect(capture.session.turns).toEqual(session.turns);
@@ -518,7 +519,7 @@ it("finishes a pending capture when the daemon already has its file bytes", asyn
   const host = storingHost(files);
   const page = chatgptPage();
   const answer = (request) => request.type === "file" ? new Promise(() => {}) : page.answer(request);
-  const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
   const before = start(chrome, { indexedDB: new IDBFactory() });
   expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
   expect(JSON.parse(host.stored[0]).session.attachments[0].not_fetched).toBe("downloading");
@@ -592,7 +593,7 @@ it("keeps the next capture when the old page closes during a download", async ()
 it("keeps unchanged conversation fingerprints across a browser restart", async () => {
   const host = storingHost([]);
   const page = chatgptPage();
-  const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
   const before = start(chrome, { indexedDB: new IDBFactory() });
   expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
   await chrome.storage.session.clear();
@@ -608,7 +609,7 @@ it("an_unchanged_conversation_is_not_fetched_on_a_sweep, while an explicit captu
   const answer = (request) => (request.type === "page"
     ? { status: 200, info: { id: "c1", temporary: false }, shown }
     : page.answer(request));
-  const chrome = fakeChrome({ routes: host.routes, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const chrome = fakeChrome({ operations: host.operations, pages: { 1: answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
   const fetches = () => page.asked.filter((request) => request.type === "conversation").length;
   expect((await start(chrome, { indexedDB: new IDBFactory() }).captureTab(1, "changed")).outcome).toBe("stored");
   expect(fetches()).toBe(1);
@@ -629,11 +630,11 @@ it("an_unchanged_conversation_is_not_fetched_on_a_sweep, while an explicit captu
 it.each(["missing", "unknown"])("captures cached content when the daemon reports it as %s", async (state) => {
   const host = storingHost([]);
   const page = chatgptPage();
-  const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
   const before = start(chrome, { indexedDB: new IDBFactory() });
   expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
   host.stored.length = 0;
-  host.routes["POST /v1/conversations"] = () => ({ json: {
+  host.operations["internal conversations"] = () => ({ json: {
     daemon: state === "missing" ? "running" : "unknown",
     conversations: [{ id: "c1", state, downloading: false }],
   } });
@@ -646,7 +647,7 @@ it.each(["missing", "unknown"])("captures cached content when the daemon reports
 it("confirms a submitted turn only from a stored provider snapshot", async () => {
   const host = storingHost();
   const page = chatgptPage();
-  const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+  const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
   const extension = start(chrome, { indexedDB: new IDBFactory() });
   const capture = (turn, text) => extension.capturer.capture(1, "chatgpt", { force: true, confirm: { turn, text } });
   expect(await capture("m1", "hello")).toMatchObject({ outcome: "stored", confirmedTurn: "m1" });
@@ -657,9 +658,9 @@ it("confirms a submitted turn only from a stored provider snapshot", async () =>
 describe("the background worker's own messages", () => {
   function worker(extra = {}) {
     const host = storingHost();
-    Object.assign(host.routes, extra);
+    Object.assign(host.operations, extra);
     const page = chatgptPage();
-    const chrome = fakeChrome({ routes: host.routes, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
+    const chrome = fakeChrome({ operations: host.operations, pages: { 1: page.answer }, tabs: [{ id: 1, url: "https://chatgpt.com/c/c1" }] });
     return { host, chrome, extension: start(chrome, { indexedDB: new IDBFactory() }) };
   }
 
@@ -700,8 +701,7 @@ describe("the background worker's own messages", () => {
     ];
     const actions = [{ id: "a1", state: "awaiting_approval" }, { id: "a2", state: "submitted" }];
     const { extension } = worker({
-      "GET /v1/import_job": () => ({ json: { jobs } }),
-      "GET /v1/chat-actions": () => ({ json: { actions } }),
+      "rows": ({ selection }) => ({ json: { reply: { rows: selection === "import_jobs" ? jobs : actions } } }),
     });
     const shown = await extension.popup(null);
     expect(shown.importJob.map((job) => job.id)).toEqual(["r1", "e4", "e3", "e2"]);

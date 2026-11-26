@@ -15,6 +15,7 @@ use crate::protocol::browser as protocol;
 use base64::Engine as _;
 use command_surface::{Answer, TextStyle};
 use polylogue_model::user::{UserOutcome, UserWrite};
+use polylogue_model::{MessageId, Reference};
 use polylogue_reading::operation::Invocation;
 use polylogue_store::{Reader, StoreError, user_writes};
 
@@ -491,3 +492,96 @@ browser!(
         }
     }
 );
+
+browser!(
+    CaptureFiles,
+    protocol::CaptureFiles,
+    serde_json::Value,
+    print::json,
+    Policy::READ,
+    |a, _call| {
+        polylogue_sources::browser_capture::files(a.capture.as_bytes())
+            .map(Answer::ok)
+            .map_err(|problem| {
+                Failure::refusal(polylogue_model::Reason::CaptureUnreadable { problem })
+            })?
+    }
+);
+
+impl protocol::SelectionNote {
+    pub(crate) fn references(&self, request_id: &str) -> Result<(Reference, MessageId), Failure> {
+        let source = self;
+        if uuid::Uuid::parse_str(request_id).is_err()
+            || self.body.trim().is_empty()
+            || self.quote.trim().is_empty()
+            || source.conversation_id.is_empty()
+            || source.message_id.is_empty()
+            || source.selected_at.parse::<jiff::Timestamp>().is_err()
+        {
+            return Err(Failure::bad_request(
+                "the note needs a request ID, a body, a selection and its source",
+            ));
+        }
+        let Ok(url) = source.page_url.parse::<axum::http::Uri>() else {
+            return Err(Failure::bad_request("the source page URL is invalid"));
+        };
+        let Some((origin, chat)) = polylogue_sources::origin::by_extension_name(&source.provider)
+            .and_then(|origin| origin.web.as_ref().map(|chat| (origin, chat)))
+        else {
+            return Err(Failure::bad_request(
+                "this provider has no selection-note target",
+            ));
+        };
+        let parts: Vec<_> = url.path().split('/').filter(|s| !s.is_empty()).collect();
+        if url.scheme_str() != Some("https")
+            || !url
+                .authority()
+                .is_some_and(|a| chat.hosts.contains(&a.as_str()))
+            || parts.len() != 2
+            || parts[0] != chat.path
+            || parts[1] != source.conversation_id
+        {
+            return Err(Failure::bad_request(
+                "the source page does not identify the supplied provider conversation",
+            ));
+        }
+        let Some(session) = polylogue_sources::browser_capture::session_for(
+            &source.provider,
+            &source.conversation_id,
+        ) else {
+            return Err(Failure::bad_request(
+                "the supplied conversation ID is invalid",
+            ));
+        };
+        let Ok(message) = MessageId::parse(&format!("{}:{}", origin.name, source.message_id))
+        else {
+            return Err(Failure::bad_request("the supplied message ID is invalid"));
+        };
+        Ok((Reference::Session(session), message))
+    }
+    pub(crate) fn annotation(
+        &self,
+        session: Reference,
+        message: Reference,
+    ) -> polylogue_model::annotation::NewAnnotation {
+        use polylogue_model::annotation::{
+            AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink,
+        };
+        NewAnnotation {
+            kind: AnnotationKind::Note,
+            key: None,
+            value: Some(serde_json::Value::String(format!(
+                "{}\n\nQuoted selection:\n{}\n\nSource: {}\nSelected at: {}",
+                self.body, self.quote, self.page_url, self.selected_at
+            ))),
+            valid_until: None,
+            links: [session, message]
+                .into_iter()
+                .map(|reference| NewAnnotationLink {
+                    role: LinkRole::About,
+                    reference,
+                })
+                .collect(),
+        }
+    }
+}

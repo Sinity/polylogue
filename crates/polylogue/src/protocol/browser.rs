@@ -194,3 +194,11 @@ pub struct StoredFile {
     pub blob: polylogue_model::BlobHash,
     pub size: Option<u64>,
 }
+
+/// A capture whose attachment names the extension asks the parser to read.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct CaptureFiles {
+    /// The capture JSON, preserving the submitted bytes
+    pub capture: String,
+}
