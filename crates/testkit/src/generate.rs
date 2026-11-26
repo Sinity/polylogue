@@ -59,7 +59,7 @@ pub fn delivered_activity() -> impl Strategy<Value = (Activity, Vec<File>, Sched
 /// file's pieces in order, a store after every write, and after a store
 /// sometimes a restart or a rebuild. The chunk is either larger than any
 /// file or small enough that most files take several.
-pub fn schedule(files: &[File]) -> impl Strategy<Value = Schedule> {
+pub fn schedule(files: &[File]) -> impl Strategy<Value = Schedule> + use<> {
     let lens: Vec<usize> = files.iter().map(|f| f.bytes.len()).collect();
     let cuts = lens
         .iter()
