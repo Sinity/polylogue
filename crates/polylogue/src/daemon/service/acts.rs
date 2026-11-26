@@ -163,7 +163,7 @@ pub(super) fn author(
     ) {
         Ok(writes
             .archive()
-            .accept_delivery(request)?
+            .accept_delivery(request, None)?
             .recv()
             .map_err(|_| polylogue_store::StoreError::WriterGone)??
             .outcome
@@ -197,7 +197,7 @@ fn outcome_event(
     );
     writer(d)?
         .archive()
-        .accept_delivery(request)
+        .accept_delivery(request, None)
         .map(|_| ())
         .map_err(Failure::from)
 }

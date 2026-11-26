@@ -255,7 +255,7 @@ impl LastBrief {
 
 pub struct BriefContext<'a, 'reader> {
     pub reader: &'a Reader<'reader>,
-    pub pending_deliveries: &'a [polylogue_model::user::UserRequest],
+    pub pending_deliveries: &'a [polylogue_store::archive::writer::PendingDelivery],
     pub delivery_id: &'a str,
     pub context: &'a std::sync::Arc<polylogue_reading::operation::Context>,
     pub ranking_identity: Option<&'a str>,
@@ -1125,7 +1125,7 @@ fn session_start(
             let pending = brief.pending_deliveries;
             let delivered = |id: &str| {
                 pending.iter().any(|request| {
-                    matches!(&request.write, UserWrite::DeliveryEvent {
+                    matches!(&request.request.write, UserWrite::DeliveryEvent {
                         delivery, what: polylogue_model::DeliveryOutcome::Delivered, ..
                     } if delivery == id)
                 })
@@ -1143,21 +1143,23 @@ fn session_start(
                     seq: delivery.seq,
                 });
             let mut previous = committed;
-            for request in pending {
+            for pending in pending.iter().rev() {
+                let request = &pending.request;
                 if let UserWrite::Deliver(delivery) = &request.write
                     && delivery.recipient_id.as_deref() == Some(recipient.as_str())
                     && BRIEF_EVENTS.contains(&delivery.event)
                     && delivered(&request.id)
+                    && let Some(prepared_at) = pending.prepared_at
                     && !stored.iter().any(|delivery| delivery.id == request.id)
                 {
-                    // No later write can commit before this pending delivery.
                     previous = LastBrief::newest(
                         previous,
                         Some(LastBrief {
                             at: request.at,
-                            seq: reader.change_position()?.archive,
+                            seq: prepared_at,
                         }),
                     );
+                    break;
                 }
             }
             previous

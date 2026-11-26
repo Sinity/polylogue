@@ -507,6 +507,17 @@ fn a_pending_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
     use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
     use polylogue_store::writer::{DispatchPhase, Queued};
     let d = daemon_with_a_project();
+    let at = polylogue_model::Timestamp::from_unix_ms(1_800_000_000_000).unwrap();
+    let brief = |request_id: &str, source: StartSource| {
+        let request = crate::test_daemon::Call::new(
+            "rows",
+            serde_json::json!({"steps":[{"verb":"brief", "cwd":"/home/op/proj", "for":"claude-code:newcomer", "source":source}]}),
+        ).id(request_id).channel(command_surface::Via::Hook).at(at);
+        match crate::test_answers::step(request.answer(&d.daemon)) {
+            crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
+            other => panic!("expected a directory brief: {other:?}"),
+        }
+    };
     let (pause, held) = hold_writer(&d, "held-before-note");
     let writer = d.daemon.writes.as_ref().unwrap();
     let invocation = d
@@ -535,7 +546,7 @@ fn a_pending_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
     };
     let delivery_pause =
         writer.pause_user_dispatch_for_test("brief-before-note-commit-1", DispatchPhase::Owned);
-    let startup = brief(&d, "brief-before-note-commit", StartSource::Startup);
+    let startup = brief("brief-before-note-commit", StartSource::Startup);
     assert!(
         !startup["prepared"]["text"]
             .as_str()
@@ -546,7 +557,16 @@ fn a_pending_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
     pause.release();
     delivery_pause.wait().unwrap();
     note.recv().unwrap().unwrap();
-    let resume = brief(&d, "brief-after-note-commit", StartSource::Resume);
+    let resume = brief("brief-after-note-commit", StartSource::Resume);
+    delivered(&d, resume["delivery"].as_str().unwrap());
+    let compact = brief("brief-after-delivered-resume", StartSource::Compact);
+    assert!(
+        compact["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing changed.")
+    );
+    assert_eq!(compact["prepared"]["refs"], serde_json::json!([]));
     delivery_pause.release();
     held.join().unwrap();
     let text = resume["prepared"]["text"].as_str().unwrap();

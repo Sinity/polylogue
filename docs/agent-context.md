@@ -167,6 +167,7 @@ A **delivery** records each time prepared content is handed to a session or a pe
 
 - The delivery reference appears in the delivered text.
 - **Uncertain sends are reconciled, never resent.** For `unknown`, the daemon looks for the delivery's reference line in the recipient's transcript and records `delivered` when it finds it.
+- While a brief's delivery is pending, the writer also holds the read counter of the snapshot used to prepare it, so annotations committed after preparation remain in the next brief's delta. This counter is discarded when the delivery commits. Committed briefs use the delivery's own write counter for their delta start.
 - High-frequency deliveries (advisories) are recorded once per session, advisory and target.
 - Deliveries are user state: they survive rebuilds, travel in `read --to` bundles, and in primary mode go to Sinex as `polylogue.delivery` ([primary-mode.md](primary-mode.md)).
 
