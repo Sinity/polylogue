@@ -164,7 +164,7 @@ fn tied_historical_child_coordinates_never_gain_order_from_link_or_message_keys(
         // Historical rows with the original default coordinates keep their
         // bytes and identity, but supply no relative display order.
         crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP).unwrap()
-            .execute("UPDATE message_parse SET seq=0,record_position=0,source_start=0,source_end=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='child-file')", []).unwrap();
+            .execute("UPDATE message_parse SET seq=0,record_position=0,source_start=0,source_length=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='child-file')", []).unwrap();
         let pool = ReadPool::open(&w.archive).unwrap();
         let reader = pool.reader().unwrap();
         let selected = reader.select_messages(&sid("c1"), true).unwrap();

@@ -18,9 +18,9 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
         let conn = crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP)
             .unwrap();
         let saved: String = conn
-            .query_row("SELECT facts FROM session_record", [], |r| r.get(0))
+            .query_row("SELECT facts FROM session_parse", [], |r| r.get(0))
             .unwrap();
-        conn.execute("UPDATE session_record SET facts=?1", [corrupt])
+        conn.execute("UPDATE session_parse SET facts=?1", [corrupt])
             .unwrap();
         let next = batch(
             "input",
@@ -35,13 +35,13 @@ fn corrupt_stored_session_facts_refuse_without_erasure_and_can_retry_after_repai
         );
         assert!(w.writer.flush().unwrap().errors.is_empty());
         assert_eq!(
-            conn.query_row("SELECT facts FROM session_record", [], |r| r
+            conn.query_row("SELECT facts FROM session_parse", [], |r| r
                 .get::<_, String>(0))
                 .unwrap(),
             corrupt
         );
         assert_eq!(texts(&w, "s"), ["kept"]);
-        conn.execute("UPDATE session_record SET facts=?1", [saved])
+        conn.execute("UPDATE session_parse SET facts=?1", [saved])
             .unwrap();
         w.store_reading(next, Some(&SOURCE_RECORD)).unwrap();
         assert!(w.writer.flush().unwrap().errors.is_empty());

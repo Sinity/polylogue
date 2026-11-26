@@ -55,7 +55,7 @@ fn array_order_and_parent_sessions_survive_rebuild() {
         // Three messages are stored: the two shared ones once, and one more.
         let sources = r
             .query(
-                "SELECT s.id AS session, m.source_start, m.source_end \
+                "SELECT s.id AS session, m.source_start, m.source_start + m.source_length AS source_end \
                  FROM message_parse m JOIN session_stated x ON x.stated_id=m.session_id JOIN session s ON s.pk=x.session_pk",
                 &[],
             )

@@ -554,6 +554,7 @@ impl<'c> Work<'_, 'c> {
             .execute(params![session, id.origin().as_str(), id.native().as_str(), self.context.counter])?;
         let pk = self.tx().last_insert_rowid();
         self.sessions.insert(session.to_owned(), pk);
+        crate::lineage::mark_due(self.tx(), session)?;
         Ok(pk)
     }
 
@@ -569,9 +570,7 @@ impl<'c> Work<'_, 'c> {
             let pk = self.session_row(session)?;
             self.context.changes.whole_session(pk);
             self.context.changes.session(pk);
-            self.tx()
-                .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
-                .execute(params![pk, !own])?;
+            self.set_stub(pk, session, !own)?;
             return Ok(());
         }
         let stated = self.ids.stated(session)?;
@@ -581,7 +580,7 @@ impl<'c> Work<'_, 'c> {
         let mut stated_at_all = false;
         for id in &stated {
             own |= self.tx().exists(
-                "SELECT EXISTS(SELECT 1 FROM session_record WHERE session_id=?1)
+                "SELECT EXISTS(SELECT 1 FROM session_parse WHERE session_id=?1)
                  OR EXISTS(SELECT 1 FROM message_parse WHERE session_id=?1)",
                 [id],
             )?;
@@ -606,17 +605,26 @@ impl<'c> Work<'_, 'c> {
                 }
                 crate::session_row::remove(self.tx(), pk, session, self.context.counter)?;
                 self.sessions.remove(session);
-                Ok(())
+                crate::lineage::mark_due(self.tx(), session)
             }
             (_, true) => {
                 let pk = self.session_row(session)?;
                 self.context.changes.session(pk);
-                self.tx()
-                    .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
-                    .execute(params![pk, !own])?;
-                Ok(())
+                self.set_stub(pk, session, !own)
             }
         }
+    }
+
+    /// Makes session `pk` a stub or not; a change marks its lineage due.
+    fn set_stub(&mut self, pk: i64, session: &str, stub: bool) -> Result<()> {
+        let changed = self
+            .tx()
+            .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
+            .execute(params![pk, stub])?;
+        if changed > 0 {
+            crate::lineage::mark_due(self.tx(), session)?;
+        }
+        Ok(())
     }
 
     /// Each input's reading of a shown message (see [`latest_readings`]).
@@ -631,7 +639,7 @@ impl<'c> Work<'_, 'c> {
             let rows = self
                 .tx()
                 .prepare_cached(
-                    "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_end,r.seq,
+                    "SELECT r.input_pk,i.id,r.chain,r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.seq,
                          r.record_position,r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
                          r.content_group,r.content_start,r.content_length
                      FROM message_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.message_id=?1",
@@ -684,7 +692,7 @@ impl<'c> Work<'_, 'c> {
         let kind: Option<Option<String>> = self
             .tx()
             .prepare_cached(
-                "SELECT json_extract(facts,'$.kind') FROM session_record WHERE input_pk=?1 AND chain=?2 AND session_id=?3",
+                "SELECT json_extract(facts,'$.kind') FROM session_parse WHERE input_pk=?1 AND chain=?2 AND session_id=?3",
             )?
             .query_row(params![r.input_pk, r.chain, r.session], |row| row.get(0))
             .optional()?;
@@ -1478,7 +1486,7 @@ impl<'c> Work<'_, 'c> {
         Ok(self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.seq,r.source_start,r.source_end,
+                "SELECT i.id,r.chain,r.input_pk,r.route,r.hash,r.seq,r.source_start,r.source_start+r.source_length,
                      r.content_group,r.content_start,r.content_length,r.data_length
                  FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.event_id=?1",
             )?
@@ -1799,6 +1807,9 @@ impl<'c> Work<'_, 'c> {
                 self.mark_link_sessions(&parent, &child)?;
                 self.tx()
                     .execute("DELETE FROM link_statement WHERE pk=?1", [pk])?;
+                if crate::lineage::is_lineage(&kind) {
+                    crate::lineage::mark_due(self.tx(), &child)?;
+                }
             }
             return Ok(());
         };
@@ -1828,6 +1839,9 @@ impl<'c> Work<'_, 'c> {
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 )?
                 .execute(params![parent, child, kind, how, link.evidence, input_pk, chain, at, call, link.copies_prefix])?;
+                if crate::lineage::is_lineage(&kind) {
+                    crate::lineage::mark_due(self.tx(), &child)?;
+                }
             }
         }
         self.mark_link_sessions(&parent, &child)
@@ -1924,7 +1938,7 @@ impl<'c> Work<'_, 'c> {
         let mut found = self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.input_pk,r.chain,r.route,r.source_time,r.hash,r.source_start,r.source_end
+                "SELECT i.id,r.input_pk,r.chain,r.route,r.source_time,r.hash,r.source_start,r.source_start+r.source_length
                  FROM document_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.document_id=?1",
             )?
             .query_map([id], |r| {

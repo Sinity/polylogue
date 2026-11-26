@@ -7,6 +7,29 @@ use polylogue_model::{
 };
 use rusqlite::Connection;
 
+/// Marks the lineage summary due for session `id` and every session below it
+/// through lineage links: what a link written, removed or retyped, or a
+/// session added, removed or turned to or from a stub, can change. The code
+/// that makes the change calls it in the change's transaction.
+pub(crate) fn mark_due(conn: &Connection, id: &str) -> Result<()> {
+    conn.prepare_cached(
+        "INSERT INTO summary_due(session_pk,from_order,lineage)
+         WITH RECURSIVE affected(id) AS (
+           SELECT ?1
+           UNION SELECT l.child_id FROM session_link l JOIN affected a ON l.parent_id=a.id
+             WHERE l.kind IN ('spawn','fork','continuation','resume')
+         ) SELECT s.pk,X'FF',1 FROM affected a JOIN session s ON s.id=a.id WHERE true
+         ON CONFLICT(session_pk) DO UPDATE SET lineage=1,marked=marked+1",
+    )?
+    .execute([id])?;
+    Ok(())
+}
+
+/// Whether a link of `kind` places sessions in a lineage.
+pub(crate) fn is_lineage(kind: &str) -> bool {
+    matches!(kind, "spawn" | "fork" | "continuation" | "resume")
+}
+
 /// The visible incoming relations, including their stored presentation order.
 /// Only the affected child's indexed edge set is read while writing.
 pub(crate) fn relation_identity(conn: &Connection, child: &str) -> Result<String> {

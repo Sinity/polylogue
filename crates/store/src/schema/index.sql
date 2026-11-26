@@ -134,7 +134,11 @@ CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_o
 
 -- What a chain states about a session (model Session, as JSON), merged in
 -- byte order. A session exists while some reading states it.
-CREATE TABLE session_record (
+-- A parse row's byte range is its start and length in its chain.
+-- A parse row with a byte range gets its commit position from the archive's
+-- extents for that range; a row without one (sessions, links, prefix copies)
+-- keeps `committed`, the commit of the step that stated it.
+CREATE TABLE session_parse (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   session_id        TEXT NOT NULL,          -- as the chain names it
@@ -142,7 +146,7 @@ CREATE TABLE session_record (
   committed         INTEGER CHECK(committed > 0),
   PRIMARY KEY (input_pk, chain, session_id)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX session_record_id ON session_record(session_id);
+CREATE INDEX session_parse_id ON session_parse(session_id);
 
 -- The IDs copies of a session carry when they have no native ID
 -- (Session.aliases): an AI Studio prompt read from Drive names the content
@@ -171,7 +175,7 @@ CREATE TABLE message_parse (
   message_id        TEXT NOT NULL,          -- as the chain names it
   session_id        TEXT NOT NULL,          -- as the chain names it
   source_start      INTEGER NOT NULL,
-  source_end        INTEGER NOT NULL,
+  source_length        INTEGER NOT NULL CHECK (source_length >= 0),
   seq               INTEGER NOT NULL,       -- its place in the input: the record's offset, or the
   record_position   INTEGER NOT NULL,       --   explicit reading order; then its position in the record
   order_time        INTEGER,                -- the latest source time (ms) of this reading and the readings
@@ -184,7 +188,6 @@ CREATE TABLE message_parse (
   layout            BLOB NOT NULL,          -- original block count and selected ordinals
   response_key      TEXT,                   -- the key the source gives the records of one response
   content_name      TEXT,                   -- a content-named message's name without its number
-  committed         INTEGER CHECK(committed > 0),
   content_group     INTEGER NOT NULL REFERENCES content_group(id),
   content_start     INTEGER NOT NULL,       -- its content's place in the group's decoded bytes
   content_length    INTEGER NOT NULL,
@@ -229,7 +232,7 @@ CREATE TABLE message_alias (
   name              TEXT NOT NULL,
   target            TEXT,
   source_start      INTEGER NOT NULL,
-  source_end        INTEGER NOT NULL,
+  source_length        INTEGER NOT NULL CHECK (source_length >= 0),
   PRIMARY KEY (input_pk, chain, name)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX message_alias_name ON message_alias(name);
@@ -244,13 +247,12 @@ CREATE TABLE event_parse (
   route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
   seq               INTEGER NOT NULL,
   source_start      INTEGER,
-  source_end        INTEGER,
+  source_length        INTEGER CHECK (source_length >= 0),
   after_message_id  TEXT,                   -- the message it follows, as the chain names it
   kind              TEXT NOT NULL,
   at                INTEGER,
   hash              BLOB NOT NULL,          -- the value's hash
   imported_sources  TEXT NOT NULL CHECK(json_valid(imported_sources)),
-  committed         INTEGER CHECK(committed > 0),
   content_group     INTEGER NOT NULL REFERENCES content_group(id),
   content_start     INTEGER NOT NULL,       -- its fields' place in the group's decoded bytes,
   content_length    INTEGER NOT NULL,       --   and their length
@@ -289,12 +291,11 @@ CREATE TABLE document_parse (
   document_id       TEXT NOT NULL,
   route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
   source_start      INTEGER NOT NULL,
-  source_end        INTEGER NOT NULL,
+  source_length        INTEGER NOT NULL CHECK (source_length >= 0),
   source_time       INTEGER,
   time              BLOB NOT NULL,
   hash              BLOB NOT NULL,
   body              BLOB NOT NULL,          -- the model Document with text moved to `text`
-  committed         INTEGER CHECK(committed > 0),
   PRIMARY KEY (input_pk, chain, document_id)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_parse_id ON document_parse(document_id);
@@ -795,41 +796,6 @@ CREATE TABLE import_asset_sidecar (
 CREATE INDEX tool_call_script ON tool_call(session_pk) WHERE run_by_script = 1;
 -- Session counts are applied once by the transaction's ChangeSummary after
 -- messages, blocks, tool pairing and compaction events agree.
-
--- How many rows the tables status counts hold, kept by the triggers below so
--- that status does not scan the tables. A build's composition runs without
--- them and counts each table once when it ends.
-CREATE TABLE row_count (
-  name              TEXT PRIMARY KEY,       -- the table
-  n                 INTEGER NOT NULL
-) STRICT, WITHOUT ROWID;
-INSERT INTO row_count(name, n) VALUES ('session', 0), ('message', 0), ('document', 0), ('tool_call', 0);
-CREATE TRIGGER session_added AFTER INSERT ON session BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'session'; END;
-CREATE TRIGGER session_removed AFTER DELETE ON session BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'session'; END;
-CREATE TRIGGER message_added AFTER INSERT ON message BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'message'; END;
-CREATE TRIGGER message_removed AFTER DELETE ON message BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'message'; END;
-CREATE TRIGGER document_added AFTER INSERT ON document BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'document'; END;
-CREATE TRIGGER document_removed AFTER DELETE ON document BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'document'; END;
-CREATE TRIGGER tool_call_added AFTER INSERT ON tool_call BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'tool_call'; END;
-CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'tool_call'; END;
-INSERT INTO row_count(name, n) VALUES ('search_pending', 0);
-CREATE TRIGGER search_pending_added AFTER INSERT ON search_pending BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'search_pending'; END;
-CREATE TRIGGER search_pending_removed AFTER DELETE ON search_pending BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'search_pending'; END;
--- Records parsers did not read, summed by what they were, kept the same way.
-CREATE TABLE unused_count (
-  what              TEXT PRIMARY KEY,
-  n                 INTEGER NOT NULL
-) STRICT, WITHOUT ROWID;
-CREATE TRIGGER unused_added AFTER INSERT ON unused BEGIN
-  INSERT INTO unused_count(what, n) VALUES (NEW.what, NEW.count) ON CONFLICT(what) DO UPDATE SET n = n + excluded.n;
-END;
-CREATE TRIGGER unused_removed AFTER DELETE ON unused BEGIN
-  UPDATE unused_count SET n = n - OLD.count WHERE what = OLD.what;
-END;
-CREATE TRIGGER unused_changed AFTER UPDATE OF what, count ON unused BEGIN
-  UPDATE unused_count SET n = n - OLD.count WHERE what = OLD.what;
-  INSERT INTO unused_count(what, n) VALUES (NEW.what, NEW.count) ON CONFLICT(what) DO UPDATE SET n = n + excluded.n;
-END;
 
 -- Recomputed comparison state for tool-database inputs.
 CREATE TABLE tool_row (

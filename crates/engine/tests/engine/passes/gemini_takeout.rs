@@ -64,7 +64,10 @@ fn takeout_cells_keep_interleaved_parents_and_events_after_a_rebuild() {
         // event and the cell without a body yields nothing.
         let mut covered = std::collections::BTreeSet::new();
         for row in r
-            .query("SELECT source_start,source_end FROM message_parse", &[])
+            .query(
+                "SELECT source_start,source_start+source_length AS source_end FROM message_parse",
+                &[],
+            )
             .unwrap()
         {
             let a = row["source_start"].as_u64().unwrap() as usize;

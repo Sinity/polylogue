@@ -44,7 +44,7 @@ row! {
         shown: bool,
     }
     statements {
-        const OF_DOCUMENT = "SELECT r.id AS input, s.chain, s.source_start, s.source_end, s.hash,
+        const OF_DOCUMENT = "SELECT r.id AS input, s.chain, s.source_start, s.source_start + s.source_length AS source_end, s.hash,
             (s.input_pk=d.input_pk AND s.chain=d.source_chain) AS shown
             FROM document d JOIN document_parse s ON s.document_id=d.id JOIN input_ref r ON r.pk=s.input_pk
             WHERE d.pk=?1 ORDER BY r.id, s.chain, s.source_start, s.hash";
