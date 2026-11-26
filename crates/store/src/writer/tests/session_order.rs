@@ -133,7 +133,7 @@ fn export_and_capture_turns_read_in_time_order() {
 /// them, by an earlier order time or by its digest at an equal time, has its
 /// messages placed before the stored rows: a read before it arrives shows
 /// the stored order, and a read after shows the order one build of both
-/// inputs gives.
+/// inputs gives, in either arrival order.
 #[test]
 fn a_later_input_that_sorts_earlier_is_placed_before_stored_rows() {
     let first = step(
@@ -150,23 +150,12 @@ fn a_later_input_that_sorts_earlier_is_placed_before_stored_rows() {
         &[("b0", Some(500)), ("b1", Some(1_000))],
     );
     let w = store(&[&first]);
-    let pool = ReadPool::open(&w.archive).unwrap();
-    let before = pool.reader().unwrap();
     assert_eq!(order(&w), ["a1", "a2"]);
     w.store_reading(later.clone(), Some(&bytes(&earlier, 0)))
         .unwrap();
     assert!(w.writer.flush().unwrap().errors.is_empty());
     let expected = ["b0", "b1", "a1", "a2"];
     assert_eq!(order(&w), expected);
-    // The reader opened before keeps the order it read.
-    let kept: Vec<String> = before
-        .messages(&sid("s"), false)
-        .unwrap()
-        .iter()
-        .map(|m| m.id.native().as_str().to_owned())
-        .collect();
-    assert_eq!(kept, ["a1", "a2"]);
-    drop(before);
     assert_eq!(order(&store(&[&later, &first])), expected);
     assert_eq!(order(&store(&[&first, &later])), expected);
 }

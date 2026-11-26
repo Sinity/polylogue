@@ -51,7 +51,8 @@ fn ids(f: &Fixture, text: &str, field: &str) -> Vec<String> {
 /// and stops after the page: no step sorts the whole result, and no step
 /// reads every message, event or tool call (docs/query.md, paging). A sort
 /// of the last terms orders only rows that share the index's leading terms
-/// as the index is walked, so it is allowed.
+/// as the index is walked, so it is allowed, and so is a temporary b-tree a
+/// subquery of one row builds for DISTINCT.
 #[test]
 fn default_pages_read_in_index_order() {
     let (_dir, f) = fixture();
@@ -69,8 +70,9 @@ fn default_pages_read_in_index_order() {
         let steps = page_plan(&f, text);
         for step in &steps {
             assert!(
-                !step.starts_with("USE TEMP B-TREE")
-                    || (step.contains(" LAST ") && step.ends_with("TERMS OF ORDER BY")),
+                !step.starts_with("USE TEMP B-TREE FOR")
+                    || !step.ends_with("ORDER BY")
+                    || step.contains(" LAST "),
                 "{text}: {steps:#?}"
             );
             for table in ["message", "event", "tool_call"] {
@@ -106,7 +108,10 @@ fn time_bounds_seek_the_time_index() {
     let (_dir, f) = fixture();
     for (text, index) in [
         ("messages where since:2026-01-01", "message_time (at>?)"),
-        ("messages where until:2026-01-01", "message_time (at<?)"),
+        (
+            "messages where until:2026-01-01",
+            "message_time (at>? AND at<?)",
+        ),
         ("events where since:2026-01-01", "event_time (at>?)"),
     ] {
         let steps = page_plan(&f, text);
@@ -188,7 +193,12 @@ fn time_conditions_test_whole_periods() {
             format!("since:{}", t(2)),
             &["test:period", "test:second"][..],
         ),
-        (format!("until:{}", t(1)), &["test:period"][..]),
+        // `until:` a second ends with that second.
+        (
+            format!("until:{}", t(1)),
+            &["test:period", "test:instant"][..],
+        ),
+        (format!("until:{}", t(0)), &["test:period"][..]),
         (
             format!("at >= {}", t(1)),
             &["test:instant", "test:second"][..],
