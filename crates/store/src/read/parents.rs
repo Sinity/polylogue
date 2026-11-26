@@ -306,15 +306,6 @@ fn parent_keys(
                     continue;
                 }
             };
-            let explicit: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
-            if !explicit && !link.copies_prefix && link.branch_point.is_none() {
-                frame.issues.push(ParentIssue::MissingBranchPoint {
-                    child: frame.session.clone(),
-                    parent,
-                    branch_point: None,
-                });
-                continue;
-            }
             let parent_pk: Option<SessionPk> = conn.value(
                 "SELECT pk FROM session WHERE id=?1 AND stub=0",
                 [parent.to_string()],
@@ -337,6 +328,7 @@ fn parent_keys(
                 continue;
             }
 
+            let explicit: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
             if explicit || link.copies_prefix && link.branch_point.is_none() {
                 let (child_text, parent_text) = (frame.session.to_string(), parent.to_string());
                 let params = params![parent_pk, child_text, parent_text];
@@ -383,6 +375,12 @@ fn parent_keys(
                         key: key(listed.pk, listed.id, listed.record_order),
                     });
                 }
+            } else if link.branch_point.is_none() {
+                frame.issues.push(ParentIssue::MissingBranchPoint {
+                    child: frame.session.clone(),
+                    parent,
+                    branch_point: None,
+                });
             } else {
                 let child = frame.session.clone();
                 active.insert(parent_pk);

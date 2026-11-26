@@ -287,9 +287,11 @@ fn path_under_agrees_in_every_read() {
 
 #[test]
 fn session_measurement_windows_use_stored_message_milliseconds() {
+    let mut opts = options();
+    opts.fields.clear();
     let program = crate::query::compile(
         "sessions where since:2026-10-29T12:00:00.0002Z until:2026-10-29T12:00:00.0012Z | measure usage",
-        &options(),
+        &opts,
     )
     .unwrap();
     let measure = program.measure.unwrap();

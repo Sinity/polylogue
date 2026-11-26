@@ -25,17 +25,6 @@ fn child_with(parent_link: impl FnOnce(&mut Fixture)) -> (tempfile::TempDir, Fix
     (root, fixture)
 }
 
-fn composed() -> Composed {
-    Composed {
-        parts: Vec::new(),
-        indexes: Vec::new(),
-        issues: Vec::new(),
-        unstored_copy: false,
-        before: Default::default(),
-        after: Vec::new(),
-    }
-}
-
 #[test]
 fn a_copy_from_an_unstored_session_reads_as_own_with_its_marker() {
     let (_root, fixture) = child_with(|fixture| {
@@ -45,16 +34,12 @@ fn a_copy_from_an_unstored_session_reads_as_own_with_its_marker() {
     });
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let mut found = composed();
-    prefix(
-        &reader,
-        &SessionId::parse("test:child").unwrap(),
-        &mut found,
-    )
-    .unwrap();
-    assert!(found.unstored_copy);
-    assert!(found.issues.is_empty());
-    assert!(found.parts.is_empty());
+    let (parts, parents, unstored) = reader
+        .parent_parts(&SessionId::parse("test:child").unwrap())
+        .unwrap();
+    assert!(unstored);
+    assert!(parents.issues.is_empty());
+    assert!(parts.is_empty());
 }
 
 #[test]
@@ -66,18 +51,14 @@ fn a_link_that_copies_nothing_is_never_the_unstored_copy_marker() {
     });
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let mut found = composed();
-    prefix(
-        &reader,
-        &SessionId::parse("test:child").unwrap(),
-        &mut found,
-    )
-    .unwrap();
-    assert!(!found.unstored_copy);
-    assert!(matches!(
-        &found.issues[..],
-        [ParentIssue::MissingBranchPoint { .. }]
-    ));
+    let (parts, parents, unstored) = reader
+        .parent_parts(&SessionId::parse("test:child").unwrap())
+        .unwrap();
+    assert!(!unstored);
+    assert!(parts.is_empty());
+    assert!(
+        matches!(&parents.issues[..], [ParentIssue::MissingParent { parent, .. }] if parent.to_string()=="test:missing")
+    );
 }
 
 #[test]
