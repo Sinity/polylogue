@@ -1,8 +1,6 @@
 //! The common evaluator owns firing, occurrence consumption and host policy.
 //! This adapter owns archive transactions and deployment-selected effects.
 mod desktop;
-#[cfg(test)]
-pub(crate) mod observations;
 mod rules;
 
 use crate::daemon::service::Daemon;
@@ -61,17 +59,8 @@ impl From<crate::daemon::Failure> for Held {
 }
 fn report(d: &Daemon, hold: &Held) {
     *d.signals.locked() = json!({"held":[hold]});
-    #[cfg(test)]
-    observations::status(d);
 }
 
-#[cfg(test)]
-fn operation(d: &Daemon) -> Result<Arc<polylogue_reading::operation::Context>, Held> {
-    d.operation_context(&polylogue_reading::operation::Context::worker_authorship(
-        "polylogue-signals",
-    ))
-    .map_err(Held::from)
-}
 struct LocalAttention {
     quiet: Option<shared_signals::QuietHours>,
     budget: usize,
@@ -177,23 +166,8 @@ fn persist(
     let id = canonical_json::canonical_hash("polylogue-signal-commit", &commit)
         .map_err(|e| e.to_string())?;
     let id = format!("signal:{}", id.to_hex());
-    let request = context.request(id.clone(), UserWrite::SignalCommit(Box::new(commit)));
-    #[cfg(test)]
-    observations::emit(
-        d,
-        observations::Phase::PersistStarted {
-            request: id.clone(),
-        },
-    );
+    let request = context.request(id, UserWrite::SignalCommit(Box::new(commit)));
     let outcome = writes.archive().user(request).map_err(|e| e.to_string())?;
-    #[cfg(test)]
-    observations::emit(
-        d,
-        observations::Phase::PersistAcknowledged {
-            request: id.clone(),
-            confirmed: !outcome.pending,
-        },
-    );
     Ok(!outcome.pending)
 }
 
@@ -211,16 +185,6 @@ fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Resu
     }
     let annotations = crate::daemon::query::annotations::list(&reader, "kind:signal", &context)
         .map_err(|e| e.to_string())?;
-    #[cfg(test)]
-    observations::emit(
-        d,
-        observations::Phase::RulesRead {
-            ids: annotations
-                .iter()
-                .map(|annotation| annotation.fact.id.clone())
-                .collect(),
-        },
-    );
     let firings = reader.last_firings().map_err(|e| e.to_string())?;
     let mut definitions = Vec::new();
     let mut unusable = Vec::new();
@@ -248,8 +212,6 @@ fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Resu
         }
     }
     *d.signals.locked() = json!({"rules":definitions,"unusable":unusable,"held":held_rules});
-    #[cfg(test)]
-    observations::status(d);
     drop(reader);
     let bootstrap = prior.is_none();
     if bootstrap {
@@ -260,13 +222,6 @@ fn tick(d: &Daemon, context: Arc<polylogue_reading::operation::Context>) -> Resu
             return Err("signal checkpoint is durably pending confirmation".into());
         }
     }
-    #[cfg(test)]
-    observations::emit(
-        d,
-        observations::Phase::TickCompleted {
-            persisted: bootstrap,
-        },
-    );
     Ok(Tick {
         notices: vec![],
         next: None,

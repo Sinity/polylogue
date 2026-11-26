@@ -4,8 +4,6 @@ use polylogue_engine::{LoopMsg, SharedLoopStatus};
 use polylogue_model::LockExt as _;
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(test)]
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -40,8 +38,6 @@ pub struct Daemon {
     pub(super) started: Instant,
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,
-    #[cfg(test)]
-    pub(crate) signal_trace: Mutex<Option<Sender<crate::signals::observations::Phase>>>,
     pub(in crate::daemon) idle_gate: crate::daemon::schema::IdleGate,
 }
 
