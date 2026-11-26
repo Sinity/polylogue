@@ -25,8 +25,8 @@ pub(crate) const EVERY: u64 = 512;
 const LATEST_KEPT: i64 = 4;
 
 /// A row's place in its session's order, as stored bytes: the row's
-/// `session_order`, a zero byte, 0 for a message or 1 for an event, and its
-/// ID. The empty key comes before every row and `FF` after every row.
+/// `session_order`, 0 for a message or 1 for an event, and its ID. No
+/// order is a prefix of another, so nothing separates them. The empty key comes before every row and `FF` after every row.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Key(pub(crate) Vec<u8>);
 
@@ -40,27 +40,25 @@ impl Key {
         Self(vec![0xFF])
     }
 
-    pub(crate) fn message(order: &str, id: &str) -> Self {
+    pub(crate) fn message(order: &[u8], id: &str) -> Self {
         Self::of(order, 0, id)
     }
 
-    pub(crate) fn event(order: &str, id: &str) -> Self {
+    pub(crate) fn event(order: &[u8], id: &str) -> Self {
         Self::of(order, 1, id)
     }
 
-    fn of(order: &str, kind: u8, id: &str) -> Self {
-        let mut bytes = Vec::with_capacity(order.len() + id.len() + 2);
-        bytes.extend_from_slice(order.as_bytes());
-        bytes.push(0);
+    fn of(order: &[u8], kind: u8, id: &str) -> Self {
+        let mut bytes = Vec::with_capacity(order.len() + id.len() + 1);
+        bytes.extend_from_slice(order);
         bytes.push(kind);
         bytes.extend_from_slice(id.as_bytes());
         Self(bytes)
     }
 
     /// The `session_order` the key starts with.
-    pub(crate) fn order(&self) -> &str {
-        let end = self.0.iter().position(|b| *b == 0).unwrap_or(self.0.len());
-        std::str::from_utf8(&self.0[..end]).unwrap_or("")
+    pub(crate) fn order(&self) -> &[u8] {
+        &self.0[..crate::encoding::ORDER_LENGTH.min(self.0.len())]
     }
 
     pub(crate) fn is_start(&self) -> bool {
@@ -108,12 +106,15 @@ pub(crate) struct MessageRow {
     pub key: Key,
     pub pk: i64,
     pub id: String,
-    pub order: String,
+    pub order: Vec<u8>,
     pub role: String,
     pub written_by: String,
     pub prompt_kind: Option<String>,
     pub model: Option<String>,
     pub at: Option<i64>,
+    /// The exclusive end of its time's period, when the time is a period.
+    pub at_until: Option<i64>,
+    pub at_precision: Option<String>,
     pub words: i64,
     pub stop_reason: Option<String>,
     pub duplicate: bool,
@@ -155,7 +156,7 @@ pub(crate) struct CallRow {
 }
 
 pub(crate) struct ResultRow {
-    pub order: String,
+    pub order: Vec<u8>,
     pub id: String,
     /// The result message's time, when that message is in its session's own
     /// population.
@@ -491,14 +492,15 @@ impl Rows {
                 "SELECT m.pk, m.id, m.session_order, m.role, m.written_by, m.prompt_kind, m.model,
                         m.at, m.words, m.stop_reason, m.duplicate_of IS NOT NULL,
                         m.duplicate_of IS NULL AND coalesce(m.on_active_path, 1) = 1,
-                        coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) <> 0
+                        coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) <> 0,
+                        m.at_until, m.at_precision
                  FROM message m INDEXED BY message_session
                  WHERE m.session_pk = ?1 AND m.session_order >= ?2
                  ORDER BY m.session_order, m.id",
             )?
             .query_map(params![session_pk, order], |r| {
                 let id: String = r.get(1)?;
-                let order: String = r.get(2)?;
+                let order: Vec<u8> = r.get(2)?;
                 Ok(MessageRow {
                     key: Key::message(&order, &id),
                     pk: r.get(0)?,
@@ -514,6 +516,8 @@ impl Rows {
                     duplicate: r.get(10)?,
                     own: r.get(11)?,
                     boundary_unknown: r.get(12)?,
+                    at_until: r.get(13)?,
+                    at_precision: r.get(14)?,
                     blocks: Vec::new(),
                     calls: Vec::new(),
                     inputs: Vec::new(),
@@ -531,7 +535,7 @@ impl Rows {
             )?
             .query_map(params![session_pk, order], |r| {
                 let id: String = r.get(0)?;
-                let order: String = r.get(1)?;
+                let order: Vec<u8> = r.get(1)?;
                 Ok(EventRow {
                     key: Key::event(&order, &id),
                     kind: r.get(2)?,
@@ -589,7 +593,7 @@ impl Rows {
                  ORDER BY b.idx, t.call_id, t.command_norm, t.tool",
             )?
             .query_map(params![m.pk, m.at, self.session_pk], |r| {
-                let order: Option<String> = r.get(10)?;
+                let order: Option<Vec<u8>> = r.get(10)?;
                 Ok(CallRow {
                     pk: r.get(0)?,
                     block_pk: r.get(1)?,

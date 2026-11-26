@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// A message's place in session order (`message_session`): its
 /// `session_order` and ID.
-pub(crate) type OrderKey = (String, String);
+pub(crate) type OrderKey = (Vec<u8>, String);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Span {

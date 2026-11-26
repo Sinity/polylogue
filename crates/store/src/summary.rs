@@ -48,7 +48,7 @@ pub(crate) mod lines;
 pub(crate) mod links;
 mod live;
 mod repository;
-mod session;
+pub(crate) mod session;
 pub(crate) mod span;
 mod title;
 mod tool_calls;

@@ -30,25 +30,27 @@ pub static ARCHIVE: LazyLock<String> = LazyLock::new(|| {
         include_str!("schema/signals.sql")
     ))
 });
-pub const INDEX: &str = concat!(
-    include_str!("schema/index.sql"),
-    "\n",
-    include_str!("schema/wire_shapes.sql"),
-    "\n",
-    include_str!("schema/injection_fields.sql"),
-    "\n",
-    include_str!("schema/attachment_bindings.sql"),
-    "\n",
-    include_str!("schema/text_fragments.sql"),
-    "\n",
-    include_str!("schema/session_cwd.sql"),
-    "\n",
-    include_str!("schema/transcript_lines.sql"),
-    "\n",
-    include_str!("schema/summary.sql"),
-    "\n",
-    include_str!("schema/lineage.sql")
-);
+pub static INDEX: LazyLock<String> = LazyLock::new(|| {
+    with_names(concat!(
+        include_str!("schema/index.sql"),
+        "\n",
+        include_str!("schema/wire_shapes.sql"),
+        "\n",
+        include_str!("schema/injection_fields.sql"),
+        "\n",
+        include_str!("schema/attachment_bindings.sql"),
+        "\n",
+        include_str!("schema/text_fragments.sql"),
+        "\n",
+        include_str!("schema/session_cwd.sql"),
+        "\n",
+        include_str!("schema/transcript_lines.sql"),
+        "\n",
+        include_str!("schema/summary.sql"),
+        "\n",
+        include_str!("schema/lineage.sql")
+    ))
+});
 #[cfg(test)]
 pub(crate) static QUERY_OBJECTS: LazyLock<String> = LazyLock::new(|| {
     with_names(concat!(
@@ -73,7 +75,50 @@ const NAMED_SETS: &[(&str, &[&str])] = &[
         "QueryEdgeKind",
         polylogue_model::query_objects::QueryEdgeKind::NAMES,
     ),
+    ("Precision", &PRECISIONS),
+    ("Route", polylogue_model::Route::NAMES),
+    ("IdKind", polylogue_model::batch::IdKind::NAMES),
+    ("Completion", polylogue_model::Completion::NAMES),
+    ("RoutedFieldGroup", &ROUTED_FIELD_GROUPS),
+    ("Party", crate::measure::time::Party::NAMES),
+    ("SessionKind", polylogue_model::SessionKind::NAMES),
+    ("Role", polylogue_model::Role::NAMES),
+    ("WrittenBy", polylogue_model::WrittenBy::NAMES),
+    ("PromptKind", polylogue_model::PromptKind::NAMES),
+    ("BlockKind", polylogue_model::BlockKind::NAMES),
+    ("ToolAction", polylogue_model::ToolAction::NAMES),
+    ("CallOutcome", polylogue_model::CallOutcome::NAMES),
+    ("LinkKind", polylogue_model::LinkKind::NAMES),
+    ("ReferenceReason", polylogue_model::ReferenceReason::NAMES),
 ];
+
+/// The field groups `message_route` records: every group but the content,
+/// whose route is the message's main route.
+const ROUTED_FIELD_GROUPS: [&str; polylogue_model::FieldGroup::NAMES.len() - 1] = {
+    let all = polylogue_model::FieldGroup::ALL;
+    let mut names = [""; polylogue_model::FieldGroup::NAMES.len() - 1];
+    let (mut i, mut n) = (0, 0);
+    while i < all.len() {
+        if !matches!(all[i], polylogue_model::FieldGroup::Content) {
+            names[n] = all[i].as_str();
+            n += 1;
+        }
+        i += 1;
+    }
+    names
+};
+
+/// The precisions a stored time states, from the shared query language's
+/// closed set.
+const PRECISIONS: [&str; polylogue_model::Precision::ALL.len()] = {
+    let mut names = [""; polylogue_model::Precision::ALL.len()];
+    let mut i = 0;
+    while i < names.len() {
+        names[i] = polylogue_model::Precision::ALL[i].as_str();
+        i += 1;
+    }
+    names
+};
 
 /// Schema text with each `@names(Type)` replaced by that type's names.
 pub(crate) fn with_names(sql: &str) -> String {
@@ -117,41 +162,32 @@ pub(crate) const OPEN_INDEXES: &str = include_str!("schema/open_indexes.sql");
 /// natural-key indexes the writer looks rows up by stay throughout.
 pub(crate) const BUILT_AT_END: &[&str] = &[
     "text_normalized",
-    "message_order",
-    "tool_call_order",
-    "event_order",
-    "message_at",
-    "message_recent",
-    "message_session_at",
-    "message_model_at",
-    "message_session_model_at",
-    "event_at",
-    "session_order",
+    "message_time",
+    "message_period",
+    "message_marked",
+    "tool_call_time",
+    "event_time",
+    "event_period",
     "session_activity",
-    "session_recent",
     "session_started",
     "session_cwd",
     "session_repo",
     "session_live",
-    "message_prose",
-    "message_branch",
-    "tool_call_tool",
     "tool_call_action",
-    "tool_call_path",
     "tool_call_repo_command",
     "event_kind",
-    "commit_link_hash",
-    "pr_link_number",
     "removed_session_changed",
 ];
 #[cfg(test)]
-pub(crate) const INDEX_SCHEMA: &[&str] = &[
-    INDEX,
-    crate::coverage::SCHEMA,
-    crate::alternates::SCHEMA,
-    SEARCH_TRIGGERS,
-    OPEN_INDEXES,
-];
+pub(crate) static INDEX_SCHEMA: LazyLock<[&str; 5]> = LazyLock::new(|| {
+    [
+        &INDEX,
+        crate::coverage::SCHEMA,
+        crate::alternates::SCHEMA,
+        SEARCH_TRIGGERS,
+        OPEN_INDEXES,
+    ]
+});
 /// The `embedded` (vectors) and `embed_failure` tables of `embeddings.db`, as the first build at
 /// the baseline created them.
 const EMBEDDINGS_BASE: &str = include_str!("schema/embeddings.sql");
@@ -266,7 +302,7 @@ fn base_index(conn: &Connection) -> Result<()> {
 }
 
 fn base_index_in(conn: &Connection, deferring: bool) -> Result<()> {
-    execute_index_sql(conn, INDEX, deferring)?;
+    execute_index_sql(conn, &INDEX, deferring)?;
     conn.execute_batch(crate::coverage::SCHEMA)?;
     conn.execute_batch(crate::alternates::SCHEMA)?;
     if !deferring {

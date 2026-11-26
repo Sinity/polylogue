@@ -230,8 +230,18 @@ impl<'a> Compiler<'a> {
                     ));
                     let spec = units::spec(parts.scope.unit);
                     let time = parts.scope.a.expand(spec.time);
+                    // Newest first is the unit's time order read backwards,
+                    // ties included, so the index of its default order
+                    // serves it.
                     let mut order = vec![format!("{time} IS NULL"), format!("{time} DESC")];
-                    order.extend(spec.identity.iter().map(|term| parts.scope.a.expand(term)));
+                    if spec.session_order {
+                        order.push(format!("{}.session_order DESC", parts.scope.a.m));
+                    }
+                    order.extend(
+                        spec.identity
+                            .iter()
+                            .map(|term| format!("{} DESC", parts.scope.a.expand(term))),
+                    );
                     parts.explicit_order = Some(order);
                 }
                 TransformKind::Extension { name, arguments }

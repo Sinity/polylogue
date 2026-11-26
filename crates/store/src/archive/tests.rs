@@ -242,12 +242,12 @@ fn a_stopped_process_resumes_its_committed_parse_positions() {
     writer.derive().unwrap();
     drop(writer);
     let index = open_read(&archive.index_db()).unwrap();
-    assert!(schema::same_schema(&index, schema::INDEX_SCHEMA).unwrap());
+    assert!(schema::same_schema(&index, &*schema::INDEX_SCHEMA).unwrap());
     assert!(archive.index_build().is_none());
 }
 
 #[test]
-fn opening_adds_model_completion_index_without_rebuilding_rows() {
+fn opening_adds_a_missing_read_index_without_rebuilding_rows() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     // An installed index: a build in progress defers this index to its end.
@@ -256,10 +256,10 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
         .build(Vec::new())
         .unwrap();
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
-    index.execute_batch("DROP INDEX message_model_at;").unwrap();
+    index.execute_batch("DROP INDEX message_time;").unwrap();
     let completion_plan = |index: &Connection| -> Vec<String> {
         index
-            .prepare("EXPLAIN QUERY PLAN SELECT DISTINCT model FROM message WHERE model IS NOT NULL ORDER BY model")
+            .prepare("EXPLAIN QUERY PLAN SELECT id FROM message WHERE at IS NOT NULL ORDER BY at, session_order, id")
             .unwrap()
             .query_map([], |r| r.get(3))
             .unwrap()
@@ -301,7 +301,7 @@ fn opening_adds_model_completion_index_without_rebuilding_rows() {
         let plan = completion_plan(&index);
         assert!(
             plan.iter()
-                .any(|step| step.contains("COVERING INDEX message_model_at")),
+                .any(|step| step.contains("COVERING INDEX message_time")),
             "{plan:?}"
         );
         assert!(
@@ -327,8 +327,8 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     let index = open_write(&archive.index_db(), cache::SETUP).unwrap();
     index
         .execute_batch(
-            "DROP INDEX message_at; DROP INDEX event_at;
-             DROP INDEX message_session_at; DROP INDEX message_model_at; DROP INDEX message_session_model_at;
+            "DROP INDEX message_time; DROP INDEX event_time;
+             DROP INDEX message_period; DROP INDEX event_period;
         INSERT INTO input_ref(id) VALUES ('synthetic');
         INSERT INTO meta VALUES ('index-marker','present');",
         )
@@ -338,7 +338,7 @@ fn missing_time_indexes_are_created_without_rebuilding_the_index() {
     for _ in 0..2 {
         let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
         let index = open_read(&archive.index_db()).unwrap();
-        assert!(schema::same_schema(&index, schema::INDEX_SCHEMA).unwrap());
+        assert!(schema::same_schema(&index, &*schema::INDEX_SCHEMA).unwrap());
         assert_eq!(
             index
                 .query_row("SELECT value FROM meta WHERE key='index-marker'", [], |r| r

@@ -985,7 +985,7 @@ fn cwd_searches_recorded_directories_and_never_scans_sessions() {
                     program.statements.page(
                         &program.order,
                         program.params.len(),
-                        false,
+                        None,
                         false,
                         crate::query::PageColumns::All,
                     )
@@ -1177,7 +1177,7 @@ fn session_field_uses_session_index() {
                 program.statements.page(
                     &program.order,
                     program.params.len(),
-                    false,
+                    None,
                     false,
                     crate::query::PageColumns::All,
                 )
