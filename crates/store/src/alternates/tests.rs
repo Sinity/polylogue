@@ -372,6 +372,8 @@ fn live_alternate_reads_use_one_source_snapshot_and_search_the_committed_text() 
     archive.writer.archive().user(first).unwrap();
     assert!(before.alternate("first").unwrap().is_none());
     drop(before);
+    // Its text is searchable once the index writer has followed the commit.
+    archive.writer.flush_rows().unwrap();
     let reader = pool.reader().unwrap();
     assert!(reader.alternate("first").unwrap().is_some());
     let alternate = reader.alternate("first").unwrap().unwrap();

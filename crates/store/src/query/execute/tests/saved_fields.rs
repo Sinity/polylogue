@@ -626,6 +626,7 @@ fn alternate_true_admits_alternate_text() {
             },
         ))
         .unwrap();
+    archive.writer.flush_rows().unwrap();
     let read = |text: &str| {
         let mut opts = all_columns_options();
         opts.origins = vec!["claude-code".into()];

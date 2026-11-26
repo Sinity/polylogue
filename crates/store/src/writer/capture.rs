@@ -16,6 +16,10 @@ use polylogue_model::LockExt as _;
 pub(super) struct Parsed {
     pub batches: Vec<Batch>,
     pub atomic: bool,
+    /// Every batch only parses bytes stored before (no capture of new bytes
+    /// or a new observation): its rows can be made again from stored bytes,
+    /// so a stop may drop them.
+    pub replay: bool,
     pub reply: Reply,
 }
 
@@ -98,6 +102,7 @@ impl WriterSender {
     /// failure after the hand-over is reported at the next flush.
     pub fn send(&self, mut batch: Batch) -> Result<()> {
         prepare_batches(&self.0.location, &mut [&mut batch])?;
+        let replay = replayed_input(&batch);
         if batch.stores() {
             if batch.parse.is_empty() {
                 return self.0.archive.hand_over(Group::Captured {
@@ -124,6 +129,7 @@ impl WriterSender {
             .send(Msg::Batch(Parsed {
                 batches: vec![batch],
                 atomic: false,
+                replay,
                 reply: Reply::Nobody,
             }))
             .map_err(|_| StoreError::WriterGone)
@@ -155,6 +161,7 @@ impl WriterSender {
             return Ok(wait);
         }
         let atomic = is_atomic_capture_group(&group);
+        let replay = group.iter().all(|item| replayed_input(&item.batch));
         let stored = match self.store_rows(&mut group, atomic) {
             Ok(stored) => stored,
             Err(StoreError::WriterGone) => return Err(StoreError::WriterGone),
@@ -179,6 +186,7 @@ impl WriterSender {
             .send(Msg::Batch(Parsed {
                 batches: parsed,
                 atomic,
+                replay,
                 reply: Reply::Stored {
                     stored,
                     positions,

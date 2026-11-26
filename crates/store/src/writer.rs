@@ -1109,7 +1109,7 @@ impl Inner {
             ));
         }
         let batches = || group.iter().flat_map(|parsed| &parsed.batches);
-        let replay = batches().all(replayed_input) && batches().any(cancellable_replay);
+        let replay = group.iter().all(|parsed| parsed.replay) && batches().any(cancellable_replay);
         let together = batches().count() > 1 && self.write(batches(), replay).is_ok();
         let mut answers: Vec<Vec<Result<()>>> = Vec::with_capacity(group.len());
         for parsed in &group {
@@ -1118,7 +1118,7 @@ impl Inner {
             } else if together {
                 answers.push(parsed.batches.iter().map(|_| Ok(())).collect());
             } else if parsed.atomic || parsed.batches.len() == 1 {
-                let replay = parsed.batches.iter().all(cancellable_replay);
+                let replay = parsed.replay && parsed.batches.iter().all(cancellable_replay);
                 let answer = self.write(parsed.batches.iter(), replay);
                 answers.push(match answer {
                     Ok(()) => parsed.batches.iter().map(|_| Ok(())).collect(),
@@ -1134,7 +1134,7 @@ impl Inner {
                 let answer = parsed
                     .batches
                     .iter()
-                    .map(|b| self.write(std::iter::once(b), cancellable_replay(b)))
+                    .map(|b| self.write(std::iter::once(b), parsed.replay && cancellable_replay(b)))
                     .collect();
                 answers.push(answer);
             }
@@ -1144,6 +1144,7 @@ impl Inner {
                 batches,
                 atomic,
                 reply,
+                ..
             } = parsed;
             let inputs: Vec<String> = batches.iter().map(|b| b.input.id.clone()).collect();
             // A reply also observes the release of the batches' memory
