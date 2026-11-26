@@ -312,7 +312,10 @@ mod tests {
         std::fs::write(&old_path, &bytes).unwrap();
         for path in [old_path, new_path] {
             let bytes = std::fs::read(&path).unwrap();
-            assert!(polylogue_sources::hook_spool::recognize(&path, &bytes));
+            assert!(polylogue_sources::hook_spool::recognize(
+                &path,
+                &polylogue_sources::document::Head::new(&bytes)
+            ));
             let parser = polylogue_sources::hook_spool::open(&path).unwrap();
             let (step, _) = parser.step(None, &bytes, 0).unwrap();
             assert_eq!(step.output.events.len(), 1);

@@ -260,9 +260,9 @@ fn tool_roots(
 ) -> Vec<PathBuf> {
     let base = config.root(tool.root);
     let mut roots = Vec::new();
-    if tool.name == "hermes" {
+    if let Some(profiles) = tool.profiles {
         roots.extend(
-            entries(&base.join("profiles"), unreadable)
+            entries(&base.join(profiles), unreadable)
                 .into_iter()
                 .filter(|profile| fs::symlink_metadata(profile).is_ok_and(|m| m.is_dir())),
         );
@@ -362,7 +362,7 @@ pub fn scan_with_coverage(config: &Config) -> Scan {
             // user's checkout.
             let ignored = ignored.or_else(|| {
                 (matched.is_none()
-                    && tool.is_some_and(|tool| tool.name == "claude-code")
+                    && tool.is_some_and(|tool| tool.user_projects)
                     && user_project(&root, &path))
                 .then_some(("**", "user project under tool home"))
             });
@@ -451,12 +451,11 @@ fn user_project(root: &Path, path: &Path) -> bool {
 
 fn git_metadata(relative: &Path, tool: Option<&polylogue_sources::locations::Tool>) -> bool {
     relative.components().any(|p| p.as_os_str() == ".git")
+        // A location that names git data makes that data the tool's.
         && !tool.is_some_and(|tool| {
-            tool.name == "gemini-cli"
-                && tool
-                    .locations
-                    .iter()
-                    .any(|pattern| pattern.contains(".git/") && matches_path(relative, pattern))
+            tool.locations
+                .iter()
+                .any(|pattern| pattern.contains(".git/") && matches_path(relative, pattern))
         })
 }
 
@@ -464,14 +463,21 @@ fn context_origin(tool: &polylogue_sources::locations::Tool, path: &Path) -> &'s
     let database = path
         .extension()
         .is_some_and(|e| e == "db" || e == "sqlite" || e == "vscdb");
-    let name = if tool.name == "hermes" && polylogue_sources::hermes::open(path).is_some() {
-        "hermes"
-    } else if tool.name == "codex" && path.extension().is_some_and(|e| e == "zst") {
-        "codex-compressed"
+    let parsed = tool
+        .parsed_by
+        .and_then(polylogue_sources::origin::by_name)
+        .filter(|origin| (origin.open)(path).is_some());
+    let compressed = tool
+        .compressed
+        .filter(|_| path.extension().is_some_and(|e| e == "zst"));
+    let name = if let Some(origin) = parsed {
+        origin.name
+    } else if let Some(origin) = compressed {
+        origin
     } else if database {
-        "tool-database"
+        polylogue_sources::origin::TOOL_DATABASE
     } else {
-        "tool-context"
+        polylogue_sources::origin::TOOL_CONTEXT
     };
     polylogue_sources::origin::by_name(name).expect("collection origin")
 }
@@ -555,7 +561,7 @@ pub fn recognize(found: &Found) -> bool {
     let head = fs::File::open(&found.path)
         .and_then(|mut f| polylogue_sources::document::read_head(&mut f))
         .unwrap_or_default();
-    (found.origin.recognize)(&found.path, &head)
+    (found.origin.recognize)(&found.path, &polylogue_sources::document::Head::new(&head))
 }
 
 /// An existing input directory is watched recursively. Until it exists,

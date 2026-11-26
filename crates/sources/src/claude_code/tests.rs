@@ -3,6 +3,11 @@ use crate::parse::run;
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap};
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn main_file(stem: &str) -> ClaudeCode {
     ClaudeCode {
         file: File::Main { stem: stem.into() },

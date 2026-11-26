@@ -2,6 +2,11 @@ use super::*;
 use crate::parse::run_document;
 use serde_json::json;
 
+/// The rule as a file found at a location meets it: its first bytes alone.
+fn recognize(path: &std::path::Path, head: &[u8]) -> bool {
+    super::recognize(path, &crate::document::Head::new(head))
+}
+
 fn capture(raw: Json, session: Json) -> Vec<u8> {
     serde_json::to_vec(&json!({
         "polylogue_capture_kind": "conversation",

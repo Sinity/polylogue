@@ -174,8 +174,9 @@ impl Engine {
             let prepared = self.archive.prepare_bytes(&mut manifest)?;
             let id = prepared.hash().to_string();
             if self.reads.reader()?.input_progress(&id)?.is_none() {
-                let origin = polylogue_sources::origin::by_name(polylogue_sources::origin::TOOL_CONTEXT)
-                    .expect("declared origin");
+                let origin =
+                    polylogue_sources::origin::by_name(polylogue_sources::origin::TOOL_CONTEXT)
+                        .expect("declared origin");
                 let observation = self.observation(
                     Path::new(&format!("codex-local-references/{transcript}.jsonl")),
                     None,

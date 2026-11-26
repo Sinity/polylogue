@@ -7,7 +7,7 @@ pub const VERSION: u32 = 3;
 
 use crate::fields::ExpectedType as T;
 mod identity;
-use crate::document::{Sink, first_key, message_id, session_id};
+use crate::document::{Sink, message_id, session_id};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse, Step};
