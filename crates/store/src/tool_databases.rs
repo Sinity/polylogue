@@ -7,7 +7,7 @@ use crate::row::{Row as _, Rows as _, row};
 use crate::{Archive, FileFacts, InputKey, Observation};
 use base64::Engine as _;
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OpenFlags, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
 use serde_json::{Map, Value, json};
 use std::{
     collections::HashMap,
