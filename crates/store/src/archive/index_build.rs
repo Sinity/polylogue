@@ -193,12 +193,12 @@ impl State {
     }
 
     /// Sets the files as the archive's open found or made them.
+    /// The counts and measurements start again with the open.
     fn opened(&self, files: IndexFiles) {
-        let mut inner = self.inner.locked();
-        if !matches!(files.rebuilding, Rebuilding::Writing { .. }) {
-            inner.measured = Default::default();
-        }
-        inner.files = Some(files);
+        *self.inner.locked() = Inner {
+            files: Some(files),
+            ..Inner::default()
+        };
     }
 
     /// Moves the files to their next state. A rebuild that starts, or starts

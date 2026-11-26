@@ -149,7 +149,7 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
 #[test]
 fn an_import_answered_during_a_build_says_the_index_is_being_built() {
     let build = polylogue_store::archive::index_build::IndexBuild {
-        serving_previous: false,
+        reason: polylogue_store::index::file::RebuildReason::NoIndex,
         chains: 3,
         chains_read: 1,
         bytes: 300,

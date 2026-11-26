@@ -4,7 +4,7 @@ use super::*;
 fn building_status_keeps_progress_and_does_not_invent_empty_vectors() {
     let daemon = crate::test_daemon::start("synthetic source");
     let progress = polylogue_store::archive::index_build::IndexBuild {
-        serving_previous: false,
+        reason: polylogue_store::index::file::RebuildReason::NoIndex,
         chains: 3,
         chains_read: 1,
         bytes: 900,
