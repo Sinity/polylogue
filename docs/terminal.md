@@ -54,6 +54,7 @@ It opens only when standard input and a display output are terminals and no mach
 ```
 
 - **Filtering.** The prompt filters fuzzily over titles, first prompts and repositories, ignoring letter case, from the session index the CLI reads from the catalog. `Ctrl-e` switches it to query mode: the text is a query, the list runs again as it changes, stale replies are dropped and the count updates. Candidates stream page by page as the user scrolls.
+- **A page on its way** shows `loading` where the count goes and no rows, and Enter waits for it; a page with no rows shows its count, `0 rows`. A page that could not be read shows `failed` there and the reason on the line above the footer. The highlight starts on a new page's first row, or on its last row when the page was reached by moving up.
 - **The footer always shows the keys**, generated from one key table. Enter runs the line's next verb with its words, shown in the footer (`Enter tag reviewed`; `Enter read` for `polylogue read`). When nothing follows `pick`, Enter prints the chosen references, one per line, which is what Alt-p inserts. `Ctrl-r` reads the highlighted row in the pager and returns to the picker.
 - **The preview** shows the highlighted row as `read --view overview` would, at the pane's width; a reply for a row no longer highlighted is never drawn. Archived text is shown with control characters escaped.
 - **Off a terminal or with `--json`**, a line that needs the picker is refused `ambiguous` with the candidates (short ID, time, title) and ready lines (`polylogue SESSION resume`, `polylogue @N read` on a terminal); it never dumps every candidate into a pipe. With `--json` the shared error reply carries kind `ambiguous`, the candidates and the ready lines.
@@ -101,7 +102,7 @@ Row numbers name rows of the last list printed on this terminal. The other refer
 | `@all` | every row shown |
 
 - **Terminal only.** Row numbers resolve when standard input and output are a terminal. Elsewhere (pipes, agents' tool shells) `@3` is refused `row_numbers_off_terminal` with "use the references printed above": parallel subagents share one harness session ID, so a list remembered per session would let one act on another's rows. Every reply carries short references, so agents lose nothing.
-- **The row file**, per terminal and archive, holds the last list's question, the shown rows' references and when they were shown. Only list replies replace it: a listing, picker candidates and `ambiguous` candidates. Reads, writes and acts never do.
+- **The row file**, per terminal and archive, holds the last list's question, the shown rows' references and when they were shown. Only list replies replace it: a listing, a page of picker candidates once it has arrived and `ambiguous` candidates. Reads, writes and acts never do.
 - A write or act that used row numbers prints `rows of '<question>' shown <n> min ago` before its outcome.
 - Row numbers are rewritten only in the selection position (and in `judge`'s word), never inside text. They travel as resolved references: row numbers never leave the command line, and the daemon refuses a row number with "row numbers are resolved by the command line".
 

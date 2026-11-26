@@ -261,50 +261,122 @@ impl<T> Drop for Work<T> {
     }
 }
 
+/// Which row a page highlights when it arrives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Highlight {
+    First,
+    Last,
+}
+
+/// The page of rows the picker is on. Only a loaded page has rows, a
+/// highlighted row and a place in the terminal's row list.
+enum CurrentPage {
+    /// The page was asked for and has not arrived. Replacing this value drops
+    /// the request, and with it the highlight chosen for that request.
+    Loading {
+        request: Work<Page>,
+        highlight: Highlight,
+    },
+    Loaded {
+        page: Page,
+        highlighted: usize,
+        /// The first row drawn.
+        top: usize,
+    },
+    /// The request failed; the text says why.
+    Failed(String),
+}
+impl CurrentPage {
+    fn loaded(page: Page, highlight: Highlight) -> Self {
+        let highlighted = match highlight {
+            Highlight::First => 0,
+            Highlight::Last => page.rows.len().saturating_sub(1),
+        };
+        Self::Loaded {
+            page,
+            highlighted,
+            top: 0,
+        }
+    }
+}
+
+/// The preview pane's reading of one row at one width.
+enum Overview {
+    /// No row is highlighted, or the pane is closed.
+    Absent,
+    /// Replacing this value drops the request, so its reply is never drawn.
+    Loading {
+        row: (String, u16),
+        request: Work<String>,
+    },
+    /// The text is the overview, or why there is none.
+    Arrived { row: (String, u16), text: String },
+}
+impl Overview {
+    fn row(&self) -> Option<&(String, u16)> {
+        match self {
+            Self::Absent => None,
+            Self::Loading { row, .. } | Self::Arrived { row, .. } => Some(row),
+        }
+    }
+    fn text(&self) -> &str {
+        match self {
+            Self::Arrived { text, .. } => text,
+            Self::Absent | Self::Loading { .. } => "",
+        }
+    }
+    /// Takes the reply once it is in; true when the pane changed.
+    fn settle(&mut self) -> bool {
+        let Self::Loading { row, request } = self else {
+            return false;
+        };
+        let Some(reply) = request.take() else {
+            return false;
+        };
+        *self = Self::Arrived {
+            row: row.clone(),
+            text: reply.unwrap_or_else(|error| error.message.clone()),
+        };
+        true
+    }
+}
+
 struct State {
     question: String,
     ambiguous: Option<Vec<Candidate>>,
     mode: Mode,
     fuzzy: String,
     query: String,
-    page: Page,
-    index: usize,
-    top: usize,
+    page: CurrentPage,
     cursors: Vec<Option<String>>,
     page_number: usize,
-    select_last: bool,
     marked: Vec<String>,
     preview: bool,
-    overview: String,
-    preview_key: Option<(String, u16)>,
+    overview: Overview,
+    /// Why the last action failed.
     message: String,
     shown: (String, Vec<String>),
 }
 impl State {
-    fn new(selection: Selection) -> Self {
-        let (question, ambiguous) = match selection {
-            Selection::Query(question) => (question, None),
-            Selection::Ambiguous {
-                question,
-                candidates,
-            } => (question, Some(candidates)),
-        };
+    /// The picker opens on a loaded page, read at `cursor`.
+    fn new(
+        question: String,
+        ambiguous: Option<Vec<Candidate>>,
+        cursor: Option<String>,
+        page: Page,
+    ) -> Self {
         Self {
             query: question.clone(),
             question,
             ambiguous,
             mode: Mode::Fuzzy,
             fuzzy: String::new(),
-            page: Page::default(),
-            index: 0,
-            top: 0,
-            cursors: vec![None],
+            page: CurrentPage::loaded(page, Highlight::First),
+            cursors: vec![cursor],
             page_number: 0,
-            select_last: false,
             marked: Vec::new(),
             preview: true,
-            overview: String::new(),
-            preview_key: None,
+            overview: Overview::Absent,
             message: String::new(),
             shown: (String::new(), vec![]),
         }
@@ -337,7 +409,12 @@ impl State {
         }
     }
     fn highlighted(&self) -> Option<&Candidate> {
-        self.page.rows.get(self.index)
+        match &self.page {
+            CurrentPage::Loaded {
+                page, highlighted, ..
+            } => page.rows.get(*highlighted),
+            CurrentPage::Loading { .. } | CurrentPage::Failed(_) => None,
+        }
     }
     fn chosen(&self) -> Vec<String> {
         if self.marked.is_empty() {
@@ -347,32 +424,6 @@ impl State {
         } else {
             self.marked.clone()
         }
-    }
-    fn reset(&mut self) {
-        self.page = Page::default();
-        self.index = 0;
-        self.top = 0;
-        self.cursors = vec![None];
-        self.page_number = 0;
-        self.marked.clear();
-        self.message.clear();
-        self.clear_preview();
-    }
-    fn clear_preview(&mut self) {
-        self.preview_key = None;
-        self.overview.clear();
-    }
-    fn accept(&mut self, page: Page) {
-        self.page = page;
-        self.index = if self.select_last {
-            self.page.rows.len().saturating_sub(1)
-        } else {
-            0
-        };
-        self.top = 0;
-        self.select_last = false;
-        self.message.clear();
-        self.clear_preview();
     }
     fn start_page<S: Source>(
         &self,
@@ -390,25 +441,84 @@ impl State {
         }
         Work::start(runtime, async move { source.page(request).await })
     }
-    fn move_row(&mut self, next: bool) -> bool {
-        self.clear_preview();
-        if next && self.index + 1 < self.page.rows.len() {
-            self.index += 1;
-        } else if !next && self.index > 0 {
-            self.index -= 1;
-        } else if next && let Some(cursor) = &self.page.next {
+
+    // The page's transitions: `load` from any state to loading, `settle` from
+    // loading to loaded or failed. `restart` and `move_row` decide which page
+    // to load and call `load`.
+
+    /// Asks for the page `page_number` names, in place of whatever was shown
+    /// or on its way.
+    fn load<S: Source>(
+        &mut self,
+        source: &Arc<S>,
+        runtime: &tokio::runtime::Runtime,
+        highlight: Highlight,
+    ) {
+        self.overview = Overview::Absent;
+        self.page = CurrentPage::Loading {
+            request: self.start_page(source.clone(), runtime),
+            highlight,
+        };
+    }
+    /// Takes the reply once it is in; true when the page changed.
+    fn settle(&mut self) -> bool {
+        let CurrentPage::Loading { request, highlight } = &self.page else {
+            return false;
+        };
+        let Some(reply) = request.take() else {
+            return false;
+        };
+        self.page = match reply {
+            Ok(page) => CurrentPage::loaded(page, *highlight),
+            Err(error) => CurrentPage::Failed(error.message.clone()),
+        };
+        self.message.clear();
+        self.overview = Overview::Absent;
+        true
+    }
+    /// A changed filter, query or mode starts again from the first page.
+    fn restart<S: Source>(&mut self, source: &Arc<S>, runtime: &tokio::runtime::Runtime) {
+        self.cursors = vec![None];
+        self.page_number = 0;
+        self.marked.clear();
+        self.message.clear();
+        self.load(source, runtime, Highlight::First);
+    }
+    /// Moves the highlight within a loaded page, or loads the page past its
+    /// edge. The earlier page can be asked for from any state.
+    fn move_row<S: Source>(
+        &mut self,
+        next: bool,
+        source: &Arc<S>,
+        runtime: &tokio::runtime::Runtime,
+    ) {
+        self.overview = Overview::Absent;
+        let later = match &mut self.page {
+            CurrentPage::Loaded {
+                page, highlighted, ..
+            } => {
+                if next && *highlighted + 1 < page.rows.len() {
+                    *highlighted += 1;
+                    return;
+                }
+                if !next && *highlighted > 0 {
+                    *highlighted -= 1;
+                    return;
+                }
+                page.next.clone()
+            }
+            CurrentPage::Loading { .. } | CurrentPage::Failed(_) => None,
+        };
+        if next {
+            let Some(cursor) = later else { return };
             self.cursors.truncate(self.page_number + 1);
-            self.cursors.push(Some(cursor.clone()));
+            self.cursors.push(Some(cursor));
             self.page_number += 1;
-            self.page = Page::default();
-            return true;
-        } else if !next && self.page_number > 0 {
+            self.load(source, runtime, Highlight::First);
+        } else if self.page_number > 0 {
             self.page_number -= 1;
-            self.select_last = true;
-            self.page = Page::default();
-            return true;
+            self.load(source, runtime, Highlight::Last);
         }
-        false
     }
 }
 
@@ -418,19 +528,28 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
         .enable_all()
         .build()
         .map_err(Failure::io)?;
-    let mut state = State::new(options.selection.clone());
+    let (question, ambiguous) = match options.selection.clone() {
+        Selection::Query(question) => (question, None),
+        Selection::Ambiguous {
+            question,
+            candidates,
+        } => (question, Some(candidates)),
+    };
     // No terminal mode is changed until the cardinality is known.
-    let mut page = if let Some(rows) = &state.ambiguous {
-        fuzzy_page(rows.clone(), &state.request(), CANDIDATE_PAGE)?
+    let mut request = PageRequest {
+        selection: question.clone(),
+        cursor: None,
+        fuzzy: Some(String::new()),
+    };
+    let mut page = if let Some(rows) = &ambiguous {
+        fuzzy_page(rows.clone(), &request, CANDIDATE_PAGE)?
     } else {
-        runtime.block_on(source.page(state.request()))?
+        runtime.block_on(source.page(request.clone()))?
     };
     // Empty transfer pages do not imply that a selection is empty.
     while page.rows.is_empty() && page.next.is_some() {
-        state.accept(page);
-        state.cursors[0] = state.page.next.clone();
-        let request = state.request();
-        page = runtime.block_on(source.page(request))?;
+        request.cursor = page.next;
+        page = runtime.block_on(source.page(request.clone()))?;
     }
     if page.rows.is_empty() {
         return Err(Failure::new(
@@ -438,13 +557,11 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
             "no rows match the selection",
         ));
     }
-    state.accept(page);
-    if state.page.rows.len() == 1 && state.page.next.is_none() {
-        return finish(&*source, &options, state.chosen());
+    if page.rows.len() == 1 && page.next.is_none() {
+        return finish(&*source, &options, vec![page.rows[0].reference.clone()]);
     }
     if !screen.is_terminal() {
-        let candidates = state
-            .page
+        let candidates = page
             .rows
             .iter()
             .map(|row| {
@@ -469,6 +586,7 @@ fn run<S: Source>(source: Arc<S>, options: Options, screen: &mut Screen) -> Resu
         failure.error = failure.error.with_candidates(candidates);
         return Err(failure);
     }
+    let mut state = State::new(question, ambiguous, request.cursor, page);
     screen.enter()?;
     let result = interact(source.clone(), &options, screen, &runtime, &mut state);
     let restored = screen.leave();
@@ -494,55 +612,25 @@ fn interact<S: Source>(
     runtime: &tokio::runtime::Runtime,
     state: &mut State,
 ) -> Result<Choice> {
-    let mut page: Option<Work<Page>> = None;
-    let mut preview: Option<Work<String>> = None;
     let mut dirty = true;
     loop {
-        if let Some(reply) = page.as_ref().and_then(Work::take) {
-            page = None;
-            match reply {
-                Ok(rows) => state.accept(rows),
-                Err(error) => state.message = error.message.clone(),
-            }
-            dirty = true;
-        }
+        dirty |= state.settle();
         let (width, height) = screen.size()?;
-        let preview_key = state
+        let wanted = state
             .highlighted()
             .filter(|_| state.preview)
             .map(|row| (row.reference.clone(), width.saturating_sub(1)));
-        if preview_key != state.preview_key {
-            preview = None;
-            state.overview.clear();
-            state.preview_key = preview_key.clone();
-            if let Some((reference, width)) = preview_key {
-                let source = source.clone();
-                preview = Some(Work::start(runtime, async move {
-                    let request = PreviewRequest {
-                        reference,
-                        width,
-                        deadline: PREVIEW_DEADLINE,
-                    };
-                    tokio::time::timeout(PREVIEW_DEADLINE, source.preview(request))
-                        .await
-                        .map_err(|_| {
-                            Failure::deadline_exceeded(format!(
-                                "overview exceeded its {} ms deadline",
-                                PREVIEW_DEADLINE.as_millis()
-                            ))
-                        })?
-                }));
-            }
-            dirty = true;
-        }
-        if let Some(reply) = preview.as_ref().and_then(Work::take) {
-            preview = None;
-            state.overview = match reply {
-                Ok(text) => text,
-                Err(error) => error.message.clone(),
+        if wanted.as_ref() != state.overview.row() {
+            state.overview = match wanted {
+                Some(row) => Overview::Loading {
+                    request: start_overview(source.clone(), runtime, row.clone()),
+                    row,
+                },
+                None => Overview::Absent,
             };
             dirty = true;
         }
+        dirty |= state.overview.settle();
         if dirty {
             draw(&*source, options, screen, state, width, height)?;
             dirty = false;
@@ -553,15 +641,13 @@ fn interact<S: Source>(
         let event = event::read().map_err(Failure::io)?;
         let key = match event {
             Event::Resize(_, _) => {
-                state.clear_preview();
+                state.overview = Overview::Absent;
                 dirty = true;
                 continue;
             }
             Event::Paste(text) => {
                 state.text_mut().push_str(&text);
-                state.reset();
-                page = Some(state.start_page(source.clone(), runtime));
-                preview = None;
+                state.restart(&source, runtime);
                 dirty = true;
                 continue;
             }
@@ -577,14 +663,12 @@ fn interact<S: Source>(
             Some(Command::Cancel) => return Ok(Choice::Cancelled),
             Some(Command::Enter) => {
                 let chosen = state.chosen();
-                if !chosen.is_empty() && page.is_none() {
+                if !chosen.is_empty() && !matches!(state.page, CurrentPage::Loading { .. }) {
                     return Ok(Choice::Selected(chosen));
                 }
             }
             Some(Command::Next | Command::Previous) => {
-                if state.move_row(matches!(command, Some(Command::Next))) {
-                    page = Some(state.start_page(source.clone(), runtime));
-                }
+                state.move_row(matches!(command, Some(Command::Next)), &source, runtime);
             }
             Some(Command::Mark) => {
                 if let Some(row) = state.highlighted().cloned() {
@@ -600,9 +684,7 @@ fn interact<S: Source>(
                         }
                         state.marked.push(row.reference);
                     }
-                    if state.move_row(true) {
-                        page = Some(state.start_page(source.clone(), runtime));
-                    }
+                    state.move_row(true, &source, runtime);
                 }
             }
             Some(Command::Mode) => {
@@ -610,9 +692,7 @@ fn interact<S: Source>(
                     Mode::Fuzzy => Mode::Query,
                     Mode::Query => Mode::Fuzzy,
                 };
-                state.reset();
-                page = Some(state.start_page(source.clone(), runtime));
-                preview = None;
+                state.restart(&source, runtime);
             }
             Some(Command::Preview) => {
                 state.preview = !state.preview;
@@ -625,8 +705,7 @@ fn interact<S: Source>(
                         Some(Command::Browser) => Action::Browser,
                         _ => Action::Copy,
                     };
-                    preview = None;
-                    state.clear_preview();
+                    state.overview = Overview::Absent;
                     screen.leave()?;
                     let result = source.act(action, &[reference]);
                     screen.enter()?;
@@ -640,14 +719,32 @@ fn interact<S: Source>(
                     screen.print(std::slice::from_ref(&row.reference))?;
                 }
             }
-            None if edit(state.text_mut(), key) => {
-                state.reset();
-                page = Some(state.start_page(source.clone(), runtime));
-                preview = None;
-            }
+            None if edit(state.text_mut(), key) => state.restart(&source, runtime),
             None => {}
         }
     }
+}
+
+fn start_overview<S: Source>(
+    source: Arc<S>,
+    runtime: &tokio::runtime::Runtime,
+    (reference, width): (String, u16),
+) -> Work<String> {
+    Work::start(runtime, async move {
+        let request = PreviewRequest {
+            reference,
+            width,
+            deadline: PREVIEW_DEADLINE,
+        };
+        tokio::time::timeout(PREVIEW_DEADLINE, source.preview(request))
+            .await
+            .map_err(|_| {
+                Failure::deadline_exceeded(format!(
+                    "overview exceeded its {} ms deadline",
+                    PREVIEW_DEADLINE.as_millis()
+                ))
+            })?
+    })
 }
 
 fn edit(text: &mut String, key: KeyEvent) -> bool {
@@ -711,28 +808,51 @@ fn draw(
         0
     };
     let row_lines = available.saturating_sub(preview_lines).max(1);
-    if state.index < state.top {
-        state.top = state.index;
-    } else if state.index >= state.top + row_lines {
-        state.top = state.index + 1 - row_lines;
+    if let CurrentPage::Loaded {
+        highlighted, top, ..
+    } = &mut state.page
+    {
+        if *highlighted < *top {
+            *top = *highlighted;
+        } else if *highlighted >= *top + row_lines {
+            *top = *highlighted + 1 - row_lines;
+        }
     }
-    let shown = &state.page.rows
-        [state.top.min(state.page.rows.len())..(state.top + row_lines).min(state.page.rows.len())];
     let question = state.selection();
-    let remembered = (
-        question.to_owned(),
-        shown.iter().map(|row| row.reference.clone()).collect(),
-    );
-    if remembered != state.shown {
-        source.shown(question, shown)?;
-        state.shown = remembered;
-    }
-    let count = state
-        .page
-        .count
-        .map_or_else(|| "?".into(), |count| count.to_string());
+    let (shown, highlighted, top, count, message): (&[Candidate], _, _, _, &str) = match &state.page
+    {
+        CurrentPage::Loaded {
+            page,
+            highlighted,
+            top,
+        } => {
+            let shown =
+                &page.rows[(*top).min(page.rows.len())..(*top + row_lines).min(page.rows.len())];
+            // Only a loaded page replaces the terminal's row list.
+            let remembered = (
+                question.to_owned(),
+                shown.iter().map(|row| row.reference.clone()).collect(),
+            );
+            if remembered != state.shown {
+                source.shown(question, shown)?;
+                state.shown = remembered;
+            }
+            let count = page
+                .count
+                .map_or_else(|| "?".into(), |count| count.to_string());
+            (
+                shown,
+                Some(*highlighted),
+                *top,
+                format!("{count} rows"),
+                &state.message,
+            )
+        }
+        CurrentPage::Loading { .. } => (&[], None, 0, "loading".into(), &state.message),
+        CurrentPage::Failed(why) => (&[], None, 0, "failed".into(), why),
+    };
     let mut lines = vec![format!(
-        "{} › {} [{}] → {} rows",
+        "{} › {} [{}] → {}",
         screen::safe_line(&state.question),
         screen::safe_line(state.text()),
         if state.mode == Mode::Fuzzy {
@@ -745,7 +865,7 @@ fn draw(
     for (index, row) in shown.iter().enumerate() {
         lines.push(format!(
             "{}{} {} {}  {}  {}",
-            if state.top + index == state.index {
+            if highlighted == Some(top + index) {
                 "›"
             } else {
                 " "
@@ -769,6 +889,7 @@ fn draw(
         lines.extend(
             state
                 .overview
+                .text()
                 .split('\n')
                 .take(preview_lines.saturating_sub(1))
                 .map(screen::safe_line),
@@ -777,7 +898,7 @@ fn draw(
             lines.push(String::new());
         }
     }
-    lines.push(screen::safe_line(&state.message));
+    lines.push(screen::safe_line(message));
     lines.extend(footer);
     screen.draw(&lines)
 }

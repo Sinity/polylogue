@@ -7,7 +7,10 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     os::unix::net::{UnixListener, UnixStream},
     process::{Child, Command as Process, Stdio},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Instant,
 };
 
@@ -26,15 +29,32 @@ struct Fixture {
     events: Arc<Mutex<UnixStream>>,
     release: Arc<tokio::sync::Semaphore>,
     started: Instant,
+    /// Requests so far for the unfiltered first page.
+    first_pages: AtomicUsize,
+}
+/// Reports that the preview request holding it was dropped.
+struct DroppedPreview(Arc<Mutex<UnixStream>>, String);
+impl Drop for DroppedPreview {
+    fn drop(&mut self) {
+        emit(&self.0, json!({"dropped":"preview","name":self.1}));
+    }
 }
 impl Fixture {
+    fn page_size(&self) -> usize {
+        if matches!(self.case.as_str(), "pages" | "fails" | "held") {
+            2
+        } else {
+            64
+        }
+    }
+
     fn emit(&self, event: Value) {
         emit(&self.events, event);
     }
     fn rows(&self) -> Vec<Candidate> {
         match self.case.as_str() {
             "single" => vec![row("Alpha")],
-            "pages" => ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
+            "pages" | "fails" | "held" => ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"]
                 .map(row)
                 .to_vec(),
             _ => vec![row("Alpha"), row("Beta")],
@@ -63,12 +83,18 @@ fn emit(events: &Mutex<UnixStream>, event: Value) {
 impl Source for Fixture {
     async fn page(&self, request: PageRequest) -> Result<Page> {
         self.emit(json!({"page":request.selection,"fuzzy":request.fuzzy,"cursor":request.cursor}));
+        if self.case == "fails"
+            && request.cursor.is_none()
+            && request.fuzzy.as_deref() == Some("")
+            && self.first_pages.fetch_add(1, Ordering::SeqCst) == 1
+        {
+            return Err(Failure::not_yet_available("the first page is unavailable"));
+        }
+        if self.case == "held" && request.cursor.is_some() {
+            std::future::pending::<()>().await;
+        }
         if request.fuzzy.is_some() {
-            return fuzzy_page(
-                self.rows(),
-                &request,
-                if self.case == "pages" { 2 } else { 64 },
-            );
+            return fuzzy_page(self.rows(), &request, self.page_size());
         }
         if request.selection == "older" {
             self.delayed("query", "older").await;
@@ -103,6 +129,10 @@ impl Source for Fixture {
         let name = request.reference.rsplit(':').next().unwrap();
         if self.case == "preview" && name == "Alpha" {
             self.delayed("preview", "Alpha").await;
+        }
+        if self.case == "held" && name == "Beta" {
+            let _dropped = DroppedPreview(self.events.clone(), name.to_owned());
+            std::future::pending::<()>().await;
         }
         if name == "Beta" {
             self.release.add_permits(1);
@@ -139,6 +169,7 @@ fn terminal_child() {
         events: events.clone(),
         release: Arc::new(tokio::sync::Semaphore::new(0)),
         started: Instant::now(),
+        first_pages: AtomicUsize::new(0),
     });
     let selection = if case == "ambiguous" {
         Selection::Ambiguous {
@@ -436,7 +467,6 @@ fn picker_query_mode_reruns_and_drops_stale() {
         .iter()
         .filter(|event| event.get("shown").is_some())
         .map(|event| event["shown"].clone())
-        .filter(|rows| !rows.as_array().unwrap().is_empty())
         .collect();
     assert_eq!(
         shown,
@@ -654,4 +684,285 @@ fn a_ten_thousand_row_catalog_filters_to_one_page() {
         assert_eq!(page.count, Some(10_000));
         assert_eq!(page.rows.len(), 64);
     }
+}
+
+/// The first drawn line after `start` that contains `mark`, once its frame is
+/// complete.
+fn drawn_line(terminal: &mut Terminal, start: usize, mark: &str) -> String {
+    terminal.until_after(start, mark);
+    let marked = start
+        + String::from_utf8_lossy(&terminal.bytes[start..])
+            .find(mark)
+            .unwrap();
+    terminal.until_after(marked, "^/ preview");
+    let output = String::from_utf8_lossy(&terminal.bytes[start..]).into_owned();
+    lines(&output)
+        .into_iter()
+        .find(|line| line.contains(mark))
+        .unwrap()
+        .to_owned()
+}
+
+#[test]
+fn a_new_filter_after_a_failed_page_highlights_the_first_row() {
+    let mut terminal = Terminal::new("fails", true, true);
+    terminal.until("Esc cancel");
+    terminal.event(|event| event["shown"] == json!(["session:codex:Alpha", "session:codex:Beta"]));
+    terminal.send(b"\x1b[B\x1b[B");
+    terminal.event(|event| event["shown"] == json!(["session:codex:Gamma", "session:codex:Delta"]));
+    // The earlier page is asked for with its last row to be highlighted, and fails.
+    terminal.send(b"\x1b[A");
+    terminal.until("the first page is unavailable");
+    let start = terminal.bytes.len();
+    terminal.send(b"w");
+    assert_eq!(
+        drawn_line(&mut terminal, start, "→ 5 rows"),
+        "sessions › w [fuzzy] → 5 rows"
+    );
+    terminal.send(b"\r");
+    assert_eq!(
+        terminal.finish().0,
+        json!({"choice":["session:codex:Alpha"]})
+    );
+}
+
+#[test]
+fn a_page_on_its_way_does_not_replace_the_row_list() {
+    let mut terminal = Terminal::new("query", true, true);
+    terminal.until("Esc cancel");
+    let start = terminal.bytes.len();
+    // Query mode asks for a page that never arrives.
+    terminal.send(b"\x05");
+    drawn_line(&mut terminal, start, "[query]");
+    terminal.send(b"\x1b");
+    let (result, _, events) = terminal.finish();
+    assert_eq!(result, json!({"cancelled":true}));
+    let shown: Vec<_> = events
+        .iter()
+        .filter(|event| event.get("shown").is_some())
+        .map(|event| json!({"shown":event["shown"],"question":event["question"]}))
+        .collect();
+    assert_eq!(
+        shown,
+        vec![json!({"shown":["session:codex:Alpha","session:codex:Beta"],"question":"sessions"})]
+    );
+}
+
+#[test]
+fn a_page_on_its_way_and_a_page_without_rows_are_drawn_differently() {
+    let mut terminal = Terminal::new("query", true, true);
+    terminal.until("Esc cancel");
+    let start = terminal.bytes.len();
+    terminal.send(b"\x05");
+    assert_eq!(
+        drawn_line(&mut terminal, start, "[query]"),
+        "sessions › sessions [query] → loading"
+    );
+    terminal.send(b"\x05");
+    let start = terminal.bytes.len();
+    terminal.paste("zzz");
+    assert_eq!(
+        drawn_line(&mut terminal, start, "zzz [fuzzy] → 0"),
+        "sessions › zzz [fuzzy] → 0 rows"
+    );
+    terminal.send(b"\x1b");
+    assert_eq!(terminal.finish().0, json!({"cancelled":true}));
+}
+
+#[test]
+fn a_preview_of_a_row_on_a_page_that_was_left_is_never_drawn() {
+    let mut terminal = Terminal::new("held", true, true);
+    terminal.until("overview: Alpha at 99 columns");
+    terminal.send(b"\x1b[B");
+    terminal.event(|event| event["preview"] == "session:codex:Beta");
+    // The next page is asked for while Beta's preview is still on its way.
+    terminal.send(b"\x1b[B");
+    terminal.event(|event| event["dropped"] == "preview");
+    let start = terminal.bytes.len();
+    terminal.send(b"\x1b[B");
+    terminal.until_after(start, "^/ preview");
+    terminal.send(b"\x1b");
+    let (result, output, _) = terminal.finish();
+    assert_eq!(result, json!({"cancelled":true}));
+    let drawn = lines(&output);
+    let pane = drawn
+        .iter()
+        .rposition(|line| *line == "─ preview ─")
+        .unwrap();
+    let preview: Vec<_> = drawn[pane + 1..]
+        .iter()
+        .take_while(|line| !line.starts_with("↑ up"))
+        .filter(|line| !line.is_empty())
+        .collect();
+    assert_eq!(preview, Vec::<&&str>::new());
+}
+
+/// Answers each page request as the function says; `None` never answers.
+struct Scripted(fn(&PageRequest) -> Option<Result<Page>>);
+impl Source for Scripted {
+    async fn page(&self, request: PageRequest) -> Result<Page> {
+        match (self.0)(&request) {
+            Some(reply) => reply,
+            None => std::future::pending().await,
+        }
+    }
+    async fn preview(&self, _: PreviewRequest) -> Result<String> {
+        std::future::pending().await
+    }
+    fn act(&self, _: Action, _: &[String]) -> Result<()> {
+        Ok(())
+    }
+    fn shown(&self, _: &str, _: &[Candidate]) -> Result<()> {
+        Ok(())
+    }
+}
+
+/// The page state in words, with the page number and the cursors known.
+fn page_state(state: &State) -> String {
+    let page = match &state.page {
+        CurrentPage::Loading { highlight, .. } => format!("loading, to highlight {highlight:?}"),
+        CurrentPage::Loaded {
+            page, highlighted, ..
+        } => format!(
+            "loaded {}, highlighted {}",
+            page.rows
+                .iter()
+                .map(|row| row.title.as_str())
+                .collect::<Vec<_>>()
+                .join(","),
+            highlighted + 1
+        ),
+        CurrentPage::Failed(why) => format!("failed: {why}"),
+    };
+    format!(
+        "page {} of {:?}: {page}",
+        state.page_number + 1,
+        state.cursors
+    )
+}
+
+fn settled(state: &mut State) {
+    while !state.settle() {
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn page_state_transitions() {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .unwrap();
+    fn page(names: &[&str], next: Option<&str>) -> Page {
+        Page {
+            rows: names.iter().map(|name| row(name)).collect(),
+            count: Some(3),
+            next: next.map(str::to_owned),
+        }
+    }
+    let source = Arc::new(Scripted(|request| {
+        match (request.fuzzy.as_deref().unwrap(), &request.cursor) {
+            ("", Some(_)) => Some(Ok(page(&["Gamma"], None))),
+            ("", None) => Some(Err(Failure::not_yet_available("unavailable"))),
+            ("al", None) => Some(Ok(page(&["Alpha", "Beta"], Some("after Beta")))),
+            _ => None,
+        }
+    }));
+    let mut state = State::new(
+        "sessions".into(),
+        None,
+        None,
+        page(&["Alpha", "Beta"], Some("after Beta")),
+    );
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None]: loaded Alpha title,Beta title, highlighted 1"
+    );
+    assert!(!state.settle(), "a loaded page waits for nothing");
+
+    // Moving inside a loaded page keeps it loaded.
+    state.move_row(false, &source, &runtime);
+    state.move_row(true, &source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None]: loaded Alpha title,Beta title, highlighted 2"
+    );
+    state.marked.push("session:codex:Beta".into());
+
+    // Past the last row the next page is loading, and arrives.
+    state.move_row(true, &source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 2 of [None, Some(\"after Beta\")]: loading, to highlight First"
+    );
+    assert_eq!(state.highlighted(), None);
+    settled(&mut state);
+    assert_eq!(
+        page_state(&state),
+        "page 2 of [None, Some(\"after Beta\")]: loaded Gamma title, highlighted 1"
+    );
+    state.move_row(true, &source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 2 of [None, Some(\"after Beta\")]: loaded Gamma title, highlighted 1",
+        "the last page has no page after it"
+    );
+
+    // Before the first row the earlier page is loading, and fails.
+    state.move_row(false, &source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None, Some(\"after Beta\")]: loading, to highlight Last"
+    );
+    settled(&mut state);
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None, Some(\"after Beta\")]: failed: unavailable"
+    );
+    assert_eq!(state.highlighted(), None);
+    assert_eq!(state.chosen(), ["session:codex:Beta"]);
+    state.move_row(true, &source, &runtime);
+    state.move_row(false, &source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None, Some(\"after Beta\")]: failed: unavailable",
+        "a failed first page has no page on either side"
+    );
+
+    // A new filter starts again from the first page, from any state, and the
+    // request it replaces takes its highlight with it.
+    state.fuzzy.push('a');
+    state.restart(&source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None]: loading, to highlight First"
+    );
+    assert_eq!(state.chosen(), Vec::<String>::new());
+    assert!(!state.settle(), "the page has not arrived");
+    state.move_row(true, &source, &runtime);
+    state.move_row(false, &source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None]: loading, to highlight First"
+    );
+    state.fuzzy.push('l');
+    state.restart(&source, &runtime);
+    settled(&mut state);
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None]: loaded Alpha title,Beta title, highlighted 1"
+    );
+
+    // The earlier page can be asked for while a later one is on its way.
+    state.move_row(true, &source, &runtime);
+    state.move_row(true, &source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 2 of [None, Some(\"after Beta\")]: loading, to highlight First"
+    );
+    state.move_row(false, &source, &runtime);
+    assert_eq!(
+        page_state(&state),
+        "page 1 of [None, Some(\"after Beta\")]: loading, to highlight Last"
+    );
 }
