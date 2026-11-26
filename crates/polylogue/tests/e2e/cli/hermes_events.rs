@@ -456,3 +456,76 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_ordered_parts() {
             && originals.contains("synthetic-atif-result-tail")
     );
 }
+
+/// Temporary probe: repeats the ATIF import on fresh daemons and, when the
+/// daemon does not catch up, reports the search queue and text rows.
+#[test]
+fn probe_search_stall_a() {
+    probe_search_stall();
+}
+#[test]
+fn probe_search_stall_b() {
+    probe_search_stall();
+}
+#[test]
+fn probe_search_stall_c() {
+    probe_search_stall();
+}
+#[test]
+fn probe_search_stall_d() {
+    probe_search_stall();
+}
+
+fn probe_search_stall() {
+    let value = json!({"schema_version":"ATIF-v1.7","trajectory_id":"native-trajectory","session_id":"default","agent":{"name":"synthetic","version":"1"},"steps":[
+        {"step_id":1,"source":"user","message":[{"type":"text","text":" exact user λ🙂 "},{"type":"image","source":{"media_type":"image/png","path":"images/input.png"}}]},
+        {"step_id":2,"source":"agent","llm_call_count":0,"message":[{"type":"text","text":"-----BEGIN PRIVATE KEY-----\n"},{"type":"text","text":"synthetic-atif-message-tail\n-----END PRIVATE KEY-----"}],"tool_calls":[{"tool_call_id":"native-call","function_name":"terminal","arguments":{"command":"printf synthetic"}}],"observation":{"results":[{"source_call_id":"native-call","content":[{"type":"text","text":"-----BEGIN PRIVATE KEY-----\n"},{"type":"image","source":{"media_type":"image/png","path":"images/result.png"}},{"type":"text","text":"synthetic-atif-result-tail\n-----END PRIVATE KEY-----"}]}]}}
+    ]});
+    let raw = serde_json::to_vec_pretty(&value).unwrap();
+    for round in 0..80 {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let archive = dir.path().join("archive");
+        let config = dir.path().join("config");
+        let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
+        let source = dir.path().join("trajectory-synthetic.json");
+        std::fs::write(&source, &raw).unwrap();
+        let _daemon = start_daemon(&env);
+        let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
+        let _ = import_report(&imported);
+        let out = cli(
+            &env,
+            &["--deadline", "none", "--json", "status", "--wait", "15s"],
+        );
+        let status: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        if status["value"]["caught_up"] == true {
+            continue;
+        }
+        let sql = |q: &str| {
+            let out = cli(&env, &["--deadline", "none", "--json", "dev", "sql", q]);
+            format!(
+                "{q}\n{}\n{}",
+                String::from_utf8_lossy(&out.stdout),
+                String::from_utf8_lossy(&out.stderr)
+            )
+        };
+        let report = [
+            sql("SELECT * FROM search_pending"),
+            sql("SELECT id, indexed, hex(hash) AS hash, length AS n FROM text"),
+            sql("SELECT name, n FROM row_count"),
+            sql("SELECT name, file FROM pragma_database_list"),
+            sql("SELECT key, value FROM meta"),
+        ]
+        .join("\n---\n");
+        let again = cli(
+            &env,
+            &["--deadline", "none", "--json", "status", "--wait", "5s"],
+        );
+        panic!(
+            "round {round}: not caught up\nstatus: {}\n{report}\nstatus again: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&again.stdout)
+        );
+    }
+}
