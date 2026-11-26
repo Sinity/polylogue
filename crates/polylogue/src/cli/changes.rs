@@ -11,13 +11,13 @@ use std::process::ExitCode;
 /// completion line.
 pub fn run(
     values: &command_surface::ParsedCommand,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     call: &command_surface::RunnableRequest,
 ) -> ExitCode {
     let timeout = call
         .deadline
         .duration(Some(crate::daemon::execution::default_read_deadline()));
-    let archive = Archive::at(&startup.config.archive);
+    let archive = Archive::at(&client.archive);
     let mut request = call.clone();
     // The feed's arguments: only the last applied position.
     request.arguments = values.request.arguments.clone();
@@ -30,14 +30,14 @@ pub fn run(
             ) =>
         {
             fail(
-                startup.output,
+                client.output,
                 true,
                 polylogue_model::Code::DeadlineExceeded,
                 &e.to_string(),
             )
         }
         Err(e) => fail(
-            startup.output,
+            client.output,
             true,
             polylogue_model::Code::Io,
             &e.to_string(),

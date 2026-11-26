@@ -873,6 +873,15 @@ fn a_follow_whose_client_hangs_up_ends_at_once_and_waits_without_a_reader() {
     });
 }
 
+fn via(words: &[&str]) -> command_surface::Via {
+    via_of_command_line(
+        &words
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>(),
+    )
+}
+
 #[test]
 fn peer_running_internal_hook_is_the_hook_channel() {
     use command_surface::Via;
@@ -888,14 +897,14 @@ fn peer_running_internal_hook_is_the_hook_channel() {
         ],
         vec!["polylogue", "--deadline=100", "internal", "hook", "Stop"],
     ] {
-        assert_eq!(via_of_command_line(&arguments), Via::Hook);
+        assert_eq!(via(&arguments), Via::Hook);
     }
     assert_eq!(
-        via_of_command_line(&["polylogue", "internal", "browser-host"]),
+        via(&["polylogue", "internal", "browser-host"]),
         Via::Extension
     );
     assert_eq!(
-        via_of_command_line(&["polylogue", "sessions", "internal", "hook"]),
+        via(&["polylogue", "sessions", "internal", "hook"]),
         Via::Cli
     );
 }
@@ -903,23 +912,11 @@ fn peer_running_internal_hook_is_the_hook_channel() {
 #[test]
 fn a_query_word_named_mcp_does_not_change_the_observed_channel() {
     use command_surface::Via;
-    assert_eq!(via_of_command_line(&["polylogue", "find", "mcp"]), Via::Cli);
-    assert_eq!(
-        via_of_command_line(&["polylogue", "--json", "mcp"]),
-        Via::Mcp
-    );
-    assert_eq!(
-        via_of_command_line(&["polylogue", "--deadline", "100", "mcp"]),
-        Via::Mcp
-    );
-    assert_eq!(
-        via_of_command_line(&["polylogue", "--budget", "4000", "mcp"]),
-        Via::Mcp
-    );
-    assert_eq!(
-        via_of_command_line(&["polylogue", "--cursor=abc", "mcp"]),
-        Via::Mcp
-    );
+    assert_eq!(via(&["polylogue", "find", "mcp"]), Via::Cli);
+    assert_eq!(via(&["polylogue", "--json", "mcp"]), Via::Mcp);
+    assert_eq!(via(&["polylogue", "--deadline", "100", "mcp"]), Via::Mcp);
+    assert_eq!(via(&["polylogue", "--budget", "4000", "mcp"]), Via::Mcp);
+    assert_eq!(via(&["polylogue", "--cursor=abc", "mcp"]), Via::Mcp);
 }
 
 #[test]

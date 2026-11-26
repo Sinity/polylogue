@@ -165,7 +165,7 @@ impl Cli {
 pub type OutputHandler = fn(
     &command_surface::ParsedCommand,
     &command_surface::Answer<Value>,
-    &crate::config::Startup,
+    &crate::config::Client,
     bool,
 ) -> ExitCode;
 
@@ -173,7 +173,7 @@ pub type OutputHandler = fn(
 /// writes a file or a directory, or follows a stream.
 pub type Deliver = fn(
     &command_surface::ParsedCommand,
-    &crate::config::Startup,
+    &crate::config::Client,
     &command_surface::RunnableRequest,
 ) -> ExitCode;
 
@@ -193,8 +193,16 @@ pub enum Run {
         fn(&mut command_surface::DeclarationsBuilder, &'static Command),
         fn(&Value) -> Result<(), String>,
     ),
+    /// Runs in the calling process with the whole deployment: the daemon,
+    /// and the commands that run the engine or read the machine identity.
     ConfiguredLocal(
         fn(&Command, &command_surface::ParsedCommand, &crate::config::Startup, bool) -> ExitCode,
+        fn(&mut command_surface::DeclarationsBuilder, &'static Command),
+        fn(&Value) -> Result<(), String>,
+    ),
+    /// Runs in the calling process with the client's configuration alone.
+    ClientLocal(
+        fn(&Command, &command_surface::ParsedCommand, &crate::config::Client, bool) -> ExitCode,
         fn(&mut command_surface::DeclarationsBuilder, &'static Command),
         fn(&Value) -> Result<(), String>,
     ),
@@ -214,6 +222,11 @@ const fn configured_local<A: command_surface::JsonSchema + serde::de::Deserializ
     run: fn(&Command, &command_surface::ParsedCommand, &crate::config::Startup, bool) -> ExitCode,
 ) -> Run {
     Run::ConfiguredLocal(run, declare_local::<A>, validate_local::<A>)
+}
+const fn client_local<A: command_surface::JsonSchema + serde::de::DeserializeOwned>(
+    run: fn(&Command, &command_surface::ParsedCommand, &crate::config::Client, bool) -> ExitCode,
+) -> Run {
+    Run::ClientLocal(run, declare_local::<A>, validate_local::<A>)
 }
 fn validate_local<A: serde::de::DeserializeOwned>(arguments: &Value) -> Result<(), String> {
     A::deserialize(arguments)
@@ -269,7 +282,7 @@ impl Command {
     pub(crate) fn operation(&self) -> Option<&'static dyn Row> {
         match self.run {
             Run::Daemon(operation) => Some(operation),
-            Run::Local(..) | Run::ConfiguredLocal(..) => None,
+            Run::Local(..) | Run::ConfiguredLocal(..) | Run::ClientLocal(..) => None,
         }
     }
 
@@ -502,7 +515,7 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "web",
         help: "Open the web reader",
-        run: configured_local::<local::arguments::Empty>(local::web),
+        run: client_local::<local::arguments::Empty>(local::web),
         ..CLI
     },
     Command {
@@ -516,7 +529,7 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "mcp",
         help: "Serve MCP over stdio",
-        run: configured_local::<local::arguments::Empty>(local::mcp),
+        run: client_local::<local::arguments::Empty>(local::mcp),
         ..CLI
     },
     Command {
@@ -758,9 +771,9 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
             }
             for command in COMMANDS.iter() {
                 match command.run {
-                    Run::Local(_, declare, _) | Run::ConfiguredLocal(_, declare, _) => {
-                        declare(&mut declarations, command)
-                    }
+                    Run::Local(_, declare, _)
+                    | Run::ConfiguredLocal(_, declare, _)
+                    | Run::ClientLocal(_, declare, _) => declare(&mut declarations, command),
                     Run::Daemon(operation) => operation.declare(&mut declarations, command),
                 }
                 if command.cli == Cli::Line {

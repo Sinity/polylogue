@@ -888,9 +888,11 @@ mod terminal;
 
 mod index_open;
 
+mod entry;
+
 #[cfg(target_os = "linux")]
 #[test]
-fn terminal_resume_without_recorded_directory_is_refused() {
+fn terminal_resume_without_recorded_directory_is_refused_with_exit_3() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("home");
     let archive = dir.path().join("archive");
@@ -918,7 +920,8 @@ fn terminal_resume_without_recorded_directory_is_refused() {
         .output()
         .unwrap();
     drop(master);
-    assert_eq!(out.status.code(), Some(1));
+    // docs/interfaces.md#exit-codes: no way to reopen the session is `refused`.
+    assert_eq!(out.status.code(), Some(3));
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("directory_unknown"), "{stderr}");
     let fallback = stderr

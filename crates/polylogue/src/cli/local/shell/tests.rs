@@ -33,7 +33,7 @@ fn paths(
     match shell {
         "zsh" => (
             paths.data.join("zsh/site-functions/_plg"),
-            Some(startup.zsh_directory.join(".zshrc")),
+            Some(startup.client.zsh_directory.join(".zshrc")),
         ),
         "fish" => (
             paths.config.join("fish/completions/plg.fish"),
@@ -104,7 +104,7 @@ fn install_shell_remove_restores_startup_file_without_final_newline() {
 #[test]
 fn install_zsh_preserves_later_unrelated_startup_edits_and_honors_zdotdir() {
     let (_directory, mut startup) = fixture();
-    startup.zsh_directory = startup.config.paths.home.join("zsh-startup");
+    startup.client.zsh_directory = startup.config.paths.home.join("zsh-startup");
     let (_, init) = paths(&startup, "zsh");
     let init = init.unwrap();
     std::fs::create_dir_all(init.parent().unwrap()).unwrap();
@@ -159,7 +159,7 @@ printf 'shell-ready\n'"#
         let output = Command::new(shell)
             .args(["-i", "-c", check])
             .env("HOME", &startup.config.paths.home)
-            .env("ZDOTDIR", &startup.zsh_directory)
+            .env("ZDOTDIR", &startup.client.zsh_directory)
             .env("XDG_CONFIG_HOME", &startup.config.paths.config)
             .env("XDG_DATA_HOME", &startup.config.paths.data)
             .env("XDG_CACHE_HOME", &startup.config.paths.cache)
@@ -190,7 +190,7 @@ fn install_shell_wrapper_function_names_replace_unsafe_program_characters() {
                 "functions --query _polylogue_pick_work_archive_s; and printf 'wrapper-ready\n'"
             }])
             .env("HOME", &startup.config.paths.home)
-            .env("ZDOTDIR", &startup.zsh_directory)
+            .env("ZDOTDIR", &startup.client.zsh_directory)
             .env("XDG_CONFIG_HOME", &startup.config.paths.config)
             .env("XDG_DATA_HOME", &startup.config.paths.data)
             .env("XDG_CACHE_HOME", &startup.config.paths.cache)

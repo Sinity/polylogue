@@ -153,7 +153,7 @@ fn append_record(
                 .is_some_and(|caller_harness| caller_harness.as_str() == harness.origin())
         })
         .unwrap_or_else(std::os::unix::process::parent_id);
-    let at = startup.clock.now();
+    let at = startup.client.clock.now();
     let ns = at.as_nanosecond();
     let event_id = request_id(at)?;
     let mut payload = payload.clone();
@@ -487,7 +487,7 @@ fn context(
     until: Instant,
 ) -> Option<(String, String)> {
     let advisory = matches!(&ask, Ask::Advisory { .. });
-    let request_id = match request_id(startup.clock.now()) {
+    let request_id = match request_id(startup.client.clock.now()) {
         Ok(id) => id,
         Err(error) => {
             report("no context", &error);
@@ -580,7 +580,7 @@ fn context(
             // No prepared bytes were emitted. Only the daemon's existing
             // queue may confirm preparation; without it, acceptance stays
             // unresolved.
-            let accepted = self::request_id(startup.clock.now())
+            let accepted = self::request_id(startup.client.clock.now())
                 .map_err(Unanswered::Exchange)
                 .and_then(|id| {
                     ask_daemon(
@@ -637,7 +637,7 @@ fn brief_of(data: Value) -> Result<crate::protocol::context::Answer, Unanswered>
 }
 
 fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
-    let accepted = request_id(startup.clock.now())
+    let accepted = request_id(startup.client.clock.now())
         .map_err(Unanswered::Exchange)
         .and_then(|request_id| {
             ask_daemon(
