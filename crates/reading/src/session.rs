@@ -257,6 +257,7 @@ impl Reading {
     /// The items of `entries`, laid out and decorated in reading order, one
     /// list per entry; with `originals`, the source record each entry's
     /// message or event comes from, beside its first entry.
+    #[allow(clippy::too_many_arguments)]
     fn lay_out(
         &self,
         reader: &Reader<'_>,

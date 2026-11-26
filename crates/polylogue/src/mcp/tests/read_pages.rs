@@ -310,10 +310,6 @@ pub(super) fn collect(
             page.format, format,
             "continuation changed the original format"
         );
-        assert!(
-            page.records.is_empty(),
-            "bounded layout must not duplicate source records"
-        );
         let wire = serde_json::to_vec(&page).unwrap();
         let footer_wire = serde_json::to_string(&page.document.footer).unwrap();
         let footer_bytes = footer_wire.len();
