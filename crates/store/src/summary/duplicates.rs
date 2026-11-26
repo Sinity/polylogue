@@ -63,7 +63,7 @@ struct Reply {
 fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<String>)>> {
     let marked: HashMap<i64, String> = conn
         .prepare_cached(
-            "SELECT pk, duplicate_of FROM message WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",
+            "SELECT pk, duplicate_of FROM message INDEXED BY message_marked WHERE session_pk = ?1 AND duplicate_of IS NOT NULL",
         )?
         .query_map([session_pk], |r| <(_, _)>::try_from(r))?
         .collect::<rusqlite::Result<_>>()?;

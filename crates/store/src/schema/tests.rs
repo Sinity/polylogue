@@ -39,15 +39,15 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     // An index written by an older build of another lineage.
-    set_version(&conn, 23).unwrap();
+    set_version(&conn, INDEX_VERSION + 1).unwrap();
     assert!(matches!(
         ensure_index(&conn),
         Err(StoreError::IndexVersion {
-            found: 23,
+            found,
             wanted: INDEX_VERSION
-        })
+        }) if found == INDEX_VERSION + 1
     ));
-    assert_eq!(version(&conn).unwrap(), 23);
+    assert_eq!(version(&conn).unwrap(), INDEX_VERSION + 1);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
             .get::<_, String>(0))
@@ -179,7 +179,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
             .unwrap(),
         "synthetic"
     );
-    conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)")
+    conn.execute_batch("DROP INDEX event_time; CREATE INDEX event_time ON event(kind)")
         .unwrap();
     assert!(!same_index_schema_in(&conn).unwrap());
 }
@@ -375,7 +375,27 @@ fn schema_check_lists_come_from_names() {
             crate::input_rows::ObservationClass::NAMES,
         ),
     ];
-    let index_sets: [(&str, &str, &[&str]); 11] = [
+    let precisions: Vec<&str> = polylogue_model::Precision::ALL
+        .iter()
+        .map(|precision| precision.as_str())
+        .collect();
+    let index_sets: [(&str, &str, &[&str]); 27] = [
+        ("session", "kind", polylogue_model::SessionKind::NAMES),
+        ("session", "started_precision", &precisions[..]),
+        ("session", "last_active_precision", &precisions[..]),
+        ("message", "role", polylogue_model::Role::NAMES),
+        ("message", "written_by", polylogue_model::WrittenBy::NAMES),
+        ("message", "prompt_kind", polylogue_model::PromptKind::NAMES),
+        ("message", "at_precision", &precisions[..]),
+        ("event", "at_precision", &precisions[..]),
+        ("document", "at_precision", &precisions[..]),
+        ("block", "kind", polylogue_model::BlockKind::NAMES),
+        ("tool_call", "action", polylogue_model::ToolAction::NAMES),
+        ("tool_call", "outcome", polylogue_model::CallOutcome::NAMES),
+        ("link", "kind", polylogue_model::LinkKind::NAMES),
+        ("link", "how", polylogue_model::ReferenceReason::NAMES),
+        ("link_parse", "kind", polylogue_model::LinkKind::NAMES),
+        ("link_parse", "how", polylogue_model::ReferenceReason::NAMES),
         ("input_ref", "route", Route::NAMES),
         ("message_parse", "id_kind", IdKind::NAMES),
         ("message_parse", "route", Route::NAMES),

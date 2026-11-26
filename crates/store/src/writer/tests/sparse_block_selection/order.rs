@@ -80,7 +80,7 @@ fn record_ordinals_precede_subsets_and_use_record_positions_before_ids() {
     write(
         &w,
         batch(
-            "aaa-earlier",
+            &input_sorting_before("middle", "earlier"),
             Route::Live,
             0,
             vec![row(0, message("new", "s"))],
@@ -233,7 +233,7 @@ fn metadata_order_has_an_id_tiebreak_and_never_reads_message_bodies() {
     let index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
     index
         .execute(
-            "UPDATE message SET session_order='0' WHERE source_start=20",
+            "UPDATE message SET session_order=X'00' WHERE source_start=20",
             [],
         )
         .unwrap();

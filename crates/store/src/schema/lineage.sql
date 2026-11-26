@@ -6,6 +6,5 @@ CREATE TABLE session_lineage (
   root_pending INTEGER NOT NULL CHECK(root_pending IN (0,1)),
   issue TEXT
 ) STRICT;
-CREATE INDEX session_lineage_root ON session_lineage(root,session_pk);
 -- The code that writes a link or a session marks the lineage it reaches due
 -- (lineage::mark_due); no trigger marks a session.

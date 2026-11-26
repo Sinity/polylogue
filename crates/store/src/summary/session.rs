@@ -46,19 +46,85 @@ pub(crate) struct Inputs;
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Spans {
     inputs: BTreeMap<i64, (i64, i64)>,
-    last_activity_at: Option<i64>,
+    latest: Latest,
+}
+
+/// The latest of the messages' times (docs/query.md, times): its start is
+/// the latest start, and its period reaches the latest end of any period,
+/// so a period `[0,10)` and an instant at 5 give `[5,10)`.
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Latest {
+    /// The latest start.
+    start: Option<i64>,
+    /// The latest last millisecond of a period with a known end.
+    last: Option<i64>,
+    /// The latest start of a time whose period has no known end (a
+    /// calendar grain without a bound), and its precision: the latest
+    /// time then has no known end either.
+    open: Option<(i64, String)>,
+    /// The time that starts latest, with its last millisecond and
+    /// precision; the latest time is that time when nothing ends later.
+    first_latest: Option<(i64, i64, String)>,
+}
+
+impl Latest {
+    pub(crate) fn add(&mut self, at: i64, until: Option<i64>, precision: &str) {
+        self.start = Some(self.start.map_or(at, |s| s.max(at)));
+        let last = match (until, precision) {
+            (Some(until), _) => until - 1,
+            (None, "instant") => at,
+            (None, _) => {
+                if self.open.as_ref().is_none_or(|(start, _)| at > *start) {
+                    self.open = Some((at, precision.to_owned()));
+                }
+                return;
+            }
+        };
+        self.last = Some(self.last.map_or(last, |l| l.max(last)));
+        let later = self
+            .first_latest
+            .as_ref()
+            .is_none_or(|(start, end, _)| (at, last) > (*start, *end));
+        if later {
+            self.first_latest = Some((at, last, precision.to_owned()));
+        }
+    }
+
+    /// The start, the exclusive end and the precision to store.
+    pub(crate) fn columns(&self) -> (Option<i64>, Option<i64>, Option<String>) {
+        let Some(start) = self.start else {
+            return (None, None, None);
+        };
+        if let Some((_, precision)) = &self.open {
+            return (Some(start), None, Some(precision.clone()));
+        }
+        let last = self.last.unwrap_or(start).max(start);
+        match &self.first_latest {
+            Some((at, end, precision)) if *at == start && *end == last => (
+                Some(start),
+                (precision != "instant").then_some(last + 1),
+                Some(precision.clone()),
+            ),
+            _ if last == start => (Some(start), None, Some("instant".into())),
+            _ => (Some(start), Some(last + 1), Some("bounded".into())),
+        }
+    }
 }
 
 impl Fold for Inputs {
     type State = Spans;
     const NAME: &'static str = "inputs";
-    const VERSION: i64 = 1;
+    const VERSION: i64 = 2;
 
     fn step(state: &mut Spans, row: &SessionRow, _: &Context<'_>, _: &mut Output) -> Result<Flow> {
         if let SessionRow::Message(m) = row
             && let Some(at) = m.at
         {
-            state.last_activity_at = Some(state.last_activity_at.map_or(at, |l| l.max(at)));
+            state.latest.add(
+                at,
+                m.at_until,
+                m.at_precision.as_deref().unwrap_or("instant"),
+            );
             for input in &m.inputs {
                 let span = state.inputs.entry(*input).or_insert((at, at));
                 span.0 = span.0.min(at);
@@ -98,7 +164,8 @@ fn later(a: Option<i64>, b: Option<i64>) -> Ordering {
 /// What the session summary stores for a session.
 #[derive(Debug)]
 pub(crate) struct Facts {
-    last_activity_at: Option<i64>,
+    /// The latest message time's start, exclusive end and precision.
+    last_active: (Option<i64>, Option<i64>, Option<String>),
     /// Its columns from its inputs' facts; `None` when no input states any
     /// and the session keeps the columns it has.
     session: Option<Session>,
@@ -146,7 +213,7 @@ pub(super) fn compute(conn: &Connection, session_pk: i64, out: &mut Output) -> R
             .query_row([session_pk], |r| <(_, _)>::try_from(r))?;
         if !stub {
             out.session = Some(Box::new(Facts {
-                last_activity_at: spans.last_activity_at,
+                last_active: spans.latest.columns(),
                 session: None,
             }));
             return Ok(());
@@ -164,7 +231,7 @@ pub(super) fn compute(conn: &Connection, session_pk: i64, out: &mut Output) -> R
         merge(&inputs)
     };
     out.session = Some(Box::new(Facts {
-        last_activity_at: spans.last_activity_at,
+        last_active: spans.latest.columns(),
         session: Some(session),
     }));
     Ok(())
@@ -187,10 +254,12 @@ pub(super) fn place(
 }
 
 pub(super) fn apply(tx: &Transaction<'_>, session_pk: i64, facts: &Facts) -> Result<()> {
+    let (at, until, precision) = &facts.last_active;
     tx.prepare_cached(
-        "UPDATE session SET last_activity_at=?2 WHERE pk=?1 AND last_activity_at IS NOT ?2",
+        "UPDATE session SET last_activity_at=?2, last_active_until=?3, last_active_precision=?4
+         WHERE pk=?1 AND NOT (last_activity_at IS ?2 AND last_active_until IS ?3 AND last_active_precision IS ?4)",
     )?
-    .execute(params![session_pk, facts.last_activity_at])?;
+    .execute(params![session_pk, at, until, precision])?;
     if let Some(session) = &facts.session {
         crate::session_row::write(tx, session_pk, session)?;
     }

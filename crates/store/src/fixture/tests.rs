@@ -139,35 +139,6 @@ fn stored_message(directory: &std::path::Path) -> (Fixture, SessionId) {
     (fixture, SessionId::parse("claude-code:decode").unwrap())
 }
 
-/// A role the model does not have is a read error, never a user message.
-#[test]
-fn unknown_stored_role_fails_the_read() {
-    let directory = tempfile::tempdir().unwrap();
-    let (fixture, session) = stored_message(directory.path());
-    assert_eq!(
-        fixture
-            .reads()
-            .unwrap()
-            .reader()
-            .unwrap()
-            .messages(&session, false)
-            .unwrap()[0]
-            .role,
-        polylogue_model::Role::Assistant
-    );
-    fixture
-        .index
-        .execute("UPDATE message SET role = 'narrator'", [])
-        .unwrap();
-    let reads = fixture.reads().unwrap();
-    let error = reads
-        .reader()
-        .unwrap()
-        .messages(&session, false)
-        .unwrap_err();
-    assert!(error.to_string().contains("narrator"), "{error}");
-}
-
 /// Attributes that do not parse are a read error, never empty attributes.
 #[test]
 fn unparseable_message_attrs_fail_the_read() {

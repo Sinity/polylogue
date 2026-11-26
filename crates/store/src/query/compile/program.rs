@@ -230,8 +230,18 @@ impl<'a> Compiler<'a> {
                     ));
                     let spec = units::spec(parts.scope.unit);
                     let time = parts.scope.a.expand(spec.time);
+                    // Newest first is the unit's time order read backwards,
+                    // ties included, so the index of its default order
+                    // serves it.
                     let mut order = vec![format!("{time} IS NULL"), format!("{time} DESC")];
-                    order.extend(spec.identity.iter().map(|term| parts.scope.a.expand(term)));
+                    if spec.session_order {
+                        order.push(format!("{}.session_order DESC", parts.scope.a.m));
+                    }
+                    order.extend(
+                        spec.identity
+                            .iter()
+                            .map(|term| format!("{} DESC", parts.scope.a.expand(term))),
+                    );
                     parts.explicit_order = Some(order);
                 }
                 TransformKind::Extension { name, arguments }
@@ -432,7 +442,15 @@ impl<'a> Compiler<'a> {
             "{ctes}SELECT {pk} AS _pk,{} AS _near FROM {count_from} WHERE {count_where}",
             similarity.unwrap_or("1")
         ));
-        let (hidden, keys) = self.selection_order(&order, ranking);
+        let (hidden, mut keys) = self.selection_order(&order, ranking);
+        // A unit whose rows are an aggregate is computed whole, so its page
+        // is not read as two parts, which would compute it twice.
+        if matches!(units::spec(parts.scope.unit).from, fields::Expr::Template(t) if t.starts_with('('))
+        {
+            for key in &mut keys {
+                key.partition = false;
+            }
+        }
         let keyed = parts.measure.is_none().then(|| {
             (
                 self.keys_statement(ctes, (&from, &wh), &pk, &hidden, ranking),

@@ -11,7 +11,7 @@ CREATE TABLE input_ref (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- archive.db input.id
   format            TEXT NOT NULL DEFAULT '', -- parser declaration used for this input
-  route             TEXT NOT NULL DEFAULT 'live' CHECK (route IN ('live','capture','recorded','export','copy','page_text'))
+  route             TEXT NOT NULL DEFAULT 'live' CHECK (route IN (@names(Route)))
 ) STRICT;
 
 CREATE TABLE session (
@@ -19,7 +19,7 @@ CREATE TABLE session (
   id                TEXT NOT NULL UNIQUE,   -- '<origin>:<native id>'
   origin            TEXT NOT NULL,
   native_id         TEXT NOT NULL,
-  kind              TEXT NOT NULL,          -- main | subagent | sidechain | compaction (continuations are links, not a kind)
+  kind              TEXT NOT NULL CHECK (kind IN (@names(SessionKind))),  -- continuations are links, not a kind
   stub              INTEGER NOT NULL DEFAULT 0,  -- 1: created by a hook line naming a session that has no
                                             --   transcript yet, so its live state exists; cleared when its messages arrive
   title             TEXT,                   -- provider title only
@@ -29,7 +29,12 @@ CREATE TABLE session (
   cwd_json          TEXT,                   -- every working directory in order (model Session.cwd); `cwd` is the last
   started_time      BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
   started_at        INTEGER,                -- from the messages and events the session counts as its own
-  last_activity_at  INTEGER,
+  started_until     INTEGER,                --   with started_precision, as message.at_until and at_precision
+  started_precision TEXT CHECK (started_precision IN (@names(Precision))),
+  last_activity_at  INTEGER,                -- the latest start of its messages' times (session summary)
+  last_active_until INTEGER,                -- the latest end of their periods, when one ends after
+                                            --   last_activity_at (docs/query.md, times)
+  last_active_precision TEXT CHECK (last_active_precision IN (@names(Precision))),
   cwd               TEXT,
   repo              TEXT,                   -- name or URL, for display: record_repo, else the remote of the
                                             --   repo_lookup holding the session's cwd (derived: repository)
@@ -60,9 +65,14 @@ CREATE TABLE session (
   -- and registry lines, summary/live.rs); the live state is computed at read
   -- time from these and now (`pl_live`).
   live_facts TEXT,                          -- polylogue_model::live::LiveFacts as JSON
-  live_last_at INTEGER                      -- time of the latest live event included
+  live_last_at INTEGER,                     -- time of the latest live event included
+  CHECK ((started_at IS NULL) = (started_precision IS NULL)),
+  CHECK (started_until IS NULL OR (started_precision <> 'instant' AND started_until > started_at)),
+  CHECK (started_until IS NOT NULL OR started_precision IS NULL OR started_precision IN ('instant','day','month','year')),
+  CHECK ((last_activity_at IS NULL) = (last_active_precision IS NULL)),
+  CHECK (last_active_until IS NULL OR (last_active_precision <> 'instant' AND last_active_until > last_activity_at)),
+  CHECK (last_active_until IS NOT NULL OR last_active_precision IS NULL OR last_active_precision IN ('instant','day','month','year'))
 ) STRICT;
-CREATE INDEX session_activity ON session(last_activity_at);   -- default order, since:
 CREATE INDEX session_started  ON session(started_at);         -- started between, until:
 CREATE INDEX session_changed  ON session(changed);            -- change feed; derive step
 CREATE INDEX session_cwd      ON session(cwd);                -- cwd: prefix as a range; briefings; resume
@@ -74,15 +84,20 @@ CREATE TABLE message (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL,          -- unique: message_id
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
-  session_order     TEXT NOT NULL,          -- the message's place in its session (docs/sessions.md, messages):
-                                            --   order time, input ID, position in that input, written so the
-                                            --   text sorts in that order (encoding::session_order); ties by id
-  role              TEXT NOT NULL,          -- user | assistant | system | tool (sources/ maps each provider's role)
-  written_by        TEXT NOT NULL,          -- human | model | harness | tool | unknown
-  prompt_kind       TEXT,                   -- written_by human: prose | command
+  session_order     BLOB NOT NULL,          -- the message's place in its session (docs/sessions.md, messages):
+                                            --   order time, input ID, position in that input, as bytes that
+                                            --   sort in that order (encoding::session_order); ties by id
+  role              TEXT NOT NULL CHECK (role IN (@names(Role))),  -- sources/ maps each provider's role
+  written_by        TEXT NOT NULL CHECK (written_by IN (@names(WrittenBy))),
+  prompt_kind       TEXT CHECK (prompt_kind IN (@names(PromptKind))),  -- a user message's category; harness
+                                            --   also marks runtime notices under another role
   model             TEXT,
   at_time           BLOB NOT NULL DEFAULT X'5b6e756c6c2c7b227175616c697479223a22756e6b6e6f776e227d5d',
-  at                INTEGER,                -- provider time
+  at                INTEGER,                -- provider time (ms): the start of its period
+  at_until          INTEGER,                -- the exclusive end (ms) of a time that is a period (encoding::
+                                            --   TimeColumns); NULL for an instant, an unknown time, and a
+                                            --   calendar grain the source gave no bound
+  at_precision      TEXT CHECK (at_precision IN (@names(Precision))),  -- NULL exactly when `at` is
   parent_id         TEXT,                   -- natural message id of the tree parent (may arrive later)
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the main route's input: its reading is the stored one
   version_hash      BLOB,                   -- the main reading's content hash: the message's version
@@ -114,15 +129,14 @@ CREATE TABLE message (
   stop_reason       TEXT,
   duration_ms       INTEGER,
   words             INTEGER NOT NULL DEFAULT 0, -- words in its text blocks
-  UNIQUE (pk, session_pk)                   -- lets children state their session once
+  CHECK ((at IS NULL) = (at_precision IS NULL)),
+  CHECK (at_until IS NULL OR (at_precision <> 'instant' AND at_until > at)),
+  CHECK (at_until IS NOT NULL OR at_precision IS NULL OR at_precision IN ('instant','day','month','year'))
 ) STRICT;
 -- A first build drops the three unique indexes on natural keys and builds
 -- them once at its end; meanwhile the writer finds rows by key in memory.
 CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, session_order, id);   -- reading in order; [last:N]
-CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
-CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path IS NOT NULL;   -- off the path; the active path summary
-CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_of IS NULL;   -- branch points
 
 -- Readings. Each chain's reading owns its rows: every row below carries the
 -- input and chain whose records state it and the byte range of those
@@ -181,9 +195,9 @@ CREATE TABLE message_parse (
   order_time        INTEGER,                -- the latest source time (ms) of this reading and the readings
                                             --   before it in its chain and session; NULL before any time
   at                INTEGER,                -- this reading's own source time (ms)
-  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
-  completion        TEXT NOT NULL CHECK (completion IN ('finished','unknown','in_progress')),
-  id_kind           TEXT NOT NULL CHECK (id_kind IN ('native','content')),
+  route             TEXT NOT NULL CHECK (route IN (@names(Route))),
+  completion        TEXT NOT NULL CHECK (completion IN (@names(Completion))),
+  id_kind           TEXT NOT NULL CHECK (id_kind IN (@names(IdKind))),
   hash              BLOB NOT NULL,          -- the message's content hash (its version)
   layout            BLOB NOT NULL,          -- original block count and selected ordinals
   response_key      TEXT,                   -- the key the source gives the records of one response
@@ -244,7 +258,7 @@ CREATE TABLE event_parse (
   chain             INTEGER NOT NULL,
   event_id          TEXT NOT NULL,          -- as the chain names it
   session_id        TEXT,                   -- NULL: an event about its input
-  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
+  route             TEXT NOT NULL CHECK (route IN (@names(Route))),
   seq               INTEGER NOT NULL,
   source_start      INTEGER,
   source_length        INTEGER CHECK (source_length >= 0),
@@ -272,9 +286,9 @@ CREATE TABLE link_parse (
   statement         BLOB NOT NULL,
   parent_id         TEXT NOT NULL,
   child_id          TEXT NOT NULL,
-  kind              TEXT NOT NULL,
-  how               TEXT,
-  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
+  kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
+  how               TEXT CHECK (how IN (@names(ReferenceReason))),
+  route             TEXT NOT NULL CHECK (route IN (@names(Route))),
   hash              BLOB NOT NULL,
   body              BLOB NOT NULL,          -- the model Link as JSON
   committed         INTEGER CHECK(committed > 0),
@@ -289,7 +303,7 @@ CREATE TABLE document_parse (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   document_id       TEXT NOT NULL,
-  route             TEXT NOT NULL CHECK (route IN ('live','capture','recorded','export','copy','page_text')),
+  route             TEXT NOT NULL CHECK (route IN (@names(Route))),
   source_start      INTEGER NOT NULL,
   source_length        INTEGER NOT NULL CHECK (source_length >= 0),
   source_time       INTEGER,
@@ -330,12 +344,11 @@ CREATE INDEX export_reading_origin ON export_reading(origin, latest_at);
 -- the main route (the message's own input_pk, source_chain).
 CREATE TABLE message_route (
   message_pk        INTEGER NOT NULL REFERENCES message(pk),
-  field_group       TEXT NOT NULL CHECK (field_group IN ('time','model','usage','stop','parent','production')),
+  field_group       TEXT NOT NULL CHECK (field_group IN (@names(RoutedFieldGroup))),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   PRIMARY KEY (message_pk, field_group)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX message_route_input ON message_route(input_pk, chain);
 
 -- Content stored once (content.rs): each group is one zstd frame of pieces
 -- laid one after another in the order a parse worker wrote them (about
@@ -366,10 +379,10 @@ CREATE TABLE text (
 -- call (tool, command, outcome, exit code, duration) belong to tool_call alone.
 CREATE TABLE block (
   pk                INTEGER PRIMARY KEY,
-  message_pk        INTEGER NOT NULL,
-  session_pk        INTEGER NOT NULL,       -- the message's session, enforced by the composite key below
+  message_pk        INTEGER NOT NULL REFERENCES message(pk),
+  session_pk        INTEGER NOT NULL,       -- its message's session, for block_call
   idx               INTEGER,                -- compact position among the stored blocks, used for ordering
-  kind              TEXT NOT NULL,          -- text | thinking | tool_call | tool_result | image | file | other
+  kind              TEXT NOT NULL CHECK (kind IN (@names(BlockKind))),
   text_id           INTEGER REFERENCES text(id),
   content_group     INTEGER NOT NULL,       -- the model Block as JSON, with its prose or output text moved to
   content_start     INTEGER NOT NULL,       --   `text` (text_id) and its structured value after it: a piece of
@@ -385,9 +398,7 @@ CREATE TABLE block (
   url               TEXT,                   -- image/file downloaded from a link
   encrypted         INTEGER NOT NULL DEFAULT 0,  -- thinking kept encrypted
   other_type        TEXT,                   -- other: the provider's content type name; export `type`
-  ordinal           TEXT,                   -- original u64 source position; NULL means the dense index the source implies
-  FOREIGN KEY (message_pk, session_pk) REFERENCES message(pk, session_pk),
-  UNIQUE (pk, session_pk)
+  ordinal           TEXT                    -- original u64 source position; NULL means the dense index the source implies
 ) STRICT;
 CREATE UNIQUE INDEX text_hash ON text(hash);
 CREATE INDEX text_group_member ON text(group_id);  -- whether a group still holds a text
@@ -416,8 +427,8 @@ CREATE TABLE search_pending (
 -- one place every derived call fact is kept.
 CREATE TABLE tool_call (
   pk                INTEGER PRIMARY KEY,
-  session_pk        INTEGER NOT NULL,       -- kept for index speed; the composite keys make it agree with its blocks
-  call_block_pk     INTEGER NOT NULL UNIQUE,
+  session_pk        INTEGER NOT NULL,       -- its call block's session, for the indexes by session
+  call_block_pk     INTEGER NOT NULL UNIQUE REFERENCES block(pk),
   call_id           TEXT,                   -- the provider's call id: how a later result finds its call
   result_at         INTEGER,
   reported_duration_ms INTEGER,
@@ -426,23 +437,20 @@ CREATE TABLE tool_call (
                                             --   call's ID in session order
   at                INTEGER,
   tool              TEXT NOT NULL,
-  action            TEXT,                   -- the parser's ToolAction: shell | code | file_read | file_write | file_edit | search | web | subagent | mcp | other
+  action            TEXT CHECK (action IN (@names(ToolAction))),  -- the parser's ToolAction
   command           TEXT,                   -- as given
   command_norm      TEXT,                   -- derived (tool_calls): 'cargo test', 'git commit'
   path              TEXT,                   -- file path argument, when the tool has one
-  outcome           TEXT NOT NULL,          -- ok | error | unknown: facts of the records, never of the clock;
+  outcome           TEXT NOT NULL CHECK (outcome IN (@names(CallOutcome))),  -- facts of the records, never of the clock;
                                             --   `pending` is computed at read time from live state
   outcome_reason    TEXT,                   -- a reason code (no_result, background_never_reported, ...)
   exit_code         INTEGER,
-  run_by_script     INTEGER NOT NULL DEFAULT 0, -- a command a script call ran, with no call of its own
-  FOREIGN KEY (call_block_pk, session_pk) REFERENCES block(pk, session_pk)
+  run_by_script     INTEGER NOT NULL DEFAULT 0 -- a command a script call ran, with no call of its own
 ) STRICT;
 CREATE INDEX tool_call_session ON tool_call(session_pk, at);   -- exists, seq(...), the changes view
 CREATE INDEX tool_call_pairing ON tool_call(session_pk, call_id) WHERE call_id IS NOT NULL;   -- result -> call
 CREATE INDEX block_call ON block(session_pk, call_id) WHERE call_id IS NOT NULL;   -- call -> earlier result
-CREATE INDEX tool_call_tool    ON tool_call(tool);
 CREATE INDEX tool_call_action  ON tool_call(action, NULLIF(outcome, 'unknown'));   -- action: and outcome: as compiled
-CREATE INDEX tool_call_path    ON tool_call(path) WHERE path IS NOT NULL;
 CREATE INDEX tool_call_repo_command ON tool_call(command_norm, at) WHERE command_norm IS NOT NULL;   -- failing commands
 CREATE INDEX tool_call_result  ON tool_call(result_message_id) WHERE result_message_id IS NOT NULL;   -- result -> call
 
@@ -461,8 +469,8 @@ CREATE TABLE link (
   parent_id         TEXT NOT NULL,          -- natural session id (may not be ingested yet)
   child_id          TEXT NOT NULL,          -- natural session id of the child (may not be ingested yet: a parent's
                                             --   thread_spawn_edges, continued-in or job children name it first)
-  kind              TEXT NOT NULL,          -- spawn | fork | continuation | resume | reference
-  how               TEXT,                   -- reference: briefing | ping | mention
+  kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
+  how               TEXT CHECK (how IN (@names(ReferenceReason))),  -- a reference's reason
   copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),
   branch_point      TEXT,                   -- natural message id where the child branches off
   spawning_call     TEXT,                   -- the spawning call's ID as the source record names it (a tool-use ID)
@@ -472,7 +480,6 @@ CREATE TABLE link (
 ) STRICT;
 CREATE UNIQUE INDEX link_statement ON link(parent_id, child_id, kind, how IS NULL, coalesce(how,''), branch_point IS NULL, coalesce(branch_point,''), spawning_call IS NULL, coalesce(spawning_call,''));
 CREATE INDEX link_child_id ON link(child_id);   -- parents by id; late children
-CREATE INDEX link_branch_point ON link(branch_point) WHERE branch_point IS NOT NULL;
 CREATE INDEX link_parent ON link(parent_id, kind);             -- children; late parents
 
 -- Copied-prefix facts an input states never create a relationship on their own.
@@ -586,7 +593,9 @@ CREATE TABLE event (
                                             --   main reading's; not a key
   after_message_id  TEXT,                   -- the message it follows, joined by ID; export `after_message`
   kind              TEXT NOT NULL,          -- open set; each provider's kinds are listed in sources/
-  at                INTEGER,
+  at                INTEGER,                -- as message.at, at_until and at_precision
+  at_until          INTEGER,
+  at_precision      TEXT CHECK (at_precision IN (@names(Precision))),
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- the input whose record it came from
   source_chain      INTEGER,                -- revision chain of the byte range (as message.source_chain)
   source_start      INTEGER,
@@ -595,9 +604,12 @@ CREATE TABLE event (
   content_start     INTEGER NOT NULL,       --   without its data, with its session and the message it
   content_length    INTEGER NOT NULL,       --   follows as stated (this row names them as shown), then
   data_length       INTEGER NOT NULL,       --   its normalized payload as JSON; export `data`
-  session_order     TEXT                    -- its place among its session's rows for the session's summaries:
+  session_order     BLOB,                   -- its place among its session's rows for the session's summaries:
                                             --   time, input ID, position, as message.session_order; NULL without
                                             --   a session
+  CHECK ((at IS NULL) = (at_precision IS NULL)),
+  CHECK (at_until IS NULL OR (at_precision <> 'instant' AND at_until > at)),
+  CHECK (at_until IS NOT NULL OR at_precision IS NULL OR at_precision IN ('instant','day','month','year'))
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
 CREATE INDEX event_session_order ON event(session_pk, session_order, id) WHERE session_pk IS NOT NULL;  -- summary folds
@@ -676,7 +688,6 @@ CREATE TABLE commit_link (
                                             --   reported it (summary/links.rs); NULL for another evidence
   PRIMARY KEY (session_pk, commit_hash)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX commit_link_hash ON commit_link(commit_hash);      -- commit:
 CREATE INDEX commit_link_block ON commit_link(evidence_block_pk) WHERE evidence_block_pk IS NOT NULL;  -- the foreign-key check when blocks are deleted
 
 CREATE TABLE pr_link (
@@ -689,7 +700,6 @@ CREATE TABLE pr_link (
                                             --   reported it; NULL for another evidence
   PRIMARY KEY (session_pk, repo, number)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX pr_link_number ON pr_link(number);                 -- pr:
 
 
 -- One per repository directory a session worked in, from the
@@ -732,13 +742,10 @@ CREATE TABLE session_span (
   ends_with_message TEXT,
   last_stop_reason TEXT
 ) STRICT;
-CREATE INDEX session_span_wall ON session_span(wall_ms);
-CREATE INDEX session_span_clustered ON session_span(clustered_ms);
-CREATE INDEX session_span_ending ON session_span(ends_with);
 
 CREATE TABLE session_time (
   session_pk INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
-  party TEXT NOT NULL CHECK(party IN ('tool','model','human','unattributed')),
+  party TEXT NOT NULL CHECK(party IN (@names(Party))),
   key TEXT NOT NULL,
   ms INTEGER NOT NULL CHECK(ms >= 0),
   PRIMARY KEY(session_pk,party,key)
@@ -753,7 +760,9 @@ CREATE TABLE document (
   native_id TEXT NOT NULL,
   purpose TEXT NOT NULL,
   title TEXT,
-  source_time INTEGER,
+  at INTEGER,                               -- its source time, as message.at, at_until and at_precision
+  at_until INTEGER,
+  at_precision TEXT CHECK (at_precision IN (@names(Precision))),
   authorship TEXT NOT NULL,
   version_hash BLOB NOT NULL,
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
@@ -761,7 +770,10 @@ CREATE TABLE document (
   source_start INTEGER NOT NULL,
   source_end INTEGER NOT NULL,
   fields BLOB NOT NULL, -- the shown version without its blocks, zstd JSON
-  changed INTEGER NOT NULL
+  changed INTEGER NOT NULL,
+  CHECK ((at IS NULL) = (at_precision IS NULL)),
+  CHECK (at_until IS NULL OR (at_precision <> 'instant' AND at_until > at)),
+  CHECK (at_until IS NOT NULL OR at_precision IS NULL OR at_precision IN ('instant','day','month','year'))
 ) STRICT;
 CREATE TABLE document_block (
   document_pk INTEGER NOT NULL REFERENCES document(pk) ON DELETE CASCADE,
@@ -774,7 +786,6 @@ CREATE TABLE document_block (
   PRIMARY KEY(document_pk,idx)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_block_text ON document_block(text_id) WHERE text_id IS NOT NULL;
-CREATE INDEX document_block_blob ON document_block(blob_hash) WHERE blob_hash IS NOT NULL;
 
 -- One counter per import that moves whenever its members, asset metadata or
 -- sidecars change; a read binds it instead of re-reading the members.

@@ -212,7 +212,7 @@ struct Call {
 
 /// A tool result block: (session order, message ID, block index) places it.
 struct CallResult {
-    place: (String, String, i64),
+    place: (Vec<u8>, String, i64),
     outcome: Option<ResultOutcome>,
     at: Option<i64>,
 }
@@ -818,24 +818,17 @@ impl<'c> Work<'_, 'c> {
         // The earliest place among the readings that know an order time, so
         // the message stays before what follows it in each input; a reading
         // that knows none never pulls it to the session's start.
-        let place = readings
+        let order = readings
             .iter()
-            .min_by_key(|m| {
+            .map(|m| {
                 (
                     m.order_time.is_none(),
-                    m.order_time,
-                    &m.input,
-                    m.seq,
-                    m.position,
+                    crate::encoding::session_order(m.order_time, &m.input, m.seq, m.position),
                 )
             })
+            .min()
+            .map(|(_, order)| order)
             .expect("readings are not empty");
-        let order = crate::encoding::session_order(
-            place.order_time,
-            &place.input,
-            place.seq,
-            place.position,
-        );
         let mut routes: Vec<(FieldGroup, i64, i64)> = groups
             .iter()
             .map(|(group, n)| (*group, readings[*n].input_pk, readings[*n].chain))
@@ -1114,7 +1107,7 @@ impl<'c> Work<'_, 'c> {
         &mut self,
         message_pk: i64,
         session_pk: i64,
-        order: &str,
+        order: &[u8],
         value: &ReadingValue,
     ) -> Result<()> {
         let m = &value.message;
@@ -1600,13 +1593,14 @@ impl<'c> Work<'_, 'c> {
                 winner.start.unwrap_or(0),
             )
         });
+        let time = crate::encoding::TimeColumns::of(winner.event.at, winner.event.time_accuracy());
         let values = params![
             shown,
             session_pk,
             seq,
             after,
             winner.event.kind,
-            winner.event.at.map(Timestamp::unix_ms),
+            time.at,
             winner.input_pk,
             winner.chain,
             winner.start,
@@ -1616,6 +1610,8 @@ impl<'c> Work<'_, 'c> {
             piece.length,
             piece.data_length,
             order,
+            time.until,
+            time.precision_name(),
         ];
         match stored {
             Some((pk, before_session, before)) => {
@@ -1642,7 +1638,8 @@ impl<'c> Work<'_, 'c> {
                 self.tx().prepare_cached(
                     "UPDATE event SET session_pk=?2,seq=?3,after_message_id=?4,kind=?5,at=?6,input_pk=?7,
                          source_chain=?8,source_start=?9,source_end=?10,content_group=?11,content_start=?12,
-                         content_length=?13,data_length=?14,session_order=?15 WHERE id=?1",
+                         content_length=?13,data_length=?14,session_order=?15,at_until=?16,at_precision=?17
+                     WHERE id=?1",
                 )?
                 .execute(values)?;
                 if moved_only {
@@ -1652,8 +1649,9 @@ impl<'c> Work<'_, 'c> {
             None => {
                 self.tx().prepare_cached(
                     "INSERT INTO event(id,session_pk,seq,after_message_id,kind,at,input_pk,source_chain,source_start,
-                         source_end,content_group,content_start,content_length,data_length,session_order)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                         source_end,content_group,content_start,content_length,data_length,session_order,
+                         at_until,at_precision)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
                 )?
                 .execute(values)?;
                 let pk = self.tx().last_insert_rowid();
@@ -1910,25 +1908,28 @@ impl<'c> Work<'_, 'c> {
         let document: Document = readings::read_document(self.tx(), input_pk, chain, id)?
             .ok_or_else(|| StoreError::Invalid("a document reading has no body".into()))?;
         let prepared = PreparedDocument::new(&document)?;
+        let time = crate::encoding::TimeColumns::of(document.source_time, document.time_accuracy());
         let pk = match stored {
             Some((pk, _)) => {
                 self.tx().execute(
-                    "UPDATE document SET purpose=?2,title=?3,source_time=?4,authorship=?5,version_hash=?6,input_pk=?7,
-                         source_chain=?8,source_start=?9,source_end=?10,changed=?11,fields=?12 WHERE pk=?1",
-                    params![pk, document.purpose.as_str(), document.title, document.source_time.map(Timestamp::unix_ms),
+                    "UPDATE document SET purpose=?2,title=?3,at=?4,authorship=?5,version_hash=?6,input_pk=?7,
+                         source_chain=?8,source_start=?9,source_end=?10,changed=?11,fields=?12,
+                         at_until=?13,at_precision=?14 WHERE pk=?1",
+                    params![pk, document.purpose.as_str(), document.title, time.at,
                         document.authorship.as_str(), &prepared.hash[..], input_pk, chain, start, end,
-                        self.context.counter, prepared.fields],
+                        self.context.counter, prepared.fields, time.until, time.precision_name()],
                 )?;
                 pk
             }
             None => {
                 self.tx().execute(
-                    "INSERT INTO document(id,origin,native_id,purpose,title,source_time,authorship,version_hash,input_pk,
-                         source_chain,source_start,source_end,fields,changed)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                    "INSERT INTO document(id,origin,native_id,purpose,title,at,authorship,version_hash,input_pk,
+                         source_chain,source_start,source_end,fields,changed,at_until,at_precision)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
                     params![id, document.id.origin().as_str(), document.id.native().as_str(), document.purpose.as_str(),
-                        document.title, document.source_time.map(Timestamp::unix_ms), document.authorship.as_str(),
-                        &prepared.hash[..], input_pk, chain, start, end, prepared.fields, self.context.counter],
+                        document.title, time.at, document.authorship.as_str(),
+                        &prepared.hash[..], input_pk, chain, start, end, prepared.fields, self.context.counter,
+                        time.until, time.precision_name()],
                 )?;
                 self.tx().last_insert_rowid()
             }
@@ -2058,7 +2059,7 @@ struct MainReading<'a> {
     session_pk: i64,
     /// The words of the main reading's text blocks.
     words: i64,
-    order: &'a str,
+    order: &'a [u8],
     input_pk: i64,
     chain: i64,
     start: i64,
@@ -2080,6 +2081,8 @@ const MESSAGE_COLUMNS: &[&str] = &[
     "prompt_kind",
     "model",
     "at",
+    "at_until",
+    "at_precision",
     "at_time",
     "parent_id",
     "input_tokens",
@@ -2104,7 +2107,7 @@ const MESSAGE_COLUMNS: &[&str] = &[
     "source_end",
     "in_progress",
 ];
-const CONTENT_COLUMNS: usize = 25;
+const CONTENT_COLUMNS: usize = 27;
 
 /// A block layout worth storing: `None` for a message holding every block.
 fn layout_column(selection: &polylogue_model::bundle::ShownBlocks) -> Result<Option<Vec<u8>>> {
@@ -2139,6 +2142,7 @@ fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
         }
         (!a.is_empty()).then(|| serde_json::Value::Object(a).to_string())
     };
+    let time = crate::encoding::TimeColumns::of(m.at, m.time_accuracy());
     let u = &m.usage;
     // A count beyond SQLite's integer range is unknown, never wrapped.
     let n = |x: Option<u64>| x.and_then(|x| i64::try_from(x).ok());
@@ -2152,7 +2156,9 @@ fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
         Value::Text(author.as_str().to_owned()),
         text(m.prompt_kind.map(|k| name(&k))),
         text(m.model.clone()),
-        int(m.at.map(Timestamp::unix_ms)),
+        int(time.at),
+        int(time.until),
+        text(time.precision_name().map(str::to_owned)),
         Value::Blob(main.time),
         text(m.parent.as_ref().map(ToString::to_string)),
         int(n(u.input)),
@@ -2176,7 +2182,7 @@ fn message_columns(m: &Message, main: MainReading<'_>) -> Result<Vec<Value>> {
         int(n(m.duration_ms)),
         Value::Integer(main.words),
         text(attrs),
-        Value::Text(main.order.to_owned()),
+        Value::Blob(main.order.to_owned()),
         Value::Integer(main.input_pk),
         Value::Integer(main.chain),
         Value::Integer(main.start),

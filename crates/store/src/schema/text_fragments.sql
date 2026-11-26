@@ -8,7 +8,6 @@ CREATE TABLE text_fragment (
   total BLOB CHECK(total IS NULL OR (length(total)=8 AND total>=end)),
   record BLOB NOT NULL
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX text_fragment_interval ON text_fragment(container,version,start,end,hash);
 CREATE TABLE text_fragment_source (
   hash BLOB NOT NULL REFERENCES text_fragment(hash),
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),

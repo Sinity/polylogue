@@ -5,7 +5,7 @@
 
 use crate::Result;
 use crate::encoding::Columns;
-use polylogue_model::{Session, SessionId, SessionKind, Timestamp, Title, TitleSource};
+use polylogue_model::{Session, SessionId, SessionKind, Title, TitleSource};
 use rusqlite::{Connection, Row, params};
 
 /// The columns [`read`] expects, in order, for a `SELECT`.
@@ -13,9 +13,11 @@ pub(crate) const COLUMNS: &str = "kind, title, title_source, cwd_json, branch, r
 
 /// Writes `s`'s facts into the row `pk`; `cwd` is the last directory.
 pub(crate) fn write(conn: &Connection, pk: i64, s: &Session) -> Result<()> {
+    let started = crate::encoding::TimeColumns::of(s.started, s.time_accuracy());
     conn.prepare_cached(
         "UPDATE session SET kind = ?2, title = ?3, title_source = ?4, cwd_json = ?5, cwd = ?6,
-             branch = ?7, record_repo = ?8, harness_version = ?9, started_at = ?10, mode = ?11, git_commit = ?12, model_provider = ?13, instructions = ?14, started_time = ?15
+             branch = ?7, record_repo = ?8, harness_version = ?9, started_at = ?10, mode = ?11, git_commit = ?12, model_provider = ?13, instructions = ?14, started_time = ?15,
+             started_until = ?16, started_precision = ?17
          WHERE pk = ?1",
     )?
     .execute(params![
@@ -28,12 +30,14 @@ pub(crate) fn write(conn: &Connection, pk: i64, s: &Session) -> Result<()> {
         s.git_branch,
         s.repo,
         s.tool_version,
-        s.started.map(Timestamp::unix_ms),
+        started.at,
         s.mode,
         s.git_commit,
         s.model_provider,
         s.instructions,
         crate::encoding::time_bytes(s.started,s.time_accuracy())?,
+        started.until,
+        started.precision_name(),
     ])?;
     Ok(())
 }

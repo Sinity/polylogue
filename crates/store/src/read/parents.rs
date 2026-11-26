@@ -91,7 +91,7 @@ row! {
     /// A message's session and its place there.
     struct MessagePlace {
         session_pk: SessionPk,
-        session_order: String,
+        session_order: Vec<u8>,
     }
     statements {
         const OF_MESSAGE = "SELECT session_pk, session_order FROM message WHERE id=?1 AND duplicate_of IS NULL";
@@ -421,7 +421,7 @@ pub(crate) fn compare_session_messages(
             [target.to_string()],
         )?
         .ok_or_else(|| StoreError::NotFound(format!("session:{target}")))?;
-    let coordinate = |id: &MessageId| -> Result<(String, SessionPk, String)> {
+    let coordinate = |id: &MessageId| -> Result<(String, SessionPk, Vec<u8>)> {
         let id = crate::chain_names::resolved_message(conn, id)?.to_string();
         let place = conn
             .maybe(&MessagePlace::OF_MESSAGE, [&id])?

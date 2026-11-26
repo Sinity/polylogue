@@ -168,7 +168,7 @@ row! {
 row! {
     /// Where a visit from a message starts in its session's order.
     struct MessageStart {
-        session_order: String,
+        session_order: Vec<u8>,
         id: String,
     }
     statements {
@@ -1445,7 +1445,7 @@ impl Reader<'_> {
         };
         let mut parameters = vec![Value::Integer(session_pk.0)];
         if let Some(start) = &start {
-            parameters.push(Value::Text(start.session_order.clone()));
+            parameters.push(Value::Blob(start.session_order.clone()));
             parameters.push(Value::Text(start.id.clone()));
         }
         let statement = match (&start, ordinal) {

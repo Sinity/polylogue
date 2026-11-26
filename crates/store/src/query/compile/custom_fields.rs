@@ -234,6 +234,7 @@ pub(crate) fn since(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String
                 since: Some(t.start()),
                 until: None,
             },
+            x.cx.is_top(),
         );
         return Ok(if x.unit == Unit::ToolCalls {
             format!("({test} OR {}.result_message_id IS NULL)", x.scope.a.t)
@@ -263,6 +264,7 @@ pub(crate) fn until(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String
                 since: None,
                 until: Some(t.until_bound()),
             },
+            x.cx.is_top(),
         ));
     }
     let bound = crate::calendar::boundary_ms(t.until_bound());
