@@ -36,6 +36,7 @@ impl SharedScopeIndex {
         // Read without the lock: briefs keep answering from the last state.
         let changes = reader.scope_changes(after.as_ref())?;
         let mut held = self.index.locked();
+        polylogue_store::fault::check("scope_index.apply", "")?;
         match held.as_mut() {
             // Another refresh already applied a newer snapshot.
             Some(index) if index.is_newer_than(&changes) => {}
