@@ -793,7 +793,14 @@ impl Inner {
                 let _ = reply.send(result);
             }
             for (entries, reply) in search_writes.drain(..) {
-                let _ = reply.send(crate::text_rows::apply_entries(&self.index, &entries));
+                let result = crate::text_rows::apply_entries(&self.index, &entries);
+                // Settled search text is a commit its readers see: status
+                // stops saying search text is pending.
+                if matches!(result, Ok(applied) if applied > 0) {
+                    self.commits
+                        .committed(crate::completion::Committed::CONTENT);
+                }
+                let _ = reply.send(result);
             }
             for (input, chain, length, reading, reply) in replacements.drain(..) {
                 let _ = reply.send(crate::timing::time(crate::timing::Stage::Rows, || {
