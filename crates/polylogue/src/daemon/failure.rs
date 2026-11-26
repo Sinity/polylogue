@@ -160,12 +160,6 @@ impl From<polylogue_model::Panicked> for Failure {
     }
 }
 
-impl<T> From<polylogue_model::Panicked> for command_surface::Answer<T> {
-    fn from(panic: polylogue_model::Panicked) -> Self {
-        Failure::from(panic).answer()
-    }
-}
-
 impl From<polylogue_reading::Error> for Failure {
     fn from(error: polylogue_reading::Error) -> Self {
         use polylogue_reading::Error;

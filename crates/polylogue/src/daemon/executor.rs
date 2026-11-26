@@ -197,17 +197,18 @@ impl Executor {
         true
     }
 
-    /// Runs `job` and returns its result; `None` when the executor stopped
-    /// before running it.
-    pub(crate) async fn run<T: From<polylogue_model::Panicked> + Send + 'static>(
+    /// Runs `job` and returns its answer, a panic's as a failure; `None`
+    /// when the executor stopped before running it.
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
         class: Class,
         deadline: Option<Instant>,
-        job: impl FnOnce() -> T + Send + 'static,
-    ) -> Option<T> {
+        job: impl FnOnce() -> command_surface::Answer<T> + Send + 'static,
+    ) -> Option<command_surface::Answer<T>> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         if !self.submit(class, deadline, move || {
-            let answer = polylogue_model::caught(job).unwrap_or_else(T::from);
+            let answer = polylogue_model::caught(job)
+                .unwrap_or_else(|panic| super::Failure::from(panic).answer());
             let _ = sender.send(answer);
         }) {
             return None;
