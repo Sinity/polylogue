@@ -28,7 +28,7 @@ impl Reader<'_> {
             problem: error.to_string(),
         })?;
         let mut statement = conn.prepare_cached(&source.sql(
-            "SELECT EXISTS(SELECT 1 FROM @source.annotation_slot s JOIN @source.revision_state r ON r.id=s.id WHERE s.slot=?1 AND r.current=1 AND r.withdrawn=0)",
+            "SELECT EXISTS(SELECT 1 FROM @source.annotation_unique_key s JOIN @source.revision_state r ON r.id=s.id WHERE s.key_hash=?1 AND r.current=1 AND r.withdrawn=0)",
         ))?;
         let mut found = BTreeSet::new();
         for target in targets {
@@ -75,9 +75,9 @@ impl Reader<'_> {
         let block_end = format!("span:block:{message}$");
         let (through, until) = annotation_bounds(at);
         let sql = if at.is_some() {
-            "SELECT a.root,a.id,l.ref FROM @source.annotation_link l JOIN @source.annotation a ON a.id=l.record WHERE l.role='about' AND (?6 IS NULL OR a.commit_seq<=?6) AND (?7 IS NULL OR a.created_at<=?7) AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
+            "SELECT a.root,a.id,l.ref FROM @source.annotation_link l JOIN @source.annotation a ON a.id=l.annotation WHERE l.role='about' AND (?6 IS NULL OR a.commit_seq<=?6) AND (?7 IS NULL OR a.created_at<=?7) AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
         } else {
-            "SELECT a.root,a.id,l.ref FROM @source.annotation_link l JOIN @source.annotation a ON a.id=l.record JOIN @source.revision_state r ON r.id=a.id WHERE l.role='about' AND r.current=1 AND r.withdrawn=0 AND ?6 IS NULL AND ?7 IS NULL AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
+            "SELECT a.root,a.id,l.ref FROM @source.annotation_link l JOIN @source.annotation a ON a.id=l.annotation JOIN @source.revision_state r ON r.id=a.id WHERE l.role='about' AND r.current=1 AND r.withdrawn=0 AND ?6 IS NULL AND ?7 IS NULL AND (l.ref=?1 OR (l.ref>=?2 AND l.ref<?3) OR (l.ref>=?4 AND l.ref<?5)) ORDER BY a.root,a.id,l.ref"
         };
         let mut statement = conn.prepare_cached(&source.sql(sql))?;
         let mut links = at
@@ -211,7 +211,7 @@ impl Reader<'_> {
         let source = Source::reading(conn)?;
         let (through, until) = annotation_bounds(at);
         let mut statement = conn.prepare_cached(&source.sql(
-            "SELECT DISTINCT a.root,a.id FROM @source.annotation_link l JOIN @source.annotation a ON a.id=l.record WHERE l.ref=?1 AND l.role IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR a.commit_seq<=?3) AND (?4 IS NULL OR a.created_at<=?4) ORDER BY a.root,a.id",
+            "SELECT DISTINCT a.root,a.id FROM @source.annotation_link l JOIN @source.annotation a ON a.id=l.annotation WHERE l.ref=?1 AND l.role IN (SELECT value FROM json_each(?2)) AND (?3 IS NULL OR a.commit_seq<=?3) AND (?4 IS NULL OR a.created_at<=?4) ORDER BY a.root,a.id",
         ))?;
         let roles =
             serde_json::to_string(&roles.iter().map(|role| role.as_str()).collect::<Vec<_>>())?;

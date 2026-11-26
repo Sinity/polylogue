@@ -187,7 +187,7 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
                 FROM source_observation o WHERE o.class = 'imported' AND json_valid(o.details_json)
                     AND json_type(o.details_json, '$.import_format') = 'text'
             )
-            SELECT COALESCE(f.format, i.format), c.length, p.state, p.parser_version,
+            SELECT COALESCE(f.format, i.origin), c.length, p.state, p.parser_version,
                 p.parsed_to + p.waiting, p.failure_kind
             FROM chains c JOIN source_input i ON i.id = c.input
             LEFT JOIN formats f ON f.input = c.input AND f.choice = 1

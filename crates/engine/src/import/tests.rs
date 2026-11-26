@@ -217,7 +217,7 @@ fn file_of_declared_origin_without_parser_is_stored_by_import() {
     );
     drop(reader);
     assert_eq!(
-        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'pi'"),
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE origin = 'pi'"),
         1
     );
     // Named explicitly, the same bytes are already stored.

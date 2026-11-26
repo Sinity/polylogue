@@ -55,7 +55,7 @@ fn record(row: &rusqlite::Row<'_>) -> Result<Annotation> {
 fn links(conn: &Connection, id: &str) -> Result<Vec<AnnotationLink>> {
     let source = Source::reading(conn)?;
     let mut statement = conn.prepare_cached(&source.sql(
-        "SELECT role,ref,seen_hash,quote FROM @source.annotation_link WHERE record=?1 ORDER BY role,ref",
+        "SELECT role,ref,seen_hash,quote FROM @source.annotation_link WHERE annotation=?1 ORDER BY role,ref",
     ))?;
     let mut rows = statement.query([id])?;
     let mut result = Vec::new();
@@ -310,7 +310,7 @@ pub(crate) fn insert(
     for link in &annotation.links {
         conn.execute(
             &source.sql(
-                "INSERT INTO @source.annotation_link(record,role,ref,seen_hash,quote) VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO @source.annotation_link(annotation,role,ref,seen_hash,quote) VALUES(?1,?2,?3,?4,?5)",
             ),
             params![
                 annotation.id,
@@ -323,7 +323,9 @@ pub(crate) fn insert(
     }
     for slot in slots {
         conn.execute(
-            &source.sql("INSERT OR IGNORE INTO @source.annotation_slot(slot,id) VALUES(?1,?2)"),
+            &source.sql(
+                "INSERT OR IGNORE INTO @source.annotation_unique_key(key_hash,id) VALUES(?1,?2)",
+            ),
             params![slot.digest().as_slice(), annotation.id],
         )?;
     }
@@ -448,7 +450,7 @@ impl<'a> StoredLinks<'a> {
     fn incoming(&self, reference: &Reference, role: LinkRole) -> Result<Vec<Revision>> {
         check_read()?;
         let mut statement = self.conn.prepare_cached(&self.source.sql(
-            "SELECT a.root,a.id,a.created_at,a.commit_seq FROM @source.annotation_link l JOIN @source.annotation a ON a.id=l.record WHERE l.ref=?1 AND l.role=?2 ORDER BY a.root,a.id",
+            "SELECT a.root,a.id,a.created_at,a.commit_seq FROM @source.annotation_link l JOIN @source.annotation a ON a.id=l.annotation WHERE l.ref=?1 AND l.role=?2 ORDER BY a.root,a.id",
         ))?;
         let mut rows = statement.query(params![reference.to_string(), role.as_str()])?;
         let mut incoming = Vec::new();
@@ -490,7 +492,7 @@ impl Links for StoredLinks<'_> {
     fn withdraws(&mut self, record: &Revision) -> Result<Vec<Target>> {
         check_read()?;
         let mut statement = self.conn.prepare_cached(&self.source.sql(
-            "SELECT ref FROM @source.annotation_link WHERE record=?1 AND role='withdraws' ORDER BY ref",
+            "SELECT ref FROM @source.annotation_link WHERE annotation=?1 AND role='withdraws' ORDER BY ref",
         ))?;
         let mut rows = statement.query([&record.rev])?;
         let mut targets = Vec::new();
@@ -510,7 +512,7 @@ impl Holders for StoredLinks<'_> {
     fn holders(&mut self, slot: &UniqueSlot) -> Result<Vec<Revision>> {
         check_read()?;
         let mut statement = self.conn.prepare_cached(&self.source.sql(
-            "SELECT a.root,a.id FROM @source.annotation_slot s JOIN @source.annotation a ON a.id=s.id WHERE s.slot=?1 ORDER BY a.root,a.id",
+            "SELECT a.root,a.id FROM @source.annotation_unique_key s JOIN @source.annotation a ON a.id=s.id WHERE s.key_hash=?1 ORDER BY a.root,a.id",
         ))?;
         let mut rows = statement.query([slot.digest().as_slice()])?;
         let mut holders = Vec::new();

@@ -367,7 +367,7 @@ fn remove_previews(conn: &Connection, previews: Vec<(String, String)>) -> Result
     let mut roots = std::collections::BTreeSet::new();
     for (id, root) in previews {
         conn.execute(
-            &source.sql("DELETE FROM @source.annotation_link WHERE record=?1"),
+            &source.sql("DELETE FROM @source.annotation_link WHERE annotation=?1"),
             [&id],
         )?;
         conn.execute(

@@ -140,7 +140,7 @@ fn raw_name_bytes_stay_apart_from_the_decoded_name() {
     let member = container.by_index(0).unwrap();
     assert_eq!(member.name_raw()[0], 0xff);
     assert!(std::str::from_utf8(member.name_raw()).is_err());
-    let names=reader.query("SELECT json_extract(o.details_json,'$.import.member') AS name FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id WHERE c.member_index=0",&[]).unwrap();
+    let names=reader.query("SELECT json_extract(o.details_json,'$.import.member') AS name FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id WHERE c.member_position=0",&[]).unwrap();
     assert_eq!(
         names[0]["name"],
         member.name(),
