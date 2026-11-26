@@ -128,3 +128,44 @@ fn shutdown_cancels_a_stream_read_and_keeps_its_producers_writes_admissible() {
     };
     assert_eq!(failure.code(), "shutting_down");
 }
+
+#[test]
+fn a_stream_still_queued_when_the_daemon_stops_answers_shutting_down() {
+    let daemon = crate::test_daemon::start("stream queued at stop");
+    let executor = &daemon.daemon.executor;
+    // Every place is held, so the stream below waits in the queue.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let held = std::sync::Arc::new(std::sync::Mutex::new(held));
+    let (started, running) = std::sync::mpsc::channel();
+    for _ in 0..executor.places() {
+        let held = std::sync::Arc::clone(&held);
+        let started = started.clone();
+        assert!(executor.submit(Class::Ordinary, None, move || {
+            let _ = started.send(());
+            let _ = polylogue_model::LockExt::locked(&*held).recv();
+        }));
+    }
+    running
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .unwrap();
+    let invocation =
+        daemon
+            .daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "stream-queued",
+            ));
+    let input = start(
+        &daemon.daemon,
+        Class::Ordinary,
+        ReadLimit::without_deadline(Default::default()),
+        invocation,
+        Box::new(|_, _, _, _| panic!("a queued stream does not run after the stop")),
+    )
+    .unwrap();
+    executor.refuse();
+    let super::super::stream_buffer::Next::Failed(failure) = input.next_blocking().unwrap() else {
+        panic!("a stream that never ran is not a complete stream");
+    };
+    assert_eq!(failure.code(), "shutting_down");
+    drop(release);
+}

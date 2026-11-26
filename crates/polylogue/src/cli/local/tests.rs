@@ -255,6 +255,7 @@ fn install_chrome_remove_takes_back_a_new_manifest() {
     }
 }
 
+mod daemon_end;
 mod drive;
 
 mod instructions;
