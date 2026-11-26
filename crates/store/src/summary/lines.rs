@@ -1354,22 +1354,27 @@ pub(crate) fn computed_entries(conn: &Connection, session_pk: i64) -> Result<Vec
     Ok(out)
 }
 
-/// Writes the lines of every session from its first row, on a connection
+/// Writes the lines of every session changed since `written` records it
+/// (its `changed` then), from its first row, on a connection
 /// that holds rows written directly (the fixture builder) and no due
 /// marks. The fixture builder writes rows the writer would refuse (message
 /// IDs without an origin, partial block bodies) for tests that never read
 /// them as sessions; such a session is left without lines, so only a
 /// session read of it is refused.
 #[cfg(any(test, feature = "fixture"))]
-pub(crate) fn write_fixture_lines(conn: &Connection) -> Result<()> {
-    let sessions: Vec<i64> = conn
-        .prepare("SELECT pk FROM session ORDER BY pk")?
-        .query_map([], |row| row.get(0))?
+pub(crate) fn write_fixture_lines(
+    conn: &Connection,
+    written: &mut std::collections::HashMap<i64, i64>,
+) -> Result<()> {
+    let sessions: Vec<(i64, i64)> = conn
+        .prepare("SELECT pk, changed FROM session ORDER BY pk")?
+        .query_map([], |row| <(i64, i64)>::try_from(row))?
+        .filter(|row| !matches!(row, Ok((pk, changed)) if written.get(pk) == Some(changed)))
         .collect::<rusqlite::Result<_>>()?;
     // One transaction, as the writer applies a round.
     conn.execute_batch("SAVEPOINT fixture_lines")?;
     let result = (|| {
-        for pk in sessions {
+        for &(pk, _) in &sessions {
             match compute(conn, pk, &Key::start()) {
                 Ok(lines) => apply(conn, pk, &lines)?,
                 Err(
@@ -1391,6 +1396,7 @@ pub(crate) fn write_fixture_lines(conn: &Connection) -> Result<()> {
             return Err(error);
         }
     }
+    written.extend(sessions);
     Ok(())
 }
 

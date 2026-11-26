@@ -66,6 +66,26 @@ impl Key {
     pub(crate) fn is_start(&self) -> bool {
         self.0.is_empty()
     }
+
+    /// The row the key names, as a log line says it.
+    pub(crate) fn row(&self) -> String {
+        if self.is_start() {
+            return "the first row".into();
+        }
+        if *self >= Self::past_every_row() {
+            return "no row".into();
+        }
+        let order = self.order();
+        let rest = &self.0[(order.len() + 1).min(self.0.len())..];
+        match rest.split_first() {
+            Some((kind, id)) => format!(
+                "{} {} at {order}",
+                if *kind == 0 { "message" } else { "event" },
+                String::from_utf8_lossy(id)
+            ),
+            None => format!("place {order}"),
+        }
+    }
 }
 
 /// One assembled row of a session, as the folds read it.

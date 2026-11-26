@@ -540,7 +540,7 @@ impl<'a> Pass<'a> {
             drop(key);
             drop(snapshot);
             drop(doing);
-            taken.push((pk, token, stale, from, lines_moved, true));
+            taken.push((pk, token, stale, (due.from, from), lines_moved, true));
             first.push(SessionWrite {
                 pk,
                 token,
@@ -561,7 +561,7 @@ impl<'a> Pass<'a> {
         // The second wave: the folds, then what is computed from them, and
         // the transcript lines.
         let start = Key::start();
-        for (pk, token, stale, from, lines_moved, applied) in &taken {
+        for (pk, token, stale, (marked, from), lines_moved, applied) in &taken {
             if !applied {
                 continue;
             }
@@ -591,8 +591,10 @@ impl<'a> Pass<'a> {
             if run.read >= fold::EVERY || lines.read >= fold::EVERY {
                 crate::log!(
                     info,
-                    "summaries of {id}: folds {}, {} of {} rows read; lines from line {} of {}, \
-                     {} units read",
+                    "summaries of {id}: due from {}, folds start at {}; folds {}, {} of {} rows \
+                     read; lines from line {} of {}, {} units read",
+                    marked.row(),
+                    from.row(),
                     run.began,
                     run.read,
                     run.rows,
