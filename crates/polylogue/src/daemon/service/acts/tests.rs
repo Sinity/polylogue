@@ -267,7 +267,8 @@ fn resume_in_starts_a_new_session_briefed_from_the_source() {
     );
     assert!(
         crate::hosting::records(&d.daemon.acts.hosts)
-            .iter()
+            .into_iter()
+            .map(Result::unwrap)
             .any(|(_, r)| r.session == "codex:t1")
     );
 }
@@ -487,31 +488,22 @@ fn resume_with_missing_directory_is_refused_by_name() {
     )
     .unwrap();
     d.wait_for(|status| status["store"]["messages"] == 2);
-    let detail = |session: &str, delivery: &str| {
-        author(
-            &d.daemon,
-            &invocation(&d),
-            delivery.into(),
-            UserWrite::Deliver(Delivery {
-                recipient_kind: "session".into(),
-                recipient_id: Some(session.into()),
-                sender: DeliverySender::Send,
-                event: DeliveryEvent::Message,
-                cwd: None,
-                text: "rebase".into(),
-                refs: vec![],
-                left_out: vec![],
-            }),
-        )
-        .unwrap();
-        resume_once(
-            &d.daemon,
-            &ResumeRun {
-                session: SessionId::parse(session).unwrap(),
-                delivery: delivery.into(),
-                text: "rebase".into(),
-            },
+    let detail = |session: &str, request: &str| {
+        let answer = crate::test_answers::ok(
+            super::send(
+                &d.daemon,
+                &invocation(&d),
+                request,
+                session,
+                "rebase",
+                false,
+                None,
+            )
+            .unwrap(),
         );
+        let row = &answer.deliveries[0];
+        assert_eq!(row.outcome, ActOutcome::NotSent);
+        let delivery = row.delivery.as_deref().unwrap();
         d.wait_for(|status| status["pending_writes"]["delivery_outcomes"] == 0);
         let reader = d.daemon.reads.reader().unwrap();
         let rows = reader

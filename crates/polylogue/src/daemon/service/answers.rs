@@ -324,11 +324,14 @@ pub(crate) fn context(
                 .expect("advisory cooldown held")
                 .insert(session.to_string(), operation.clock.now.as_millisecond());
         }
-        if let Err(error) = writes.archive().accept_delivery(request, Some(prepared_at)) {
-            if let Some(recent) = &mut cooldown {
-                recent.remove(&ask.recipient().expect("advisory recipient").to_string());
+        match writes.archive().accept_delivery(request, Some(prepared_at)) {
+            Ok(written) => d.acts.watch_delivery(&request_id, written),
+            Err(error) => {
+                if let Some(recent) = &mut cooldown {
+                    recent.remove(&ask.recipient().expect("advisory recipient").to_string());
+                }
+                return store_error(&error);
             }
-            return store_error(&error);
         }
         delivery = Some(request_id);
     }
@@ -377,10 +380,13 @@ pub(crate) fn delivery_event(
         .archive()
         .accept_delivery(invocation.request(request_id.clone(), write), None)
     {
-        Ok(_) => crate::protocol::written(
-            serde_json::json!({ "id": request_id, "queued": true }),
-            false,
-        ),
+        Ok(written) => {
+            d.acts.watch_delivery(&request_id, written);
+            crate::protocol::written(
+                serde_json::json!({ "id": request_id, "queued": true }),
+                false,
+            )
+        }
         Err(error) => store_error(&error),
     }
 }

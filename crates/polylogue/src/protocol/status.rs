@@ -152,6 +152,9 @@ impl AnswersFrom {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct PendingWrites {
     pub delivery_outcomes: u64,
+    pub delivery_write_failures: u64,
+    pub mailbox_failures: u64,
+    pub host_reattachment_failures: u64,
     pub live_event_lines: u64,
     pub last_error: Option<String>,
 }

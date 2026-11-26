@@ -181,6 +181,11 @@ fn every_reason_has_one_code_and_one_text() {
             "resume --in needs the session whose work it continues",
         ),
         (
+            Reason::ContinuationRequestUsed {},
+            Code::Conflict,
+            "this request ID already names a different operation",
+        ),
+        (
             Reason::ResumeOptionsNeedIn {},
             Code::BadRequest,
             "resume --at, --cwd and --stop-source apply only with --in HARNESS",

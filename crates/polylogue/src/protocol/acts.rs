@@ -67,6 +67,7 @@ pub enum ActOutcome {
     /// Queued behind the session's running resume.
     Queued,
     NotSent,
+    Cancelled,
 }
 
 /// One session a message went to.
@@ -124,7 +125,25 @@ pub struct SendReport {
 #[serde(deny_unknown_fields)]
 pub struct Skipped {
     pub session: String,
+    pub reason: SkipReason,
     pub line: String,
+}
+
+/// Why a session in a multi-recipient send was skipped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SkipReason {
+    SessionMissing,
+    SessionNotRunning {
+        state: polylogue_model::live::LiveState,
+    },
+}
+
+/// Why a hosted permission request was cancelled.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct AnswerCancellation {
+    /// The permission option kinds the harness offered.
+    pub options: Vec<String>,
 }
 
 /// An answer to a session's pending request.
@@ -136,6 +155,8 @@ pub struct Answered {
     pub request: String,
     pub channel: Channel,
     pub outcome: ActOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation: Option<AnswerCancellation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     pub undo: String,
