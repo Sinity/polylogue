@@ -189,9 +189,14 @@ fn query_selection(rows: &Rows) -> Option<&str> {
 }
 
 /// A reference that names rows one by one: a session, message, block,
-/// annotation, alternate, attachment, page, role, tool call or kept result. Any other
-/// text, a saved query's name included, is a query.
+/// annotation, alternate, attachment, page, role, tool call or kept result,
+/// or a provider conversation URL, which names its web-chat session whether
+/// or not the archive holds it yet. Any other text, a saved query's name
+/// included, is a query.
 fn named(text: &str) -> Option<Reference> {
+    if let Some(session) = polylogue_sources::origin::conversation_session(text) {
+        return Some(Reference::Session(session));
+    }
     Reference::parse(text.trim()).ok().filter(|reference| {
         polylogue_query::catalog::reference_unit(reference).is_some()
             || matches!(
@@ -869,7 +874,9 @@ fn listing_answer(answer: crate::daemon::query::CountReply) -> Answer<LineAnswer
     answer.map(|found| LineAnswer::Listing(Box::new(found)))
 }
 
-fn listing_wait(wait: &str, surface: Surface) -> Result<Duration, Failure> {
+/// How long a `--wait` waits: over MCP at most 50 seconds, which a model
+/// can hold a call open for.
+pub(super) fn listing_wait(wait: &str, surface: Surface) -> Result<Duration, Failure> {
     let millis = crate::signals::duration(wait)
         .ok_or_else(|| Failure::bad_value("--wait needs a duration such as 30s or 30m"))?;
     let duration = Duration::from_millis(millis as u64);

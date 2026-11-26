@@ -330,7 +330,7 @@ fn feed_refuses_query_page_and_field_flags_instead_of_ignoring_global_arguments(
         argv.extend(suffix);
         let matches = crate::cli::command().try_get_matches_from(&argv).unwrap();
         assert_eq!(
-            crate::cli::run(&matches, &startup, root.path()),
+            crate::cli::run(&matches, &startup),
             ExitCode::from(2),
             "{argv:?}"
         );

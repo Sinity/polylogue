@@ -679,6 +679,7 @@ mod read_failures;
 
 mod read_trace;
 
+mod import_provider;
 mod import_refusals;
 mod tags;
 mod withdrawals;

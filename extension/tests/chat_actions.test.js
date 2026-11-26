@@ -28,7 +28,7 @@ function setup(pageResult) {
   return { actions, chrome, reports, ran, captured };
 }
 
-describe("a chat action queued with `polylogue chat send`", () => {
+describe("a chat action queued with `polylogue start --in chatgpt`", () => {
   it("is drafted in a background tab with its file, and the draft is reported", async () => {
     let files = null;
     const { actions, chrome, reports, ran } = setup((attachments, [action, runId]) => {

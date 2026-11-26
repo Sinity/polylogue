@@ -62,16 +62,18 @@
     $("approvals-section").hidden = actions.length === 0;
     $("approvals").replaceChildren(...actions.map((action) => {
       // The turn is shown whole: it is posted under the operator's account.
-      const li = item(`${words.providerName(action.provider)}: send into conversation ${action.conversation}`, action.text);
+      const what = action.conversation ? `send into conversation ${action.conversation}` : "submit a new conversation";
+      const li = item(`${words.providerName(action.provider)}: ${what}`, action.text);
       const buttons = document.createElement("div");
       buttons.className = "buttons";
-      for (const [label, approve] of [["Allow", true], ["Deny", false]]) {
+      // The operator's answer, as `polylogue SESSION answer allow|deny` gives it.
+      for (const [label, value] of [["Allow", "allow"], ["Deny", "deny"]]) {
         const button = document.createElement("button");
         button.textContent = label;
-        if (approve) button.className = "primary";
+        if (value === "allow") button.className = "primary";
         button.addEventListener("click", async () => {
           button.disabled = true;
-          await chrome.runtime.sendMessage({ type: "polylogue.decide", id: action.id, approve });
+          await chrome.runtime.sendMessage({ type: "polylogue.answer", id: action.id, value });
           await refresh();
         });
         buttons.append(button);

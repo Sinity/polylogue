@@ -227,7 +227,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       await local.set({ settings: next });
       return next;
     },
-    "polylogue.decide": async (message) => host.decideChatAction(message.id, "operator", message.approve === true),
+    "polylogue.answer": async (message) => host.answerChatAction(message.id, message.value === "allow" ? "allow" : "deny"),
     "polylogue.reader": async () => {
       const { url } = await host.reader();
       await chrome.tabs.create({ url });

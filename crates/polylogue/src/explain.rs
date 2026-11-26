@@ -38,7 +38,7 @@ pub fn removed_word(word: &str) -> Option<String> {
             .split('`')
             .skip(1)
             .step_by(2)
-            .any(|named| named == word);
+            .any(|named| named == word || named.split(' ').next() == Some(word));
         let plain = |text: &str| text.replace("\\|", "|").replace('`', "");
         named.then(|| {
             format!(

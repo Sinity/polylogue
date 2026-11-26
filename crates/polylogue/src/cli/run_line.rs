@@ -188,18 +188,14 @@ fn decoded(answer: &Answer<Value>) -> Result<LineAnswer, command_surface::Failur
     serde_json::from_value(answer.value().cloned().unwrap_or(Value::Null))
         .map_err(|error| crate::protocol::protocol_mismatch("rows", error.to_string()))
 }
-pub(crate) fn run(
-    mut parsed: ParsedLine,
-    startup: &crate::config::Startup,
-    cwd: &std::path::Path,
-) -> ExitCode {
+pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> ExitCode {
     let json = parsed.line.json;
     if parsed.first == FirstWord::Nothing {
         let words = vec!["polylogue", "status"];
         let matches = super::command()
             .try_get_matches_from(words)
             .expect("status command");
-        return super::run(&matches, startup, cwd);
+        return super::run(&matches, startup);
     }
     if parsed.line.explain && !json {
         println!(

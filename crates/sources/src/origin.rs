@@ -1118,6 +1118,17 @@ pub fn by_extension_name(name: &str) -> Option<&'static OriginSpec> {
     })
 }
 
+/// The extension's first name for the web chat it calls `name` (`claude`
+/// is `claude-ai`).
+pub fn web_chat_name(name: &str) -> Option<&'static str> {
+    by_extension_name(name)?
+        .web
+        .as_ref()?
+        .extension_names
+        .first()
+        .copied()
+}
+
 /// The browser extension's provider table (`extension/src/background/providers.js`),
 /// written from this registry by `cargo xtask extension-providers`. Each
 /// provider the extension names gets its current host, the page it opens and
@@ -1149,6 +1160,18 @@ pub fn extension_providers_module() -> String {
     }
     out.push_str("};\n");
     out
+}
+
+/// The session a provider conversation URL names, whether or not the
+/// archive holds it.
+pub fn conversation_session(url: &str) -> Option<polylogue_model::SessionId> {
+    let parsed = conversation_catalog().read_url(url.trim()).ok()?;
+    let references::Target::Object(object) = parsed.target() else {
+        return None;
+    };
+    (object.product() == references::Product::Polylogue && object.kind() == "session")
+        .then(|| polylogue_model::SessionId::parse(object.id()).ok())
+        .flatten()
 }
 
 /// Conversation URL declarations shared by query and read preparation.

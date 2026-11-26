@@ -15,10 +15,13 @@ fn refusal(arguments: serde_json::Value) -> (String, String) {
     )
 }
 
-/// An option of the provider import is refused as not built, naming it.
+/// A provider import's options are refused on files, naming the option.
 #[test]
-fn a_provider_import_option_is_refused_as_not_built() {
-    let (kind, message) = refusal(json!({"cancel": true}));
-    assert_eq!(kind, "not_yet_available");
-    assert!(message.contains("--cancel"), "{message}");
+fn a_provider_import_option_on_files_is_refused() {
+    let (kind, message) = refusal(json!({"paths": ["/home/op/export.json"], "cancel": true}));
+    assert_eq!(kind, "bad_request");
+    assert!(
+        message.starts_with("--cancel is for a provider import"),
+        "{message}"
+    );
 }

@@ -1,9 +1,11 @@
-//! Chat actions as the operator queues them and the extension sees them.
-//! The daemon's writer stores them ([`polylogue_store::chat_actions`]);
-//! this module checks requests and shapes the answers.
+//! Chat actions as `send`, `start --in` and `answer` make them and the
+//! extension sees them. The daemon's writer stores them
+//! ([`polylogue_store::chat_actions`]); this module checks requests and
+//! shapes the answers.
 //!
-//! A new action drafts unless it asks to submit; a submit into an existing
-//! conversation waits for the operator's approval. One action is handed out
+//! A new conversation drafts unless it asks to submit; a turn into an
+//! existing conversation, and a submit by anyone but the operator, waits
+//! for the operator's answer. One action is handed out
 //! at a time, as a claim that expires and returns the action to the queue
 //! if the extension goes quiet before sending. Once a send may have begun,
 //! an expired claim has an unknown outcome and is not queued again. Replies
@@ -50,10 +52,12 @@ pub struct ChatRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project: Option<String>,
     pub text: String,
-    /// The model as the provider's model menu names it.
-    pub model: String,
+    /// The model as the provider's model menu names it; none keeps what
+    /// the page has selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// The reasoning effort as the provider's menu names it, where it
-    /// offers one.
+    /// offers one; it is chosen in the model's menu, so it needs a model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     /// Submit the turn; without it the extension fills the composer and
@@ -62,7 +66,7 @@ pub struct ChatRequest {
     pub submit: bool,
 }
 
-/// A file the operator attaches, with its bytes.
+/// A file attached to a turn, with its bytes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct ChatFile {
     pub name: String,
@@ -94,11 +98,14 @@ pub fn check_file_name(name: &str) -> Result<(), Refused> {
 }
 
 /// Checks a request and makes the row the writer stores. `files` are the
-/// attachments already stored as blobs, with their names and media types.
+/// attachments already stored as blobs, with their names and media types;
+/// a `held` action waits for the operator's answer before the extension
+/// takes it.
 pub fn new_action(
     request_key: &str,
     req: &ChatRequest,
     files: Vec<ChatAttachment>,
+    held: bool,
 ) -> Result<NewChatAction, Refused> {
     if !providers().any(|p| p == req.provider) {
         return Err(Refused(polylogue_model::Code::UnsupportedProvider));
@@ -106,7 +113,7 @@ pub fn new_action(
     if req.text.trim().is_empty() {
         return Err(Refused(polylogue_model::Code::EmptyText));
     }
-    if req.model.trim().is_empty() {
+    if req.effort.is_some() && req.model.as_deref().is_none_or(|m| m.trim().is_empty()) {
         return Err(Refused(polylogue_model::Code::ModelRequired));
     }
     for file in &files {
@@ -127,7 +134,7 @@ pub fn new_action(
         request_hash,
         request,
         stage_only: !req.submit,
-        needs_approval: req.submit && req.conversation.is_some(),
+        needs_approval: held,
         attachments: files,
     })
 }

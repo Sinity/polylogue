@@ -413,8 +413,9 @@ fn search_renders_the_cli_answer_with_session_links() {
     });
 }
 
-fn chat_send(body: &serde_json::Value) -> axum::http::Request<Body> {
-    own_origin(authed(post("/api/v1/chat/send")))
+/// `start --in chatgpt` over HTTP: a new web conversation drafted by the extension.
+fn web_start(body: &serde_json::Value) -> axum::http::Request<Body> {
+    own_origin(authed(post("/api/v1/start")))
         .body(Body::from(body.to_string()))
         .unwrap()
 }
@@ -424,29 +425,29 @@ fn the_operator_queues_chat_actions_only_while_switched_on() {
     let r = reader();
     let body = serde_json::json!({
         "request_id": "draft-1",
-        "provider": "chatgpt",
+        "in": "chatgpt",
         "text": "summarize this",
         "model": "GPT X",
     });
     rt().block_on(async {
-        let (s, _, refused) = send(&r, chat_send(&body)).await;
+        let (s, _, refused) = send(&r, web_start(&body)).await;
         assert_eq!(s, StatusCode::CONFLICT, "{refused}");
         assert!(refused.contains("browser_actions_off"));
         r.w.set("browser.actions", "on");
-        let (s, _, created) = send(&r, chat_send(&body)).await;
+        let (s, _, created) = send(&r, web_start(&body)).await;
         assert_eq!(s, StatusCode::OK, "{created}");
         let v: serde_json::Value = serde_json::from_str(&created).unwrap();
         assert_eq!(v["action"]["status"], "queued");
         assert_eq!(v["action"]["submit"], false);
         // The same request again, as after a lost reply, is the same action.
-        let (s, _, again) = send(&r, chat_send(&body)).await;
+        let (s, _, again) = send(&r, web_start(&body)).await;
         assert_eq!(s, StatusCode::OK);
         let again: serde_json::Value = serde_json::from_str(&again).unwrap();
         assert_eq!(again["action"]["id"], v["action"]["id"]);
         // The same request ID with other content is refused.
         let mut changed = body.clone();
         changed["text"] = "Different draft".into();
-        let (s, _, raw) = send(&r, chat_send(&changed)).await;
+        let (s, _, raw) = send(&r, web_start(&changed)).await;
         assert_eq!(s, StatusCode::CONFLICT);
         assert!(raw.contains("idempotency_key_reused"));
     });
@@ -463,10 +464,10 @@ fn the_operator_queues_chat_actions_only_while_switched_on() {
 }
 
 #[test]
-fn chat_send_needs_the_origin_and_token() {
+fn web_start_needs_the_origin_and_token() {
     let r = reader();
     rt().block_on(async {
-        let path = "/api/v1/chat/send";
+        let path = "/api/v1/start";
         assert_eq!(
             send(&r, own_origin(post(path)).body(Body::from("{}")).unwrap())
                 .await
@@ -490,11 +491,11 @@ fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
         .execute_batch("ALTER TABLE annotation RENAME TO unavailable_annotation")
         .unwrap();
     let body = serde_json::json!({
-        "provider": "chatgpt",
+        "in": "chatgpt",
         "text": "Neutral synthetic draft",
         "model": "X",
     });
-    let response = rt().block_on(async { send(&r, chat_send(&body)).await });
+    let response = rt().block_on(async { send(&r, web_start(&body)).await });
     archive
         .execute_batch("ALTER TABLE unavailable_annotation RENAME TO annotation")
         .unwrap();
@@ -509,13 +510,13 @@ fn an_unavailable_browser_permission_is_not_reported_as_disabled() {
 }
 
 #[test]
-fn chat_send_answer_preserves_draft_credentials_as_data() {
+fn web_start_answer_preserves_draft_credentials_as_data() {
     let r = reader();
     r.w.set("browser.actions", "on");
     let text = format!("Keep this draft {}", "AKIAIOSFODNN7EXAMPLE");
-    let body = serde_json::json!({"provider":"chatgpt", "text":text, "model":"X"});
+    let body = serde_json::json!({"in":"chatgpt", "text":text, "model":"X"});
     rt().block_on(async {
-        let (status, _, shown) = send(&r, chat_send(&body)).await;
+        let (status, _, shown) = send(&r, web_start(&body)).await;
         assert_eq!(status, StatusCode::OK);
         let shown: serde_json::Value = serde_json::from_str(&shown).unwrap();
         assert_eq!(shown["action"]["text"], text);
@@ -529,8 +530,8 @@ fn chat_send_answer_preserves_draft_credentials_as_data() {
 fn import_jobs_start_over_http_and_list_as_the_unit() {
     let r = reader();
     rt().block_on(async {
-        let start = own_origin(authed(post("/api/v1/backfill/start")))
-            .body(Body::from(r#"{"provider":"claude-ai"}"#))
+        let start = own_origin(authed(post("/api/v1/import")))
+            .body(Body::from(r#"{"paths":["claude-ai"]}"#))
             .unwrap();
         let (s, _, started) = send(&r, start).await;
         assert_eq!(s, StatusCode::OK, "{started}");

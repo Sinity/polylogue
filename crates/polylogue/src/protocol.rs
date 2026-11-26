@@ -72,10 +72,12 @@ pub mod import {
     #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct Arguments {
-        /// Files or directories on the daemon host; relative paths need the caller's working directory
+        /// Files or directories on the daemon host (relative paths need the caller's working directory), or one web chat's name (chatgpt, claude-ai, grok) to import its history through the browser extension; a file named like one is ./chatgpt
         #[serde(default)]
         #[schemars(extend("argument_form" = "words"))]
         pub paths: Vec<std::path::PathBuf>,
+        /// The web chat whose history the browser extension imports: chatgpt, claude-ai or grok (on the command line, its name alone in place of the paths)
+        pub provider: Option<String>,
         /// Read the paths as this declared structure (an origin name), or python-vectors for one of Python Polylogue's vector stores
         #[serde(default)]
         pub origin: Option<String>,
@@ -94,16 +96,26 @@ pub mod import {
         pub dry_run: bool,
     }
     impl Arguments {
-        /// A provider import is addressed by its single provider word.
-        pub fn provider(&self) -> Option<&str> {
-            let [path] = self.paths.as_slice() else {
-                return None;
+        /// The provider by the extension's first name for it: `provider`, or
+        /// the one path when it is a web chat's name (a file named like one
+        /// is written `./chatgpt`).
+        pub fn provider(&self) -> Option<&'static str> {
+            let name = match (self.provider.as_deref(), self.paths.as_slice()) {
+                (Some(name), _) => name,
+                (None, [path]) => path.to_str()?,
+                _ => return None,
             };
-            path.to_str()
-                .filter(|path| matches!(*path, "chatgpt" | "claude-ai" | "grok"))
+            polylogue_sources::origin::web_chat_name(name)
         }
     }
-    pub type Answer = polylogue_engine::ImportReport;
+
+    /// What files and bundles brought in, or the provider's import job.
+    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+    #[serde(untagged)]
+    pub enum Answer {
+        Files(Box<polylogue_engine::ImportReport>),
+        Provider(crate::protocol::browser::ImportJobAnswer),
+    }
 }
 
 pub mod line;

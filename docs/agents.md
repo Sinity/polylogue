@@ -136,10 +136,10 @@ Example: {"arguments":{"selection":"self","steps":[{"verb":"note","text":"Catalo
 
 ```
 Everything polylogue_write does, plus acts that reach live sessions, web chats and paid providers. Each act is recorded; a sent message cannot be taken back. Post into web chats only on the operator's word. Steps add:
-  send(text, about?) a running session gets it at its next tool call or prompt; one ended session is resumed with it; a web chat turn waits for the operator's approval
-  answer(value) allow|deny|"text": respond to what a session is waiting for
+  send(text, about?, attach?) a running session gets it at its next tool call or prompt; one ended session is resumed with it; a web chat turn waits for the operator's approval
+  answer(value) allow|deny|"text": respond to what a session is waiting for; a held web chat turn is the operator's to answer
   interrupt() | resume(in?, at?, cwd?, stop_source?) without in, the command that reopens it; with in: HARNESS, a new hosted session continuing its work
-start(text, in?, role?, cwd?) | import(provider, since?, cancel?) fetches a web chat's history | embed(query?, yes?)
+start(text, in?, role?, cwd?) in: chatgpt drafts a web conversation (model?, effort?, project?, attach?, submit?) | import(provider, since?, cancel?, wait?) fetches a web chat's history | embed(query?, yes?)
 Example: {"arguments":{"selection":"session:codex:019d0f2a","steps":[{"verb":"send","text":"rebase on master first"}]}}
 ```
 

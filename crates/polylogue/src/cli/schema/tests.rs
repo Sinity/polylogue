@@ -4,8 +4,7 @@ use serde_json::json;
 #[test]
 fn infer_and_unread_share_typed_requests_and_keep_local_output_off_remote_surfaces() {
     let arguments = |argv: &[&str]| {
-        let (command, _, arguments) =
-            crate::cli::request_arguments(argv, std::path::Path::new("/")).unwrap();
+        let (command, _, arguments) = crate::cli::request_arguments(argv).unwrap();
         (command, serde_json::Value::Object(arguments))
     };
     let (command, wire) = arguments(&[

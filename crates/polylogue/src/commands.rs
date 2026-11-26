@@ -18,7 +18,7 @@ use crate::cli::{calling_process, local};
 use crate::daemon::handler::{FeedRegistration, Registration, daemon, feed, streams};
 use crate::daemon::service::handlers as H;
 use crate::daemon::service::{acts, browser, feeds, line};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::LazyLock;
@@ -99,10 +99,10 @@ Example: {"arguments":{"selection":"self","steps":[{"verb":"note","text":"Catalo
             }
             Tool::Act => {
                 r#"Everything polylogue_write does, plus acts that reach live sessions, web chats and paid providers. Each act is recorded; a sent message cannot be taken back. Post into web chats only on the operator's word. Steps add:
-  send(text, about?) a running session gets it at its next tool call or prompt; one ended session is resumed with it; a web chat turn waits for the operator's approval
-  answer(value) allow|deny|"text": respond to what a session is waiting for
+  send(text, about?, attach?) a running session gets it at its next tool call or prompt; one ended session is resumed with it; a web chat turn waits for the operator's approval
+  answer(value) allow|deny|"text": respond to what a session is waiting for; a held web chat turn is the operator's to answer
   interrupt() | resume(in?, at?, cwd?, stop_source?) without in, the command that reopens it; with in: HARNESS, a new hosted session continuing its work
-start(text, in?, role?, cwd?) | import(provider, since?, cancel?) fetches a web chat's history | embed(query?, yes?)
+start(text, in?, role?, cwd?) in: chatgpt drafts a web conversation (model?, effort?, project?, attach?, submit?) | import(provider, since?, cancel?, wait?) fetches a web chat's history | embed(query?, yes?)
 Example: {"arguments":{"selection":"session:codex:019d0f2a","steps":[{"verb":"send","text":"rebase on master first"}]}}"#
             }
         }
@@ -177,14 +177,6 @@ pub type Deliver = fn(
     &crate::config::Startup,
     &command_surface::RunnableRequest,
 ) -> ExitCode;
-
-/// Turns the command line's values into the request's arguments where
-/// they differ.
-pub type Prepare = fn(
-    &command_surface::ParsedCommand,
-    &std::path::Path,
-    &mut Map<String, Value>,
-) -> Result<(), String>;
 
 /// What runs a command.
 #[derive(Clone, Copy)]
@@ -270,9 +262,6 @@ pub struct Command {
     pub http: bool,
     /// Mutates state: POST over HTTP, where the origin is checked.
     pub writes: bool,
-    /// Turns the command line's values into the request's arguments where
-    /// they differ (`chat send` reads its `--attach` files here).
-    pub prepare: Option<Prepare>,
     /// What the command line does with the answer in place of printing it
     /// (`export` writes a file, `continue --exec` runs the plan).
     pub output: Option<OutputHandler>,
@@ -296,7 +285,7 @@ impl Command {
     }
 }
 
-/// A word that groups commands on the command line (`chat`, `measure`).
+/// A word that groups commands on the command line (`dev`, `measure`).
 pub struct Group {
     pub name: &'static str,
     pub help: &'static str,
@@ -346,7 +335,6 @@ const CLI: Command = Command {
     tool: None,
     http: false,
     writes: false,
-    prepare: None,
     output: None,
 };
 
@@ -358,14 +346,6 @@ pub const GROUPS: &[Group] = &[
     Group {
         name: "dev schema",
         help: "Structure, counts and unread paths from stored revisions",
-    },
-    Group {
-        name: "chat",
-        help: "Chat actions: turns the browser extension drafts or sends in a web chat",
-    },
-    Group {
-        name: "backfill",
-        help: "Capture a web chat's older conversations through the browser extension",
     },
 ];
 
@@ -479,8 +459,11 @@ pub static COMMANDS: &[Command] = &[
     },
     Command {
         name: "import",
-        examples: &["polylogue import /home/op/morrow/export.json --origin chatgpt"],
-        help: "Store explicit files, directories and bundles through the daemon. The typed report lists imported and already stored paths, classifications and refusals, packages and authored restoration counts, and for a Python Polylogue vector store what became of each vector. Primary authored restores awaiting confirmation are pending",
+        examples: &[
+            "polylogue import /home/op/morrow/export.json --origin chatgpt",
+            "polylogue import chatgpt --since 2026-01-01",
+        ],
+        help: "Store explicit files, directories and bundles through the daemon. The typed report lists imported and already stored paths, classifications and refusals, packages and authored restoration counts, and for a Python Polylogue vector store what became of each vector. Primary authored restores awaiting confirmation are pending. One web chat's name (chatgpt, claude-ai, grok) has the browser extension import its history instead: one job per provider, --since, --cancel, --wait; a file named like one is ./chatgpt",
         reason: "Capture explicitly selected source bytes and restore the notes and other user records a bundle carries",
         latency: command_surface::LatencyClass::Aggregate,
         run: Run::Daemon(daemon::<H::Import>()),
@@ -527,8 +510,9 @@ pub static COMMANDS: &[Command] = &[
         name: "start",
         examples: &[
             "polylogue start 'Summarize the current work' --in codex --cwd /home/op/morrow",
+            "polylogue start 'Summarize the attached notes' --in chatgpt --attach /home/op/morrow/notes.md",
         ],
-        help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions",
+        help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions. With --in chatgpt, the browser extension drafts a new web conversation (--model, --effort, --project, --attach); --submit sends it, held for the operator's answer when anyone else asks",
         reason: "Starts a harness session; no query selects one that does not exist yet",
         run: Run::Daemon(daemon::<acts::Start>()),
         tool: Some(Tool::Act),
@@ -545,54 +529,6 @@ pub static COMMANDS: &[Command] = &[
         run: Run::Daemon(daemon::<H::Sql>()),
         http: true,
         tool: Some(Tool::Read),
-        ..CLI
-    },
-    Command {
-        name: "chat send",
-        reason: "Queue a chat action the browser extension carries out in a web chat",
-        help: "Ask the browser extension to draft a turn in a web chat, or with `--submit` to send it. Needs the setting `browser.actions on`; a submit into an existing conversation waits for approval in the extension's popup",
-        calling_process: Some(calling_process::schema::<calling_process::ChatSend>),
-        run: Run::Daemon(daemon::<browser::ChatSend>()),
-        prepare: Some(attach_files),
-        tool: Some(Tool::Act),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "chat approve",
-        reason: "The operator approves a chat action waiting in the extension",
-        help: "Approve a held submit into an existing conversation",
-        run: Run::Daemon(daemon::<browser::ChatApprove>()),
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "chat decline",
-        reason: "The operator declines a chat action waiting in the extension",
-        help: "Decline a held submit; the action is cancelled",
-        run: Run::Daemon(daemon::<browser::ChatDecline>()),
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "backfill start",
-        reason: "Start an import job the browser extension carries out",
-        help: "Ask the browser extension to capture a web chat's older conversations: every one the archive lacks or holds an older copy of. One job runs per provider; starting again shows it",
-        run: Run::Daemon(daemon::<browser::ImportJobStart>()),
-        tool: Some(Tool::Act),
-        http: true,
-        writes: true,
-        ..CLI
-    },
-    Command {
-        name: "backfill cancel",
-        reason: "Stop an import job the browser extension is running",
-        help: "Stop an import job",
-        run: Run::Daemon(daemon::<browser::ImportJobCancel>()),
-        tool: Some(Tool::Act),
-        http: true,
-        writes: true,
         ..CLI
     },
     Command {
@@ -695,10 +631,10 @@ pub static COMMANDS: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "internal chat decide",
-        reason: "The extension's popup records the operator's approval",
-        help: "Approve or decline a chat action from the extension",
-        run: Run::Daemon(daemon::<browser::ChatDecision>()),
+        name: "internal chat answer",
+        reason: "The extension's popup gives the operator's answer to a held turn",
+        help: "Allow or deny a held chat action, as `answer allow|deny` does",
+        run: Run::Daemon(daemon::<browser::HeldTurnAnswer>()),
         cli: Cli::Hidden,
         writes: true,
         tool: None,
@@ -766,54 +702,6 @@ pub static COMMANDS: &[Command] = &[
 /// The command called `name` (`dev sql`).
 pub fn command(name: &str) -> Option<&'static Command> {
     COMMANDS.iter().find(|c| c.name == name)
-}
-
-/// `chat send`: the command line reads the `--attach` files in the
-/// caller's process and sends their bytes.
-fn attach_files(
-    parsed: &command_surface::ParsedCommand,
-    cwd: &std::path::Path,
-    arguments: &mut Map<String, Value>,
-) -> Result<(), String> {
-    let mut files = Vec::new();
-    for path in calling_process::options::<calling_process::ChatSend>(parsed)?.attach {
-        let path = cwd.join(path);
-        let bytes =
-            std::fs::read(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        let name = path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .ok_or_else(|| format!("{} names no file", path.display()))?;
-        files.push(crate::browser::actions::ChatFile {
-            media_type: media_type(&name).to_owned(),
-            name,
-            bytes,
-        });
-    }
-    if !files.is_empty() {
-        arguments.insert(
-            "files".into(),
-            serde_json::to_value(files).map_err(|e| e.to_string())?,
-        );
-    }
-    Ok(())
-}
-
-/// The media type a file's extension names; the provider checks the bytes.
-fn media_type(name: &str) -> &'static str {
-    let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-    match extension.as_deref() {
-        Some("txt" | "md") => "text/plain",
-        Some("json") => "application/json",
-        Some("pdf") => "application/pdf",
-        Some("png") => "image/png",
-        Some("jpg" | "jpeg") => "image/jpeg",
-        Some("gif") => "image/gif",
-        Some("webp") => "image/webp",
-        Some("csv") => "text/csv",
-        Some("html") => "text/html",
-        _ => "application/octet-stream",
-    }
 }
 
 pub const PRODUCT: &str = "polylogue";

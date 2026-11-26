@@ -80,11 +80,11 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
     assert!(!status["mode"]["error"].as_str().unwrap().is_empty());
     let requests = vec![
         crate::test_daemon::Call::new(
-            "chat send",
-            serde_json::json!({"provider": "chatgpt", "text": "Synthetic draft", "model": "X"}),
+            "start",
+            serde_json::json!({"in": "chatgpt", "text": "Synthetic draft", "model": "X"}),
         )
         .id("send"),
-        crate::test_daemon::Call::new("backfill start", serde_json::json!({"provider": "chatgpt"})),
+        crate::test_daemon::Call::new("import", serde_json::json!({"paths": ["chatgpt"]})),
         crate::test_daemon::Call::new("import", serde_json::json!({})).id("import"),
         crate::test_daemon::Call::new(
             "set",

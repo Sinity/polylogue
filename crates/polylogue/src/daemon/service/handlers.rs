@@ -399,7 +399,15 @@ pub(crate) struct Import;
 impl Handler for Import {
     type Arguments = protocol::import::Arguments;
     type Answer = protocol::import::Answer;
+    const PRINT: fn(&Self::Answer, TextStyle) -> String = crate::cli::print::import;
     const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Background;
+    fn class(arguments: &Self::Arguments) -> crate::daemon::executor::Class {
+        if arguments.provider().is_some() {
+            crate::daemon::executor::Class::Ordinary
+        } else {
+            Self::CLASS
+        }
+    }
     fn tool_access(arguments: &Self::Arguments, _: &Command) -> crate::commands::ToolAccess {
         if arguments.provider().is_some() {
             crate::commands::ToolAccess::Act
@@ -411,17 +419,39 @@ impl Handler for Import {
         false
     }
     fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let pending = [
-            (arguments.provider().is_some(), "a provider"),
-            (arguments.withdraw_missing, "--withdraw-missing"),
+        if let Some(named) = &arguments.provider {
+            if !arguments.paths.is_empty() {
+                return Err(Failure::bad_request(
+                    "an import takes paths or a provider, not both",
+                ));
+            }
+            if arguments.provider().is_none() {
+                return Ok(error(
+                    polylogue_model::Code::UnsupportedProvider,
+                    format!("{named} is not a web chat the browser extension knows"),
+                ));
+            }
+        }
+        if let Some(provider) = arguments.provider() {
+            return super::browser::import_provider(call, &arguments, provider)
+                .map(|answer| answer.map(protocol::import::Answer::Provider));
+        }
+        if let Some((_, option)) = [
             (arguments.since.is_some(), "--since"),
             (arguments.cancel, "--cancel"),
             (arguments.wait.is_some(), "--wait"),
-        ];
-        if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
+        ]
+        .into_iter()
+        .find(|(used, _)| *used)
+        {
+            return Err(Failure::bad_request(format!(
+                "{option} is for a provider import (`polylogue import chatgpt {option}`), not for files"
+            )));
+        }
+        if arguments.withdraw_missing {
             return Ok(error(
                 polylogue_model::Code::NotBuilt,
-                format!("import {option} is not built yet"),
+                "import --withdraw-missing is not built yet",
             ));
         }
         let paths = arguments
@@ -453,7 +483,9 @@ impl Handler for Import {
             return Ok(loop_stopped());
         }
         Ok(match wait.recv() {
-            Ok(Ok(report)) => super::import_answer(report),
+            Ok(Ok(report)) => {
+                super::import_answer(report).map(|r| protocol::import::Answer::Files(Box::new(r)))
+            }
             Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
             Ok(Err(polylogue_engine::ImportFailure::Import(
                 polylogue_engine::EngineError::Store(error),

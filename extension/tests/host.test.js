@@ -30,6 +30,12 @@ describe("the native messaging host", () => {
     expect((await host.reader().catch((e) => e)).code).toBe("host_http_502");
   });
 
+  it("extension_popup_decision_uses_answer: carries the popup's Allow or Deny to the answer route", async () => {
+    const chrome = fakeChrome({ routes: { "POST /v1/chat-actions/a%2F1/answer": (body) => ({ json: { answered: JSON.parse(new TextDecoder().decode(body)) } }) } });
+    const answer = await new Host(chrome.runtime).answerChatAction("a/1", "deny");
+    expect(answer).toEqual({ answered: { value: "deny" } });
+  });
+
   it("tells a missing host apart from one that stopped", async () => {
     const missing = fakeChrome({ installed: false });
     expect((await new Host(missing.runtime).status().catch((e) => e)).code).toBe("host_missing");

@@ -1,4 +1,5 @@
-// Chat actions: turns the operator queued with `polylogue chat send`. The
+// Chat actions: turns queued with `polylogue SESSION send` and
+// `polylogue start --in chatgpt`. The
 // extension claims one at a time through the host, opens the conversation in
 // a background tab, drafts the turn or sends it, and reports what happened.
 // Replies come back through regular capture.
