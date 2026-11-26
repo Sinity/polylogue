@@ -62,9 +62,6 @@ pub(super) fn bundle(
     directory: &Path,
 ) -> Vec<polylogue_model::bundle::Record> {
     std::fs::create_dir(directory).unwrap();
-    wait_rows(fixture, "sessions where id:claude-code:stored", |rows| {
-        rows["count"] == 1
-    });
     let output = cli(
         fixture,
         &[

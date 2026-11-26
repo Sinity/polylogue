@@ -226,9 +226,6 @@ pub(super) fn wait_status(
 
 /// Poll a query until the current answer has the expected rows. A degraded
 /// answer cannot satisfy a ready fixture even when its partial rows match.
-/// A test reads after an import through this: the import's answer does not
-/// wait until a read sees its rows, for one while a start-up index build
-/// still runs, and the status counts can lead what a selection finds.
 pub(super) fn wait_rows(
     env: &crate::Fixture,
     query: &str,
