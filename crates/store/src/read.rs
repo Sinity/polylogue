@@ -636,6 +636,16 @@ impl ReadPool {
     }
 
     fn acquire(&self, lane: Lane, limit: Option<limit::ReadLimit>) -> Result<Reader<'_>> {
+        self.acquire_with(lane, limit, |path| self.connect(path))
+    }
+
+    /// [`Self::acquire`] with the first connection opened by `connect`.
+    fn acquire_with(
+        &self,
+        lane: Lane,
+        limit: Option<limit::ReadLimit>,
+        connect: impl FnOnce(&Path) -> Result<Connection>,
+    ) -> Result<Reader<'_>> {
         // Refused before a slot is taken: nothing can be read until the build ends.
         self.index_path()?;
         let scope = self.archive.read_scope.token()?;
@@ -728,7 +738,20 @@ impl ReadPool {
         let idle = idle.filter(|(_, identity)| current.as_ref().is_ok_and(|now| now == identity));
         let (conn, identity) = match idle {
             Some(connection) => connection,
-            None => reader.open()?,
+            None => {
+                let before = current?;
+                let conn = match &reader.limit {
+                    Some(limit) => limit.scope(|| connect(&before.0)),
+                    None => connect(&before.0),
+                };
+                // An open that raced an install named the replaced file:
+                // the installed one is opened instead.
+                if self.index_identity()? == before {
+                    (conn?, before)
+                } else {
+                    reader.open()?
+                }
+            }
         };
         reader.prepare(&conn)?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;

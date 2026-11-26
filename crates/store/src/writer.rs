@@ -787,7 +787,10 @@ impl Inner {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(group));
             }
             for (write, reply) in derive_writes.drain(..) {
-                let result = crate::summary::apply(self.index.get()?, &write);
+                let result = self
+                    .index
+                    .get()
+                    .and_then(|index| crate::summary::apply(index, &write));
                 if result.is_ok() {
                     self.commits
                         .committed(crate::completion::Committed::CONTENT);
@@ -795,7 +798,10 @@ impl Inner {
                 let _ = reply.send(result);
             }
             for (entries, reply) in search_writes.drain(..) {
-                let result = crate::text_rows::apply_entries(self.index.get()?, &entries);
+                let result = self
+                    .index
+                    .get()
+                    .and_then(|index| crate::text_rows::apply_entries(index, &entries));
                 // Settled search text is a commit its readers see: status
                 // stops saying search text is pending.
                 if matches!(result, Ok(applied) if applied > 0) {
@@ -829,16 +835,22 @@ impl Inner {
                 }
             }
             for (staged, reply) in assets.drain(..) {
-                let before = self.index.get()?.total_changes();
+                let changes =
+                    |inner: &Self| inner.index.get().map_or(0, |index| index.total_changes());
+                let before = changes(self);
                 let result = self.install_assets(*staged);
-                if result.is_ok() && self.index.get()?.total_changes() != before {
+                if result.is_ok() && changes(self) != before {
                     self.commits
                         .committed(crate::completion::Committed::CONTENT);
                 }
                 let _ = reply.send(result);
             }
             for reply in background_derives.drain(..) {
-                let pending = crate::summary::caught_up(self.index.get()?).map(|current| !current);
+                let pending = self
+                    .index
+                    .get()
+                    .and_then(crate::summary::caught_up)
+                    .map(|current| !current);
                 let requested = pending.as_ref().is_ok_and(|pending| *pending);
                 // A caller with no new reading must not wait for an unrelated
                 // computation, including the work preparing that computation.
@@ -977,23 +989,27 @@ impl Inner {
         if self.stop.is_cancelled() {
             return;
         }
+        // Without an index connection there is no log of its to restart.
+        let Ok(index) = self.index.get() else {
+            return;
+        };
         let wait = std::time::Duration::from_millis(100);
         let limit = crate::archive::WAL_AUTOCHECKPOINT;
         let mut results = vec![crate::archive::restart_full_log(
-            self.index.get()?,
+            index,
             "main",
             &self.location.index_db(),
             limit,
             wait,
         )];
         // The full-text files the writer has attached, once a build is installed.
-        if crate::search::files::attached(self.index.get()?).unwrap_or(false)
-            && let Ok(Some(files)) = crate::search::files::paths(self.index.get()?)
+        if crate::search::files::attached(index).unwrap_or(false)
+            && let Ok(Some(files)) = crate::search::files::paths(index)
         {
             for (n, path) in files.iter().enumerate() {
                 if !self.stop.is_cancelled() {
                     results.push(crate::archive::restart_full_log(
-                        self.index.get()?,
+                        index,
                         &crate::search::files::schema(n),
                         path,
                         limit,
@@ -1192,7 +1208,6 @@ impl Inner {
         };
         let restarted = self
             .index
-            .get()?
             .close(retry)
             .and_then(|()| crate::archive::index_build::restart(&self.location, error))
             .and_then(|()| self.open_index());
@@ -1219,7 +1234,6 @@ impl Inner {
         let synced = std::time::Instant::now();
         let installed = self
             .index
-            .get()?
             .close(index_connection::Retry::Install)
             .and_then(|()| crate::archive::index_build::finish(&self.location))
             .and_then(|()| self.open_index());
@@ -1257,7 +1271,7 @@ impl Inner {
     /// the log has it once.
     fn lose_index(&mut self, subject: &str, error: &StoreError, retry: index_connection::Retry) {
         let failure = polylogue_model::Failure::new(subject, error);
-        let repeated = matches!(self.index.get()?, index_connection::IndexConnection::Lost(lost) if lost.failure == failure);
+        let repeated = matches!(&self.index, index_connection::IndexConnection::Lost(lost) if lost.failure == failure);
         if !repeated {
             crate::log!(
                 error,
