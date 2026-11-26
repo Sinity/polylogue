@@ -546,6 +546,9 @@ fn chain_rows(conn: &Connection, context: &Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+/// A query run's ID, run and completion, as stored.
+type QueryRunRow = (String, Option<Vec<u8>>, Option<Vec<u8>>);
+
 /// Query runs a page at a time, in id order, so memory does not follow the
 /// table: each page's rows are read whole before `visit` sees them, and
 /// `visit` may update the rows it is given.
@@ -557,7 +560,7 @@ fn each_query_run(
     let mut after = String::new();
     let mut visited = 0;
     loop {
-        let page: Vec<(String, Option<Vec<u8>>, Option<Vec<u8>>)> = conn
+        let page: Vec<QueryRunRow> = conn
             .prepare_cached(
                 "SELECT id, run, completion FROM main.query_run WHERE id > ?1 ORDER BY id LIMIT ?2",
             )?
