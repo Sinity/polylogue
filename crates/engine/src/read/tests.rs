@@ -15,7 +15,7 @@ fn commit_blob(engine: &crate::Engine, bytes: impl std::io::Read) -> polylogue_m
 
 #[test]
 fn stored_bytes_are_opened_at_their_first_read() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let body = "synthetic stored body ".repeat(10_000);
     home.append(
         "large.jsonl",
@@ -69,7 +69,7 @@ fn detects_a_changed_tail() {
 
 #[test]
 fn imported_ranges_decode_each_checked_frame_once_and_release_consumed_chunks() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
     let size = 10 * 1024 * 1024;
     let hash = commit_blob(&engine, std::io::repeat(b'x').take(size as u64));
@@ -97,7 +97,7 @@ fn imported_ranges_decode_each_checked_frame_once_and_release_consumed_chunks() 
 
 #[test]
 fn imported_ranges_keep_only_the_incomplete_record_overlap() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
     let hash = commit_blob(&engine, b"complete\npartial\n".as_slice());
     let mut source = Imported::open(&engine.blobs, hash, 17).unwrap();
@@ -112,7 +112,7 @@ fn imported_ranges_keep_only_the_incomplete_record_overlap() {
 
 #[test]
 fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
     let hash = commit_blob(&engine, b"0123456789abcdef".as_slice());
     let mut source = Imported::open(&engine.blobs, hash, 16).unwrap();
@@ -128,7 +128,7 @@ fn a_smaller_parse_range_can_reuse_already_decoded_overlap() {
 
 #[test]
 fn export_scanning_uses_one_forward_pass_over_checked_frames() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
     let mut bytes = b"[{}".to_vec();
     for _ in 0..10_000 {
@@ -160,7 +160,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     const CHUNK: usize = 64 << 10;
     const INPUTS: usize = 32;
     let budget = 2 * CHUNK;
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let mut expected = Vec::new();
     for i in 0..INPUTS {
         let session = format!("stored-{i}");
@@ -338,7 +338,7 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     use std::time::Duration;
 
     const CHUNK: usize = 64 << 10;
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let mut paths = Vec::new();
     // The third job reads twice the span, as a continuation enlarged for a
     // long record does, so it and the queued job together exceed the budget
@@ -589,7 +589,7 @@ fn source_range_refuses_a_file_changed_other_than_by_growing() {
 
 #[test]
 fn new_empty_file_has_body_and_eof_without_progress() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     home.append("empty.jsonl", "");
     let path = home.home.join(".claude/projects/-proj/empty.jsonl");
     let facts = polylogue_store::FileFacts::of(&std::fs::metadata(&path).unwrap());
@@ -653,7 +653,7 @@ fn new_empty_file_has_body_and_eof_without_progress() {
 
 #[test]
 fn malformed_middle_is_unreadable_and_later_facts_stay() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let first = polylogue_testkit::claude_user("first", "raw-error", "valid prefix");
     let later = "stored raw tail ".repeat(128);
     let bytes = [
@@ -743,7 +743,7 @@ fn malformed_middle_is_unreadable_and_later_facts_stay() {
 #[test]
 fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
     use polylogue_store::fault::{self, Action};
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let first = polylogue_testkit::claude_user("first", "raw-error", "valid prefix");
     let bytes = [
         first.as_bytes(),

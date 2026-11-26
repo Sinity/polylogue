@@ -7,7 +7,7 @@ use super::*;
 /// range of each in turn (docs/architecture.md, pipeline).
 #[test]
 fn a_pass_finishes_started_inputs_before_starting_more() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let filler = "quokka ".repeat(100);
     // Each input spans several ranges, so interleaving becomes visible in
     // its message row keys regardless of which input starts first.

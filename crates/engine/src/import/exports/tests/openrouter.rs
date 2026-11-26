@@ -9,7 +9,7 @@ const ROOM: &str = r#"{"version":"example","messages":{
 
 #[test]
 fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("OpenRouter Chat example.json");
     fs::write(&path, ROOM).unwrap();
     let sid = polylogue_model::SessionId::parse("openrouter:m-kept").unwrap();
@@ -64,7 +64,7 @@ fn keyed_room_replacements_choose_the_first_stored_message_and_rebuild() {
 
 #[test]
 fn a_bad_room_suffix_refuses_before_any_header_or_message_is_committed() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("OpenRouter Chat example.json");
     fs::write(&path, format!("{ROOM} false")).unwrap();
     let (mut e, _lock) = engine(&w, 16);

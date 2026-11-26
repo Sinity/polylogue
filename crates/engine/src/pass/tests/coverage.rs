@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::capture::{Accessibility, Classification};
 #[test]
 fn status_keeps_the_last_completed_full_walk_across_incremental_events() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let root = home.home.join(".codex");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::create_dir_all(home.home.join(".grok")).unwrap();
@@ -86,7 +86,7 @@ fn status_keeps_the_last_completed_full_walk_across_incremental_events() {
 /// coverage report, with an ignored `**` entry for each reason.
 #[test]
 fn ignored_files_matching_any_path_are_one_entry_per_reason() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let claude = home.home.join(".claude");
     let project = claude.join("work");
     std::fs::create_dir_all(project.join(".git")).unwrap();
@@ -132,7 +132,7 @@ fn ignored_files_matching_any_path_are_one_entry_per_reason() {
 fn a_refused_coverage_report_does_not_stop_reading() {
     use polylogue_store::fault::{self, Action};
 
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("kept.jsonl", &claude_user("one", "kept", "kept words"));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 1024);
     fault::clear();

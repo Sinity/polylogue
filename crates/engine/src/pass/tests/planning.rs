@@ -4,8 +4,8 @@ use polylogue_store::fault::{self, Action};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::sync_channel;
 
-fn histories(n: usize) -> ClaudeHome {
-    let home = ClaudeHome::new();
+fn histories(n: usize) -> Home {
+    let home = Home::new();
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.workers = 1;
     for body in ["first", "other", "first"] {
@@ -24,7 +24,7 @@ fn histories(n: usize) -> ClaudeHome {
     home
 }
 
-fn kept_request(engine: &mut Engine, home: &ClaudeHome) -> PathBuf {
+fn kept_request(engine: &mut Engine, home: &Home) -> PathBuf {
     let request = home.dir.path().join("request.json");
     std::fs::write(
         &request,
@@ -388,7 +388,7 @@ fn the_daemon_loop_keeps_its_planning_page_when_refreshing_committed_progress() 
 #[test]
 fn a_new_file_is_stored_before_the_stored_backlog_is_read() {
     fault::clear();
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.workers = 1;
     let mut backlog = Vec::new();
@@ -462,7 +462,7 @@ fn a_new_file_is_stored_before_the_stored_backlog_is_read() {
 #[test]
 fn a_grown_file_is_read_before_the_stored_backlog() {
     fault::clear();
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     engine.config.workers = 1;
     for i in 0..6 {

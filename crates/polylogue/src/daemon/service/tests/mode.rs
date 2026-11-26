@@ -1,11 +1,11 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user as user};
+use polylogue_testkit::{Home, claude_user as user};
 
-fn path(home: &ClaudeHome) -> std::path::PathBuf {
+fn path(home: &Home) -> std::path::PathBuf {
     home.root.join("sinex.toml")
 }
 
-fn startup(home: &ClaudeHome) -> crate::config::Startup {
+fn startup(home: &Home) -> crate::config::Startup {
     use crate::config::{Client, EnvSnapshot, Identity, Overrides, ProcessInputs, Startup};
     let process = ProcessInputs {
         environment: EnvSnapshot::from_values([
@@ -37,7 +37,7 @@ fn startup(home: &ClaudeHome) -> crate::config::Startup {
     .unwrap()
 }
 
-fn loaded(home: &ClaudeHome, text: &str) -> crate::config::Startup {
+fn loaded(home: &Home, text: &str) -> crate::config::Startup {
     let path = path(home);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(path, text).unwrap();
@@ -59,8 +59,8 @@ fn launch(startup: crate::config::Startup) -> std::io::Result<Runtime> {
     )
 }
 
-fn seeded() -> ClaudeHome {
-    let w = ClaudeHome::new();
+fn seeded() -> Home {
+    let w = Home::new();
     w.append("s1.jsonl", &user("u1", "s1", "Stored question"));
     let (mut engine, _lock) = w.engine(64 << 20);
     assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -180,7 +180,7 @@ fn refused_as_not_built(started: std::io::Result<Runtime>) {
 #[test]
 fn primary_mode_is_not_built_until_its_parts_land() {
     // An archive whose meta.json records primary mode.
-    let w = ClaudeHome::new();
+    let w = Home::new();
     std::fs::create_dir_all(&w.root).unwrap();
     std::fs::write(w.root.join("meta.json"), "{\"mode\":\"primary\"}\n").unwrap();
     std::fs::write(w.root.join("index.db"), b"synthetic primary index").unwrap();
@@ -189,7 +189,7 @@ fn primary_mode_is_not_built_until_its_parts_land() {
     assert_eq!(contents(&w.root), before);
 
     // A configuration asking for primary mode, for a new archive.
-    let w = ClaudeHome::new();
+    let w = Home::new();
     refused_as_not_built(launch(loaded(&w, "mode = 'primary'\n")));
     assert!(!w.root.join("meta.json").exists());
     assert!(!w.root.join("archive.db").exists());

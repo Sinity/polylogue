@@ -386,7 +386,7 @@ fn measures_over_near_ranked_sessions_keep_page_counts() {
 
 #[test]
 fn stored_counts_and_time_match_morrow_after_the_real_loop() {
-    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let archive = polylogue_testkit::Home::morrow(polylogue_testkit::Set::Main).stored();
     let pool = archive.reads();
     let reader = pool.reader().unwrap();
     let query =

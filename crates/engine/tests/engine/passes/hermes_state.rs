@@ -19,7 +19,7 @@ fn tool_database(path: &Path, id: &str, question: &str) {
     connection.execute("INSERT INTO messages VALUES(4,?1,'tool',?2,'bad-call','terminal',NULL,NULL,1712000004,1,0,0)", rusqlite::params![id,r#"{"output":"exact failure output","exit_code":7}"#]).unwrap();
 }
 
-fn hermes_ids(w: &ClaudeHome) -> Vec<SessionId> {
+fn hermes_ids(w: &Home) -> Vec<SessionId> {
     w.reads()
         .reader()
         .unwrap()
@@ -35,7 +35,7 @@ fn hermes_ids(w: &ClaudeHome) -> Vec<SessionId> {
 
 #[test]
 fn hermes_state_reads_roles_reasoning_and_outcomes() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     tool_database(
         &w.home.join(".hermes/state.db"),
         "same-native-id",
@@ -76,7 +76,7 @@ fn two_profiles_with_one_session_id_stay_apart_after_provider_removal_and_rebuil
     // A Hermes session is named by its profile's name (docs/capture.md),
     // so the home and a profile under it holding the same native ID are two
     // sessions.
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let first = w.home.join(".hermes/state.db");
     let second = w.home.join(".hermes/profiles/work/state.db");
     tool_database(&first, "same-native-id", "first profile text");
@@ -123,7 +123,7 @@ fn two_profiles_with_one_session_id_stay_apart_after_provider_removal_and_rebuil
 
 #[test]
 fn hermes_many_messages_in_records_keep_supplied_subagent_metadata() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.home.join(".hermes/state.db");
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     let mut db = rusqlite::Connection::open(&path).unwrap();

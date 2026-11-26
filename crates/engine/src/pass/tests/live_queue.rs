@@ -5,7 +5,7 @@ use serde_json::json;
 
 #[test]
 fn live_refresh_keeps_each_queued_partial_first_plan_and_finishes_its_bytes() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let chunk = 256;
     let (mut engine, _lock) = crate::import::tests::engine(&home, chunk);
     engine.config.workers = 1;

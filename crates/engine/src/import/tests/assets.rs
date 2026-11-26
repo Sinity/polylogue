@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 
 fn conversation() -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!([{
@@ -20,7 +20,7 @@ fn message_id() -> polylogue_model::MessageId {
 
 #[test]
 fn source_scoped_assets_survive_provider_removal_and_rebuild_without_changing_messages() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let directory = w.dir.path().join("account");
     std::fs::create_dir_all(&directory).unwrap();
     std::fs::write(directory.join("conversations.json"), conversation()).unwrap();
@@ -76,7 +76,7 @@ fn source_scoped_assets_survive_provider_removal_and_rebuild_without_changing_me
 
 #[test]
 fn identical_conversations_in_conflicting_imports_do_not_pick_an_asset() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let (mut engine, _lock) = engine(&w, 1024);
     for (directory, bytes) in [("one", b"first".as_slice()), ("two", b"second".as_slice())] {
         let directory = w.dir.path().join(directory);
@@ -98,7 +98,7 @@ fn identical_conversations_in_conflicting_imports_do_not_pick_an_asset() {
 
 #[test]
 fn directory_import_keeps_attachment_bytes_after_the_source_file_is_removed() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let directory = w.dir.path().join("account-export");
     std::fs::create_dir_all(&directory).unwrap();
     let bytes = b"synthetic stored attachment\0\xff";
@@ -128,7 +128,7 @@ fn directory_import_keeps_attachment_bytes_after_the_source_file_is_removed() {
 #[test]
 fn duplicate_zip_member_content_keeps_each_member_association() {
     use std::io::Write;
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("export.zip");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
     for name in ["file-first.dat", "file-second.dat"] {
@@ -171,7 +171,7 @@ fn duplicate_zip_member_content_keeps_each_member_association() {
 
 #[test]
 fn sidecar_parsing_is_scoped_to_its_declared_role_in_each_import() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let (mut engine, _lock) = engine(&w, 1024);
     let names = br#"{"file-Native.dat":"native-name.png"}"#;
     for (directory, sidecar, bytes) in [

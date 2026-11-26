@@ -32,7 +32,7 @@ fn resume_runs_each_harness_command() {
 
 #[test]
 fn resume_uses_launch_directory_not_last_used() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let record = |uuid: &str, cwd: &str| {
         format!(
             "{}\n",
@@ -48,7 +48,7 @@ fn resume_uses_launch_directory_not_last_used() {
         &(record("u1", "/home/op/launch") + &record("u2", "/home/op/launch/crates/sub")),
     );
     let session = SessionId::parse("claude-code:s1").unwrap();
-    let directory = |home: &polylogue_testkit::ClaudeHome| {
+    let directory = |home: &polylogue_testkit::Home| {
         let (mut engine, _lock) = home.engine(64 << 20);
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{pass:?}");

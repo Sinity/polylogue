@@ -18,7 +18,7 @@ fn wrap(spans: Vec<serde_json::Value>) -> serde_json::Value {
 
 #[test]
 fn otlp_disk_ordering_and_refused_prefix_stays_out_after_index_deletion() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let original = w.dir.path().join("traces.jsonl");
     let good = wrap(
         (0..40)

@@ -1,7 +1,7 @@
 //! The Morrow archive built through the real loop and import path holds
 //! the sessions `FACTS.md` lists, with their kinds and own message counts.
 
-use crate::{Morrow, Set, session};
+use crate::{Home, Set, session};
 use polylogue_model::SessionKind;
 use polylogue_store::{Reader, SqlValue};
 
@@ -36,7 +36,7 @@ const FACTS: [(u8, Option<usize>, usize); 8] = [
 
 #[test]
 fn every_session_in_facts_is_built_with_its_own_messages() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let mut wrong = Vec::new();
@@ -70,7 +70,7 @@ fn every_session_in_facts_is_built_with_its_own_messages() {
 
 #[test]
 fn a_continuation_reads_its_inherited_prefix_logically() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     // #4 copies #2's prefix: 18 inherited messages, then its 10 own turns

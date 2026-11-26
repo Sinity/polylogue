@@ -177,7 +177,7 @@ fn demo_steps_run_through_rows() {
         tour["transcript"].as_str().unwrap()
     );
     // Bundled collected files must exactly match Testkit's Main layout.
-    let main = polylogue_testkit::Morrow::lay_out(polylogue_testkit::Set::Main);
+    let main = polylogue_testkit::Home::morrow(polylogue_testkit::Set::Main);
     let home = directory.join("home");
     for path in main.provider_files() {
         let relative = path.strip_prefix(&main.home).unwrap();

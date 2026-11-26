@@ -14,7 +14,7 @@ fn until_idle(engine: &mut Engine, queued: Vec<LoopMsg>) -> RunSummary {
         .unwrap()
 }
 
-fn rows(home: &ClaudeHome) -> [i64; 3] {
+fn rows(home: &Home) -> [i64; 3] {
     [
         home.count("SELECT count(*) AS n FROM a.input"),
         home.count("SELECT count(*) AS n FROM a.observation"),
@@ -42,7 +42,7 @@ fn files(dir: &Path) -> Vec<PathBuf> {
 
 #[test]
 fn a_loop_run_until_idle_stores_what_it_finds_then_returns() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("first.jsonl", &claude_user("one", "first", "first words"));
     let (mut engine, _lock) = open_engine(&home);
     let summary = until_idle(&mut engine, Vec::new());
@@ -56,7 +56,7 @@ fn a_loop_run_until_idle_stores_what_it_finds_then_returns() {
 
 #[test]
 fn without_sources_a_fresh_archive_records_no_input_and_writes_nothing_under_home() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("present.jsonl", &claude_user("one", "present", "on disk"));
     // A hook spool beside the transcript: a spool is a source too.
     let spool = crate::test_config().spool_dir(polylogue_sources::hook_spool::ORIGIN);
@@ -86,7 +86,7 @@ fn without_sources_a_fresh_archive_records_no_input_and_writes_nothing_under_hom
 
 #[test]
 fn without_sources_the_index_is_rebuilt_from_stored_bytes_and_a_gone_file_is_not_observed() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("kept.jsonl", &claude_user("one", "kept", "stored words"));
     {
         let (mut engine, _lock) = open_engine(&home);
@@ -112,7 +112,7 @@ fn without_sources_the_index_is_rebuilt_from_stored_bytes_and_a_gone_file_is_not
 
 #[test]
 fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("unread.jsonl", &claude_user("one", "unread", "never read"));
     let path = home.dir.path().join("conversation.json");
     std::fs::write(
@@ -159,7 +159,7 @@ fn without_sources_an_import_is_stored_and_the_loop_then_becomes_idle() {
 fn replay_uses_recorded_raw_paths() {
     use std::os::unix::ffi::OsStringExt;
 
-    let mut home = ClaudeHome::new();
+    let mut home = Home::new();
     // Fixed roots may contain raw path bytes; the provider's wildcard path
     // components and transcript stem still use their supported spelling.
     let raw_home = home
@@ -231,7 +231,7 @@ fn replay_uses_recorded_raw_paths() {
 fn stored_planning_skips_watched_history() {
     use polylogue_store::fault::{self, Action};
 
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("stored.jsonl", &claude_user("one", "stored", "stored body"));
     {
         let (mut engine, _lock) = open_engine(&home);
@@ -283,7 +283,7 @@ fn stored_planning_skips_watched_history() {
 fn a_turn_failing_as_the_one_before_ends_an_idle_run() {
     use polylogue_store::fault::{self, Action};
 
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("stored.jsonl", &claude_user("one", "stored", "stored body"));
     let (mut engine, _lock) = open_engine(&home);
     engine.config.reads_sources = true;
@@ -314,7 +314,7 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
     use polylogue_model::batch::StepProgress;
 
     for old_version in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         home.append(
             "upgrade.jsonl",
             &claude_user("one", "upgrade", "preserved reading"),

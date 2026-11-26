@@ -7,7 +7,7 @@ use std::sync::mpsc::sync_channel;
 #[test]
 fn queued_import_checks_its_parent_before_committing() {
     for expired in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let path = home.dir.path().join("queued-conversation.json");
         let bytes = serde_json::to_vec(&serde_json::json!({
             "uuid":"queued-session", "chat_messages":[{

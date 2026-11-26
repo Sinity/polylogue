@@ -9,7 +9,7 @@ mod scope_lifecycle;
 mod tool_captures;
 mod unreadable;
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 use std::io::Read;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
@@ -40,7 +40,7 @@ fn extent_checkpoint_keeps_tail_detection_after_a_rewrite_read_failure() {
 }
 
 fn failed_rewrite_then_growth(edit_tail: bool) {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let old = "original body ".repeat(40);
     home.append("checkpoint.jsonl", &claude_user("one", "session", &old));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 256);
@@ -142,7 +142,7 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
 }
 
 // Unit tests need this crate's Engine rather than the testkit's dependency.
-fn open_engine(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
+fn open_engine(home: &Home) -> (Engine, polylogue_store::ArchiveLock) {
     let mut config = crate::test_config();
     config.home = home.home.clone();
     config.tool_dirs.clear();
@@ -158,7 +158,7 @@ fn open_engine(home: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
 
 /// An engine whose clock reads `ahead` past the real time the test files get.
 fn open_engine_ahead(
-    home: &ClaudeHome,
+    home: &Home,
     ahead: jiff::SignedDuration,
 ) -> (Engine, polylogue_store::ArchiveLock) {
     let mut config = crate::test_config();
@@ -180,7 +180,7 @@ fn finished_inputs_restore_their_continuation_when_they_grow() {
         jiff::SignedDuration::from_hours(24),
         jiff::SignedDuration::from_mins(1),
     ] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         home.append("growing.jsonl", &claude_user("one", "growing", "first"));
         let (mut engine, _lock) = open_engine_ahead(&home, ahead);
         let pass = engine.run_pass().unwrap();
@@ -194,7 +194,7 @@ fn finished_inputs_restore_their_continuation_when_they_grow() {
 
 #[test]
 fn changed_paths_do_not_run_a_full_scan_and_a_rescan_finds_missed_files() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("first.jsonl", &claude_user("one", "first", "first"));
     let (mut engine, _lock) = open_engine(&home);
     assert_eq!(engine.run_pass().unwrap().full_scans, 1);
@@ -217,7 +217,7 @@ fn changed_paths_do_not_run_a_full_scan_and_a_rescan_finds_missed_files() {
 
 #[test]
 fn unrelated_file_events_do_not_make_a_busy_database_appear_quiet() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let db = home.home.join(".codex/state_5.sqlite");
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();
     let source = rusqlite::Connection::open(&db).unwrap();
@@ -262,7 +262,7 @@ mod live_inputs;
 
 #[test]
 fn idle_loop_turns_do_not_repeat_the_startup_discovery_walk() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (mut engine, _lock) = open_engine(&home);
     engine.config.live_every = Duration::from_millis(1);
     let status = Arc::new(SharedLoopStatus::default());
@@ -284,7 +284,7 @@ fn idle_loop_turns_do_not_repeat_the_startup_discovery_walk() {
 
 #[test]
 fn first_byte_read_failure_retries_after_restart() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "first-byte.jsonl",
         &claude_user("one", "first-byte", "read after restart"),
@@ -323,7 +323,7 @@ fn first_byte_read_failure_retries_after_restart() {
 
 #[test]
 fn unparseable_stored_input_refused_and_pass_continues() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let outside = home.dir.path().join("export");
     std::fs::create_dir_all(&outside).unwrap();
     let kept = outside.join("kept.jsonl");
@@ -393,7 +393,7 @@ fn unparseable_stored_input_refused_and_pass_continues() {
 /// refusal finishes.
 #[test]
 fn unparsed_watched_input_is_refused_and_finishes() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("kept.jsonl", &claude_user("k1", "kept", "still indexed"));
     let odd_text = claude_user("o1", "odd", "refused");
     home.append("odd.jsonl", &odd_text);
@@ -452,7 +452,7 @@ fn unparsed_watched_input_is_refused_and_finishes() {
 
 #[test]
 fn a_stopped_engine_reports_cancelled_derivation() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
     engine.archive.stop().cancel();
     assert!(matches!(engine.derive(), Err(EngineError::Stopped)));
@@ -463,7 +463,7 @@ fn a_stopped_engine_reports_cancelled_derivation() {
 /// finds the grown file unchanged by a look and reads none of its bytes.
 #[test]
 fn a_restart_reads_no_bytes_of_files_appended_at_their_location() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("grown.jsonl", &claude_user("one", "grown", "first record"));
     {
         let (mut engine, _lock) = open_engine(&home);

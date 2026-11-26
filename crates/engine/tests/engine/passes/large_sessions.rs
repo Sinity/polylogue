@@ -7,7 +7,7 @@ const PAST_THE_PARAMETER_LIMIT: usize = 32_767 + 233;
 /// listing message IDs as parameters.
 #[test]
 fn a_session_past_the_parameter_limit_exports_whole() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let mut lines = String::new();
     for i in 0..PAST_THE_PARAMETER_LIMIT {
         lines += &if i % 2 == 0 {

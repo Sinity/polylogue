@@ -5,7 +5,7 @@ use polylogue_store::fault::{self, Action};
 fn interrupted_import_keeps_committed_bytes_across_restart() {
     for point in ["segment.after_sync", "capture.after_commit"] {
         fault::clear();
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let path = home.dir.path().join("manual.jsonl");
         let original = claude_user(
             "stored-user",

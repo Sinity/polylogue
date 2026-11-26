@@ -22,7 +22,7 @@ fn standing(engine: &Engine) -> (String, Option<String>, Option<i64>) {
 
 #[test]
 fn a_parser_failure_is_the_chains_failed_parse_state_until_the_bytes_change() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "broken-standing.jsonl",
         &claude_user("one", "session", "first body"),
@@ -57,7 +57,7 @@ fn a_parser_failure_is_the_chains_failed_parse_state_until_the_bytes_change() {
 
 #[test]
 fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "after-read-error.jsonl",
         &claude_user("u1", "resumed", "kept discovery"),
@@ -98,7 +98,7 @@ fn stopped_reading(engine: &Engine, path: &Path) -> polylogue_store::read::Store
 
 #[test]
 fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let name = "dependency-stop.jsonl";
     let first = claude_user("one", "dependency-stop", "first stored body");
     let second = claude_user("two", "dependency-stop", "second stored body");
@@ -187,7 +187,7 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
 
 #[test]
 fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let name = "unrecorded-stop.jsonl";
     home.append(
         name,

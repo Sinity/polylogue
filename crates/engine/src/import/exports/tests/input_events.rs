@@ -1,6 +1,6 @@
 use super::*;
 
-fn events(w: &ClaudeHome) -> Vec<serde_json::Value> {
+fn events(w: &Home) -> Vec<serde_json::Value> {
     w.reads()
         .reader()
         .unwrap()
@@ -15,7 +15,7 @@ fn events(w: &ClaudeHome) -> Vec<serde_json::Value> {
 #[test]
 fn input_event_import_and_rebuild_keep_scope() {
     for chunk in [1, 7, 64] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let path = w.dir.path().join("synthetic.atof.jsonl");
         let raw = include_bytes!("../../../../../../examples/sources/hermes/atof/input.jsonl");
         fs::write(&path, raw).unwrap();
@@ -59,7 +59,7 @@ fn input_event_import_and_rebuild_keep_scope() {
 
 #[test]
 fn malformed_observer_suffix_never_commits_a_valid_prefix() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("synthetic.atof.jsonl");
     fs::write(&path,b"{\"atof_version\":\"0.1\",\"kind\":\"mark\",\"uuid\":\"synthetic\",\"name\":\"neutral\"}\n{").unwrap();
     let (mut e, _lock) = engine(&w, 7);

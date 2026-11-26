@@ -1,10 +1,10 @@
 use super::*;
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 use serde_json::json;
 
 #[test]
 fn whole_documents_cite_the_stored_bytes_and_preserve_reading_order_on_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("design_chats/example.json");
     let bytes = br#"{
         "uuid":"example", "title":"Example", "project":{}, "messages":[

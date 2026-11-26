@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
 use polylogue_model::{Session, SessionId, SessionKind};
 use polylogue_sources::Output;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 use std::sync::mpsc::{Sender, channel};
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ fn import(engine: &mut Engine, path: &Path) -> ImportReport {
 
 /// Add a real reading without requesting its derived values. This models work
 /// left pending by an earlier writer, independently of the imported selection.
-fn unrelated_reading(engine: &Engine, home: &ClaudeHome) {
+fn unrelated_reading(engine: &Engine, home: &Home) {
     let output = Output {
         sessions: vec![Session::new(
             SessionId::parse("claude-code:unrelated").unwrap(),
@@ -65,13 +65,13 @@ fn held_derivation(engine: &Engine) -> (Sender<()>, std::thread::JoinHandle<bool
     (returned, held)
 }
 
-fn derivation(home: &ClaudeHome) -> CompletenessDimension {
+fn derivation(home: &Home) -> CompletenessDimension {
     home.read(|reader| reader.completeness(&[])).derivation
 }
 
 #[test]
 fn unchanged_import_returns_while_unrelated_derivation_is_held_and_wakes_it() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let path = home.dir.path().join("selected.jsonl");
     let original = claude_user("one", "selected", "kept original");
     std::fs::write(&path, &original).unwrap();
@@ -127,7 +127,7 @@ fn unchanged_import_returns_while_unrelated_derivation_is_held_and_wakes_it() {
 
 #[test]
 fn changed_import_waits_for_its_derivation() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let path = home.dir.path().join("selected.jsonl");
     let first = claude_user("one", "selected", "first");
     std::fs::write(&path, &first).unwrap();

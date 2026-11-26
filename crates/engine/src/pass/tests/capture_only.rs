@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn an_origin_without_a_parser_keeps_bytes_and_commits_capture_progress() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let path = home.home.join(".pi/agent/sessions/project/session.jsonl");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let bytes = b"{\"native\":\"synthetic stored record\"}\n";
@@ -40,7 +40,7 @@ fn an_origin_without_a_parser_keeps_bytes_and_commits_capture_progress() {
 
 #[test]
 fn unparsed_database_commits_rows_and_capture_progress() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let path = home.home.join(".config/io.datasette.llm/logs.db");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let database = rusqlite::Connection::open(&path).unwrap();

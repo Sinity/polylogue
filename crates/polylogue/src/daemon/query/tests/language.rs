@@ -1,7 +1,7 @@
 //! Query-language behavior over the archive built through the real loop.
 use polylogue_store::query::{Options, Param, QueryError, compile};
 use polylogue_store::{Reader, SqlValue};
-use polylogue_testkit::{Morrow, Set, short};
+use polylogue_testkit::{Home, Set, short};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
@@ -86,7 +86,7 @@ fn group_key(row: &Value) -> String {
 /// group act on the groups, never on the ungrouped rows.
 #[test]
 fn a_grouped_result_is_rows() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let base = "tool_calls | group by action | count";
@@ -125,7 +125,7 @@ fn a_grouped_result_is_rows() {
 /// `NOT exists`.
 #[test]
 fn three_valued_filters_partition() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let all: BTreeSet<String> = ids(&q(&r, "kind:*")).into_iter().collect();
@@ -194,7 +194,7 @@ fn three_valued_filters_partition() {
 /// nested where it is not a top-level condition, leaves the rows unchanged.
 #[test]
 fn a_nested_condition_does_not_drop_a_default() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let count = |text: &str| rows(&q(&r, text))[0]["count"].as_u64().unwrap();
@@ -236,7 +236,7 @@ fn a_nested_condition_does_not_drop_a_default() {
 /// answer; every value of the set, `*` and `unknown` (where allowed) pass.
 #[test]
 fn a_value_outside_a_closed_set_is_refused() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let options = options();
@@ -335,7 +335,7 @@ fn a_value_outside_a_closed_set_is_refused() {
 /// prompts.
 #[test]
 fn turns_count_every_human_prompt_once() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let turns = q(&r, "turns | limit 1000");
@@ -369,7 +369,7 @@ fn turns_count_every_human_prompt_once() {
 
 #[test]
 fn no_sort_key_holds_bytes() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let reader = pool.reader().unwrap();
     let opts = options();

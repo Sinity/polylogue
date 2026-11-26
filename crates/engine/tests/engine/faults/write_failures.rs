@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 use std::collections::BTreeSet;
 use std::io::Read;
 use std::sync::Arc;
@@ -15,7 +15,7 @@ const POINTS: &[(&str, bool)] = &[
 fn failed_write_child() {
     let base = std::path::PathBuf::from(std::env::var_os("POLYLOGUE_WRITE_BASE").unwrap());
     let point = std::env::var("POLYLOGUE_WRITE_POINT").unwrap();
-    let mut w = ClaudeHome::new();
+    let mut w = Home::new();
     w.home = base.join("home");
     w.root = base.join("archive");
     let (mut engine, _lock) = w.engine(64 << 20);
@@ -49,7 +49,7 @@ fn failed_write_child() {
 }
 
 #[allow(unsafe_code)]
-fn interrupt_write(w: &ClaudeHome, point: &str, fail: bool) {
+fn interrupt_write(w: &Home, point: &str, fail: bool) {
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -86,7 +86,7 @@ fn interrupt_write(w: &ClaudeHome, point: &str, fail: bool) {
     assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGKILL));
 }
 
-fn stored_inputs(w: &ClaudeHome) -> Vec<(String, Vec<u8>)> {
+fn stored_inputs(w: &Home) -> Vec<(String, Vec<u8>)> {
     let pool = w.reads();
     let reader = pool.reader().unwrap();
     let blobs = Arc::new(polylogue_store::Archive::at(&w.root).blobs().unwrap());
@@ -125,7 +125,7 @@ fn a_crash_at_a_write_boundary_loses_only_uncommitted_inputs() {
 
 fn check_reopened_archive(fail: bool) {
     for &(point, committed) in POINTS {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let first = claude_user("one", "first", "first committed body");
         let second = claude_user("two", "second", "second committed body");
         let pending = claude_user("three", "pending", "pending body");
@@ -147,7 +147,7 @@ fn check_reopened_archive(fail: bool) {
             .filter(|(name, _)| committed || name != "pending.jsonl")
             .cloned()
             .collect::<Vec<_>>();
-        let mut uninterrupted = ClaudeHome::new();
+        let mut uninterrupted = Home::new();
         uninterrupted.home = w.home.clone();
         {
             let (mut engine, _lock) = uninterrupted.engine(64 << 20);

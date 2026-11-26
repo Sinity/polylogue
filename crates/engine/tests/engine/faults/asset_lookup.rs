@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, delete_index};
+use polylogue_testkit::{Home, delete_index};
 
 /// After an index rebuild no message is visible before the asset lookup it
 /// names: the lookup comes from stored rows, so the loop writes it before
@@ -7,7 +7,7 @@ use polylogue_testkit::{ClaudeHome, delete_index};
 #[test]
 fn a_rebuilt_index_has_the_asset_lookup_before_any_message() {
     fault::clear();
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let export = w.dir.path().join("export");
     fs::create_dir(&export).unwrap();
     let conversation = serde_json::json!([{

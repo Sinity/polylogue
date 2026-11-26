@@ -1,9 +1,9 @@
 use super::*;
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 
 #[test]
 fn unknown_import_refuses_and_a_dry_run_stores_nothing() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("unrelated.jsonl");
     std::fs::write(&path, b"{\"type\":\"arbitrary\"}\n").unwrap();
     let (mut e, _lock) = engine(&w, 64);
@@ -34,7 +34,7 @@ fn unknown_import_refuses_and_a_dry_run_stores_nothing() {
 
 #[test]
 fn reimport_changes_nothing_in_archive_rows() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     std::fs::write(
         &path,
@@ -80,7 +80,7 @@ fn declared_export_signatures_reach_scanners_unshaped() {
             true,
         ),
     ] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let path = w.dir.path().join(name);
         std::fs::write(&path, raw).unwrap();
         let (mut e, _lock) = engine(&w, 64);
@@ -111,7 +111,7 @@ fn declared_export_signatures_reach_scanners_unshaped() {
 
 #[test]
 fn export_names_lacking_a_signature_are_refused() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     std::fs::write(&path, br#"[{"arbitrary":true}]"#).unwrap();
     let (mut e, _lock) = engine(&w, 64);
@@ -124,7 +124,7 @@ fn export_names_lacking_a_signature_are_refused() {
 
 #[test]
 fn a_refusal_names_the_origin_the_operator_asked_for() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("unrelated.jsonl");
     std::fs::write(&path, b"{\"type\":\"arbitrary\"}\n").unwrap();
     let (mut e, _lock) = engine(&w, 64);
@@ -144,7 +144,7 @@ fn a_refusal_names_the_origin_the_operator_asked_for() {
 
 #[test]
 fn a_directory_import_skips_links_that_lead_to_no_file() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.dir.path().join("export");
     std::fs::create_dir_all(dir.join("sub")).unwrap();
     std::fs::write(dir.join("real.txt"), b"x").unwrap();

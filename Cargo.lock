@@ -2245,11 +2245,14 @@ dependencies = [
 name = "polylogue-testkit"
 version = "0.1.0"
 dependencies = [
+ "jiff",
  "libc",
  "polylogue-engine",
  "polylogue-model",
  "polylogue-sources",
  "polylogue-store",
+ "proptest",
+ "query-language",
  "serde_json",
  "tempfile",
  "workspace-hack",

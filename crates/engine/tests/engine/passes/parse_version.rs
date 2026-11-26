@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn changed_reading_replaces_its_chains_and_the_next_pass_is_quiet() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append(
         "main.jsonl",
         &(user("one", "main", "first") + &assistant("two", "main", "second")),

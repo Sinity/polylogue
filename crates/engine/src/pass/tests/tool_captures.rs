@@ -3,7 +3,7 @@ use polylogue_testkit::claude_user as user;
 use std::fs;
 
 /// A database of `rows` rows where Codex keeps one.
-fn database(w: &ClaudeHome, rows: u32) -> std::path::PathBuf {
+fn database(w: &Home, rows: u32) -> std::path::PathBuf {
     let db = w.home.join(".codex/state_5.sqlite");
     fs::create_dir_all(db.parent().unwrap()).unwrap();
     rusqlite::Connection::open(&db)
@@ -19,7 +19,7 @@ fn database(w: &ClaudeHome, rows: u32) -> std::path::PathBuf {
 
 #[test]
 fn a_pass_captures_a_database_while_serving_files() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     database(&w, 3000);
     w.append("live.jsonl", &user("u1", "live", "beside the capture"));
     let (mut engine, _lock) = crate::import::tests::engine(&w, 64 << 20);
@@ -46,7 +46,7 @@ fn open_descriptors(path: &std::path::Path) -> usize {
 
 #[test]
 fn inputs_are_serviced_while_a_database_is_read() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append("live.jsonl", &user("u1", "live", "before capture"));
     let (mut engine, _lock) = crate::import::tests::engine(&w, 64 << 20);
     assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -100,7 +100,7 @@ fn daemon_continues_capture_without_a_watcher_event() {
     use crate::{LoopMsg, SharedLoopStatus};
     use std::sync::{Arc, mpsc::channel};
     use std::time::{Duration, Instant};
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let (mut engine, lock) = crate::import::tests::engine(&w, 64 << 20);
     // A first build captures whole; this one has nothing to capture.
     assert!(engine.run_pass().unwrap().errors.is_empty());

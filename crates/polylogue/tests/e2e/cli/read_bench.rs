@@ -350,7 +350,7 @@ fn read_benchmark() {
     assert!(repetitions > 0);
     let full_walk = std::env::var("POLYLOGUE_READ_BENCH_FULL_WALK").as_deref() == Ok("1");
     let setup = Instant::now();
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let config = home.dir.path().join("config");
     let env = crate::Fixture::new(home.root.as_path(), home.home.as_path(), config.as_path());
     let expected: Vec<_> = (0..MAIN_MESSAGES).map(body).collect();

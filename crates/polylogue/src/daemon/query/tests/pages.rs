@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 
 #[test]
 fn continuation_refuses_the_pre_logical_session_compiler() {
@@ -163,7 +163,7 @@ fn counts_preserve_selected_rows_across_limits_offsets_and_shapes() {
     }
 }
 
-fn page(home: &ClaudeHome, cursor: Option<&str>) -> Result<Value, Failure> {
+fn page(home: &Home, cursor: Option<&str>) -> Result<Value, Failure> {
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     let mut request = ask("sessions | sort by id");
@@ -174,7 +174,7 @@ fn page(home: &ClaudeHome, cursor: Option<&str>) -> Result<Value, Failure> {
 
 #[test]
 fn writes_between_pages_neither_refuse_nor_repeat_rows() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     for session in ["a", "b", "c"] {
         home.append(
             &format!("{session}.jsonl"),
@@ -303,7 +303,7 @@ fn continuation_binds_fields_zone_day_and_options() {
 #[test]
 fn edits_continue_after_the_last_row_and_rebuilds_retire_the_cursor() {
     for rebuild in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         for session in ["a", "b", "c"] {
             home.append(
                 &format!("{session}.jsonl"),
@@ -345,7 +345,7 @@ fn edits_continue_after_the_last_row_and_rebuilds_retire_the_cursor() {
 
 #[test]
 fn daemon_reopen_preserves_cursor_key_and_continues_the_page() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     for session in ["a", "b", "c"] {
         home.append(
             &format!("{session}.jsonl"),

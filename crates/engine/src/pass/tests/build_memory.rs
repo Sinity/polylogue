@@ -5,7 +5,7 @@ use polylogue_store::fault::{self, Action};
 /// found due a reading and those it has read whole.
 #[test]
 fn build_progress_counts_chains_read_whole() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let first = claude_user("first", "progress", "first chunk");
     let second = claude_user("second", "progress", "second chunk");
     home.append(
@@ -53,7 +53,7 @@ fn build_progress_counts_chains_read_whole() {
 /// progress), so the share and estimate status shows are of the whole build.
 #[test]
 fn build_progress_has_the_whole_total_before_planning_starts() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let first = claude_user("first", "one", "first file");
     let second = claude_user("second", "two", "second file");
     home.append("one.jsonl", &first);
@@ -113,7 +113,7 @@ fn build_progress_has_the_whole_total_before_planning_starts() {
 /// installs at the end of the pass.
 #[test]
 fn a_new_archive_stores_found_files_then_builds_its_index() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let first = claude_user("first", "fresh", "first chunk");
     let second = claude_user("second", "fresh", "second chunk");
     home.append("fresh.jsonl", &[first.as_str(), second.as_str()].concat());
@@ -162,7 +162,7 @@ fn a_new_archive_stores_found_files_then_builds_its_index() {
 /// build's, on its workers (docs/installing.md, replacing an index).
 #[test]
 fn a_new_archive_stores_codex_rollouts_and_its_build_reads_them() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let sessions = home.home.join(".codex/sessions");
     let archived = home.home.join(".codex/archived_sessions");
     std::fs::create_dir_all(&sessions).unwrap();
@@ -239,7 +239,7 @@ fn a_new_archive_stores_codex_rollouts_and_its_build_reads_them() {
 /// first pass, so a daemon started that way serves reads at once.
 #[test]
 fn an_empty_archive_without_sources_installs_its_empty_build_in_the_first_pass() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (mut engine, _lock) = home.engine(1 << 20);
     engine.config.reads_sources = false;
     assert!(engine.archive.index_build().is_some());
@@ -254,7 +254,7 @@ fn an_empty_archive_without_sources_installs_its_empty_build_in_the_first_pass()
 /// the build's position (docs/architecture.md, one path).
 #[test]
 fn a_build_installed_behind_its_record_is_brought_forward_by_upkeep() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "forward.jsonl",
         &claude_user("one", "forward", "before the build"),
@@ -284,7 +284,7 @@ fn a_build_installed_behind_its_record_is_brought_forward_by_upkeep() {
 #[test]
 fn content_named_messages_keep_their_occurrence_after_ranges_and_restart() {
     use std::io::Write;
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let path = home.home.join(".codex/sessions/rollout-counter.jsonl");
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let message = |text: &str| {
@@ -347,7 +347,7 @@ fn content_named_messages_keep_their_occurrence_after_ranges_and_restart() {
 fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
     use polylogue_model::authorship::{Author, Authorship, Channel};
     use std::sync::mpsc::sync_channel;
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let large: String = (0..12_000)
         .map(|n| {
             claude_user(

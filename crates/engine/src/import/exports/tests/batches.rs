@@ -17,7 +17,7 @@ fn equal_conversations() -> Vec<u8> {
     serde_json::to_vec_pretty(&values).unwrap()
 }
 
-fn all_texts(w: &ClaudeHome) -> Vec<Vec<String>> {
+fn all_texts(w: &Home) -> Vec<Vec<String>> {
     (0..CONVERSATIONS)
         .map(|i| texts(w, &format!("chatgpt:c{i:02}")))
         .collect()
@@ -27,8 +27,8 @@ fn all_texts(w: &ClaudeHome) -> Vec<Vec<String>> {
 /// that committed its sessions: each such transaction gives the sessions it
 /// wrote its change counter (the search and derive threads' own
 /// transactions do not).
-fn import(bytes: &[u8], chunk: u64) -> (ClaudeHome, i64) {
-    let w = ClaudeHome::new();
+fn import(bytes: &[u8], chunk: u64) -> (Home, i64) {
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     fs::write(&path, bytes).unwrap();
     let (mut e, _lock) = engine(&w, chunk);
@@ -41,7 +41,7 @@ fn import(bytes: &[u8], chunk: u64) -> (ClaudeHome, i64) {
 }
 
 /// The length every item of [`equal_conversations`] has in the stored export.
-fn item_length(w: &ClaudeHome) -> u64 {
+fn item_length(w: &Home) -> u64 {
     assert_eq!(
         w.count("SELECT count(DISTINCT source_end - source_start) AS n FROM message_parse"),
         1,
@@ -82,7 +82,7 @@ fn a_stopped_export_resumes_after_its_last_committed_batch() {
     let bytes = equal_conversations();
     let (whole, _) = import(&bytes, 1 << 40);
     let chunk = item_length(&whole) * 5 / 2;
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     fs::write(&path, &bytes).unwrap();
     {

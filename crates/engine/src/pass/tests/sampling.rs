@@ -8,7 +8,7 @@ use std::sync::mpsc;
 /// once the write is done.
 #[test]
 fn sampling_a_source_does_not_wait_for_a_busy_writer() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "sampled.jsonl",
         &claude_user("u1", "sampled", "stored first"),

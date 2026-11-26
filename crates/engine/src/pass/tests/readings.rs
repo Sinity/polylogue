@@ -1,7 +1,7 @@
 use super::*;
 use polylogue_sources::origin::{Arrival, Capture, ParserModule, Root};
 use polylogue_sources::parse::{Parse, ParseError, Step, StepParser};
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 use std::sync::mpsc::Sender;
 use std::sync::{
     Barrier,
@@ -68,7 +68,7 @@ fn lines(path: &Path) -> Option<Box<dyn StepParser>> {
 
 static ORIGIN: OriginSpec = origin(|path| Some(Parse::Lines(Box::new(Together(lines(path)?)))));
 
-fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
+fn engine(w: &Home) -> (Engine, polylogue_store::ArchiveLock) {
     let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
     let config = Config {
         clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
@@ -91,7 +91,7 @@ fn engine(w: &ClaudeHome) -> (Engine, polylogue_store::ArchiveLock) {
 #[test]
 fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
     STARTED.store(0, Ordering::SeqCst);
-    let w = ClaudeHome::new();
+    let w = Home::new();
     for name in ["a", "b", "c"] {
         w.append(
             &format!("{name}.jsonl"),
@@ -186,7 +186,7 @@ fn chains_parse_together_and_continue_while_the_writer_is_blocked() {
 
 #[test]
 fn a_nested_live_scan_does_not_reschedule_a_reading_in_progress() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append("live.jsonl", &claude_user("one", "live", "first"));
     let (mut engine, _lock) = engine(&w);
     assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -247,7 +247,7 @@ static LIVE_ORIGIN: OriginSpec = origin(|path| {
 
 #[test]
 fn a_committed_live_path_can_append_while_another_chain_is_still_parsing() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     for name in ["a", "b"] {
         w.append(&format!("{name}.jsonl"), &claude_user(name, name, "first"));
     }
@@ -373,7 +373,7 @@ static PAUSED_ORIGIN: OriginSpec =
 
 #[test]
 fn live_append_commits_before_waiting_chain_replacements() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     for name in ["chain-a", "chain-b", "live"] {
         w.append(&format!("{name}.jsonl"), &claude_user(name, name, "first"));
     }
@@ -486,7 +486,7 @@ fn live_append_commits_before_waiting_chain_replacements() {
 fn live_append_commits_while_an_oversized_chain_waits_for_its_reply() {
     use polylogue_store::fault::{self, Action};
 
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append(
         "chain.jsonl",
         &claude_user("old", "chain", &"x".repeat(4096)),

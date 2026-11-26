@@ -13,7 +13,7 @@ fn source_rows(engine: &Engine, input: &str) -> Vec<Json> {
 
 #[test]
 fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let text = claude_user("one", "scope", "original confirmed body");
     home.append("scope.jsonl", &text);
     let path = home.file("scope.jsonl");
@@ -77,7 +77,7 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
 
 #[test]
 fn a_cached_scope_cannot_be_rebound_after_its_entry_check() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "scope-race.jsonl",
         &claude_user("one", "scope-race", "committed before the reset"),
@@ -169,7 +169,7 @@ fn held_origin() -> &'static OriginSpec {
 
 #[test]
 fn a_scope_reset_during_preparation_cannot_complete_with_stale_state_or_capture_twice() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let first = claude_user("one", "scope-session", "first confirmed body");
     home.append("scope-session.jsonl", &first);
     let path = home.file("scope-session.jsonl");
@@ -251,7 +251,7 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
 
     for (kept, reads_sources) in [(false, true), (true, false), (true, true)] {
         for stop_after_import in [false, true] {
-            let home = ClaudeHome::new();
+            let home = Home::new();
             let first = claude_user("first", "request-turn", "first stored record");
             let suffix = (0..48)
                 .map(|n| {
@@ -430,7 +430,7 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
 
 #[test]
 fn a_stop_keeps_the_bytes_in_hand_without_reading_the_whole_input() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let first = claude_user("first", "stop-request", "initial body");
     home.append("stop-request.jsonl", &first);
     let path = home.file("stop-request.jsonl");
@@ -525,7 +525,7 @@ fn an_import_answers_before_queued_captures_start_and_the_next_turn_finishes_the
     // (queued_import_yields_then_resumes_from_saved_positions).
     {
         let kept = false;
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let files: Vec<_> = (0..12)
             .map(|n| {
                 let session = format!("queued-{n:02}");

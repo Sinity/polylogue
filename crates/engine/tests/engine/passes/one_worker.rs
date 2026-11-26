@@ -7,7 +7,7 @@ use polylogue_store::fault::{self, Action};
 /// (docs/architecture.md, pipeline).
 #[test]
 fn the_ranges_of_a_lone_input_run_on_one_worker() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let filler = "quokka ".repeat(100);
     let mut lines = String::new();
     for i in 0..2_000 {

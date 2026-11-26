@@ -5,7 +5,7 @@
 
 use polylogue_store::SqlValue;
 use polylogue_store::fault::{self, Action};
-use polylogue_testkit::{Morrow, Set, session};
+use polylogue_testkit::{Home, Set, session};
 use std::fs;
 
 mod identical_chains;
@@ -45,10 +45,10 @@ mod write_failures;
 #[test]
 fn a_panicking_parser_loses_only_its_input() {
     fault::clear();
-    let w = Morrow::lay_out(Set::Main);
+    let w = Home::morrow(Set::Main);
     let two = "7f3a2c10-0002-4000-8000-000000000002.jsonl";
     fault::arm("parse", two, Action::Panic, 0, u32::MAX);
-    let (mut engine, _lock) = w.engine();
+    let (mut engine, _lock) = w.engine(polylogue_testkit::WHOLE_FILES);
     let pass = engine.run_pass().unwrap();
     assert!(
         pass.errors
@@ -77,7 +77,7 @@ fn a_panicking_parser_loses_only_its_input() {
     );
     // Changed, with the parser working again: parsed.
     fault::clear();
-    let file = w.file(&format!(".claude/projects/-home-op-morrow/{two}"));
+    let file = w.path(&format!(".claude/projects/-home-op-morrow/{two}"));
     let mut text = fs::read_to_string(&file).unwrap();
     text.push_str("{\"type\":\"user\",\"uuid\":\"u2-late\",\"sessionId\":\"7f3a2c10-0002-4000-8000-000000000002\",\"timestamp\":\"2026-10-08T09:00:00Z\",\"promptSource\":\"typed\",\"message\":{\"role\":\"user\",\"content\":\"later\"}}\n");
     fs::write(&file, text).unwrap();
@@ -98,7 +98,7 @@ fn a_panicking_parser_loses_only_its_input() {
 #[test]
 fn a_failed_read_is_never_empty() {
     fault::clear();
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let r = pool.reader().unwrap();
     fault::arm("read.query", "", Action::Fail, 0, 1);

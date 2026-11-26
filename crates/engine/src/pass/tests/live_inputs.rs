@@ -43,7 +43,7 @@ impl StepParser for Held {
 
 #[test]
 fn new_files_and_database_records_run_while_another_parser_waits() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let db = home.home.join(".codex/state_5.sqlite");
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();
     let source = rusqlite::Connection::open(&db).unwrap();

@@ -9,7 +9,7 @@
 use super::fixture_context;
 use super::run;
 use crate::daemon::query::*;
-use polylogue_testkit::{Morrow, Set, morrow_dir, short};
+use polylogue_testkit::{Home, Set, morrow_dir, short};
 use std::collections::BTreeMap;
 
 /// 2026-10-08 12:00 Europe/Warsaw (`FACTS.md`, the examples' clock).
@@ -29,13 +29,13 @@ const GAPS: &[(&str, &str)] = &[
     ("38", "tree cost differs from the historical example prices"),
 ];
 
-fn archive_with_notes() -> Morrow {
+fn archive_with_notes() -> Home {
     use crate::daemon::service::ArchiveMode;
     use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
     use polylogue_model::{Block, Reference};
     use polylogue_testkit::session;
 
-    let archive = Morrow::build(Set::Main);
+    let archive = Home::morrow(Set::Main).stored();
     let decision = {
         let pool = archive.reads();
         let reader = pool.reader().unwrap();
@@ -52,9 +52,12 @@ fn archive_with_notes() -> Morrow {
             .unwrap()
             .id
     };
-    let mut runtime =
-        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
-            .unwrap();
+    let mut runtime = crate::test_daemon::start_runtime(
+        &archive.root,
+        archive.config(polylogue_testkit::WHOLE_FILES),
+        ArchiveMode::Standalone,
+    )
+    .unwrap();
     for (id, kind, key, value, targets) in [
         (
             "morrow-project",
@@ -331,7 +334,7 @@ fn compare(
 
 #[test]
 fn codex_message_counts_include_script_commands() {
-    let archive = Morrow::build(Set::Main);
+    let archive = Home::morrow(Set::Main).stored();
     let pool = archive.reads();
     let reader = pool.reader().unwrap();
     let result = run(
@@ -478,10 +481,13 @@ fn pages_of_every_size_concatenate_to_the_whole_answer() {
 #[test]
 fn a_query_on_an_absent_id_answers_empty() {
     use crate::daemon::service::ArchiveMode;
-    let archive = Morrow::build(Set::Main);
-    let mut runtime =
-        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
-            .unwrap();
+    let archive = Home::morrow(Set::Main).stored();
+    let mut runtime = crate::test_daemon::start_runtime(
+        &archive.root,
+        archive.config(polylogue_testkit::WHOLE_FILES),
+        ArchiveMode::Standalone,
+    )
+    .unwrap();
     let mut server =
         crate::daemon::server::Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
     let absent = "sessions where id:claude-code:7f3a2c10-0009-4000-8000-000000000009";

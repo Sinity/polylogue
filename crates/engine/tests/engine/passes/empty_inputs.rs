@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn an_older_inputs_parse_prefix_does_not_commit_a_late_append_early() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let first: String = (0..10)
         .map(|n| user(&format!("u{n}"), "late", "original message"))
         .collect();
@@ -34,7 +34,7 @@ fn an_older_inputs_parse_prefix_does_not_commit_a_late_append_early() {
 
 #[test]
 fn empty_live_inputs_keep_observations_and_later_appends_without_empty_extents() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append("empty.jsonl", "");
     {
         let (mut e, _lock) = w.engine(64 << 20);

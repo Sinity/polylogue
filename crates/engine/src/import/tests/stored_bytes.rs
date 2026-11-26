@@ -1,5 +1,5 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 
 #[cfg(feature = "faults")]
 mod commits;
@@ -25,7 +25,7 @@ fn assert_catalogued(engine: &Engine, hash: &hashed_blobs::Hash, present: bool) 
 /// stays, cited by nothing, and the next import of the same bytes finds it.
 fn a_refused_import_commits_no_source_rows_and_keeps_its_put_blob() {
     for changed in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let path = home.dir.path().join("manual.jsonl");
         let original = claude_user("u1", "original-session", "synthetic original import");
         std::fs::write(&path, &original).unwrap();
@@ -84,7 +84,7 @@ fn a_refused_import_commits_no_source_rows_and_keeps_its_put_blob() {
 
 #[test]
 fn equal_small_bytes_share_one_segment_extent_across_inputs() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let original = claude_user("small-user", "small-session", "synthetic shared content");
     home.append("small-session.jsonl", &original);
     let path = home.dir.path().join("manual-small.jsonl");

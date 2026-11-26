@@ -16,7 +16,7 @@ fn hook_line(at_ns: u64, event: &str, session: &str, payload: serde_json::Value)
     format!("{line}\n")
 }
 
-fn hook_spool(w: &ClaudeHome) -> std::path::PathBuf {
+fn hook_spool(w: &Home) -> std::path::PathBuf {
     let spool = w
         .config(64 << 20)
         .spool_dir(polylogue_sources::hook_spool::ORIGIN);
@@ -26,7 +26,7 @@ fn hook_spool(w: &ClaudeHome) -> std::path::PathBuf {
 
 #[test]
 fn a_hook_event_never_creates_a_session() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let spool = hook_spool(&w);
     let nested = user("n1", "nested", "a transcript inside a payload");
     let lines = hook_line(
@@ -75,7 +75,7 @@ fn a_hook_event_never_creates_a_session() {
 
 #[test]
 fn a_stored_hook_line_is_one_event_however_often_it_is_stored() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let spool = hook_spool(&w);
     w.append("h2.jsonl", &user("u1", "h2", "run it"));
     // Two invocations with exactly the same payload and timestamp.

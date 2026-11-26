@@ -5,7 +5,7 @@ use polylogue_store::fault::{self, Action};
 /// `grows.jsonl`, appends `record` to that file, and lets the pass go on.
 /// The pass's errors, or the error that ended it.
 fn pass_while_a_file_grows(
-    home: &ClaudeHome,
+    home: &Home,
     record: &str,
     pass: impl FnOnce() -> Result<Vec<polylogue_model::Failure>, String> + Send + 'static,
 ) -> Vec<polylogue_model::Failure> {
@@ -31,7 +31,7 @@ fn pass_while_a_file_grows(
 #[test]
 fn a_file_growing_in_the_first_build_is_stored_with_every_other_file() {
     fault::clear();
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "before.jsonl",
         &claude_user("b1", "before", "beside it, before"),
@@ -74,7 +74,7 @@ fn a_file_growing_in_the_first_build_is_stored_with_every_other_file() {
 #[test]
 fn a_file_growing_after_its_append_was_planned_is_read_with_every_other_file() {
     fault::clear();
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("steady.jsonl", &claude_user("s1", "steady", "unchanged"));
     home.append("grows.jsonl", &claude_user("g1", "grows", "first record"));
     let (mut engine, lock) = crate::import::tests::engine(&home, 1 << 20);
@@ -111,7 +111,7 @@ fn a_file_growing_after_its_append_was_planned_is_read_with_every_other_file() {
 #[test]
 fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
     fault::clear();
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("grows.jsonl", &claude_user("g1", "grows", "first record"));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
     engine.config.workers = 1;

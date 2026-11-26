@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".gemini/tmp/project/chats");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("session-stream.json");

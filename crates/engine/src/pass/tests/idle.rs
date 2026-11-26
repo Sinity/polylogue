@@ -1,7 +1,7 @@
 use super::*;
 
-fn stored_home(behind: bool) -> ClaudeHome {
-    let home = ClaudeHome::new();
+fn stored_home(behind: bool) -> Home {
+    let home = Home::new();
     let path = home.file("idle.jsonl");
     let first = claude_user("one", "idle", "first body");
     let second = claude_user("one", "idle", "other body");
