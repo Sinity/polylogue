@@ -209,10 +209,10 @@ impl Engine {
         if !before.is_file() {
             return Err(
                 polylogue_store::StoreError::Failed(polylogue_model::Failure::stated(
-                    path.display(),
+                    "",
                     polylogue_model::Cause::Environment,
                     polylogue_model::Code::Io,
-                    "a local reference is not a regular file",
+                    "local reference is not a regular file",
                 ))
                 .into(),
             );

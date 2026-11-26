@@ -47,19 +47,30 @@ impl Cause {
         matches!(self, Self::Content | Self::Request | Self::Bug)
     }
 
-    /// The cause of an operating-system I/O failure, from its kind.
+    /// The cause of an operating-system I/O failure, from its kind. A
+    /// failure the system does not classify (`EIO` among them) is taken to
+    /// pass: the same bytes are written or read again.
     pub fn of_io(error: &std::io::Error) -> Self {
         use std::io::ErrorKind;
         match error.kind() {
-            ErrorKind::Interrupted
-            | ErrorKind::WouldBlock
-            | ErrorKind::TimedOut
-            | ErrorKind::ResourceBusy
-            | ErrorKind::Deadlock
-            | ErrorKind::OutOfMemory => Self::Transient,
+            ErrorKind::PermissionDenied
+            | ErrorKind::ReadOnlyFilesystem
+            | ErrorKind::NotFound
+            | ErrorKind::IsADirectory
+            | ErrorKind::NotADirectory
+            | ErrorKind::AlreadyExists
+            | ErrorKind::DirectoryNotEmpty
+            | ErrorKind::StorageFull
+            | ErrorKind::QuotaExceeded
+            | ErrorKind::FileTooLarge
+            | ErrorKind::NotSeekable
+            | ErrorKind::CrossesDevices
+            | ErrorKind::TooManyLinks
+            | ErrorKind::InvalidFilename
+            | ErrorKind::ExecutableFileBusy => Self::Environment,
             ErrorKind::InvalidInput | ErrorKind::Unsupported => Self::Bug,
             ErrorKind::InvalidData | ErrorKind::UnexpectedEof => Self::Content,
-            _ => Self::Environment,
+            _ => Self::Transient,
         }
     }
 }

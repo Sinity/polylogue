@@ -25,7 +25,7 @@ impl Stop {
 }
 
 /// Whether sending again later can succeed: Sinex was unreachable, or a
-/// local condition that passes or that the machine's owner fixes stopped it.
+/// local condition that passes by itself stopped it.
 fn retryable(error: &Error) -> bool {
     use polylogue_model::{Cause, Caused as _};
     let cause = match error {
@@ -34,7 +34,7 @@ fn retryable(error: &Error) -> bool {
         Error::Store(error) => error.cause(),
         _ => return false,
     };
-    matches!(cause, Cause::Transient | Cause::Environment)
+    cause == Cause::Transient
 }
 
 pub(crate) struct Sender {

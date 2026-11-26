@@ -155,7 +155,14 @@ impl From<polylogue_model::Panicked> for Failure {
     fn from(panic: polylogue_model::Panicked) -> Self {
         Self::new(
             polylogue_model::Code::Internal,
-            format!("a Polylogue bug stopped this request: {panic}; report it with the request ID"),
+            format!(
+                "a Polylogue bug stopped this request: {}{}; report it with the request ID",
+                panic.message,
+                panic
+                    .location
+                    .as_ref()
+                    .map_or_else(String::new, |location| format!(" (at {location})"))
+            ),
         )
     }
 }

@@ -66,7 +66,7 @@ fn io_failures_are_classified_by_kind() {
         (ErrorKind::PermissionDenied, Cause::Environment),
         (ErrorKind::StorageFull, Cause::Environment),
         (ErrorKind::NotFound, Cause::Environment),
-        (ErrorKind::Other, Cause::Environment),
+        (ErrorKind::Other, Cause::Transient),
         (ErrorKind::InvalidData, Cause::Content),
         (ErrorKind::InvalidInput, Cause::Bug),
     ] {

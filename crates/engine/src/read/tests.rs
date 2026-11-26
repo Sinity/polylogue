@@ -695,7 +695,7 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         fault::arm(
             "parse",
             &home.file("failed.jsonl").to_string_lossy(),
-            Action::Fail,
+            Action::Panic,
             u32::from(attempt == 0),
             1,
         );
@@ -705,7 +705,7 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         assert!(
             pass.errors
                 .iter()
-                .any(|error| error.to_string().contains("injected fault at parse")),
+                .any(|error| error.to_string().contains("injected panic at parse")),
             "attempt {attempt}: {pass:?}"
         );
         if attempt == 1 {

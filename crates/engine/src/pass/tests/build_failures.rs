@@ -38,28 +38,42 @@ fn stored_and_unbuilt(name: &str) -> ClaudeHome {
     home
 }
 
-/// A failure the chain's bytes did not cause (an injected write failure
-/// while the build prepares the chain) is never the chain's failed parse
-/// state: the build fails with it, and the next pass reads the chain
+/// A failure the chain's bytes did not cause (an injected I/O failure
+/// while the build prepares the chain, which passes by itself) is never the
+/// chain's failed parse state: the build leaves the chain out and reports
+/// the failure, and the chain is read after the install
 /// (docs/archive.md, field accounting and outcomes: parse state).
 #[test]
 fn a_store_failure_while_the_build_reads_a_chain_is_not_its_parse_failure() {
     let home = stored_and_unbuilt("busy-build");
+    let path = home.file("busy-build.jsonl");
     let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
     fault::clear();
     fault::arm("reparse.prepare", "", Action::Fail, 0, 1);
-    let failed = engine.run_pass();
+    let built = engine.run_pass().unwrap();
     fault::clear();
-    let error = failed.expect_err("the machine's failure ends the build");
-    assert!(
-        error
-            .to_string()
-            .contains("injected fault at reparse.prepare"),
-        "{error}"
-    );
+    assert_eq!(built.errors.len(), 1, "{:?}", built.errors);
     assert_eq!(
-        polylogue_model::Caused::cause(&error),
-        polylogue_model::Cause::Environment
+        built.errors[0].key(),
+        (
+            path.display().to_string().as_str(),
+            polylogue_model::Cause::Transient,
+            polylogue_model::Code::Io
+        )
+    );
+    assert!(
+        built.errors[0]
+            .message
+            .contains("injected fault at reparse.prepare"),
+        "{:?}",
+        built.errors
+    );
+    assert!(
+        standing(&engine)
+            .iter()
+            .all(|(status, _)| status != "failed"),
+        "{:?}",
+        standing(&engine)
     );
     let retried = engine.run_pass().unwrap();
     assert!(retried.errors.is_empty(), "{:?}", retried.errors);

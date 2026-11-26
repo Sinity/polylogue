@@ -6,7 +6,7 @@ fn sqlite_and_io_failures_are_classified_by_what_ends_them() {
     for (code, cause) in [
         (rusqlite::ffi::SQLITE_BUSY, Cause::Transient),
         (rusqlite::ffi::SQLITE_LOCKED, Cause::Transient),
-        (rusqlite::ffi::SQLITE_IOERR, Cause::Environment),
+        (rusqlite::ffi::SQLITE_IOERR, Cause::Transient),
         (rusqlite::ffi::SQLITE_FULL, Cause::Environment),
         (rusqlite::ffi::SQLITE_READONLY, Cause::Environment),
         (rusqlite::ffi::SQLITE_PERM, Cause::Environment),

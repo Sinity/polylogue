@@ -546,12 +546,12 @@ pub(crate) fn sqlite_cause(error: &rusqlite::Error) -> Cause {
     match code {
         ErrorCode::DatabaseBusy
         | ErrorCode::DatabaseLocked
+        | ErrorCode::SystemIoFailure
         | ErrorCode::OutOfMemory
         | ErrorCode::SchemaChanged
         | ErrorCode::FileLockingProtocolFailed => Cause::Transient,
         ErrorCode::OperationInterrupted | ErrorCode::OperationAborted => Cause::Stopping,
-        ErrorCode::SystemIoFailure
-        | ErrorCode::DiskFull
+        ErrorCode::DiskFull
         | ErrorCode::CannotOpen
         | ErrorCode::ReadOnly
         | ErrorCode::PermissionDenied
