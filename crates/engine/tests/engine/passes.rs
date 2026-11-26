@@ -778,7 +778,7 @@ fn equal_timestamps_order_by_input_and_position_through_a_rebuild() {
     // shared message is placed by the earliest of its two readings.
     let reads = w.reads();
     let r = reads.reader().unwrap();
-    let input_of = |native: &str| -> String {
+    let input_of = |native: &str| -> Vec<u8> {
         let rows = r
             .query(
                 &format!(

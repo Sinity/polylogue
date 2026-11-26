@@ -93,7 +93,9 @@ fn default_pages_read_in_index_order() {
         };
         // A derived relation, and a unit whose rows are an aggregate
         // (`files`), is computed whole before its page. Annotations are
-        // rows of the archive, whose indexes the archive format owns.
+        // rows of the archive that people and agents write by hand, few
+        // enough that sorting them at read is cheap, and the archive format
+        // owns their indexes.
         if !matches!(
             program.statements,
             crate::query::compile::Statements::Keyed(_)
