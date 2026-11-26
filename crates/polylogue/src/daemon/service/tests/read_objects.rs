@@ -79,7 +79,7 @@ fn frames(bytes: &[u8]) -> Vec<(String, serde_json::Value)> {
 /// The stream of a read as the daemon's socket delivers it: the transfer's
 /// begin, its one record and its completion (docs/interfaces.md, finite
 /// transfers), then the line's step report and answer.
-fn streamed(d: &test_daemon::TestDaemon, id: &str) -> (ReadBegin, ReadRecord, ReadComplete) {
+fn streamed(d: &test_daemon::TestDaemon, id: &str) -> (ReadHeader, ReadRecord, ReadFooter) {
     let request = crate::client::request("rows", read(id).arguments, format!("stream-{id}"));
     let mut frames = Vec::new();
     let answer = crate::client::call_streaming(
@@ -106,7 +106,7 @@ fn streamed(d: &test_daemon::TestDaemon, id: &str) -> (ReadBegin, ReadRecord, Re
         serde_json::from_value(frames[2].1.clone()).unwrap(),
     )
 }
-fn assert_single_object_run(d: &Daemon, reference: &str, begin: &ReadBegin) {
+fn assert_single_object_run(d: &Daemon, reference: &str, begin: &ReadHeader) {
     let reader = d.reads.reader().unwrap();
     let count = reader
         .query(
@@ -115,7 +115,8 @@ fn assert_single_object_run(d: &Daemon, reference: &str, begin: &ReadBegin) {
         )
         .unwrap();
     assert_eq!(count[0]["n"], 1);
-    let Reference::Run(id) = Reference::parse(&begin.snapshot.query).unwrap() else {
+    let Reference::Run(id) = Reference::parse(&begin.snapshot.as_ref().unwrap().query).unwrap()
+    else {
         panic!("object reading must cite its real Run, not a question")
     };
     let run = reader.query_run(&id).unwrap().unwrap();
