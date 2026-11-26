@@ -375,7 +375,19 @@ fn schema_check_lists_come_from_names() {
             crate::input_rows::ObservationClass::NAMES,
         ),
     ];
-    let index_sets: [(&str, &str, &[&str]); 11] = [
+    let index_sets: [(&str, &str, &[&str]); 15] = [
+        ("link_statement", "kind", polylogue_model::LinkKind::NAMES),
+        (
+            "link_statement",
+            "how",
+            polylogue_model::ReferenceReason::NAMES,
+        ),
+        ("session_link", "kind", polylogue_model::LinkKind::NAMES),
+        (
+            "session_link",
+            "how",
+            polylogue_model::ReferenceReason::NAMES,
+        ),
         ("input_ref", "route", Route::NAMES),
         ("message_parse", "id_kind", IdKind::NAMES),
         ("message_parse", "route", Route::NAMES),

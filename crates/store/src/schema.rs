@@ -76,6 +76,8 @@ const NAMED_SETS: &[(&str, &[&str])] = &[
         polylogue_model::query_objects::QueryEdgeKind::NAMES,
     ),
     ("ChainFailureKind", polylogue_model::ChainFailureKind::NAMES),
+    ("LinkKind", polylogue_model::LinkKind::NAMES),
+    ("ReferenceReason", polylogue_model::ReferenceReason::NAMES),
 ];
 
 /// Schema text with each `@names(Type)` replaced by that type's names.
