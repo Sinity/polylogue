@@ -193,9 +193,9 @@ impl AllItems {
                 "begin" => {
                     assert!(!began);
                     began = true;
-                    let begin: polylogue_model::read::ReadBegin =
+                    let begin: polylogue_model::read::ReadHeader =
                         serde_json::from_str(&frame.data).unwrap();
-                    header = Some(begin.header);
+                    header = Some(begin);
                 }
                 "record" => {
                     assert!(began && !completed);
@@ -309,10 +309,6 @@ pub(super) fn collect(
         assert_eq!(
             page.format, format,
             "continuation changed the original format"
-        );
-        assert!(
-            page.records.is_empty(),
-            "bounded layout must not duplicate source records"
         );
         let wire = serde_json::to_vec(&page).unwrap();
         let footer_wire = serde_json::to_string(&page.document.footer).unwrap();

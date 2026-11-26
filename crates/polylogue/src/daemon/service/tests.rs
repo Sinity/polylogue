@@ -675,6 +675,7 @@ mod advisory;
 
 mod read_annotations;
 mod read_attachments;
+mod read_composition;
 mod read_links;
 mod read_objects;
 mod read_runs;

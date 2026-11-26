@@ -176,7 +176,6 @@ fn all(d: &Daemon, target: &str, inherited: bool, view: View) -> String {
     loop {
         let page = page(d, target, inherited, view, 8, cursor.as_ref());
         assert!(serde_json::to_vec(&page).unwrap().len() <= 25_000);
-        assert!(page.records.is_empty());
         text.page(&page);
         let continued = next(&page);
         if let (Some(previous), Some(next)) = (&cursor, &continued) {

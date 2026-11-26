@@ -49,7 +49,6 @@ fn page() -> ReadPage {
                 sinex: IndexFreshness::primary(Some(4), Some(7), Some(1.), Some(true), None),
             },
         },
-        records: vec![],
         document: ReadDocument {
             header: ReadHeader {
                 target: "session:test:session".into(),
@@ -60,6 +59,8 @@ fn page() -> ReadPage {
                 },
                 figures: vec![],
                 zone: None,
+                snapshot: None,
+                options: None,
             },
             items: vec![ReadItem {
                 source: Source::record("block:test:session:message#0"),
