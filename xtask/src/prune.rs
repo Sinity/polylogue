@@ -5,7 +5,8 @@
 //! Access times cannot tell what a build read: the hosted runner restores
 //! the target from an archive onto a `relatime` file system. So the builds
 //! are asked again, with JSON messages: Cargo lists every unit's files,
-//! fresh ones too, and what none of them names is removed.
+//! fresh ones too, and what none of them names is removed. A build that
+//! fails leaves the target as it was.
 
 use std::collections::BTreeSet;
 use std::path::Path;

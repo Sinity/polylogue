@@ -16,6 +16,7 @@ input. Change the compiler version in common and both products together.
 | `cargo xtask test --no-run` | build every test binary without running tests |
 | `cargo xtask nix [--base <ref>]` | the flake's `nix-fmt`, `settings` and `modules` checks; with `--base`, only when the changes touch `nix/`, `flake.nix` or `flake.lock` |
 | `cargo xtask warm` | build every test binary and both Clippy configurations without running tests |
+| `cargo xtask prune-build` | remove from the target directory every artifact that both Clippy configurations, the test build and xtask's build no longer use |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |
 | `cargo xtask extension-providers` | rewrite the browser extension's provider table (`extension/src/background/providers.js`) from the origin registry; a sources test fails while the checked-in table differs |
@@ -198,7 +199,12 @@ Every Rust job restores master's saved build and dates source files against
 its recorded commit, so Cargo rebuilds only the packages that changed and
 their dependents. Only the `lint` job of a master push saves the build: after
 Clippy it builds every test binary, so the one saved target serves every job.
-A manual run may reuse that build but never replaces it.
+Before saving, `cargo xtask prune-build` removes every artifact that neither
+Clippy configuration, the test build nor xtask's own build names (Cargo lists
+them, fresh ones included, in its JSON messages). Cargo never deletes an
+artifact it no longer needs, and a dependency's new version gives every unit
+above it a new name, so without this each saved build kept the copies of all
+earlier ones. A manual run may reuse that build but never replaces it.
 
 ## Published package
 
