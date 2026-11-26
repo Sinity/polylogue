@@ -32,3 +32,11 @@ fn a_synthetic_environment_replaces_every_inherited_directory() {
         ])
     );
 }
+
+/// Temporary: a panic whose backtrace shows whether file and line survive.
+#[test]
+#[ignore]
+fn experiment_backtrace() {
+    let value: Option<u8> = std::hint::black_box(None);
+    value.expect("experiment panic");
+}

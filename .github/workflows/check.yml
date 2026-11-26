@@ -72,6 +72,27 @@ jobs:
       - uses: ./.github/actions/rust
         with:
           rev: ${{ inputs.rev || '' }}
+      # Temporary measurement for build-setting experiments.
+      - name: Timed test build (experiment)
+        if: ${{ matrix.shard == 1 }}
+        run: |
+          F=polylogue/sinex,polylogue-model/fixture,polylogue-query/fixture,polylogue-sources/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture
+          s=$(date +%s); cargo test --no-run --locked --workspace --features $F --tests --timings 2>&1 | tail -3; echo "timed build seconds $(( $(date +%s) - s ))"
+          cd target/debug
+          newest() { find deps -maxdepth 1 -type f -perm -u+x ! -name '*.so' -printf '%T@ %s %f\n' | sort -rn | awk '{n=$3; sub(/-[0-9a-f]+$/,"",n); if (!(n in seen)) {seen[n]=1; print $2, $3}}'; }
+          newest | sort -n
+          echo "newest test executables: $(newest | awk '{s+=$1}END{print s}') bytes"
+          big=$(newest | sort -n | tail -1 | cut -d' ' -f2)
+          readelf -SW "deps/$big" | sed -n 's/^ *\[ *[0-9]*\] //p' | while read -r name type addr off size rest; do echo "$((16#$size)) $name"; done | sort -n | tail -8
+          find deps -name '*.dwo' -printf '%s\n' | awk '{s+=$1; n++} END {print "dwo files", n, "bytes", s}'
+          t=$(newest | grep ' polylogue_testkit-' | cut -d' ' -f2)
+          RUST_BACKTRACE=1 "deps/$t" --exact experiment_backtrace --ignored 2>&1 | grep -A12 'panicked' | head -30 || true
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() && matrix.shard == 1 }}
+        with:
+          name: cargo-timings
+          path: target/cargo-timings/cargo-timing.html
+          if-no-files-found: ignore
       - run: cargo xtask test $BASE --partition hash:${{ matrix.shard }}/4 --junit "$RUNNER_TEMP/junit.xml"
       # The report names every test's outcome and duration, so a flaky test
       # can be traced across recorded runs.
