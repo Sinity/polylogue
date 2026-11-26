@@ -565,29 +565,35 @@ fn parent_links_use_index() {
 fn attachment_reads_children_through_each_parent_key() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
-    for (n, id) in ["test:big", "test:small"].into_iter().enumerate() {
-        let session = f
-            .session(SessionFacts {
-                id,
-                last: Some(1_000 + n as i64),
+    // One session of 3,000 messages, written in one transaction.
+    f.many_sessions(crate::fixture::ManySessions {
+        prefix: "/synthetic",
+        sessions: 1,
+        messages: 3_000,
+        answered: 0,
+        last: 1_800_000_000_000,
+    })
+    .unwrap();
+    let small = f
+        .session(SessionFacts {
+            id: "test:small",
+            last: Some(1_800_000_060_000),
+            ..Default::default()
+        })
+        .unwrap();
+    for m in 0..3 {
+        let message = format!("test:small:m{m}");
+        f.message(
+            small,
+            MessageFacts {
+                id: &message,
+                role: if m % 2 == 0 { "user" } else { "assistant" },
+                written_by: if m % 2 == 0 { "human" } else { "model" },
+                at: Some(m as i64),
                 ..Default::default()
-            })
-            .unwrap();
-        let count = if n == 0 { 3_000 } else { 3 };
-        for m in 0..count {
-            let message = format!("{id}:m{m}");
-            f.message(
-                session,
-                MessageFacts {
-                    id: &message,
-                    role: if m % 2 == 0 { "user" } else { "assistant" },
-                    written_by: if m % 2 == 0 { "human" } else { "model" },
-                    at: Some(m as i64),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        }
+            },
+        )
+        .unwrap();
     }
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();

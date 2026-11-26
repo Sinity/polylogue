@@ -58,7 +58,6 @@ fn pending_current_chains(engine: &Engine, inputs: &[String]) -> usize {
                     .unwrap()
                     .parse_version(),
             )],
-            polylogue_store::StoppedChains::Finished,
             RevisionChains::Newest,
             Some(inputs),
         )

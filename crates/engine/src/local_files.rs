@@ -120,7 +120,8 @@ impl Engine {
         };
         let stored = self
             .reads
-            .read_current(|reader| reader.stored_chain(&plan.input.id, chain, plan.size))?;
+            .reader()
+            .and_then(|reader| reader.stored_chain(&plan.input.id, chain, plan.size))?;
         // Only the records this reading parses are looked at: an append's
         // records, or every record when the reading starts again.
         let start = plan.parse_pos.min(plan.size);
@@ -212,7 +213,7 @@ impl Engine {
             manifest.rewind()?;
             let prepared = self.archive.prepare_bytes(&mut manifest)?;
             let id = prepared.hash().to_string();
-            if self.reads.reader()?.input_progress(&id)?.is_none() {
+            if self.reads.reader()?.latest_chain(&id)?.is_none() {
                 let origin =
                     polylogue_sources::origin::by_name("tool-context").expect("declared origin");
                 let observation = self.observation(
@@ -234,11 +235,8 @@ impl Engine {
                     )),
                     blobs: Vec::new(),
                     length: prepared.len(),
-                    parse: vec![polylogue_store::ParseStep::without_parser(
-                        0..prepared.len(),
-                        true,
-                        origin.parse_version(),
-                    )],
+                    // A local file is kept, not parsed: it has no parse state.
+                    parse: Vec::new(),
                     capture_read: None,
                     release: Default::default(),
                 };
@@ -299,7 +297,7 @@ impl Engine {
         }
         let id = prepared.hash().to_string();
         pass.bytes_read += prepared.len();
-        let exists = self.reads.reader()?.input_progress(&id)?.is_some();
+        let exists = self.reads.reader()?.latest_chain(&id)?.is_some();
         let observation = self.observation(path, Some(facts));
         let source_read = context.finish(
             polylogue_store::capture_read::RawRange {

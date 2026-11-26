@@ -9,7 +9,7 @@ fn remove_reading(archive: &WriterArchive, input: &str) {
     let progress = reads
         .reader()
         .unwrap()
-        .input_progress(input)
+        .latest_chain(input)
         .unwrap()
         .unwrap();
     let mut counts = RecordCounts {
@@ -20,8 +20,8 @@ fn remove_reading(archive: &WriterArchive, input: &str) {
         "record",
         &RecordOutcome::skipped("replacement has no session facts"),
     );
-    let mut step = ParseStep::new(Output::default(), counts, 0..progress.length, true);
-    step.parse_version = "completion-removal=2".into();
+    let mut step = ParseStep::new(Output::default(), counts, 0..progress.stored, true);
+    step.parse_version = "synthetic=1".into();
     let mut reading = ChainParse::new().unwrap();
     reading.push(&mut step).unwrap();
     archive
@@ -33,7 +33,7 @@ fn remove_reading(archive: &WriterArchive, input: &str) {
                 route: polylogue_model::Route::Live,
             },
             progress.chain,
-            progress.length,
+            progress.stored,
             reading,
         )
         .unwrap();

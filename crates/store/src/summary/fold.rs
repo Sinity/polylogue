@@ -488,98 +488,166 @@ pub(crate) fn keep(tx: &Connection, session_pk: i64, after: &Key, kept: &[Kept])
     Ok(())
 }
 
-/// A session's rows after a key, messages and events merged in key order.
-/// The narrow columns of every row are read at once; a message's blocks,
-/// calls and readings when it is reached.
+/// Rows a run reads from the index at a time, of messages and of events:
+/// a run holds at most this many of each, whatever the session's length.
+const PAGE: i64 = 256;
+
+/// A session's rows after a key, messages and events merged in key order,
+/// read a page at a time. The narrow columns of a page are read at once; a
+/// message's blocks, calls and readings when it is reached.
 struct Rows {
     session_pk: i64,
-    messages: std::iter::Peekable<std::vec::IntoIter<MessageRow>>,
-    events: std::iter::Peekable<std::vec::IntoIter<EventRow>>,
+    after: Key,
+    messages: Page<MessageRow>,
+    events: Page<EventRow>,
+}
+
+/// The rows of one table read so far and not yet folded, and where the
+/// next page starts: the last row's `(session_order, id)`.
+struct Page<R> {
+    rows: std::collections::VecDeque<R>,
+    from: (Vec<u8>, String),
+    done: bool,
+}
+
+impl<R> Page<R> {
+    fn new(order: &[u8]) -> Self {
+        Self {
+            rows: Default::default(),
+            from: (order.to_vec(), String::new()),
+            done: false,
+        }
+    }
 }
 
 impl Rows {
-    fn after(conn: &Connection, session_pk: i64, after: &Key) -> Result<Self> {
+    fn after(_: &Connection, session_pk: i64, after: &Key) -> Result<Self> {
         let order = after.order();
-        let messages: Vec<MessageRow> = conn
-            .prepare_cached(
-                "SELECT m.pk, m.id, m.session_order, m.role, m.written_by, m.prompt_kind, m.model,
-                        m.at, m.words, m.stop_reason, m.duplicate_of IS NOT NULL,
-                        m.duplicate_of IS NULL AND coalesce(m.on_active_path, 1) = 1,
-                        coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) <> 0,
-                        m.at_until, m.at_precision
-                 FROM message m INDEXED BY message_session
-                 WHERE m.session_pk = ?1 AND m.session_order >= ?2
-                 ORDER BY m.session_order, m.id",
-            )?
-            .query_map(params![session_pk, order], |r| {
-                let id: String = r.get(1)?;
-                let order: Vec<u8> = r.get(2)?;
-                Ok(MessageRow {
-                    key: Key::message(&order, &id),
-                    pk: r.get(0)?,
-                    id,
-                    order,
-                    role: r.get(3)?,
-                    written_by: r.get(4)?,
-                    prompt_kind: r.get(5)?,
-                    model: r.get(6)?,
-                    at: r.get(7)?,
-                    words: r.get(8)?,
-                    stop_reason: r.get(9)?,
-                    duplicate: r.get(10)?,
-                    own: r.get(11)?,
-                    boundary_unknown: r.get(12)?,
-                    at_until: r.get(13)?,
-                    at_precision: r.get(14)?,
-                    blocks: Vec::new(),
-                    calls: Vec::new(),
-                    inputs: Vec::new(),
-                })
-            })?
-            .filter(|m| !matches!(m, Ok(m) if m.key <= *after))
-            .collect::<rusqlite::Result<_>>()?;
-        let events: Vec<EventRow> = conn
-            .prepare_cached(
-                "SELECT e.id, e.session_order, e.kind, e.at, e.content_group,
-                        e.content_start + e.content_length, e.data_length
-                 FROM event e INDEXED BY event_session_order
-                 WHERE e.session_pk = ?1 AND e.session_order >= ?2
-                 ORDER BY e.session_order, e.id",
-            )?
-            .query_map(params![session_pk, order], |r| {
-                let id: String = r.get(0)?;
-                let order: Vec<u8> = r.get(1)?;
-                Ok(EventRow {
-                    key: Key::event(&order, &id),
-                    kind: r.get(2)?,
-                    at: r.get(3)?,
-                    data: crate::content::Stretch {
-                        group: r.get(4)?,
-                        start: r.get(5)?,
-                        length: r.get(6)?,
-                    },
-                })
-            })?
-            .filter(|e| !matches!(e, Ok(e) if e.key <= *after))
-            .collect::<rusqlite::Result<_>>()?;
         Ok(Self {
             session_pk,
-            messages: messages.into_iter().peekable(),
-            events: events.into_iter().peekable(),
+            after: after.clone(),
+            messages: Page::new(order),
+            events: Page::new(order),
         })
     }
 
+    /// Reads the next page of messages when none is left unread.
+    fn fill_messages(&mut self, conn: &Connection) -> Result<()> {
+        while self.messages.rows.is_empty() && !self.messages.done {
+            let page: Vec<MessageRow> = conn
+                .prepare_cached(
+                    "SELECT m.pk, m.id, m.session_order, m.role, m.written_by, m.prompt_kind, m.model,
+                            m.at, m.words, m.stop_reason, m.duplicate_of IS NOT NULL,
+                            m.duplicate_of IS NULL AND coalesce(m.on_active_path, 1) = 1,
+                            coalesce(json_extract(m.attrs_json, '$.production.response_boundary_unknown'), 0) <> 0,
+                            m.at_until, m.at_precision
+                     FROM message m INDEXED BY message_session
+                     WHERE m.session_pk = ?1 AND (m.session_order, m.id) > (?2, ?3)
+                     ORDER BY m.session_order, m.id LIMIT ?4",
+                )?
+                .query_map(
+                    params![self.session_pk, self.messages.from.0, self.messages.from.1, PAGE],
+                    |r| {
+                        let id: String = r.get(1)?;
+                        let order: Vec<u8> = r.get(2)?;
+                        Ok(MessageRow {
+                            key: Key::message(&order, &id),
+                            pk: r.get(0)?,
+                            id,
+                            order,
+                            role: r.get(3)?,
+                            written_by: r.get(4)?,
+                            prompt_kind: r.get(5)?,
+                            model: r.get(6)?,
+                            at: r.get(7)?,
+                            words: r.get(8)?,
+                            stop_reason: r.get(9)?,
+                            duplicate: r.get(10)?,
+                            own: r.get(11)?,
+                            boundary_unknown: r.get(12)?,
+                            at_until: r.get(13)?,
+                            at_precision: r.get(14)?,
+                            blocks: Vec::new(),
+                            calls: Vec::new(),
+                            inputs: Vec::new(),
+                        })
+                    },
+                )?
+                .collect::<rusqlite::Result<_>>()?;
+            self.messages.done = (page.len() as i64) < PAGE;
+            if let Some(last) = page.last() {
+                self.messages.from = (last.order.clone(), last.id.clone());
+            }
+            let after = &self.after;
+            self.messages
+                .rows
+                .extend(page.into_iter().filter(|m| m.key > *after));
+        }
+        Ok(())
+    }
+
+    /// Reads the next page of events when none is left unread.
+    fn fill_events(&mut self, conn: &Connection) -> Result<()> {
+        while self.events.rows.is_empty() && !self.events.done {
+            let page: Vec<(String, EventRow)> = conn
+                .prepare_cached(
+                    "SELECT e.id, e.session_order, e.kind, e.at, e.content_group,
+                            e.content_start + e.content_length, e.data_length
+                     FROM event e INDEXED BY event_session_order
+                     WHERE e.session_pk = ?1 AND (e.session_order, e.id) > (?2, ?3)
+                     ORDER BY e.session_order, e.id LIMIT ?4",
+                )?
+                .query_map(
+                    params![
+                        self.session_pk,
+                        self.events.from.0,
+                        self.events.from.1,
+                        PAGE
+                    ],
+                    |r| {
+                        let id: String = r.get(0)?;
+                        let order: Vec<u8> = r.get(1)?;
+                        Ok((
+                            id.clone(),
+                            EventRow {
+                                key: Key::event(&order, &id),
+                                kind: r.get(2)?,
+                                at: r.get(3)?,
+                                data: crate::content::Stretch {
+                                    group: r.get(4)?,
+                                    start: r.get(5)?,
+                                    length: r.get(6)?,
+                                },
+                            },
+                        ))
+                    },
+                )?
+                .collect::<rusqlite::Result<_>>()?;
+            self.events.done = (page.len() as i64) < PAGE;
+            if let Some((id, last)) = page.last() {
+                self.events.from = (last.key.order().to_owned(), id.clone());
+            }
+            let after = &self.after;
+            self.events
+                .rows
+                .extend(page.into_iter().map(|(_, e)| e).filter(|e| e.key > *after));
+        }
+        Ok(())
+    }
+
     fn next(&mut self, conn: &Connection) -> Result<Option<SessionRow>> {
-        let message_first = match (self.messages.peek(), self.events.peek()) {
+        self.fill_messages(conn)?;
+        self.fill_events(conn)?;
+        let message_first = match (self.messages.rows.front(), self.events.rows.front()) {
             (None, None) => return Ok(None),
             (Some(_), None) => true,
             (None, Some(_)) => false,
             (Some(m), Some(e)) => m.key < e.key,
         };
         if !message_first {
-            return Ok(self.events.next().map(SessionRow::Event));
+            return Ok(self.events.rows.pop_front().map(SessionRow::Event));
         }
-        let mut m = self.messages.next().expect("peeked");
+        let mut m = self.messages.rows.pop_front().expect("looked at");
         m.blocks = conn
             .prepare_cached(
                 "SELECT pk, kind, text_id IS NOT NULL FROM block WHERE message_pk = ?1 ORDER BY idx",

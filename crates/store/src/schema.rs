@@ -90,6 +90,7 @@ const NAMED_SETS: &[(&str, &[&str])] = &[
     ("CallOutcome", polylogue_model::CallOutcome::NAMES),
     ("LinkKind", polylogue_model::LinkKind::NAMES),
     ("ReferenceReason", polylogue_model::ReferenceReason::NAMES),
+    ("ChainFailureKind", polylogue_model::ChainFailureKind::NAMES),
 ];
 
 /// The field groups `message_route` records: every group but the content,
@@ -182,7 +183,7 @@ pub(crate) const BUILT_AT_END: &[&str] = &[
 #[cfg(test)]
 pub(crate) static INDEX_SCHEMA: LazyLock<[&str; 5]> = LazyLock::new(|| {
     [
-        &INDEX,
+        INDEX.as_str(),
         crate::coverage::SCHEMA,
         crate::alternates::SCHEMA,
         SEARCH_TRIGGERS,
@@ -207,7 +208,7 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 8;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 18;
+pub const INDEX_VERSION: u32 = 22;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A versioned file without it was written by an

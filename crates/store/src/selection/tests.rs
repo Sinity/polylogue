@@ -927,10 +927,6 @@ fn a_selection_failure_carries_the_store_code_every_surface_uses() {
             polylogue_model::Code::Conflict,
         ),
         (
-            StoreError::ReadIndexReplaced,
-            polylogue_model::Code::Conflict,
-        ),
-        (
             StoreError::Stale {
                 reference: "note:1".into(),
                 current: vec!["note:2".into()],

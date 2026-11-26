@@ -106,11 +106,11 @@ impl Test {
     fn lines(&self) -> Vec<Value> {
         let pool = ReadPool::open(&self.archive).unwrap();
         let reader = pool.reader().unwrap();
-        let p = reader.input_progress(&self.input.id).unwrap().unwrap();
+        let p = reader.latest_chain(&self.input.id).unwrap().unwrap();
         let bytes = reader
-            .stored_chain(&self.input.id, p.chain, p.length)
+            .stored_chain(&self.input.id, p.chain, p.stored)
             .unwrap()
-            .read_range(&self.archive.blobs().unwrap(), 0, p.length)
+            .read_range(&self.archive.blobs().unwrap(), 0, p.stored)
             .unwrap();
         String::from_utf8(bytes)
             .unwrap()

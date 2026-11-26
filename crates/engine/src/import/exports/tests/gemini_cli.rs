@@ -89,7 +89,10 @@ fn watched_gemini_turns_keep_tools_notices_and_header_facts_through_rewrites_and
         w.reads()
             .reader()
             .unwrap()
-            .query("SELECT records FROM parse_state ORDER BY chain", &[])
+            .query(
+                "SELECT used+skipped+unreadable AS records FROM parse_state ORDER BY chain",
+                &[]
+            )
             .unwrap(),
         [json!({"records":5}), json!({"records":6})]
     );

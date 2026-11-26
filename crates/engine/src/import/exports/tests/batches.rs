@@ -64,10 +64,10 @@ fn an_export_commits_one_transaction_per_chunk_of_items() {
         .collect();
     assert_eq!(all_texts(&whole), expected);
     assert_eq!(all_texts(&batched), expected);
-    let records = "SELECT sum(records) AS n FROM parse_state";
+    let records = "SELECT sum(used+skipped+unreadable) AS n FROM parse_state";
     assert_eq!(batched.count(records), whole.count(records));
     assert_eq!(
-        batched.count("SELECT parsed_upto AS n FROM parse_state"),
+        batched.count("SELECT parsed_to AS n FROM parse_state"),
         bytes.len() as i64
     );
 }
@@ -111,21 +111,16 @@ fn a_stopped_export_resumes_after_its_last_committed_batch() {
             true, true, true, true, true, true, false, false, false, false
         ]
     );
-    assert_eq!(w.count("SELECT parsed_upto AS n FROM parse_state"), 0);
-    let (e, _lock) = engine(&w, chunk);
-    let config = e.config.clone();
-    let archive = e.archive.clone();
-    let mut attempt = e.stopped_attempt;
-    attempt.executable = polylogue_model::BlobHash::of(b"changed export reader executable");
-    drop(e);
-    let mut e = Engine::new(config, archive, attempt).unwrap();
+    assert_eq!(w.count("SELECT parsed_to AS n FROM parse_state"), 0);
+    let (mut e, _lock) = engine(&w, chunk);
+    polylogue_store::fixture::older_reading(&e.archive, "chatgpt").unwrap();
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(all_texts(&w), all_texts(&whole));
-    let records = "SELECT sum(records) AS n FROM parse_state";
+    let records = "SELECT sum(used+skipped+unreadable) AS n FROM parse_state";
     assert_eq!(w.count(records), whole.count(records));
     assert_eq!(
-        w.count("SELECT parsed_upto AS n FROM parse_state"),
+        w.count("SELECT parsed_to AS n FROM parse_state"),
         bytes.len() as i64
     );
 }

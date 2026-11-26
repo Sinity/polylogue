@@ -213,12 +213,13 @@ CREATE INDEX message_parse_content ON message_parse(input_pk, chain, content_nam
 CREATE INDEX message_parse_hash ON message_parse(hash);
 CREATE INDEX message_parse_group ON message_parse(content_group);   -- whether a group is still named
 -- The message readings an input still holds: once a newer chain of the
--- input is read to its end, a content-named message it no longer holds is
--- gone from that input (an edit has a new ID). Composition reads the same.
+-- input is parsed, a content-named message it no longer holds is gone from
+-- that input (an edit has a new ID). The one definition: composition and the
+-- build read this view.
 CREATE VIEW held_message_parse AS
 SELECT * FROM message_parse r
 WHERE NOT (r.id_kind = 'content' AND EXISTS(SELECT 1 FROM parse_state p
-  WHERE p.input_pk = r.input_pk AND p.chain > r.chain AND p.status IN ('done','waiting')));
+  WHERE p.input_pk = r.input_pk AND p.chain > r.chain AND p.state = 'parsed'));
 
 -- The texts a reading's message and document bodies hold, by block. A text
 -- leaves with its last row here, with its search entries.
@@ -623,30 +624,29 @@ CREATE INDEX event_kind    ON event(kind, at);
 
 
 
--- How far each revision chain has been parsed, and how it ended. Every chain of every input has a row once the loop has seen it,
--- so nothing is silently skipped.
+-- Each chain's state (model ChainState): no row, parsed to a length under a
+-- parser version, or failed there with the reason. Only a content failure of
+-- the chain's bytes under that version is stored as failed. Whether a chain
+-- is due is judged from this row and the archive's facts (model::chain::due).
 CREATE TABLE parse_state (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
-  parse_version   TEXT NOT NULL DEFAULT '',
-  status            TEXT NOT NULL CHECK(status IN ('parsing','waiting','done','no_parser_yet','partial','refused','failed')),
-                                            -- parsing: more stored bytes need parsing; waiting: incomplete record at
-                                            --   observed EOF; done: at the stored length
-  parsed_upto       INTEGER NOT NULL,       -- byte offset in the chain after the last complete record parsed
-  at_length        INTEGER CHECK(at_length >= 0),  -- waiting, refused, failed: the stored length it was decided at
-  records           INTEGER NOT NULL DEFAULT 0,  -- every record of this chain read so far:
-  used              INTEGER NOT NULL DEFAULT 0,  --   records = used + skipped + unreadable; an append adds
-  skipped           INTEGER NOT NULL DEFAULT 0,  --   to the counts, a whole parse replaces them; written in the
-  unreadable        INTEGER NOT NULL DEFAULT 0,  --   same transaction as the chain's last session
-  commit_seq INTEGER CHECK(commit_seq > 0), -- the committed parse checkpoint, never a read position
-  checkpoint BLOB,                        -- versioned opaque parser state at this cursor
-  reason            TEXT,                   -- refused: the reason; failed: the error
-  stopped_attempt BLOB CHECK(stopped_attempt IS NULL OR status IN ('refused','failed')),
+  state             TEXT NOT NULL CHECK (state IN ('parsed','failed')),
+  parser_version    TEXT NOT NULL,
+  parsed_to         INTEGER NOT NULL CHECK (parsed_to >= 0),  -- after the last complete record
+  waiting           INTEGER NOT NULL CHECK (waiting >= 0),    -- the stored length the parser saw, less parsed_to
+  used              INTEGER NOT NULL DEFAULT 0 CHECK (used >= 0),
+  skipped           INTEGER NOT NULL DEFAULT 0 CHECK (skipped >= 0),
+  unreadable        INTEGER NOT NULL DEFAULT 0 CHECK (unreadable >= 0),
+  resume            BLOB,                   -- the parser's carried state at parsed_to (model ParserState)
+  failure_kind      TEXT CHECK (failure_kind IN (@names(ChainFailureKind))),
+  failure_detail    TEXT,
   PRIMARY KEY (input_pk, chain),
-  CHECK((status IN ('waiting','refused','failed')) = (at_length IS NOT NULL)),
-  CHECK((status IN ('refused','failed')) = (reason IS NOT NULL))
+  CHECK ((state = 'failed') = (failure_kind IS NOT NULL)),
+  CHECK ((failure_kind IS NULL) = (failure_detail IS NULL)),
+  CHECK (state = 'parsed' OR resume IS NULL)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX parse_state_status ON parse_state(status) WHERE status <> 'done';   -- status, waiting work
+CREATE INDEX parse_state_failed ON parse_state(failure_kind) WHERE state = 'failed';
 
 -- What a parser did not use, per input: records it skipped (known kinds it
 -- counts by design, listed in sources/), records it could not read, and wire
@@ -683,6 +683,8 @@ CREATE TABLE commit_link (
                                             --   trailer. Derived: a rewrite of the call removes it, and the
                                             --   derive step makes it again
   evidence          TEXT NOT NULL,          -- commit-output | trailer | codex-git
+  row_key           BLOB,                   -- commit-output: the row key of the message whose call first
+                                            --   reported it (summary/links.rs); NULL for another evidence
   PRIMARY KEY (session_pk, commit_hash)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX commit_link_block ON commit_link(evidence_block_pk) WHERE evidence_block_pk IS NOT NULL;  -- the foreign-key check when blocks are deleted
@@ -693,6 +695,8 @@ CREATE TABLE pr_link (
   number            INTEGER NOT NULL,
   url               TEXT,
   evidence          TEXT NOT NULL,          -- pr-link-record | gh-output | codex
+  row_key           BLOB,                   -- gh-output: the row key of the message whose call first
+                                            --   reported it; NULL for another evidence
   PRIMARY KEY (session_pk, repo, number)
 ) STRICT, WITHOUT ROWID;
 
@@ -844,56 +848,6 @@ CREATE TRIGGER tool_call_removed AFTER DELETE ON tool_call BEGIN UPDATE row_coun
 INSERT INTO row_count(name, n) VALUES ('search_pending', 0);
 CREATE TRIGGER search_pending_added AFTER INSERT ON search_pending BEGIN UPDATE row_count SET n = n + 1 WHERE name = 'search_pending'; END;
 CREATE TRIGGER search_pending_removed AFTER DELETE ON search_pending BEGIN UPDATE row_count SET n = n - 1 WHERE name = 'search_pending'; END;
--- Input chains by parse status, kept the same way.
-CREATE TABLE parse_status_count (
-  status            TEXT PRIMARY KEY,
-  n                 INTEGER NOT NULL
-) STRICT, WITHOUT ROWID;
-CREATE TRIGGER parse_state_added AFTER INSERT ON parse_state BEGIN
-  INSERT INTO parse_status_count(status, n) VALUES (NEW.status, 1) ON CONFLICT(status) DO UPDATE SET n = n + 1;
-END;
-CREATE TRIGGER parse_state_removed AFTER DELETE ON parse_state BEGIN
-  UPDATE parse_status_count SET n = n - 1 WHERE status = OLD.status;
-END;
-CREATE TRIGGER parse_state_changed AFTER UPDATE OF status ON parse_state WHEN OLD.status IS NOT NEW.status BEGIN
-  UPDATE parse_status_count SET n = n - 1 WHERE status = OLD.status;
-  INSERT INTO parse_status_count(status, n) VALUES (NEW.status, 1) ON CONFLICT(status) DO UPDATE SET n = n + 1;
-END;
--- How far each stored revision chain is parsed, one row per chain of the
--- source, kept by the writer in the transaction of the change
--- (crates/store/src/chain_progress.rs), and counted below so that whether
--- the index has caught up is read without walking the chains. A group
--- without chains has no count row, so equal chains give equal rows however
--- they were reached.
-CREATE TABLE chain_progress (
-  input             TEXT NOT NULL,          -- archive.db input.id
-  chain             INTEGER NOT NULL,
-  origin            TEXT NOT NULL,          -- the format the chain is read as
-  parse_version   TEXT NOT NULL,          -- of its parse state; '' without one
-  state             TEXT NOT NULL CHECK(state IN ('no_checkpoint','current','no_parser','partial','behind')),
-  PRIMARY KEY (input, chain)
-) STRICT, WITHOUT ROWID;
-CREATE TABLE chain_progress_count (
-  origin            TEXT NOT NULL,
-  parse_version   TEXT NOT NULL,
-  state             TEXT NOT NULL,
-  n                 INTEGER NOT NULL,
-  PRIMARY KEY (origin, parse_version, state)
-) STRICT, WITHOUT ROWID;
-CREATE TRIGGER chain_progress_added AFTER INSERT ON chain_progress BEGIN
-  INSERT INTO chain_progress_count(origin, parse_version, state, n) VALUES (NEW.origin, NEW.parse_version, NEW.state, 1)
-    ON CONFLICT(origin, parse_version, state) DO UPDATE SET n = n + 1;
-END;
-CREATE TRIGGER chain_progress_removed AFTER DELETE ON chain_progress BEGIN
-  UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND parse_version = OLD.parse_version AND state = OLD.state;
-  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND parse_version = OLD.parse_version AND state = OLD.state AND n = 0;
-END;
-CREATE TRIGGER chain_progress_changed AFTER UPDATE OF origin, parse_version, state ON chain_progress BEGIN
-  UPDATE chain_progress_count SET n = n - 1 WHERE origin = OLD.origin AND parse_version = OLD.parse_version AND state = OLD.state;
-  DELETE FROM chain_progress_count WHERE origin = OLD.origin AND parse_version = OLD.parse_version AND state = OLD.state AND n = 0;
-  INSERT INTO chain_progress_count(origin, parse_version, state, n) VALUES (NEW.origin, NEW.parse_version, NEW.state, 1)
-    ON CONFLICT(origin, parse_version, state) DO UPDATE SET n = n + 1;
-END;
 -- Records parsers did not read, summed by what they were, kept the same way.
 CREATE TABLE unused_count (
   what              TEXT PRIMARY KEY,

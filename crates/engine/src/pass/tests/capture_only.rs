@@ -16,7 +16,7 @@ fn an_origin_without_a_parser_keeps_bytes_and_commits_capture_progress() {
         .unwrap()
         .unwrap();
     assert_eq!(known.stored, bytes.len() as u64);
-    assert_eq!(known.parsed_upto, 0);
+    assert_eq!(known.state.parsed_to(), 0);
     assert!(
         reader
             .query("SELECT * FROM parse_state", &[])
@@ -55,15 +55,16 @@ fn unparsed_database_commits_rows_and_capture_progress() {
     assert!(parsed.errors.is_empty(), "{parsed:?}");
     let reader = engine.reads.reader().unwrap();
     let progress = reader
-        .input_progress(&engine.location_id(&path))
+        .latest_chain(&engine.location_id(&path))
         .unwrap()
         .unwrap();
-    assert!(progress.length > 0);
-    assert_eq!(progress.parsed_upto, progress.length);
+    assert!(progress.stored > 0);
+    assert_eq!(progress.state.parsed_to(), progress.stored);
     let state = reader
-        .query("SELECT status,parse_version,records FROM parse_state", &[])
+        .query("SELECT CASE WHEN state='failed' AND failure_kind='refused' THEN 'refused' WHEN state='failed' THEN 'failed' WHEN waiting>0 THEN 'waiting' ELSE 'done' END AS status,parser_version AS parse_version,used+skipped+unreadable AS records FROM parse_state", &[])
         .unwrap();
-    assert_eq!(state[0]["status"], "no_parser_yet");
+    // A row dump read under the row-dump reader is parsed, its records counted.
+    assert_eq!(state[0]["status"], "done");
     assert_ne!(state[0]["parse_version"], "");
     assert_eq!(state[0]["records"], 2);
     assert_eq!(

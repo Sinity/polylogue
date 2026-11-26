@@ -10,14 +10,14 @@ fn fixture_keeps_each_inputs_stored_bytes_and_committed_parse_position() {
     let reader = pool.reader().unwrap();
     let blobs = reader.blob_reader().unwrap();
     for (input, expected) in [("input-alpha", &b"r\nr\n"[..]), ("input-beta", &b"r\n"[..])] {
-        let position = reader.input_progress(input).unwrap().unwrap();
-        assert_eq!(position.parsed_upto, expected.len() as u64);
-        assert_eq!(position.length, expected.len() as u64);
+        let position = reader.latest_chain(input).unwrap().unwrap();
+        assert_eq!(position.state.parsed_to(), expected.len() as u64);
+        assert_eq!(position.stored, expected.len() as u64);
         let chain = reader
-            .stored_chain(input, position.chain, position.length)
+            .stored_chain(input, position.chain, position.stored)
             .unwrap();
         assert_eq!(
-            chain.read_range(&blobs, 0, position.length).unwrap(),
+            chain.read_range(&blobs, 0, position.stored).unwrap(),
             expected
         );
     }
