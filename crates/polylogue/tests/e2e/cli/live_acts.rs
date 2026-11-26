@@ -116,6 +116,7 @@ printf '%s\n' '{"type":"result"}'
     let started = json(&started);
     let hosted = started["session"].as_str().unwrap();
     let host_reference = format!("session:{hosted}");
+    wait_status(&env, |status| status["store"]["sessions"] == 2);
     let out = cli(
         &env,
         &[

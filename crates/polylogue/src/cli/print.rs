@@ -284,7 +284,12 @@ pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
         match reached {
             Reached::Session(sent) => {
                 for one in &sent.deliveries {
-                    delivered(&mut out, "sent to", one);
+                    let action = if one.outcome == protocol::acts::ActOutcome::NotSent {
+                        "could not send to"
+                    } else {
+                        "sent to"
+                    };
+                    delivered(&mut out, action, one);
                 }
                 if let Some(message) = &sent.message {
                     let _ = writeln!(out, "message annotation:{message}");

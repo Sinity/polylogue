@@ -387,7 +387,7 @@ fn record_sent(d: &Daemon, delivery: &str, sent: Result<(), String>) {
         Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
     };
     if let Err(error) = outcome_event(d, &invocation, delivery, what, detail) {
-        d.acts.delivery_write_failed(delivery, &error);
+        d.acts.delivery_write_failed(delivery, &error.message);
     }
 }
 
@@ -755,7 +755,7 @@ pub(crate) fn finish_ended(d: &Daemon, now: i64, everyone: bool) {
                 DeliveryOutcome::NotSent,
                 reason.clone(),
             ) {
-                d.acts.delivery_write_failed(&id, error);
+                d.acts.delivery_write_failed(&id, &error.message);
             }
         }
         if let Err(error) = crate::mailbox::lower(d.acts.mail(), &session) {
@@ -1152,7 +1152,7 @@ fn resume_session(
             ) {
                 daemon
                     .acts
-                    .delivery_write_failed(&queued.delivery, write_error);
+                    .delivery_write_failed(&queued.delivery, &write_error.message);
             }
         }
     }
@@ -1169,7 +1169,7 @@ fn resume_once(
     ));
     let record = |what, detail: String| {
         if let Err(error) = outcome_event(d, &invocation, &run.delivery, what, detail) {
-            d.acts.delivery_write_failed(&run.delivery, &error);
+            d.acts.delivery_write_failed(&run.delivery, &error.message);
         }
     };
     let child = std::process::Command::new(&run.argv[0])
