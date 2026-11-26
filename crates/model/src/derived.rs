@@ -258,9 +258,9 @@ pub const SESSION_LINEAGE: Construct = Construct {
     reads: &[
         "session.id",
         "session.stub",
-        "link.parent_id",
-        "link.child_id",
-        "link.kind",
+        "session_link.parent_id",
+        "session_link.child_id",
+        "session_link.kind",
     ],
     unit: "session; parent steps",
     denominator: Some("one physical session"),
