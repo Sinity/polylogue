@@ -350,13 +350,21 @@ fn exit_code(result: Result<(), String>) -> ExitCode {
     }
 }
 
-fn parse(args: Vec<String>) -> Result<Cli, clap::Error> {
-    let args = if args.get(1).is_some_and(|command| command == "test") {
-        selection::separate_short_values(args)
-    } else {
-        args
-    };
-    Cli::try_parse_from(args)
+fn parse(mut args: Vec<String>) -> Result<Cli, clap::Error> {
+    if args.get(1).is_none_or(|command| command != "test") {
+        return Cli::try_parse_from(args);
+    }
+    // clap consumes the `--` that hands what follows to the test binaries;
+    // that part passes to nextest as written.
+    let after = args
+        .iter()
+        .position(|arg| arg == "--")
+        .map(|separator| args.split_off(separator));
+    let mut cli = Cli::try_parse_from(selection::separate_short_values(args))?;
+    if let (Cli::Test { selection, .. }, Some(after)) = (&mut cli, after) {
+        selection.pass_through(after);
+    }
+    Ok(cli)
 }
 
 fn main() -> ExitCode {

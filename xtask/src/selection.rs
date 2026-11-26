@@ -166,6 +166,11 @@ impl Selection {
         self
     }
 
+    /// Arguments that pass to nextest after the ones xtask interprets.
+    pub(crate) fn pass_through(&mut self, arguments: Vec<String>) {
+        self.rest.extend(arguments);
+    }
+
     pub(crate) fn is_partitioned(&self) -> bool {
         self.partition.is_some()
     }
@@ -374,15 +379,9 @@ fn glob_matches(pattern: &[u8], name: &[u8]) -> bool {
 /// Spells `-pNAME`, `-EEXPR` and `-FFEATURES` as two words. With pass-through
 /// arguments allowed, clap reads a short option with an attached value as
 /// the first argument it does not interpret.
-pub(crate) fn separate_short_values(args: impl IntoIterator<Item = String>) -> Vec<String> {
+pub(crate) fn separate_short_values(args: Vec<String>) -> Vec<String> {
     let mut separated = Vec::new();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        if arg == "--" {
-            separated.push(arg);
-            separated.extend(args);
-            break;
-        }
+    for arg in args {
         match ["-p", "-E", "-F"].iter().find_map(|flag| {
             Some((
                 *flag,
