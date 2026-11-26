@@ -432,10 +432,7 @@ impl Call {
 
 /// A read through the declared line, retaining its typed cursor and options.
 pub(crate) fn read_call(request: polylogue_reading::ReadRequest) -> Call {
-    let arguments = crate::daemon::service::read::arguments_of(&request)
-        .expect("a test read has public arguments");
-    let step = crate::daemon::verbs::read::step_of(arguments, request.cursor)
-        .expect("a test read fits the declared step");
+    let step = crate::daemon::verbs::read::step_from(&request, request.cursor.clone());
     let rows = crate::protocol::line::Rows {
         selection: request.references.is_none().then_some(request.target),
         references: request

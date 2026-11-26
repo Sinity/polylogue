@@ -669,16 +669,16 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         *name,
                         "polylogue.line_resolution" | "polylogue.line_resolution_restore"
                     ) {
-                        7
+                        8
                     } else {
                         match *product {
                             "message" => 10,
                             "request" | "restored_request" => 11,
                             "session" | "link" | "parse_progress" => 8,
-                            "input" => 7,
+                            "input" => 8,
                             "document" | "event" | "background" | "repository" => 7,
                             "fragment" => 5,
-                            "query_run" => 9,
+                            "query_run" => 10,
                             "tool_call" | "prefix_copy" | "prefix_member" | "query" => 3,
                             "query_run_outcome" => 2,
                             "attachment_binding" => 2,

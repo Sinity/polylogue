@@ -1,6 +1,5 @@
 //! One line: a selection and the verbs that act on its rows, and its answer.
 //! The `rows` operation carries it on every surface.
-use super::steps::*;
 use crate::commands::ToolAccess;
 use command_surface::JsonSchema;
 use polylogue_model::user::{AssertQueryOutcome, UserOutcome};
@@ -49,61 +48,7 @@ pub struct Rows {
     pub return_selection: bool,
 }
 
-/// One verb of a line with its options.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "verb", rename_all = "snake_case")]
-pub enum Step {
-    Read(Box<ReadStep>),
-    Pick(PickStep),
-    Brief(BriefStep),
-    Note(Box<NoteStep>),
-    Tag(TagStep),
-    Edit(EditStep),
-    Withdraw(WithdrawStep),
-    Judge(JudgeStep),
-    Save(Box<SaveStep>),
-    Send(SendStep),
-    Answer(AnswerStep),
-    Interrupt(InterruptStep),
-    Resume(ResumeStep),
-}
-
-impl Step {
-    /// The verb as written on every surface.
-    pub fn verb(&self) -> &'static str {
-        match self {
-            Self::Read(_) => "read",
-            Self::Pick(_) => "pick",
-            Self::Brief(_) => "brief",
-            Self::Note(_) => "note",
-            Self::Tag(_) => "tag",
-            Self::Edit(_) => "edit",
-            Self::Withdraw(_) => "withdraw",
-            Self::Judge(_) => "judge",
-            Self::Save(_) => "save",
-            Self::Send(_) => "send",
-            Self::Answer(_) => "answer",
-            Self::Interrupt(_) => "interrupt",
-            Self::Resume(_) => "resume",
-        }
-    }
-
-    /// The smallest tool that may run this step.
-    pub fn access(&self) -> ToolAccess {
-        match self {
-            Self::Read(_) | Self::Pick(_) | Self::Brief(_) => ToolAccess::Read,
-            Self::Note(_)
-            | Self::Tag(_)
-            | Self::Edit(_)
-            | Self::Withdraw(_)
-            | Self::Judge(_)
-            | Self::Save(_) => ToolAccess::Write,
-            Self::Send(_) | Self::Answer(_) | Self::Interrupt(_) | Self::Resume(_) => {
-                ToolAccess::Act
-            }
-        }
-    }
-}
+pub use crate::daemon::verbs::Step;
 
 impl Rows {
     /// The highest step's access; a line without steps reads.
@@ -205,12 +150,13 @@ pub enum StepAnswer {
     /// The follow's events were delivered through these final marks.
     Followed(Box<super::follow::Marks>),
     Picked(Vec<String>),
-    Brief(Box<super::context::Answer>),
+    Brief(Box<crate::brief::BriefReply>),
     Wrote(UserOutcome),
     WroteEach(AssertQueryOutcome),
     Saved(SaveReport),
-    Sent(SendReport),
-    Acted(Vec<Value>),
+    Sent(super::acts::SendReport),
+    /// What `answer`, `interrupt` and `resume --in` did to each session.
+    Acted(Vec<super::acts::Acted>),
     Resume(Box<super::resume::Answer>),
 }
 
@@ -230,21 +176,6 @@ pub(crate) fn attachment_page(answer: &Value) -> crate::daemon::attachment::Byte
         }) => *page,
         _ => panic!("no attachment range: {answer}"),
     }
-}
-
-/// Whom `send` reached, and the sessions it skipped with the line that sends to each alone.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct SendReport {
-    pub reached: Vec<Value>,
-    pub skipped: Vec<Skipped>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Skipped {
-    pub session: String,
-    pub line: String,
 }
 
 /// How a line is read, without running it.

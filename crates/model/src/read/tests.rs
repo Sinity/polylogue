@@ -148,7 +148,7 @@ fn unknown_view_names_are_refused_and_options_name_the_supported_views() {
     );
     let invalid = ReadOptions {
         view: View::Dialogue,
-        thinking: Some(Expansion::Full),
+        show: vec!["thinking:full".into()],
         ..Default::default()
     };
     let error = invalid.validate().unwrap_err().to_string();
@@ -385,7 +385,7 @@ fn layout_keeps_slots_and_ambiguous_same_hash_sources() {
     let projected = project_record(
         original.clone(),
         &ReadOptions {
-            tools: Some(Expansion::None),
+            hide: vec!["tools".into()],
             ..Default::default()
         },
         &LayoutFacts::default(),
@@ -426,45 +426,59 @@ fn layout_keeps_slots_and_ambiguous_same_hash_sources() {
     dialogue.validate().unwrap();
 }
 
+fn shown(show: &[&str], hide: &[&str]) -> ReadOptions {
+    ReadOptions {
+        show: show.iter().map(|word| (*word).to_owned()).collect(),
+        hide: hide.iter().map(|word| (*word).to_owned()).collect(),
+        ..ReadOptions::default()
+    }
+}
+
 #[test]
-fn show_hide_words_round_trip_through_one_table() {
-    let mut options = ReadOptions::default();
-    options
-        .apply_show_hide(
-            &[
-                "tools:full".into(),
-                "thinking".into(),
-                "inherited".into(),
-                "turns".into(),
-                "context".into(),
-            ],
-            &["annotations".into(), "spawns".into()],
-        )
-        .unwrap();
-    assert_eq!(options.tools, Some(Expansion::Full));
-    assert_eq!(options.thinking, Some(Expansion::Full));
-    assert!(options.inherited && options.turns && options.context_meter);
-    assert!(!options.annotations && options.spawns == SpawnDisplay::Hidden);
-    let (show, hide) = options.show_hide_words();
-    assert_eq!(hide, ["annotations", "spawns"]);
-    assert_eq!(
-        serde_json::to_value(&options).unwrap()["annotations"],
-        false
+fn show_and_hide_words_expand_through_one_table() {
+    let defaults = ReadOptions::default();
+    assert_eq!(defaults.tools(), Expansion::Collapsed);
+    assert_eq!(defaults.thinking(), Expansion::Collapsed);
+    assert_eq!(defaults.harness(), Expansion::Collapsed);
+    assert_eq!(defaults.output_lines(), 100);
+    assert!(!defaults.inherited() && !defaults.branches() && !defaults.turns());
+    assert!(defaults.annotations() && !defaults.context_meter());
+    assert_eq!(defaults.spawns(), SpawnDisplay::Card);
+    let options = shown(
+        &["tools:full", "thinking", "inherited", "turns", "context"],
+        &["annotations", "spawns"],
     );
-    let mut again = ReadOptions::default();
-    again.apply_show_hide(&show, &hide).unwrap();
-    assert_eq!(again, options);
+    options.validate().unwrap();
+    assert_eq!(options.tools(), Expansion::Full);
+    assert_eq!(options.output_lines(), 0);
+    assert_eq!(options.thinking(), Expansion::Full);
+    assert_eq!(options.harness(), Expansion::Collapsed);
+    assert!(options.inherited() && options.turns() && options.context_meter());
+    assert!(!options.annotations() && options.spawns() == SpawnDisplay::Hidden);
+    // The options keep the words the caller wrote.
+    assert_eq!(
+        serde_json::to_value(&options).unwrap(),
+        serde_json::json!({
+            "view": "transcript",
+            "show": ["tools:full", "thinking", "inherited", "turns", "context"],
+            "hide": ["annotations", "spawns"],
+        })
+    );
+    // A hide word wins over a show word for the same kind; the last show
+    // word wins over an earlier one.
+    let later = shown(&["tools:line", "tools:7", "thinking:line"], &["thinking"]);
+    assert_eq!(later.tools(), Expansion::Full);
+    assert_eq!(later.output_lines(), 7);
+    assert_eq!(later.thinking(), Expansion::None);
     for kind in ShowKind::ALL {
         assert_eq!(ShowKind::parse(kind.name()), Some(kind));
     }
-    assert!(matches!(
-        ReadOptions::default().apply_show_hide(&["tools:loud".into()], &[]),
-        Err(ReadError::UnknownShowWord { .. })
-    ));
-    assert!(matches!(
-        ReadOptions::default().apply_show_hide(&[], &["nothing".into()]),
-        Err(ReadError::UnknownShowWord { .. })
-    ));
+    for (show, hide) in [(&["tools:loud"][..], &[][..]), (&[], &["nothing"])] {
+        assert!(matches!(
+            shown(show, hide).validate(),
+            Err(ReadError::UnknownShowWord { .. })
+        ));
+    }
 }
 
 #[test]
@@ -481,18 +495,14 @@ fn spawn_levels_and_help_come_from_the_show_table() {
             },
         ),
     ] {
-        let mut options = ReadOptions::default();
-        options.apply_show_hide(&[word.into()], &[]).unwrap();
-        assert_eq!(options.spawns, expected, "{word}");
-        let (show, hide) = options.show_hide_words();
-        let mut again = ReadOptions::default();
-        again.apply_show_hide(&show, &hide).unwrap();
-        assert_eq!(again, options, "{word}");
+        let options = shown(&[word], &[]);
+        options.validate().unwrap();
+        assert_eq!(options.spawns(), expected, "{word}");
     }
     for refused in ["spawns:N", "spawns:0", "spawns:deep", "tools:0"] {
         assert!(
             matches!(
-                ReadOptions::default().apply_show_hide(&[refused.into()], &[]),
+                shown(&[refused], &[]).validate(),
                 Err(ReadError::UnknownShowWord { .. })
             ),
             "{refused}"
@@ -504,8 +514,7 @@ fn spawn_levels_and_help_come_from_the_show_table() {
     );
     let inline_context = ReadOptions {
         view: View::Context,
-        spawns: SpawnDisplay::Inline { depth: None },
-        ..ReadOptions::default()
+        ..shown(&["spawns:full"], &[])
     };
     assert!(matches!(
         inline_context.validate(),
@@ -514,26 +523,11 @@ fn spawn_levels_and_help_come_from_the_show_table() {
 }
 
 #[test]
-fn inline_spawns_to_depth_zero_read_back_as_cards() {
-    let options = ReadOptions {
-        spawns: SpawnDisplay::Inline { depth: Some(0) },
-        ..ReadOptions::default()
-    };
-    let (show, hide) = options.show_hide_words();
-    assert_eq!(show, ["spawns:card"]);
-    assert!(hide.is_empty());
-    let mut again = ReadOptions::default();
-    again.apply_show_hide(&show, &hide).unwrap();
-    assert_eq!(again.spawns, SpawnDisplay::Card);
-}
-
-#[test]
 fn the_context_meter_is_refused_where_no_message_header_is_read() {
     for view in [View::Overview, View::Tree, View::Live, View::Trace] {
         let options = ReadOptions {
             view,
-            context_meter: true,
-            ..ReadOptions::default()
+            ..shown(&["context"], &[])
         };
         assert!(
             matches!(
@@ -546,8 +540,7 @@ fn the_context_meter_is_refused_where_no_message_header_is_read() {
     for view in [View::Transcript, View::Dialogue, View::Context] {
         let options = ReadOptions {
             view,
-            context_meter: true,
-            ..ReadOptions::default()
+            ..shown(&["context"], &[])
         };
         assert!(options.validate().is_ok(), "{view}");
     }
@@ -620,7 +613,7 @@ fn follow_up_holds_one_request_per_direction() {
 }
 
 #[test]
-fn full_tool_output_and_numeric_line_limits_round_trip_without_changing_stored_fields() {
+fn full_tool_output_and_numeric_line_limits_expand_from_their_word() {
     for (word, lines) in [
         ("tools:full", 0),
         ("tools:2", 2),
@@ -628,72 +621,32 @@ fn full_tool_output_and_numeric_line_limits_round_trip_without_changing_stored_f
         ("tools:100", 100),
         ("tools:18446744073709551615", u64::MAX),
     ] {
-        let mut options = ReadOptions::default();
-        options.apply_show_hide(&[word.into()], &[]).unwrap();
-        assert_eq!(options.tools, Some(Expansion::Full));
-        assert_eq!(options.output_lines, lines);
-        let (show, hide) = options.show_hide_words();
-        assert_eq!(show, [word]);
-        assert!(hide.is_empty());
-        let mut restored = ReadOptions::default();
-        restored.apply_show_hide(&show, &hide).unwrap();
-        assert_eq!(restored, options);
+        let options = shown(&[word], &[]);
+        options.validate().unwrap();
+        assert_eq!(options.tools(), Expansion::Full, "{word}");
+        assert_eq!(options.output_lines(), lines, "{word}");
         assert_eq!(
-            serde_json::to_value(&options).unwrap()["output_lines"],
-            lines
+            serde_json::to_value(&options).unwrap()["show"],
+            serde_json::json!([word])
         );
     }
 }
 
 #[test]
-fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
-    let legacy = serde_json::json!({"view":"context","at":"claude-code:u1"});
-    let options: ReadOptions = serde_json::from_value(legacy).unwrap();
-    options.validate().unwrap();
+fn read_at_is_a_time_or_a_position_in_one_string() {
+    // A message word is no place to read at: it stays the caller's words,
+    // which the reading refuses with the line that selects the message.
+    let message: ReadOptions =
+        serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:u1"}))
+            .unwrap();
     assert_eq!(
-        options.at,
-        Some(ReadAt::Message(MessageId::parse("claude-code:u1").unwrap()))
+        message.at,
+        Some(ReadAt::TimeExpression("claude-code:u1".into()))
     );
     assert_eq!(
-        serde_json::to_value(&options).unwrap()["at"],
+        serde_json::to_value(&message).unwrap()["at"],
         "claude-code:u1"
     );
-    let opaque: ReadAt = serde_json::from_value(serde_json::json!("message:opaque")).unwrap();
-    assert_eq!(
-        opaque,
-        ReadAt::Message(MessageId::parse("message:opaque").unwrap())
-    );
-    assert_eq!(serde_json::to_value(&opaque).unwrap(), "message:opaque");
-    let numeric: ReadOptions =
-        serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:2:3"}))
-            .unwrap();
-    numeric.validate().unwrap();
-    assert_eq!(
-        numeric.context_message_candidate(),
-        Some(MessageId::parse("claude-code:2:3").unwrap())
-    );
-    // The reading owner resolves this ambiguous word against stored messages.
-    assert_eq!(numeric.at.as_ref().unwrap().to_string(), "claude-code:2:3");
-    let padded: ReadOptions =
-        serde_json::from_value(serde_json::json!({"view":"context","at":"claude-code:02:03"}))
-            .unwrap();
-    assert_eq!(
-        padded.context_message_candidate(),
-        Some(MessageId::parse("claude-code:02:03").unwrap())
-    );
-    assert_eq!(
-        serde_json::to_value(&padded).unwrap()["at"],
-        "claude-code:02:03"
-    );
-    for text in ["08:00:00", "2026-11-21t08:00:00z"] {
-        let context: ReadOptions =
-            serde_json::from_value(serde_json::json!({"view":"context","at":text})).unwrap();
-        assert_eq!(
-            context.context_message_candidate(),
-            Some(MessageId::parse(text).unwrap())
-        );
-        assert_eq!(serde_json::to_value(&context).unwrap()["at"], text);
-    }
     let historical = serde_json::json!({"at":"generation:2:3"});
     let options: ReadOptions = serde_json::from_value(historical).unwrap();
     options.validate().unwrap();
@@ -713,13 +666,9 @@ fn read_at_keeps_the_declared_string_format_and_context_message_behavior() {
     assert_eq!(
         schema["properties"]["at"],
         serde_json::json!({
-            "description":"The message a context reading is taken at; the latest when absent.",
-            "anyOf":[{"$ref":"#/$defs/MessageId"},{"type":"null"}]
+            "description":"Annotations and pages as they stood at this time or position",
+            "type":["string","null"]
         })
-    );
-    assert_eq!(
-        schema["$defs"]["MessageId"],
-        serde_json::json!({"type":"string"})
     );
 }
 

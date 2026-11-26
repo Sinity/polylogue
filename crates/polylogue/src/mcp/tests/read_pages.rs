@@ -155,11 +155,11 @@ impl AllItems {
             .selection
             .clone()
             .unwrap_or_else(|| rows.references.join(" OR "));
-        let arguments = crate::daemon::verbs::read::arguments(read, target).unwrap();
-        let mut request = crate::daemon::service::read::request_of(arguments, None).unwrap();
+        let mut request =
+            crate::daemon::verbs::read::request_for((**read).clone(), target).unwrap();
+        request.cursor = None;
         request.delivery = polylogue_model::read::ReadDelivery::Stream;
         request.budget = polylogue_model::read::ReadBudget::Default;
-        request.with_blobs = false;
         if !rows.references.is_empty() {
             request.references = Some(
                 rows.references
@@ -410,7 +410,11 @@ pub(super) fn collect(
             panic!("one read continuation")
         };
         // A continuation reads the same target with the same options.
-        let identity = (rows.selection.clone(), rows.references.clone(), read.view);
+        let identity = (
+            rows.selection.clone(),
+            rows.references.clone(),
+            read.options.view,
+        );
         if let Some(root) = &root {
             assert_eq!(&identity, root, "the continuation changed its reading");
         } else {
