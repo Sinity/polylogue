@@ -898,11 +898,11 @@ fn threads_show_their_work_progress_and_long_statements() {
     assert_eq!(
         section,
         [
-            "THREADS    polylogue-parse-0  parsing a file (/home/op/a.jsonl)  4s",
-            "           polylogue-request  no work recorded",
+            "THREADS    parse-0  parsing a file (/home/op/a.jsonl)  4s",
+            "           request  no work recorded",
             "             running 5s on the reader connection: SELECT 1",
-            "           polylogue-search-fill  reading texts for the search index  40s · no progress for 30s",
-            "           polylogue-writer  building the index › indexing sessions  1h2m · stalled, no progress for 58m",
+            "           search-fill  reading texts for the search index  40s · no progress for 30s",
+            "           writer  building the index › indexing sessions  1h2m · stalled, no progress for 58m",
             "             running 58m on the writer connection: UPDATE session_item SET shown = 1",
         ]
     );

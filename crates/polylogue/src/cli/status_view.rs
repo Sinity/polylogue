@@ -843,7 +843,7 @@ fn unused(status: &Answer) -> Vec<String> {
     vec![line]
 }
 
-/// Each busy daemon thread: what it is doing, outermost first, for how
+/// Each busy daemon thread, named without the program's prefix: what it is doing, outermost first, for how
 /// long, and how long since it last made progress when that is a while
 /// (stalled, marked, after [`STALLED_AFTER`]); under it the statements it
 /// has run for a few seconds, running time first since the SQL is cut.
@@ -851,6 +851,13 @@ fn threads(status: &Answer, view: &View<'_>) -> Vec<String> {
     let seconds = |seconds: f64| short_duration((seconds * 1000.) as i64);
     let mut lines = Vec::new();
     for thread in &status.threads {
+        // Every daemon thread's name starts with the program's.
+        let name = clean(
+            thread
+                .name
+                .strip_prefix("polylogue-")
+                .unwrap_or(&thread.name),
+        );
         let doing: Vec<String> = thread
             .doing
             .iter()
@@ -861,12 +868,11 @@ fn threads(status: &Answer, view: &View<'_>) -> Vec<String> {
             .collect();
         let mut line = match thread.doing.last() {
             Some(innermost) => format!(
-                "{}  {}  {}",
-                clean(&thread.name),
+                "{name}  {}  {}",
                 view.bold(&doing.join(" › ")),
                 seconds(innermost.seconds)
             ),
-            None => format!("{}  {}", clean(&thread.name), view.dim("no work recorded")),
+            None => format!("{name}  {}", view.dim("no work recorded")),
         };
         match thread.seconds_since_progress {
             Some(since) if since >= STALLED_AFTER => line.push_str(&format!(

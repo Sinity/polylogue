@@ -301,9 +301,12 @@ pub(crate) fn trace_statements(conn: &rusqlite::Connection, connection: Connecti
 
 fn traced<const CONNECTION: usize>(event: TraceEvent<'_>) {
     match event {
+        // The event's text is a copy for a nested statement and a marker
+        // for a trigger's subprogram; the statement's own text, which
+        // SQLite keeps for its life, names it. Rust's SQL is UTF-8, so the
+        // text is borrowed, not converted.
         TraceEvent::Stmt(statement, _) => {
             let sql = statement.sql();
-            // Only text SQLite holds has an address that names the statement.
             if matches!(sql, Cow::Owned(_)) || sql.is_empty() {
                 return;
             }
@@ -328,29 +331,26 @@ fn traced<const CONNECTION: usize>(event: TraceEvent<'_>) {
         TraceEvent::Profile(statement, measured) => {
             let sql = statement.sql();
             let key = sql.as_ptr() as usize;
-            let took = RECORD
-                .try_with(|record| {
-                    let mut state = record.state.locked();
-                    let at = state
-                        .statements
-                        .iter()
-                        .position(|running| running.key == key)?;
-                    let running = state.statements.swap_remove(at);
-                    let took = running.since.elapsed();
-                    state.spare.push(running.sql);
-                    Some(took)
-                })
-                .ok()
-                .flatten()
-                .unwrap_or(measured);
-            if took >= SLOW_STATEMENT {
+            let _ = RECORD.try_with(|record| {
+                let mut state = record.state.locked();
+                let at = state
+                    .statements
+                    .iter()
+                    .position(|running| running.key == key)?;
+                let running = state.statements.swap_remove(at);
+                state.spare.push(running.sql);
+                Some(())
+            });
+            // SQLite's own measure, to the millisecond, saves reading the
+            // clock again.
+            if measured >= SLOW_STATEMENT {
                 use rusqlite::StatementStatus as Counter;
                 crate::log!(
                     info,
                     "slow statement on a {} connection: {:.1} s, {} full-scan steps, {} sorts, \
                      {} automatic-index rows, {} virtual machine steps: {}",
                     Connection::NAMES[CONNECTION],
-                    took.as_secs_f64(),
+                    measured.as_secs_f64(),
                     statement.get_status(Counter::FullscanStep),
                     statement.get_status(Counter::Sort),
                     statement.get_status(Counter::AutoIndex),
