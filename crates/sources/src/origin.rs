@@ -615,7 +615,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         import: Import::LAYOUT,
         compressed_form_of: None,
-        local_references: None,
+        local_references: Some(crate::codex::LOCAL_REFERENCES),
         name: "codex",
         modules: modules!(crate::codex::VERSION),
         support: Support::Parsed,
@@ -637,7 +637,7 @@ pub static ORIGINS: &[OriginSpec] = &[
     OriginSpec {
         import: Import::LAYOUT,
         compressed_form_of: None,
-        local_references: Some(crate::codex::LOCAL_REFERENCES),
+        local_references: None,
         name: "codex-database",
         modules: modules!(crate::codex::VERSION, crate::codex::database::VERSION),
         support: Support::Parsed,

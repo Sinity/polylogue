@@ -59,14 +59,24 @@ pub(super) fn declared(
     let structure = ORIGINS.iter().find(|o| {
         matches!(o.import.alone, Alone::Structure(_)) && importable(o) && (o.recognize)(path, &head)
     });
-    Ok(structure.or_else(|| {
+    // A path that keeps the tool's own directory with the location
+    // (`.codex/history.jsonl`) names that tool before a bare location match.
+    let layout = |rooted: bool| {
         ORIGINS.iter().find(|o| {
             matches!(o.import.alone, Alone::Layout)
                 && importable(o)
-                && o.locations.iter().any(|p| collect::ends_in(path, p))
+                && o.locations.iter().any(|p| {
+                    if rooted {
+                        !o.root.default.is_empty()
+                            && collect::ends_in(path, &format!("{}/{p}", o.root.default))
+                    } else {
+                        collect::ends_in(path, p)
+                    }
+                })
                 && (o.recognize)(path, &head)
         })
-    }))
+    };
+    Ok(structure.or_else(|| layout(true)).or_else(|| layout(false)))
 }
 
 /// An origin whose files an import stores: a parsed one, or one whose
