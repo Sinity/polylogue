@@ -88,7 +88,8 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
                 .iter()
                 .map(|statement| {
                     format!(
-                        "{} times · {:.1}s latest · {:.1}s longest · {} · {} · {}",
+                        "{} · {} times · {:.1}s latest · {:.1}s longest · {} · {} · {}",
+                        view.time(statement.at.unix_ms()),
                         statement.count,
                         statement.seconds,
                         statement.longest_seconds,
@@ -928,7 +929,14 @@ fn unused(status: &Answer) -> Vec<String> {
         return Vec::new();
     };
     let Some((field, n)) = store.unused.first() else {
-        return Vec::new();
+        return if store.unused_fields == 0 {
+            Vec::new()
+        } else {
+            vec![format!(
+                "{} unread source fields · `polylogue status --details --json` lists the most frequent",
+                count(store.unused_fields)
+            )]
+        };
     };
     let mut line = format!("{} ×{} not yet read", clean(field), count(*n));
     // `unused` is cut; `unused_fields` counts them all.

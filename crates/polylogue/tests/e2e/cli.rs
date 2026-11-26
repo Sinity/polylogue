@@ -199,7 +199,7 @@ fn serving(mut command: Command) -> Daemon {
 /// written file) waits here first. While `ready` does not hold for a
 /// caught-up status, the change the test made has not reached the daemon
 /// yet, and the next wait is for a status that caught up after a later
-/// change (`--after`): each answer follows something the daemon did, and
+/// change (`--after-changes`): each answer follows something the daemon did, and
 /// nothing is polled.
 pub(super) fn wait_status(
     env: &crate::Fixture,

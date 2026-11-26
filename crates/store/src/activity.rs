@@ -35,6 +35,7 @@ pub struct SlowStatement {
     pub connection: String,
     pub sql: String,
     pub count: u64,
+    pub at: polylogue_model::Timestamp,
     pub seconds: f64,
     pub longest_seconds: f64,
     pub thread: String,
@@ -57,10 +58,22 @@ fn finished_slow_statement(connection: &str, sql: &str, measured: Duration) {
                 .locked()
                 .doing
                 .last()
-                .map(|work| work.what.to_string())
+                .map(|work| match &work.subject {
+                    Some(subject) => format!("{}: {subject}", work.what),
+                    None => work.what.to_owned(),
+                })
         })
         .ok()
         .flatten();
+    // Like the journal log, completed statements carry the time they ended.
+    let Some(at) = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|since| i64::try_from(since.as_millis()).ok())
+        .and_then(polylogue_model::Timestamp::from_unix_ms)
+    else {
+        return;
+    };
     let mut statements = SLOW.locked();
     let previous = statements
         .iter()
@@ -78,6 +91,7 @@ fn finished_slow_statement(connection: &str, sql: &str, measured: Duration) {
         connection: connection.to_owned(),
         sql: sql.to_owned(),
         count,
+        at,
         seconds,
         longest_seconds,
         thread: std::thread::current()

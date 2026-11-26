@@ -116,7 +116,7 @@ fn a_file_error_stays_until_the_file_is_read_without_the_error() {
                 completed: true,
             },
         );
-        assert_eq!(log.errors(), [failure.clone()]);
+        assert_eq!(log.errors(), std::slice::from_ref(&failure));
     }
     log.pass_ended(
         &[],

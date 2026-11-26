@@ -541,6 +541,12 @@ fn status_summarizes_twenty_roots_and_details_are_explicit() {
     let request = |details| {
         crate::test_daemon::Call::new("status", serde_json::json!({"details":details})).answer(d)
     };
+    let mcp = crate::mcp::tests::call(&d.archive, "status", serde_json::Map::new()).unwrap();
+    assert!(
+        mcp.chars().count() < 8000,
+        "{} MCP text characters",
+        mcp.chars().count()
+    );
     let default = request(false);
     let text = serde_json::to_string(&default).unwrap();
     assert!(
@@ -600,4 +606,71 @@ fn status_names_update_errors_and_failed_snapshot_parts() {
     assert!(
         matches!(value.notices, Some(crate::protocol::status::Notices::Unavailable { error }) if error == "synthetic notices read failed")
     );
+}
+
+#[test]
+fn status_keeps_a_root_error_until_a_scan_finds_the_root_readable() {
+    use std::os::unix::fs::PermissionsExt;
+    let daemon = crate::test_daemon::start_with_sources_and_workers(
+        "synthetic source",
+        &|home| {
+            std::fs::create_dir_all(home.join(".codex")).unwrap();
+        },
+        0,
+        2,
+    );
+    let d = &daemon.daemon;
+    let root = daemon.home.join(".claude");
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o000)).unwrap();
+    daemon.wait_for(|status| {
+        status["last_pass"]["unreadable_roots"]
+            .as_array()
+            .is_some_and(|paths| paths.iter().any(|path| path.as_str() == root.to_str()))
+    });
+    for n in 0..4 {
+        let result = crate::test_daemon::Call::new("status", serde_json::json!({})).answer(d);
+        assert_eq!(result.exit_code(), 5, "{result:?}");
+        let words = crate::protocol::notes(&result)
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("; ");
+        assert!(
+            words.contains(&root.display().to_string())
+                && words.to_lowercase().contains("permission denied"),
+            "{words}"
+        );
+        let value = result.value().unwrap();
+        let roots = value["store"]["capture_coverage"][0]["roots"]
+            .as_array()
+            .unwrap();
+        let observed = roots
+            .iter()
+            .find(|item| item["path"].as_str() == root.to_str())
+            .unwrap();
+        assert!(
+            observed["error"]
+                .as_str()
+                .unwrap()
+                .to_lowercase()
+                .contains("permission denied")
+        );
+        let before = value["passes"].as_u64().unwrap();
+        std::fs::write(
+            daemon.home.join(format!(".codex/unrecognized-{n}")),
+            "synthetic file",
+        )
+        .unwrap();
+        daemon.wait_for(|status| {
+            status["passes"]
+                .as_u64()
+                .is_some_and(|passes| passes > before)
+        });
+    }
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    daemon.wait_for(|status| {
+        status["last_pass"]["errors"] == serde_json::json!([])
+            && status["last_pass"]["unreadable_roots"] == serde_json::json!([])
+    });
+    let result = crate::test_daemon::Call::new("status", serde_json::json!({})).answer(d);
+    assert_eq!(result.exit_code(), 0, "{result:?}");
 }

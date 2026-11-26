@@ -205,3 +205,24 @@ fn archived_controls_are_data_in_pipes_and_terminals() {
     assert!(!error.status.success());
     safe(std::str::from_utf8(&error.stderr).unwrap());
 }
+
+#[test]
+fn piped_status_keeps_the_whole_archive_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let padding = "a".repeat(65usize.saturating_sub(dir.path().as_os_str().len()));
+    let archive = dir.path().join(padding);
+    let env = crate::Fixture::new(
+        &archive,
+        &dir.path().join("home"),
+        &dir.path().join("config"),
+    );
+    let _daemon = start_daemon(&env);
+    let output = cli(&env, &["status"]);
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.lines()
+            .any(|line| line.ends_with(archive.to_str().unwrap()) && line.chars().count() > 100),
+        "{text}"
+    );
+}
