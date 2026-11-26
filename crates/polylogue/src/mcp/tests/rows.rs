@@ -351,7 +351,7 @@ fn mcp_and_cli_print_the_same_step_text() {
          kept    result:kept-1 (3 rows, {at}), now result:open-work\n\
          \ntagged 2 rows\n"
     );
-    assert_eq!(rows_text(&line).unwrap(), expected);
+    assert_eq!(line_text(&line).unwrap(), expected);
     assert_eq!(
         crate::cli::print::line(&line, command_surface::TextStyle::Plain),
         expected.replace("\n\n", "\n")

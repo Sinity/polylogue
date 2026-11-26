@@ -47,7 +47,7 @@ impl Operation for Line {
         }
         Some(paged)
     }
-    const MODEL_TEXT: Option<fn(&LineAnswer) -> Result<String, String>> =
+    const MODEL_TEXT: Option<crate::daemon::handler::ModelText<LineAnswer>> =
         Some(crate::mcp::line_text);
     /// A line's access is its highest step's. It changes the archive when a
     /// step writes or acts, or a brief records its delivery to a model or a

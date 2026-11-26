@@ -27,7 +27,7 @@ impl Verb for Send {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        let targets = recipients(&step, selection)?;
+        let targets = recipients(selection)?;
         send(&step, &targets, &call.call).map(|answer| answer.map(StepAnswer::Sent).into())
     }
     fn would(
@@ -35,7 +35,7 @@ impl Verb for Send {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<String, Failure> {
-        let targets = recipients(step, selection)?;
+        let targets = recipients(selection)?;
         let several = targets.len() > 1;
         targets
             .iter()
@@ -184,7 +184,7 @@ fn send(
 }
 
 /// Sessions or one role, preserving its send-time resolution.
-fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Failure> {
+fn recipients(selection: &Selection) -> Result<Vec<String>, Failure> {
     let references = selection.references()?;
     references
         .iter()

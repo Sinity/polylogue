@@ -51,8 +51,11 @@ pub(crate) trait Operation: 'static {
         None
     }
     /// The reply as text for a model, when it has one other than its JSON.
-    const MODEL_TEXT: Option<fn(&Self::Reply) -> Result<String, String>> = None;
+    const MODEL_TEXT: Option<ModelText<Self::Reply>> = None;
 }
+
+/// A reply as text for a model, or why it cannot be.
+pub(crate) type ModelText<Reply> = fn(&Reply) -> Result<String, String>;
 
 /// How one request is treated before and while it runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

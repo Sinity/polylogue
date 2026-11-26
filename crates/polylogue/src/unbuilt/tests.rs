@@ -299,7 +299,7 @@ Designed and not built yet, with the page that designs each:
 fn help_all_names_nothing_that_refuses_as_not_built() {
     use crate::daemon::service::ArchiveMode;
     let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
-    let runtime =
+    let mut runtime =
         crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
             .unwrap();
     let daemon = &runtime.daemon;
