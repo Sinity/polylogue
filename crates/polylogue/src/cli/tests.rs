@@ -181,13 +181,14 @@ fn captured_output_policy_reaches_query_and_error_renderers_per_sink() {
         &daemon.daemon.archive.socket(),
         &crate::client::request(
             "rows",
-            serde_json::json!({"selection": "messages where match", "fields": ["text"]}),
+            serde_json::json!({"selection": "messages where match", "fields": ["role"]}),
             "colour-query".into(),
         ),
     )
     .unwrap();
-    let data = &answer.value().expect("query result")["reply"];
-    assert_eq!(data["rows"][0]["text"], "match stored \x1b[31m λ");
+    let document = crate::test_answers::ok(answer.clone());
+    let data = &document["reply"];
+    assert_eq!(data["rows"][0]["role"], "user");
     assert_eq!(
         data["rows"][0]["snippet"],
         serde_json::json!({"text":"match stored \x1b[31m λ", "marks":[[0,5]]})
