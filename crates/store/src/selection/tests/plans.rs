@@ -47,12 +47,42 @@ fn ids(f: &Fixture, text: &str, field: &str) -> Vec<String> {
     ids
 }
 
+/// The steps of a default page's plan outside correlated subqueries: what
+/// the page itself reads, not the per-row values it computes.
+fn page_steps(f: &Fixture, text: &str) -> Vec<String> {
+    let pool = f.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let program = crate::query::compile(text, &options()).unwrap();
+    let sql = program.statements.page(
+        &program.order,
+        program.params.len(),
+        None,
+        false,
+        crate::query::PageColumns::All,
+    );
+    let rows = reader
+        .query(&format!("EXPLAIN QUERY PLAN {sql}"), &[])
+        .unwrap();
+    let mut inner = std::collections::HashSet::new();
+    let mut steps = Vec::new();
+    for row in rows {
+        let (id, parent) = (row["id"].as_i64().unwrap(), row["parent"].as_i64().unwrap());
+        let detail = row["detail"].as_str().unwrap().to_owned();
+        if inner.contains(&parent) || detail.starts_with("CORRELATED SCALAR SUBQUERY") {
+            inner.insert(id);
+            continue;
+        }
+        steps.push(detail);
+    }
+    steps
+}
+
 /// The default page of every unit reads its rows in the order of an index
 /// and stops after the page: no step sorts the whole result, and no step
 /// reads every message, event or tool call (docs/query.md, paging). A sort
 /// of the last terms orders only rows that share the index's leading terms
-/// as the index is walked, so it is allowed, and so is a temporary b-tree a
-/// subquery of one row builds for DISTINCT.
+/// as the index is walked, so it is allowed. What a correlated subquery does
+/// for one row is the cost of a column, not of the page.
 #[test]
 fn default_pages_read_in_index_order() {
     let (_dir, f) = fixture();
@@ -67,12 +97,10 @@ fn default_pages_read_in_index_order() {
         ) {
             continue;
         }
-        let steps = page_plan(&f, text);
+        let steps = page_steps(&f, text);
         for step in &steps {
             assert!(
-                !step.starts_with("USE TEMP B-TREE FOR")
-                    || !step.ends_with("ORDER BY")
-                    || step.contains(" LAST "),
+                !step.starts_with("USE TEMP B-TREE") || step.contains(" LAST "),
                 "{text}: {steps:#?}"
             );
             for table in ["message", "event", "tool_call"] {
