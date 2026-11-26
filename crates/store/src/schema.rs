@@ -62,6 +62,11 @@ pub(crate) static QUERY_OBJECTS: LazyLock<String> = LazyLock::new(|| {
 /// becomes that type's `NAMES` as a quoted SQL list when the text is
 /// assembled, so a `CHECK` list and the enum it holds are one declaration.
 const NAMED_SETS: &[(&str, &[&str])] = &[
+    ("Produced", crate::input_rows::Produced::NAMES),
+    (
+        "ObservationClass",
+        crate::input_rows::ObservationClass::NAMES,
+    ),
     ("DeliveryOutcome", polylogue_model::DeliveryOutcome::NAMES),
     ("RunsHere", polylogue_model::authored::RunsHere::NAMES),
     (
@@ -162,7 +167,7 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 ];
 
 /// The register format version.
-pub const ARCHIVE_VERSION: u32 = 6;
+pub const ARCHIVE_VERSION: u32 = 7;
 
 /// The index schema and row encoding version. Reading versions are independent.
 pub const INDEX_VERSION: u32 = 16;
@@ -396,6 +401,7 @@ pub fn ensure_archive(conn: &Connection) -> Result<()> {
             rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
         tx.pragma_update(None, "application_id", FORMAT_ID)?;
         tx.execute_batch(&ARCHIVE)?;
+        crate::meta_set(&tx, "archive_id", uuid::Uuid::new_v4().simple().to_string())?;
         set_version(&tx, ARCHIVE_VERSION)?;
         tx.commit()?;
         return Ok(());

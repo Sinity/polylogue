@@ -9,7 +9,7 @@ fn observed(w: &ClaudeHome) -> Vec<(String, Option<i64>)> {
         .query(
             "SELECT o.class, r.chain FROM a.observation o
              LEFT JOIN a.revision r ON r.input = o.input AND r.number = o.revision
-             ORDER BY o.rowid",
+             ORDER BY o.id",
             &[],
         )
         .unwrap()

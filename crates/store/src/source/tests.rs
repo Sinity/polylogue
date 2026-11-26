@@ -103,12 +103,16 @@ fn later_chunks_keep_their_commit_when_a_revision_grows() {
             capture_read: None,
             input: "input".into(),
             origin: "synthetic".into(),
+            chain: None,
             observation: None,
             revision: Some(crate::input_rows::Revision {
                 number: 1,
-                produced: "first".into(),
+                produced: crate::input_rows::Produced::First,
                 chain: 1,
                 length: 4,
+                seen_at: Some(1),
+                mtime_ns: None,
+                ctime_ns: None,
             }),
             extents: vec![crate::input_rows::Extent {
                 chain: 1,
@@ -231,18 +235,18 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
         capture_read: None,
         input: "native".into(),
         origin: "synthetic".into(),
+        chain: None,
         revision: None,
         extents: Vec::new(),
         observation: Some(crate::input_rows::ObservationRow {
             id: "prefix-four".into(),
             machine: "machine".into(),
             host: "host".into(),
-            path: "/home/op/session".into(),
-            path_bytes: None,
-            class: "back".into(),
-            revision: None,
-            chain: Some(1),
-            length: Some(4),
+            path_bytes: b"/home/op/session".to_vec(),
+            seen: crate::input_rows::Seen::Prefix {
+                chain: 1,
+                length: 4,
+            },
             device: None,
             inode: None,
             size: Some(4),
@@ -268,7 +272,6 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
         1
     );
     let source_commit = Source::reading_commit(&standalone, "native", 1, 4).unwrap();
-    assert_eq!(source_commit.observation.as_deref(), Some("prefix-four"));
     let first_batch: String = standalone
         .query_row(
             "SELECT id FROM observation WHERE input='native' AND id<>'prefix-four'",
@@ -276,6 +279,9 @@ fn shorter_prefix_has_a_commit_and_keeps_progress() {
             |row| row.get(0),
         )
         .unwrap();
+    // The location that captured a prefix's bytes names it, also when the
+    // file was seen back holding that prefix later.
+    assert_eq!(source_commit.observation.as_ref(), Some(&first_batch));
     assert_eq!(
         Source::reading_commit(&standalone, "native", 1, 8)
             .unwrap()

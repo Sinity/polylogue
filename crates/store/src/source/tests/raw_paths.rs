@@ -2,17 +2,13 @@ use super::super::*;
 use crate::capture_read::{CaptureRead, RawRange, ReadRoute, SourceSelector, SourceStatus};
 use crate::input_rows::{InputRows, ObservationRow};
 
-fn observation(id: &str, bytes: Option<Vec<u8>>) -> ObservationRow {
+fn observation(id: &str, bytes: Vec<u8>) -> ObservationRow {
     ObservationRow {
         id: id.into(),
         machine: "machine".into(),
         host: "host".into(),
-        path: "/home/op/�".into(),
         path_bytes: bytes,
-        class: "first".into(),
-        revision: None,
-        chain: None,
-        length: None,
+        seen: crate::input_rows::Seen::Deleted,
         device: None,
         inode: None,
         size: None,
@@ -24,12 +20,13 @@ fn observation(id: &str, bytes: Option<Vec<u8>>) -> ObservationRow {
         container: None,
     }
 }
-fn rows(id: &str, bytes: Option<Vec<u8>>) -> InputRows {
+fn rows(id: &str, bytes: Vec<u8>) -> InputRows {
     InputRows {
         capture_read: None,
         input: id.into(),
         origin: "synthetic".into(),
         revision: None,
+        chain: None,
         extents: Vec::new(),
         observation: Some(observation(id, bytes)),
     }
@@ -62,7 +59,7 @@ fn colliding_display_paths_keep_distinct_raw_paths() {
             String::from_utf8_lossy(paths[1])
         );
         for (n, path) in paths.iter().enumerate() {
-            rows(&format!("input-{n}"), Some(path.to_vec()))
+            rows(&format!("input-{n}"), path.to_vec())
                 .insert(&conn, 1)
                 .unwrap();
         }
@@ -71,31 +68,8 @@ fn colliding_display_paths_keep_distinct_raw_paths() {
             assert_eq!(status, SourceStatus::Ready);
             let source = source.unwrap();
             assert_eq!(source.input, format!("input-{n}"));
-            assert_eq!(source.observation.path_bytes.as_deref(), Some(*path));
+            assert_eq!(source.observation.path_bytes.as_slice(), *path);
         }
-        rows("no-path-bytes", None).insert(&conn, 2).unwrap();
-        assert_eq!(
-            Source::confirmed_source(&conn, &selector(paths[0]))
-                .unwrap()
-                .0,
-            SourceStatus::MissingEvidence
-        );
-        rows("no-path-bytes-2", None).insert(&conn, 3).unwrap();
-        assert_eq!(
-            Source::confirmed_source(&conn, &selector(paths[0]))
-                .unwrap()
-                .0,
-            SourceStatus::Ambiguous
-        );
-        rows("path-bytes-again", Some(paths[0].to_vec()))
-            .insert(&conn, 4)
-            .unwrap();
-        assert_eq!(
-            Source::confirmed_source(&conn, &selector(paths[0]))
-                .unwrap()
-                .0,
-            SourceStatus::Ready
-        );
     }
 }
 
@@ -122,13 +96,16 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
             [&source_read.hash.0[..]],
         )
         .unwrap();
-        let mut row = rows("native", Some(source_read.source.path_bytes.clone()));
+        let mut row = rows("native", source_read.source.path_bytes.clone());
         row.capture_read = Some(source_read.clone());
         row.revision = Some(crate::input_rows::Revision {
             number: 1,
-            produced: "first".into(),
+            produced: crate::input_rows::Produced::First,
             chain: 1,
             length: 12,
+            seen_at: Some(1),
+            mtime_ns: None,
+            ctime_ns: None,
         });
         row.extents = vec![crate::input_rows::Extent {
             chain: 1,
@@ -137,18 +114,9 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
             blob: source_read.hash,
             blob_offset: 4,
         }];
+        // The capture read checks the trimmed extent; the extent row keeps
+        // no copy of it, since nothing reads one.
         row.insert(&conn, 7).unwrap();
-        let packed: Vec<u8> = conn
-            .query_row(
-                &source.sql("SELECT capture_read FROM @source.extent"),
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(
-            crate::encoding::unpack_json::<CaptureRead>(&packed).unwrap(),
-            source_read
-        );
         row.extents.clear();
         row.revision = None;
         row.observation.as_mut().unwrap().id = "overlap".into();
@@ -195,9 +163,7 @@ fn source_snapshot_and_observation_keep_the_same_observation() {
     let (archive, _lock) = crate::Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let conn = Connection::open(archive.archive_db()).unwrap();
     let path = b"/home/op/\xff";
-    rows("native", Some(path.to_vec()))
-        .insert(&conn, 1)
-        .unwrap();
+    rows("native", path.to_vec()).insert(&conn, 1).unwrap();
     conn.execute(
         "INSERT INTO meta(key,value) VALUES('write_counter','1')",
         [],
@@ -218,8 +184,8 @@ fn source_snapshot_and_observation_keep_the_same_observation() {
             .unwrap()
             .observation
             .path_bytes
-            .as_deref(),
-        Some(path.as_slice())
+            .as_slice(),
+        path.as_slice()
     );
     let reader = pool.reader().unwrap();
     assert_eq!(
@@ -232,8 +198,8 @@ fn source_snapshot_and_observation_keep_the_same_observation() {
             .unwrap()
             .unwrap()
             .path_bytes
-            .as_deref(),
-        Some(path.as_slice())
+            .as_slice(),
+        path.as_slice()
     );
     assert!(
         reader
@@ -248,18 +214,14 @@ fn source_history_checks_observations_at_a_fixed_position() {
     for primary in [false, true] {
         let conn = database(primary);
         let path = b"/home/op/\xff";
-        rows("first", Some(path.to_vec())).insert(&conn, 2).unwrap();
-        rows("no-path-bytes", None).insert(&conn, 4).unwrap();
-        rows("later", Some(path.to_vec())).insert(&conn, 6).unwrap();
-        let (status, first) = Source::confirmed_source_at(&conn, &selector(path), Some(2)).unwrap();
-        assert_eq!(status, SourceStatus::Ready);
-        assert_eq!(first.unwrap().observation.id, "first");
-        assert_eq!(
-            Source::confirmed_source_at(&conn, &selector(path), Some(4))
-                .unwrap()
-                .0,
-            SourceStatus::MissingEvidence
-        );
+        rows("first", path.to_vec()).insert(&conn, 2).unwrap();
+        rows("later", path.to_vec()).insert(&conn, 6).unwrap();
+        for at in [2, 4] {
+            let (status, first) =
+                Source::confirmed_source_at(&conn, &selector(path), Some(at)).unwrap();
+            assert_eq!(status, SourceStatus::Ready);
+            assert_eq!(first.unwrap().observation.id, "first");
+        }
         assert_eq!(
             Source::confirmed_source(&conn, &selector(path))
                 .unwrap()

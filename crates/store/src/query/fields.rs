@@ -970,15 +970,14 @@ fn notes_withdrawn(a: &Aliases) -> String {
 
 pub use crate::annotations::sql::{current_annotation, withdrawn_annotation};
 
-/// When Polylogue first had message `m`'s bytes: the earliest observation,
-/// over every chain whose records hold a version of it, of a revision of
-/// that chain long enough to cover those records.
+/// When Polylogue first had message `m`'s bytes: the earliest time a
+/// revision long enough to cover its records was read, over every chain
+/// whose records hold a version of it.
 pub fn first_seen_of(m: &str) -> String {
     format!(
-        "(SELECT min(fo.seen_at) FROM shown_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
+        "(SELECT min(fr.seen_at) FROM shown_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_end \
-         JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
          WHERE fs.message_pk = {m}.pk)"
     )
 }
@@ -1002,11 +1001,10 @@ fn message_first_seen(a: &Aliases) -> String {
 
 fn session_first_seen(a: &Aliases) -> String {
     format!(
-        "(SELECT min(fo.seen_at) FROM message fm JOIN shown_message_parse fs ON fs.message_pk = fm.pk \
+        "(SELECT min(fr.seen_at) FROM message fm JOIN shown_message_parse fs ON fs.message_pk = fm.pk \
          JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
          AND fr.length > fs.source_start AND fr.length >= fs.source_end \
-         JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
          WHERE fm.session_pk = {}.pk)",
         a.s
     )
@@ -1015,10 +1013,9 @@ fn session_first_seen(a: &Aliases) -> String {
 /// An event's first observation, as for a message, over its one chain.
 pub fn event_first_seen(a: &Aliases) -> String {
     format!(
-        "(SELECT min(fo.seen_at) FROM input_ref fi \
+        "(SELECT min(fr.seen_at) FROM input_ref fi \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = {r}.source_chain \
          AND fr.length > {r}.source_start AND fr.length >= coalesce({r}.source_end, {r}.source_start) \
-         JOIN source_observation fo ON fo.input = fr.input AND fo.revision = fr.number \
          WHERE fi.pk = {r}.input_pk)",
         r = a.row
     )

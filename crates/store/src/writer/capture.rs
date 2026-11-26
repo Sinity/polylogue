@@ -6,9 +6,12 @@
 //! on the calling thread; puts waiting together share one sync and groups
 //! waiting together share one archive commit.
 use super::*;
+use crate::archive::writer::agreement::Agreement;
 use crate::archive::writer::{Group, Outcome};
 use crate::staging::{PreparedBatch, PreparedBytes, StoredInput};
 use polylogue_model::LockExt as _;
+use std::collections::BTreeMap;
+use std::io::Read as _;
 
 /// Parsed rows of bytes the archive has committed, handed to the index
 /// writer together. An atomic group's rows commit together or not at all.
@@ -108,12 +111,14 @@ impl WriterSender {
                 return self.0.archive.hand_over(Group::Captured {
                     batches: vec![batch],
                     added: Default::default(),
+                    agreements: Vec::new(),
                     atomic: false,
                 });
             }
             let committed = self.0.archive.commit(Group::Captured {
                 batches: vec![batch.archive_rows()],
                 added: Default::default(),
+                agreements: Vec::new(),
                 atomic: false,
             })?;
             let Outcome::Stored(stored) = committed.outcome else {
@@ -213,9 +218,11 @@ impl WriterSender {
         };
         put.report(&mut self.0.archive.report().locked());
         crate::fault::check("capture.between_put_and_commit", "")?;
+        let agreements = self.agreements(group)?;
         let committed = self.0.archive.commit(Group::Captured {
             batches: group.iter().map(|item| item.batch.archive_rows()).collect(),
             added: put.added,
+            agreements,
             atomic,
         })?;
         crate::fault::check("capture.after_commit", "")?;
@@ -227,6 +234,80 @@ impl WriterSender {
             .filter(|item| item.batch.parse.is_empty())
             .count() as u64;
         Ok(stored)
+    }
+
+    /// For each batch that starts a chain of an input with earlier chains,
+    /// the earlier chain its bytes begin like for longest and through which
+    /// byte ([`crate::archive::writer::agreement`]). The new bytes are put
+    /// already; they are compared here, before the commit, so the archive
+    /// writer never reads bytes while user writes wait.
+    fn agreements(&self, group: &[PreparedBatch]) -> Result<Vec<Option<Agreement>>> {
+        let mut agreements = Vec::with_capacity(group.len());
+        let mut reads = None;
+        for item in group {
+            let b = &item.batch;
+            let (Some(new_blob), Change::First | Change::Rewritten, false) = (
+                &b.new_blob,
+                &b.change,
+                b.continues || b.input.route.is_imported(),
+            ) else {
+                agreements.push(None);
+                continue;
+            };
+            if reads.is_none() {
+                let conn = rusqlite::Connection::open_in_memory()?;
+                let uri = format!("file:{}?mode=ro", self.0.location.archive_db().display());
+                conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+                crate::source::views(&conn)?;
+                reads = Some((conn, Arc::new(self.0.location.blobs()?)));
+            }
+            let (conn, store) = reads.as_ref().expect("opened reads");
+            let lengths: BTreeMap<i64, u64> = conn
+                .prepare_cached(
+                    "SELECT chain, max(length) FROM source_revision WHERE input = ?1 GROUP BY chain",
+                )?
+                .query_map([&b.input.id], |row| {
+                    Ok((row.get(0)?, row.get::<_, i64>(1)?))
+                })?
+                .map(|row| row.map(|(chain, length)| (chain, length.max(0) as u64)))
+                .collect::<rusqlite::Result<_>>()?;
+            let latest: Option<i64> = conn
+                .prepare_cached(
+                    "SELECT chain FROM source_revision WHERE input = ?1 ORDER BY number DESC LIMIT 1",
+                )?
+                .query_row([&b.input.id], |row| row.get(0))
+                .optional()?;
+            let source = crate::blobs::ChainSource::of(&self.0.location);
+            let new_bytes = || -> Result<Box<dyn std::io::Read>> {
+                let mut reader: Box<dyn std::io::Read> = Box::new(std::io::empty());
+                for part in new_blob.parts().filter(|part| part.size > 0) {
+                    let blob = store.read(&hashed_blobs::Hash(part.hash.0))?;
+                    reader = Box::new(reader.chain(blob));
+                }
+                Ok(reader)
+            };
+            let recorded = crate::archive::writer::agreement::recorded(conn, &b.input.id)?;
+            // Earlier bytes that cannot be read are known to agree on nothing:
+            // no agreement is the lower bound that is always true.
+            let agreement = recorded.agreement(latest, |chain, from| {
+                let length = lengths.get(&chain).copied().unwrap_or(0);
+                let stored = crate::blobs::StoredChain::load(&source, &b.input.id, chain, length)?;
+                let found = crate::archive::writer::agreement::first_difference(
+                    new_bytes()?,
+                    stored.reader(Arc::clone(store)),
+                    from,
+                );
+                stored.release();
+                found
+            });
+            let agreement = match agreement {
+                Ok(agreement) => agreement,
+                Err(StoreError::Stopped) => return Err(StoreError::Stopped),
+                Err(_) => Agreement::NONE,
+            };
+            agreements.push(Some(agreement));
+        }
+        Ok(agreements)
     }
 
     /// Stores one import's bytes: a batch with an observation and no parsed

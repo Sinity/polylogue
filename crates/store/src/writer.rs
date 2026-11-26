@@ -112,8 +112,6 @@ enum Msg {
 pub struct Writer {
     sender: WriterSender,
     archive: Option<crate::archive::writer::ArchiveWriter>,
-    /// Kept so that archive commits wake the index writer.
-    _follow: crate::completion::CommitSubscription,
     /// The archive's stop request ([`Archive::stop`]). It ends the writer's
     /// long work early: a derive pass after the transaction in progress, a
     /// first build's ending (its deferred indexes) at its next step, replay
@@ -140,6 +138,29 @@ struct WriterQueue {
     /// The archive writer and the byte home the parsed rows' bytes go to first.
     archive: crate::archive::writer::ArchiveSender,
     bytes: Arc<dyn crate::bytes::Bytes>,
+    /// The archive position the index has taken in, for [`WriterSender::followed`].
+    published: Arc<Published>,
+}
+
+/// The archive position the index writer has taken in, as its last commit
+/// recorded it, and whether the writer has ended.
+#[derive(Default)]
+struct Published {
+    state: Mutex<(u64, bool)>,
+    changed: std::sync::Condvar,
+}
+
+impl Published {
+    fn publish(&self, position: crate::archive::writer::Position) {
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        state.0 = state.0.max(position.0);
+        self.changed.notify_all();
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
+        self.changed.notify_all();
+    }
 }
 
 impl WriterQueue {
@@ -253,6 +274,7 @@ impl Writer {
             commits: commits.clone(),
             archive: archive_writer.sender(),
             bytes,
+            published: Arc::default(),
         };
         let follow = {
             let wake = queue.wake.clone();
@@ -271,7 +293,16 @@ impl Writer {
                 },
             )
         };
+        if let Some(kept) =
+            crate::meta_get(&index, ARCHIVE_POSITION)?.and_then(|kept| kept.parse().ok())
+        {
+            queue
+                .published
+                .publish(crate::archive::writer::Position(kept));
+        }
         let mut inner = Inner {
+            follow,
+            published: Arc::clone(&queue.published),
             stop: stop.clone(),
             commits: commits.clone(),
             followed: archive_writer.sender(),
@@ -299,7 +330,6 @@ impl Writer {
         Ok(Self {
             sender: WriterSender(queue),
             archive: Some(archive_writer),
-            _follow: follow,
             stop,
             handle: Some(handle),
         })
@@ -367,6 +397,64 @@ impl WriterSender {
     /// The byte home captured bytes are put into.
     pub fn bytes(&self) -> &Arc<dyn crate::bytes::Bytes> {
         &self.0.bytes
+    }
+
+    /// The archive position the index has taken in: everything the index
+    /// keeps of archive rows committed at or before it (alternate text and
+    /// its search entries, chain progress) is in the index.
+    pub fn followed_position(&self) -> crate::archive::writer::Position {
+        crate::archive::writer::Position(
+            self.0
+                .published
+                .state
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .0,
+        )
+    }
+
+    /// Waits until the index has taken in the archive commit at `position`.
+    /// Only the index's own products of archive rows need it; authored rows
+    /// are read from the attached archive. Ends with the limit's deadline or
+    /// cancellation, the archive's stop request, or the writer's end, each
+    /// with the error a read gets.
+    pub fn followed(
+        &self,
+        position: crate::archive::writer::Position,
+        limit: Option<&crate::read::limit::ReadLimit>,
+    ) -> Result<()> {
+        let published = &self.0.published;
+        let stop = self.0.location.stop().clone();
+        let wake = |published: Arc<Published>| {
+            move || {
+                let _state = published.state.lock();
+                published.changed.notify_all();
+            }
+        };
+        let _stopped = stop.on_cancel(wake(Arc::clone(published)));
+        let _cancelled =
+            limit.map(|limit| limit.cancellation.on_cancel(wake(Arc::clone(published))));
+        let mut state = published.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if state.0 >= position.0 {
+                return Ok(());
+            }
+            if let Some(limit) = limit {
+                limit.check()?;
+            }
+            stop.check()?;
+            if state.1 {
+                return Err(StoreError::WriterGone);
+            }
+            let wait = limit
+                .and_then(crate::read::limit::ReadLimit::remaining)
+                .unwrap_or(std::time::Duration::from_secs(60));
+            state = published
+                .changed
+                .wait_timeout(state, wait)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
     }
 
     pub fn completion_commits(&self) -> crate::completion::CommitSubscription {
@@ -523,6 +611,9 @@ struct Inner {
     commits: crate::completion::CommitEvents,
     /// Hands over what archive commits changed, and their reports.
     followed: crate::archive::writer::ArchiveSender,
+    /// Wakes this writer once after archive commits, until it is drained.
+    follow: crate::completion::CommitSubscription,
+    published: Arc<Published>,
     /// `archive.db`, read only.
     archive: Connection,
     index: Connection,
@@ -787,6 +878,7 @@ impl Inner {
         let closed = self
             .follow_archive()
             .and_then(|()| crate::chain_progress::mark_current(&self.index));
+        self.published.close();
         if let Err(error) = closed {
             crate::log!(error, "writer: chain progress: {error}");
         }
@@ -798,6 +890,9 @@ impl Inner {
     /// a write whose index transaction failed), and the text of alternates
     /// committed after the index's `archive_position`, which it advances.
     fn follow_archive(&mut self) -> Result<()> {
+        // Drained before taking what was handed over, so a commit after this
+        // point wakes the writer again.
+        while self.follow.try_recv().is_ok() {}
         let followed = self.followed.take_followed();
         let result = self.apply_followed(&followed);
         if result.is_err() {
@@ -810,6 +905,7 @@ impl Inner {
         let position = followed.position.0.to_string();
         let kept = crate::meta_get(&self.index, ARCHIVE_POSITION)?;
         if followed.changes.is_empty() && kept.as_deref() == Some(position.as_str()) {
+            self.published.publish(followed.position);
             return Ok(());
         }
         let after: i64 = kept.and_then(|kept| kept.parse().ok()).unwrap_or(-1);
@@ -832,6 +928,7 @@ impl Inner {
         }
         crate::meta_set(&tx, ARCHIVE_POSITION, &position)?;
         tx.commit()?;
+        self.published.publish(followed.position);
         if changed {
             self.commits
                 .committed(crate::completion::Committed::CONTENT);

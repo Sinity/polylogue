@@ -267,7 +267,6 @@ row! {
 row! {
     /// A path's latest observation, its input's format and latest revision.
     struct Observation {
-        path: String,
         input: String,
         format: String,
         class: String,
@@ -278,7 +277,7 @@ row! {
         ctime_ns: Option<i64>,
         chain: Option<i64>,
         length: Option<i64>,
-        path_bytes: Option<Vec<u8>>,
+        path_bytes: Vec<u8>,
     }
 }
 
@@ -394,8 +393,8 @@ type IndexIdentity = (PathBuf, u64, u64);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KnownInput {
     pub path: String,
-    /// None means an older record has no path bytes; never a UTF-8 fallback.
-    pub path_bytes: Option<Vec<u8>>,
+    /// The location's bytes; `path` shows them as text.
+    pub path_bytes: Vec<u8>,
     pub input_id: String,
     pub format: String,
     /// The file's facts at the last observation; `None` once it was seen
@@ -1716,19 +1715,23 @@ impl Reader<'_> {
             )
         };
         let sql = format!(
-            "SELECT o.path, o.input, i.format, o.class, o.device, o.inode, o.size, o.mtime_ns,
-                    o.ctime_ns,
+            "SELECT o.input, i.format, o.class, o.device, o.inode,
+                    CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.length ELSE o.size END AS size,
+                    CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.mtime_ns ELSE o.mtime_ns END AS mtime_ns,
+                    CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.ctime_ns ELSE o.ctime_ns END AS ctime_ns,
                     (SELECT chain FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1) AS chain,
                     (SELECT length FROM source_revision r WHERE r.input = o.input ORDER BY number DESC LIMIT 1) AS length,
                     o.path_bytes
              FROM (
-                 SELECT MAX(x.rowid) AS latest FROM source_observation x
+                 SELECT MAX(x.id) AS latest FROM source_observation x
                  WHERE {location}
                    AND (?3 OR x.input NOT IN ({imported}))
-                 GROUP BY x.path_bytes,CASE WHEN x.path_bytes IS NULL THEN x.path END
+                 GROUP BY x.path_bytes
              ) latest
-             JOIN source_observation o ON o.rowid = latest.latest
-             JOIN source_input i ON i.id = o.input"
+             JOIN source_observation o ON o.id = latest.latest
+             JOIN source_input i ON i.id = o.input
+             LEFT JOIN source_revision nr ON nr.input = o.input
+               AND nr.number = (SELECT max(number) FROM source_revision WHERE input = o.input)"
         );
         let observed = self.conn()?.all(
             &Statement::<Observation>::built(sql),
@@ -1737,10 +1740,13 @@ impl Reader<'_> {
         let mut out = Vec::new();
         for o in observed {
             let f = [o.device, o.inode, o.size, o.mtime_ns, o.ctime_ns];
-            let (path, input_id, format, chain, length, path_bytes) =
-                (o.path, o.input, o.format, o.chain, o.length, o.path_bytes);
-            let facts = match (o.class.as_str(), f) {
-                ("deleted", _) => None,
+            let (input_id, format, chain, length, path_bytes) =
+                (o.input, o.format, o.chain, o.length, o.path_bytes);
+            let path = String::from_utf8_lossy(&path_bytes).into_owned();
+            let gone = crate::input_rows::ObservationClass::from_name(&o.class)
+                == Some(crate::input_rows::ObservationClass::Deleted);
+            let facts = match (gone, f) {
+                (true, _) => None,
                 (_, [Some(d), Some(i), Some(s), Some(m), Some(c)]) => Some(FileFacts {
                     device: d as u64,
                     inode: i as u64,
@@ -1803,16 +1809,9 @@ impl Reader<'_> {
         else {
             return Ok(None);
         };
-        let imported = match produced.as_str() {
-            "imported" => true,
-            "first" | "appended" | "rewritten" => false,
-            _ => {
-                return Err(StoreError::stored(
-                    3,
-                    format!("unknown revision source: {produced}"),
-                ));
-            }
-        };
+        let imported = crate::input_rows::Produced::from_name(&produced)
+            .ok_or_else(|| StoreError::stored(3, format!("unknown revision source: {produced}")))?
+            == crate::input_rows::Produced::Imported;
         Ok(Some(ChainProgress {
             chain,
             imported,

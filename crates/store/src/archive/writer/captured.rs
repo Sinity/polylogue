@@ -5,7 +5,7 @@
 use super::*;
 use crate::ConnExt as _;
 use crate::blobs::Change;
-use crate::input_rows::{Extent, InputRows, ObservationRow, Revision};
+use crate::input_rows::{Extent, InputRows, ObservationRow, Produced, Revision, Seen};
 use crate::{ImportMember, NewBlob};
 use polylogue_model::BlobHash;
 use rusqlite::{OptionalExtension, Transaction, params};
@@ -20,6 +20,7 @@ impl Inner {
         &mut self,
         mut batches: Vec<Batch>,
         mut added: BTreeMap<BlobHash, u64>,
+        agreements: Vec<Option<super::agreement::Agreement>>,
     ) -> Result<Committed<Vec<StoredInput>>> {
         for batch in &batches {
             check(&self.conn, batch)?;
@@ -70,7 +71,10 @@ impl Inner {
         let counted = tx.total_changes();
         let mut stored = Vec::new();
         let mut seen = BTreeSet::new();
-        for b in &mut batches {
+        for (b, agreement) in batches
+            .iter_mut()
+            .zip(agreements.into_iter().chain(std::iter::repeat(None)))
+        {
             let bytes_written = b
                 .new_blob
                 .iter()
@@ -102,11 +106,14 @@ impl Inner {
                 b.change = Change::Unchanged;
                 b.new_blob = None;
             }
-            let (chain, _) = write_bytes(&tx, b, seq)?;
+            let (chain, _) = write_bytes(&tx, b, seq, agreement)?;
             let chain = chain.or_invalid("stored bytes produced no chain")?;
             crate::fault::check("import.rows", &b.input.id)?;
-            let already_stored =
-                again || matches!(b.change, Change::Unchanged | Change::Observed { .. });
+            let already_stored = again
+                || matches!(
+                    b.change,
+                    Change::Unchanged | Change::Observed { .. } | Change::Shorter { .. }
+                );
             stored.push(StoredInput {
                 input: b.input.id.clone(),
                 chain,
@@ -218,6 +225,7 @@ pub(crate) fn write_bytes(
     tx: &Transaction<'_>,
     b: &Batch,
     seq: i64,
+    agreement: Option<super::agreement::Agreement>,
 ) -> Result<(Option<i64>, Option<InputRows>)> {
     tx.prepare_cached("INSERT OR IGNORE INTO input(id, format) VALUES (?1, ?2)")?
         .execute(params![b.input.id, b.input.format])?;
@@ -227,7 +235,14 @@ pub(crate) fn write_bytes(
     if matches!(b.change, Change::Reparse { .. }) {
         return Ok((Some(stored_reading_chain(tx, b)?), None));
     }
-    let (chain, rows) = input_rows(tx, b, seq)?;
+    let (chain, mut rows) = input_rows(tx, b, seq)?;
+    if rows
+        .revision
+        .as_ref()
+        .is_some_and(|r| r.chain == r.number && r.produced.starts_chain())
+    {
+        rows.chain = Some(agreement.unwrap_or(super::agreement::Agreement::NONE));
+    }
     for part in b.new_blob.iter().flat_map(NewBlob::parts) {
         check_blob_size(tx, part)?;
     }
@@ -282,6 +297,13 @@ fn input_rows(tx: &Connection, b: &Batch, seq: i64) -> Result<(Option<i64>, Inpu
         ))?
         .query_row([&b.input.id], |r| <(_, _, _, _)>::try_from(r))
         .optional()?;
+    let latest = latest
+        .map(|(number, chain, length, produced)| {
+            Produced::from_name(&produced)
+                .map(|produced| (number, chain, length, produced))
+                .ok_or_else(|| StoreError::stored(3, format!("revision produced {produced:?}")))
+        })
+        .transpose()?;
     input_rows_at(tx, b, seq, latest, &std::collections::BTreeSet::new())
 }
 
@@ -289,7 +311,7 @@ fn input_rows_at(
     tx: &Connection,
     b: &Batch,
     seq: i64,
-    latest: Option<(i64, i64, i64, String)>,
+    latest: Option<(i64, i64, i64, Produced)>,
     staged: &std::collections::BTreeSet<String>,
 ) -> Result<(Option<i64>, InputRows)> {
     let next = latest.as_ref().map_or(1, |l| l.0 + 1);
@@ -298,6 +320,7 @@ fn input_rows_at(
         input: b.input.id.clone(),
         origin: b.input.format.clone(),
         revision: None,
+        chain: None,
         extents: Vec::new(),
         observation: None,
     };
@@ -323,31 +346,71 @@ fn input_rows_at(
             ));
         }
         let source = crate::source::Source::of(tx)?;
-        let stored:bool=tx.scalar(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,number,chain,b.length as i64])?;
-        if !stored {
+        let length = b.length as i64;
+        let exact: bool = tx.scalar(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,number,chain,length])?;
+        if !exact {
             return Err(StoreError::Invalid(
                 "observed revision point is not stored".into(),
             ));
         }
-        rows.observation = observation(tx, b, "back", Some(number), seq, staged)?;
+        let seen = Seen::Back {
+            revision: number,
+            length,
+        };
+        rows.observation = observation(tx, b, seen, seq, staged)?;
         return Ok((Some(chain), rows));
     }
-    let revision = |number, produced: &str, chain| Revision {
+    if let Change::Shorter { chain } = b.change {
+        // The capture proved every byte the file holds equal to the stored
+        // byte at its place; the chain must hold more than that.
+        if b.continues
+            || b.new_blob.is_some()
+            || !b.blobs.is_empty()
+            || !b.parse.is_empty()
+            || b.observation.is_none()
+        {
+            return Err(StoreError::Invalid(
+                "a file seen holding a prefix of its chain stores no bytes or rows".into(),
+            ));
+        }
+        let source = crate::source::Source::of(tx)?;
+        let length = b.length as i64;
+        let longer: bool = tx.scalar(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND chain=?2 AND length>?3)"),params![b.input.id,chain,length])?;
+        if !longer {
+            return Err(StoreError::Invalid(
+                "a file seen holding a prefix names a chain no longer than it".into(),
+            ));
+        }
+        rows.observation = observation(tx, b, Seen::Prefix { chain, length }, seq, staged)?;
+        return Ok((Some(chain), rows));
+    }
+    let revision = |number, produced, chain| Revision {
         number,
-        produced: produced.to_owned(),
+        produced,
         chain,
         length: b.length as i64,
+        seen_at: b.observation.as_ref().map(|o| o.seen_at_ms),
+        mtime_ns: b
+            .observation
+            .as_ref()
+            .and_then(|o| o.facts)
+            .map(|f| f.mtime_ns as i64),
+        ctime_ns: b
+            .observation
+            .as_ref()
+            .and_then(|o| o.facts)
+            .map(|f| f.ctime_ns as i64),
     };
     // Where the step's new bytes go: the end of its chain as stored, so they
     // never land on a stored extent. `None` when they are stored already.
     let (number, chain, offset) = match (&b.change, b.continues, latest) {
         (Change::Disappeared, _, latest) => {
-            rows.observation = observation(tx, b, "deleted", None, seq, staged)?;
+            rows.observation = observation(tx, b, Seen::Deleted, seq, staged)?;
             return Ok((latest.map(|l| l.1), rows));
         }
         (_, true, Some((number, chain, length, produced))) => {
             never_shorter(b, length)?;
-            rows.revision = Some(revision(number, &produced, chain));
+            rows.revision = Some(revision(number, produced, chain));
             (number, chain, Some(length as u64))
         }
         (Change::Unchanged, _, Some((number, chain, _, _))) => {
@@ -388,14 +451,14 @@ fn input_rows_at(
                 }
                 offset = None;
             }
-            rows.revision = Some(revision(next, "appended", chain));
+            rows.revision = Some(revision(next, Produced::Appended, chain));
             (next, chain, offset)
         }
         (change, _, _) => {
             let produced = match (change, b.input.route.is_imported()) {
-                (_, true) => "imported",
-                (Change::First, _) => "first",
-                _ => "rewritten",
+                (_, true) => Produced::Imported,
+                (Change::First, _) => Produced::First,
+                _ => Produced::Rewritten,
             };
             rows.revision = Some(revision(next, produced, next));
             (next, next, Some(0))
@@ -405,17 +468,55 @@ fn input_rows_at(
         rows.extents = extents(new_blob, chain, offset);
     }
     if b.observation.is_some() && !b.continues {
-        let class = match &b.change {
-            Change::First if b.input.route.is_imported() => "imported",
-            Change::First => "first",
-            Change::Appended { .. } => "appended",
-            Change::Rewritten => "rewritten",
-            Change::Unchanged if b.input.route.is_imported() => "imported",
-            Change::Unchanged => "back",
-            Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
-            Change::Disappeared => "deleted",
+        let length = b.length as i64;
+        let stored = |produced| Seen::Stored {
+            produced,
+            revision: number,
+            length,
         };
-        rows.observation = observation(tx, b, class, Some(number), seq, staged)?;
+        let seen = match &b.change {
+            Change::First | Change::Unchanged if b.input.route.is_imported() => {
+                stored(Produced::Imported)
+            }
+            Change::First => stored(Produced::First),
+            Change::Appended { .. } => stored(Produced::Appended),
+            Change::Rewritten => stored(Produced::Rewritten),
+            Change::Unchanged => Seen::Back {
+                revision: number,
+                length,
+            },
+            Change::Reparse { .. }
+            | Change::Observed { .. }
+            | Change::Shorter { .. }
+            | Change::Disappeared => {
+                unreachable!()
+            }
+        };
+        // An append to the file the input was last observed as, at the same
+        // location, is the revision alone: an observation records a change
+        // of location or of file (a return after it was gone, another
+        // inode). A database read's observation carries its log's facts, so
+        // it is always written.
+        let unmoved = matches!(b.change, Change::Appended { .. })
+            && b.observation.as_ref().is_some_and(|o| {
+                o.database.is_none()
+                    && last_location(tx, &b.input.id)
+                        .ok()
+                        .flatten()
+                        .is_some_and(|last| {
+                            last.machine == o.machine
+                                && last.path_bytes == o.path_bytes
+                                && last.class
+                                    != crate::input_rows::ObservationClass::Deleted.as_str()
+                                && o.facts.is_some_and(|f| {
+                                    last.device == Some(f.device as i64)
+                                        && last.inode == Some(f.inode as i64)
+                                })
+                        })
+            });
+        if !unmoved {
+            rows.observation = observation(tx, b, seen, seq, staged)?;
+        }
     }
     Ok((Some(chain), rows))
 }
@@ -468,15 +569,16 @@ fn check_blob_size(tx: &Transaction<'_>, new_blob: crate::Chunk) -> Result<()> {
     Ok(())
 }
 
-/// New IDs sort by insertion within one transaction's shared sequence.
-/// A UUID distinguishes independent archives with equal local counters.
+/// New IDs sort by insertion: the write counter, then the observation's
+/// place among those of its commit, both in fixed-width hex. A UUID
+/// distinguishes independent archives with equal local counters.
 pub(crate) fn observation_id(tx: &Connection, seq: i64, input: &str) -> Result<String> {
     let ordinal: i64 = tx
         .prepare_cached(
             &crate::source::Source::of(tx)?
-                .sql("SELECT COALESCE(MAX(rowid),0)+1 FROM @source.observation"),
+                .sql("SELECT count(*)+1 FROM @source.observation WHERE commit_seq = ?1"),
         )?
-        .query_row([], |r| r.get(0))?;
+        .query_row([seq], |r| r.get(0))?;
     Ok(format!(
         "{seq:016x}-{ordinal:016x}-{}-{input}",
         uuid::Uuid::now_v7()
@@ -510,11 +612,38 @@ pub(crate) fn check_import_format(
 /// The observation a step records, checked against what the archive
 /// already holds for the input. `staged` holds the inputs staged earlier in
 /// this capture group, which are not in the archive yet.
+/// Where and as what file the input was last observed.
+struct LastLocation {
+    machine: String,
+    path_bytes: Vec<u8>,
+    class: String,
+    device: Option<i64>,
+    inode: Option<i64>,
+}
+
+fn last_location(tx: &Connection, input: &str) -> Result<Option<LastLocation>> {
+    let source = crate::source::Source::of(tx)?;
+    Ok(tx
+        .prepare_cached(&source.sql(
+            "SELECT machine, path_bytes, class, device, inode FROM @source.observation
+             WHERE input = ?1 ORDER BY commit_seq DESC, id DESC LIMIT 1",
+        ))?
+        .query_row([input], |r| {
+            Ok(LastLocation {
+                machine: r.get(0)?,
+                path_bytes: r.get(1)?,
+                class: r.get(2)?,
+                device: r.get(3)?,
+                inode: r.get(4)?,
+            })
+        })
+        .optional()?)
+}
+
 pub(crate) fn observation(
     tx: &Connection,
     b: &Batch,
-    class: &str,
-    revision: Option<i64>,
+    seen: Seen,
     seq: i64,
     staged: &std::collections::BTreeSet<String>,
 ) -> Result<Option<ObservationRow>> {
@@ -534,12 +663,8 @@ pub(crate) fn observation(
         id: observation_id(tx, seq, &b.input.id)?,
         machine: o.machine.clone(),
         host: o.host.clone(),
-        path: o.path.clone(),
-        path_bytes: Some(o.path_bytes.clone()),
-        class: class.to_owned(),
-        revision,
-        chain: None,
-        length: revision.map(|_| b.length as i64),
+        path_bytes: o.path_bytes.clone(),
+        seen,
         device: f.map(|f| f.device as i64),
         inode: f.map(|f| f.inode as i64),
         size: f.map(|f| f.size as i64),

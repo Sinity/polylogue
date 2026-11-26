@@ -1,14 +1,14 @@
 use super::Source;
-use crate::ConnExt as _;
 use crate::Result;
 use crate::capture_read::{ConfirmedSource, SourceSelector, SourceStatus};
-use crate::input_rows::ObservationRow;
+use crate::input_rows::{ObservationRow, Seen};
 use rusqlite::{Connection, OptionalExtension, params};
 
+/// An observation's class, revision, chain and length as stored.
+type SeenColumns = (String, Option<i64>, Option<i64>, Option<i64>);
+
 impl Source {
-    /// Matching by display path diagnoses old observations without path bytes; it
-    /// never selects an identity. A later observation with path bytes replaces
-    /// that uncertainty.
+    /// The input last observed at the selected location, by its exact bytes.
     pub(crate) fn confirmed_source(
         conn: &Connection,
         selector: &SourceSelector,
@@ -25,27 +25,23 @@ impl Source {
             crate::StoreError::internal("source commit position exceeds archive address space")
         })?;
         let source = Self::reading(conn)?;
-        let by_path_bytes: Option<(i64, String, ObservationRow)> = conn.query_row(
-            &source.sql("SELECT o.rowid,o.input,o.id,o.machine,m.host,o.path,o.path_bytes,o.class,o.revision,o.chain,o.length,o.device,o.inode,o.size,o.mtime_ns,o.ctime_ns,o.polylogue_version,o.seen_at,o.details_json FROM @source.observation o JOIN @source.input i ON i.id=o.input JOIN @source.machine m ON m.id=o.machine WHERE i.format=?1 AND o.machine=?2 AND o.path_bytes=?3 AND (?4 IS NULL OR o.commit_seq<=?4) ORDER BY o.rowid DESC LIMIT 1"),
+        let found: Option<(String, ObservationRow, SeenColumns)> = conn.query_row(
+            &source.sql("SELECT o.input,o.id,o.machine,m.host,o.path_bytes,o.class,o.revision,o.chain,o.length,o.device,o.inode,o.size,o.mtime_ns,o.ctime_ns,o.polylogue_version,o.seen_at,o.details_json FROM @source.observation o JOIN @source.input i ON i.id=o.input JOIN @source.machine m ON m.id=o.machine WHERE i.format=?1 AND o.machine=?2 AND o.path_bytes=?3 AND (?4 IS NULL OR o.commit_seq<=?4) ORDER BY o.id DESC LIMIT 1"),
             params![selector.origin,selector.machine,selector.path_bytes,through],
-            |row| Ok((row.get(0)?,row.get(1)?,ObservationRow {
-                id:row.get(2)?,machine:row.get(3)?,host:row.get(4)?,path:row.get(5)?,path_bytes:row.get(6)?,class:row.get(7)?,revision:row.get(8)?,chain:row.get(9)?,length:row.get(10)?,device:row.get(11)?,inode:row.get(12)?,size:row.get(13)?,mtime_ns:row.get(14)?,ctime_ns:row.get(15)?,polylogue_version:row.get(16)?,seen_at:row.get(17)?,details_json:row.get(18)?,container:None,
-            })),
+            |row| Ok((row.get(0)?,ObservationRow {
+                id:row.get(1)?,machine:row.get(2)?,host:row.get(3)?,path_bytes:row.get(4)?,seen:Seen::Deleted,device:row.get(9)?,inode:row.get(10)?,size:row.get(11)?,mtime_ns:row.get(12)?,ctime_ns:row.get(13)?,polylogue_version:row.get(14)?,seen_at:row.get(15)?,details_json:row.get(16)?,container:None,
+            },(row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?))),
         ).optional()?;
-        let after = by_path_bytes.as_ref().map_or(0, |row| row.0);
-        let unknown: i64 = conn.scalar(&source.sql("SELECT count(DISTINCT o.input) FROM @source.observation o JOIN @source.input i ON i.id=o.input WHERE i.format=?1 AND o.machine=?2 AND o.path_bytes IS NULL AND o.path=?3 AND o.rowid>?4 AND (?5 IS NULL OR o.commit_seq<=?5)"), params![selector.origin,selector.machine,String::from_utf8_lossy(&selector.path_bytes),after,through])?;
-        if unknown > 0 {
-            return Ok((
-                if unknown > 1 {
-                    SourceStatus::Ambiguous
-                } else {
-                    SourceStatus::MissingEvidence
+        let by_path_bytes = found
+            .map(
+                |(input, mut observation, (class, revision, chain, length))| {
+                    observation.seen = Seen::from_columns(&class, revision, chain, length)?;
+                    Ok::<_, crate::StoreError>((input, observation))
                 },
-                None,
-            ));
-        }
+            )
+            .transpose()?;
         let mut confirmed =
-            by_path_bytes.map(|(_, input, observation)| ConfirmedSource { input, observation });
+            by_path_bytes.map(|(input, observation)| ConfirmedSource { input, observation });
         if let Some(confirmed) = &mut confirmed {
             confirmed.observation.container = conn.query_row(
                 &source.sql("SELECT container_input,member_index,kind,path_bytes FROM @source.observation_container WHERE observation_id=?1"),

@@ -375,13 +375,10 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_ordered_parts() {
     let _daemon = start_daemon(&env);
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     let _ = import_report(&imported);
-    let listed = cli(
-        &env,
-        &["--json", "documents where origin:hermes | sort by id"],
-    );
-    assert!(listed.status.success(), "{listed:?}");
-    let listed = listing(json(&listed));
-    assert_eq!(listed["count"], 2);
+    // The import answers once its bytes are stored; reads need the parse.
+    let listed = wait_rows(&env, "documents where origin:hermes | sort by id", |rows| {
+        rows["count"] == 2
+    });
     for row in listed["rows"].as_array().unwrap() {
         let reference = format!("document:{}", row["id"].as_str().unwrap());
         assert_eq!(row["purpose"], "transcript");

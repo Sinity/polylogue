@@ -121,7 +121,7 @@ fn after_restart_only_the_changed_input_resumes() {
             .known_inputs(&engine.config.machine)
             .unwrap()
             .into_iter()
-            .find(|known| known.path_bytes.as_deref() == Some(path.as_os_str().as_encoded_bytes()))
+            .find(|known| known.path_bytes.as_slice() == path.as_os_str().as_encoded_bytes())
             .unwrap();
         let chain = known.chain.unwrap();
         let version = polylogue_sources::origin::by_name("claude-code")

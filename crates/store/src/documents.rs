@@ -55,12 +55,12 @@ row! {
     /// Where and when a machine saw an input.
     struct InputLocation {
         machine: String,
-        path: String,
+        path_bytes: Vec<u8>,
         seen_at: i64,
     }
     statements {
-        const OF_INPUT = "SELECT machine, path, seen_at FROM source_observation WHERE input=?1
-            ORDER BY seen_at, machine, path";
+        const OF_INPUT = "SELECT machine, path_bytes, seen_at FROM source_observation WHERE input=?1
+            ORDER BY seen_at, machine, path_bytes";
     }
 }
 
@@ -169,7 +169,7 @@ impl DocumentRead<'_, '_> {
                 .all(&InputLocation::OF_INPUT, [&reading.input])?
                 .into_iter()
                 .map(|seen| {
-                    serde_json::json!({"machine": seen.machine, "path": seen.path, "seen_at_ms": seen.seen_at})
+                    serde_json::json!({"machine": seen.machine, "path": String::from_utf8_lossy(&seen.path_bytes), "seen_at_ms": seen.seen_at})
                 })
                 .collect();
             out.push(DocumentSource {

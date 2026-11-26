@@ -72,7 +72,7 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     archive
         .execute_batch(
             "INSERT INTO input VALUES('waiting','synthetic');
-        INSERT INTO revision VALUES('waiting',1,'first',1,10,1);",
+        INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('waiting',1,'first',1,10,1);",
         )
         .unwrap();
     let index = index_editor(&fixture.archive);
@@ -150,7 +150,7 @@ fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
     assert_eq!(empty.raw_only_chains, 0);
     let source = Connection::open(fixture.archive.archive_db()).unwrap();
     crate::chain_progress::record_source_changes(&source).unwrap();
-    source.execute_batch("INSERT INTO input VALUES('raw-input','unparsed-provider'); INSERT INTO revision VALUES('raw-input',1,'first',1,12,1);").unwrap();
+    source.execute_batch("INSERT INTO input VALUES('raw-input','unparsed-provider'); INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('raw-input',1,'first',1,12,1);").unwrap();
     let changes = crate::chain_progress::recorded(&source).unwrap();
     crate::chain_progress::refresh(&index_editor(&fixture.archive), &changes).unwrap();
     let present = pool.reader().unwrap().completeness(&contracts).unwrap();
@@ -185,7 +185,7 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
                 SELECT o.input, json_extract(o.details_json, '$.import_format') AS format,
                     row_number() OVER (PARTITION BY o.input
                         ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
-                                 o.rowid DESC) AS choice
+                                 o.commit_seq DESC, o.id DESC) AS choice
                 FROM source_observation o WHERE o.class = 'imported' AND json_valid(o.details_json)
                     AND json_type(o.details_json, '$.import_format') = 'text'
             )

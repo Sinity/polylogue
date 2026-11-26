@@ -1159,6 +1159,59 @@ impl Engine {
         Ok(plans)
     }
 
+    /// The chain a file holds fewer bytes of, each equal to the stored byte
+    /// at its place: its input's current chain when it is longer than the
+    /// file and begins with the file's bytes.
+    fn shorter_prefix(&mut self, path: &Path, now: FileFacts) -> Result<Option<i64>, EngineError> {
+        let st = &self.inputs[path];
+        let reader = self.reads.reader()?;
+        let Some(progress) = reader.input_progress(&st.input_id)? else {
+            return Ok(None);
+        };
+        if now.size == 0 || progress.length <= now.size || progress.length < st.stored {
+            return Ok(None);
+        }
+        let intact = reader
+            .stored_chain(&st.input_id, progress.chain, now.size)
+            .ok()
+            .is_some_and(|chain| {
+                read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
+            });
+        Ok(intact.then_some(progress.chain))
+    }
+
+    /// Records that a file came back holding a prefix of its stored chain:
+    /// an observation with the length it holds, no revision and no chain.
+    fn observe_shorter(
+        &mut self,
+        path: &Path,
+        now: FileFacts,
+        chain: i64,
+    ) -> Result<Option<Plan>, EngineError> {
+        let state = &self.inputs[path];
+        let batch = polylogue_store::Batch {
+            input: InputKey {
+                id: state.input_id.clone(),
+                format: state.origin.name.into(),
+                route: state.origin.route,
+            },
+            change: Change::Shorter { chain },
+            observation: Some(self.observation(path, Some(now))),
+            continues: false,
+            new_blob: None,
+            blobs: vec![],
+            length: now.size,
+            parse: Vec::new(),
+            capture_read: None,
+            release: Default::default(),
+        };
+        self.writer.send(batch)?;
+        let st = self.inputs.get_mut(path).expect("tracked input");
+        st.facts = Some(now);
+        st.unread = None;
+        Ok(None)
+    }
+
     /// Records that a file came back holding exactly its stored chain (after
     /// it was gone, or under another inode): an observation, no revision.
     fn observe_back(&mut self, path: &Path, now: FileFacts) -> Result<Option<Plan>, EngineError> {
@@ -1227,6 +1280,13 @@ impl Engine {
         let parsed = has_reading(st.origin);
         let mut change = polylogue_store::blobs::classify(st.facts, Some(now));
         let mut back = false;
+        if matches!(change, Change::First | Change::Rewritten)
+            && !source_uncertain
+            && let Some(chain) = self.shorter_prefix(path, now)?
+        {
+            return self.observe_shorter(path, now, chain);
+        }
+        let st = self.inputs.get_mut(path).expect("tracked input");
         if matches!(change, Change::First | Change::Rewritten) && !source_uncertain {
             // Another inode at the path, or the file back after it was gone:
             // when it still begins with every stored byte, it continues its
@@ -1321,7 +1381,9 @@ impl Engine {
                 Priority::Live,
             ),
             Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
-            Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
+            Change::Reparse { .. } | Change::Observed { .. } | Change::Shorter { .. } => {
+                unreachable!()
+            }
         };
         // A document is parsed whole: any change parses it from its start.
         let (parse_pos, parser_state) = if whole(st.origin, path) {

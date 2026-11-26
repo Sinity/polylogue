@@ -42,8 +42,7 @@ pub(crate) const STATES_IMPORT_FORMAT: &str = "o.class = 'imported' AND json_val
 /// Which of an input's stated import formats its chains are parsed as: a
 /// recognized format before the kept-file one, then the newest observation.
 /// An input never has two recognized formats (`check_import_format`).
-pub(crate) const IMPORT_FORMAT_ORDER: &str =
-    "(json_extract(o.details_json, '$.import_format') = 'export-file'), o.rowid DESC";
+pub(crate) const IMPORT_FORMAT_ORDER: &str = "(json_extract(o.details_json, '$.import_format') = 'export-file'), o.commit_seq DESC, o.id DESC";
 
 /// The format the chains of `input` are parsed as: the one an import read it
 /// as, else `own`, the input's own format (SQL expressions).
@@ -242,7 +241,10 @@ impl Source {
         let sequence = i64::try_from(sequence).map_err(|_| {
             StoreError::internal("source commit position exceeds SQLite's integer range")
         })?;
-        let observation = conn.query_row(&source.sql("SELECT o.id,o.seen_at FROM @source.observation o LEFT JOIN @source.revision r ON r.input=o.input AND r.number=o.revision WHERE o.input=?1 AND coalesce(o.chain,r.chain)=?2 AND o.length>=?3 ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1"),rusqlite::params![input,chain,through],|row| <(_, _)>::try_from(row)).optional()?;
+        // The location that captured the prefix: the input's latest
+        // observation committed with or before its last byte. An append at an
+        // unchanged location records none of its own.
+        let observation = conn.query_row(&source.sql("SELECT o.id,o.seen_at FROM @source.observation o WHERE o.input=?1 AND o.commit_seq<=?2 ORDER BY o.commit_seq DESC, o.id DESC LIMIT 1"),rusqlite::params![input,sequence],|row| <(_, _)>::try_from(row)).optional()?;
         let (observation, observed_at_ms) =
             observation.map_or((None, None), |(id, time)| (Some(id), Some(time)));
         Ok(crate::wire_shapes::ReadingCommit {

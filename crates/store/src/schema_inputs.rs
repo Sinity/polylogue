@@ -24,10 +24,10 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let row = conn.query_row(
             "SELECT i.format,r.number,r.chain,r.length,
-             coalesce((SELECT o.path FROM source_observation o WHERE o.input=i.id AND o.revision=r.number ORDER BY o.rowid DESC LIMIT 1),'')
+             coalesce((SELECT o.path_bytes FROM source_observation o WHERE o.input=i.id AND o.commit_seq<=r.commit_seq ORDER BY o.id DESC LIMIT 1),X'')
              FROM source_input i JOIN source_revision r ON r.input=i.id
              WHERE i.id=?1 AND (?2 IS NULL OR r.number=?2) ORDER BY r.number DESC LIMIT 1",
-            params![input, revision], |r| <(String, i64, i64, i64, String)>::try_from(r)
+            params![input, revision], |r| <(String, i64, i64, i64, Vec<u8>)>::try_from(r)
         ).optional()?;
         row.map(|(format, revision, chain, length, path)| {
             Ok(InputRevision {
@@ -37,7 +37,7 @@ impl Reader<'_> {
                 chain,
                 length: u64::try_from(length)
                     .map_err(|_| crate::StoreError::stored(0, "negative input length"))?,
-                path,
+                path: String::from_utf8_lossy(&path).into_owned(),
             })
         })
         .transpose()
@@ -77,8 +77,8 @@ impl Reader<'_> {
         let conn = self.conn()?;
         let base = "WITH selected AS (
           SELECT i.id,i.format,r.number,r.chain,r.length,
-            coalesce((SELECT o.path FROM source_observation o WHERE o.input=i.id AND o.revision=r.number ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1),'') AS path,
-            (SELECT o.seen_at FROM source_observation o WHERE o.input=i.id AND o.revision=r.number ORDER BY o.commit_seq DESC,o.rowid DESC LIMIT 1) AS observed_at
+            coalesce((SELECT o.path_bytes FROM source_observation o WHERE o.input=i.id AND o.commit_seq<=r.commit_seq ORDER BY o.id DESC LIMIT 1),X'') AS path,
+            (SELECT o.seen_at FROM source_observation o WHERE o.input=i.id AND o.commit_seq<=r.commit_seq ORDER BY o.id DESC LIMIT 1) AS observed_at
           FROM source_input i LEFT JOIN source_revision r ON r.input=i.id
             AND r.number=coalesce(?2,(SELECT max(newer.number) FROM source_revision newer WHERE newer.input=i.id))
           WHERE (?1 IS NULL OR i.format=?1))";
@@ -122,7 +122,7 @@ impl Reader<'_> {
                     chain: row.get(3)?,
                     length: u64::try_from(length)
                         .map_err(|_| crate::StoreError::stored(0, "negative input length"))?,
-                    path: row.get(5)?,
+                    path: String::from_utf8_lossy(&row.get::<_, Vec<u8>>(5)?).into_owned(),
                 });
             } else {
                 missing_revisions.push(input);

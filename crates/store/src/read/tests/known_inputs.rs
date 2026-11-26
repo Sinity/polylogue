@@ -10,19 +10,15 @@ fn known_inputs_choose_the_latest_usable_observation() {
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive.execute_batch(
         "INSERT INTO input VALUES ('watched','codex-rollout'),('manual','codex-rollout'),('other','codex-rollout');
-         INSERT INTO revision VALUES ('watched',1,'first',1,10,1),('watched',2,'appended',1,20,2),('manual',1,'imported',1,5,3),('manual',2,'appended',1,7,4),('other',1,'first',1,99,4);
-         INSERT INTO observation(id,input,machine,path,class,device,inode,size,mtime_ns,ctime_ns,polylogue_version,seen_at) VALUES
-           ('first','watched','m','/home/op/session.jsonl','first',1,2,10,3,4,'test',100),
-           ('gone','watched','m','/home/op/session.jsonl','deleted',NULL,NULL,NULL,NULL,NULL,'test',50),
-           ('manual','manual','m','/home/op/session.jsonl','imported',5,6,5,7,8,'test',300),
-           ('manual-tail','manual','m','/home/op/session.jsonl','appended',5,6,7,7,8,'test',200),
-           ('facts','watched','m','/home/op/renamed.jsonl','back',9,10,20,11,12,'test',40),
-           ('other','other','other-machine','/home/op/session.jsonl','first',13,14,99,15,16,'test',500);"
+         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('watched',1,'first',1,10,1),('watched',2,'appended',1,20,2),('manual',1,'imported',1,5,3),('manual',2,'appended',1,7,4),('other',1,'first',1,99,4);
+         INSERT INTO observation(id,input,machine,path_bytes,class,device,inode,size,mtime_ns,ctime_ns,polylogue_version,seen_at,commit_seq) VALUES
+           ('01-first','watched','m', CAST('/home/op/session.jsonl' AS BLOB),'first',1,2,10,3,4,'test',100,10),
+           ('02-gone','watched','m', CAST('/home/op/session.jsonl' AS BLOB),'deleted',NULL,NULL,NULL,NULL,NULL,'test',50,11),
+           ('03-manual','manual','m', CAST('/home/op/session.jsonl' AS BLOB),'imported',5,6,5,7,8,'test',300,12),
+           ('04-manual-tail','manual','m', CAST('/home/op/session.jsonl' AS BLOB),'appended',5,6,7,7,8,'test',200,13),
+           ('05-facts','watched','m', CAST('/home/op/renamed.jsonl' AS BLOB),'back',9,10,20,11,12,'test',40,14),
+           ('06-other','other','other-machine', CAST('/home/op/session.jsonl' AS BLOB),'first',13,14,99,15,16,'test',500,15);"
     ).unwrap();
-    // These fixture paths are synthetic UTF-8 observations.
-    archive
-        .execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
-        .unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
     index
         .execute_batch(
@@ -82,13 +78,13 @@ fn lookup_work(history: usize, point: bool, unrelated: usize) -> usize {
         .unwrap();
     for number in 1..=history {
         tx.execute(
-            "INSERT INTO revision VALUES ('watched',?1,'appended',1,?1,?1)",
+            "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('watched',?1,'appended',1,?1,?1)",
             [number as i64],
         )
         .unwrap();
         tx.execute(
-            "INSERT INTO observation(id,input,machine,path,class,size,polylogue_version,seen_at)
-             VALUES (?1,'watched','m','/home/op/session.jsonl','appended',?2,'test',?2)",
+            "INSERT INTO observation(id,input,machine,path_bytes,class,size,polylogue_version,seen_at)
+             VALUES (?1,'watched','m', CAST('/home/op/session.jsonl' AS BLOB),'appended',?2,'test',?2)",
             params![number.to_string(), number as i64],
         )
         .unwrap();
@@ -98,14 +94,12 @@ fn lookup_work(history: usize, point: bool, unrelated: usize) -> usize {
             .unwrap();
         for number in 1..=unrelated {
             tx.execute(
-                "INSERT INTO revision VALUES ('unrelated',?1,'appended',1,?1,?1)",
+                "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('unrelated',?1,'appended',1,?1,?1)",
                 [number as i64],
             )
             .unwrap();
         }
     }
-    tx.execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
-        .unwrap();
     tx.commit().unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();

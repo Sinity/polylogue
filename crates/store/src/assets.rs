@@ -12,8 +12,10 @@ pub use read::{AssetMatch, AttachmentResolution, AttachmentState};
 
 pub const RULES: u32 = 1;
 
-/// The meta key holding the last import observation row already projected.
-const OBSERVATION_ROW_KEY: &str = "import_observation_row";
+/// The meta key holding the archive position through which import
+/// observations are projected. Observations of one commit become visible
+/// together, so a position is a complete cursor.
+const OBSERVATION_ROW_KEY: &str = "import_observation_position";
 
 #[derive(Debug, Clone)]
 pub struct AssetSource {
@@ -250,7 +252,7 @@ pub(crate) fn visit_import_members(
     mut visit: impl FnMut(ObservedMember) -> Result<()>,
 ) -> Result<Option<i64>> {
     let through: i64 = conn.scalar(
-        &format!("SELECT COALESCE(max(rowid),0) FROM {prefix}observation"),
+        &format!("SELECT COALESCE(max(commit_seq),0) FROM {prefix}observation"),
         [],
     )?;
     // A ZIP is the source of its members, not one of the attachments among them.
@@ -259,7 +261,7 @@ pub(crate) fn visit_import_members(
     let mut roots = conn.prepare(&format!(
         "SELECT DISTINCT c.container_input,json_extract(o.details_json,'$.import.import_id')
         FROM {prefix}observation o JOIN {prefix}observation_container c ON c.observation_id=o.id
-        WHERE o.rowid>?1 AND o.rowid<=?2 AND (?3 IS NULL OR c.container_input=?3)
+        WHERE o.commit_seq>?1 AND o.commit_seq<=?2 AND (?3 IS NULL OR c.container_input=?3)
           AND json_type(o.details_json,'$.import.import_id')='text'"
     ))?;
     for row in roots.query_map(params![after, through, input], |row| {
@@ -270,8 +272,8 @@ pub(crate) fn visit_import_members(
     }
     let mut observations = conn.prepare(&format!(
         "SELECT o.id,o.input,o.details_json FROM {prefix}observation o
-        WHERE o.rowid>?1 AND o.rowid<=?2 AND (?3 IS NULL OR o.input=?3)
-          AND o.details_json IS NOT NULL ORDER BY o.rowid"
+        WHERE o.commit_seq>?1 AND o.commit_seq<=?2 AND (?3 IS NULL OR o.input=?3)
+          AND o.details_json IS NOT NULL ORDER BY o.commit_seq, o.id"
     ))?;
     for row in observations.query_map(params![after, through, input], |row| {
         <(String, String, String)>::try_from(row)

@@ -16,7 +16,7 @@ fn every_schema_applies_to_an_empty_database() {
 
 #[test]
 fn every_database_starts_at_its_current_version() {
-    assert_eq!(ARCHIVE_VERSION, 6);
+    assert_eq!(ARCHIVE_VERSION, 7);
     assert_eq!(INDEX_VERSION, 16);
     for (create, expected) in [
         (
@@ -377,6 +377,12 @@ fn schema_check_lists_come_from_names() {
         ("chat_action", "execution", RunsHere::NAMES),
         ("import_job", "execution", RunsHere::NAMES),
         ("query_edge", "how", QueryEdgeKind::NAMES),
+        ("revision", "produced", crate::input_rows::Produced::NAMES),
+        (
+            "observation",
+            "class",
+            crate::input_rows::ObservationClass::NAMES,
+        ),
     ];
     let index_sets: [(&str, &str, &[&str]); 11] = [
         ("input_ref", "route", Route::NAMES),

@@ -101,7 +101,6 @@ pub enum SourceStatus {
     Ready,
     #[default]
     MissingEvidence,
-    Ambiguous,
 }
 
 /// Original decoded source interval physically acquired, before overlap trim.

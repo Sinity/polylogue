@@ -18,14 +18,11 @@ fn an_older_inputs_parse_prefix_does_not_commit_a_late_append_early() {
     w.append("late.jsonl", &later);
     assert!(e.run_pass().unwrap().errors.is_empty());
     assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 2);
-    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 2);
-    // Length is the captured prefix; size is the observed file EOF.
-    let captured = w.count("SELECT length AS n FROM a.observation WHERE class='appended'");
+    // An append at the same location writes no observation; its revision's
+    // length is the captured prefix.
+    assert_eq!(w.count("SELECT count(*) AS n FROM a.observation"), 1);
+    let captured = w.count("SELECT length AS n FROM a.revision WHERE produced='appended'");
     assert!(captured > first.len() as i64 && captured <= (first.len() + later.len()) as i64);
-    assert_eq!(
-        w.count("SELECT size AS n FROM a.observation WHERE class='appended'"),
-        (first.len() + later.len()) as i64
-    );
     assert_eq!(
         w.count("SELECT length AS n FROM a.revision WHERE number=2"),
         (first.len() + later.len()) as i64

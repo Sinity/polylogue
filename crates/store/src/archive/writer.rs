@@ -33,6 +33,7 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 mod after;
+pub mod agreement;
 pub(crate) mod captured;
 mod dispatch;
 mod query_objects;
@@ -62,6 +63,10 @@ pub enum Group {
     Captured {
         batches: Vec<Batch>,
         added: BTreeMap<polylogue_model::BlobHash, u64>,
+        /// For each batch that starts a chain, the earlier chain of its input
+        /// its bytes begin like, found by the caller before the commit
+        /// ([`agreement`]); `None` records none.
+        agreements: Vec<Option<agreement::Agreement>>,
         atomic: bool,
     },
     /// A request recorded by another archive, as its bundle states it.
@@ -507,11 +512,13 @@ impl Inner {
         if together.len() > 1 {
             let mut batches = Vec::new();
             let mut added = BTreeMap::new();
+            let mut agreements = Vec::new();
             let mut counts = Vec::new();
             for (group, _) in &together {
                 let Group::Captured {
                     batches: these,
                     added: their,
+                    agreements: theirs,
                     ..
                 } = &**group
                 else {
@@ -519,9 +526,16 @@ impl Inner {
                 };
                 counts.push(these.len());
                 batches.extend(these.iter().cloned());
+                agreements.extend(
+                    theirs
+                        .iter()
+                        .copied()
+                        .chain(std::iter::repeat(None))
+                        .take(these.len()),
+                );
                 added.extend(their.iter().map(|(hash, size)| (*hash, *size)));
             }
-            if let Ok(committed) = self.captured(batches, added) {
+            if let Ok(committed) = self.captured(batches, added, agreements) {
                 let mut stored = committed.outcome.into_iter();
                 for ((_, reply), count) in together.into_iter().zip(counts) {
                     let outcome = Outcome::Stored(stored.by_ref().take(count).collect());
@@ -552,12 +566,17 @@ impl Inner {
                 Group::RestoredAnnotation { fact, .. } => fact.id.clone(),
             };
             let result = match *group {
-                Group::Captured { batches, added, .. } => {
-                    self.captured(batches, added).map(|committed| Committed {
+                Group::Captured {
+                    batches,
+                    added,
+                    agreements,
+                    ..
+                } => self
+                    .captured(batches, added, agreements)
+                    .map(|committed| Committed {
                         position: committed.position,
                         outcome: Outcome::Stored(committed.outcome),
-                    })
-                }
+                    }),
                 Group::RestoredRequest(prepared) => {
                     self.restore_request(prepared).map(|committed| Committed {
                         position: committed.position,

@@ -424,7 +424,7 @@ fn loaded_chains_waiting_to_be_read_let_a_truncating_checkpoint_complete() {
     // As a pass's queued plans: every chain loaded, none read yet.
     let queued: Vec<_> = (1..=64).map(|n| w.load(n * 3)).collect();
     w.conn
-        .execute("UPDATE revision SET produced='later'", [])
+        .execute("UPDATE revision SET produced='rewritten'", [])
         .unwrap();
     assert!(!checkpoint_blocked(&w));
     assert_eq!(queued[9].read_range(&w.store, 27, 30).unwrap(), b"009");
@@ -440,7 +440,7 @@ fn a_released_chain_lets_a_checkpoint_complete_and_reads_on() {
     let mut first = [0; 2];
     reader.read_exact(&mut first).unwrap();
     w.conn
-        .execute("UPDATE revision SET produced='later'", [])
+        .execute("UPDATE revision SET produced='rewritten'", [])
         .unwrap();
     assert!(
         checkpoint_blocked(&w),

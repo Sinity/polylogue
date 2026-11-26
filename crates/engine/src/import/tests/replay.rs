@@ -239,7 +239,7 @@ fn register(root: &std::path::Path) -> Vec<String> {
     for sql in [
         "SELECT input, number, produced, chain, length FROM revision ORDER BY commit_seq, input, number",
         "SELECT input, chain, offset, length, hex(blob) FROM extent ORDER BY input, chain, offset",
-        "SELECT id, input, class, revision, path FROM observation ORDER BY rowid",
+        "SELECT id, input, class, revision, CAST(path_bytes AS TEXT) FROM observation ORDER BY id",
     ] {
         let mut statement = conn.prepare(sql).unwrap();
         let columns = statement.column_count();

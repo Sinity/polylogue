@@ -125,21 +125,24 @@ fn segmented_asset_ranges_and_hashes_match_and_old_selections_refuse_rewrites() 
 fn member_scan_fixture(prefix: &str) -> Connection {
     let conn = Connection::open_in_memory().unwrap();
     conn.execute_batch(&format!(
-        "CREATE TABLE {prefix}observation(id TEXT PRIMARY KEY,input TEXT NOT NULL,details_json TEXT);
+        "CREATE TABLE {prefix}observation(id TEXT PRIMARY KEY,input TEXT NOT NULL,details_json TEXT,commit_seq INTEGER NOT NULL);
          CREATE TABLE {prefix}observation_container(observation_id TEXT,container_input TEXT);"
     )).unwrap();
-    for (id, input, namespace, member) in [
+    for (seq, (id, input, namespace, member)) in [
         ("root-a", "archive", "scope-a", "original.zip"),
         ("member-a", "asset", "scope-a", "assets/a.bin"),
         ("root-b", "archive", "scope-b", "received.zip"),
         ("member-b", "other", "scope-b", "assets/b.bin"),
-    ] {
+    ]
+    .into_iter()
+    .enumerate()
+    {
         let details = serde_json::json!({"import":{
             "version":1,"import_id":namespace,"member":member
         }});
         conn.execute(
-            &format!("INSERT INTO {prefix}observation VALUES (?1,?2,?3)"),
-            params![id, input, details.to_string()],
+            &format!("INSERT INTO {prefix}observation VALUES (?1,?2,?3,?4)"),
+            params![id, input, details.to_string(), seq as i64 + 1],
         )
         .unwrap();
     }
@@ -149,7 +152,7 @@ fn member_scan_fixture(prefix: &str) -> Connection {
     )
     .unwrap();
     conn.execute(
-        &format!("INSERT INTO {prefix}observation VALUES ('no-import','unrelated',NULL)"),
+        &format!("INSERT INTO {prefix}observation VALUES ('no-import','unrelated',NULL,5)"),
         [],
     )
     .unwrap();

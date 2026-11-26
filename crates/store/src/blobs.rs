@@ -77,6 +77,10 @@ pub enum Change {
     Observed { revision: i64, chain: i64 },
     /// Parse bytes already stored in this same chain.
     Reparse { chain: i64 },
+    /// The file holds fewer bytes than chain `chain`, each equal to the
+    /// stored byte at its place: seen back holding a prefix of it, with no
+    /// new revision and no new chain.
+    Shorter { chain: i64 },
     /// The same file grew: only the bytes from `from` on are new. The caller
     /// confirms the old tail is intact before trusting this.
     Appended { from: u64 },

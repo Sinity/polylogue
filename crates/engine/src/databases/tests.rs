@@ -199,8 +199,8 @@ fn capture_continues_the_input_at_the_observed_path() {
         .unwrap();
     assert_eq!(known.input_id, "stored-database");
     assert_eq!(
-        known.path_bytes.as_deref(),
-        Some(db.as_os_str().as_encoded_bytes())
+        known.path_bytes.as_slice(),
+        db.as_os_str().as_encoded_bytes()
     );
     assert_eq!(known.chain, Some(initial_chain));
     assert_eq!(

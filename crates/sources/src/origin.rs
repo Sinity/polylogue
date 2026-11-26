@@ -36,12 +36,21 @@ pub enum InputIdentity {
     /// The machine and the path: `blake3(machine \0 path bytes)`, the first
     /// 32 hex digits. A file the tool keeps at one place.
     Location,
-    /// An ID the provider writes into the file (`codex:rollout:<session
-    /// id>`), for a tool that moves or compresses its own files. The file is
-    /// not stored until that ID is readable.
+    /// An ID the provider writes into the file, with the machine
+    /// (`codex:rollout:<session id>@<machine>`), for a tool that moves or
+    /// compresses its own files. The file is not stored until that ID is
+    /// readable.
     ProviderId,
     /// The bytes: the full BLAKE3 hex of an imported file.
     Content,
+}
+
+impl InputIdentity {
+    /// The input a provider's own ID names on `machine`: no two machines
+    /// write chains of one input.
+    pub fn provider_named(id: &str, machine: &str) -> String {
+        format!("{id}@{machine}")
+    }
 }
 
 /// The directory an origin's locations are relative to: the tool's own

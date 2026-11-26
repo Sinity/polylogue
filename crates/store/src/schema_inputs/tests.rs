@@ -7,9 +7,9 @@ fn exact_revisions_are_distinguishable_and_missing_selection_stays_empty() {
     let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
     conn.execute_batch(
         "INSERT INTO input VALUES ('input:with:colons','claude-code');
-        INSERT INTO revision VALUES ('input:with:colons',1,'first',1,10,1);
-        INSERT INTO revision VALUES ('input:with:colons',2,'appended',1,20,2);
-        INSERT INTO revision VALUES ('input:with:colons',3,'rewritten',3,5,3);",
+        INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input:with:colons',1,'first',1,10,1);
+        INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input:with:colons',2,'appended',1,20,2);
+        INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('input:with:colons',3,'rewritten',3,5,3);",
     )
     .unwrap();
     let pool = fixture.reads().unwrap();
@@ -39,9 +39,9 @@ fn schema_selection_pages_all_origins_and_preserves_missing_revisions_and_unknow
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
     conn.execute_batch("INSERT INTO input VALUES('a','claude-code'),('b','codex'),('c','claude-code');
-      INSERT INTO revision VALUES('a',1,'first',1,10,1),('b',1,'first',1,20,2),('b',2,'appended',1,30,3),('c',1,'first',1,5,4);
-      INSERT INTO observation(id,input,machine,path,class,revision,length,polylogue_version,seen_at,commit_seq) VALUES
-      ('a-o','a','m','a.json','first',1,10,'test',100,1),('b-o','b','m','b.jsonl','appended',2,30,'test',200,3);").unwrap();
+      INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('a',1,'first',1,10,1),('b',1,'first',1,20,2),('b',2,'appended',1,30,3),('c',1,'first',1,5,4);
+      INSERT INTO observation(id,input,machine,path_bytes,class,revision,length,polylogue_version,seen_at,commit_seq) VALUES
+      ('a-o','a','m', CAST('a.json' AS BLOB),'first',1,10,'test',100,1),('b-o','b','m', CAST('b.jsonl' AS BLOB),'appended',2,30,'test',200,3);").unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let first = reader
@@ -125,9 +125,9 @@ fn exact_revision_time_selection_reports_missing_separately_from_unobserved_time
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let conn = crate::archive::open_write(&fixture.archive.archive_db(), 1).unwrap();
     conn.execute_batch("INSERT INTO input VALUES('missing','fixture'),('recent','fixture'),('unknown','fixture');
-      INSERT INTO revision VALUES('missing',1,'first',1,1,1),('recent',2,'first',2,1,2),('unknown',2,'first',2,1,3);
-      INSERT INTO observation(id,input,machine,path,class,revision,length,polylogue_version,seen_at,commit_seq)
-      VALUES('o','recent','m','recent.json','first',2,1,'test',200,2);").unwrap();
+      INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('missing',1,'first',1,1,1),('recent',2,'first',2,1,2),('unknown',2,'first',2,1,3);
+      INSERT INTO observation(id,input,machine,path_bytes,class,revision,length,polylogue_version,seen_at,commit_seq)
+      VALUES('o','recent','m', CAST('recent.json' AS BLOB),'first',2,1,'test',200,2);").unwrap();
     let pool = fixture.reads().unwrap();
     let page = pool
         .reader()

@@ -104,7 +104,7 @@ fn a_rewritten_document_stores_only_its_changed_chunks_and_reads_back_whole() {
     let latest = &reader
         .query(
             "SELECT r.input, r.chain, r.length FROM a.revision r
-             JOIN a.observation o ON o.input = r.input AND o.path LIKE '%export.json'
+             JOIN a.observation o ON o.input = r.input AND CAST(o.path_bytes AS TEXT) LIKE '%export.json'
              ORDER BY r.number DESC LIMIT 1",
             &[],
         )
