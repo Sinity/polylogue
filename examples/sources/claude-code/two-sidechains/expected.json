@@ -15,6 +15,7 @@
     "events": [],
     "links": [
       {
+        "call_id": "call-one",
         "child": "claude-code:two-sidechains~side-11111111-1111-4111-8111-111111111111",
         "evidence": "isSidechain",
         "kind": "spawn",
@@ -22,6 +23,7 @@
         "copies_prefix": false
       },
       {
+        "call_id": "call-two",
         "child": "claude-code:two-sidechains~side-22222222-2222-4222-8222-222222222222",
         "evidence": "isSidechain",
         "kind": "spawn",
@@ -82,7 +84,7 @@
               "text": "Review the first file."
             }
           ],
-          "prompt_kind": "prose",
+          "prompt_kind": "model",
           "at_quality": "unknown"
         }
       },
@@ -121,7 +123,7 @@
               "text": "Review the second file."
             }
           ],
-          "prompt_kind": "prose",
+          "prompt_kind": "model",
           "at_quality": "unknown"
         }
       },

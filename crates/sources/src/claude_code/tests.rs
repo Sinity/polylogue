@@ -914,8 +914,19 @@ fn morrows_older_sidechain_uses_its_first_record_uuid() {
         out.links
             .iter()
             .filter(|link| link.kind == LinkKind::Spawn && link.child.native().as_str() == side)
-            .count(),
-        1
+            .map(|link| link.call_id.as_deref())
+            .collect::<Vec<_>>(),
+        [Some("toolu_1102")]
+    );
+    let prompt = &out
+        .messages
+        .iter()
+        .find(|row| row.message.session.native().as_str() == side)
+        .unwrap()
+        .message;
+    assert_eq!(
+        polylogue_model::WrittenBy::of(prompt),
+        polylogue_model::WrittenBy::Model
     );
 }
 
@@ -951,4 +962,224 @@ fn a_parent_before_the_latest_sidechain_record_starts_a_separate_sidechain() {
             "s1~side-first"
         ]
     );
+}
+
+fn check_appended(parser: &ClaudeCode, records: &[Json], check: impl Fn(&[crate::parse::Step])) {
+    let bytes = jsonl(records);
+    check(&[run(parser, &mut ParserState::default(), &bytes, 0).unwrap()]);
+    for cut in bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, byte)| (*byte == b'\n' && i + 1 < bytes.len()).then_some(i + 1))
+    {
+        let mut state = ParserState::default();
+        let first = run(parser, &mut state, &bytes[..cut], 0).unwrap();
+        let mut state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+        let second = run(parser, &mut state, &bytes[cut..], cut as u64).unwrap();
+        check(&[first, second]);
+    }
+}
+
+#[test]
+fn fork_records_copy_the_named_parent_messages() {
+    let records = [
+        json!({"type":"user","uuid":"copy-u","sessionId":"fork","parentUuid":null,
+               "forkedFrom":{"sessionId":"root","messageUuid":"root-u"},
+               "message":{"role":"user","content":"Check the table."}}),
+        json!({"type":"assistant","uuid":"copy-a","sessionId":"fork","parentUuid":"copy-u",
+               "forkedFrom":{"sessionId":"root","messageUuid":"root-a"},
+               "message":{"id":"answer","role":"assistant","content":"The table checks out."}}),
+        json!({"type":"user","uuid":"fork-u","sessionId":"fork","parentUuid":"copy-a",
+               "message":{"role":"user","content":"Check the dates too."}}),
+    ];
+    check_appended(&main_file("fork"), &records, |steps| {
+        let messages = final_messages(steps);
+        let facts: Vec<_> = messages
+            .iter()
+            .map(|m| {
+                (
+                    m.session.native().as_str(),
+                    m.id.native().as_str(),
+                    m.parent.as_ref().map(|id| id.native().as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            facts,
+            [
+                ("root", "root-u", None),
+                ("root", "root-a", Some("root-u")),
+                ("fork", "fork-u", Some("root-a")),
+            ]
+        );
+        let copies: Vec<_> = steps
+            .iter()
+            .flat_map(|step| &step.output.prefix_copies)
+            .collect();
+        let copy = polylogue_model::PrefixCopy {
+            parent: session_id("root").unwrap(),
+            child: session_id("fork").unwrap(),
+            explicit_members: true,
+        };
+        assert!(!copies.is_empty());
+        assert!(copies.into_iter().all(|stated| *stated == copy));
+        let members: Vec<_> = steps
+            .iter()
+            .flat_map(|step| &step.output.prefix_members)
+            .map(|member| {
+                (
+                    &member.parent,
+                    &member.child,
+                    member.message.native().as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            members,
+            [
+                (&copy.parent, &copy.child, "root-u"),
+                (&copy.parent, &copy.child, "root-a"),
+            ]
+        );
+    });
+}
+
+fn task(uuid: &str, id: &str, prompt: &str) -> Json {
+    assistant(
+        uuid,
+        uuid,
+        json!({"type":"tool_use","name":"Task","id":id,"input":{"prompt":prompt}}),
+    )
+}
+
+fn sidechain(uuid: &str, content: Json) -> Json {
+    json!({"type":"user","uuid":uuid,"sessionId":"s1","isSidechain":true,"parentUuid":null,
+           "message":{"role":"user","content":content}})
+}
+
+fn check_sidechain_calls(records: &[Json], expected: &[(&str, Option<&str>)]) {
+    check_appended(&main_file("s1"), records, |steps| {
+        let calls: Vec<_> = steps
+            .iter()
+            .flat_map(|step| &step.output.links)
+            .map(|link| {
+                assert_eq!(link.parent, session_id("s1").unwrap());
+                assert_eq!(link.kind, LinkKind::Spawn);
+                (link.child.native().as_str(), link.call_id.as_deref())
+            })
+            .collect();
+        assert_eq!(calls, expected);
+    });
+}
+
+#[test]
+fn sidechain_names_its_only_open_task() {
+    let records = [
+        task("a1", "call-one", "Review the index."),
+        sidechain("review", json!("Review the index.")),
+        json!({"type":"user","uuid":"result","sessionId":"s1",
+               "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-one","content":"Done."}]}}),
+        sidechain("unmatched", json!("Review the index.")),
+    ];
+    check_sidechain_calls(
+        &records,
+        &[
+            ("s1~side-review", Some("call-one")),
+            ("s1~side-unmatched", None),
+        ],
+    );
+}
+
+#[test]
+fn interleaved_sidechains_match_their_own_open_tasks() {
+    let records = [
+        task("a1", "call-one", "Review the index."),
+        task("a2", "call-two", "Review the appendix."),
+        sidechain("index", json!("Review the index.")),
+        sidechain(
+            "appendix",
+            json!([{"type":"text","text":"Your task: Review the appendix. Report any issues."}]),
+        ),
+        json!({"type":"assistant","uuid":"index-answer","sessionId":"s1","isSidechain":true,
+               "parentUuid":"index","message":{"role":"assistant","content":"The index is correct."}}),
+        json!({"type":"assistant","uuid":"appendix-answer","sessionId":"s1","isSidechain":true,
+               "parentUuid":"appendix","message":{"role":"assistant","content":"The appendix is correct."}}),
+    ];
+    check_sidechain_calls(
+        &records,
+        &[
+            ("s1~side-index", Some("call-one")),
+            ("s1~side-appendix", Some("call-two")),
+        ],
+    );
+}
+
+#[test]
+fn sidechain_names_no_call_when_several_prompts_match() {
+    let records = [
+        task("a1", "call-one", "Review the index."),
+        task("a2", "call-two", "Review the appendix."),
+        sidechain("both", json!("Review the index. Review the appendix.")),
+    ];
+    check_sidechain_calls(&records, &[("s1~side-both", None)]);
+}
+
+#[test]
+fn opening_sidechain_prompt_is_written_by_a_model() {
+    use polylogue_model::WrittenBy;
+    let mut follow_up = sidechain("follow-up", json!("Now check the appendix."));
+    follow_up["parentUuid"] = json!("opening");
+    follow_up["origin"] = json!({"kind":"human"});
+    let records = [sidechain("opening", json!("Check the table.")), follow_up];
+    check_appended(&main_file("s1"), &records, |steps| {
+        let messages = final_messages(steps);
+        assert_eq!(
+            messages.iter().map(WrittenBy::of).collect::<Vec<_>>(),
+            [WrittenBy::Model, WrittenBy::Human]
+        );
+        assert_eq!(messages[0].prompt_kind, Some(PromptKind::Model));
+    });
+}
+
+#[test]
+fn first_subagent_prompt_after_copied_messages_is_written_by_a_model() {
+    use polylogue_model::WrittenBy;
+    let agent = ClaudeCode {
+        file: File::Subagent {
+            stem: "agent-next".into(),
+        },
+    };
+    let records = [
+        json!({"type":"user","uuid":"original","sessionId":"s1","agentId":"first","parentUuid":null,
+               "message":{"role":"user","content":"Check the table."}}),
+        json!({"type":"assistant","uuid":"answer","sessionId":"s1","agentId":"first","parentUuid":"original",
+               "message":{"role":"assistant","content":"The table is correct."}}),
+        json!({"type":"user","uuid":"delegated","sessionId":"s1","agentId":"next","parentUuid":"answer",
+               "message":{"role":"user","content":"Check the appendix."}}),
+        json!({"type":"user","uuid":"later","sessionId":"s1","agentId":"next","parentUuid":"delegated",
+               "message":{"role":"user","content":"That is enough."}}),
+    ];
+    check_appended(&agent, &records, |steps| {
+        let messages = final_messages(steps);
+        let writers: Vec<_> = messages
+            .iter()
+            .map(|m| {
+                (
+                    m.session.native().as_str(),
+                    m.id.native().as_str(),
+                    WrittenBy::of(m),
+                )
+            })
+            .collect();
+        assert_eq!(
+            writers,
+            [
+                ("agent-first", "original", WrittenBy::Model),
+                ("agent-first", "answer", WrittenBy::Model),
+                ("agent-next", "delegated", WrittenBy::Model),
+                ("agent-next", "later", WrittenBy::Human),
+            ]
+        );
+        assert_eq!(messages[2].prompt_kind, Some(PromptKind::Model));
+    });
 }

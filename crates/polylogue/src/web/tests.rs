@@ -859,14 +859,29 @@ fn session_parent_links_are_scoped_and_missing_parent_stays_incomplete() {
             "synthetic child",
         ))
         .unwrap();
-        record["forkedFrom"] = serde_json::json!({"sessionId": parent, "messageUuid": "u1"});
+        let input = if child == "orphan" {
+            record["resumeSessionId"] = serde_json::json!(parent);
+            format!("{record}\n")
+        } else {
+            let (uuid, text) = if child == "child" {
+                ("u1", "look at <script>alert(1)</script> & the parser")
+            } else {
+                ("unrelated-prompt", "synthetic unrelated parent")
+            };
+            let mut copy: serde_json::Value = serde_json::from_str(
+                &polylogue_testkit::claude_user(&format!("copy-{child}"), child, text),
+            )
+            .unwrap();
+            copy["forkedFrom"] = serde_json::json!({"sessionId": parent, "messageUuid": uuid});
+            format!("{copy}\n{record}\n")
+        };
         std::fs::write(
             r.w.home.join(format!(".claude/projects/-p/{child}.jsonl")),
-            format!("{record}\n"),
+            input,
         )
         .unwrap();
     }
-    r.w.wait_for(|status| status["store"]["messages"] == 4);
+    r.w.wait_for(|status| status["store"]["messages"] == 5);
     rt().block_on(async {
         use polylogue_model::read::{Card, ItemKind, ParentIssue, ReadRecord, ValueState};
         let (status, _, html) = send_html(&r, "/s/claude-code:child?view=tree").await;
