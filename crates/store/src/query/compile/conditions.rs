@@ -387,7 +387,7 @@ impl<'a> Compiler<'a> {
                 let p = self.text_param(&me);
                 format!("{s}.id = {p}")
             }
-            id => self.session_reference(&format!("{s}.native_id"), "native_id", id),
+            id => self.session_reference(&format!("{s}.native_id"), "native_id", id, true),
         })
     }
 
@@ -416,13 +416,24 @@ impl<'a> Compiler<'a> {
     }
 
     /// The one session whose `column` is `id`, or else starts with it: the
-    /// caller checks that exactly one does before the query runs, so a
-    /// prefix two sessions share is refused rather than answered with both.
-    pub(super) fn session_reference(&mut self, expr: &str, column: &str, id: &str) -> String {
+    /// caller checks that at most one does before the query runs, so a
+    /// prefix two sessions share is refused rather than answered with both,
+    /// and that a `reference` names one. An ID that names no session
+    /// compares with the empty string, which no ID is, so on a row that has
+    /// the column the condition is false rather than unknown, and its
+    /// negation holds.
+    pub(super) fn session_reference(
+        &mut self,
+        expr: &str,
+        column: &str,
+        id: &str,
+        reference: bool,
+    ) -> String {
         let exact = self.text_param(id);
         let prefix = self.text_param(&like_prefix(id));
         self.id_checks.push(IdCheck {
             word: id.to_owned(),
+            reference,
             sql: format!(
                 "WITH exact AS MATERIALIZED (SELECT id FROM session WHERE {column}=?1) \
                  SELECT id FROM exact UNION SELECT s.id \
@@ -431,13 +442,14 @@ impl<'a> Compiler<'a> {
             ),
             params: vec![Param::Text(id.to_owned()), Param::Text(like_prefix(id))],
         });
-        // The check above refuses missing or ambiguous references. Resolve the
+        // The check above refuses ambiguous and absent references. Resolve the
         // value once, with a short-circuited fallback, so a full ID remains
         // an indexed equality when it drives a scope.
         format!(
             "{expr}=coalesce(\
              (SELECT {column} FROM session WHERE {column}={exact} LIMIT 1),\
-             (SELECT {column} FROM session WHERE {column} LIKE {prefix} ESCAPE '\\' LIMIT 1))"
+             (SELECT {column} FROM session WHERE {column} LIKE {prefix} ESCAPE '\\' LIMIT 1),\
+             '')"
         )
     }
 
@@ -453,12 +465,14 @@ impl<'a> Compiler<'a> {
             format!("{s}.pk")
         } else {
             match units::spec(scope.unit).session_pk {
-                "" | "NULL" => return Ok(self.session_reference(&format!("{s}.id"), "id", id)),
+                "" | "NULL" => {
+                    return Ok(self.session_reference(&format!("{s}.id"), "id", id, true));
+                }
                 template => scope.a.expand(template),
             }
         };
         // Resolve the reference once, so the row's own session key can use its index.
-        let resolved = self.session_reference("rs.id", "id", id);
+        let resolved = self.session_reference("rs.id", "id", id, true);
         // One resolved session has at most one non-null key. For tool calls,
         // IS preserves a miss as false and lets SQLite prefer the session
         // index over the action index, whose common actions span the archive.
@@ -832,7 +846,7 @@ impl<'a> Compiler<'a> {
                 let mut parts = vec![];
                 for x in values {
                     if def.column_reference() == Some(ColumnReference::Session) {
-                        parts.push(self.session_reference(expr, "id", x));
+                        parts.push(self.session_reference(expr, "id", x, false));
                         continue;
                     }
                     let exact = self.text_param(x);

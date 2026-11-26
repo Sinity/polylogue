@@ -450,6 +450,63 @@ fn listing_wait_returns_when_rows_match() {
     });
 }
 
+/// A waiting listing on an ID no session has yet keeps waiting, and returns
+/// the session once it is imported (docs/query.md, References).
+#[test]
+fn a_waiting_listing_on_an_absent_id_returns_when_the_session_appears() {
+    let d = test_daemon::start("first prompt");
+    let reads = d.watch_reads();
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| {
+            line(
+                &d,
+                "wait-for-s2",
+                json!({"selection": "sessions where id:claude-code:s2", "wait": "1m"}),
+            )
+        });
+        let read = reads
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        while read.limit.stage() != Some("listing wait") {
+            read.limit.check().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        std::fs::write(
+            d.home.join(".claude/projects/-p/s2.jsonl"),
+            polylogue_testkit::claude_user("u2", "s2", "second prompt"),
+        )
+        .unwrap();
+        // The new session's derivation may still be running: the listing
+        // then answers degraded, with the row.
+        let answer = waiting.join().unwrap();
+        let listing = answer
+            .value()
+            .unwrap_or_else(|| panic!("{answer:?}"))
+            .clone();
+        assert_eq!(
+            listing["reply"]["rows"].as_array().unwrap().len(),
+            1,
+            "{listing}"
+        );
+        assert_eq!(listing["reply"]["rows"][0]["id"], "claude-code:s2");
+    });
+}
+
+/// A reference selection that names no session is `not_found`; only a
+/// query's condition on an absent ID answers empty.
+#[test]
+fn a_reference_that_names_nothing_answers_not_found() {
+    let d = test_daemon::start("first prompt");
+    let read = steps(
+        &d,
+        "absent-reference",
+        json!({"selection": "session:claude-code:absent", "steps": [{"verb": "read"}]}),
+    );
+    assert_eq!(read[0]["outcome"]["status"], "failed", "{read:?}");
+    assert_eq!(read[0]["outcome"]["error"]["kind"], "not_found", "{read:?}");
+    assert_eq!(read[0]["outcome"]["error"]["code"], "not_found", "{read:?}");
+}
+
 #[test]
 fn listing_wait_caps_long_mcp_requests() {
     use crate::commands::Surface;

@@ -767,6 +767,10 @@ impl Reader<'_> {
                 .collect::<Vec<_>>();
             match ids.len() {
                 1 => {}
+                // A field condition on an ID no session has is a condition no
+                // row meets: the query answers empty, and a waiting listing
+                // keeps waiting for the session.
+                0 if !check.reference => {}
                 0 => {
                     return Err(SelectionError::Invalid {
                         kind: polylogue_model::Code::NotFound,
