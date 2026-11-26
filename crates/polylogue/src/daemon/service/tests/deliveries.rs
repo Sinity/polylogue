@@ -503,6 +503,30 @@ fn undelivered_brief_does_not_move_the_changes_since_point() {
 }
 
 #[test]
+fn a_pending_outcome_makes_a_committed_brief_the_start_of_the_next_delta() {
+    let d = daemon_with_a_project();
+    lesson(&d, "the otter release needs a signed tag");
+    let startup = brief(&d, "committed-start", StartSource::Startup);
+    after_queued_writes(&d);
+    lesson(&d, "the otter release also needs release notes");
+    let (pause, held) = hold_writer(&d, "held-before-outcome");
+    delivered(&d, startup["delivery"].as_str().unwrap());
+    let resume = brief(&d, "pending-outcome-resume", StartSource::Resume);
+    let text = resume["prepared"]["text"].as_str().unwrap();
+    assert!(text.contains("Changes since your last brief at"), "{text}");
+    assert!(
+        text.contains("the otter release also needs release notes"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("the otter release needs a signed tag"),
+        "{text}"
+    );
+    pause.release();
+    held.join().unwrap();
+}
+
+#[test]
 fn a_delivery_sent_while_the_writer_is_busy_is_committed_and_read_by_the_next_brief() {
     use polylogue_store::writer::Queued;
     let mut d = daemon_with_a_project();

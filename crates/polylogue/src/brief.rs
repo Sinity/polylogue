@@ -1774,6 +1774,7 @@ fn recall(
         context,
         ranking_identity,
         near,
+        ..
     } = *brief;
     let words = search::words(text_in);
     let text = text_in.trim();
