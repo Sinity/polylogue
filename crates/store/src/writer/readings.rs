@@ -47,6 +47,9 @@ pub(super) struct Chain<'a> {
     /// The transaction's change summary: relations named by copied-prefix
     /// facts are recorded before they change.
     pub changes: &'a crate::change_summary::ChangeSummary,
+    /// The chain gains or loses its parse with this step, which decides
+    /// which content-named messages of the input's older chains are held.
+    pub holds_changed: bool,
 }
 
 /// The coordinates of a link as its chain states them: its natural key.
@@ -103,7 +106,7 @@ fn position(value: u64) -> Result<i64> {
 
 /// The reading tables, and the per-chain tables that are part of a reading.
 const READING_TABLES: &[&str] = &[
-    "session_record",
+    "session_parse",
     "session_alias",
     "message_parse",
     "parse_text",
@@ -138,7 +141,7 @@ pub(super) fn delete(
             .collect::<rusqlite::Result<_>>()?)
     };
     for session in strings(
-        "SELECT session_id FROM session_record WHERE input_pk=?1 AND chain=?2
+        "SELECT session_id FROM session_parse WHERE input_pk=?1 AND chain=?2
          UNION SELECT session_id FROM message_parse WHERE input_pk=?1 AND chain=?2
          UNION SELECT session_id FROM event_parse WHERE input_pk=?1 AND chain=?2 AND session_id IS NOT NULL",
     )? {
@@ -253,8 +256,8 @@ pub(super) fn write(
     write_events(tx, chain, step, &mut groups, touched)?;
     for alias in &step.output.aliases {
         tx.prepare_cached(
-            "INSERT INTO message_alias(input_pk,chain,name,target,source_start,source_end) VALUES (?1,?2,?3,?4,?5,?6)
-             ON CONFLICT(input_pk,chain,name) DO UPDATE SET target=excluded.target,source_start=excluded.source_start,source_end=excluded.source_end",
+            "INSERT INTO message_alias(input_pk,chain,name,target,source_start,source_length) VALUES (?1,?2,?3,?4,?5,?6-?5)
+             ON CONFLICT(input_pk,chain,name) DO UPDATE SET target=excluded.target,source_start=excluded.source_start,source_length=excluded.source_length",
         )?
         .execute(params![
             chain.input_pk,
@@ -343,9 +346,9 @@ pub(super) fn write(
         .apply(tx, chain.input_pk, chain.chain, step.parsed_upto, |_| {
             Ok(chain.committed)
         })?;
-    if step.progress.reached_end() {
-        // Once a newer chain is read to its end, an older chain's
-        // content-named messages that it no longer holds are gone.
+    if chain.holds_changed {
+        // Once a newer chain is parsed, an older chain's content-named
+        // messages that it no longer holds are gone (`held_message_parse`).
         for row in tx
             .prepare_cached(
                 "SELECT session_id,message_id FROM message_parse
@@ -388,7 +391,7 @@ fn write_sessions(
     for session in &step.output.sessions {
         let id = session.id.to_string();
         let stored: Option<String> = tx.scalar_optional(
-            "SELECT facts FROM session_record WHERE input_pk=?1 AND chain=?2 AND session_id=?3",
+            "SELECT facts FROM session_parse WHERE input_pk=?1 AND chain=?2 AND session_id=?3",
             params![chain.input_pk, chain.chain, id],
         )?;
         let stored: Option<Session> = stored
@@ -397,9 +400,9 @@ fn write_sessions(
         let mut merged = stored.clone().unwrap_or_else(|| session.clone());
         merged.merge(session);
         tx.prepare_cached(
-            "INSERT INTO session_record(input_pk,chain,session_id,facts,committed) VALUES (?1,?2,?3,?4,?5)
+            "INSERT INTO session_parse(input_pk,chain,session_id,facts,committed) VALUES (?1,?2,?3,?4,?5)
              ON CONFLICT(input_pk,chain,session_id) DO UPDATE SET facts=excluded.facts,
-             committed=coalesce(max(session_record.committed,excluded.committed),session_record.committed,excluded.committed)",
+             committed=coalesce(max(session_parse.committed,excluded.committed),session_parse.committed,excluded.committed)",
         )?
         .execute(params![chain.input_pk, chain.chain, id, serde_json::to_string(&merged)?, chain.committed])?;
         let before: BTreeSet<String> = stored
@@ -598,16 +601,16 @@ fn write_messages(
             let route = row.route(chain.route);
             let message = &row.message;
             tx.prepare_cached(
-                "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_end,seq,record_position,
-                     at,route,completion,id_kind,hash,layout,response_key,content_name,committed,
+                "INSERT INTO message_parse(input_pk,chain,message_id,session_id,source_start,source_length,seq,record_position,
+                     at,route,completion,id_kind,hash,layout,response_key,content_name,
                      content_group,content_start,content_length)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20)
+                 VALUES (?1,?2,?3,?4,?5,?6-?5,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
                  ON CONFLICT(input_pk,chain,message_id) DO UPDATE SET session_id=excluded.session_id,
-                     source_start=excluded.source_start,source_end=excluded.source_end,seq=excluded.seq,
+                     source_start=excluded.source_start,source_length=excluded.source_length,seq=excluded.seq,
                      record_position=excluded.record_position,at=excluded.at,route=excluded.route,
                      completion=excluded.completion,id_kind=excluded.id_kind,hash=excluded.hash,
                      layout=excluded.layout,response_key=excluded.response_key,content_name=excluded.content_name,
-                     committed=excluded.committed,content_group=excluded.content_group,
+                     content_group=excluded.content_group,
                      content_start=excluded.content_start,content_length=excluded.content_length",
             )?
             .execute(params![
@@ -627,7 +630,6 @@ fn write_messages(
                 layout,
                 row.response,
                 crate::chain_names::content_name(row),
-                chain.committed,
                 content.group,
                 content.start,
                 content.length,
@@ -802,11 +804,11 @@ fn write_documents(
             touched,
         )?;
         tx.prepare_cached(
-            "INSERT INTO document_parse(input_pk,chain,document_id,route,source_start,source_end,source_time,time,hash,body,committed)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
+            "INSERT INTO document_parse(input_pk,chain,document_id,route,source_start,source_length,source_time,time,hash,body)
+             VALUES (?1,?2,?3,?4,?5,?6-?5,?7,?8,?9,?10)
              ON CONFLICT(input_pk,chain,document_id) DO UPDATE SET route=excluded.route,source_start=excluded.source_start,
-                 source_end=excluded.source_end,source_time=excluded.source_time,time=excluded.time,hash=excluded.hash,
-                 body=excluded.body,committed=excluded.committed",
+                 source_length=excluded.source_length,source_time=excluded.source_time,time=excluded.time,hash=excluded.hash,
+                 body=excluded.body",
         )?
         .execute(params![
             chain.input_pk,
@@ -819,7 +821,6 @@ fn write_documents(
             prepared.time,
             prepared.hash.as_slice(),
             prepared.body,
-            chain.committed,
         ])?;
         touched.documents.insert(id);
     }
@@ -906,14 +907,14 @@ fn write_events(
         };
         let session = event.session.as_ref().map(ToString::to_string);
         tx.prepare_cached(
-            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,source_start,source_end,
-                 after_message_id,kind,at,hash,imported_sources,committed,
+            "INSERT INTO event_parse(input_pk,chain,event_id,session_id,route,seq,source_start,source_length,
+                 after_message_id,kind,at,hash,imported_sources,
                  content_group,content_start,content_length,data_length)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8-?7,?9,?10,?11,?12,?13,?14,?15,?16,?17)
              ON CONFLICT(input_pk,chain,event_id) DO UPDATE SET session_id=excluded.session_id,route=excluded.route,
-                 seq=excluded.seq,source_start=excluded.source_start,source_end=excluded.source_end,
+                 seq=excluded.seq,source_start=excluded.source_start,source_length=excluded.source_length,
                  after_message_id=excluded.after_message_id,kind=excluded.kind,at=excluded.at,hash=excluded.hash,
-                 imported_sources=excluded.imported_sources,committed=excluded.committed,
+                 imported_sources=excluded.imported_sources,
                  content_group=excluded.content_group,content_start=excluded.content_start,
                  content_length=excluded.content_length,data_length=excluded.data_length",
         )?
@@ -931,7 +932,6 @@ fn write_events(
             event.at.map(Timestamp::unix_ms),
             prepared.hash.as_slice(),
             serde_json::to_string(&original)?,
-            chain.committed,
             content.group,
             content.start,
             prepared.fields_length as i64,
@@ -1313,7 +1313,6 @@ pub(crate) struct EventReading {
     pub imported: String,
     pub hash: Vec<u8>,
     pub fields: Vec<u8>,
-    pub committed: Option<i64>,
 }
 
 /// The readings a shown event shows: those naming its ID, and those of the
@@ -1335,8 +1334,8 @@ pub(crate) fn event_readings(conn: &Connection, event_pk: i64) -> Result<Vec<Eve
     let mut reader = crate::content::Reader::default();
     for (event_id, copy) in stated {
         let mut statement = conn.prepare_cached(
-            "SELECT i.id,i.format,r.chain,r.source_start,r.source_end,r.imported_sources,r.hash,
-                 r.committed,r.event_id,r.content_group,r.content_start,r.content_length,r.data_length
+            "SELECT i.id,i.format,r.chain,r.source_start,r.source_start+r.source_length,r.imported_sources,r.hash,
+                 r.event_id,r.content_group,r.content_start,r.content_length,r.data_length
              FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk
              WHERE (?1 IS NOT NULL AND r.event_id=?1) OR (?2 IS NOT NULL AND r.session_id=?2)",
         )?;
@@ -1350,14 +1349,12 @@ pub(crate) fn event_readings(conn: &Connection, event_pk: i64) -> Result<Vec<Eve
                     r.get::<_, Option<u64>>(4)?,
                     r.get::<_, String>(5)?,
                     r.get::<_, Vec<u8>>(6)?,
-                    r.get::<_, Option<i64>>(7)?,
-                    r.get::<_, String>(8)?,
-                    crate::content::Piece::of(r, 9)?,
+                    r.get::<_, String>(7)?,
+                    crate::content::Piece::of(r, 8)?,
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        for (input, format, chain, start, end, imported, hash, committed, stated_id, piece) in rows
-        {
+        for (input, format, chain, start, end, imported, hash, stated_id, piece) in rows {
             let mut event = read_event(conn, &mut reader, piece)?;
             let (moved, shown) = ids.event(&event, &stated_id)?;
             if shown != id {
@@ -1376,7 +1373,6 @@ pub(crate) fn event_readings(conn: &Connection, event_pk: i64) -> Result<Vec<Eve
                 imported,
                 hash,
                 fields: serde_json::to_vec(&event)?,
-                committed,
             });
         }
     }

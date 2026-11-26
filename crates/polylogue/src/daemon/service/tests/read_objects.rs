@@ -221,17 +221,13 @@ fn object_stream_stops_on_scope_reset_and_cancellation_before_record_body() {
             polylogue_reading::stream(
                 &reader,
                 d.daemon.as_ref(),
-                &crate::daemon::service::read::request_of(
-                    crate::daemon::verbs::read::arguments(
-                        &crate::protocol::steps::ReadStep {
-                            delivery: ReadDelivery::Stream,
-                            format: Some("jsonl".into()),
-                            ..Default::default()
-                        },
-                        "request:interrupted-object".into(),
-                    )
-                    .unwrap(),
-                    None,
+                &crate::daemon::verbs::read::request_for(
+                    crate::protocol::steps::ReadStep {
+                        delivery: ReadDelivery::Stream,
+                        format: Some("jsonl".into()),
+                        ..Default::default()
+                    },
+                    "request:interrupted-object".into(),
                 )
                 .unwrap(),
                 &operation,

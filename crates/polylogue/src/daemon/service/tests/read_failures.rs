@@ -88,7 +88,10 @@ fn stale_cursor_failures_suggest_rerun() {
             selection: Some(target.into()),
             steps: vec![crate::protocol::line::Step::Read(Box::new(
                 crate::protocol::steps::ReadStep {
-                    view,
+                    options: polylogue_model::read::ReadOptions {
+                        view,
+                        ..Default::default()
+                    },
                     format: Some("json".into()),
                     budget: polylogue_model::read::ReadBudget::Tokens(1),
                     ..Default::default()

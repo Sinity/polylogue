@@ -6,8 +6,10 @@ input. Change the compiler version in common and both products together.
 
 | Command | Does |
 |---|---|
-| `cargo xtask check --changed` | formatting, the workspace-hack verification, Clippy (unchanged crates reuse their result), the Nix checks when their inputs changed, and the tests your changes since the merge base with `origin/master` can affect: the loop while editing |
+| `cargo xtask check --changed` | formatting, the workspace-hack verification, Clippy (unchanged crates reuse their result), the Nix checks when their inputs changed, and the tests your changes since the merge base with `origin/master` can affect |
 | `cargo xtask check [--base <ref>]` | the same with every test, or with the parts and tests the changes since the merge base with `<ref>` can affect |
+| `dev/land [--dry-run] <n>` | land pull request `n` once its required check is green against a base still current for the packages it changes ([landing](#landing)) |
+| `dev/land --queue [--once] [--dry-run]` | land every ready pull request, in passes a minute apart ([landing](#landing)) |
 | `cargo xtask fast` | formatting, the workspace-hack verification and both Clippy configurations, without tests |
 | `cargo xtask test -p <crate> --lib -E 'test(<name>)'` | the selected tests under nextest, building only that crate's library test target and what it depends on |
 | `cargo xtask test --changed`, `--base <ref>` | the tests the changes since the merge base with `origin/master` (or `<ref>`) can affect: changed packages and their dependents |
@@ -190,9 +192,13 @@ A host may queue these commands through its own job runner; the operations
 AgentCTL runs are declared in `.agentctl/project.toml`. They clear an ambient
 `CARGO_TARGET_DIR` before entering the workspace's shell, which then selects
 the checkout's own host target and seeds its dependency artifacts through
-`sinnix-cargo-target` where the host has it. `fast` and `compile` share the
-one-slot `compile` queue; `focused` runs in the `normal` queue beside them,
-and full checks and Nix checks in `bulk`. `measure` is the one operation for
+`sinnix-cargo-target` where the host has it. While writing, an agent runs
+`compile` (a type-check) and `focused` for the tests it writes or changes,
+with `-p <package>` and a target flag; the suite runs in the hosted check,
+and a local `check` only reproduces a failure the hosted check reported.
+`fast` and `compile` share the one-slot `compile` queue; `focused` runs in
+the `normal` queue beside them, and full checks and Nix checks in `bulk`.
+`measure` is the one operation for
 benchmarks, archive rebuilds and measurement drivers: it runs one at a time,
 waits until 10 GiB of memory is free rather than starting a run its memory
 limit would end, runs at low CPU and I/O priority, and never sees the paid
@@ -203,12 +209,15 @@ selection. Keep the experimental target exclusive to the same checkout.
 
 To build against a local checkout of the shared crates, run
 `cargo xtask link-common PATH`, and `cargo xtask unlink-common` before
-committing a lock file, as the shared
+committing a lock file. New common commits arrive as a pull request on the
+`update-polylogue-sinex-common` branch, opened by common's `Update product
+locks` workflow once Sinex's master has adopted them; it moves the Sinex
+revision and the common lock together. The shared
 [dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
-describes.
+describes the route.
 
-For an early type-check of one package, `cargo check --locked -p
-polylogue-sinex --tests` checks its library target without compiling a test
+A type-check of one package, `cargo check --locked -p polylogue-sinex
+--tests`, checks its library and test targets without compiling a test
 executable. The declared AgentCTL `compile` operation accepts those Cargo check
 arguments.
 
@@ -251,11 +260,68 @@ artifact it no longer needs, and a dependency's new version gives every unit
 above it a new name, so without this each saved build kept the copies of all
 earlier ones. A manual run may reuse that build but never replaces it.
 
+### Landing
+
+A pull request's run checks GitHub's merge of its head with master at that
+moment, and its `check` job records that master commit as the notice
+annotation `tested base` on its check run. `dev/land` (git, gh and awk;
+nothing to build) compares the packages a pull request changes with those
+master changed since the tested base. A package is a directory with a
+`Cargo.toml`; another path counts as its top-level directory; the root
+manifest, `Cargo.lock`, `rust-toolchain.toml`, the flake, `.cargo/`,
+`.config/` and `.github/` count as every package; Markdown counts as none.
+When the two sets meet, or the run recorded no tested base and the pull
+request changes more than Markdown, the pull request is stale: master is
+merged into its branch with GitHub's update-branch and the check runs again.
+Otherwise it is squash-merged with `--match-head-commit`. Master can still
+move in the second or two between the last comparison and the merge. The
+comparison does not see a break across packages, such as a new caller in one
+crate of an API master removed from another; master's own run after the
+merge finds it.
+
+A pull request is ready when it is open, not a draft, not labelled `hold`,
+has no unresolved review threads and its required check is green on its head.
+The owner's part is to make it ready: resolving a review thread, once the
+finding is answered, is what releases it. `hold`, with the reason in a
+comment, parks a finished pull request.
+
+`dev/land --queue` runs as the declared `land_queue` operation, in passes a
+minute apart. Each pass reads every open pull request with two GraphQL calls,
+merges the ready ones that are current, oldest first, deciding each against
+master's tip after the merge before it, and then updates the stale ones
+without waiting for their checks. Of the pull requests whose package sets
+overlap, at most one is in flight at a time, since each merge makes its
+overlapping siblings stale again. In flight means updated in this pass, or
+with jobs of its check queued or running on its head, whoever pushed it; each
+pass reads this afresh, so when that check goes red or the pull request
+becomes a draft, held or conflicting, the next pass updates the next stale
+one. A head with no check job yet holds nothing back. A pass prints a block when it merged or updated something, and every
+ten minutes otherwise: merged, updated, waiting (with the reason), waiting on
+review threads, red (with the failed jobs), conflicting, held and draft pull
+requests, with numbers and titles. A red check or a conflict never stops the
+queue, and it never reruns a check; a conflict needs the owner or a new
+worker. `--once` runs one pass and exits 0 unless a pull request is red or
+conflicting. The queue keeps nothing beyond what GitHub holds, so stopping
+and restarting it is always safe.
+
+`dev/land <n>` lands one pull request by hand: it waits for the required
+check, polling once a minute, updates the branch and waits again while it is
+stale, and prints the head, tested base, master's tip, both package sets and
+the runs it waited for. It stops on a draft, `hold`, unresolved threads, a
+conflict, or a red check, naming the failed jobs. `--dry-run`, with either
+form, prints the decisions without updating or merging; for one pull request
+it exits 0 only when it would merge now.
+
 ## Published package
 
 The `package` workflow builds `.#default` for every master commit and pushes
 its runtime closure and production compiler artifacts to `sinity.cachix.org`.
-The next source-only package build reuses those compiler artifacts. Sinnix deploys a revision only
+The next source-only package build reuses those compiler artifacts.
+The release profile (`[profile.release]` in `Cargo.toml`) builds with whole-program
+optimisation, one code generation unit and stripped symbols: the binary is 73 MB
+instead of 115 MB, and a hosted release build takes about 15 to 25 minutes
+instead of 10. Panics stay unwinding because the build and the engine catch a
+failed worker. Sinnix deploys a revision only
 after fetching that package, so its switches never compile Polylogue. To
 deploy a revision master does not contain, such as a deployment branch's head,
 qualify that tree with `gh workflow run check -f rev=<full-commit-sha>`,

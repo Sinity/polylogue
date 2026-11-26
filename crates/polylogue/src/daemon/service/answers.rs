@@ -110,9 +110,9 @@ pub(crate) fn answer_reserve(left: std::time::Duration) -> std::time::Duration {
 
 /// The answer of an advisory that has nothing to offer: also its answer
 /// when preparation cannot finish within its cap, on every surface.
-pub(crate) fn advisory_silence() -> Answer<crate::protocol::context::Answer> {
+pub(crate) fn advisory_silence() -> Answer<crate::brief::BriefReply> {
     crate::protocol::written(
-        crate::protocol::context::Answer {
+        crate::brief::BriefReply {
             delivery: None,
             prepared: crate::advisory::empty(),
         },
@@ -133,7 +133,7 @@ pub(crate) fn context(
     sender: Option<polylogue_model::DeliverySender>,
     budget_tokens: command_surface::TokenBudget,
     operation: &Arc<Context>,
-) -> Answer<crate::protocol::context::Answer> {
+) -> Answer<crate::brief::BriefReply> {
     use polylogue_store::read::limit::ReadLimit;
     let is_advisory = matches!(ask, Ask::Advisory { .. });
     let mut cooldown = if let Ask::Advisory { session, .. } = ask {
@@ -144,7 +144,7 @@ pub(crate) fn context(
             Some(cooldown) => Some(cooldown),
             None => {
                 return crate::protocol::written(
-                    crate::protocol::context::Answer {
+                    crate::brief::BriefReply {
                         delivery: None,
                         prepared: crate::advisory::empty(),
                     },
@@ -155,22 +155,26 @@ pub(crate) fn context(
     } else {
         None
     };
-    let pending_advice = if let Ask::Advisory { session, .. } = ask {
-        match d.queued_deliveries.pending_advice(&session.to_string()) {
-            Some(pending) => pending,
-            None => {
-                return crate::protocol::written(
-                    crate::protocol::context::Answer {
-                        delivery: None,
-                        prepared: crate::advisory::empty(),
-                    },
-                    false,
-                );
+    // Read pending records before opening the snapshot, so every accepted
+    // delivery is represented here or in the committed rows we read.
+    let pending_deliveries = d
+        .writes
+        .as_ref()
+        .map_or_else(Vec::new, |writes| writes.archive().pending_deliveries());
+    let pending_refs: Vec<_> = pending_deliveries
+        .iter()
+        .filter_map(|pending| match (&pending.request.write, ask.recipient()) {
+            (
+                UserWrite::Deliver(delivery) | UserWrite::DeliveredAdvice(delivery),
+                Some(recipient),
+            ) if delivery.event == polylogue_model::DeliveryEvent::Advice
+                && delivery.recipient_id.as_deref() == Some(recipient.to_string().as_str()) =>
+            {
+                Some(delivery.refs.clone())
             }
-        }
-    } else {
-        Vec::new()
-    };
+            _ => None,
+        })
+        .collect();
     let request_limit = ReadLimit::current();
     let brief_limit = match (ask, &request_limit) {
         (Ask::SessionStart { .. }, Some(limit)) => limit.deadline().map(|deadline| {
@@ -184,29 +188,8 @@ pub(crate) fn context(
         }),
         _ => None,
     };
-    let queued = (!is_advisory)
-        .then(|| {
-            ask.recipient()
-                .and_then(|recipient| d.queued_deliveries.latest(&recipient.to_string()))
-        })
-        .flatten();
-    let prepare = || -> Result<_, Box<Answer<crate::protocol::context::Answer>>> {
+    let prepare = || -> Result<_, Box<Answer<crate::brief::BriefReply>>> {
         let reader = d.reads.reader().map_err(|e| Box::new(store_error(&e)))?;
-        let mut applied_advice = Vec::new();
-        for (id, _) in &pending_advice {
-            if reader
-                .delivery_refs(id)
-                .map_err(|error| Box::new(store_error(&error)))?
-                .is_some()
-            {
-                applied_advice.push(id.clone());
-            }
-        }
-        d.queued_deliveries.advice_applied(&applied_advice);
-        let pending_refs: Vec<_> = pending_advice
-            .iter()
-            .map(|(_, refs)| refs.clone())
-            .collect();
         // A settings error stays the reason similarity cannot rank.
         let provider = if is_advisory {
             Ok(None)
@@ -227,21 +210,20 @@ pub(crate) fn context(
             &reader,
             provider.as_ref().ok().and_then(Option::as_ref),
         );
-        // Annotations written after this are the next brief's delta.
-        let written_up_to = reader
+        let prepared_at = reader
             .change_position()
             .map_err(|e| Box::new(store_error(&e)))?
             .archive;
         let prepared = brief::prepare(
             crate::brief::BriefContext {
                 reader: &reader,
+                pending_deliveries: &pending_deliveries,
                 delivery_id: &request_id,
                 context: operation,
                 ranking_identity: ranking_identity.as_deref(),
                 near,
             },
             &d.scope,
-            queued,
             &pending_refs,
             ask,
             budget_tokens,
@@ -249,7 +231,7 @@ pub(crate) fn context(
         .map_err(|e| match &request_limit {
             Some(limit) if limit.check().is_err() => {
                 let text = match ask {
-                    Ask::Recall { text, .. } => Some(text.as_str()),
+                    Ask::Words { text, .. } => Some(text.as_str()),
                     _ => None,
                 };
                 Box::new(crate::daemon::execution::stopped_read(
@@ -258,7 +240,7 @@ pub(crate) fn context(
             }
             _ => Box::new(store_error(&e)),
         })?;
-        Ok((prepared, reader.scope_token(), written_up_to))
+        Ok((prepared, prepared_at))
     };
     let prepared = match &brief_limit {
         Some(limit) => limit.scope(prepare),
@@ -269,7 +251,7 @@ pub(crate) fn context(
     // selection changed under it, answers with nothing on every surface. A
     // store failure is reported, never read as an empty advisory.
     let silent = advisory_silence;
-    let (prepared, selected_scope, written_up_to) = match prepared {
+    let (prepared, prepared_at) = match prepared {
         Ok(prepared) => prepared,
         Err(answer)
             if is_advisory
@@ -299,7 +281,7 @@ pub(crate) fn context(
         && let Err(error) = limit.check()
     {
         let text = match ask {
-            Ask::Recall { text, .. } => Some(text.as_str()),
+            Ask::Words { text, .. } => Some(text.as_str()),
             _ => None,
         };
         return crate::daemon::execution::stopped_read(&error, "context", text, limit);
@@ -335,51 +317,22 @@ pub(crate) fn context(
         // Queued without the caller's lifetime: the text has been handed
         // over, so its record is written even when the caller has gone.
         let request = operation.request(request_id.clone(), write);
-        let since = brief::LastBrief {
-            at: request.at,
-            seq: written_up_to,
-        };
         if is_advisory {
-            // A non-empty preparation reserves this session while its record or acknowledgment
-            // is unconfirmed. The stored outcome is still prepared until emitted.
             let session = ask.recipient().expect("advisory recipient");
-            let recent = cooldown.as_mut().expect("advisory cooldown held");
-            recent.insert(session.to_string(), operation.clock.now.as_millisecond());
-            match d
-                .queued_deliveries
-                .try_submit(writes, request, Some(selected_scope))
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    recent.remove(&session.to_string());
-                    return crate::protocol::written(
-                        crate::protocol::context::Answer {
-                            delivery: None,
-                            prepared: crate::advisory::empty(),
-                        },
-                        false,
-                    );
-                }
-                Err(error) => {
-                    recent.remove(&session.to_string());
-                    return store_error(&error);
-                }
+            cooldown
+                .as_mut()
+                .expect("advisory cooldown held")
+                .insert(session.to_string(), operation.clock.now.as_millisecond());
+        }
+        if let Err(error) = writes.archive().accept_delivery(request, Some(prepared_at)) {
+            if let Some(recent) = &mut cooldown {
+                recent.remove(&ask.recipient().expect("advisory recipient").to_string());
             }
-        } else {
-            let recipient = ask.recipient().map(|r| (r.to_string(), since));
-            if let Err(error) =
-                d.queued_deliveries
-                    .submit(writes, request, Some(selected_scope), recipient)
-            {
-                return store_error(&error);
-            }
+            return store_error(&error);
         }
         delivery = Some(request_id);
     }
-    crate::protocol::written(
-        crate::protocol::context::Answer { delivery, prepared },
-        false,
-    )
+    crate::protocol::written(crate::brief::BriefReply { delivery, prepared }, false)
 }
 
 /// Queues what happened to a delivery and answers at once: the writer
@@ -393,27 +346,38 @@ pub(crate) fn delivery_event(
     request_id: String,
     write: UserWrite,
 ) -> Answer<Value> {
+    let writes = match writer(d) {
+        Ok(writes) => writes,
+        Err(failure) => return failure.answer(),
+    };
     if let UserWrite::DeliveryEvent {
         delivery,
         what: polylogue_model::DeliveryOutcome::NotSent,
         detail,
     } = &write
         && detail.as_deref() == Some("timeout")
-        && !d.queued_deliveries.owns_preparation(delivery)
     {
-        return ok(serde_json::json!({ "queued": false, "preparation": "unconfirmed" }));
+        let pending = writes.archive().pending_deliveries().iter().any(|pending| {
+            let request = &pending.request;
+            request.id == *delivery && matches!(request.write, UserWrite::Deliver(_))
+        });
+        if !pending {
+            match writes.archive().committed_for(delivery) {
+                Ok(Some(request)) if matches!(request.request.write, UserWrite::Deliver(_)) => {}
+                Ok(_) => {
+                    return ok(
+                        serde_json::json!({ "queued": false, "preparation": "unconfirmed" }),
+                    );
+                }
+                Err(error) => return store_error(&error),
+            }
+        }
     }
-    let writes = match writer(d) {
-        Ok(writes) => writes,
-        Err(failure) => return failure.answer(),
-    };
-    match d.queued_deliveries.submit(
-        writes,
-        invocation.request(request_id.clone(), write),
-        None,
-        None,
-    ) {
-        Ok(()) => crate::protocol::written(
+    match writes
+        .archive()
+        .accept_delivery(invocation.request(request_id.clone(), write), None)
+    {
+        Ok(_) => crate::protocol::written(
             serde_json::json!({ "id": request_id, "queued": true }),
             false,
         ),

@@ -4,46 +4,33 @@ use super::ReadError;
 use crate::{BlockKind, Message, PromptKind, Role};
 use serde::{Deserialize, Serialize};
 
-/// A context message, local archive position or annotation time. The wire form remains
-/// one string, including for stored reads accepted before historical reading.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+/// The moment a reading's annotations and pages are taken at: an exact local
+/// archive position or a time. The wire form is one string.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub enum ReadAt {
-    Message(crate::MessageId),
-    Position {
-        position: crate::ChangePosition,
-        // Context message IDs are opaque: numeric components may have leading
-        // zeroes even when the same word also parses as a local position.
-        spelling: String,
-    },
+    Position(crate::ChangePosition),
     Time(crate::Timestamp),
+    /// A time in the shared time grammar, resolved against the accepted
+    /// read's clock.
     TimeExpression(String),
 }
 impl TryFrom<String> for ReadAt {
     type Error = String;
     fn try_from(text: String) -> Result<Self, String> {
-        // Local clock/date-time spellings can also have three colon-separated
-        // parts. The shared time grammar owns those words; context reads still
-        // recover the original opaque message coordinate from this string.
+        // Local clock and date-time words can also have three colon-separated
+        // parts, so the shared time grammar reads the word first.
         if query_language::time::is_time_expression(&text) {
-            if crate::MessageId::parse(&text).is_err()
-                && let Some(at) = crate::Timestamp::parse_rfc3339(&text)
-            {
-                return Ok(Self::Time(at));
-            }
-            return Ok(Self::TimeExpression(text));
-        }
-        if let Some(position) = crate::ChangePosition::parse(&text) {
-            return Ok(Self::Position {
-                position,
-                spelling: text,
+            return Ok(match crate::Timestamp::parse_rfc3339(&text) {
+                Some(at) => Self::Time(at),
+                None => Self::TimeExpression(text),
             });
         }
-        if let Ok(message) = crate::MessageId::parse(&text) {
-            return Ok(Self::Message(message));
+        if let Some(position) = crate::ChangePosition::parse(&text) {
+            return Ok(Self::Position(position));
         }
         if text.trim().is_empty() {
-            return Err("read --at requires a time, local position or context message".into());
+            return Err("read --at requires a time or a local position".into());
         }
         Ok(Self::TimeExpression(text))
     }
@@ -56,8 +43,7 @@ impl From<ReadAt> for String {
 impl std::fmt::Display for ReadAt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Message(message) => message.fmt(f),
-            Self::Position { spelling, .. } => f.write_str(spelling),
+            Self::Position(position) => position.fmt(f),
             Self::Time(at) => at.fmt(f),
             Self::TimeExpression(text) => f.write_str(text),
         }
@@ -132,95 +118,47 @@ pub enum Expansion {
     Full,
 }
 
-/// Absent expansions distinguish defaults from explicit unsupported options.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+/// How to read the selected rows, as the caller writes it: the same names
+/// on every surface. `show` and `hide` stay the words the caller typed; the
+/// accessors below expand them where items are filtered.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadOptions {
+    /// The reading view
     #[serde(default)]
     pub view: View,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Expansion>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking: Option<Expansion>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub harness: Option<Expansion>,
-    /// Head and tail lines of expanded tool output. Zero keeps the complete output.
-    #[serde(default = "output_lines")]
-    pub output_lines: u64,
-    #[serde(default)]
-    pub inherited: bool,
-    #[serde(default)]
-    pub branches: bool,
-    #[serde(default)]
-    pub turns: bool,
-    #[serde(default = "enabled")]
-    pub annotations: bool,
-    #[serde(default)]
-    pub for_others: bool,
+    /// Item kinds to show, beyond the view's own
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub alternates: Vec<String>,
-    /// Spawned sessions at their calls: hidden, a card, or inline.
-    #[serde(default = "spawn_cards")]
-    pub spawns: SpawnDisplay,
-    /// The context meter on model message headers.
-    #[serde(default)]
-    pub context_meter: bool,
-    /// For `root:REF`: read only the named physical session.
-    #[serde(default)]
-    pub physical: bool,
-    /// A context message, exact local annotation position or annotation time.
-    // The existing published nullable-string codec and its declaration text
-    // stay immutable; Rust parses the same string into the appropriate case.
+    pub show: Vec<String>,
+    /// Item kinds to hide, from the same table as show
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hide: Vec<String>,
+    /// Start at this message, time within the session or absolute time; `seen` where this reader stopped
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[schemars(
-        with = "Option<crate::MessageId>",
-        description = "The message a context reading is taken at; the latest when absent."
-    )]
-    pub at: Option<ReadAt>,
-    /// The other place of a context difference: a message, or `compaction`
-    /// or `compaction:N` for just before the last or the Nth-last boundary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub diff: Option<String>,
-    /// For a message read: this many messages before and after it.
+    pub from: Option<String>,
+    /// N messages either side of the selected item
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub around: Option<u64>,
-    /// Start at the last page instead of the first.
-    #[serde(default)]
-    pub latest: bool,
+    /// With the context view: a message or compaction[:N] to compare with
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<String>,
+    /// The alternate to read (`translation:pl`), or `none` for the originals
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alternate: Option<String>,
+    /// Read only the named physical session
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub physical: bool,
+    /// Label the human `user` instead of `you`, for excerpts shared with others
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub neutral_names: bool,
+    /// Annotations and pages as they stood at this time or position
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub at: Option<ReadAt>,
 }
-fn output_lines() -> u64 {
-    100
-}
-fn enabled() -> bool {
-    true
-}
-fn spawn_cards() -> SpawnDisplay {
-    SpawnDisplay::Card
-}
-impl Default for ReadOptions {
-    fn default() -> Self {
-        Self {
-            view: View::Transcript,
-            tools: None,
-            thinking: None,
-            harness: None,
-            output_lines: output_lines(),
-            inherited: false,
-            branches: false,
-            turns: false,
-            annotations: enabled(),
-            for_others: false,
-            alternates: vec![],
-            spawns: spawn_cards(),
-            physical: false,
-            context_meter: false,
-            at: None,
-            diff: None,
-            around: None,
-            latest: false,
-        }
-    }
-}
+
+/// Head and tail lines of a tool's output when `tools` names no number.
+const OUTPUT_LINES: u64 = 100;
 
 /// One row per show kind: the alternate, its word and its levels, fullest
 /// last. The table gives the enum, its words and the `--show` help text, so
@@ -301,10 +239,106 @@ pub enum SpawnDisplay {
     },
 }
 
+/// What the show and hide words ask of one item kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Asked<'a> {
+    Hidden,
+    /// The level a show word names, its fullest when it names none.
+    Level(&'a str),
+}
+
 impl ReadOptions {
-    /// Apply `--show KIND[:LEVEL]` and `--hide KIND` words. A kind or level
-    /// outside the table is refused with the table's words.
-    pub fn apply_show_hide(&mut self, show: &[String], hide: &[String]) -> Result<(), ReadError> {
+    /// What the words ask of `kind`: a hide word wins, then the last show
+    /// word; none when no word names the kind.
+    fn asked(&self, kind: ShowKind) -> Option<Asked<'_>> {
+        if self.hide.iter().any(|word| word == kind.name()) {
+            return Some(Asked::Hidden);
+        }
+        self.show.iter().rev().find_map(|word| {
+            let (name, level) = word
+                .split_once(':')
+                .map_or((word.as_str(), None), |(name, level)| (name, Some(level)));
+            (name == kind.name())
+                .then(|| Asked::Level(level.unwrap_or(kind.levels()[kind.levels().len() - 1])))
+        })
+    }
+
+    /// A show word's positive number, for the kinds that take one.
+    fn number(level: &str) -> Option<u64> {
+        level.parse::<u64>().ok().filter(|number| *number > 0)
+    }
+
+    fn expansion(&self, kind: ShowKind) -> Expansion {
+        match self.asked(kind) {
+            Some(Asked::Hidden) => Expansion::None,
+            Some(Asked::Level("full")) => Expansion::Full,
+            Some(Asked::Level(level)) if Self::number(level).is_some() => Expansion::Full,
+            Some(Asked::Level(_)) | None => Expansion::Collapsed,
+        }
+    }
+
+    fn shown(&self, kind: ShowKind, default: bool) -> bool {
+        match self.asked(kind) {
+            Some(Asked::Hidden) => false,
+            Some(Asked::Level(_)) => true,
+            None => default,
+        }
+    }
+
+    pub fn tools(&self) -> Expansion {
+        self.expansion(ShowKind::Tools)
+    }
+    pub fn thinking(&self) -> Expansion {
+        self.expansion(ShowKind::Thinking)
+    }
+    pub fn harness(&self) -> Expansion {
+        self.expansion(ShowKind::Harness)
+    }
+    /// Head and tail lines of expanded tool output; zero keeps all of it.
+    pub fn output_lines(&self) -> u64 {
+        match self.asked(ShowKind::Tools) {
+            Some(Asked::Level("full")) => 0,
+            Some(Asked::Level(level)) => Self::number(level).unwrap_or(OUTPUT_LINES),
+            _ => OUTPUT_LINES,
+        }
+    }
+    /// The parent's copied prefix.
+    pub fn inherited(&self) -> bool {
+        self.shown(ShowKind::Inherited, false)
+    }
+    /// Abandoned versions under their split point.
+    pub fn branches(&self) -> bool {
+        self.shown(ShowKind::Branches, false)
+    }
+    /// Annotations listed under each message.
+    pub fn annotations(&self) -> bool {
+        self.shown(ShowKind::Annotations, true)
+    }
+    /// A divider before each prompt.
+    pub fn turns(&self) -> bool {
+        self.shown(ShowKind::Turns, false)
+    }
+    /// The context meter on model message headers.
+    pub fn context_meter(&self) -> bool {
+        self.shown(ShowKind::Context, false)
+    }
+    /// Spawned sessions at their calls: hidden, a card, or inline.
+    pub fn spawns(&self) -> SpawnDisplay {
+        match self.asked(ShowKind::Spawns) {
+            Some(Asked::Hidden) => SpawnDisplay::Hidden,
+            Some(Asked::Level("card")) | None => SpawnDisplay::Card,
+            Some(Asked::Level("full")) => SpawnDisplay::Inline { depth: None },
+            Some(Asked::Level(level)) => SpawnDisplay::Inline {
+                // A depth past u32::MAX reaches every level a session tree has.
+                depth: Some(
+                    Self::number(level).map_or(u32::MAX, |n| u32::try_from(n).unwrap_or(u32::MAX)),
+                ),
+            },
+        }
+    }
+
+    /// Refuse a show or hide word outside the table, with the table's words.
+    fn check_words(&self) -> Result<(), ReadError> {
         let unknown = |word: &str| ReadError::UnknownShowWord {
             word: word.into(),
             kinds: ShowKind::ALL
@@ -320,126 +354,29 @@ impl ReadOptions {
                 .collect::<Vec<_>>()
                 .join(", "),
         };
-        for word in show {
+        for word in &self.show {
             let (name, level) = word
                 .split_once(':')
-                .map_or((word.as_str(), None), |(n, l)| (n, Some(l)));
+                .map_or((word.as_str(), None), |(name, level)| (name, Some(level)));
             let kind = ShowKind::parse(name).ok_or_else(|| unknown(word))?;
-            let level = level.unwrap_or(kind.levels()[kind.levels().len() - 1]);
-            let number = kind
-                .takes_number()
-                .then(|| level.parse::<u64>().ok().filter(|number| *number > 0))
-                .flatten();
-            if number.is_none() && !kind.levels().contains(&level) {
+            if let Some(level) = level
+                && !kind.levels().contains(&level)
+                && !(kind.takes_number() && Self::number(level).is_some())
+            {
                 return Err(unknown(word));
             }
-            let expansion = if level == "full" {
-                Expansion::Full
-            } else {
-                Expansion::Collapsed
-            };
-            match kind {
-                ShowKind::Tools => {
-                    self.tools = Some(if number.is_some() {
-                        Expansion::Full
-                    } else {
-                        expansion
-                    });
-                    self.output_lines = match (level, number) {
-                        ("full", _) => 0,
-                        (_, Some(lines)) => lines,
-                        _ => output_lines(),
-                    };
-                }
-                ShowKind::Thinking => self.thinking = Some(expansion),
-                ShowKind::Harness => self.harness = Some(expansion),
-                ShowKind::Inherited => self.inherited = true,
-                ShowKind::Branches => self.branches = true,
-                ShowKind::Spawns => {
-                    self.spawns = match (level, number) {
-                        ("card", _) => SpawnDisplay::Card,
-                        (_, Some(depth)) => SpawnDisplay::Inline {
-                            // A depth past u32::MAX reaches every level a session tree has.
-                            depth: Some(u32::try_from(depth).unwrap_or(u32::MAX)),
-                        },
-                        _ => SpawnDisplay::Inline { depth: None },
-                    }
-                }
-                ShowKind::Annotations => self.annotations = true,
-                ShowKind::Turns => self.turns = true,
-                ShowKind::Context => self.context_meter = true,
-            }
         }
-        for word in hide {
-            let kind = ShowKind::parse(word).ok_or_else(|| unknown(word))?;
-            match kind {
-                ShowKind::Tools => self.tools = Some(Expansion::None),
-                ShowKind::Thinking => self.thinking = Some(Expansion::None),
-                ShowKind::Harness => self.harness = Some(Expansion::None),
-                ShowKind::Inherited => self.inherited = false,
-                ShowKind::Branches => self.branches = false,
-                ShowKind::Spawns => self.spawns = SpawnDisplay::Hidden,
-                ShowKind::Annotations => self.annotations = false,
-                ShowKind::Turns => self.turns = false,
-                ShowKind::Context => self.context_meter = false,
-            }
+        for word in &self.hide {
+            ShowKind::parse(word).ok_or_else(|| unknown(word))?;
         }
         Ok(())
     }
 
-    /// The `show` and `hide` words that give these options from the
-    /// defaults: the inverse of [`Self::apply_show_hide`].
-    pub fn show_hide_words(&self) -> (Vec<String>, Vec<String>) {
-        let mut show = Vec::new();
-        let mut hide = Vec::new();
-        let tools = ShowKind::Tools.name();
-        match self.tools {
-            Some(Expansion::Full) if self.output_lines == 0 => show.push(format!("{tools}:full")),
-            Some(Expansion::Full) => show.push(format!("{tools}:{}", self.output_lines)),
-            Some(Expansion::Collapsed) => show.push(format!("{tools}:line")),
-            Some(Expansion::None) => hide.push(tools.into()),
-            None => {}
-        }
-        for (name, level) in [
-            (ShowKind::Thinking.name(), self.thinking),
-            (ShowKind::Harness.name(), self.harness),
-        ] {
-            match level {
-                Some(Expansion::Full) => show.push(format!("{name}:full")),
-                Some(Expansion::Collapsed) => show.push(format!("{name}:line")),
-                Some(Expansion::None) => hide.push(name.to_owned()),
-                None => {}
-            }
-        }
-        for (name, value, default) in [
-            (ShowKind::Inherited.name(), self.inherited, false),
-            (ShowKind::Branches.name(), self.branches, false),
-            (ShowKind::Annotations.name(), self.annotations, enabled()),
-            (ShowKind::Turns.name(), self.turns, false),
-            (ShowKind::Context.name(), self.context_meter, false),
-        ] {
-            if value != default {
-                if value {
-                    show.push(name.to_owned());
-                } else {
-                    hide.push(name.to_owned());
-                }
-            }
-        }
-        let spawns = ShowKind::Spawns.name();
-        match self.spawns {
-            SpawnDisplay::Card => {}
-            SpawnDisplay::Hidden => hide.push(spawns.into()),
-            SpawnDisplay::Inline { depth: None } => show.push(format!("{spawns}:full")),
-            // Depth zero places no inline reading: the same as cards, and the
-            // table accepts only positive depths.
-            SpawnDisplay::Inline { depth: Some(0) } => show.push(format!("{spawns}:card")),
-            SpawnDisplay::Inline { depth: Some(depth) } => show.push(format!("{spawns}:{depth}")),
-        }
-        (show, hide)
+    /// Whether any show or hide word names `kind`.
+    fn names(&self, kind: ShowKind) -> bool {
+        self.asked(kind).is_some()
     }
-}
-impl ReadOptions {
+
     /// Visibility of an available original reference-text body. The caller
     /// decides whether the body is available.
     pub fn text_kind_visible(&self, kind: BlockKind) -> bool {
@@ -451,67 +388,44 @@ impl ReadOptions {
                 _ => false,
             }
     }
-    pub fn tools(&self) -> Expansion {
-        self.tools.unwrap_or(Expansion::Collapsed)
-    }
-    pub fn thinking(&self) -> Expansion {
-        self.thinking.unwrap_or(Expansion::Collapsed)
-    }
-    pub fn harness(&self) -> Expansion {
-        self.harness.unwrap_or(Expansion::Collapsed)
-    }
-    /// A possible legacy context coordinate. The pinned reader decides whether
-    /// this word names a stored message before interpreting time/position syntax.
-    pub fn context_message_candidate(&self) -> Option<crate::MessageId> {
-        if self.view != View::Context {
-            return None;
-        }
-        self.at
-            .as_ref()
-            .and_then(|at| crate::MessageId::parse(&at.to_string()).ok())
-    }
 
     pub fn annotation_position(&self) -> Option<&crate::ChangePosition> {
         match &self.at {
-            Some(ReadAt::Position { position, .. }) => Some(position),
+            Some(ReadAt::Position(position)) => Some(position),
             _ => None,
         }
     }
 
     pub fn annotation_at(&self) -> Option<AnnotationAt> {
         match self.at.as_ref()? {
-            ReadAt::Position { position, .. } => Some(AnnotationAt::Position(position.archive)),
+            ReadAt::Position(position) => Some(AnnotationAt::Position(position.archive)),
             ReadAt::Time(at) => Some(AnnotationAt::Time(*at)),
-            _ => None,
+            ReadAt::TimeExpression(_) => None,
         }
     }
 
     pub fn validate(&self) -> Result<(), ReadError> {
+        self.check_words()?;
         let prose = matches!(self.view, View::Transcript | View::Context);
         for (supplied, option, accepted) in [
             (
-                self.tools.is_some() && !prose,
+                self.names(ShowKind::Tools) && !prose,
                 "tools",
                 "transcript, context",
             ),
             (
-                self.thinking.is_some() && !prose,
+                self.names(ShowKind::Thinking) && !prose,
                 "thinking",
                 "transcript, context",
             ),
             (
-                self.harness.is_some() && !prose,
+                self.names(ShowKind::Harness) && !prose,
                 "harness",
                 "transcript, context",
             ),
-            (self.turns && !prose, "turns", "transcript, context"),
+            (self.turns() && !prose, "turns", "transcript, context"),
             (
-                self.output_lines != output_lines() && !prose,
-                "output_lines",
-                "transcript, context",
-            ),
-            (
-                self.inherited
+                self.inherited()
                     && matches!(
                         self.view,
                         View::Overview | View::Tree | View::Live | View::Raw | View::Trace
@@ -520,7 +434,7 @@ impl ReadOptions {
                 "transcript, dialogue, context, changes",
             ),
             (
-                self.branches
+                self.branches()
                     && matches!(
                         self.view,
                         View::Overview | View::Tree | View::Live | View::Trace
@@ -529,12 +443,12 @@ impl ReadOptions {
                 "transcript, dialogue, context, changes, raw",
             ),
             (
-                matches!(self.spawns, SpawnDisplay::Inline { .. }) && self.view == View::Context,
+                matches!(self.spawns(), SpawnDisplay::Inline { .. }) && self.view == View::Context,
                 "spawns",
                 "transcript, dialogue, changes, raw",
             ),
             (
-                self.context_meter
+                self.context_meter()
                     && matches!(
                         self.view,
                         View::Overview | View::Tree | View::Live | View::Trace

@@ -26,7 +26,7 @@ scratch = "nvme"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.compile]
-description = "Type-check selected packages and targets; pass further Cargo check arguments"
+description = "Type-check while writing: selected packages and targets, e.g. -p <package> --tests; pass further Cargo check arguments"
 exec = ["nix", "develop", "--command", "cargo", "check", "--locked"]
 arguments = "required"
 pool = "compile"
@@ -37,7 +37,7 @@ scratch = "nvme"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.check]
-description = "Formatting, both clippy configurations and all tests"
+description = "Formatting, both clippy configurations and all tests: only to reproduce a failure the hosted check reported, which runs the suite"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "-p", "xtask", "--", "check"]
 pool = "bulk"
 result = "exit"
@@ -57,7 +57,7 @@ cache = "none"
 unit_properties = ["MemoryHigh=8G"]
 
 [operations.focused]
-description = "Run selected tests, building only the selected packages' test targets; Cargo target flags bound it further"
+description = "Run the tests being written or changed: -p <package>, a target flag and -E filters; builds only the selected packages' test targets"
 exec = ["nix", "develop", "--command", "cargo", "run", "--locked", "--quiet", "-p", "xtask", "--", "test"]
 arguments = "required"
 # Test builds run beside type checks (compile pool); admission holds
@@ -67,6 +67,16 @@ result = "exit"
 timeout_seconds = 3600
 scratch = "tmpfs"
 unit_properties = ["MemoryHigh=8G"]
+
+[operations.land_queue]
+description = "The landing queue: merge every ready pull request, updating stale ones, in passes a minute apart (dev/land --queue)"
+exec = ["dev/land", "--queue"]
+# Long-lived and light (gh and git calls only): the pool for long-running
+# development dependencies, no time limit, no memory reservation.
+pool = "service"
+result = "exit"
+timeout_seconds = 0
+cache = "none"
 
 [operations.package]
 description = "Full locked Nix checks: package, source, modules and services"

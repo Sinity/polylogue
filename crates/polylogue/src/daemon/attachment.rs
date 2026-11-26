@@ -99,7 +99,7 @@ pub(crate) fn read(range: Range, d: &Daemon) -> Answer<BytePage> {
     let decoded = match cursor {
         Some(cursor) => match seal.open::<Cursor>(SEAL_DOMAIN, &cursor) {
             Ok(decoded) if decoded.binding == resolution.binding => Some(decoded),
-            Ok(_) | Err(CursorError::Stale) => {
+            Ok(_) | Err(CursorError::Stale | CursorError::EarlierBuild) => {
                 return error(polylogue_model::Code::StaleCursor, STALE);
             }
             Err(CursorError::Invalid | CursorError::OtherReading(_)) => {

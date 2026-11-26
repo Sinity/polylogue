@@ -41,6 +41,10 @@ shared-signals.workspace = true
 polylogue-sources.workspace = true
 polylogue-testkit.workspace = true
 
+[[example]]
+name = "archive_format_7"
+test = true
+
 [lints]
 workspace = true
 

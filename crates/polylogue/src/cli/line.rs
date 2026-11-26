@@ -265,7 +265,7 @@ pub(crate) fn parse(
     catalog: &FirstWordCatalog,
     terminal: bool,
 ) -> Result<ParsedLine, Refusal> {
-    let declarations = crate::protocol::steps::declarations();
+    let declarations = crate::daemon::verbs::declarations();
     let mut parsed = ParsedLine {
         first: FirstWord::Nothing,
         selection: None,

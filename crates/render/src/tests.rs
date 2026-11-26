@@ -235,7 +235,7 @@ fn tool_pair_uses_declared_relationship_outside_current_record() {
         },
     );
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     let items = layout(message(vec![result]), &options, &facts);
@@ -252,7 +252,7 @@ fn tool_pair_uses_declared_relationship_outside_current_record() {
 #[test]
 fn unknown_call_and_empty_output_are_distinct() {
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     let result = Block::ToolResult {
@@ -309,7 +309,7 @@ fn alternates_change_layout_only_and_stale_is_opt_in() {
     let items = layout_record(
         &projected,
         &ReadOptions {
-            alternates: vec!["en".into()],
+            alternate: Some("en".into()),
             ..options
         },
         &facts,
@@ -325,7 +325,7 @@ fn specialized_views_need_prepared_layout_facts() {
     let record = message(vec![Block::Text {
         text: "not a summary".into(),
     }]);
-    for view in [View::Overview, View::Tree, View::Changes] {
+    for view in [View::Overview, View::Tree] {
         let parts = layout_record(
             &record,
             &ReadOptions {
@@ -335,7 +335,38 @@ fn specialized_views_need_prepared_layout_facts() {
             &LayoutFacts::default(),
         )
         .unwrap();
-        assert!(!format!("{parts:?}").contains("not a summary"));
+        assert!(parts.is_empty(), "{view:?}: {parts:?}");
+    }
+    let mut changes = document(layout(
+        record.clone(),
+        &ReadOptions {
+            view: View::Changes,
+            ..Default::default()
+        },
+        &LayoutFacts::default(),
+    ));
+    changes.header.view = View::Changes;
+    for (format, expected) in [
+        (
+            Format::Terminal,
+            "session:test:session\nsession:test:session · changes\n\n\n--:-- model\nmessage:test:session:message\n",
+        ),
+        (
+            Format::Markdown,
+            "# session:test:session\nsession:test:session · changes\n\n\n## --:-- model\nmessage:test:session:message\n",
+        ),
+        (
+            Format::Html,
+            concat!(
+                "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
+                "<p class=\"meta\"><code>session:test:session</code> · changes</p><dl></dl></header>",
+                "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"message:test:session:message\">",
+                "<h2><time>--:--</time> <span class=\"value-state\" data-state=\"known\">model</span></h2>",
+                "<code>message:test:session:message</code></section></article>"
+            ),
+        ),
+    ] {
+        assert_eq!(encode(&changes, format), expected, "{format:?}");
     }
     for view in [View::Raw, View::Live] {
         assert!(matches!(
@@ -492,17 +523,48 @@ fn standalone_html_uses_shared_tokens_and_no_scripts() {
 fn footer_is_outside_prose_content_but_present_in_json() {
     let mut doc = document(vec![text("content")]);
     doc.footer.next = Some(ready(json!({"target":"next-sealed"})));
-    for format in [Format::Terminal, Format::Markdown, Format::Html] {
-        assert!(!encode(&doc, format).contains("next-sealed"));
+    for (format, expected) in [
+        (
+            Format::Terminal,
+            "session:test:session\nsession:test:session · transcript\n\ncontent\n\n",
+        ),
+        (
+            Format::Markdown,
+            "# session:test:session\nsession:test:session · transcript\n\ncontent\n\n",
+        ),
+        (
+            Format::Html,
+            concat!(
+                "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
+                "<p class=\"meta\"><code>session:test:session</code> · transcript</p><dl></dl></header>",
+                "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test:session:message#3\">",
+                "<div class=\"archived-text\"><p>content</p>\n</div></section></article>"
+            ),
+        ),
+    ] {
+        assert_eq!(encode(&doc, format), expected, "{format:?}");
     }
-    assert!(encode(&doc, Format::Json).contains("next-sealed"));
-    assert!(
+    assert_eq!(
+        serde_json::from_str::<ReadDocument>(&encode(&doc, Format::Json)).unwrap(),
+        doc
+    );
+    assert_eq!(
         html::document(&doc, Some(read_commands()))
             .unwrap()
-            .into_string()
-            .contains("next-sealed")
+            .into_string(),
+        concat!(
+            "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
+            "<p class=\"meta\"><code>session:test:session</code> · transcript</p><dl></dl></header>",
+            "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test:session:message#3\">",
+            "<div class=\"archived-text\"><p>content</p>\n</div></section>",
+            "<footer class=\"read-footer\"><nav aria-label=\"Next page\">",
+            "<a class=\"ready-call\" href=\"/api/v1/read?operation=read&amp;arguments=%7B%22target%22%3A%22next-sealed%22%7D&amp;request_id=synthetic\">",
+            "polylogue read --request '{&quot;target&quot;:&quot;next-sealed&quot;}' --request-id synthetic</a>",
+            "</nav></footer></article>"
+        )
     );
 }
+
 #[test]
 fn model_notice_precedes_every_prose_record() {
     let mut output = vec![];
@@ -734,8 +796,13 @@ fn summary_cards_show_header_facts_without_source_instructions() {
 }
 #[test]
 fn html_export_has_no_network_font_dependency() {
-    assert!(!html::export_css().contains("/assets/"));
+    let css = html::export_css();
+    assert!(!css.is_empty());
+    for network_dependency in ["url(", "@import", "@font-face"] {
+        assert!(!css.contains(network_dependency), "{network_dependency}");
+    }
 }
+
 #[test]
 fn declared_tool_pairs_refuse_conflicting_ids() {
     let call = Block::ToolCall {
@@ -796,7 +863,7 @@ fn expanded_tool_output_has_omission_counts_and_zero_means_all() {
         .map(|n| format!("line {n} λ\n"))
         .collect::<String>();
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     let (record, call) = result_output(original.clone(), options.clone());
@@ -828,7 +895,7 @@ fn expanded_tool_output_has_omission_counts_and_zero_means_all() {
     let (_, call) = result_output(
         original.clone(),
         ReadOptions {
-            output_lines: 0,
+            show: vec!["tools:full".into()],
             ..options
         },
     );
@@ -841,7 +908,7 @@ fn a_single_long_output_line_is_shortened_at_unicode_boundaries() {
     let (_, call) = result_output(
         original.clone(),
         ReadOptions {
-            tools: Some(Expansion::Full),
+            show: vec!["tools:100".into()],
             ..Default::default()
         },
     );
@@ -907,93 +974,71 @@ fn multiple_result_attachments_keep_individual_availability_and_source() {
 #[test]
 fn inline_images_need_hash_safe_raster_type_and_size() {
     let bytes = vec![137, 80, 78, 71];
-    let mut attachment = polylogue_model::Attachment {
+    let attachment = polylogue_model::Attachment {
         name: Some("sample".into()),
         media_type: Some("image/png".into()),
         blob: Some(polylogue_model::BlobHash::of(&bytes)),
         ..Default::default()
     };
-    let make = |attachment: polylogue_model::Attachment| ReadItem {
-        source: Source::record("block:test#0"),
-        kind: ItemKind::Attachment {
-            attachment: Box::new(attachment),
-            supplied_by: ValueState::default(),
-            availability: ValueState::known("present".into()),
-            link: Some("blobs/hash".into()),
-            inline_bytes: Some(bytes.clone()),
-            verified_hash: None,
-            open: None,
-        },
-    };
-    assert!(
+    let render = |attachment: polylogue_model::Attachment, limit| {
         html::item(
-            &make(attachment.clone()),
-            100,
+            &ReadItem {
+                source: Source::record("block:test#0"),
+                kind: ItemKind::Attachment {
+                    attachment: Box::new(attachment),
+                    supplied_by: ValueState::default(),
+                    availability: ValueState::known("present".into()),
+                    link: Some("blobs/hash".into()),
+                    inline_bytes: Some(bytes.clone()),
+                    verified_hash: None,
+                    open: None,
+                },
+            },
+            limit,
             &jiff::tz::TimeZone::UTC,
-            Some(read_commands())
+            Some(read_commands()),
         )
         .unwrap()
         .into_string()
-        .contains("data:image/png;base64,")
+    };
+    let png_line =
+        "<p class=\"attachment\">▣ <a href=\"blobs/hash\">sample</a> (image/png, size unknown)</p>";
+    for limit in [3, 0] {
+        assert_eq!(
+            render(attachment.clone(), limit),
+            format!(
+                "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test#0\">{png_line}</section>"
+            ),
+            "limit {limit}"
+        );
+    }
+    for (media_type, expected) in [
+        (
+            "image/svg+xml",
+            "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test#0\"><p class=\"attachment\">▣ <a href=\"blobs/hash\">sample</a> (image/svg+xml, size unknown)</p></section>",
+        ),
+        (
+            "text/html",
+            "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test#0\"><p class=\"attachment\">▣ <a href=\"blobs/hash\">sample</a> (text/html, size unknown)</p></section>",
+        ),
+    ] {
+        let mut refused = attachment.clone();
+        refused.media_type = Some(media_type.into());
+        assert_eq!(render(refused, 100), expected, "{media_type}");
+    }
+    assert_eq!(
+        render(attachment.clone(), 100),
+        format!(
+            "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test#0\"><img src=\"data:image/png;base64,iVBORw==\" alt=\"sample\">{png_line}</section>"
+        )
     );
-    assert!(
-        !html::item(
-            &make(attachment.clone()),
-            3,
-            &jiff::tz::TimeZone::UTC,
-            Some(read_commands())
+    let mut wrong_hash = attachment;
+    wrong_hash.blob = Some(polylogue_model::BlobHash::of(b"different"));
+    assert_eq!(
+        render(wrong_hash, 100),
+        format!(
+            "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test#0\">{png_line}</section>"
         )
-        .unwrap()
-        .into_string()
-        .contains("<img")
-    );
-    assert!(
-        !html::item(
-            &make(attachment.clone()),
-            0,
-            &jiff::tz::TimeZone::UTC,
-            Some(read_commands())
-        )
-        .unwrap()
-        .into_string()
-        .contains("<img")
-    );
-    attachment.media_type = Some("image/svg+xml".into());
-    assert!(
-        !html::item(
-            &make(attachment.clone()),
-            100,
-            &jiff::tz::TimeZone::UTC,
-            Some(read_commands())
-        )
-        .unwrap()
-        .into_string()
-        .contains("<img")
-    );
-    attachment.media_type = Some("text/html".into());
-    assert!(
-        !html::item(
-            &make(attachment.clone()),
-            100,
-            &jiff::tz::TimeZone::UTC,
-            Some(read_commands())
-        )
-        .unwrap()
-        .into_string()
-        .contains("<img")
-    );
-    attachment.media_type = Some("image/png".into());
-    attachment.blob = Some(polylogue_model::BlobHash::of(b"different"));
-    assert!(
-        !html::item(
-            &make(attachment),
-            100,
-            &jiff::tz::TimeZone::UTC,
-            Some(read_commands())
-        )
-        .unwrap()
-        .into_string()
-        .contains("<img")
     );
 }
 
@@ -1035,30 +1080,59 @@ fn hand_written_format_goldens_agree_on_the_typed_document() {
 
 #[test]
 fn every_encoder_exposes_controls_without_losing_json_source_values() {
-    let source = "\x1b]52;c;data\x07\u{9b}2J\u{202e}x\r\u{2066}";
+    let source = concat!(
+        "\0\x1b]52;c;data\x07\x7f\u{9b}2J\r",
+        "\u{061c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}x",
+        "\u{2066}\u{2067}\u{2068}\u{2069}"
+    );
+    let escaped = concat!(
+        r"\x00\x1b]52;c;data\x07\x7f\x9b2J\x0d",
+        r"\u{061c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{202e}x",
+        r"\u{2066}\u{2067}\u{2068}\u{2069}"
+    );
     let doc = document(vec![text(source)]);
-    for format in [
-        Format::Terminal,
-        Format::Markdown,
-        Format::Html,
-        Format::Json,
-        Format::Jsonl,
+    for (format, expected) in [
+        (
+            Format::Terminal,
+            format!("session:test:session\nsession:test:session · transcript\n\n{escaped}\n\n"),
+        ),
+        (
+            Format::Markdown,
+            format!("# session:test:session\nsession:test:session · transcript\n\n{escaped}\n\n"),
+        ),
+        (
+            Format::Html,
+            format!(
+                concat!(
+                    "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
+                    "<p class=\"meta\"><code>session:test:session</code> · transcript</p><dl></dl></header>",
+                    "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test:session:message#3\">",
+                    "<div class=\"archived-text\"><p>{}</p>\n</div></section></article>"
+                ),
+                escaped
+            ),
+        ),
     ] {
-        let output = encode(&doc, format);
-        assert!(
-            !output
-                .chars()
-                .any(|c| c.is_control() && c != '\n' && c != '\t'),
-            "{format:?}"
-        );
-        assert!(!output.contains('\u{202e}'));
-        assert!(!output.contains('\u{2066}'));
+        assert_eq!(encode(&doc, format), expected, "{format:?}");
     }
     assert_eq!(
         serde_json::from_str::<ReadDocument>(&encode(&doc, Format::Json)).unwrap(),
         doc
     );
+    let parts: Vec<ReadPart> = encode(&doc, Format::Jsonl)
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        parts,
+        vec![
+            ReadPart::Header(doc.header),
+            ReadPart::Item(doc.items.into_iter().next().unwrap()),
+            ReadPart::Footer(Box::new(doc.footer)),
+        ]
+    );
 }
+
 #[test]
 fn document_items_keep_a_runnable_document_reference_and_separate_original_position() {
     let mut doc = polylogue_model::Document::new(
@@ -1108,7 +1182,7 @@ fn each_kept_long_tool_line_has_its_own_omission() {
     let (_, call) = result_output(
         original,
         ReadOptions {
-            tools: Some(Expansion::Full),
+            show: vec!["tools:100".into()],
             ..Default::default()
         },
     );
@@ -1252,8 +1326,10 @@ fn document_attachments_at_different_blocks_do_not_share_availability() {
 
 #[test]
 fn format_flags_and_public_json_schema_use_one_closed_vocabulary() {
+    let names = ["terminal", "markdown", "html", "json", "jsonl"];
+    assert_eq!(Format::NAMES, names);
     let schema = serde_json::to_value(schemars::schema_for!(Format)).unwrap();
-    assert_eq!(schema["enum"], serde_json::json!(Format::NAMES));
+    assert_eq!(schema["enum"], serde_json::json!(names));
     for name in Format::NAMES {
         let format = Format::parse(name).unwrap();
         assert_eq!(format.to_string(), *name);
@@ -1611,8 +1687,7 @@ fn alternates_replace_thinking_and_remote_tool_output_at_their_sources() {
         },
     );
     let options = ReadOptions {
-        thinking: Some(Expansion::Full),
-        tools: Some(Expansion::Full),
+        show: vec!["thinking:full".into(), "tools:100".into()],
         ..Default::default()
     };
     assert_eq!(
@@ -1813,7 +1888,7 @@ fn paired_result_header_marks_only_the_pair_emitted_here() {
         },
     );
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     let hidden = layout(message(vec![result.clone()]), &options, &facts);
@@ -1992,10 +2067,22 @@ fn bound_rasters_inline_without_overriding_stored_hashes() {
         result.map(|()| items)
     };
     let items = render(&block, &facts).unwrap();
-    assert!(
-        matches!(&items[0].kind,ItemKind::Attachment{attachment,verified_hash:Some(value),..} if attachment.blob.is_none() && *value==hash)
+    assert_eq!(
+        items,
+        vec![ReadItem {
+            source: source.clone(),
+            kind: ItemKind::Attachment {
+                attachment: Box::new(attachment.clone()),
+                supplied_by: ValueState::default(),
+                availability: ValueState::known("present".into()),
+                link: None,
+                inline_bytes: Some(bytes),
+                verified_hash: Some(hash),
+                open: None,
+            },
+        }]
     );
-    assert!(
+    assert_eq!(
         html::item(
             &items[0],
             100,
@@ -2003,19 +2090,19 @@ fn bound_rasters_inline_without_overriding_stored_hashes() {
             Some(read_commands())
         )
         .unwrap()
-        .into_string()
-        .contains("data:image/png;base64,")
+        .into_string(),
+        "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test:session:message#0\" data-block=\"0\"><img src=\"data:image/png;base64,iVBORw==\" alt=\"attachment\"><p class=\"attachment\">▣ attachment (image/png, size unknown)</p></section>"
     );
     assert_eq!(block.block, Block::Image(attachment));
     let mut svg = items[0].clone();
     if let ItemKind::Attachment { attachment, .. } = &mut svg.kind {
         attachment.media_type = Some("image/svg+xml".into());
     }
-    assert!(
-        !html::item(&svg, 100, &jiff::tz::TimeZone::UTC, Some(read_commands()))
+    assert_eq!(
+        html::item(&svg, 100, &jiff::tz::TimeZone::UTC, Some(read_commands()))
             .unwrap()
-            .into_string()
-            .contains("data:image/svg")
+            .into_string(),
+        "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"block:test:session:message#0\" data-block=\"0\"><p class=\"attachment\">▣ attachment (image/svg+xml, size unknown)</p></section>"
     );
     let entry = facts
         .attachments
@@ -2026,7 +2113,12 @@ fn bound_rasters_inline_without_overriding_stored_hashes() {
         .first_mut()
         .unwrap();
     entry.verified_hash = Some(polylogue_model::BlobHash::of(b"wrong"));
-    assert!(render(&block, &facts).is_err());
+    assert_eq!(
+        render(&block, &facts).unwrap_err(),
+        ReadError::InvalidPreparedData(
+            "attachment inline bytes do not match the stored or verified content hash".into()
+        )
+    );
     let entry = facts
         .attachments
         .get_mut(&source.reference)
@@ -2036,7 +2128,12 @@ fn bound_rasters_inline_without_overriding_stored_hashes() {
         .first_mut()
         .unwrap();
     entry.verified_hash = None;
-    assert!(render(&block, &facts).is_err());
+    assert_eq!(
+        render(&block, &facts).unwrap_err(),
+        ReadError::InvalidPreparedData(
+            "attachment inline bytes do not match the stored or verified content hash".into()
+        )
+    );
 }
 
 #[test]
@@ -2129,10 +2226,42 @@ fn resumed_item_digest_rejects_late_layout_changes() {
 
 #[test]
 fn prose_encoders_label_json_fragments_as_encoded_transport() {
-    let fragment = fragments(text(&"\u{9b}\n".repeat(2000))).remove(0);
-    let doc = document(vec![fragment]);
-    for format in [Format::Terminal, Format::Markdown, Format::Html] {
-        assert!(encode(&doc, format).contains("Encoded ReadItem JSON fragment"));
+    let original = r#"{"source":{"ref":"block:test:session:message#3","inherited":false},"kind":{"kind":"text","text":"λ"}}"#;
+    let doc = document(vec![ReadItem {
+        source: Source::record("run:018f0000-0000-7000-8000-000000000001"),
+        kind: ItemKind::Fragment {
+            text: r#""text":"λ""#.into(),
+            position: ItemPlace {
+                selection: selection(),
+                item: 0,
+                character: 89,
+                item_hash: polylogue_model::BlobHash::of(original.as_bytes()),
+            },
+            until: 99,
+            total: 101,
+        },
+    }]);
+    for (format, expected) in [
+        (
+            Format::Terminal,
+            "session:test:session\nsession:test:session · transcript\n\nEncoded ReadItem JSON fragment\n\"text\":\"λ\"\n… encoded characters 89..99 of 101 · run:018f0000-0000-7000-8000-000000000001\n",
+        ),
+        (
+            Format::Markdown,
+            "# session:test:session\nsession:test:session · transcript\n\nEncoded ReadItem JSON fragment\n```json-fragment\n\"text\":\"λ\"\n```\n\n… encoded characters 89..99 of 101 · run:018f0000-0000-7000-8000-000000000001\n",
+        ),
+        (
+            Format::Html,
+            concat!(
+                "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
+                "<p class=\"meta\"><code>session:test:session</code> · transcript</p><dl></dl></header>",
+                "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"run:018f0000-0000-7000-8000-000000000001\">",
+                "<p>Encoded ReadItem JSON fragment</p><pre data-encoding=\"read_item_json\">&quot;text&quot;:&quot;λ&quot;</pre>",
+                "<p class=\"fragment-position\">… encoded characters 89..99 of 101</p></section></article>"
+            ),
+        ),
+    ] {
+        assert_eq!(encode(&doc, format), expected, "{format:?}");
     }
 }
 
@@ -2213,10 +2342,7 @@ fn authored_selection_keeps_the_stored_request_and_coverage() {
     };
     let record = Record::Authored(Box::new(row.clone()));
     record.validate().unwrap();
-    let options = ReadOptions {
-        annotations: true,
-        ..Default::default()
-    };
+    let options = ReadOptions::default();
     let selected = AuthoredSelection {
         selected: polylogue_model::Reference::Delivery("selected".into()),
         coverage: AuthoredCoverage::WholeRequest,
@@ -2419,11 +2545,9 @@ fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutati
             ),
             Err(ReadError::UnsupportedTarget { .. })
         ));
-        let mut full = ReadOptions::default();
-        if option == "thinking" {
-            full.thinking = Some(Expansion::Full)
-        } else {
-            full.tools = Some(Expansion::Full)
+        let full = ReadOptions {
+            show: vec![format!("{option}:full")],
+            ..ReadOptions::default()
         };
         assert_eq!(
             project_record(record.clone(), &full, &facts).unwrap(),
@@ -2461,7 +2585,7 @@ fn known_fragment_origins_apply_existing_view_and_expansion_rules_without_mutati
         project_record(
             record.clone(),
             &ReadOptions {
-                harness: Some(Expansion::Full),
+                show: vec!["harness:full".into()],
                 ..Default::default()
             },
             &harness
@@ -3172,7 +3296,7 @@ fn every_kind_document() -> ReadDocument {
         });
     }
     let options = ReadOptions {
-        tools: Some(Expansion::Full),
+        show: vec!["tools:100".into()],
         ..Default::default()
     };
     for (n, outcome) in [
@@ -3380,32 +3504,7 @@ fn format_goldens_html() {
 }
 
 #[test]
-fn no_debug_formatting_in_rendered_output() {
-    let doc = every_kind_document();
-    for format in [Format::Terminal, Format::Markdown, Format::Html] {
-        let output = encode(&doc, format);
-        for debug in [
-            "Some(",
-            "None",
-            "SessionId(",
-            "Agent(",
-            "AgentOrigin",
-            "Script(",
-            "Unattributed",
-            "StatusFieldUnreadable",
-            "RunningInBackground",
-            "RateLimited",
-            "ModelSwitch",
-            "AwaySummary",
-            "LinkIssue",
-            "TextFragment",
-        ] {
-            assert!(
-                !output.contains(debug),
-                "{format:?} shows {debug}:\n{output}"
-            );
-        }
-    }
+fn session_card_and_page_errors_use_plain_text() {
     let mut session = polylogue_model::Session::new(
         SessionId::parse("test:session").unwrap(),
         polylogue_model::SessionKind::Main,
@@ -3420,13 +3519,65 @@ fn no_debug_formatting_in_rendered_output() {
             },
         )
         .unwrap();
-    let card = crate::encode::session_lines(&session, &jiff::tz::TimeZone::UTC).join("\n");
-    assert!(card.contains("(captured, minute)"), "{card}");
-    for (error, words) in [
-        (crate::pager::PageError::ItemChanged, "changed"),
-        (crate::pager::PageError::AlreadyFull, "full"),
+    let doc = document(vec![ReadItem {
+        source: Source::record("session:test:session"),
+        kind: ItemKind::Card {
+            card: Box::new(Card::Session {
+                session: Box::new(session),
+                annotations: vec![],
+                lineage_complete: ValueState::NotApplicable,
+                open: None,
+            }),
+        },
+    }]);
+    for (format, expected) in [
+        (
+            Format::Terminal,
+            concat!(
+                "session:test:session\nsession:test:session · transcript\n\n",
+                "session:test:session · title unknown\n",
+                "main · started 1970-01-01 00:00 +00:00 (captured, minute)\n",
+                "working directories: not recorded\n",
+                "branch: not recorded · model provider: not recorded · tool version: not recorded\n"
+            ),
+        ),
+        (
+            Format::Markdown,
+            concat!(
+                "# session:test:session\nsession:test:session · transcript\n\n",
+                "session:test:session · title unknown\n",
+                "main · started 1970-01-01 00:00 +00:00 (captured, minute)\n",
+                "working directories: not recorded\n",
+                "branch: not recorded · model provider: not recorded · tool version: not recorded\n"
+            ),
+        ),
+        (
+            Format::Html,
+            concat!(
+                "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
+                "<p class=\"meta\"><code>session:test:session</code> · transcript</p><dl></dl></header>",
+                "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"session:test:session\">",
+                "<section class=\"read-card\"><h3>session:test:session · title unknown</h3>",
+                "<p>main · started 1970-01-01 00:00 +00:00 (captured, minute)</p>",
+                "<p>working directories: not recorded</p>",
+                "<p>branch: not recorded · model provider: not recorded · tool version: not recorded</p>",
+                "</section></section></article>"
+            ),
+        ),
     ] {
-        assert!(error.to_string().contains(words));
+        assert_eq!(encode(&doc, format), expected, "{format:?}");
+    }
+    for (error, expected) in [
+        (
+            crate::pager::PageError::ItemChanged,
+            "the item at the page position changed",
+        ),
+        (
+            crate::pager::PageError::AlreadyFull,
+            "the page is already full",
+        ),
+    ] {
+        assert_eq!(error.to_string(), expected);
     }
 }
 
@@ -3500,17 +3651,45 @@ fn run_card_renders_zero_pending_and_unrecorded_counts_truthfully() {
                 }),
             },
         }]);
-        for format in [Format::Terminal, Format::Markdown, Format::Html] {
-            let output = encode(&doc, format);
-            for expected in [
-                "Question: not applicable (object read)",
-                "Read position: synthetic:3:7",
-                "Author: operator",
-                wanted_count,
-                wanted_outcome,
-            ] {
-                assert!(output.contains(expected), "{expected}: {output}");
-            }
+        for (format, expected) in [
+            (
+                Format::Terminal,
+                format!(
+                    concat!(
+                        "session:test:session\nsession:test:session · transcript\n\nRun\n",
+                        "Question: not applicable (object read)\nRead position: synthetic:3:7\nAuthor: operator\n",
+                        "{}\n{}\n"
+                    ),
+                    wanted_count, wanted_outcome
+                ),
+            ),
+            (
+                Format::Markdown,
+                format!(
+                    concat!(
+                        "# session:test:session\nsession:test:session · transcript\n\nRun\n",
+                        "Question: not applicable (object read)\nRead position: synthetic:3:7\nAuthor: operator\n",
+                        "{}\n{}\n"
+                    ),
+                    wanted_count, wanted_outcome
+                ),
+            ),
+            (
+                Format::Html,
+                format!(
+                    concat!(
+                        "<article class=\"read-document\"><header class=\"read-header\"><h1>session:test:session</h1>",
+                        "<p class=\"meta\"><code>session:test:session</code> · transcript</p><dl></dl></header>",
+                        "<section class=\"read-item\" data-row=\"\" tabindex=\"-1\" data-reference=\"run:018f0000-0000-7000-8000-000000000001\">",
+                        "<section class=\"read-card\"><p>Run</p><p>Question: not applicable (object read)</p>",
+                        "<p>Read position: synthetic:3:7</p><p>Author: operator</p><p>{}</p><p>{}</p>",
+                        "</section></section></article>"
+                    ),
+                    wanted_count, wanted_outcome
+                ),
+            ),
+        ] {
+            assert_eq!(encode(&doc, format), expected, "{format:?}");
         }
     }
 }
@@ -3532,8 +3711,8 @@ fn alternate_indicator_names_partial_omission_and_stale_state() {
             )
             .unwrap();
         let options = ReadOptions {
-            thinking: Some(Expansion::Full),
-            alternates: vec!["en".into()],
+            show: vec!["thinking:full".into()],
+            alternate: Some("en".into()),
             ..Default::default()
         };
         let record = message(vec![Block::Thinking {

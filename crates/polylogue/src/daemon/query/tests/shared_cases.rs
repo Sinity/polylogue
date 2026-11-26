@@ -234,16 +234,23 @@ struct Metadata {
     time: Option<Extent>,
 }
 struct Loaded {
-    fixture: Fixture,
+    reads: polylogue_store::ReadPool,
+    _fixture: Fixture,
     dataset: Dataset,
     metadata: BTreeMap<(String, String), Metadata>,
     parents: BTreeSet<String>,
     _directory: tempfile::TempDir,
 }
+/// The installations made so far, newest last. Cases share fixtures and
+/// each case runs every rotation and reversal of its fixture, so a case
+/// after the first finds its installations here.
 #[derive(Default)]
 struct Execution {
-    loaded: Option<Loaded>,
+    loaded: Vec<Loaded>,
 }
+/// Installations kept at once: the rotations and reversals of a case's
+/// fixture fit, so later cases over the same fixture install nothing.
+const KEPT_INSTALLATIONS: usize = 16;
 fn tokens(value: Option<&Scalar>) -> Result<Option<u64>, Error> {
     match value {
         None | Some(Scalar::Unknown) => Ok(None),
@@ -501,8 +508,12 @@ impl Execution {
                 }
             }
         }
-        self.loaded = Some(Loaded {
-            fixture,
+        if self.loaded.len() == KEPT_INSTALLATIONS {
+            self.loaded.remove(0);
+        }
+        self.loaded.push(Loaded {
+            reads: fixture.reads().map_err(error)?,
+            _fixture: fixture,
             dataset: dataset.clone(),
             metadata,
             parents: sessions.into_keys().collect(),
@@ -582,20 +593,23 @@ impl compiler_cases::Executor<Plan> for Execution {
         fixture: &Dataset,
         request: &PageRequest,
     ) -> Result<compiler_cases::Page, Error> {
-        // Each changed enumeration is installed through the fixture store.
-        // The three page sizes read that same immutable installation.
-        if request.cursor.is_none()
-            && self
-                .loaded
-                .as_ref()
-                .is_none_or(|loaded| loaded.dataset != *fixture)
+        // Each enumeration is installed once through the fixture store.
+        // Every page size and every later case over the same rows reads
+        // that same immutable installation.
+        let index = match self
+            .loaded
+            .iter()
+            .position(|loaded| loaded.dataset == *fixture)
         {
-            self.load(fixture)?;
-        }
-        let loaded = self.loaded.as_ref().expect("first page loaded fixture");
-        let reads = loaded.fixture.reads().map_err(error)?;
+            Some(index) => index,
+            None => {
+                self.load(fixture)?;
+                self.loaded.len() - 1
+            }
+        };
+        let loaded = &self.loaded[index];
         let answer = run(
-            &reads.reader().map_err(error)?,
+            &loaded.reads.reader().map_err(error)?,
             Ask {
                 text: &plan.text,
                 cursor: request.cursor.as_ref().map(SealedCursor::as_str),

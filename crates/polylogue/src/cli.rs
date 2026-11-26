@@ -233,18 +233,6 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
     crate::commands::command(&name).map(|c| (c, leaf))
 }
 
-/// Only configured local commands that construct an Engine need its binary identity.
-pub(crate) fn needs_engine(
-    matches: &ArgMatches,
-    mode: &crate::daemon::service::ArchiveMode,
-) -> bool {
-    chosen(matches).is_some_and(|(command, _)| match command.name {
-        "daemon" => mode.needs_engine(),
-        "demo" => true,
-        _ => false,
-    })
-}
-
 /// Clap owns presentation, OS-valued startup options and lexical placement.
 /// The shared parser alone turns the accepted words into values and an envelope.
 fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {
@@ -592,7 +580,8 @@ fn style(output: crate::config::OutputConfig) -> TextStyle {
 }
 
 /// `status`: the view, the whole answer with `--json`, or with `--line` the
-/// one line a status bar shows (`3 running · 1 waiting 7m`). `--watch`
+/// one line a status bar shows (`up to date · 3 running · 1 waiting 7m ·
+/// claude-code 5h 61%`). `--watch`
 /// asks the daemon again every two seconds and redraws the view.
 pub fn status_output(
     values: &ParsedCommand,
@@ -644,7 +633,11 @@ pub fn status_output(
         }
         return ExitCode::from(answer.exit_code());
     }
-    let line = status.running.line(client.clock.now().as_millisecond());
+    let line = status_view::line(
+        &status,
+        &problems(answer),
+        client.clock.now().as_millisecond(),
+    );
     if json {
         println!("{}", serde_json::json!({ "line": line }));
     } else {
@@ -660,6 +653,16 @@ fn status_answer(answer: &Answer<Value>) -> serde_json::Result<crate::protocol::
     crate::protocol::status::Answer::deserialize(data)
 }
 
+/// The reasons a status answer is degraded, then its notes.
+fn problems(answer: &Answer<Value>) -> Vec<String> {
+    let mut problems = match &answer.outcome {
+        command_surface::Outcome::Degraded { missing, .. } => missing.clone(),
+        _ => Vec::new(),
+    };
+    problems.extend(answer.envelope.notes.iter().cloned());
+    problems
+}
+
 /// The status view of `status`, with the answer's degraded reasons and
 /// notes, at the terminal's width.
 fn status_view(
@@ -668,11 +671,7 @@ fn status_view(
     client: &crate::config::Client,
     arguments: &crate::protocol::status::Arguments,
 ) -> String {
-    let mut problems = match &answer.outcome {
-        command_surface::Outcome::Degraded { missing, .. } => missing.clone(),
-        _ => Vec::new(),
-    };
-    problems.extend(answer.envelope.notes.iter().cloned());
+    let problems = problems(answer);
     let width = if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         // A terminal that reports no size (a pseudo-terminal nobody sized)
         // gets the same width as no terminal.

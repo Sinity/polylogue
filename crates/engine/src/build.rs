@@ -121,7 +121,7 @@ struct Prepare {
     runs: Mutex<Vec<(u64, PathBuf)>>,
     /// Chains whose bytes cannot be read under their reading version:
     /// recorded as their failed parse state once the index is installed.
-    failed: Mutex<Vec<(Plan, polylogue_model::Failure)>>,
+    failed: Mutex<Vec<(Plan, polylogue_model::ChainFailure)>>,
     /// Chains left out for a failure that is not their bytes' (a busy
     /// database, a bug): reported, and read again after the install.
     left_out: Mutex<Vec<polylogue_model::Failure>>,
@@ -167,10 +167,7 @@ impl Prepare {
     fn chain_failed(&self, plan: Plan, error: EngineError) -> Result<(), EngineError> {
         let subject = plan.path.display().to_string();
         match error {
-            EngineError::Chain(failure) => {
-                let failure = polylogue_model::Failure::new(subject, &failure);
-                self.failed.locked().push((plan, failure));
-            }
+            EngineError::Chain(failure) => self.failed.locked().push((plan, failure)),
             error => match error.cause() {
                 Cause::Stopping | Cause::Environment => return Err(error),
                 Cause::Transient
@@ -284,7 +281,6 @@ impl Engine {
             blobs: Arc::clone(&self.blobs),
             writer: self.writer.sender(),
             settings: pool::ChainSettings {
-                stopped_attempt: self.stopped_attempt,
                 read_memory: self.config.reader_memory_per_connection()?,
                 yielding: Arc::new(AtomicBool::new(false)),
             },
@@ -382,7 +378,7 @@ impl Engine {
         for (mut plan, failure) in failed {
             self.record_failure(&mut plan, failure, &mut pass);
         }
-        pass.messages_written = self.reads.reader()?.status()?.messages;
+        pass.messages_written = self.reads.reader()?.status(&[])?.messages;
         Ok((pass, phases))
     }
 
@@ -512,7 +508,6 @@ impl Engine {
             };
             let behind = reader.chains_behind_index(
                 &versions,
-                polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
                 polylogue_store::read::RevisionChains::All,
                 Some(&ids),
             )?;
@@ -524,7 +519,7 @@ impl Engine {
                 let expected = versions
                     .iter()
                     .any(|(origin, _)| *origin == c.source.format);
-                let length = c.progress.length;
+                let length = c.stored;
                 let plan = self.build_plan(c)?;
                 if expected || plan.is_some() {
                     planned_chains += 1;
@@ -589,7 +584,6 @@ impl Engine {
         &self,
         c: polylogue_store::read::BehindChain,
     ) -> Result<Option<Plan>, EngineError> {
-        let state = c.progress;
         let Some(origin) = polylogue_sources::origin::by_name(&c.source.format)
             .filter(|origin| has_reading(origin))
         else {
@@ -609,18 +603,23 @@ impl Engine {
         let input = InputKey {
             id: c.input,
             format: origin.name.into(),
-            route: if state.imported {
+            route: if c.imported {
                 origin.route.imported()
             } else {
                 origin.route
             },
         };
-        let mut fresh = state;
-        fresh.parsed = false;
-        fresh.parsed_upto = 0;
-        Ok(Some(
-            self.reparse_plan(path, origin, input, &fresh, None, false)?,
-        ))
+        Ok(Some(self.reparse_plan(
+            path,
+            origin,
+            input,
+            c.chain,
+            c.stored,
+            &polylogue_model::chain::ChainState::Unparsed,
+            0,
+            None,
+            false,
+        )?))
     }
 }
 

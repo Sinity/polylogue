@@ -1,0 +1,345 @@
+#!/usr/bin/env bash
+# dev/land [--dry-run] <pr-number>
+# dev/land --queue [--once] [--dry-run]
+#
+# Squash-merges a pull request once its required check is green and the base
+# commit that check tested is still current for the packages concerned. A
+# pull request's check runs on GitHub's merge of its head with the base
+# branch; the `check` workflow records that base commit as a notice
+# annotation titled "tested base" on a required check run. If the base
+# branch has since changed a package the pull request changes (a package is a
+# directory with a Cargo.toml; files outside every package count by their
+# top-level directory, and root manifests, Cargo.lock, rust-toolchain.toml,
+# the flake, .cargo/, .config/ and .github/ count as every package; Markdown
+# never counts), the branch is brought up to date with a merge of the base
+# branch and the check runs again.
+#
+# With a number it lands that pull request, waiting for its checks, and stops
+# on a draft, a `hold` label, unresolved review threads, a conflict or a red
+# check. --queue lands every ready pull request (open, not a draft, not
+# labelled `hold`, no unresolved review threads, required check green), oldest
+# first, in passes a minute apart, and lists what it skipped and why; --once
+# runs one pass and exits 0 unless a pull request is red or conflicting.
+# --dry-run prints the decisions without updating or merging.
+#
+# Needs git (fetching from the remote `origin`), gh and awk; compiles nothing
+# and keeps no state beyond what GitHub holds, so it is always safe to stop
+# and restart.
+set -euo pipefail
+
+usage() { echo "usage: dev/land [--dry-run] <pr-number> | dev/land --queue [--once] [--dry-run]" >&2; exit 2; }
+dry_run=false queue=false once=false number=
+for arg in "$@"; do
+    case $arg in
+        --dry-run) dry_run=true ;;
+        --queue) queue=true ;;
+        --once) once=true ;;
+        [0-9]*) number=$arg ;;
+        *) usage ;;
+    esac
+done
+if $queue; then [ -z "$number" ] || usage; else [ -n "$number" ] && ! $once || usage; fi
+
+read -r owner name default_branch < <(gh repo view --json owner,name,defaultBranchRef \
+    --jq '"\(.owner.login) \(.name) \(.defaultBranchRef.name)"')
+
+# One GraphQL call for the given pull requests, oldest first, one line each:
+# number state draft mergeable base-branch head labels unresolved-threads
+# check-runs required failing title, tab-separated, "-" for an empty field. `required`
+# lists the required check runs on the head as name|status|conclusion|details
+# URL, separated by semicolons; `failing` names the failed jobs, the
+# required ones only when nothing else failed. A queued run, or a job waiting
+# for other jobs, reports nothing yet. Each tested base the required runs
+# recorded is printed after its pull request's line as "base <number> <sha>".
+pr_rows() {
+    local q='query($owner: String!, $name: String!) { repository(owner: $owner, name: $name) {' n
+    for n in "$@"; do
+        q+="
+  p$n: pullRequest(number: $n) {
+    number state isDraft mergeable title createdAt baseRefName headRefOid
+    labels(first: 20) { nodes { name } }
+    reviewThreads(first: 100) { nodes { isResolved } }
+    commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 50) { nodes {
+      ... on CheckRun { name status conclusion detailsUrl isRequired(pullRequestNumber: $n)
+        annotations(first: 10) { nodes { title message } } }
+    } } } } } }
+  }"
+    done
+    q+=' } }'
+    gh api graphql -F owner="$owner" -F name="$name" -f query="$q" --jq '
+      def dash: if . == "" then "-" else . end;
+      [.data.repository[]] | sort_by(.createdAt)[] |
+      ([.commits.nodes[0].commit.statusCheckRollup.contexts.nodes[]? | select(.name != null)]) as $runs |
+      ($runs | map(select(.isRequired))) as $required |
+      ($runs | map(select(.conclusion as $c | ["FAILURE", "CANCELLED", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED"] | index($c)))) as $failed |
+      ([$required[] | "\(.name)|\(.status)|\(.conclusion)|\(.detailsUrl)"] | join(";") | dash) as $req |
+      (($failed | map(select(.isRequired | not))) as $jobs | (if $jobs == [] then $failed else $jobs end) | map(.name) | join(", ") | dash) as $fail |
+      ([.labels.nodes[].name] | join(",") | dash) as $labels |
+      ([.reviewThreads.nodes[] | select(.isResolved | not)] | length) as $threads |
+      ([.number, .state, .isDraft, .mergeable, .baseRefName, .headRefOid, $labels, $threads, ($runs | length), $req, $fail, .title] | map(tostring) | join("\t")),
+      ([$required[] | select(.status == "COMPLETED" and .conclusion == "SUCCESS") | .annotations.nodes[] | select(.title == "tested base") | .message][0] // empty | "base \(.)")
+    ' | awk -F'\t' '/^base / { sub(/^base /, "base " last " "); print; next } { last = $1; print }'
+}
+
+# Reads one pr_rows line into the row variables.
+parse_row() {
+    IFS=$'\t' read -r number state draft mergeable base_branch head labels threads runs checks failing title <<<"$1"
+}
+
+# The required check on the head into `check`: none, pending, failed or
+# passed; `details` is a required check run's URL.
+check_state() {
+    local c c_name c_status c_conclusion c_url
+    check=none details=
+    [ "$checks" != - ] || return 0
+    IFS=';' read -ra required <<<"$checks"
+    check=passed
+    for c in "${required[@]}"; do
+        IFS='|' read -r c_name c_status c_conclusion c_url <<<"$c"
+        details=${details:-$c_url}
+        if [ "$c_status" != COMPLETED ]; then [ $check = failed ] || check=pending
+        elif [ "$c_conclusion" != SUCCESS ]; then check=failed details=$c_url
+        fi
+    done
+}
+
+tip_of() { git ls-remote origin "refs/heads/$1" | cut -f1; }
+
+# Workspace units the paths on stdin change, one per line.
+units() {
+    awk -v dirs="$package_dirs" '
+        BEGIN { n = split(dirs, dir, "\n") }
+        /\.md$/ { next }
+        /^(Cargo\.toml|Cargo\.lock|rust-toolchain\.toml|flake\.nix|flake\.lock)$/ || /^\.(cargo|config|github)\// {
+            print "everything"; next
+        }
+        {
+            best = ""
+            for (i = 1; i <= n; i++)
+                if (dir[i] != "" && index($0, dir[i] "/") == 1 && length(dir[i]) > length(best)) best = dir[i]
+            if (best == "") { best = $0; sub(/\/.*/, "", best) }
+            print best
+        }' | sort -u
+}
+
+# Whether two unit lists ($1, $2) overlap: both non-empty and sharing a unit,
+# or either holding "everything".
+overlap() {
+    [ -n "$1" ] && [ -n "$2" ] &&
+        { comm -12 <(echo "$1") <(echo "$2") | grep -q . ||
+          printf '%s\n%s\n' "$1" "$2" | grep -qx everything; }
+}
+
+# The packages the head changes against the tip, into pr_units.
+pr_units_against() {
+    package_dirs=$( { git ls-tree -r --name-only "$tip"; git ls-tree -r --name-only "$head"; } \
+        | sed -n 's|/Cargo\.toml$||p' | sort -u)
+    pr_units=$(git diff --no-renames --name-only "${1:-$tip}...$head" | units)
+}
+
+# The landing decision for $head with tested base $tested against $tip: sets
+# pr_units, moved_units, stale and reason. Both commits must be fetched.
+decide() {
+    if [ -n "$tested" ]; then
+        pr_units_against "$tested"
+        moved_units=$(git diff --no-renames --name-only "$tested" "$tip" | units)
+        local shared
+        shared=$(comm -12 <(echo "$pr_units") <(echo "$moved_units") | grep -vx everything | paste -sd' ' || true)
+        reason="$base_branch changed ${shared:-every package} since the tested base ${tested:0:10}"
+        if overlap "$pr_units" "$moved_units"; then stale=true; else stale=false; fi
+    else
+        # A run of a workflow that records no base: only a PR that changes
+        # nothing but Markdown is current against any base.
+        pr_units_against
+        moved_units="(unknown)"
+        reason="the check recorded no tested base"
+        if [ -n "$pr_units" ]; then stale=true; else stale=false; fi
+    fi
+}
+
+list() { [ -n "$1" ] && echo "$1" | paste -sd' ' || echo "(none)"; }
+
+# ---- one pull request ----------------------------------------------------
+
+land_one() {
+    die() { echo "land #$number: $*" >&2; exit 1; }
+    say() { echo "land #$number: $*"; }
+    local runs_waited=() polls=0 previous= rows
+    report() {
+        echo "  head:                    $head"
+        echo "  tested base:             ${tested:-(not recorded)}"
+        echo "  base branch tip:         $tip ($base_branch)"
+        echo "  changed by the PR:       $(list "$pr_units")"
+        echo "  changed on base since:   $(list "$moved_units")"
+        for run in "${runs_waited[@]}"; do echo "  check run:               $run"; done
+    }
+    note_run() {
+        local run="${details%/job/*} ($1, head ${head:0:10})"
+        case " ${runs_waited[*]-} " in *" $run "*) ;; *) runs_waited+=("$run") ;; esac
+    }
+    while true; do
+        rows=$(pr_rows "$number")
+        parse_row "$(head -1 <<<"$rows")"
+        tested=$(sed -n 's/^base [0-9]* //p' <<<"$rows")
+        [ "$state" = OPEN ] || die "the pull request is $state"
+        [ "$draft" = false ] || die "the pull request is a draft"
+        [[ ",$labels," != *,hold,* ]] || die "the pull request is labelled hold"
+        [ "$mergeable" != CONFLICTING ] ||
+            die "the branch conflicts with $base_branch; rebase to resolve the conflict, push, and run dev/land again"
+        [ "$threads" = 0 ] || die "$threads review threads are unresolved; answer and resolve them, then run dev/land again"
+        tip=$(tip_of "$base_branch")
+        check_state
+        if [ "$head" = "$previous" ] || [ $check = none ]; then
+            # The update has not reached the head yet, or the required check
+            # has not reported: poll once a minute (every agent shares one
+            # hourly API limit).
+            $dry_run && die "the required check has not reported on head ${head:0:10} yet"
+            [ $polls -gt 0 ] || say "waiting for the required check to report"
+            polls=$((polls + 1))
+            [ $polls -le 120 ] || die "the required check did not report within two hours"
+            sleep 60
+            continue
+        fi
+        polls=0
+        if [ $check = failed ]; then
+            note_run failed
+            die "the required check failed on head ${head:0:10}: $failing (${details%/job/*})"
+        fi
+        if [ $check = pending ]; then
+            $dry_run && die "the required check is still running on head ${head:0:10}"
+            say "waiting for the required check on head ${head:0:10}"
+            gh pr checks "$number" -R "$owner/$name" --required --watch --interval 60 >/dev/null || true
+            continue
+        fi
+        note_run passed
+        git fetch -q --no-tags origin "$tip" "$head"
+        decide
+        if ! $stale; then
+            if $dry_run; then
+                say "would merge: the check is green and its tested base is current for the packages the PR changes"
+                report
+                exit 0
+            fi
+            gh pr merge "$number" -R "$owner/$name" --squash --match-head-commit "$head"
+            say "merged head ${head:0:10}"
+            report
+            exit 0
+        fi
+        if $dry_run; then
+            say "would update the branch: $reason"
+            report
+            exit 1
+        fi
+        say "updating the branch: $reason"
+        report
+        gh pr update-branch "$number" -R "$owner/$name" ||
+            die "the branch could not be updated with $base_branch; resolve the conflict by rebasing, push, and run dev/land again"
+        previous=$head
+    done
+}
+
+# ---- the queue -----------------------------------------------------------
+
+# One pass over every open pull request. Prints its block when it merged or
+# updated something, when $1 is "always", or ten minutes after the last
+# block. Returns 1 when a pull request is red or conflicting.
+queue_pass() {
+    local rows numbers line n sha result flight blocker would= changed=false red=false
+    local in_flight=() ready=() stale_rows=() out=()
+    local -A tested_of=()
+    # Sorts the block: what the pass did first, then why the rest wait.
+    entry() {
+        local order
+        case $1 in
+            merged|"would merge") order=1 ;; updated|"would update") order=2 ;; waiting) order=3 ;;
+            review) order=4 ;; red) order=5 ;; conflicting) order=6 ;; held) order=7 ;; draft) order=8 ;; *) order=9 ;;
+        esac
+        out+=("$order$(printf '  %-12s #%s %s%s' "$1" "$number" "${title:0:72}" "${2:+ ($2)}")")
+    }
+    numbers=$(gh api graphql -F owner="$owner" -F name="$name" -f query='
+query($owner: String!, $name: String!) {
+  repository(owner: $owner, name: $name) { pullRequests(states: OPEN, first: 100) { nodes { number } } }
+}' --jq '.data.repository.pullRequests.nodes[].number') &&
+        rows=$([ -z "$numbers" ] || pr_rows $numbers) &&
+        tip=$(tip_of "$default_branch") || {
+        echo "$(date -u '+%Y-%m-%d %H:%MZ') reading the pull requests failed; next pass in a minute"
+        return 0
+    }
+    $dry_run && would="would "
+    while read -r _ n sha; do tested_of[$n]=$sha; done < <(grep '^base ' <<<"$rows" || true)
+    git fetch -q --no-tags origin "$tip" $(awk -F'\t' '$3 == "false" { print $6 }' <<<"$rows")
+
+    while IFS= read -r line; do
+        parse_row "$line"
+        if [ "$base_branch" != "$default_branch" ]; then entry other "targets $base_branch"
+        elif [ "$draft" = true ]; then entry draft
+        elif [[ ",$labels," == *,hold,* ]]; then entry held
+        elif [ "$mergeable" = CONFLICTING ]; then
+            entry conflicting "conflicts with $default_branch: needs its owner or a new worker"; red=true
+        else
+            check_state
+            if [ $check = failed ]; then entry red "$failing"; red=true
+            elif [ "$threads" != 0 ]; then entry review "waiting on $threads unresolved review threads"
+            elif [ $check = passed ]; then ready+=("$line")
+            elif [ "$runs" = 0 ]; then entry waiting "no check job on its head yet"
+            else
+                pr_units_against
+                in_flight+=("$number $(echo "$pr_units" | paste -sd' ')")
+                entry waiting "check queued or running"
+            fi
+        fi
+    done < <(grep -v '^base ' <<<"$rows" || true)
+
+    # Merges, oldest first, each decided against the tip after the one before.
+    for line in "${ready[@]}"; do
+        parse_row "$line"
+        tested=${tested_of[$number]-}
+        decide
+        if $stale; then stale_rows+=("$line"); continue; fi
+        if $dry_run; then entry "would merge"; changed=true; continue; fi
+        if result=$(gh pr merge "$number" -R "$owner/$name" --squash --match-head-commit "$head" 2>&1); then
+            entry merged "head ${head:0:10}"
+            changed=true
+            tip=$(tip_of "$default_branch")
+            git fetch -q --no-tags origin "$tip"
+        else
+            entry waiting "merge refused: $(tr '\n' ' ' <<<"$result")"
+        fi
+    done
+
+    # Updates: at most one in flight among pull requests whose packages overlap.
+    for line in "${stale_rows[@]}"; do
+        parse_row "$line"
+        tested=${tested_of[$number]-}
+        decide
+        blocker=
+        for flight in "${in_flight[@]}"; do
+            overlap "$pr_units" "$(tr ' ' '\n' <<<"${flight#* }")" && { blocker=${flight%% *}; break; }
+        done
+        if [ -n "$blocker" ]; then entry waiting "stale: $reason; waits for #$blocker, in flight with overlapping packages"; continue; fi
+        if $dry_run || result=$(gh pr update-branch "$number" -R "$owner/$name" 2>&1); then
+            entry "${would}update" "$reason"
+            changed=true
+            in_flight+=("$number $(echo "$pr_units" | paste -sd' ')")
+        else
+            entry conflicting "update-branch failed: $(tr '\n' ' ' <<<"$result")"; red=true
+        fi
+    done
+
+    if $changed || [ "${1-}" = always ] || [ $((SECONDS - last_block)) -ge 600 ]; then
+        echo "$(date -u '+%Y-%m-%d %H:%MZ') $default_branch ${tip:0:10}, $(grep -c . <<<"$numbers") open"
+        [ ${#out[@]} -eq 0 ] || printf '%s\n' "${out[@]}" | sort -s -n -k1.1,1.1 | cut -c2-
+        last_block=$SECONDS
+    fi
+    ! $red
+}
+
+if $queue; then
+    last_block=-600
+    if $once; then queue_pass always; exit; fi
+    while true; do
+        queue_pass || true
+        sleep 60
+    done
+fi
+land_one

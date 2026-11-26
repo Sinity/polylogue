@@ -188,7 +188,6 @@ fn replay_uses_recorded_raw_paths() {
         let plans = reader
             .chains_behind_index(
                 &[("claude-code".into(), "synthetic-previous-reading".into())],
-                polylogue_store::StoppedChains::Finished,
                 RevisionChains::Newest,
                 None,
             )
@@ -310,9 +309,7 @@ fn a_turn_failing_as_the_one_before_ends_an_idle_run() {
 }
 
 #[test]
-fn stopped_readings_keep_their_attempt_and_upgrade() {
-    use polylogue_model::batch::StepProgress;
-
+fn a_refused_reading_keeps_its_rows_and_is_read_again_under_a_new_parser_version() {
     for old_version in [false, true] {
         let home = ClaudeHome::new();
         home.append(
@@ -328,21 +325,11 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
         let version = state.origin.parse_version();
         // A refusal after a committed prefix changes neither that prefix's
         // rows nor its cursor. A resetting step would retract the reading.
-        let mut step = polylogue_store::ParseStep::new(
-            Default::default(),
-            Default::default(),
+        let mut step = polylogue_store::ParseStep::failed(
             length..length,
-            false,
+            polylogue_model::ChainFailure::refused("recorded synthetic refusal"),
         );
-        step.progress = StepProgress::Refused {
-            reason: "recorded synthetic refusal".into(),
-        };
-        step.parse_version = if old_version {
-            "synthetic-previous-reading".into()
-        } else {
-            version.clone()
-        };
-        step.stopped_attempt = Some(engine.stopped_attempt);
+        step.parse_version = version.clone();
         engine
             .writer
             .send(polylogue_store::Batch {
@@ -370,6 +357,9 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
             ["preserved reading"],
             "a refusal at the committed cursor keeps its prior rows"
         );
+        if old_version {
+            polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
+        }
         let stored = rows(&home);
         engine.config.reads_sources = false;
         std::fs::remove_file(home.file("upgrade.jsonl")).unwrap();
@@ -377,15 +367,15 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
         let replay = engine.run_pass().unwrap();
         assert!(replay.errors.is_empty(), "{replay:?}");
         let progress = engine.reads.reader().unwrap().query(
-            "SELECT status,parse_version,parsed_upto FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
+            "SELECT state,parser_version,parsed_to FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
             &[polylogue_store::SqlValue::Text(input)],
         ).unwrap();
         assert_eq!(
-            progress[0]["status"],
-            if old_version { "done" } else { "refused" }
+            progress[0]["state"],
+            if old_version { "parsed" } else { "failed" }
         );
-        assert_eq!(progress[0]["parse_version"], version);
-        assert_eq!(progress[0]["parsed_upto"].as_u64(), Some(length));
+        assert_eq!(progress[0]["parser_version"], version);
+        assert_eq!(progress[0]["parsed_to"].as_u64(), Some(length));
         assert_eq!(rows(&home), stored);
         assert_eq!(home.texts("upgrade"), ["preserved reading"]);
     }

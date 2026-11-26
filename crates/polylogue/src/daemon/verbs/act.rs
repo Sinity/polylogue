@@ -1,19 +1,17 @@
-//! The acts on live sessions: `send`, `answer` and `interrupt`, through the
-//! acts' handlers; a web-chat session's turns go through
-//! [`acts::web_chat`]. Each recipient's act is its own request.
-use super::{
-    RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use, sessions,
-};
+//! The acts on live sessions: `send`, `answer` and `interrupt`. A web-chat
+//! session's turns go through [`acts::web_chat`]. Each recipient's act is
+//! its own request, `<step>-<n>` when the step has several.
+use super::{RowRule, Selection, StepCall, StepDone, Verb, not_built, not_built_use, sessions};
+use crate::commands::ToolAccess;
 use crate::daemon::Failure;
-use crate::daemon::handler::{Call, Operation};
+use crate::daemon::handler::Call;
 use crate::daemon::service::acts;
-use crate::protocol::act;
-use crate::protocol::line::{SendReport, Skipped, StepAnswer};
+use crate::protocol::acts::{Acted, Reached, SendReport, Skipped};
+use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::{AnswerStep, InterruptStep, SendStep};
-use command_surface::Envelope;
+use command_surface::{Answer as Answered, Envelope, Outcome};
 use polylogue_model::live::channel::{Act, Channel, channel};
-use polylogue_model::{Reference, SessionId};
-use serde_json::Value;
+use polylogue_model::{Reason, Reference, SessionId};
 
 #[cfg(test)]
 mod tests;
@@ -23,102 +21,14 @@ impl Verb for Send {
     type Step = SendStep;
     const NAME: &'static str = "send";
     const ROWS: RowRule = RowRule::Things;
+    const ACCESS: ToolAccess = ToolAccess::Act;
     fn run(
         step: SendStep,
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         let targets = recipients(&step, selection)?;
-        let several = targets.len() > 1;
-        let mut report = SendReport {
-            reached: Vec::new(),
-            skipped: Vec::new(),
-        };
-        let mut envelope = Envelope::default();
-        let mut outcome = command_surface::Outcome::Empty(());
-        for (n, target) in targets.into_iter().enumerate() {
-            let request_id = format!("{}-{}", call.call.request_id, n + 1);
-            let child = Call {
-                request_id: &request_id,
-                ..call.call.copy()
-            };
-            let one = if several { &child } else { &call.call };
-            let web_chat = SessionId::parse(&target)
-                .ok()
-                .filter(|session| acts::web_chat::conversation(session).is_some());
-            if let Some(session) = web_chat {
-                let done = delegated(
-                    acts::web_chat::send(one, &session, &step.text, &step.attach)?,
-                    |reached| {
-                        StepAnswer::Sent(SendReport {
-                            reached: vec![reached],
-                            skipped: Vec::new(),
-                        })
-                    },
-                )?;
-                super::merge_outcome(&mut outcome, done.outcome);
-                envelope.notes.extend(done.envelope.notes);
-                envelope.next.extend(done.envelope.next);
-                if let StepAnswer::Sent(sent) = done.reply {
-                    report.reached.extend(sent.reached);
-                }
-                continue;
-            }
-            if !step.attach.is_empty() {
-                return Err(not_built("send", "attach to a harness session"));
-            }
-            if several {
-                // The same notion of running as `would`: a session just
-                // started and still hosted has no live events yet.
-                let session = SessionId::parse(&target).map_err(Failure::bad_value)?;
-                let running = acts::session_state(
-                    call.call.daemon,
-                    &session,
-                    call.call.daemon.config.requests.now().unix_ms(),
-                )?
-                .is_some_and(|(state, _, _)| state.running());
-                if !running {
-                    report.skipped.push(Skipped {
-                        session: target.clone(),
-                        line: format!(
-                            "polylogue {} send {}",
-                            target,
-                            polylogue_render::shell_quote(&step.text)
-                        ),
-                    });
-                    continue;
-                }
-            }
-            let done = delegated(
-                acts::SendMessage::run(
-                    act::SendMessage {
-                        target,
-                        text: step.text.clone(),
-                        live: several,
-                        about: step.about.clone(),
-                    },
-                    one,
-                )?,
-                |reached| {
-                    StepAnswer::Sent(SendReport {
-                        reached: vec![reached],
-                        skipped: Vec::new(),
-                    })
-                },
-            )?;
-            super::merge_outcome(&mut outcome, done.outcome);
-            envelope.notes.extend(done.envelope.notes);
-            envelope.next.extend(done.envelope.next);
-            if let StepAnswer::Sent(sent) = done.reply {
-                report.reached.extend(sent.reached);
-            }
-        }
-        Ok(StepDone {
-            reply: StepAnswer::Sent(report),
-            undo: Vec::new(),
-            envelope,
-            outcome,
-        })
+        send(&step, &targets, &call.call).map(|answer| answer.map(StepAnswer::Sent).into())
     }
     fn would(
         step: &SendStep,
@@ -151,7 +61,7 @@ impl Verb for Send {
                         }
                     }
                 } else {
-                    SessionId::parse(target).map_err(Failure::bad_value)?
+                    session_id(target)?
                 };
                 if acts::web_chat::conversation(&session).is_some() {
                     return Ok(format!(
@@ -187,6 +97,90 @@ impl Verb for Send {
     }
 }
 
+/// A session reference as an act takes it.
+fn session_id(text: &str) -> Result<SessionId, Failure> {
+    SessionId::parse(text).map_err(|problem| {
+        Failure::refusal(Reason::BadReference {
+            text: text.into(),
+            problem: problem.to_string(),
+        })
+    })
+}
+
+/// `send TEXT` to each target: one session or role alone is sent to
+/// whatever its state; of several, the running ones are, and the others are
+/// skipped with the line that sends to each alone, since resuming spends.
+fn send(
+    step: &SendStep,
+    targets: &[String],
+    call: &Call<'_>,
+) -> Result<Answered<SendReport>, Failure> {
+    let several = targets.len() > 1;
+    let mut report = SendReport {
+        reached: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let mut envelope = Envelope::default();
+    let mut outcome = Outcome::Empty(());
+    for (n, target) in targets.iter().enumerate() {
+        let request_id = format!("{}-{}", call.request_id, n + 1);
+        let child = Call {
+            request_id: &request_id,
+            ..call.copy()
+        };
+        let one = if several { &child } else { call };
+        let web_chat = SessionId::parse(target)
+            .ok()
+            .filter(|session| acts::web_chat::conversation(session).is_some());
+        let reached = if let Some(session) = web_chat {
+            acts::web_chat::send(one, &session, &step.text, &step.attach)?.map(Reached::WebChat)
+        } else {
+            if !step.attach.is_empty() {
+                return Err(not_built("send", "attach to a harness session"));
+            }
+            if several {
+                // The same notion of running as `would`: a session just
+                // started and still hosted has no live events yet.
+                let session = session_id(target)?;
+                let running = acts::session_state(
+                    call.daemon,
+                    &session,
+                    call.daemon.config.requests.now().unix_ms(),
+                )?
+                .is_some_and(|(state, _, _)| state.running());
+                if !running {
+                    report.skipped.push(Skipped {
+                        session: target.clone(),
+                        line: format!(
+                            "polylogue {} send {}",
+                            target,
+                            polylogue_render::shell_quote(&step.text)
+                        ),
+                    });
+                    continue;
+                }
+            }
+            acts::send(
+                one.daemon,
+                one.invocation,
+                one.request_id,
+                target,
+                &step.text,
+                several,
+                step.about.clone(),
+            )?
+            .map(Reached::Session)
+        };
+        report
+            .reached
+            .push(super::gather(reached, &mut outcome, &mut envelope)?);
+    }
+    Ok(Answered {
+        outcome: outcome.map(|()| report),
+        envelope,
+    })
+}
+
 /// Sessions or one role, preserving its send-time resolution.
 fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Failure> {
     for (given, option) in [
@@ -203,9 +197,10 @@ fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Fai
         .map(|reference| match reference {
             Reference::Session(session) => Ok(session.to_string()),
             Reference::Role(name) if references.len() == 1 => Ok(format!("role:{name}")),
-            other => Err(Failure::bad_request(format!(
-                "send acts on sessions; {other} is not one"
-            ))),
+            other => Err(Failure::refusal(Reason::ActsOnSessions {
+                verb: "send".into(),
+                reference: other.to_string(),
+            })),
         })
         .collect()
 }
@@ -215,25 +210,33 @@ impl Verb for Answer {
     type Step = AnswerStep;
     const NAME: &'static str = "answer";
     const ROWS: RowRule = RowRule::Things;
+    const ACCESS: ToolAccess = ToolAccess::Act;
     fn run(
         step: AnswerStep,
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
-        let decision = decision(&step)?;
+        let approve = approves(&step)?;
         each_session(Self::NAME, selection, call, |session, call| {
             if acts::web_chat::conversation(&session).is_some() {
-                return acts::web_chat::answer(call, &session, &step.value, step.reason.clone());
+                return Ok(acts::web_chat::answer(
+                    call,
+                    &session,
+                    &step.value,
+                    step.reason.clone(),
+                )?
+                .map(Acted::WebChat));
             }
-            acts::AnswerRequest::run(
-                act::Answer {
-                    session,
-                    decision,
-                    text: step.reason.clone(),
-                    standing: step.standing,
-                },
-                call,
-            )
+            Ok(acts::answer(
+                call.daemon,
+                call.invocation,
+                call.request_id,
+                &session,
+                approve,
+                step.reason.clone(),
+                step.standing,
+            )?
+            .map(Acted::Answered))
         })
     }
     fn would(
@@ -241,7 +244,7 @@ impl Verb for Answer {
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<String, Failure> {
-        decision(step)?;
+        approves(step)?;
         sessions("answer", selection)?
             .iter()
             .map(|session| {
@@ -282,10 +285,11 @@ impl Verb for Answer {
     }
 }
 
-fn decision(step: &AnswerStep) -> Result<act::Decision, Failure> {
+/// `allow` approves and `deny` refuses; an answer in words is not built.
+fn approves(step: &AnswerStep) -> Result<bool, Failure> {
     match step.value.as_str() {
-        "allow" => Ok(act::Decision::Approve),
-        "deny" => Ok(act::Decision::Deny),
+        "allow" => Ok(true),
+        "deny" => Ok(false),
         _ => Err(not_built_use("answer", "with text")),
     }
 }
@@ -295,13 +299,17 @@ impl Verb for Interrupt {
     type Step = InterruptStep;
     const NAME: &'static str = "interrupt";
     const ROWS: RowRule = RowRule::Things;
+    const ACCESS: ToolAccess = ToolAccess::Act;
     fn run(
         _: InterruptStep,
         selection: &Selection,
         call: &StepCall<'_>,
     ) -> Result<StepDone, Failure> {
         each_session(Self::NAME, selection, call, |session, call| {
-            acts::Interrupt::run(act::Interrupt { session }, call)
+            Ok(
+                acts::interrupt(call.daemon, call.invocation, call.request_id, &session)?
+                    .map(Acted::Interrupted),
+            )
         })
     }
     fn would(
@@ -340,34 +348,25 @@ fn each_session(
     verb: &str,
     selection: &Selection,
     call: &StepCall<'_>,
-    one: impl Fn(SessionId, &Call<'_>) -> Result<command_surface::Answer<Value>, Failure>,
+    one: impl Fn(SessionId, &Call<'_>) -> Result<Answered<Acted>, Failure>,
 ) -> Result<StepDone, Failure> {
     let mut acted = Vec::new();
     let mut envelope = Envelope::default();
-    let mut outcome = command_surface::Outcome::Empty(());
+    let mut outcome = Outcome::Empty(());
     for (n, session) in sessions(verb, selection)?.into_iter().enumerate() {
         let request_id = format!("{}-{}", call.call.request_id, n + 1);
-        let done = delegated(
-            one(
-                session,
-                &Call {
-                    request_id: &request_id,
-                    ..call.call.copy()
-                },
-            )?,
-            |value| StepAnswer::Acted(vec![value]),
+        let answer = one(
+            session,
+            &Call {
+                request_id: &request_id,
+                ..call.call.copy()
+            },
         )?;
-        super::merge_outcome(&mut outcome, done.outcome);
-        envelope.notes.extend(done.envelope.notes);
-        envelope.next.extend(done.envelope.next);
-        if let StepAnswer::Acted(values) = done.reply {
-            acted.extend(values);
-        }
+        acted.push(super::gather(answer, &mut outcome, &mut envelope)?);
     }
-    Ok(StepDone {
-        reply: StepAnswer::Acted(acted),
-        undo: Vec::new(),
+    Ok(Answered {
+        outcome: outcome.map(|()| StepAnswer::Acted(acted)),
         envelope,
-        outcome,
-    })
+    }
+    .into())
 }

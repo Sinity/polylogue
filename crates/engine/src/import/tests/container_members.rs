@@ -55,11 +55,11 @@ fn original_zip_bytes_survive_provider_removal_and_rebuild() {
         }
         let reader = engine.reads.reader().unwrap();
         let stored = reader
-            .input_progress(&id)
+            .latest_chain(&id)
             .unwrap()
             .expect("original ZIP input must be stored");
         let bytes = reader
-            .stored_range(&id, stored.chain, 0, stored.length, &engine.blobs)
+            .stored_range(&id, stored.chain, 0, stored.stored, &engine.blobs)
             .unwrap();
         assert_eq!(
             bytes, original,
@@ -131,16 +131,16 @@ fn raw_name_bytes_stay_apart_from_the_decoded_name() {
     assert!(e.import(&[path]).unwrap().pass.errors.is_empty());
     let reader = e.reads.reader().unwrap();
     let id = blake3::hash(&original).to_hex().to_string();
-    let input = reader.input_progress(&id).unwrap().unwrap();
+    let input = reader.latest_chain(&id).unwrap().unwrap();
     let stored = reader
-        .stored_range(&id, input.chain, 0, input.length, &e.blobs)
+        .stored_range(&id, input.chain, 0, input.stored, &e.blobs)
         .unwrap();
     assert_eq!(stored, original);
     let mut container = zip::ZipArchive::new(std::io::Cursor::new(stored)).unwrap();
     let member = container.by_index(0).unwrap();
     assert_eq!(member.name_raw()[0], 0xff);
     assert!(std::str::from_utf8(member.name_raw()).is_err());
-    let names=reader.query("SELECT json_extract(o.details_json,'$.import.member') AS name FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id WHERE c.member_index=0",&[]).unwrap();
+    let names=reader.query("SELECT json_extract(o.details_json,'$.import.member') AS name FROM a.observation_container c JOIN a.observation o ON o.id=c.observation_id WHERE c.member_position=0",&[]).unwrap();
     assert_eq!(
         names[0]["name"],
         member.name(),

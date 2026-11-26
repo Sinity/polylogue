@@ -29,7 +29,7 @@ Where Polylogue's inputs come from: the location model and every live origin, ho
 | `ignored` | matched by an ignored entry | not stored; counted with its reason |
 | `unrecognized` | matched by neither | not stored, not parsed; counted per root, directory pattern and extension, and shown in status |
 
-- **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day with parse state `no_parser_yet` ([archive.md](archive.md#parsing)).
+- **Collecting does not wait for a parser.** An origin has two separate switches: *collect*, on for every declared location, and *parse*. A declared origin without a parser stores its bytes from the first day and is shown as `no_parser` ([archive.md](archive.md#parsing)).
 - **Fail closed.** A collected file that fails its origin's shape check is `refused`, with the reason, as a parse-state fact; it is never read as another origin's file. A Claude Code transcript found in Drive is not ingested as a Claude Code session, because it would duplicate the real one.
 - **A bad record is not a bad file.** A malformed line in a JSONL file is counted unreadable and the complete records after it are still read; a parser error stops that parser's rows at its last good record while the bytes keep being collected.
 - Hidden directories are entered only when a location names them. Symlinked roots resolve once. An unreadable directory is a reported state, never an empty result. A `.git` directory inside a root is ignored with its reason.
@@ -89,7 +89,7 @@ Ignored: `logs_2.sqlite` (diagnostic log); `thread_history_*.sqlite` (a derived 
 
 **`llm` CLI** (`~/.config/io.datasette.llm/logs.db`, as rows): a session per `conversation_id`, with prompt and response messages, model, tokens and attachments.
 
-**`pi`** (`~/.pi/agent/sessions/**/*.jsonl`): collected, with parse state `no_parser_yet` until a parser exists.
+**`pi`** (`~/.pi/agent/sessions/**/*.jsonl`): collected, and shown as `no_parser` until a parser exists.
 
 **Other producers.** Claude Code web runs are their own origin, `claude-code-web`, once a real transcript file exists. Codex Cloud tasks are origin `codex-cloud` with their own ID namespace (`task_e_…`), from `codex.json` in ChatGPT exports and from the extension.
 
