@@ -554,12 +554,19 @@ fn other_tables(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
             ))?
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
-        let from: Vec<&str> = columns
+        // A table added since starts empty.
+        if old_columns.is_empty() {
+            continue;
+        }
+        // Each column the earlier file holds is copied under its current
+        // name; a column added since is left at its default.
+        let (to, from): (Vec<&str>, Vec<&str>) = columns
             .iter()
-            .map(|column| earlier_column(table, column))
-            .collect();
-        if from != old_columns {
-            return Err(format!("table {table} changed shape; it needs its own copy").into());
+            .map(|column| (column.as_str(), earlier_column(table, column)))
+            .filter(|(_, earlier)| old_columns.iter().any(|old| old == earlier))
+            .unzip();
+        if from.len() != old_columns.len() {
+            return Err(format!("table {table} lost a column; it needs its own copy").into());
         }
         let quoted = |names: &[&str]| {
             names
@@ -568,7 +575,6 @@ fn other_tables(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
                 .collect::<Vec<_>>()
                 .join(",")
         };
-        let to: Vec<&str> = columns.iter().map(String::as_str).collect();
         tx.execute(
             &format!(
                 "INSERT INTO main.\"{table}\"({}) SELECT {} FROM old.\"{earlier}\"",

@@ -63,6 +63,9 @@ fn earlier_archive(root: &Path) -> Connection {
                 .unwrap();
         }
     }
+    // A column and a table added after format 6.
+    conn.execute_batch("ALTER TABLE delivery DROP COLUMN signal; DROP TABLE signal_state")
+        .unwrap();
     conn.pragma_update(None, "user_version", 6).unwrap();
     conn
 }
@@ -118,6 +121,20 @@ fn renamed_tables_keep_every_row_under_their_new_names() {
         )
         .unwrap(),
         (2, "page-2".to_owned())
+    );
+    // What format 6 did not have is there, empty.
+    assert_eq!(
+        conn.query_row("SELECT id, signal FROM delivery", [], |r| {
+            <(String, Option<Vec<u8>>)>::try_from(r)
+        })
+        .unwrap(),
+        ("d1".to_owned(), None)
+    );
+    assert_eq!(
+        conn.query_row("SELECT count(*) FROM signal_state", [], |r| r
+            .get::<_, i64>(0))
+            .unwrap(),
+        0
     );
     drop(conn);
 
