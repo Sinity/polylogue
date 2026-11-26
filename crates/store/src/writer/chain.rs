@@ -182,13 +182,9 @@ impl Inner {
                 ));
             }
             version.get_or_insert_with(|| step.parse_version.clone());
-            refused_or_failed |= matches!(
-                step.progress,
-                polylogue_model::batch::StepProgress::Refused { .. }
-                    | polylogue_model::batch::StepProgress::Failed { .. }
-            );
+            refused_or_failed |= step.failure.is_some();
             local_steps |= step.delivery.is_none();
-            complete = step.progress.reached_end() && step.parsed_upto == length;
+            complete = step.at_end && step.parsed_upto == length;
             Ok(())
         })?;
         if local_steps && !complete {
@@ -239,7 +235,6 @@ impl Inner {
             &tx,
             ReadingWrite {
                 register: &self.archive,
-                counter,
                 changes: &changes,
             },
             &input,
@@ -265,7 +260,6 @@ impl Inner {
 pub(super) struct ReadingWrite<'a> {
     /// Answers which attachment bytes the archive holds.
     pub register: &'a Connection,
-    pub counter: i64,
     pub changes: &'a crate::change_summary::ChangeSummary,
 }
 
@@ -362,7 +356,6 @@ impl ChainSteps {
             &self.batch,
             step,
             rows::StepWrite {
-                counter: w.counter,
                 chain: self.chain,
                 source_commit: &source_commit,
                 replacement,

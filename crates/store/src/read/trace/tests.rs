@@ -56,7 +56,7 @@ fn trace_states_a_record_beyond_the_reader_checkpoint() {
     let index = Connection::open(archive.archive.index_db()).unwrap();
     index.execute("UPDATE message_parse SET source_start=1,source_end=3 WHERE message_id='claude-code:trace-p1'",[]).unwrap();
     for (parsed_upto, covered) in [(3_i64, true), (2, false)] {
-        index.execute("UPDATE parse_state SET parsed_upto=?1 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[parsed_upto]).unwrap();
+        index.execute("UPDATE parse_state SET parsed_to=?1 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[parsed_upto]).unwrap();
         let pool = crate::ReadPool::open(&archive.archive).unwrap();
         let reader = pool.reader().unwrap();
         let card = reader
@@ -97,7 +97,7 @@ fn trace_preserves_missing_range_and_checks_block_span_and_call_identity() {
     }
     let index = Connection::open(archive.archive.index_db()).unwrap();
     index.execute("UPDATE message_parse SET source_end=source_start WHERE message_id='claude-code:trace-p1'",[]).unwrap();
-    index.execute("UPDATE parse_state SET parse_version='' WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
+    index.execute("DELETE FROM parse_state WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
     let reader = pool.reader().unwrap();
     let card = reader
         .record_chain(&Reference::parse("message:claude-code:trace-p1").unwrap())
@@ -189,7 +189,7 @@ fn trace_states_when_the_reader_checkpoint_stops_before_the_record() {
     archive.write("trace", prose("trace", 2, 2, "second"));
     let index = Connection::open(archive.archive.index_db()).unwrap();
     index.execute("UPDATE message_parse SET source_start=1,source_end=3 WHERE message_id='claude-code:trace-p1'",[]).unwrap();
-    index.execute("UPDATE parse_state SET parsed_upto=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
+    index.execute("UPDATE parse_state SET parsed_to=0 WHERE input_pk=(SELECT pk FROM input_ref WHERE id='input-trace')",[]).unwrap();
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     let reader = pool.reader().unwrap();
     let card = reader

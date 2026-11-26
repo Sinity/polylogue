@@ -288,7 +288,6 @@ pub fn start(
     config: Config,
     mode: ArchiveMode,
     lifetime: Lifetime,
-    stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
 ) -> std::io::Result<Runtime> {
     let root = deployment.archive.as_path();
     if let Some(stopped) = crate::daemon::storage_stop::this_boot(&deployment.paths, root) {
@@ -301,11 +300,6 @@ pub fn start(
     let budget = config.memory_budget;
     let config = config.with_memory_budget(budget);
     let settings = config.clone();
-    let attempt = || {
-        stopped_attempt.ok_or_else(|| {
-            std::io::Error::other("the executable identity is required to start the Engine")
-        })
-    };
     // An archive recorded as primary is refused before anything opens it,
     // so it is left as it was.
     #[cfg(feature = "sinex")]
@@ -316,11 +310,10 @@ pub fn start(
     }
     let (archive, lock, mode, engine, completion_scope) = match mode {
         ArchiveMode::Standalone => {
-            let attempt = attempt()?;
             let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
                 .map_err(std::io::Error::other)?;
             let archive = archive.with_memory_budget(settings.memory_budget);
-            let engine = Engine::new(config, archive.clone(), attempt).map_err(|e| to_io(&e))?;
+            let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
         ArchiveMode::Blocked {

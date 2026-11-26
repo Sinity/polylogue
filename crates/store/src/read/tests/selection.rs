@@ -288,7 +288,7 @@ fn reads_answer_promptly_while_the_writer_works_through_a_backlog() {
     while reading.elapsed() < Duration::from_secs(5) {
         let started = Instant::now();
         let reader = pool.reader().unwrap();
-        reader.status().unwrap();
+        reader.status(&[]).unwrap();
         positions.push(reader.change_position().unwrap().archive);
         drop(reader);
         slowest = slowest.max(started.elapsed());

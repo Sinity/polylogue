@@ -400,8 +400,6 @@ impl Config {
     }
 }
 pub struct Startup {
-    /// Executable bytes supplied by main only for a command that starts an Engine.
-    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub config: Arc<Config>,
     pub engine: polylogue_engine::Config,
     pub mode: crate::daemon::service::ArchiveMode,
@@ -704,7 +702,6 @@ impl Startup {
             standalone_day,
         });
         Ok(Self {
-            stopped_attempt: None,
             zsh_directory: process
                 .environment
                 .get_os("ZDOTDIR")
@@ -788,7 +785,6 @@ impl Config {
 impl Startup {
     pub(crate) fn for_test(engine: polylogue_engine::Config, archive: &Path) -> Self {
         Self {
-            stopped_attempt: Some(polylogue_testkit::stopped_attempt()),
             zsh_directory: engine.home.clone(),
             config: Config::for_test(&engine, archive),
             clock: engine.clock.clone(),

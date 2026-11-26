@@ -1853,7 +1853,7 @@ impl Reader<'_> {
                         SELECT source_start AS s FROM message_parse WHERE input_pk = ?1 AND chain = ?2 AND source_start > ?3
                         UNION ALL
                         SELECT source_start FROM event WHERE input_pk = ?1 AND source_chain = ?2 AND source_start > ?3)),
-                    (SELECT parsed_upto FROM parse_state WHERE input_pk = ?1 AND chain = ?2),
+                    (SELECT parsed_to FROM parse_state WHERE input_pk = ?1 AND chain = ?2),
                     ?3)", params![input_pk, chain, start])?,
         };
         let (Ok(start), Ok(end)) = (u64::try_from(start), u64::try_from(end)) else {

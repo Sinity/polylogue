@@ -161,8 +161,8 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                     if name == "content_group" {
                         value = grouped_piece(row, &names, n)?;
                     }
-                    if table == "parse_state" && name == "checkpoint" {
-                        value = checkpoint_without_read_range(value);
+                    if table == "parse_state" && name == "resume" {
+                        value = resume_without_read_range(value);
                     }
                     text.push_str(&format!("{name}={value:?};"));
                 }
@@ -255,14 +255,14 @@ const READ_RANGES: &[&str] = &["first", "last", "last_start", "last_end", "last_
 /// range started at (the base of the parser context changes it carries),
 /// which is where the chain's reading last stopped and went on, not what it
 /// read.
-fn checkpoint_without_read_range(value: rusqlite::types::Value) -> rusqlite::types::Value {
+fn resume_without_read_range(value: rusqlite::types::Value) -> rusqlite::types::Value {
     let rusqlite::types::Value::Blob(compressed) = &value else {
         return value;
     };
     let mut checkpoint: serde_json::Value =
         serde_json::from_slice(&zstd::decode_all(&compressed[..]).unwrap()).unwrap();
     if let Some(context) = checkpoint
-        .pointer_mut("/parser_state/_polylogue_context")
+        .pointer_mut("/_polylogue_context")
         .and_then(serde_json::Value::as_object_mut)
     {
         context.remove("base");
@@ -280,11 +280,10 @@ const CREATED_WITH_THE_INDEX: &[&str] = &[
 ];
 
 /// A rebuild reads an older chain that holds exactly a newer chain's bytes
-/// whole, like every chain; allowing copies changes nothing, sources
-/// included (docs/archive.md, versioned rows; docs/architecture.md, one
-/// path): every table, row for row.
+/// whole, like every chain, and keeps every chain a message appeared in
+/// recorded (docs/archive.md, readings; docs/architecture.md, one path).
 #[test]
-fn a_rebuild_reads_an_identical_older_chain_whole_with_or_without_copies() {
+fn a_rebuild_reads_an_identical_older_chain_whole() {
     fault::clear();
     let w = ClaudeHome::new();
     // Chains 1 and 3 hold `a`, chains 2 and 4 hold `b`; `a` has a message
@@ -322,51 +321,18 @@ fn a_rebuild_reads_an_identical_older_chain_whole_with_or_without_copies() {
         w.count("SELECT count(*) AS n FROM (SELECT DISTINCT input, chain FROM a.revision)"),
         8
     );
-
-    let rebuild = |copies: bool| {
-        delete_index(&w.root);
-        fault::clear();
-        if !copies {
-            fault::arm("write.copy_reading", "", Action::Fail, 0, u32::MAX);
-        }
-        // One worker, so each rebuild writes in one order.
-        let (archive, _lock) = polylogue_store::Archive::open_or_create(&w.root).unwrap();
-        let mut config = w.config(64 << 20);
-        config.workers = 1;
-        let mut engine =
-            polylogue_engine::Engine::new(config, archive, polylogue_testkit::stopped_attempt())
-                .unwrap();
-        let pass = engine.run_pass().unwrap();
-        fault::clear();
-        assert!(pass.errors.is_empty(), "{:?}", pass.errors);
-        drop(engine);
-        (pass, dump(&w))
-    };
-    let (parsed, every_chain_parsed) = rebuild(false);
-    assert_eq!((parsed.readings_copied, parsed.bytes_copied), (0, 0));
-    // A build reads every chain from its first byte and copies no reading
-    // (docs/architecture.md, one path): with copies allowed it reads the
-    // same bytes and writes the same rows.
-    let (copied, with_copies) = rebuild(true);
+    delete_index(&w.root);
+    fault::clear();
+    // One worker, so the rebuild writes in one order.
+    let (archive, _lock) = polylogue_store::Archive::open_or_create(&w.root).unwrap();
+    let mut config = w.config(64 << 20);
+    config.workers = 1;
+    let mut engine = polylogue_engine::Engine::new(config, archive).unwrap();
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    drop(engine);
     let both = (a.len() + b.len() + captured_a.len() + captured_b.len()) as u64;
-    assert_eq!(parsed.bytes_read, 2 * both);
-    assert_eq!((copied.readings_copied, copied.bytes_copied), (0, 0));
-    assert_eq!(copied.bytes_read, 2 * both);
-    let differing: Vec<String> = every_chain_parsed
-        .iter()
-        .filter(|(table, rows)| with_copies.get(*table) != Some(rows))
-        .map(|(table, rows)| {
-            format!(
-                "{table}:\n  parsed {rows:?}\n  copied {:?}",
-                with_copies.get(table)
-            )
-        })
-        .collect();
-    assert!(differing.is_empty(), "{}", differing.join("\n"));
-    assert_eq!(
-        every_chain_parsed.keys().collect::<Vec<_>>(),
-        with_copies.keys().collect::<Vec<_>>()
-    );
+    assert_eq!(pass.bytes_read, 2 * both);
     // Every chain a message appeared in stays recorded.
     let chains = w.count(
         "SELECT count(DISTINCT chain) AS n FROM message_parse s WHERE s.message_id LIKE '%u1%'",

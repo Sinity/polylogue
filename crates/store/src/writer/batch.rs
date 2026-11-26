@@ -85,10 +85,10 @@ pub struct ParseStep {
     /// Message positions in reading order for array records, apart from byte ranges.
     pub order_from: Option<u64>,
     pub parse_version: String,
+    /// The parser's carried state after the step's last complete record,
+    /// for a chain that can go on from there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
+    pub resume: Option<polylogue_model::chain::ParserState>,
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
     pub(crate) output: Output,
@@ -101,8 +101,13 @@ pub struct ParseStep {
     pub start: u64,
     /// Offset after the last complete record parsed.
     pub parsed_upto: u64,
-    /// How far the step read the stored bytes.
-    pub progress: polylogue_model::batch::StepProgress,
+    /// The step read through the end of the stored bytes: a suffix past
+    /// `parsed_upto` is a record still being written.
+    pub at_end: bool,
+    /// The parser could not go on at `parsed_upto`: these bytes under this
+    /// parser version fail the chain. The step carries no rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<polylogue_model::ChainFailure>,
     /// Packed message, text and event rows produced together on the parse pool.
     /// Default leaves the complete parsed values available for writer fallback.
     #[serde(skip)]
@@ -145,30 +150,31 @@ impl ParseStep {
             delivery: None,
             order_from: None,
             parse_version: String::new(),
-            checkpoint: None,
-            stopped_attempt: None,
+            resume: None,
             reset: range.start == 0,
             repeats_whole_conversations: false,
             output,
             counts,
             start: range.start,
             parsed_upto: range.end,
-            progress: polylogue_model::batch::StepProgress::parsed(at_end),
+            at_end,
+            failure: None,
             prepared: PreparedRows::default(),
             comparison: None,
         }
     }
 
-    /// Coverage of a byte range no parser reads yet: no rows, only that the
-    /// bytes are kept.
-    pub fn without_parser(
-        range: std::ops::Range<u64>,
-        at_end: bool,
-        parse_version: String,
-    ) -> Self {
-        let mut step = Self::new(Output::default(), RecordCounts::default(), range, at_end);
-        step.progress = polylogue_model::batch::StepProgress::NoParserYet { at_end };
-        step.parse_version = parse_version;
+    /// The parser's failure at the start of `range`: no rows, and the chain
+    /// fails at `range.start` until its bytes or its parser version change.
+    pub fn failed(range: std::ops::Range<u64>, failure: polylogue_model::ChainFailure) -> Self {
+        let mut step = Self::new(
+            Output::default(),
+            RecordCounts::default(),
+            range.start..range.start,
+            false,
+        );
+        step.reset = range.start == 0;
+        step.failure = Some(failure);
         step
     }
 }

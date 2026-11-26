@@ -32,9 +32,8 @@ pub use completeness::ReadingContract;
 mod captured;
 mod cursor_generation;
 pub use cursor_generation::open_cursor;
+mod chain_state;
 mod hook_fields;
-mod parser_checkpoint;
-pub use parser_checkpoint::{StoredParserCheckpoint, StoredParserProgress};
 mod import_counts;
 pub use import_counts::ImportCounts;
 mod parents;
@@ -43,7 +42,7 @@ mod trace;
 pub use revisions::RevisionPoint;
 mod tool_outcomes;
 mod tool_pairs;
-pub use behind_index::{BehindChain, RevisionChains, StoppedChains, StoredSource};
+pub use behind_index::{BehindChain, ChainCensus, RevisionChains, StoredSource};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod record_seek;
@@ -248,7 +247,6 @@ row! {
         n: u64,
     }
     statements {
-        const PARSE_STATES = "SELECT status AS name, n FROM parse_status_count WHERE n > 0";
         const UNUSED = "SELECT what AS name, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20";
     }
 }
@@ -282,30 +280,24 @@ row! {
 }
 
 row! {
-    /// A chain's parse standing.
-    struct ParseProgressRow {
-        parsed_upto: i64,
-        status: String,
-        at_length: Option<i64>,
-        reason: Option<String>,
+    /// An input's latest revision, and whether its bytes came in through an
+    /// import.
+    struct LatestRevisionOf {
+        length: u64,
+        produced: String,
+        chain: i64,
     }
     statements {
-        const OF_CHAIN = "SELECT p.parsed_upto, p.status, p.at_length, p.reason FROM parse_state p
-            JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2";
+        const OF_INPUT = "SELECT length, produced, chain FROM source_revision
+            WHERE input = ?1 ORDER BY number DESC LIMIT 1";
     }
 }
 
-row! {
-    /// An input's latest revision and its chain's parse progress.
-    struct InputProgress {
-        length: i64,
-        parsed_upto: i64,
-        parsed: bool,
-        produced: String,
-        waiting: bool,
-        chain: i64,
-    }
-}
+type CensusAt = (
+    polylogue_model::ChangePosition,
+    Vec<ReadingContract>,
+    Arc<ChainCensus>,
+);
 
 /// Read-only connections to one archive, reused across requests.
 /// `max_readers` connections serve every read; one more is kept for the
@@ -320,6 +312,8 @@ pub struct ReadPool {
     max_readers: usize,
     cache_kib: i64,
     counts: Mutex<crate::query::execute::CountCache>,
+    /// The chain census of the last read position it was computed at.
+    census: Mutex<Option<CensusAt>>,
     /// Wakes waiting checkouts when the access scope changes.
     _scope_wake: Arc<scope::ResetWake>,
     /// A pipeline pool closes its idle connections before a build file is
@@ -390,7 +384,7 @@ type IndexIdentity = (PathBuf, u64, u64);
 
 /// What the loop knows about a path from its last look, for comparing
 /// with the file now.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KnownInput {
     pub path: String,
     /// The location's bytes; `path` shows them as text.
@@ -403,25 +397,18 @@ pub struct KnownInput {
     /// The current revision chain and how many of its bytes are stored.
     pub chain: Option<i64>,
     pub stored: u64,
-    /// Offset after the last complete record parsed in that chain, and
-    /// whether that chain was parsed at all.
-    pub parsed_upto: u64,
-    pub parsed: bool,
-    /// An incomplete suffix, refusal or failure waits at this stored length.
-    pub waiting: bool,
+    /// That chain's state in the index.
+    pub state: polylogue_model::chain::ChainState,
 }
 
-/// A revision chain's stored length and parser progress, independent of a
-/// source path. Imports use this to retry parsing without storing bytes twice.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChainProgress {
+/// An input's latest chain: how much of it is stored, whether its bytes
+/// came in through `polylogue import`, and its state in the index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LatestChain {
     pub chain: i64,
-    /// The chain's bytes came in through `polylogue import`.
     pub imported: bool,
-    pub waiting: bool,
-    pub length: u64,
-    pub parsed_upto: u64,
-    pub parsed: bool,
+    pub stored: u64,
+    pub state: polylogue_model::chain::ChainState,
 }
 
 /// Totals for `status`. Unknown is never shown as zero: a count that could
@@ -439,7 +426,9 @@ pub struct Status {
     pub revisions: u64,
     /// Bytes of input content stored (uncompressed).
     pub stored_bytes: u64,
-    /// Input chains by parse status (`done`, `parsing`, `waiting` for growth).
+    /// Input chains by how they are shown (`model::chain::ChainStatusName`:
+    /// `parsing`, `repeated`, `no_parser`, `done`, `waiting`, `refused`,
+    /// `failed`).
     pub parse_states: BTreeMap<String, u64>,
     /// The most frequent record kinds and fields parsers did not read.
     pub unused: Vec<(String, u64)>,
@@ -524,6 +513,7 @@ impl ReadPool {
             max_readers,
             cache_kib,
             counts: Mutex::default(),
+            census: Mutex::default(),
             _scope_wake: scope_wake,
             #[cfg(test)]
             changed: Condvar::new(),
@@ -890,19 +880,6 @@ struct MessageContent<'a> {
 
 /// A chain's parse standing from its stored status word, waiting length and
 /// reason.
-pub(crate) fn stored_parse_progress(
-    status: &str,
-    at_length: Option<i64>,
-    reason: Option<String>,
-) -> Result<polylogue_model::batch::ParseProgress> {
-    let at_length = at_length
-        .map(u64::try_from)
-        .transpose()
-        .map_err(|_| StoreError::stored(0, "a stored waiting length is negative"))?;
-    polylogue_model::batch::ParseProgress::from_stored(status, at_length, reason)
-        .map_err(|error| StoreError::stored(0, error))
-}
-
 impl Reader<'_> {
     /// Pages this reader's connection had to read from its database files
     /// (`SQLITE_DBSTATUS_CACHE_MISS`, every attached database) since the last
@@ -1430,15 +1407,13 @@ impl Reader<'_> {
         })
     }
 
-    pub fn status(&self) -> Result<Status> {
+    /// Totals for `status`, with every chain shown as the model judges it
+    /// against the origins' parser versions in `contracts`.
+    pub fn status(&self, contracts: &[ReadingContract]) -> Result<Status> {
         limit::ReadLimit::set_stage("status counts");
+        let parse_states = self.chain_census_at_position(contracts)?.by_status();
         let c = self.conn()?;
         let count = |sql: &str| -> Result<u64> { Ok(c.scalar::<i64>(sql, [])? as u64) };
-        let parse_states = c
-            .all(&NamedCount::PARSE_STATES, [])?
-            .into_iter()
-            .map(|count| (count.name, count.n))
-            .collect();
         let unused = c
             .all(&NamedCount::UNUSED, [])?
             .into_iter()
@@ -1764,61 +1739,35 @@ impl Reader<'_> {
                 facts,
                 chain,
                 stored: length.unwrap_or(0) as u64,
-                parsed_upto: 0,
-                parsed: false,
-                waiting: false,
+                state: polylogue_model::chain::ChainState::Unparsed,
             });
         }
         for k in &mut out {
-            if let Some(chain) = k.chain
-                && let Some(state) = self
-                    .conn()?
-                    .maybe(&ParseProgressRow::OF_CHAIN, params![k.input_id, chain])?
-            {
-                k.parsed_upto = state.parsed_upto as u64;
-                k.parsed = true;
-                k.waiting = stored_parse_progress(&state.status, state.at_length, state.reason)?
-                    .at_length()
-                    == Some(k.stored);
+            if let Some(chain) = k.chain {
+                k.state = crate::parse_state::state_of_input(self.conn()?, &k.input_id, chain)?;
             }
         }
         Ok(out)
     }
 
-    /// The input's latest revision and its chain's parser progress.
-    pub fn input_progress(&self, id: &str) -> Result<Option<ChainProgress>> {
-        let database = crate::source::database_original("r.input");
-        let statement = Statement::<InputProgress>::built(format!(
-            "SELECT r.length, COALESCE(p.parsed_upto, 0) AS parsed_upto, p.input_pk IS NOT NULL AS parsed,
-                r.produced,
-                COALESCE(p.status IN ('waiting','refused','failed') AND p.at_length = r.length, 0) AS waiting,
-                r.chain
-             FROM source_revision r
-             LEFT JOIN input_ref i ON i.id = r.input
-             LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain AND NOT {database}
-             WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1"
-        ));
-        let Some(InputProgress {
+    /// The input's latest chain and its state.
+    pub fn latest_chain(&self, id: &str) -> Result<Option<LatestChain>> {
+        let Some(LatestRevisionOf {
             length,
-            parsed_upto,
-            parsed,
             produced,
-            waiting,
             chain,
-        }) = self.conn()?.maybe(&statement, [id])?
+        }) = self.conn()?.maybe(&LatestRevisionOf::OF_INPUT, [id])?
         else {
             return Ok(None);
         };
         let imported = crate::input_rows::Produced::from_name(&produced)
-            .ok_or_else(|| StoreError::stored(3, format!("unknown revision source: {produced}")))?
+            .ok_or_else(|| StoreError::stored(1, format!("unknown revision source: {produced}")))?
             == crate::input_rows::Produced::Imported;
-        Ok(Some(ChainProgress {
+        Ok(Some(LatestChain {
             chain,
             imported,
-            waiting,
-            length: length as u64,
-            parsed_upto: parsed_upto as u64,
-            parsed,
+            stored: length,
+            state: self.chain_state(id, chain)?,
         }))
     }
 }
@@ -1866,7 +1815,7 @@ pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
     check.row::<MessageRow>();
     check.row::<NamedCount>();
     check.row::<LatestRevision>();
-    check.row::<ParseProgressRow>();
+    check.row::<LatestRevisionOf>();
     parents::declared_rows(check);
     trace::declared_rows(check);
     revisions::declared_rows(check);

@@ -63,32 +63,6 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
     );
 }
 
-#[test]
-fn stopped_attempts_hash_executable_bytes_instead_of_paths() {
-    let dir = tempfile::tempdir().unwrap();
-    let first = dir.path().join("first-image");
-    let second = dir.path().join("second-image");
-    std::fs::write(&first, b"synthetic executable one").unwrap();
-    std::fs::copy(&first, &second).unwrap();
-    let before = super::attempt_from_executable(std::fs::File::open(&first).unwrap()).unwrap();
-    assert_eq!(
-        before,
-        super::attempt_from_executable(std::fs::File::open(&second).unwrap()).unwrap()
-    );
-    assert_eq!(
-        before.executable,
-        polylogue_model::BlobHash::of(b"synthetic executable one")
-    );
-    assert_eq!(before.parser_settings, None);
-    std::fs::write(&first, b"synthetic executable two").unwrap();
-    let after = super::attempt_from_executable(std::fs::File::open(&first).unwrap()).unwrap();
-    assert_ne!(before, after);
-    assert_eq!(
-        after.executable,
-        polylogue_model::BlobHash::of(b"synthetic executable two")
-    );
-}
-
 /// Each catalog key, set to a value other than its default, changes what its
 /// consumer produces; a key nothing reads does not belong in the catalog.
 #[test]

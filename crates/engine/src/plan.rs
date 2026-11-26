@@ -3,9 +3,19 @@
 
 use crate::pool::{self, Done, Job, Priority};
 use polylogue_model::Json;
+use polylogue_model::chain::ChainState;
 use polylogue_sources::OriginSpec;
-use polylogue_store::{Change, FileFacts, InputKey, Observation, read::ChainProgress};
+use polylogue_store::{Change, FileFacts, InputKey, LatestChain, Observation};
 use std::path::{Path, PathBuf};
+
+/// The cursor the loop keeps for a chain of `stored` bytes in `state`:
+/// where its parse ends, whether it has one, and whether it waits at the
+/// stored length (a record still being written, or a failure).
+pub(crate) fn cursor(state: &ChainState, stored: u64) -> (u64, bool, bool) {
+    let parsed = *state != ChainState::Unparsed;
+    let waiting = parsed && state.seen_to() == stored && state.parsed_to() < stored;
+    (state.parsed_to(), parsed, waiting)
+}
 
 /// File facts and cursors between passes. Active plans restore parser state
 /// from the committed checkpoint when they start.
@@ -45,13 +55,11 @@ impl InputState {
         }
     }
 
-    /// Copy the cursor fields of committed progress.
-    pub(crate) fn take_progress(&mut self, progress: &ChainProgress) {
+    /// Copy the cursor fields of a chain's stored state.
+    pub(crate) fn take_progress(&mut self, progress: &LatestChain) {
         self.chain = Some(progress.chain);
-        self.stored = progress.length;
-        self.parsed_upto = progress.parsed_upto;
-        self.parsed = progress.parsed;
-        self.waiting = progress.waiting;
+        self.stored = progress.stored;
+        (self.parsed_upto, self.parsed, self.waiting) = cursor(&progress.state, progress.stored);
     }
 
     /// Adopt committed logical progress.
@@ -60,13 +68,12 @@ impl InputState {
         input_id: &str,
         origin: &'static OriginSpec,
         facts: Option<FileFacts>,
-        progress: Option<&ChainProgress>,
+        progress: Option<&LatestChain>,
     ) {
         let chain = progress.map(|p| p.chain);
-        let stored = progress.map_or(0, |p| p.length);
-        let parsed_upto = progress.map_or(0, |p| p.parsed_upto);
-        let parsed = progress.is_some_and(|p| p.parsed);
-        let waiting = progress.is_some_and(|p| p.waiting);
+        let stored = progress.map_or(0, |p| p.stored);
+        let (parsed_upto, parsed, waiting) =
+            progress.map_or((0, false, false), |p| cursor(&p.state, p.stored));
         let same_input = self.input_id == input_id && self.origin.name == origin.name;
         let same_cursor = same_input
             && self.chain == chain
@@ -131,11 +138,6 @@ pub(crate) struct Plan {
     pub(crate) input_finished: bool,
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
-    pub(crate) checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
-    /// Older chains of the input recorded from this chain's reading as the
-    /// parse passes the end of the bytes they share with it, by stop
-    /// ([`crate::prefix_copies`]). No range reads past the first stop.
-    pub(crate) prefix_copies: Option<polylogue_store::PrefixCopies>,
     /// The end of the last range parsed: once it reaches a copy's stop, the
     /// parse has read every complete record the shared bytes hold.
     pub(crate) read_to: u64,
@@ -166,7 +168,6 @@ impl Plan {
             _ => None,
         };
         Plan {
-            checkpoint: None,
             span: span(origin, &path, chunk),
             path,
             origin,
@@ -191,7 +192,6 @@ impl Plan {
             waiting: false,
             input_finished: false,
             source,
-            prefix_copies: None,
             read_to: parse_pos,
         }
     }
@@ -212,20 +212,10 @@ impl Plan {
             self.parse_pos
         };
         let end = self.size.min(start.saturating_add(self.span));
-        match self
-            .prefix_copies
-            .as_ref()
-            .and_then(|copies| copies.first())
-        {
-            Some(copy) if copy.stop > start => (start, end.min(copy.stop)),
-            _ => (start, end),
-        }
+        (start, end)
     }
 
-    pub(crate) fn next_job(
-        &mut self,
-        stopped_attempt: &polylogue_model::batch::StoppedAttempt,
-    ) -> Job {
+    pub(crate) fn next_job(&mut self) -> Job {
         let (start, end) = self.next_range();
         let store_from = (end > self.stored_upto
             || self.size == 0 && self.observation.is_some() && !self.storing_started)
@@ -250,7 +240,6 @@ impl Plan {
             ),
         };
         Job {
-            stopped_attempt: Some(*stopped_attempt),
             source_read: None,
             proven_tail: self.tail.clone().map(|bytes| crate::read::ProvenTail {
                 end: self.stored_upto,
@@ -279,9 +268,6 @@ impl Plan {
     pub(crate) fn apply(&mut self, d: Done, parsed: bool) {
         if let Some(chain) = d.chain {
             self.parser_chain = Some(chain);
-        }
-        if d.checkpoint.is_some() {
-            self.checkpoint = d.checkpoint.clone();
         }
         // Parsing can fail after new source bytes were sent to the writer.
         // Its rejected writes reload their checkpoints through the existing
@@ -316,12 +302,6 @@ impl Plan {
             return;
         }
         self.parser_state = d.parser_state;
-        // A range that ends at a copy's stop is cut short only for the copy.
-        let at_stop = self
-            .prefix_copies
-            .as_ref()
-            .and_then(|copies| copies.first())
-            .is_some_and(|copy| copy.stop == d.end);
         if parsed {
             self.read_to = d.end;
         }
@@ -330,9 +310,6 @@ impl Plan {
         } else if d.parsed_upto > d.start {
             self.parse_pos = d.parsed_upto;
             self.span = self.chunk;
-        } else if at_stop {
-            // No record completed before the stop: the copy is taken where
-            // the parse stands, and the next range reads on from there.
         } else if d.end < self.size {
             // One record is longer than the range read: read more of it.
             self.span = (d.end - d.start).saturating_mul(2);

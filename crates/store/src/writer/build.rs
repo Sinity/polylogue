@@ -779,7 +779,6 @@ impl super::chain::ChainSink for OpenChain<'_> {
         step.prepare();
         let w = super::chain::ReadingWrite {
             register: self.register,
-            counter: 1,
             changes: &self.changes,
         };
         self.steps
@@ -1518,12 +1517,13 @@ fn shown(stating: &[Statement], newest: &std::collections::HashMap<String, Optio
     })
 }
 
-/// The newest chain of input `i` read to its end or waiting for more, as an
-/// SQL expression.
+/// The newest parsed chain of input `i`, as an SQL expression: the chain
+/// that decides which content-named messages its input holds
+/// (`held_message_parse`).
 const NEWEST_READ_CHAIN: &str = "(SELECT max(p.chain) FROM parse_state p
-    WHERE p.input_pk=i.pk AND p.status IN ('done','waiting'))";
+    WHERE p.input_pk=i.pk AND p.state='parsed')";
 
-/// Each input's newest chain read to its end or waiting for more.
+/// Each input's newest parsed chain.
 fn newest_read_chains(conn: &Connection) -> Result<std::collections::HashMap<String, Option<i64>>> {
     Ok(conn
         .prepare(&format!("SELECT i.id,{NEWEST_READ_CHAIN} FROM input_ref i"))?

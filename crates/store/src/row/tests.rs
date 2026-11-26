@@ -42,6 +42,7 @@ fn every_declared_statement_prepares_and_names_its_struct_fields() {
     };
     check.row::<InputRefRow>();
     crate::read::declared_rows(&mut check);
+    crate::parse_state::declared_rows(&mut check);
     crate::lineage::declared_rows(&mut check);
     crate::documents::declared_rows(&mut check);
     crate::commit_positions::declared_rows(&mut check);

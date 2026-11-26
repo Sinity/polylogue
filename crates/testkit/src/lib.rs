@@ -21,11 +21,3 @@ pub use morrow::{Morrow, Set, morrow_dir, session, short};
 #[cfg(target_os = "linux")]
 pub use process::ProcessExit;
 pub use process::{spawn_daemon, synthetic_environment};
-
-/// Stable synthetic executable identity for in-process archive fixtures.
-pub fn stopped_attempt() -> polylogue_model::batch::StoppedAttempt {
-    polylogue_model::batch::StoppedAttempt {
-        executable: polylogue_model::BlobHash::of(b"synthetic test executable"),
-        parser_settings: None,
-    }
-}

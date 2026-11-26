@@ -109,7 +109,6 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         config,
         service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilStopped,
-        startup.stopped_attempt,
     )
     .map_err(|e| e.to_string())?;
     // Tour reads need the bundled SDK files as well as the explicit exports.

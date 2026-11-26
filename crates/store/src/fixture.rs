@@ -913,6 +913,15 @@ impl Fixture {
     }
 }
 
+/// The parser version the writer fixtures parse `claude-code` chains under,
+/// as the reading contract status and completeness judge them by.
+pub fn synthetic_contracts() -> Vec<crate::ReadingContract> {
+    vec![crate::ReadingContract::Expected {
+        origin: "claude-code".into(),
+        version: "synthetic=1".into(),
+    }]
+}
+
 /// Marks one origin's readings as older, in an isolated test or benchmark archive.
 /// The caller serializes writes and keeps the archive lock.
 pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
@@ -922,10 +931,12 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
         [archive.archive_db().to_string_lossy().as_ref()],
     )?;
     crate::source::views(&conn)?;
-    crate::chain_progress::install_triggers(&conn)?;
     let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
         FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
-    conn.execute("UPDATE parse_state SET parse_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE parse_state SET parser_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    crate::archive::bump_counter(&tx)?;
+    tx.commit()?;
     Ok(size)
 }
 

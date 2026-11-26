@@ -161,15 +161,6 @@ pub enum Queued {
     Full(Box<UserSubmission>),
 }
 
-/// What the index writer takes from the archive writer: the chains and
-/// inputs commits changed since it last took them, and the position they
-/// reach.
-#[derive(Default)]
-pub(crate) struct Handover {
-    pub changes: crate::chain_progress::SourceChanges,
-    pub position: Position,
-}
-
 struct Shared {
     bulk: Mutex<Option<SyncSender<Bulk>>>,
     /// A second sender into the bulk queue that only wakes the writer for a
@@ -181,7 +172,8 @@ struct Shared {
     /// Delivery records accepted and not yet committed, by request ID.
     pending: Mutex<Vec<UserRequest>>,
     report: Arc<Mutex<WriteReport>>,
-    followed: Arc<Mutex<Handover>>,
+    /// The position of the last commit, which the index writer follows.
+    followed: Arc<Mutex<Position>>,
     commits: crate::completion::CommitEvents,
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::DispatchPauses,
@@ -217,7 +209,6 @@ impl ArchiveWriter {
     pub fn start(archive: &Archive, commits: crate::completion::CommitEvents) -> Result<Self> {
         let conn = crate::archive::open_archive_writer(archive)?;
         crate::write_lock::sync_register(archive)?;
-        crate::chain_progress::record_source_changes(&conn)?;
         let position = Position(
             u64::try_from(crate::write_counter(&conn)?).or_stored("negative write counter")?,
         );
@@ -229,10 +220,7 @@ impl ArchiveWriter {
             location: archive.clone(),
             pending: Mutex::default(),
             report: Arc::default(),
-            followed: Arc::new(Mutex::new(Handover {
-                changes: Default::default(),
-                position,
-            })),
+            followed: Arc::new(Mutex::new(position)),
             commits,
             #[cfg(any(test, feature = "fixture"))]
             dispatch: Default::default(),
@@ -426,21 +414,9 @@ impl ArchiveSender {
         &self.0.report
     }
 
-    /// What commits changed since the index writer last took it.
-    pub(crate) fn take_followed(&self) -> Handover {
-        let mut followed = self.0.followed.locked();
-        Handover {
-            changes: std::mem::take(&mut followed.changes),
-            position: followed.position,
-        }
-    }
-
-    /// Hands back what [`Self::take_followed`] took, when the index
-    /// transaction that applied it did not commit.
-    pub(crate) fn give_back(&self, taken: Handover) {
-        let mut followed = self.0.followed.locked();
-        followed.changes.merge(&taken.changes);
-        followed.position = followed.position.max(taken.position);
+    /// The position of the last commit, for the index writer to follow.
+    pub(crate) fn committed_position(&self) -> Position {
+        *self.0.followed.locked()
     }
 
     /// The pauses tests set on both writers' work.
@@ -618,8 +594,8 @@ impl Inner {
         )?)
     }
 
-    /// Commits `tx`, whose write counter is `seq`, and hands what it changed
-    /// to the index writer before anything is answered.
+    /// Commits `tx`, whose write counter is `seq`, and publishes its
+    /// position to the index writer before anything is answered.
     fn commit(
         &self,
         tx: rusqlite::Transaction<'_>,
@@ -628,13 +604,7 @@ impl Inner {
     ) -> Result<Position> {
         crate::write_lock::commit(tx)?;
         let position = Position(u64::try_from(seq).or_stored("negative write counter")?);
-        let changes = crate::chain_progress::recorded(&self.conn)?;
-        {
-            let mut followed = self.shared.followed.locked();
-            followed.changes.merge(&changes);
-            followed.position = position;
-        }
-        crate::chain_progress::forget(&self.conn, &changes)?;
+        *self.shared.followed.locked() = position;
         self.shared.report.locked().transactions += 1;
         self.shared.commits.committed(what);
         Ok(position)

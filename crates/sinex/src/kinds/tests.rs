@@ -17,7 +17,8 @@ fn reading(input: &str, start: u64) -> Reading {
         parse_version: "reader-3".into(),
         start,
         parsed_upto: 100,
-        progress: polylogue_model::batch::StepProgress::AtEnd,
+        at_end: true,
+        failure: None,
     }
 }
 fn message(input: &str, start: u64) -> Product {
