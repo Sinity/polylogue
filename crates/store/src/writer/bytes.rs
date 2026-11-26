@@ -147,22 +147,35 @@ fn input_rows_at(
         chain,
         length: b.length as i64,
     };
+    // Where the step's new bytes go: the end of its chain as stored, so they
+    // never land on a stored extent. `None` when they are stored already.
     let (number, chain, offset) = match (&b.change, b.continues, latest) {
         (Change::Disappeared, _, latest) => {
             rows.observation = observation(tx, b, "deleted", None, seq, staged)?;
             return Ok((latest.map(|l| l.1), rows));
         }
         (_, true, Some((number, chain, length, produced))) => {
+            never_shorter(b, length)?;
             rows.revision = Some(revision(number, &produced, chain));
-            (number, chain, length as u64)
+            (number, chain, Some(length as u64))
         }
-        (Change::Unchanged, _, Some((number, chain, _, _))) => (number, chain, b.length),
+        (Change::Unchanged, _, Some((number, chain, _, _))) => {
+            if b.new_blob.is_some() {
+                return Err(StoreError::Invalid(
+                    "an unchanged step adds no bytes".into(),
+                ));
+            }
+            (number, chain, None)
+        }
         (Change::Appended { from }, false, Some((_, chain, length, _))) => {
+            never_shorter(b, length)?;
+            let mut offset = Some(length as u64);
             if let Some(blob) = &b.new_blob
                 && *from != length as u64
             {
-                // A repeated committed append may name the same extent, but
-                // stale source state must not grow a prefix over later bytes.
+                // A repeated committed append may name the extent it stored,
+                // and then adds nothing; stale source state must not grow a
+                // prefix over later bytes.
                 let retry = b.length == length as u64
                     && tx.scalar::<bool>(
                         &crate::source::Source::of(tx)?.sql(
@@ -182,9 +195,10 @@ fn input_rows_at(
                         "an append must start at the stored length".into(),
                     ));
                 }
+                offset = None;
             }
             rows.revision = Some(revision(next, "appended", chain));
-            (next, chain, *from)
+            (next, chain, offset)
         }
         (change, _, _) => {
             let produced = match (change, b.input.route.is_imported()) {
@@ -193,10 +207,10 @@ fn input_rows_at(
                 _ => "rewritten",
             };
             rows.revision = Some(revision(next, produced, next));
-            (next, next, 0)
+            (next, next, Some(0))
         }
     };
-    if let Some(new_blob) = &b.new_blob {
+    if let (Some(new_blob), Some(offset)) = (&b.new_blob, offset) {
         rows.extents = extents(new_blob, chain, offset);
     }
     if b.observation.is_some() && !b.continues {
@@ -213,6 +227,18 @@ fn input_rows_at(
         rows.observation = observation(tx, b, class, Some(number), seq, staged)?;
     }
     Ok((Some(chain), rows))
+}
+
+/// A chain only grows: a step that continues or appends to it reaches at
+/// least the chain's stored length, so every earlier revision keeps the bytes
+/// it was stored with.
+fn never_shorter(b: &Batch, stored: i64) -> Result<()> {
+    if (b.length as i64) < stored {
+        return Err(StoreError::Invalid(
+            "a step cannot make its revision chain shorter".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Where new bytes sit in their chain from `offset` on: one extent per blob

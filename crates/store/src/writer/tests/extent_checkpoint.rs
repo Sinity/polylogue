@@ -40,10 +40,14 @@ fn extent_writer_refuses_stale_append_without_replacing_prefix() {
         }
         other => panic!("expected the stale-append refusal, got {other:?}"),
     }
+    assert_eq!(stored_bytes(&w), b"abcdefghi");
+}
+
+/// The input's latest revision read back from its stored extents.
+fn stored_bytes(w: &TestArchive) -> Vec<u8> {
     let reads = ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
     let progress = reader.input_progress("input").unwrap().unwrap();
-    assert_eq!(progress.length, 9);
     let chain = reader
         .stored_chain("input", progress.chain, progress.length)
         .unwrap();
@@ -52,7 +56,58 @@ fn extent_writer_refuses_stale_append_without_replacing_prefix() {
         .reader(Arc::new(w.archive.blobs().unwrap()))
         .read_to_end(&mut actual)
         .unwrap();
-    assert_eq!(actual, b"abcdefghi");
+    actual
+}
+
+fn assert_refused(result: Result<crate::staging::StoredInput>, expected: &str) {
+    match result {
+        Err(StoreError::Invalid(reason)) => assert_eq!(reason, expected),
+        other => panic!("expected the refusal {expected:?}, got {other:?}"),
+    }
+}
+
+/// A step with no bytes of its own at `length`.
+fn without_bytes(from: u64, length: u64) -> PreparedBatch {
+    let mut batch = batch("input", Route::Live, from, vec![], &[]);
+    batch.parse.clear();
+    batch.length = length;
+    PreparedBatch {
+        batch,
+        files: Vec::new(),
+    }
+}
+
+#[test]
+fn a_step_shorter_than_its_stored_chain_is_refused() {
+    let w = test_archive();
+    store(&w, bytes(&w.archive, 0, b"abc")).unwrap();
+    store(&w, bytes(&w.archive, 3, b"def")).unwrap();
+    let mut continuing = without_bytes(6, 4);
+    continuing.batch.continues = true;
+    assert_refused(
+        store(&w, continuing),
+        "a step cannot make its revision chain shorter",
+    );
+    assert_refused(
+        store(&w, without_bytes(6, 4)),
+        "a step cannot make its revision chain shorter",
+    );
+    assert_eq!(stored_bytes(&w), b"abcdef");
+}
+
+#[test]
+fn a_step_cannot_place_bytes_over_a_stored_extent() {
+    let w = test_archive();
+    store(&w, bytes(&w.archive, 0, b"abc")).unwrap();
+    store(&w, bytes(&w.archive, 3, b"def")).unwrap();
+    store(&w, bytes(&w.archive, 6, b"ghi")).unwrap();
+    // Unchanged bytes are named in `blobs`; new bytes at a stored place
+    // would replace the extent that is there.
+    let mut over = bytes(&w.archive, 3, b"xyzw");
+    over.batch.change = Change::Unchanged;
+    over.batch.length = 3;
+    assert_refused(store(&w, over), "an unchanged step adds no bytes");
+    assert_eq!(stored_bytes(&w), b"abcdefghi");
 }
 
 /// A step that does not start at the committed reading's position is a

@@ -97,23 +97,28 @@ pub struct ObservationRow {
 }
 
 impl InputRows {
-    /// Inserts the rows at write counter `seq`. A revision or extent already
-    /// present takes the incoming length (and, for an extent, blob and blob
-    /// offset): a later chunk grew the revision, or a write that stopped
-    /// before its commit sent the bytes at that place again, longer. Everything else present is left as it is, so inserting
-    /// the rows twice changes nothing.
+    /// Inserts the rows of one step at write counter `seq`. A revision already
+    /// present takes the incoming length: a later chunk of the same read grew
+    /// it. A stored extent never changes: the writer places a step's bytes at
+    /// its chain's stored end, so an extent at a stored place is either the
+    /// one stored there, which keeps its first commit, or is refused.
+    /// Inserting the rows twice changes nothing.
     pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
-        self.insert_rows(tx, seq, true)
-    }
-
-    /// Inserts confirmed observations without checking that a prefix
-    /// observation's chain prefix is committed: a source they depend on may be
-    /// missing from the index for a while.
-    pub(crate) fn insert_confirmed(&self, tx: &Connection, seq: i64) -> Result<()> {
         self.insert_rows(tx, seq, false)
     }
 
-    fn insert_rows(&self, tx: &Connection, seq: i64, check_prefix: bool) -> Result<()> {
+    /// Inserts rows confirmed by Sinex, in their commit order. A prefix
+    /// observation's chain prefix may be missing from the index for a while,
+    /// so it is not checked. An extent already present takes the incoming
+    /// length, blob and blob offset: a write that stopped before its local
+    /// commit sent the bytes at that place to Sinex again, longer. Everything
+    /// else present is left as it is, so inserting the rows twice changes
+    /// nothing.
+    pub(crate) fn insert_confirmed(&self, tx: &Connection, seq: i64) -> Result<()> {
+        self.insert_rows(tx, seq, true)
+    }
+
+    fn insert_rows(&self, tx: &Connection, seq: i64, confirmed: bool) -> Result<()> {
         self.validate_source_read()?;
         let source = crate::source::Source::of(tx)?;
         tx.prepare_cached(
@@ -130,14 +135,23 @@ impl InputRows {
                 self.input, r.number, r.produced, r.chain, r.length, seq
             ])?;
         }
+        let replace = if confirmed {
+            "ON CONFLICT(input,chain,offset) DO UPDATE SET
+                 commit_seq=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN min(commit_seq,excluded.commit_seq) ELSE excluded.commit_seq END,
+                 capture_read=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN coalesce(capture_read,excluded.capture_read) ELSE excluded.capture_read END,
+                 length=excluded.length,blob=excluded.blob,blob_offset=excluded.blob_offset"
+        } else {
+            // Only the extent already stored there matches; any other
+            // changes no row, which is refused below.
+            "ON CONFLICT(input,chain,offset) DO UPDATE SET
+                 commit_seq=min(commit_seq,excluded.commit_seq),
+                 capture_read=coalesce(capture_read,excluded.capture_read)
+             WHERE length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset"
+        };
         for e in &self.extents {
-            tx.prepare_cached(
-                &source.sql("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, capture_read)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT(input,chain,offset) DO UPDATE SET
-                     commit_seq=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN min(commit_seq,excluded.commit_seq) ELSE excluded.commit_seq END,
-                     capture_read=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN coalesce(capture_read,excluded.capture_read) ELSE excluded.capture_read END,
-                     length=excluded.length,blob=excluded.blob,blob_offset=excluded.blob_offset"),
+            let written = tx.prepare_cached(
+                &source.sql(&format!("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, capture_read)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) {replace}")),
             )?
             .execute(params![
                 self.input,
@@ -147,6 +161,11 @@ impl InputRows {
                 &e.blob.0[..],e.blob_offset,seq,
                 self.capture_read.as_ref().map(crate::encoding::pack_json).transpose()?
             ])?;
+            if written == 0 {
+                return Err(crate::StoreError::Invalid(
+                    "a stored extent cannot be replaced".into(),
+                ));
+            }
         }
         if let Some(o) = &self.observation {
             let details = self.observation_details(o)?;
@@ -161,7 +180,7 @@ impl InputRows {
                     })?;
                 if o.revision.is_some()
                     || chain < 1
-                    || check_prefix
+                    || !confirmed
                         && crate::source::Source::committed_through(tx, &self.input, chain, length)?
                             .is_none()
                 {

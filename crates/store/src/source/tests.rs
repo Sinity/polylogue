@@ -165,6 +165,29 @@ fn later_chunks_keep_their_commit_when_a_revision_grows() {
             Source::committed_through(&conn, "input", 1, 8).unwrap(),
             Some(9)
         );
+        // Another extent at a stored place is refused, and the one stored
+        // there stays as it was.
+        let stored = |conn: &Connection| -> Vec<(i64, i64, i64, i64)> {
+            conn.prepare(&source.sql(
+                "SELECT offset,length,blob_offset,commit_seq FROM @source.extent ORDER BY offset",
+            ))
+            .unwrap()
+            .query_map([], |r| <(i64, i64, i64, i64)>::try_from(r))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+        };
+        let before = stored(&conn);
+        assert_eq!(before, [(0, 4, 0, 2), (4, 4, 4, 9)]);
+        let mut other = row.clone();
+        other.extents[0].length = 2;
+        match other.insert(&conn, 21) {
+            Err(crate::StoreError::Invalid(reason)) => {
+                assert_eq!(reason, "a stored extent cannot be replaced")
+            }
+            result => panic!("expected the refusal, got {result:?}"),
+        }
+        assert_eq!(stored(&conn), before);
         conn.execute(
             &source.sql("UPDATE @source.extent SET length=-1 WHERE offset=0"),
             [],
