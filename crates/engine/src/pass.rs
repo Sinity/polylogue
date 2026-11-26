@@ -338,7 +338,23 @@ impl Engine {
     /// Waits for database reads as well as the current file pass.
     pub fn run_pass(&mut self) -> Result<Pass, EngineError> {
         let started = Instant::now();
-        let (mut total, seen) = self.one_pass(true, &Default::default())?;
+        self.planned.clear();
+        let (mut total, seen) = match self.one_pass(true, &Default::default()) {
+            Ok(done) => done,
+            Err(error) => {
+                if !matches!(error, EngineError::Stopped) {
+                    self.failure_log.pass_ended(
+                        &[polylogue_model::Failure::of(&error)],
+                        crate::failure_log::Looked {
+                            files: &HashSet::new(),
+                            walked: false,
+                            completed: false,
+                        },
+                    );
+                }
+                return Err(error);
+            }
+        };
         let mut paths: std::collections::BTreeSet<_> = seen.into_iter().collect();
         // A confirmed reading can still be pending after all local work ends.
         // Return that wait to the caller instead of spinning inside its pass.
@@ -358,6 +374,15 @@ impl Engine {
             total.add(next);
         }
         total.seconds = started.elapsed().as_secs_f64();
+        let planned = std::mem::take(&mut self.planned);
+        self.failure_log.pass_ended(
+            &total.errors,
+            crate::failure_log::Looked {
+                files: &planned,
+                walked: total.full_scans > 0,
+                completed: true,
+            },
+        );
         Ok(total)
     }
 
@@ -1016,6 +1041,7 @@ impl Engine {
                 continue;
             }
             if let Some(plan) = self.plan_file(&f.path, now, pass)? {
+                self.planned.insert(f.path.clone());
                 plans.push(plan);
             }
         }
@@ -2986,6 +3012,8 @@ impl Engine {
             discover |= self.take_watched(&mut changed, &mut watch_errors);
             busy(true);
             let pending;
+            self.planned.clear();
+            let mut completed = false;
             let mut finished = match self.one_pass(discover, &changed) {
                 Err(EngineError::Stopped) => {
                     // Writes the pass queued before stopping are committed.
@@ -3007,6 +3035,7 @@ impl Engine {
                         // retaining this scope's unfinished planning page.
                         self.discard_confirmed_progress();
                     }
+                    completed = true;
                     if pending {
                         changed.extend(seen);
                     } else {
@@ -3059,6 +3088,15 @@ impl Engine {
                 }
             };
             finished.errors.append(&mut watch_errors);
+            let planned = std::mem::take(&mut self.planned);
+            self.failure_log.pass_ended(
+                &finished.errors,
+                crate::failure_log::Looked {
+                    files: &planned,
+                    walked: completed && finished.full_scans > 0,
+                    completed,
+                },
+            );
             summary.passes += 1;
             summary.work.add(finished.clone());
             {

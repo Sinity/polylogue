@@ -1,7 +1,7 @@
 //! Product failure codes and refusal reasons, with the wire spelling
 //! declared once.
 stored_names! {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
     pub enum Code {
         Empty => "empty",
         ModelCallsOff => "model_calls_off",
