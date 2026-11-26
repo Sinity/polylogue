@@ -73,6 +73,8 @@ jobs:
         with:
           rev: ${{ inputs.rev || '' }}
       - run: cargo xtask test $BASE --partition hash:${{ matrix.shard }}/4
+        env:
+          CARGO_LOG: cargo::core::compiler::fingerprint=info
 
   nix:
     runs-on: ubuntu-latest
