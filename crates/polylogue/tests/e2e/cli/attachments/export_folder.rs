@@ -22,12 +22,18 @@ fn export_folder_import_resolves_assets_after_rebuild() {
     .unwrap();
     let daemon = start_daemon(&env);
     let kept = cli(&env, &["--json", "import", unknown.to_str().unwrap()]);
-    assert!(kept.status.success(), "{kept:?}");
-    let kept: polylogue_engine::ImportReport = serde_json::from_value(json(&kept)).unwrap();
-    assert_eq!(kept.refused.len(), 1);
-    assert_eq!(kept.refused[0].path, unknown);
-    assert!(!kept.refused[0].reason.is_empty());
-    assert!(!kept.refused[0].structures_tried.is_empty());
+    assert_eq!(kept.status.code(), Some(2), "{kept:?}");
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&kept.stdout).unwrap();
+    let failure = answer.failure().unwrap();
+    assert_eq!(failure.kind, command_surface::FailureKind::BadValue);
+    assert_eq!(
+        failure.message,
+        format!(
+            "no files were stored\nrefused {}: no declared structure matched",
+            unknown.display()
+        )
+    );
     assert_eq!(std::fs::read(&unknown).unwrap(), body);
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     assert!(imported.status.success(), "{imported:?}");

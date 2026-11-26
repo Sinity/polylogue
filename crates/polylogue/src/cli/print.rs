@@ -470,12 +470,34 @@ fn plan(found: &crate::resume::Plan) -> String {
     out
 }
 
-/// `import`: the files report as JSON; a provider import as its job's line.
+/// `import`: stored paths or the provider job.
 pub fn import(answer: &protocol::import::Answer, style: TextStyle) -> String {
     match answer {
-        protocol::import::Answer::Files(report) => json(report, style),
+        protocol::import::Answer::Files(report) => {
+            if report.python_import.is_some()
+                || (report.imported.is_empty() && report.already_stored.is_empty())
+            {
+                return json(report, style);
+            }
+            let mut out = String::new();
+            for (paths, label) in [
+                (&report.imported, "stored"),
+                (&report.already_stored, "already stored"),
+            ] {
+                for path in paths {
+                    let _ = writeln!(out, "{label}: {}", path.display());
+                }
+            }
+            polylogue_render::terminal::escape(&out)
+        }
         protocol::import::Answer::Provider(job) => import_job_answer(job, style),
     }
+}
+
+pub(super) fn import_next(next: &command_surface::Next) -> String {
+    let request = serde_json::to_string(&next.request).expect("request serializes");
+    let label = polylogue_render::terminal::escape(&next.label);
+    format!("{label}: polylogue --request {}\n", shell_quote(&request))
 }
 
 /// `import PROVIDER`: the job's line, or a write still awaiting

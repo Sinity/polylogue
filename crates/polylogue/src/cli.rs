@@ -555,6 +555,11 @@ pub fn run(matches: &ArgMatches, client: &crate::config::Client) -> ExitCode {
                 &crate::protocol::notes(&answer).cloned().collect::<Vec<_>>(),
                 policy,
             );
+            if cmd.name == "import" {
+                for next in &answer.envelope.next {
+                    print!("{}", print::import_next(next));
+                }
+            }
             ExitCode::from(outcome_code)
         }
     }

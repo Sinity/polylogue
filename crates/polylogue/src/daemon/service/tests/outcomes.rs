@@ -122,7 +122,7 @@ fn a_query_over_an_index_that_is_behind_is_degraded_even_with_rows_or_none() {
 fn an_import_with_pending_user_state_is_degraded_with_its_note() {
     let mut report = polylogue_engine::ImportReport::default();
     report.user_state.pending = 1;
-    let answer = import_answer(report.clone());
+    let answer = import_answer(report.clone(), false);
     assert_eq!(answer.exit_code(), 5);
     assert_eq!(answer.http_status(), Some(200));
     let (value, notes) = test_answers::degraded(answer);
@@ -134,7 +134,7 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
         applied: 1,
         present: 2,
     };
-    let answer = import_answer(report.clone());
+    let answer = import_answer(report.clone(), false);
     assert_eq!(answer.exit_code(), 0);
     assert!(
         crate::protocol::notes(&answer)
@@ -159,7 +159,7 @@ fn an_import_answered_during_a_build_says_the_index_is_being_built() {
         readable: polylogue_engine::Readable::AfterBuild { build },
         ..Default::default()
     };
-    let answer = import_answer(report);
+    let answer = import_answer(report, false);
     assert_eq!(answer.exit_code(), 5);
     let (_, notes) = test_answers::degraded(answer);
     assert_eq!(

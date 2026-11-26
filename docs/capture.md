@@ -134,6 +134,17 @@ Hooks are a capture channel: every event each harness emits is recorded whole. H
 - In an export, one element the parser cannot read (nested deeper than the 128 levels the JSON reader builds into a value, for example) is counted as unreadable on its own; the other elements still parse, and the export's bytes stay stored. A key an element repeats is counted as an unread field (`path (repeated key; earlier value)`): readers see only its last value.
 - The reply lists `imported`, `already_stored` and `refused` (with the structures tried), and per package the counts of sessions, documents and assets once its inputs are read into the index; its inputs are parsed and derived before it answers, so they are readable at once and `readable` says `now`; where that waits for a build, `readable` is `after_build` with the build's progress and the reply is degraded until the build installs. Bytes the request stored are `imported` even when the request is read again because a build installed under it. With `--dry-run` the daemon recognizes and classifies every member and stores nothing; `--explain` says how the line is read and which structures it would try, reading no file ([terminal.md#explain](terminal.md#explain)).
 
+For file imports, the reply and command exit status follow what was stored.
+
+| Result | Outcome | Exit status |
+|---|---|---|
+| All named files stored or already present, with new files stored | `ok` | 0 |
+| Everything already stored | `ok` with a note | 0 |
+| New files stored and some refused or failed | `degraded` with a reason for each refused or failed path | 5 |
+| No new files stored and at least one path refused or failed | `error` with the paths and reasons | 2 for an input the caller must change, 4 for `not_found` or `io` |
+
+A mistyped `--origin` gives one `bad_value` error listing the importable origins. Failed and partial file imports appear in the daemon's recent log. The text output names the stored paths and gives the reasons for refusals. With `--json`, these facts are in the reply. When an import has a next call, the text output gives a command that runs it.
+
 | Structure | Recognized by | Origin |
 |---|---|---|
 | ChatGPT export, every vintage | `conversations.json` or `conversations-NNN.json` shards, with `chat.html`, `user.json`, asset members, `conversation_asset_file_names.json`, `library_files.json`, `codex.json` | `chatgpt`, `codex-cloud` |

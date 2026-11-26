@@ -365,6 +365,8 @@ reasons! {
     /// Import options that cannot be used together or with what they name.
     ImportOptions "import_options" => BadRequest { problem: String }
         "the import is refused: {problem}";
+    ImportRefused "import_refused" => BadValue { problem: String }
+        "no files were stored\n{problem}";
     NotAFile "not_a_file" => BadRequest { path: String }
         "{path} is not a file: name one of Python Polylogue's vector stores";
     NotAVectorStore "not_a_vector_store" => BadRequest { path: String }
