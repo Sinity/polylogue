@@ -153,6 +153,53 @@ pub struct MessageSelection<'r, 'a> {
 }
 
 impl<'a> Reader<'a> {
+    /// Parent transcript ranges use the same copied members and order as message reads.
+    pub fn parent_parts(
+        &self,
+        id: &SessionId,
+    ) -> Result<(Vec<polylogue_model::read::Part>, Parents, bool)> {
+        let Some(pk) = self.session_pk(id)? else {
+            return Ok((Vec::new(), Parents { issues: Vec::new() }, false));
+        };
+        let (keys, issues) = parent_keys(self.conn()?, pk, id)?;
+        let mut parts: Vec<polylogue_model::read::Part> = Vec::new();
+        for key in keys.into_iter().filter(|key| key.session_pk != pk) {
+            let message = MessageId::parse(&key.id)
+                .map_err(|error| StoreError::stored_data(error.to_string()))?;
+            let Some((start, end)) = self.item_message_span(key.session_pk.0, &message)? else {
+                continue;
+            };
+            if let Some(last) = parts.last_mut()
+                && last.session == key.session
+                && last.end == start as usize
+            {
+                last.end = end as usize;
+            } else {
+                parts.push(polylogue_model::read::Part {
+                    session: key.session,
+                    start: start as usize,
+                    end: end as usize,
+                    inherited: true,
+                    joined_by: None,
+                });
+            }
+        }
+        let mut unstored = false;
+        for (parent, _, copied) in
+            crate::lineage::inherited_prefixes(self.conn()?, &id.to_string())?
+        {
+            if copied
+                && self
+                    .conn()?
+                    .value::<i64>("SELECT pk FROM session WHERE id=?1 AND stub=0", [parent])?
+                    .is_none()
+            {
+                unstored = true;
+            }
+        }
+        Ok((parts, Parents { issues }, unstored))
+    }
+
     pub fn select_messages<'r>(
         &'r self,
         id: &SessionId,
@@ -270,6 +317,15 @@ fn parent_keys(
                     continue;
                 }
             };
+            let explicit: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
+            if !explicit && !link.copies_prefix && link.branch_point.is_none() {
+                frame.issues.push(ParentIssue::MissingBranchPoint {
+                    child: frame.session.clone(),
+                    parent,
+                    branch_point: None,
+                });
+                continue;
+            }
             let parent_pk: Option<SessionPk> = conn.value(
                 "SELECT pk FROM session WHERE id=?1 AND stub=0",
                 [parent.to_string()],
@@ -289,7 +345,7 @@ fn parent_keys(
                 frame.issues.push(ParentIssue::Cycle { session: parent });
                 continue;
             }
-            let explicit: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
+
             if explicit || link.copies_prefix && link.branch_point.is_none() {
                 let (child_text, parent_text) = (frame.session.to_string(), parent.to_string());
                 let params = params![parent_pk, child_text, parent_text];
@@ -336,12 +392,6 @@ fn parent_keys(
                         key: key(listed.pk, listed.id, listed.record_order),
                     });
                 }
-            } else if link.branch_point.is_none() {
-                frame.issues.push(ParentIssue::MissingBranchPoint {
-                    child: frame.session.clone(),
-                    parent,
-                    branch_point: None,
-                });
             } else {
                 let child = frame.session.clone();
                 active.insert(parent_pk);

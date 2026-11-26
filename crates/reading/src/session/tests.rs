@@ -79,3 +79,41 @@ fn a_link_that_copies_nothing_is_never_the_unstored_copy_marker() {
         [ParentIssue::MissingBranchPoint { .. }]
     ));
 }
+
+#[test]
+fn transcript_and_store_compose_the_same_copied_prefix() {
+    use polylogue_testkit::morrow::{Morrow, Set, session};
+    let archive = Morrow::build(Set::Main);
+    let pool = archive.reads();
+    let reader = pool.reader().unwrap();
+    let id = session(4);
+    let mut expected = Vec::new();
+    let selection = reader.select_messages(&id, true).unwrap();
+    selection
+        .visit(Default::default(), |message| {
+            expected.push(message.id.clone());
+            std::ops::ControlFlow::Continue(())
+        })
+        .unwrap();
+    let (mut parts, parents, unstored) = reader.parent_parts(&id).unwrap();
+    assert!(parents.issues.is_empty());
+    assert!(!unstored);
+    parts.push(Part {
+        session: id.clone(),
+        start: 0,
+        end: reader.item_state(&id).unwrap().unwrap().entries as usize,
+        inherited: false,
+        joined_by: None,
+    });
+    let mut actual = Vec::new();
+    for part in parts {
+        let items = reader.item_index(&part.session).unwrap().unwrap();
+        for entry in &items.entries[part.start..part.end] {
+            if entry.kind == EntryKind::Header {
+                actual.push(entry.key.message().unwrap().clone());
+            }
+        }
+    }
+    assert_eq!(actual, expected);
+    assert_eq!(actual.len(), 29);
+}

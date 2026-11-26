@@ -169,22 +169,16 @@ impl Reader<'_> {
                 ))
             })?
             .collect::<rusqlite::Result<_>>()?;
-        let (last_by, last_kind): (Option<String>, Option<String>) = conn
-            .prepare_cached(
-                "SELECT m.written_by, m.prompt_kind FROM message m
-                  WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-                  ORDER BY m.session_order DESC, m.id DESC
-                  LIMIT 1",
-            )?
-            .query_row([pk], |r| <(_, _)>::try_from(r))
-            .optional()?
-            .unwrap_or_default();
-        let unfinished_tool_call: bool = conn
-            .prepare_cached(
-                "SELECT coalesce((SELECT c.result_message_id IS NULL FROM tool_call c
-                                   WHERE c.session_pk = ?1 ORDER BY c.pk DESC LIMIT 1), 0)",
-            )?
-            .query_row([pk], |r| r.get(0))?;
+        let unanswered_prompt = conn.query_row(
+            &format!("SELECT {}", crate::session_sql::unanswered_prompt("?1")),
+            [pk],
+            |r| r.get(0),
+        )?;
+        let unfinished_tool_call = conn.query_row(
+            &format!("SELECT {}", crate::session_sql::unfinished_tool_call("?1")),
+            [pk],
+            |r| r.get(0),
+        )?;
         let last_answer = match last_answer {
             Some(message) => {
                 let text = message_text_parts(conn, message, || Ok(()))?.join("\n");
@@ -198,8 +192,7 @@ impl Reader<'_> {
             recent_files: files.into_iter().take(RECENT_FILES).collect(),
             commits,
             pull_requests,
-            unanswered_prompt: last_by.as_deref() == Some("human")
-                && last_kind.as_deref() != Some("command"),
+            unanswered_prompt,
             unfinished_tool_call,
         }))
     }
@@ -294,24 +287,21 @@ impl Reader<'_> {
     pub fn open_items(&self, session: &str) -> Result<Option<OpenItems>> {
         let conn = self.conn()?;
         let row = conn
-            .prepare_cached(
+            .prepare_cached(&format!(
                 "SELECT json_extract(s.live_facts, '$.open_call') IS NOT NULL,
                         json_extract(s.live_facts, '$.todo'),
-                        json_extract(s.live_facts, '$.hook_waiting_on.value'),
-                        (SELECT m.written_by FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
-                          ORDER BY m.session_order DESC, m.id DESC LIMIT 1),
-                        (SELECT m.prompt_kind FROM message m WHERE m.session_pk = s.pk AND m.duplicate_of IS NULL
-                          ORDER BY m.session_order DESC, m.id DESC LIMIT 1),
-                        coalesce((SELECT c.result_message_id IS NULL FROM tool_call c
-                                   WHERE c.session_pk = s.pk ORDER BY c.pk DESC LIMIT 1), 0)
+                        json_extract(s.live_facts, '$.hook_waiting_on.value'), {}, {}
                    FROM session s WHERE s.id = ?1",
-            )?
-            .query_row([session], |r| <(bool, Option<String>, Option<String>, Option<String>, Option<String>, bool)>::try_from(r))
+                crate::session_sql::unanswered_prompt("s.pk"),
+                crate::session_sql::unfinished_tool_call("s.pk"),
+            ))?
+            .query_row([session], |r| {
+                <(bool, Option<String>, Option<String>, bool, bool)>::try_from(r)
+            })
             .optional()?;
         Ok(row.map(
-            |(live_tool, todo, waiting_on, last_by, last_kind, unpaired)| OpenItems {
-                unanswered_prompt: last_by.as_deref() == Some("human")
-                    && last_kind.as_deref() != Some("command"),
+            |(live_tool, todo, waiting_on, unanswered_prompt, unpaired)| OpenItems {
+                unanswered_prompt,
                 open_tool_call: live_tool || unpaired,
                 todo,
                 waiting_on,
@@ -507,7 +497,7 @@ impl Reader<'_> {
             &serde_json::json!({"directories":directories,"session":session}),
         )?;
         let candidates = self.deliveries(
-            "WHERE d.sender='signal' AND d.signal IS NULL AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery=d.id) AND (d.recipient_id=json_extract(?1,'$.session') OR (d.recipient_id IS NULL AND d.cwd IS NOT NULL AND (EXISTS (SELECT 1 FROM json_each(?1,'$.directories') scope WHERE (scope.value='/' AND substr(d.cwd,1,1)='/') OR d.cwd=rtrim(scope.value,'/') OR substr(d.cwd,1,length(rtrim(scope.value,'/'))+1)=rtrim(scope.value,'/')||'/'))))",
+            &format!("WHERE d.sender='signal' AND d.signal IS NULL AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery=d.id) AND (d.recipient_id=json_extract(?1,'$.session') OR (d.recipient_id IS NULL AND d.cwd IS NOT NULL AND (EXISTS (SELECT 1 FROM json_each(?1,'$.directories') scope WHERE {}))))", crate::session_sql::path_under_column("d.cwd", "scope.value")),
             &selection,
         )?;
         let inspect_count: i64 = self.conn()?.scalar("SELECT count(*) FROM source_delivery d WHERE d.sender='signal' AND ((d.recipient_id IS NULL AND d.cwd IS NULL) OR d.signal IS NOT NULL) AND NOT EXISTS (SELECT 1 FROM source_delivery_event e WHERE e.delivery=d.id)", [])?;

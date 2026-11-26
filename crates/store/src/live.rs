@@ -171,24 +171,14 @@ pub struct LiveRoot {
 
 impl crate::Reader<'_> {
     /// The sessions whose live state or stall would change at an instant
-    /// with no new live event, with that instant (`live_until`): those with
-    /// live events within a day, and those whose transcript alone grew
-    /// within the live window.
+    /// with no new live event, with that instant (`live_until`).
     pub fn live_untils(&self, now: i64) -> Result<Vec<(String, i64)>> {
         let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(
-            "SELECT id, pl_live(live_facts, last_activity_at, ?1, 'until') AS until FROM session
-             WHERE (live_last_at IS NOT NULL AND live_last_at >= ?2)
-                OR (live_last_at IS NULL AND last_activity_at >= ?3)",
-        )?;
-        let rows = statement.query_map(
-            params![
-                now,
-                now - live::STALE_FOR_MS - live::LIVE_WINDOW_MS,
-                now - live::LIVE_WINDOW_MS - 1
-            ],
-            |r| <(String, Option<i64>)>::try_from(r),
-        )?;
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT id, pl_live(live_facts, last_activity_at, ?1, 'until') AS until FROM session s WHERE {}",
+            crate::session_sql::live_candidates("s", "?1")
+        ))?;
+        let rows = statement.query_map([now], |r| <(String, Option<i64>)>::try_from(r))?;
         let mut out = Vec::new();
         for row in rows {
             if let (session, Some(until)) = row? {
@@ -204,21 +194,13 @@ impl crate::Reader<'_> {
     /// enters the window later does so through a new commit.
     pub fn running_candidates(&self, now: i64) -> Result<RunningCandidates> {
         let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(
-            "SELECT id, live_facts, last_activity_at, cwd FROM session
-             WHERE (live_last_at IS NOT NULL AND live_last_at >= ?1)
-                OR (live_last_at IS NULL AND last_activity_at >= ?2)
-                OR (json_extract(live_facts, '$.root') IS NOT NULL
-                    AND json_extract(live_facts, '$.root_gone_at') IS NULL
-                    AND json_extract(live_facts, '$.ended_at') IS NULL)",
-        )?;
-        let rows = statement.query_map(
-            params![
-                now - live::STALE_FOR_MS - live::LIVE_WINDOW_MS,
-                now - live::LIVE_WINDOW_MS - 1
-            ],
-            |r| <(String, Option<String>, Option<i64>, Option<String>)>::try_from(r),
-        )?;
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT id, live_facts, last_activity_at, cwd FROM session s WHERE {}",
+            crate::session_sql::live_candidates("s", "?1")
+        ))?;
+        let rows = statement.query_map([now], |r| {
+            <(String, Option<String>, Option<i64>, Option<String>)>::try_from(r)
+        })?;
         let mut sessions = Vec::new();
         for row in rows {
             let (session, facts, grew_at, cwd) = row?;
@@ -399,15 +381,13 @@ impl crate::Reader<'_> {
     /// directory and the files it changed and has not committed.
     pub fn live_edited_files(&self, now: i64) -> Result<Vec<LiveEditedFiles>> {
         let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(
-            "SELECT id, live_facts, last_activity_at, cwd FROM session
-             WHERE live_last_at IS NOT NULL AND live_last_at >= ?1 AND cwd IS NOT NULL
-               AND json_extract(live_facts, '$.edited_files') IS NOT NULL",
-        )?;
-        let rows = statement.query_map(
-            params![now - live::STALE_FOR_MS - live::LIVE_WINDOW_MS],
-            |r| <(String, String, Option<i64>, String)>::try_from(r),
-        )?;
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT id, live_facts, last_activity_at, cwd FROM session s WHERE {} AND cwd IS NOT NULL AND json_extract(live_facts, '$.edited_files') IS NOT NULL",
+            crate::session_sql::live_candidates("s", "?1")
+        ))?;
+        let rows = statement.query_map([now], |r| {
+            <(String, String, Option<i64>, String)>::try_from(r)
+        })?;
         let mut out = Vec::new();
         for row in rows {
             let (session, facts, grew_at, cwd) = row?;
@@ -430,13 +410,10 @@ impl crate::Reader<'_> {
     /// Every session whose root process is alive by its live events.
     pub fn live_roots(&self) -> Result<Vec<LiveRoot>> {
         let conn = self.conn()?;
-        let mut statement = conn.prepare_cached(
-            "SELECT id, live_facts FROM session
-             WHERE live_last_at IS NOT NULL AND live_facts IS NOT NULL
-               AND json_extract(live_facts, '$.root') IS NOT NULL
-               AND json_extract(live_facts, '$.root_gone_at') IS NULL
-               AND json_extract(live_facts, '$.ended_at') IS NULL",
-        )?;
+        let mut statement = conn.prepare_cached(&format!(
+            "SELECT id, live_facts FROM session s WHERE {}",
+            crate::session_sql::live_root("s")
+        ))?;
         let rows = statement.query_map([], |r| <(String, String)>::try_from(r))?;
         let mut out = Vec::new();
         for row in rows {

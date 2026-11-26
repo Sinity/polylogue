@@ -1394,6 +1394,8 @@ fields! {
     TurnsInputTokens = f(Turns, "input_tokens", Number, ""),
     TurnsOutputTokens = f(Turns, "output_tokens", Number, ""),
     TurnsCost = f(Turns, "cost", Money, ""),
+    TurnsCostComplete = f(Turns, "cost_complete", Bool, "Every own model response in the turn has a known cost"),
+    TurnsUnpricedResponses = f(Turns, "unpriced_responses", Number, "Own responses in the turn without a price"),
     TurnsAbandoned = f(
         Turns,
         "abandoned",

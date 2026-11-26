@@ -246,152 +246,16 @@ fn spawning_calls(
     Ok(reader.item_call_places(index.pk, &calls)?)
 }
 
-/// The parent prefix of `session` through its branch point, as parts of
-/// parent sessions, all marked inherited. The walk is iterative over
-/// sessions already on the path; problems are reported, never resolved by
-/// choosing one link.
+/// Parent ranges and link issues are selected once by the store.
 fn prefix(reader: &Reader<'_>, session: &SessionId, composed: &mut Composed) -> Result<(), Error> {
-    let mut chain: Vec<(SessionId, Option<String>, bool)> = Vec::new();
-    let mut on_path: HashSet<SessionId> = HashSet::from([session.clone()]);
-    let mut current = session.clone();
-    loop {
-        let links = reader.inherited_prefixes(&current)?;
-        let forks: std::collections::BTreeSet<(String, String)> = links
-            .iter()
-            .filter_map(|link| Some((link.parent.clone(), link.branch_point.clone()?)))
-            .collect();
-        if forks.len() > 1 {
-            let mut recorded = forks.into_iter();
-            let (first, first_branch_point) = recorded.next().expect("two forks");
-            let (second, second_branch_point) = recorded.next().expect("two forks");
-            if let (Ok(first), Ok(second)) = (SessionId::parse(&first), SessionId::parse(&second)) {
-                composed.issues.push(ParentIssue::ConflictingParents {
-                    child: current.clone(),
-                    first,
-                    first_branch_point,
-                    second,
-                    second_branch_point,
-                });
-            }
-            break;
+    let (parts, parents, unstored) = reader.parent_parts(session)?;
+    composed.issues.extend(parents.issues);
+    composed.unstored_copy = unstored;
+    for part in parts {
+        if let Some(index) = session_index(reader, &part.session)? {
+            composed.parts.push(part);
+            composed.indexes.push(index);
         }
-        // More than one composing parent (several resumes, or a fork and a
-        // resume) is reported, never resolved by choosing one.
-        let parents: std::collections::BTreeSet<(&str, &str)> = links
-            .iter()
-            .map(|link| {
-                (
-                    link.parent.as_str(),
-                    link.branch_point.as_deref().unwrap_or(""),
-                )
-            })
-            .collect();
-        if parents.len() > 1 {
-            let mut recorded = parents.into_iter();
-            let (first, first_branch_point) = recorded.next().expect("two parents");
-            let (second, second_branch_point) = recorded.next().expect("two parents");
-            if let (Ok(first), Ok(second)) = (SessionId::parse(first), SessionId::parse(second)) {
-                composed.issues.push(ParentIssue::ConflictingParents {
-                    child: current.clone(),
-                    first,
-                    first_branch_point: first_branch_point.to_owned(),
-                    second,
-                    second_branch_point: second_branch_point.to_owned(),
-                });
-            }
-            break;
-        }
-        let Some(link) = links.first() else { break };
-        let Ok(parent) = SessionId::parse(&link.parent) else {
-            composed.issues.push(ParentIssue::InvalidParent {
-                child: current.clone(),
-                parent: link.parent.clone(),
-            });
-            break;
-        };
-        if !on_path.insert(parent.clone()) {
-            composed.issues.push(ParentIssue::Cycle { session: parent });
-            break;
-        }
-        if !link.copies_prefix && link.branch_point.is_none() {
-            composed.issues.push(ParentIssue::MissingBranchPoint {
-                child: current.clone(),
-                parent,
-                branch_point: None,
-            });
-            break;
-        }
-        chain.push((
-            parent.clone(),
-            link.branch_point.clone(),
-            link.copies_prefix,
-        ));
-        current = parent;
-    }
-    // Compose from the oldest ancestor down, cutting each at the branch
-    // point its child continues from.
-    let mut parts: Vec<(Part, Arc<SessionIndex>)> = Vec::new();
-    for (at, (parent, branch_point, copies_prefix)) in chain.iter().enumerate().rev() {
-        let child = if at == 0 {
-            session.clone()
-        } else {
-            chain[at - 1].0.clone()
-        };
-        let Some(index) = session_index(reader, parent)? else {
-            // A copied prefix whose source is not stored is not a broken
-            // link: the child's messages are its own.
-            if *copies_prefix {
-                composed.unstored_copy = true;
-            } else {
-                composed.issues.push(ParentIssue::MissingParent {
-                    child,
-                    parent: parent.clone(),
-                });
-            }
-            parts.clear();
-            continue;
-        };
-        parts.push((
-            Part {
-                session: parent.clone(),
-                start: 0,
-                end: index.entries as usize,
-                inherited: true,
-                joined_by: None,
-            },
-            index,
-        ));
-        if let Some(point) = branch_point {
-            let mut cut = None;
-            if let Ok(message) = MessageId::parse(point) {
-                for (which, (part, index)) in parts.iter().enumerate().rev() {
-                    if let Some((header, end)) = reader.item_message_span(index.pk, &message)?
-                        && (part.start..part.end).contains(&(header as usize))
-                    {
-                        cut = Some((which, (end as usize).min(part.end)));
-                        break;
-                    }
-                }
-            }
-            match cut {
-                Some((which, end)) => {
-                    parts.truncate(which + 1);
-                    parts[which].0.end = end;
-                }
-                None => {
-                    composed.issues.push(ParentIssue::MissingBranchPoint {
-                        child,
-                        parent: parent.clone(),
-                        branch_point: Some(point.clone()),
-                    });
-                    parts.clear();
-                }
-            }
-        }
-    }
-    for (part, index) in parts {
-        composed.parts.push(part);
-        composed.indexes.push(index);
     }
     Ok(())
 }

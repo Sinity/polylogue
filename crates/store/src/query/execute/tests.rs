@@ -4,6 +4,7 @@ use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 mod lineage;
 mod saved_fields;
 mod search;
+mod shared_rules;
 
 fn options() -> crate::query::Options {
     crate::query::Options {

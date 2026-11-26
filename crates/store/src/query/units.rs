@@ -829,6 +829,8 @@ static TURNS: UnitSpec = UnitSpec {
         ("input_tokens", T("{r}.input_tokens"), Number),
         ("output_tokens", T("{r}.output_tokens"), Number),
         ("cost", T("{r}.cost_nusd"), Money),
+        ("cost_complete", T("{r}.cost_complete"), Bool),
+        ("unpriced_responses", T("{r}.unpriced_responses"), Number),
         ("abandoned", T("{r}.abandoned"), Bool),
     ],
     time: "{r}.start",
@@ -1248,14 +1250,20 @@ pub fn turns() -> String {
        CASE WHEN min(COALESCE(tm.on_active_path, -1)) < 0 THEN 'unknown' ELSE 'active' END AS path, \
        sum(tm.tc) AS tool_calls, sum(tm.te) AS errors, \
        sum(tm.input_tokens) AS input_tokens, sum(tm.output_tokens) AS output_tokens, \
-       sum(tm.cost_nusd) AS cost_nusd \
+       sum(tm.cost_nusd) AS cost_nusd, \
+       sum(tm.unpriced) AS unpriced_responses, NOT max(tm.unknown_cost) AS cost_complete \
      FROM (SELECT o.*, \
          sum(CASE WHEN o.hp AND (o.prompt_kind = 'command' OR NOT o.prev_hp) THEN 1 ELSE 0 END) \
            OVER (PARTITION BY o.session_pk ORDER BY o.session_order, o.id \
                  ROWS UNBOUNDED PRECEDING) AS turn, \
          row_number() OVER (PARTITION BY o.session_pk ORDER BY o.session_order, o.id) AS ord \
        FROM (SELECT m.pk, m.id, m.session_pk, m.session_order, m.role, m.written_by, m.prompt_kind, \
-             m.at, m.on_active_path, m.input_tokens, m.output_tokens, m.cost_nusd, \
+             m.at, m.on_active_path, \
+             {input_tokens} AS input_tokens, \
+             {output_tokens} AS output_tokens, \
+             {cost} AS cost_nusd, \
+             {unpriced} AS unpriced, \
+             {unknown_cost} AS unknown_cost, \
              (m.written_by = 'human') AS hp, \
              COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
                ORDER BY m.session_order, m.id), 0) AS prev_hp, \
@@ -1266,7 +1274,12 @@ pub fn turns() -> String {
            FROM message m WHERE {own_messages} \
              AND m.written_by IN ('human', 'model')) o) tm \
      GROUP BY tm.session_pk, tm.turn) g)",
-        own_messages = fields::own_messages("m", None)
+        own_messages = "m.duplicate_of IS NULL AND (COALESCE(m.on_active_path,1)=1 OR m.role='assistant' AND m.written_by='model')",
+        unpriced = crate::session_sql::response_unpriced(),
+        input_tokens = crate::session_sql::response_value("input_tokens"),
+        output_tokens = crate::session_sql::response_value("output_tokens"),
+        cost = crate::session_sql::response_value("cost_nusd"),
+        unknown_cost = crate::session_sql::response_cost_unknown(),
     )
 }
 

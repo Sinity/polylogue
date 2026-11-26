@@ -77,17 +77,9 @@ pub(super) fn register(conn: &Connection) -> rusqlite::Result<()> {
     conn.create_scalar_function("pl_query_under", 2, FLAGS, |ctx| {
         let path: Option<String> = ctx.get(0)?;
         let root: Option<String> = ctx.get(1)?;
-        Ok(path.zip(root).map(|(path, root)| {
-            let absolute_root = root.starts_with('/');
-            let root = root.trim_end_matches('/');
-            if root.is_empty() && absolute_root {
-                return path.starts_with('/');
-            }
-            path == root
-                || path
-                    .strip_prefix(root)
-                    .is_some_and(|rest| rest.starts_with('/'))
-        }))
+        Ok(path
+            .zip(root)
+            .map(|(path, root)| crate::session_sql::path_under(&path, &root)))
     })?;
     // Money is integer nano-USD. An amount scaled by a fractional number
     // rounds half away from zero; one outside the i64 range is refused.

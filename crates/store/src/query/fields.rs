@@ -708,6 +708,8 @@ pub fn rule(id: FieldId) -> Rule {
         TurnsInputTokens => Rule::NONE.sql("{r}.input_tokens"),
         TurnsOutputTokens => Rule::NONE.sql("{r}.output_tokens"),
         TurnsCost => Rule::NONE.sql("{r}.cost_nusd"),
+        TurnsCostComplete => Rule::NONE.sql("{r}.cost_complete"),
+        TurnsUnpricedResponses => Rule::NONE.sql("{r}.unpriced_responses"),
         TurnsAbandoned => Rule::NONE.sql("{r}.abandoned"),
         TurnsCorrected => Rule::NONE.sql_fn(turns_corrected),
     }

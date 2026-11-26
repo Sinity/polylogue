@@ -465,6 +465,7 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **measure**: a computation a pipeline cannot express, named after `| measure`
   (`usage`, `quota`, `survival`, `contrast`, …).
 - **population**: which responses a usage figure counts.
+- **unpriced response**: a recorded model response with no known cost; `unpriced_responses` counts these and `cost_complete` states whether every response in a session or turn has a known cost.
 - **money kind**: where a cost comes from (`api_equivalent`,
   `provider_reported`, `subscription_share`, `manual`, `estimated`).
 - **clustered time**: the union of active intervals with short gaps closed.

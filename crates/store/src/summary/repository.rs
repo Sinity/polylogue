@@ -26,11 +26,11 @@ pub(super) fn compute(conn: &Connection, session_pk: i64, out: &mut Output) -> R
     let (cwd, own) = super::session::place(conn, session_pk, facts)?;
     let lookup: Option<(Option<String>, Option<String>)> = match &cwd {
         Some(cwd) => conn
-            .prepare_cached(
+            .prepare_cached(&format!(
                 "SELECT remote, json_extract(root_commits, '$[0]') FROM repo_lookup
-                 WHERE path = ?1 OR substr(?1, 1, length(path) + 1) = path || '/'
-                 ORDER BY length(path) DESC LIMIT 1",
-            )?
+                 WHERE {} ORDER BY length(path) DESC LIMIT 1",
+                crate::session_sql::path_under_column("?1", "path")
+            ))?
             .query_row([cwd], |r| <(_, _)>::try_from(r))
             .optional()?,
         None => None,

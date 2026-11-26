@@ -55,9 +55,9 @@ pub fn query(selection_sql: &str, population_sql: &str, options: &str) -> Result
         let sql=match family {
             "origins"=>"SELECT pk,origin AS value FROM session".into(),
             "models"=>format!("SELECT DISTINCT m.session_pk AS pk,m.model AS value FROM message m WHERE {own} AND m.written_by='model'"),
-            "repositories"=>"SELECT pk,coalesce(repo_root,repo) AS value FROM session
+            "repositories"=>format!("SELECT pk,coalesce(repo_root,repo) AS value FROM session
                 UNION SELECT s.pk,coalesce(json_extract(rl.root_commits,'$[0]'),rl.remote) FROM session s JOIN json_each(s.cwd_json) cwd
-                JOIN repo_lookup rl ON rl.path=(SELECT r.path FROM repo_lookup r WHERE r.path=cwd.value OR substr(cwd.value,1,length(r.path)+1)=r.path||'/' ORDER BY length(r.path) DESC LIMIT 1)".into(),
+                JOIN repo_lookup rl ON rl.path=(SELECT r.path FROM repo_lookup r WHERE {} ORDER BY length(r.path) DESC LIMIT 1)", session_sql::path_under_column("cwd.value", "r.path")),
             "tags"=>tags_sql(),
             "months"=>"SELECT pk,pl_month(started_at) AS value FROM session".into(),
             "ends_with"=>format!("SELECT s.pk,{} AS value FROM session s",session_sql::span("s","ends_with")),
