@@ -323,7 +323,9 @@ fn a_read_deadline_does_not_cancel_a_real_typed_import() {
     assert_eq!(report.imported, [path]);
     assert!(report.refused.is_empty(), "{report:?}");
 
-    // The session reached the archive and reads back through the daemon.
+    // The session reached the archive and reads back through the daemon
+    // once the loop has parsed and derived it.
+    crate::cli::wait_status(&fixture, |_| true);
     let output = crate::cli::cli(&fixture, &["--deadline", "none", "--json", "sessions"]);
     assert!(output.status.success(), "{output:?}");
     let answer: command_surface::Answer<serde_json::Value> =
