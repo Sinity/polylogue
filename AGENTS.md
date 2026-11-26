@@ -116,9 +116,10 @@ stay its own.
 local overrides and build graphs. Enter with `nix develop`. Use
 `cargo xtask check --changed` while editing,
 `cargo xtask test -p <crate> --lib -E 'test(<name>)'` for library unit tests,
-and `cargo xtask check` for the required hosted check. All test selections share
-the workspace feature graph. Package filters select execution; Cargo
-target flags such as `--lib` or `--bin NAME` bound compilation.
+and `cargo xtask check` for the required hosted check. A run builds only the
+selected packages' test targets, with the units the full test build uses;
+Cargo target flags such as `--lib` or `--bin NAME` bound it further. After
+changing a dependency or its features, run `cargo hakari generate`.
 
 **What a test checks.** A test exercises behaviour a caller can observe
 through a stable interface (a command, an operation, a reader, a stored
