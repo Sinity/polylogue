@@ -1,34 +1,30 @@
 //! MCP completion is an adapter over the same typed operation as HTTP and the shell.
 use super::*;
 
+/// The query text and the cursor: the full text is the argument's value, the
+/// cursor a UTF-8 byte offset in `_meta["polylogue/position"]`.
 pub(super) fn arguments(
-    params: &Value,
-) -> Result<crate::protocol::complete::Arguments, &'static str> {
-    let text = params["argument"]["value"]
-        .as_str()
-        .ok_or("argument.value must contain the full query text")?;
-    let position = match params["_meta"].get("polylogue/position") {
+    request: CompleteRequestParams,
+    context: &RequestContext<RoleServer>,
+) -> Result<crate::protocol::complete::Arguments, McpError> {
+    let position = match context.meta.get("polylogue/position") {
         None => None,
-        Some(value) => Some(
-            value
-                .as_u64()
-                .ok_or("polylogue/position must be a UTF-8 byte offset")?,
-        ),
+        Some(value) => Some(value.as_u64().ok_or_else(|| {
+            McpError::invalid_params("polylogue/position must be a UTF-8 byte offset", None)
+        })?),
     };
     Ok(crate::protocol::complete::Arguments {
-        text: text.into(),
+        text: request.argument.value,
         position,
     })
 }
 
-pub(super) fn answer(
-    id: Value,
+pub(super) async fn answer(
     archive: &Archive,
     arguments: crate::protocol::complete::Arguments,
     deadline_ms: Option<i64>,
-    cancelled: &tokio_util::sync::CancellationToken,
-    with_result_type: bool,
-) -> Value {
+    cancelled: &CancellationToken,
+) -> Result<CompleteResult, McpError> {
     let deadline = deadline_ms.map_or(command_surface::Deadline::Default, |deadline| {
         command_surface::Deadline::Milliseconds(
             crate::daemon::execution::remaining(Some(deadline))
@@ -43,24 +39,20 @@ pub(super) fn answer(
         uuid::Uuid::now_v7().to_string(),
     );
     request.deadline = deadline;
-    let answer = match run(archive, request, deadline_ms, cancelled, None) {
+    let structured = match run(archive, request, deadline_ms, cancelled, None).await {
         Ok((_, answer, _)) => answer,
-        Err(message) => return error(id, -32603, &message),
+        Err(message) => return Err(McpError::internal_error(message, None)),
     };
-    let structured = answer;
     let answer: command_surface::Answer<crate::protocol::complete::Answer> =
-        match serde_json::from_value(structured.clone()) {
-            Ok(answer) => answer,
-            Err(_) => return error(id, -32603, "invalid completion answer"),
-        };
-    let completions = match crate::protocol::into_value(answer) {
-        Ok(completions) => completions,
-        Err(failure) => {
-            let mut response = error(id, -32000, &failure.message);
-            response["error"]["data"] = structured;
-            return response;
-        }
-    };
+        serde_json::from_value(structured.clone())
+            .map_err(|_| McpError::internal_error("invalid completion answer", None))?;
+    let completions = crate::protocol::into_value(answer).map_err(|failure| {
+        McpError::new(
+            rmcp::model::ErrorCode(-32000),
+            failure.message,
+            Some(structured),
+        )
+    })?;
     let mut values = Vec::with_capacity(completions.len());
     for completion in &completions {
         if arguments
@@ -68,11 +60,10 @@ pub(super) fn answer(
             .get(completion.replace.start..completion.replace.end)
             .is_none()
         {
-            return error(
-                id,
-                -32603,
+            return Err(McpError::internal_error(
                 "completion replacement is outside the query text",
-            );
+                None,
+            ));
         }
         let mut text = arguments.text.clone();
         text.replace_range(
@@ -81,14 +72,14 @@ pub(super) fn answer(
         );
         values.push(text);
     }
-    let mut result = json!({
-        "completion": {"total": values.len(), "values": values, "hasMore": false},
+    let result = json!({
+        "completion": {"values": values, "total": values.len(), "hasMore": false},
         "_meta": {"polylogue/completions": completions},
     });
-    if with_result_type {
-        result["resultType"] = json!("complete");
-    }
-    success(id, result)
+    let mut result: CompleteResult =
+        serde_json::from_value(result).expect("completion result matches the transport schema");
+    result.result_type = Some(rmcp::model::ResultType::COMPLETE);
+    Ok(result)
 }
 
 #[cfg(test)]

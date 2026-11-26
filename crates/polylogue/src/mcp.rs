@@ -4,7 +4,8 @@
 //! and sent as the same request the CLI sends. Answers are the daemon's
 //! structured answers; reads use the shared Markdown renderer, and context
 //! (briefs, takeovers, recalls) is answered with its text and
-//! recorded as a delivery from `mcp`. Refusals are tool errors.
+//! recorded as a delivery from `mcp`. Refusals are tool errors. The rmcp
+//! crate owns the protocol: framing, versions, lifecycle and cancellation.
 
 mod completion;
 
@@ -12,8 +13,17 @@ use crate::commands::{COMMANDS, Command, Tool, ToolAccess};
 use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
 use command_surface::Answer;
 use polylogue_store::Archive;
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, CallToolResult, CompleteRequestParams, CompleteResult,
+    ContentBlock, Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
+    ServerConfig,
+};
+use rmcp::service::{RequestContext, ServerInitializeError};
+use rmcp::transport::Transport;
+use rmcp::{ErrorData as McpError, RoleServer, ServerHandler, ServiceExt};
 use serde_json::{Map, Value, json};
-use std::io::{self, BufRead, Write};
+use std::io;
+use tokio_util::sync::CancellationToken;
 
 /// The commands offered as tool operations.
 pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
@@ -271,12 +281,12 @@ fn refusal_with_call(
 
 /// A `tools/call`: the tool's operation named by the call, run with its
 /// arguments.
-fn call_with_limit(
+async fn answer_call(
     archive: &Archive,
     name: &str,
     arguments: Map<String, Value>,
     deadline_ms: Option<i64>,
-    cancelled: &tokio_util::sync::CancellationToken,
+    cancelled: &CancellationToken,
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
     let Some(tool) = Tool::named(name) else {
@@ -342,15 +352,15 @@ fn call_with_limit(
         next["operation"] = json!(command.name);
         return Ok(refusal_with_call(failure, next_tool, &next, request));
     }
-    run(archive, request, deadline_ms, cancelled, tool_call_id)
+    run(archive, request, deadline_ms, cancelled, tool_call_id).await
 }
 
 /// Runs one operation as the typed request the call names.
-fn run(
+async fn run(
     archive: &Archive,
     request: command_surface::RunnableRequest,
     deadline_ms: Option<i64>,
-    cancelled: &tokio_util::sync::CancellationToken,
+    cancelled: &CancellationToken,
     tool_call_id: Option<String>,
 ) -> Result<(String, Value, bool), String> {
     let command = crate::commands::command(&request.operation)
@@ -394,21 +404,13 @@ fn run(
             ));
         }
     }
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| e.to_string())?;
     let mut caller = crate::client::this_process();
     if tool_call_id.is_some() {
         caller.tool_call_id = tool_call_id;
     }
-    let mut answer = runtime.block_on(crate::client::call_ready_as_bounded(
-        archive,
-        &request,
-        cancelled,
-        caller,
-        deadline_ms,
-    ));
+    let mut answer =
+        crate::client::call_ready_as_bounded(archive, &request, cancelled, caller, deadline_ms)
+            .await;
     // The daemon's refusal carries the same line with `all` set; MCP offers
     // it as the next call.
     let all = answer
@@ -469,351 +471,165 @@ fn run(
     Ok((text, structured, failed))
 }
 
-/// The newest version negotiated by `initialize`, and the one offered to a
-/// client that asks for a version this server does not know.
-const INITIALIZE_FALLBACK: &str = "2025-11-25";
-
-/// The first version whose requests carry the protocol version and client
-/// capabilities in each request's `_meta` instead of an `initialize`.
-const REQUEST_METADATA_FROM: &str = "2026-07-28";
-
-const VERSIONS: &[&str] = &[
-    "2024-11-05",
-    "2025-03-26",
-    "2025-06-18",
-    INITIALIZE_FALLBACK,
-    REQUEST_METADATA_FROM,
-];
-
-fn capabilities() -> Value {
-    json!({"tools": {}, "completions": {}})
-}
-
-fn server_info() -> Value {
-    json!({"name": "polylogue", "version": env!("CARGO_PKG_VERSION")})
-}
-
-#[derive(Default)]
-struct Session {
-    initialized: bool,
-    request_metadata: bool,
-}
-
-enum Reply {
-    Message(Value),
-    Completion {
-        id: Value,
-        arguments: crate::protocol::complete::Arguments,
-        deadline_ms: Option<i64>,
-        with_result_type: bool,
-    },
-    Tool {
-        id: Value,
-        name: String,
-        arguments: serde_json::Map<String, Value>,
-        with_result_type: bool,
-        deadline_ms: Option<i64>,
-        tool_call_id: Option<String>,
-    },
-    None,
-}
-
-fn success(id: Value, result: Value) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "result": result})
-}
-
-fn error(id: Value, code: i64, message: &str) -> Value {
-    json!({"jsonrpc": "2.0", "id": id, "error": {"code": code, "message": message}})
-}
-
-impl Session {
-    fn prepare(&mut self, request: Value) -> Reply {
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let valid_id = id.is_null() || id.is_string() || id.is_number();
-        let id = if valid_id { id } else { Value::Null };
-        let invalid = |code, message| Reply::Message(error(id.clone(), code, message));
-        let Some(method) = request["method"].as_str() else {
-            // Client responses to server requests have no method.
-            return if request.get("result").is_some() || request.get("error").is_some() {
-                Reply::None
-            } else {
-                invalid(-32600, "Invalid request")
-            };
-        };
-        if request["jsonrpc"] != "2.0" || !valid_id {
-            return invalid(-32600, "Invalid request");
-        }
-        if request.get("id").is_none() {
-            return Reply::None;
-        }
-        let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
-        if !params.is_object() {
-            return invalid(-32602, "Invalid params");
-        }
-        if method == "initialize" {
-            let Some(version) = params["protocolVersion"].as_str() else {
-                return invalid(-32602, "protocolVersion is required");
-            };
-            if !params["capabilities"].is_object()
-                || !params["clientInfo"]["name"].is_string()
-                || !params["clientInfo"]["version"].is_string()
-            {
-                return invalid(-32602, "clientInfo and capabilities are required");
-            }
-            let version = if VERSIONS.contains(&version) && version != REQUEST_METADATA_FROM {
-                version
-            } else {
-                INITIALIZE_FALLBACK
-            };
-            self.initialized = true;
-            return Reply::Message(success(
-                id,
-                json!({
-                    "protocolVersion": version, "capabilities": capabilities(),
-                    "serverInfo": server_info(),
-                    "instructions": crate::manual::card(),
-                }),
-            ));
-        }
-        let meta = &params["_meta"];
-        let version = meta["io.modelcontextprotocol/protocolVersion"].as_str();
-        if method == "ping"
-            && !self.request_metadata
-            && (!self.initialized || version.is_none_or(|version| version < REQUEST_METADATA_FROM))
-        {
-            return Reply::Message(success(id, json!({})));
-        }
-        let with_result_type =
-            self.request_metadata || version.is_some_and(|v| v >= REQUEST_METADATA_FROM);
-        if !self.initialized || with_result_type || method == "server/discover" {
-            let mut missing = Vec::new();
-            if version.is_none() {
-                missing.push("io.modelcontextprotocol/protocolVersion");
-            }
-            if !meta["io.modelcontextprotocol/clientCapabilities"].is_object() {
-                missing.push("io.modelcontextprotocol/clientCapabilities");
-            }
-            if !missing.is_empty() {
-                return invalid(
-                    -32602,
-                    &format!(
-                        "request _meta is missing or has malformed required fields: {}",
-                        missing.join(", ")
-                    ),
-                );
-            }
-            if !VERSIONS.contains(&version.unwrap()) {
-                let mut reply = error(id, -32022, "Unsupported protocol version");
-                reply["error"]["data"] = json!({"requested":version, "supported":VERSIONS});
-                return Reply::Message(reply);
-            }
-            if method != "server/discover" && !self.initialized {
-                self.request_metadata = true;
-            }
-        }
-        if method == "server/discover" {
-            return Reply::Message(success(
-                id,
-                json!({
-                    "resultType": "complete", "supportedVersions": VERSIONS,
-                    "capabilities": capabilities(), "instructions": crate::manual::card(),
-                    "ttlMs": 0, "cacheScope": "private",
-                    "_meta": {"io.modelcontextprotocol/serverInfo": server_info()},
-                }),
-            ));
-        }
-        let with_result_type = self.request_metadata || with_result_type;
-        match method {
-            "completion/complete" => match completion::arguments(&params) {
-                Ok(arguments) => Reply::Completion {
-                    id,
-                    arguments,
-                    deadline_ms: meta["deadline_ms"].as_i64(),
-                    with_result_type,
-                },
-                Err(message) => invalid(-32602, message),
-            },
-            "tools/list" => {
-                let mut result = json!({"tools": tools()});
-                if with_result_type {
-                    result["resultType"] = json!("complete");
-                }
-                Reply::Message(success(id, result))
-            }
-            "tools/call" => {
-                let Some(name) = params["name"].as_str() else {
-                    return invalid(-32602, "tool name is required");
-                };
-                let arguments = match params.get("arguments") {
-                    None | Some(Value::Null) => serde_json::Map::new(),
-                    Some(Value::Object(arguments)) => arguments.clone(),
-                    _ => return invalid(-32602, "tool arguments must be an object"),
-                };
-                Reply::Tool {
-                    id,
-                    name: name.to_owned(),
-                    arguments,
-                    with_result_type,
-                    deadline_ms: meta["deadline_ms"].as_i64(),
-                    tool_call_id: meta["claudecode/toolUseId"].as_str().map(str::to_owned),
-                }
-            }
-            _ => invalid(-32601, "Method not found"),
-        }
-    }
-}
-
-impl Reply {
-    fn answer(self, archive: &Archive) -> Option<Value> {
-        self.answer_with_limit(archive, &tokio_util::sync::CancellationToken::new())
-    }
-
-    fn answer_with_limit(
-        self,
-        archive: &Archive,
-        cancelled: &tokio_util::sync::CancellationToken,
-    ) -> Option<Value> {
-        match self {
-            Self::None => None,
-            Self::Message(message) => Some(message),
-            Self::Completion {
-                id,
-                arguments,
-                deadline_ms,
-                with_result_type,
-            } => Some(completion::answer(
-                id,
-                archive,
-                arguments,
-                deadline_ms,
-                cancelled,
-                with_result_type,
-            )),
-            Self::Tool {
-                id,
-                name,
-                arguments,
-                with_result_type,
-                deadline_ms,
-                tool_call_id,
-            } => {
-                let (text, structured, failed) = match call_with_limit(
-                    archive,
-                    &name,
-                    arguments,
-                    deadline_ms,
-                    cancelled,
-                    tool_call_id,
-                ) {
-                    Ok(answer) => answer,
-                    Err(text) => {
-                        let answer =
-                            command_surface::Answer::<Value>::error(crate::protocol::failure(
-                                polylogue_model::Code::BadRequest,
-                                text.clone(),
-                            ));
-                        (
-                            text,
-                            serde_json::to_value(answer).expect("failure serializes"),
-                            true,
-                        )
-                    }
-                };
-                let mut result = json!({"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": failed});
-                if with_result_type {
-                    result["resultType"] = json!("complete");
-                }
-                Some(success(id, result))
-            }
-        }
-    }
-}
-
-type Worker<'scope> = (
-    Value,
-    tokio_util::sync::CancellationToken,
-    std::thread::ScopedJoinHandle<'scope, io::Result<()>>,
-);
-
-fn serve(input: impl BufRead, output: impl Write + Send, archive: &Archive) -> io::Result<()> {
-    let output = std::sync::Mutex::new(output);
-    let write = |message: Value| -> io::Result<()> {
-        let mut output = output
-            .lock()
-            .map_err(|_| io::Error::other("MCP output lock failed"))?;
-        serde_json::to_writer(&mut *output, &message)?;
-        output.write_all(b"\n")?;
-        output.flush()
+/// A tool answer as the MCP result: the text, the structured answer, and
+/// whether it failed. A call refused before it reached an operation is a
+/// `bad_request` answer carrying the same text.
+fn tool_result(answer: Result<(String, Value, bool), String>) -> CallToolResult {
+    let (text, structured, failed) = answer.unwrap_or_else(|text| {
+        let answer = Answer::<Value>::error(crate::protocol::failure(
+            polylogue_model::Code::BadRequest,
+            text.clone(),
+        ));
+        (
+            text,
+            serde_json::to_value(answer).expect("failure serializes"),
+            true,
+        )
+    });
+    let content = vec![ContentBlock::text(text)];
+    let mut result = if failed {
+        CallToolResult::error(content)
+    } else {
+        CallToolResult::success(content)
     };
-    std::thread::scope(|scope| {
-        let mut session = Session::default();
-        let mut workers: Vec<Worker<'_>> = Vec::new();
-        let result = (|| {
-            for line in input.lines() {
-                let mut index = 0;
-                while index < workers.len() {
-                    if workers[index].2.is_finished() {
-                        workers
-                            .swap_remove(index)
-                            .2
-                            .join()
-                            .map_err(|_| io::Error::other("MCP tool thread failed"))??;
-                    } else {
-                        index += 1;
-                    }
-                }
-                let line = line?;
-                if line.trim().is_empty() {
-                    continue;
-                }
-                let reply = match serde_json::from_str::<Value>(&line) {
-                    Ok(request) => {
-                        if request["method"] == "notifications/cancelled"
-                            && request.get("id").is_none()
-                        {
-                            for (id, cancelled, _) in &workers {
-                                if id == &request["params"]["requestId"] {
-                                    cancelled.cancel();
-                                }
-                            }
-                            continue;
-                        }
-                        session.prepare(request)
-                    }
-                    Err(_) => Reply::Message(error(Value::Null, -32700, "Parse error")),
-                };
-                if let Reply::Tool { ref id, .. } | Reply::Completion { ref id, .. } = reply {
-                    let id = id.clone();
-                    let cancelled = tokio_util::sync::CancellationToken::new();
-                    let worker_cancelled = cancelled.clone();
-                    let write = &write;
-                    let worker = scope.spawn(move || {
-                        if let Some(message) = reply.answer_with_limit(archive, &worker_cancelled) {
-                            write(message)?;
-                        }
-                        Ok(())
-                    });
-                    workers.push((id, cancelled, worker));
-                } else if let Some(message) = reply.answer(archive) {
-                    write(message)?;
-                }
-            }
-            Ok(())
-        })();
-        for (_, cancelled, _) in &workers {
-            cancelled.cancel();
+    result.structured_content = Some(structured);
+    result
+}
+
+/// The absolute parent deadline a client put in the request's `_meta`.
+fn deadline_ms(context: &RequestContext<RoleServer>) -> Option<i64> {
+    context.meta.get("deadline_ms").and_then(Value::as_i64)
+}
+
+struct Server {
+    archive: Archive,
+}
+
+impl ServerHandler for Server {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(
+            ServerCapabilities::builder()
+                .enable_completions()
+                .enable_tools()
+                .build(),
+        )
+        .with_server_info(Implementation::new("polylogue", env!("CARGO_PKG_VERSION")))
+        .with_instructions(crate::manual::card())
+    }
+
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        let tools = tools()
+            .into_iter()
+            .map(|tool| {
+                serde_json::from_value(tool)
+                    .expect("declared MCP tool matches the transport schema")
+            })
+            .collect();
+        Ok(ListToolsResult::with_all_items(tools))
+    }
+
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let tool_call_id = context
+            .meta
+            .get("claudecode/toolUseId")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let answer = answer_call(
+            &self.archive,
+            &request.name,
+            request.arguments.unwrap_or_default(),
+            deadline_ms(&context),
+            &context.ct,
+            tool_call_id,
+        )
+        .await;
+        Ok(tool_result(answer).into())
+    }
+
+    async fn complete(
+        &self,
+        request: CompleteRequestParams,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CompleteResult, McpError> {
+        let arguments = completion::arguments(request, &context)?;
+        completion::answer(&self.archive, arguments, deadline_ms(&context), &context.ct).await
+    }
+}
+
+/// A transport that cancels `ended` when the client closes its input, so the
+/// calls still running stop their daemon reads instead of finishing for
+/// nobody.
+struct EndsWithInput<T> {
+    inner: T,
+    ended: CancellationToken,
+}
+
+impl<T: Transport<RoleServer>> Transport<RoleServer> for EndsWithInput<T> {
+    type Error = T::Error;
+
+    fn send(
+        &mut self,
+        item: rmcp::service::TxJsonRpcMessage<RoleServer>,
+    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'static {
+        self.inner.send(item)
+    }
+
+    async fn receive(&mut self) -> Option<rmcp::service::RxJsonRpcMessage<RoleServer>> {
+        let message = self.inner.receive().await;
+        if message.is_none() {
+            self.ended.cancel();
         }
-        for (_, _, worker) in workers {
-            worker
-                .join()
-                .map_err(|_| io::Error::other("MCP tool thread failed"))??;
+        message
+    }
+
+    fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
+        self.inner.close()
+    }
+}
+
+/// Serves MCP on `input` and `output` until the client closes its input.
+async fn serve<R, W>(input: R, output: W, archive: Archive) -> io::Result<()>
+where
+    R: tokio::io::AsyncRead + Send + Unpin + 'static,
+    W: tokio::io::AsyncWrite + Send + Unpin + 'static,
+{
+    let ended = CancellationToken::new();
+    let transport = EndsWithInput {
+        inner: rmcp::transport::async_rw::AsyncRwTransport::new_server(input, output),
+        ended: ended.clone(),
+    };
+    let running = match (Server { archive }).serve_with_ct(transport, ended).await {
+        Ok(running) => running,
+        // A client that leaves before initializing ends the session normally.
+        Err(ServerInitializeError::ConnectionClosed(_) | ServerInitializeError::Cancelled) => {
+            return Ok(());
         }
-        result
-    })
+        Err(error) => return Err(io::Error::other(error.to_string())),
+    };
+    running.waiting().await.map_err(io::Error::other)?;
+    Ok(())
+}
+
+/// The proxy's runtime: socket waits, and rendering beside them, so a long
+/// render never holds up reading the client's cancellation.
+fn runtime() -> io::Result<tokio::runtime::Runtime> {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
 }
 
 pub fn serve_stdio(archive: &Archive) -> io::Result<()> {
-    serve(io::stdin().lock(), io::stdout(), archive)
+    let (input, output) = rmcp::transport::stdio();
+    runtime()?.block_on(serve(input, output, archive.clone()))
 }
 
 #[cfg(test)]
