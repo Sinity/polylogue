@@ -1,8 +1,9 @@
 //! The views `polylogue dev sql` offers outside programs. The tables are
 //! internal and change with the owning index format; these views keep their names
-//! and columns. A change that would alter a view's columns adds the next
-//! version beside it (`v2_sessions`), so a program written against one
-//! version keeps working. They are temporary views of each read connection,
+//! and columns from index format 23 on. Before that their columns were renamed
+//! once, in place, with the stored names they show. A later change that would
+//! alter a view's columns adds the next version beside it (`v2_sessions`), so
+//! a program written against one version keeps working. They are temporary views of each read connection,
 //! because a view stored in `index.db` cannot read the attached
 //! `archive.db`, where notes live.
 
