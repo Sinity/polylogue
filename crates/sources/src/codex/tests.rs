@@ -253,6 +253,45 @@ fn rate_limits_are_stored_independently_when_they_change() {
     );
 }
 
+/// Rate limits that return to an earlier reading are a new report at their
+/// own time: A, B, A at three times are three reports, in order.
+#[test]
+fn a_reading_that_returns_is_a_new_report_in_its_place() {
+    let limits = |used: f64| {
+        json!({"type": "token_count", "info": null,
+               "rate_limits": {"primary": {"used_percent": used, "window_minutes": 300}}})
+    };
+    let records = [
+        meta(json!({})),
+        env(2, "event_msg", limits(12.0)),
+        env(3, "event_msg", limits(40.0)),
+        env(4, "event_msg", limits(12.0)),
+    ];
+    let step = run(&rollout(), &mut ParserState::default(), &jsonl(&records), 0).unwrap();
+    let reports: Vec<(Option<i64>, Json)> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "quota_report")
+        .map(|e| (e.at.map(|at| at.unix_ms()), e.data["reading"].clone()))
+        .collect();
+    let at = |second: i64| Some(1_772_359_200_000 + second * 1_000);
+    assert_eq!(
+        reports.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
+        [at(2), at(3), at(4)]
+    );
+    assert_eq!(reports[0].1, reports[2].1);
+    assert_ne!(reports[0].1, reports[1].1);
+    let ids: std::collections::BTreeSet<&Json> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "quota_report")
+        .map(|e| &e.data["report_id"])
+        .collect();
+    assert_eq!(ids.len(), 3);
+}
+
 #[test]
 fn the_thread_item_gives_the_call_its_exit_code_and_duration() {
     let mut parser_state = ParserState::default();
