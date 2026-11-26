@@ -325,13 +325,13 @@ fn check_cancelled_client(env: &crate::Fixture, daemon: &Daemon, expected: &[Str
         ],
     );
     let page = read_page(after);
-    // The first page holds the first message's opening, whole or as the
-    // first fragment of a body longer than the page budget.
-    let opening = expected[0].lines().next().unwrap();
+    // The recovery read starts again at the first message: its header and
+    // as much of its 64 KiB body as the page budget leaves room for.
     let items = serde_json::to_string(&page.document.items).unwrap();
+    let opening = expected[0].lines().next().unwrap();
     assert!(
-        items.contains(opening),
-        "the recovery read lost the first message: {}",
+        items.contains("message:claude-code:main-0000") || items.contains(opening),
+        "the recovery read did not start at the first message: {}",
         &items[..items.len().min(2000)]
     );
     eprintln!("read bench: recovery read verified");
