@@ -45,7 +45,7 @@ read -r owner name default_branch < <(gh repo view --json owner,name,defaultBran
 
 # One GraphQL call for the given pull requests, oldest first, one line each:
 # number state draft mergeable base-branch head labels unresolved-threads
-# required failing title, tab-separated, "-" for an empty field. `required`
+# check-runs required failing title, tab-separated, "-" for an empty field. `required`
 # lists the required check runs on the head as name|status|conclusion|details
 # URL, separated by semicolons; `failing` names the failed jobs, the
 # required ones only when nothing else failed. A queued run, or a job waiting
@@ -76,14 +76,14 @@ pr_rows() {
       (($failed | map(select(.isRequired | not))) as $jobs | (if $jobs == [] then $failed else $jobs end) | map(.name) | join(", ") | dash) as $fail |
       ([.labels.nodes[].name] | join(",") | dash) as $labels |
       ([.reviewThreads.nodes[] | select(.isResolved | not)] | length) as $threads |
-      ([.number, .state, .isDraft, .mergeable, .baseRefName, .headRefOid, $labels, $threads, $req, $fail, .title] | map(tostring) | join("\t")),
+      ([.number, .state, .isDraft, .mergeable, .baseRefName, .headRefOid, $labels, $threads, ($runs | length), $req, $fail, .title] | map(tostring) | join("\t")),
       ([$required[] | select(.status == "COMPLETED" and .conclusion == "SUCCESS") | .annotations.nodes[] | select(.title == "tested base") | .message][0] // empty | "base \(.)")
     ' | awk -F'\t' '/^base / { sub(/^base /, "base " last " "); print; next } { last = $1; print }'
 }
 
 # Reads one pr_rows line into the row variables.
 parse_row() {
-    IFS=$'\t' read -r number state draft mergeable base_branch head labels threads checks failing title <<<"$1"
+    IFS=$'\t' read -r number state draft mergeable base_branch head labels threads runs checks failing title <<<"$1"
 }
 
 # The required check on the head into `check`: none, pending, failed or
@@ -281,10 +281,11 @@ query($owner: String!, $name: String!) {
             if [ $check = failed ]; then entry red "$failing"; red=true
             elif [ "$threads" != 0 ]; then entry review "waiting on $threads unresolved review threads"
             elif [ $check = passed ]; then ready+=("$line")
+            elif [ "$runs" = 0 ]; then entry waiting "no check job on its head yet"
             else
                 pr_units_against
                 in_flight+=("$number $(echo "$pr_units" | paste -sd' ')")
-                entry waiting "check $([ $check = none ] && echo queued || echo running)"
+                entry waiting "check queued or running"
             fi
         fi
     done < <(grep -v '^base ' <<<"$rows" || true)

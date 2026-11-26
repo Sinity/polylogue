@@ -290,9 +290,12 @@ minute apart. Each pass reads every open pull request with two GraphQL calls,
 merges the ready ones that are current, oldest first, deciding each against
 master's tip after the merge before it, and then updates the stale ones
 without waiting for their checks. Of the pull requests whose package sets
-overlap, at most one is in flight (updated, or with its check queued or
-running) at a time, since each merge makes its overlapping siblings stale
-again. A pass prints a block when it merged or updated something, and every
+overlap, at most one is in flight at a time, since each merge makes its
+overlapping siblings stale again. In flight means updated in this pass, or
+with jobs of its check queued or running on its head, whoever pushed it; each
+pass reads this afresh, so when that check goes red or the pull request
+becomes a draft, held or conflicting, the next pass updates the next stale
+one. A head with no check job yet holds nothing back. A pass prints a block when it merged or updated something, and every
 ten minutes otherwise: merged, updated, waiting (with the reason), waiting on
 review threads, red (with the failed jobs), conflicting, held and draft pull
 requests, with numbers and titles. A red check or a conflict never stops the
