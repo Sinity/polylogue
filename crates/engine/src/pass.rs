@@ -137,23 +137,20 @@ impl Engine {
         })
     }
 
-    /// Fails `plan` with `error` and records the failure as its chain's parse
-    /// state, at the position the chain was parsed to. Recording needs stored
-    /// bytes; when it cannot be made, the failure stays the loop's own.
+    /// Fails `plan` with the parser's `failure` of its bytes and records it
+    /// as its chain's state, at the position the chain was parsed to.
+    /// Recording needs stored bytes; when it cannot be made, the failure
+    /// stays the loop's own.
     pub(crate) fn record_failure(
         &mut self,
         plan: &mut Plan,
-        failure: polylogue_model::Failure,
+        failure: polylogue_model::ChainFailure,
         pass: &mut Pass,
     ) {
-        let error = failure.message.clone();
-        pass.errors.push(failure);
+        pass.errors
+            .push(polylogue_model::Failure::new(plan.path.display(), &failure));
         plan.failed = true;
-        self.record_stop(
-            plan,
-            polylogue_model::batch::StepProgress::Failed { error },
-            pass,
-        );
+        self.record_stop(plan, failure, pass);
     }
 
     /// Fails `plan` with `error`. Only a failure of the chain's own bytes is
@@ -167,10 +164,7 @@ impl Engine {
         pass: &mut Pass,
     ) {
         match error {
-            EngineError::Chain(failure) => {
-                let failure = polylogue_model::Failure::new(plan.path.display(), &failure);
-                self.record_failure(plan, failure, pass);
-            }
+            EngineError::Chain(failure) => self.record_failure(plan, failure, pass),
             error => {
                 pass.errors
                     .push(polylogue_model::Failure::new(plan.path.display(), &error).doing(doing));
@@ -179,26 +173,35 @@ impl Engine {
         }
     }
 
-    /// Record stopped progress at the plan's existing source cursor.
+    /// Records the chain failed at the plan's existing source cursor.
     pub(crate) fn record_stop(
         &mut self,
         plan: &mut Plan,
-        progress: polylogue_model::batch::StepProgress,
+        failure: polylogue_model::ChainFailure,
         pass: &mut Pass,
     ) {
         if plan.failure_recorded || plan.stored_upto == 0 {
             return;
         }
-        let mut step = polylogue_store::ParseStep::new(
-            Default::default(),
-            Default::default(),
-            plan.parse_pos..plan.parse_pos,
-            false,
-        );
+        match self.send_failure(plan, failure) {
+            Ok(()) => plan.failure_recorded = true,
+            Err(error) => pass.errors.push(
+                polylogue_model::Failure::new(plan.path.display(), &error)
+                    .doing("record the failure"),
+            ),
+        }
+    }
+
+    /// Writes the chain's failure at the plan's cursor, at the length the
+    /// plan has stored.
+    fn send_failure(
+        &mut self,
+        plan: &Plan,
+        failure: polylogue_model::ChainFailure,
+    ) -> Result<(), EngineError> {
+        let mut step = polylogue_store::ParseStep::failed(plan.parse_pos..plan.parse_pos, failure);
         step.reset = false;
-        step.progress = progress;
         step.parse_version = plan.origin.parse_version();
-        step.stopped_attempt = Some(self.stopped_attempt);
         step.prepare();
         let batch = polylogue_store::Batch {
             input: plan.input.clone(),
@@ -216,20 +219,10 @@ impl Engine {
             capture_read: None,
             release: Default::default(),
         };
-        let recorded = self
-            .writer
-            .send(batch)
-            .map_err(EngineError::from)
-            .and_then(|()| match self.flush_writes()?.failed() {
-                None => Ok(()),
-                Some(error) => Err(error.into()),
-            });
-        match recorded {
-            Ok(()) => plan.failure_recorded = true,
-            Err(error) => pass.errors.push(
-                polylogue_model::Failure::new(plan.path.display(), &error)
-                    .doing("record the failure"),
-            ),
+        self.writer.send(batch)?;
+        match self.flush_writes()?.failed() {
+            None => Ok(()),
+            Some(error) => Err(error.into()),
         }
     }
 
@@ -704,7 +697,6 @@ impl Engine {
         // after an index rebuild it is in place before any message that
         // names an asset is parsed. The import operation refreshes its new members.
         if !continuing {
-            self.shared_prefixes.get_mut().clear();
             self.refresh_import_assets(&mut pass)?;
         }
 
@@ -1165,10 +1157,10 @@ impl Engine {
     fn shorter_prefix(&mut self, path: &Path, now: FileFacts) -> Result<Option<i64>, EngineError> {
         let st = &self.inputs[path];
         let reader = self.reads.reader()?;
-        let Some(progress) = reader.input_progress(&st.input_id)? else {
+        let Some(progress) = reader.latest_chain(&st.input_id)? else {
             return Ok(None);
         };
-        if progress.length <= now.size || progress.length < st.stored {
+        if progress.stored <= now.size || progress.stored < st.stored {
             return Ok(None);
         }
         // An emptied file holds no byte that differs: the chain seen back
@@ -1295,17 +1287,17 @@ impl Engine {
             // when it still begins with every stored byte, it continues its
             // chain (observed back, or appended) instead of starting one.
             let reader = self.reads.reader()?;
-            if let Some(progress) = reader.input_progress(&st.input_id)?
-                && progress.length > 0
-                && progress.length <= now.size
+            if let Some(progress) = reader.latest_chain(&st.input_id)?
+                && progress.stored > 0
+                && progress.stored <= now.size
                 // An index behind this engine's own stored length has
                 // writes still to commit; continuing from it would start
                 // the append before them.
-                && progress.length >= st.stored
+                && progress.stored >= st.stored
                 // A file or stored chain that cannot be read is not shown to
                 // hold the stored bytes; the file then starts a new chain.
                 && reader
-                    .stored_chain(&st.input_id, progress.chain, progress.length)
+                    .stored_chain(&st.input_id, progress.chain, progress.stored)
                     .ok()
                     .is_some_and(|chain| {
                         read::stored_prefix_intact(path, &chain, &self.blobs).unwrap_or(false)
@@ -1316,18 +1308,17 @@ impl Engine {
                     // latest (another path of a provider-named input read a
                     // later one): take that chain's parser position, and its
                     // state from its committed checkpoint below.
-                    st.parsed_upto = progress.parsed_upto;
-                    st.parsed = progress.parsed;
-                    st.waiting = progress.waiting;
+                    (st.parsed_upto, st.parsed, st.waiting) =
+                        crate::plan::cursor(&progress.state, progress.stored);
                 }
-                st.stored = progress.length;
+                st.stored = progress.stored;
                 st.chain = Some(progress.chain);
-                if progress.length == now.size {
+                if progress.stored == now.size {
                     back = true;
                     change = Change::Unchanged;
                 } else {
                     change = Change::Appended {
-                        from: progress.length,
+                        from: progress.stored,
                     };
                 }
             }
@@ -1349,7 +1340,7 @@ impl Engine {
             *from = st.stored;
             let tail = if *from > 0 {
                 let reader = self.reads.reader()?;
-                let progress = reader.input_progress(&st.input_id)?.ok_or_else(|| {
+                let progress = reader.latest_chain(&st.input_id)?.ok_or_else(|| {
                     polylogue_store::StoreError::invalid("append has no stored prefix")
                 })?;
                 reader.stored_range(
@@ -1411,7 +1402,6 @@ impl Engine {
             self.archive.record_build_bytes(bytes, read);
         }
         Ok(Some(Plan {
-            checkpoint: None,
             path: path.to_path_buf(),
             origin: st.origin,
             input: InputKey {
@@ -1436,11 +1426,11 @@ impl Engine {
             tracked: true,
             failed: false,
             failure_recorded: false,
+            failed_at: None,
             replace: false,
             waiting: false,
             input_finished: false,
             source: pool::Bytes::File,
-            prefix_copies: None,
             read_to: parse_pos,
         }))
     }
@@ -1452,10 +1442,7 @@ impl Engine {
     /// needs no command of its own; older chains go through the same
     /// parser and writer, where a newer chain wins. A pass reads every
     /// input's newest chain before any older chain, so a first build ends
-    /// once the newest chains are read. An older chain whose bytes begin
-    /// like a newer chain's is not parsed over the bytes they share: its
-    /// reading is copied from that chain's as the newer chain's parse passes
-    /// them, or once that chain is read ([`crate::prefix_copies`]).
+    /// once the newest chains are read.
     ///
     /// Replacements commit each chain once. Continuing readings run in
     /// rounds with one range plan per path, preserving each path's order.
@@ -1533,14 +1520,11 @@ impl Engine {
                 planning.after = None;
                 return Ok(false);
             };
-            let behind = self.reads.reader()?.chains_behind_index(
-                &versions,
-                polylogue_store::StoppedChains::ForAttempt(self.stopped_attempt),
-                chains,
-                Some(&ids),
-            )?;
+            let behind = self
+                .reads
+                .reader()?
+                .chains_behind_index(&versions, chains, Some(&ids))?;
             self.reparse_chains(behind, pass)?;
-            self.shared_prefixes.get_mut().clear();
             if self.yielding() || self.archive.stop().is_cancelled() {
                 return Ok(false);
             }
@@ -1597,11 +1581,8 @@ impl Engine {
         behind: Vec<polylogue_store::read::BehindChain>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
-        // Chains set aside by an earlier pass that ended early are found again.
-        self.shared_prefixes.get_mut().clear();
         let mut replacements = Vec::new();
         let mut parse = Vec::new();
-        let mut copies = Vec::new();
         let watched: HashMap<String, PathBuf> = self
             .inputs
             .iter()
@@ -1611,8 +1592,20 @@ impl Engine {
             if self.poll_request() {
                 break;
             }
-            let state = c.progress;
-            let stored_source = state.imported || !self.config.reads_sources;
+            let stored_source = c.imported || !self.config.reads_sources;
+            let route = |origin: &'static OriginSpec| {
+                if c.imported {
+                    origin.route.imported()
+                } else {
+                    origin.route
+                }
+            };
+            // Where the parse starts: on from the stored state, or from the
+            // first byte replacing the parse whole.
+            let from = match c.due {
+                polylogue_model::chain::Due::Extend { from } => Some(from),
+                _ => None,
+            };
             let (path, origin) = if stored_source {
                 let source = &c.source;
                 let Some(origin) = polylogue_sources::origin::by_name(&source.format)
@@ -1622,7 +1615,7 @@ impl Engine {
                 };
                 // The recorded path chooses the parser. Without one, this
                 // input is refused with its reason and the pass goes on.
-                let recorded_path = if !state.imported {
+                let recorded_path = if !c.imported {
                     use std::os::unix::ffi::OsStringExt;
                     source
                         .path_bytes
@@ -1651,20 +1644,19 @@ impl Engine {
                             InputKey {
                                 id: c.input.clone(),
                                 format: origin.name.into(),
-                                route: if state.imported {
-                                    origin.route.imported()
-                                } else {
-                                    origin.route
-                                },
+                                route: route(origin),
                             },
-                            &state,
+                            c.chain,
+                            c.stored,
+                            &c.state,
+                            c.state.parsed_to(),
                             None,
                             false,
                         )?;
                         pass.errors.push(refused_input(&c.input, &reason));
                         self.record_stop(
                             &mut plan,
-                            polylogue_model::batch::StepProgress::Refused { reason },
+                            polylogue_model::ChainFailure::refused(reason),
                             pass,
                         );
                         continue;
@@ -1675,11 +1667,9 @@ impl Engine {
                     continue;
                 };
                 let st = &self.inputs[path];
-                // Current work belongs to stored_plan. The query
-                // also selects a stopped attempt whose dependencies changed.
-                if c.current
-                    && ((!c.reading_changed && !c.stopped_at_length) || st.unread.is_some())
-                {
+                // The current chain of a watched file follows the file
+                // ([`Engine::stored_plan`]) unless it is read again whole.
+                if c.current && (from.is_some() || st.unread.is_some()) {
                     continue;
                 }
                 (path.clone(), st.origin)
@@ -1689,57 +1679,33 @@ impl Engine {
             }
             let tracked = self.config.reads_sources
                 && c.current
-                && !state.imported
+                && !c.imported
                 && watched.get(&c.input) == Some(&path);
             let facts = tracked
                 .then(|| self.inputs.get(&path).and_then(|st| st.facts))
                 .flatten();
-            let mut reading_state = state.clone();
-            if c.reading_changed || c.stopped_at_length {
-                // A stopped attempt selected again can have no checkpoint at
-                // its failed cursor. Replace its reading from stored bytes.
-                reading_state.parsed = false;
-                reading_state.parsed_upto = 0;
-            }
             let mut plan = self.reparse_plan(
                 path,
                 origin,
                 InputKey {
-                    id: c.input,
+                    id: c.input.clone(),
                     format: origin.name.into(),
-                    route: if state.imported {
-                        origin.route.imported()
-                    } else {
-                        origin.route
-                    },
+                    route: route(origin),
                 },
-                &reading_state,
+                c.chain,
+                c.stored,
+                &c.state,
+                from.unwrap_or(0),
                 facts,
                 tracked,
             )?;
-            plan.input_finished = state.imported;
+            plan.input_finished = c.imported;
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
-            if state.parsed && (c.reading_changed || c.stopped_at_length) {
+            if from.is_none() && c.state != polylogue_model::chain::ChainState::Unparsed {
                 plan.replace = true;
                 replacements.push(plan);
-                continue;
-            }
-            if !c.current
-                && !state.parsed
-                && !origin.is_row_dump(&plan.path)
-                && self.copied_later(
-                    &plan.input.id,
-                    state.chain,
-                    &origin.parse_version(),
-                    plan.input_finished,
-                )?
-            {
-                // Parsing these bytes again gives a reading another chain
-                // has, or will have once read; copy it after this page reads
-                // the chains it parses.
-                copies.push(plan);
                 continue;
             }
             parse.push(plan);
@@ -1748,8 +1714,7 @@ impl Engine {
         if self.yielding() {
             return Ok(());
         }
-        self.execute_by_path(parse, pass)?;
-        self.copy_identical_readings(copies, pass)
+        self.execute_by_path(parse, pass)
     }
 
     /// Runs plans of stored chains on the parse pool together, in rounds that
@@ -1778,63 +1743,6 @@ impl Engine {
         Ok(())
     }
 
-    /// Records each older chain set aside by [`Engine::reparse_behind`] from
-    /// the reading of the chain whose bytes it shares, now that the pass has
-    /// read the chains it parses. A chain the copy does not read to its end
-    /// is parsed on from the copy; one whose copy would not equal its parse
-    /// (its source stopped, or its reading writes rows shared by the input's
-    /// chains) is parsed whole.
-    fn copy_identical_readings(
-        &mut self,
-        copies: Vec<Plan>,
-        pass: &mut Pass,
-    ) -> Result<(), EngineError> {
-        if copies.is_empty() || self.poll_request() {
-            return Ok(());
-        }
-        let report = self.flush_writes()?;
-        pass.messages_written += report.messages;
-        pass.errors.extend(report.errors);
-        let mut parse = Vec::new();
-        for plan in copies {
-            // Each answer commits one complete chain. A request between
-            // copies yields now; uncopied chains are selected next pass.
-            if self.poll_request() {
-                break;
-            }
-            let Some(chain) = plan.parser_chain else {
-                parse.push(plan);
-                continue;
-            };
-            let copy = self.copy_now(
-                &plan.input.id,
-                chain,
-                &plan.origin.parse_version(),
-                plan.input_finished,
-            )?;
-            // Only a parser reading ranges in order continues from a copy.
-            let continues = crate::prefix_copies::parses_in_order(&plan);
-            let Some(copy) = copy.filter(|copy| copy.reaches_end || continues) else {
-                parse.push(plan);
-                continue;
-            };
-            let (reaches_end, upto) = (copy.reaches_end, copy.upto);
-            // A copy that would differ, or failed, is parsed instead,
-            // which gives the same reading. Transaction and stop errors
-            // propagate rather than becoming another parse attempt.
-            let answer = self.writer.copy_reading(copy)?;
-            if matches!(answer, Ok(true)) {
-                pass.readings_copied += 1;
-                pass.bytes_copied += upto;
-                if reaches_end {
-                    continue;
-                }
-            }
-            parse.push(plan);
-        }
-        self.execute_by_path(parse, pass)
-    }
-
     /// The plan for a watched location whose current chain the index is
     /// behind while its file is gone, moved or unchanged.
     pub(crate) fn stored_plan(&mut self, path: &Path) -> Result<Option<Plan>, EngineError> {
@@ -1849,21 +1757,29 @@ impl Engine {
             return Ok(None);
         }
         let (input_id, origin, facts) = (st.input_id.clone(), st.origin, st.facts);
-        let state = polylogue_store::read::ChainProgress {
-            chain,
-            imported: false,
-            waiting: st.waiting,
-            length: st.stored,
-            parsed_upto: st.parsed_upto,
-            parsed: st.parsed,
-        };
-        let imported = self
+        let stored = st.stored;
+        let latest = self
             .reads
             .reader()?
-            .input_progress(&input_id)?
-            .ok_or_else(|| polylogue_store::StoreError::invalid("the stored revision disappeared"))?
-            .imported
-            || origin.route.is_imported();
+            .latest_chain(&input_id)?
+            .ok_or_else(|| {
+                polylogue_store::StoreError::invalid("the stored revision disappeared")
+            })?;
+        let imported = latest.imported || origin.route.is_imported();
+        // Parse on from the stored state where it can go on from there.
+        let from = match polylogue_model::chain::due(
+            &latest.state,
+            &polylogue_model::chain::ChainFacts {
+                stored,
+                repeated_by: None,
+                own_from: 0,
+                parser: Some(origin.parse_version()),
+                finished: imported,
+            },
+        ) {
+            polylogue_model::chain::Due::Extend { from } => from,
+            _ => 0,
+        };
         Ok(Some(self.reparse_plan(
             path.to_path_buf(),
             origin,
@@ -1876,80 +1792,55 @@ impl Engine {
                     origin.route
                 },
             },
-            &state,
+            chain,
+            stored,
+            &latest.state,
+            from,
             facts,
             true,
         )?))
     }
 
-    /// A parse-only plan over a chain's stored bytes. A capture log resumes
-    /// at its last parsed record, and a line input at its last committed
-    /// parser checkpoint (a read that was interrupted, or a chain that grew
-    /// after it was read, such as an appended rollout); anything else
-    /// parses from the start as a replacement of the chain's reading, so a
-    /// line parser rebuilds its state. The parser
-    /// state itself is restored as the plan starts ([`Engine::load_stored`]).
+    /// A parse-only plan over a chain's stored bytes, from `from`: where
+    /// [`polylogue_model::chain::due`] says its parse goes on, or 0 to parse
+    /// it from the start, as a replacement of a parse it has. A parser that
+    /// reads whole documents always starts at 0. The parser state itself is
+    /// restored as the plan starts ([`Engine::load_stored`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn reparse_plan(
         &self,
         path: PathBuf,
         origin: &'static OriginSpec,
         input: InputKey,
-        state: &polylogue_store::read::ChainProgress,
+        chain: i64,
+        stored: u64,
+        state: &polylogue_model::chain::ChainState,
+        from: u64,
         facts: Option<FileFacts>,
         tracked: bool,
     ) -> Result<Plan, EngineError> {
         let parser = (origin.open)(&path);
-        let independent_rows =
-            origin.is_row_dump(&path) && matches!(parser, Some(polylogue_sources::Parse::Lines(_)));
-        let parse_pos = if state.parsed
-            && (independent_rows || parser.as_ref().is_some_and(|p| p.is_capture_log()))
-        {
-            state.parsed_upto
-        } else if state.parsed
-            && state.parsed_upto > 0
-            && matches!(parser, Some(polylogue_sources::Parse::Lines(_)))
-            && origin.support == Support::Parsed
-        {
-            let version = origin.parse_version();
-            self.reads
-                .reader()?
-                .parser_checkpoint(&input.id, state.chain, &version)?
-                .filter(|stored| {
-                    // A reading that stopped at a record boundary (an
-                    // interrupted read, or one complete at a length the
-                    // chain has since grown past) resumes there.
-                    stored.parse_version == version
-                        && stored.parsed_upto == state.parsed_upto
-                        && stored.checkpoint.is_some()
-                        && matches!(
-                            stored.progress,
-                            polylogue_model::batch::ParseProgress::Parsing
-                                | polylogue_model::batch::ParseProgress::Done
-                                | polylogue_model::batch::ParseProgress::Waiting { .. }
-                        )
-                })
-                .map_or(0, |stored| stored.parsed_upto)
-        } else {
-            0
-        };
+        let resumes = matches!(parser, Some(polylogue_sources::Parse::Lines(_)))
+            || parser.as_ref().is_some_and(|p| p.is_capture_log());
+        let parse_pos = if resumes { from } else { 0 };
         let export = matches!(parser, Some(polylogue_sources::Parse::Export(_)));
         let mut plan = Plan::stored(
             path,
             origin,
             input,
-            Change::Reparse { chain: state.chain },
+            Change::Reparse { chain },
             facts,
-            state.length,
+            stored,
             parse_pos,
             pool::Bytes::Unloaded {
-                chain: state.chain,
-                length: state.length,
+                chain,
+                length: stored,
                 decoded: parse_pos == 0 && !export,
             },
             self.config.chunk,
             tracked,
         );
-        plan.replace = state.parsed && parse_pos == 0;
+        plan.replace = *state != polylogue_model::chain::ChainState::Unparsed && parse_pos == 0;
         Ok(plan)
     }
 
@@ -1983,27 +1874,22 @@ impl Engine {
         else {
             return Ok(true);
         };
-        if !whole(plan.origin, &plan.path) && plan.origin.support == Support::Parsed {
+        if plan.parse_pos > 0 && !whole(plan.origin, &plan.path) {
+            // Planned to go on from the stored state: the parser's carried
+            // state there is restored, or the chain is parsed from its start.
             let reader = self.reads.reader()?;
-            if let Some(stored) =
-                reader.parser_checkpoint(&plan.input.id, chain, &plan.origin.parse_version())?
-                && stored.parse_version == plan.origin.parse_version()
-                && stored.parsed_upto > 0
-            {
-                plan.parse_pos = stored.parsed_upto;
-                plan.read_to = stored.parsed_upto;
-                plan.replace = false;
-                // A reading another chain's copy took to this chain's end
-                // leaves only a record still being written.
-                plan.waiting = stored.progress
-                    == polylogue_model::batch::ParseProgress::Waiting { length: plan.size };
-                plan.parser_state = self.restored_parser_state(
-                    &reader,
-                    &plan.input.id,
-                    chain,
-                    stored.parsed_upto,
-                    &stored.parse_version,
-                )?;
+            plan.parser_state = self.restored_parser_state(
+                &reader,
+                &plan.input.id,
+                chain,
+                plan.parse_pos,
+                &plan.origin.parse_version(),
+            )?;
+            if plan.parser_state.is_none() {
+                plan.parse_pos = 0;
+                plan.replace = true;
+            } else {
+                plan.read_to = plan.parse_pos;
                 decoded = false;
             }
         }
@@ -2040,7 +1926,7 @@ impl Engine {
             plan.failed = true;
             self.record_stop(
                 &mut plan,
-                polylogue_model::batch::StepProgress::Refused { reason },
+                polylogue_model::ChainFailure::refused(reason),
                 pass,
             );
             self.finish_plan(plan);
@@ -2256,7 +2142,6 @@ impl Engine {
                 self.archive.clone(),
                 done_tx,
                 pool::ChainSettings {
-                    stopped_attempt: self.stopped_attempt,
                     read_memory: self.config.reader_memory_per_connection()?,
                     yielding: self.requests.as_ref().map_or_else(
                         || Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -2281,7 +2166,7 @@ impl Engine {
             let mut started: HashSet<PathBuf> = HashSet::new();
             // Plans whose range the writer refused for its content; their
             // failures are recorded once the pool's writes are flushed.
-            let mut refused: Vec<(Plan, polylogue_model::Failure)> = Vec::new();
+            let mut refused: Vec<(Plan, polylogue_model::ChainFailure)> = Vec::new();
             let mut outstanding = 0usize;
             let mut checked = Instant::now();
             let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
@@ -2397,7 +2282,6 @@ impl Engine {
                         continue 'work;
                     }
                     if plan.finished() {
-                        self.make_due_copies(&mut plan, pass)?;
                         self.finish_plan(plan);
                         continue;
                     }
@@ -2415,17 +2299,11 @@ impl Engine {
                     if !self.load_stored(&mut plan)? {
                         continue;
                     }
-                    if first {
-                        self.plan_prefix_copies(&mut plan)?;
-                    }
-                    // Copies whose stop the parse has reached take the reading
-                    // before the next range changes it.
-                    self.make_due_copies(&mut plan, pass)?;
                     if plan.finished() {
                         self.finish_plan(plan);
                         continue;
                     }
-                    let mut job = plan.next_job(&self.stopped_attempt);
+                    let mut job = plan.next_job();
                     if matches!(job.source, pool::Bytes::File) {
                         let mut context = self.source_read_context(
                             &job.path,
@@ -2537,14 +2415,10 @@ impl Engine {
                             plan.storing_started = true;
                         }
                     }
-                    let failure = match &d.error {
-                        Some(error) => polylogue_model::Failure::new(plan.path.display(), error)
-                            .doing("the writer refused it"),
-                        None => polylogue_model::Failure::bug(
-                            plan.path.display(),
-                            "the writer refused a batch without a reason",
-                        ),
-                    };
+                    let failure = polylogue_model::ChainFailure::malformed(match &d.error {
+                        Some(error) => format!("the writer refused its rows: {error}"),
+                        None => "the writer refused its rows".to_owned(),
+                    });
                     refused.push((plan, failure));
                     continue;
                 }
@@ -2576,7 +2450,6 @@ impl Engine {
                 }
                 plan.apply(d, parsed);
                 if plan.finished() {
-                    self.make_due_copies(&mut plan, pass)?;
                     self.finish_plan(plan);
                 } else {
                     // The next part of the same input keeps its place.
@@ -2628,40 +2501,9 @@ impl Engine {
         count
     }
 
-    /// A rejected spool cursor cannot become progress. An existing committed
-    /// stop at this same cursor can keep its error and bind the retry.
-    fn record_retried_stop(&mut self, plan: &mut Plan, pass: &mut Pass) -> Result<(), EngineError> {
-        let Change::Reparse { chain } = plan.change else {
-            return Ok(());
-        };
-        let version = plan.origin.parse_version();
-        let stored = self
-            .reads
-            .reader()?
-            .parser_checkpoint(&plan.input.id, chain, &version)?;
-        let Some(stored) = stored.filter(|stored| {
-            stored.parse_version == version
-                && stored.parsed_upto == plan.parse_pos
-                && stored.progress.at_length() == Some(plan.size)
-        }) else {
-            return Ok(());
-        };
-        let progress = match stored.progress {
-            polylogue_model::batch::ParseProgress::Failed { error, .. } => {
-                polylogue_model::batch::StepProgress::Failed { error }
-            }
-            polylogue_model::batch::ParseProgress::Refused { reason, .. } => {
-                polylogue_model::batch::StepProgress::Refused { reason }
-            }
-            _ => return Ok(()),
-        };
-        self.record_stop(plan, progress, pass);
-        Ok(())
-    }
-
     fn finish_chain(
         &mut self,
-        mut plan: Plan,
+        plan: Plan,
         written: Result<Option<u64>, EngineError>,
         pass: &mut Pass,
     ) {
@@ -2676,14 +2518,6 @@ impl Engine {
                 pass.errors.push(
                     polylogue_model::Failure::new(plan.path.display(), &error).doing("re-parse"),
                 );
-                if matches!(error, EngineError::Chain(_))
-                    && let Err(error) = self.record_retried_stop(&mut plan, pass)
-                {
-                    pass.errors.push(
-                        polylogue_model::Failure::new(plan.path.display(), &error)
-                            .doing("record retried stop"),
-                    );
-                }
             }
         }
     }
@@ -2698,6 +2532,19 @@ impl Engine {
 
     /// Finished inputs keep their cursors; an append restores the committed checkpoint.
     pub(crate) fn finish_plan(&mut self, plan: Plan) {
+        // A parse that failed before the plan stored the rest of the file
+        // fails at the length the plan left stored: reading those bytes
+        // again would meet the same failure.
+        if let Some((failure, at)) = plan.failed_at.clone()
+            && plan.stored_upto > at
+            && let Err(error) = self.send_failure(&plan, failure)
+        {
+            polylogue_store::log!(
+                warning,
+                "{}: recording the failure at the stored length: {error}",
+                plan.path.display()
+            );
+        }
         if !plan.tracked {
             return;
         }
@@ -3079,33 +2926,9 @@ impl Engine {
                     origin: format,
                     dry_run,
                 };
-                self.import_stored.clear();
-                let mut report = self.import_with_options(&paths, &options);
-                // A build installed while the import read the index: its
-                // readers met the replaced file. The import is read again
-                // against the installed one; what it stored stays stored,
-                // and is reported as imported by this request, not as
-                // bytes the archive already had.
-                if matches!(
-                    report,
-                    Err(EngineError::Store(
-                        polylogue_store::StoreError::ReadIndexReplaced
-                    ))
-                ) {
-                    report = self.import_with_options(&paths, &options);
-                    if let Ok(report) = &mut report {
-                        for (path, length) in std::mem::take(&mut self.import_stored) {
-                            if let Some(at) =
-                                report.already_stored.iter().position(|seen| *seen == path)
-                            {
-                                report.already_stored.remove(at);
-                                report.imported.push(path);
-                                report.pass.bytes_stored += length;
-                            }
-                        }
-                    }
-                }
-                let report = report.map_err(ImportFailure::Import);
+                let report = self
+                    .import_with_options(&paths, &options)
+                    .map_err(ImportFailure::Import);
                 busy(pending);
                 report
             });

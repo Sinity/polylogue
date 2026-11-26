@@ -725,7 +725,9 @@ name_columns!(
     polylogue_model::Role,
     polylogue_model::PromptKind,
     polylogue_model::CallOutcome,
-    polylogue_model::Route
+    polylogue_model::Route,
+    polylogue_model::ChainFailureKind,
+    crate::parse_state::StateWord
 );
 
 /// Store keys: the integer primary key of a row, typed by its table, bound

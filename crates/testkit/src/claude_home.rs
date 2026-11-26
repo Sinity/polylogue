@@ -50,8 +50,7 @@ impl ClaudeHome {
     pub fn engine(&self, chunk: u64) -> (Engine, ArchiveLock) {
         let (archive, lock) = Archive::open_or_create(&self.root).expect("open the archive");
         (
-            Engine::new(self.config(chunk), archive, crate::stopped_attempt())
-                .expect("start the engine"),
+            Engine::new(self.config(chunk), archive).expect("start the engine"),
             lock,
         )
     }
@@ -74,13 +73,15 @@ impl ClaudeHome {
         ReadPool::open(&Archive::at(&self.root)).expect("open readers")
     }
 
-    /// Runs `read` on a new reader, again when the index was replaced under
-    /// it, as a build's install does (`StoreError::ReadIndexReplaced`).
+    /// Runs `read` on a new reader.
     pub fn read<T>(
         &self,
         read: impl Fn(&polylogue_store::Reader<'_>) -> polylogue_store::Result<T>,
     ) -> T {
-        self.reads().read_current(read).expect("read the archive")
+        self.reads()
+            .reader()
+            .and_then(|reader| read(&reader))
+            .expect("read the archive")
     }
 
     /// The index file as the archive holds it now: the private build file

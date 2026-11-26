@@ -133,6 +133,15 @@ jobs:
     if: ${{ always() }}
     runs-on: ubuntu-latest
     steps:
+      # The base commit under the tested merge commit, as an annotation on
+      # this check run, where `dev/land` reads it.
+      - name: Record the tested base
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          base=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '.parents[0].sha')
+          echo "::notice title=tested base::$base"
       - name: Require every job
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}

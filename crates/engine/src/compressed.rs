@@ -133,7 +133,7 @@ pub(crate) struct CapturedRollout {
 }
 
 struct Captured {
-    previous: Option<polylogue_store::read::ChainProgress>,
+    previous: Option<polylogue_store::LatestChain>,
     original_added: u64,
     added: u64,
     /// Bytes of the file read to capture it.
@@ -232,10 +232,10 @@ impl RolloutCapture {
         // read ends before the file's bytes are compared or prepared.
         let (previous, chain) = {
             let reader = reads.reader()?;
-            let previous = reader.input_progress(&id)?;
+            let previous = reader.latest_chain(&id)?;
             let chain = match &previous {
                 Some(previous) => {
-                    Some(reader.stored_chain(&id, previous.chain, previous.length)?)
+                    Some(reader.stored_chain(&id, previous.chain, previous.stored)?)
                 }
                 _ => None,
             };
@@ -255,14 +255,14 @@ impl RolloutCapture {
         // appended bytes are read. A compressed file does not grow in place.
         let grown = match (&chain, &previous) {
             (Some(chain), Some(previous))
-                if !compressed && previous.length > 0 && facts.size > previous.length =>
+                if !compressed && previous.stored > 0 && facts.size > previous.stored =>
             {
                 let tail = chain.read_range(
                     blobs,
-                    previous.length.saturating_sub(read::TAIL as u64),
-                    previous.length,
+                    previous.stored.saturating_sub(read::TAIL as u64),
+                    previous.stored,
                 )?;
-                read::tail_intact(path, previous.length, &tail)?.then_some(previous.length)
+                read::tail_intact(path, previous.stored, &tail)?.then_some(previous.stored)
             }
             _ => None,
         };
@@ -331,11 +331,11 @@ impl RolloutCapture {
         } else if let Some(point) = historical {
             point.length
         } else if same {
-            previous.as_ref().expect("same stored input").length
+            previous.as_ref().expect("same stored input").stored
         } else {
             prepared.as_ref().expect("new bytes").len()
                 + if appended {
-                    previous.as_ref().expect("prefix").length
+                    previous.as_ref().expect("prefix").stored
                 } else {
                     0
                 }
@@ -350,7 +350,7 @@ impl RolloutCapture {
         let mut original_added = 0;
         if let Some((original, original_context)) = original {
             let original_id = original.hash().to_string();
-            let exists = reads.reader()?.input_progress(&original_id)?.is_some();
+            let exists = reads.reader()?.latest_chain(&original_id)?.is_some();
             if !exists {
                 original_added = original.len();
             }
@@ -405,7 +405,7 @@ impl RolloutCapture {
             Change::Unchanged
         } else if appended {
             Change::Appended {
-                from: previous.as_ref().expect("prefix").length,
+                from: previous.as_ref().expect("prefix").stored,
             }
         } else if previous.is_some() {
             Change::Rewritten
@@ -491,7 +491,7 @@ impl Engine {
             .is_some_and(|s| s.facts == Some(facts))
         {
             let id = self.inputs[path].input_id.clone();
-            if let Some(progress) = self.reads.reader()?.input_progress(&id)? {
+            if let Some(progress) = self.reads.reader()?.latest_chain(&id)? {
                 self.inputs
                     .get_mut(path)
                     .expect("known rollout")
@@ -572,19 +572,19 @@ impl Engine {
         };
         pass.bytes_read += captured.read;
         pass.bytes_stored += captured.original_added + captured.added;
-        let progress = self.reads.reader()?.input_progress(&id)?.ok_or_else(|| {
+        let progress = self.reads.reader()?.latest_chain(&id)?.ok_or_else(|| {
             EngineError::internal("captured rollout input has no current revision")
         })?;
         let previous = captured.previous;
         if let Some(build) = self.archive.index_build() {
             let bytes = build
                 .bytes
-                .saturating_sub(previous.as_ref().map_or(0, |p| p.length))
-                .saturating_add(progress.length);
+                .saturating_sub(previous.as_ref().map_or(0, |p| p.stored))
+                .saturating_add(progress.stored);
             let read = build
                 .bytes_read
-                .saturating_sub(previous.as_ref().map_or(0, |p| p.parsed_upto))
-                .saturating_add(progress.parsed_upto);
+                .saturating_sub(previous.as_ref().map_or(0, |p| p.state.parsed_to()))
+                .saturating_add(progress.state.parsed_to());
             self.archive.record_build_bytes(bytes, read);
         }
         let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");

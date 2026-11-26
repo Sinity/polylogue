@@ -37,14 +37,14 @@ impl Engine {
         let sidecars = self.reads.reader()?.pending_asset_sidecars()?;
         for (input, member) in sidecars {
             let reader = self.reads.reader()?;
-            let Some(progress) = reader.input_progress(&input)? else {
+            let Some(progress) = reader.latest_chain(&input)? else {
                 continue;
             };
             let source = reader.asset_source(&input)?.ok_or_else(|| {
                 crate::EngineError::internal("a stored sidecar has no current revision")
             })?;
             // Bytes still being written are read in a later pass.
-            let chain = reader.stored_chain(&input, progress.chain, progress.length)?;
+            let chain = reader.stored_chain(&input, progress.chain, progress.stored)?;
             let mut staged = ExportItems::new()?;
             stage(
                 &mut staged,

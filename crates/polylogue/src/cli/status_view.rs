@@ -41,11 +41,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
     let building = status.index_build.is_some();
     // While an index is built, its section says what that means for reads,
     // and the last check of the sources is from before it.
-    let index_building = CompletenessReason::IndexBuilding.text();
-    let notes: Vec<&String> = problems
-        .iter()
-        .filter(|note| !(building && note.as_str() == index_building))
-        .collect();
+    let notes = notes(status, problems);
     let mut out = String::new();
     for (n, line) in header(status, &notes, view).iter().enumerate() {
         let label = if n == 0 {
@@ -81,7 +77,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         ("NOTICES", notices(status, view)),
         ("RULES", rules(status, view)),
         ("PENDING", pending(status, view)),
-        ("CAPTURE", capture(status, view)),
+        ("SOURCES", sources(status, view)),
         ("UNUSED", unused(status)),
         ("THREADS", threads(status, view)),
         ("RECENT", recent(status, view)),
@@ -115,45 +111,91 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
     out
 }
 
-/// The headline, then the daemon's facts dimmed: what it is doing (blocked,
-/// building the index, warming) or whether the reply is current, and
-/// otherwise the first note.
-fn header(status: &Answer, notes: &[&String], view: &View<'_>) -> Vec<String> {
-    let headline = if let Mode::Blocked { path, error, .. } = &status.mode {
-        view.paint(
-            "1;31",
-            &format!(
-                "✖ blocked: {}: {}",
+/// The reasons a reply is degraded and its notes, less the one the
+/// `INDEX` section says in full while an index is built.
+fn notes<'a>(status: &Answer, problems: &'a [String]) -> Vec<&'a String> {
+    let index_building = CompletenessReason::IndexBuilding.text();
+    problems
+        .iter()
+        .filter(|note| !(status.index_build.is_some() && note.as_str() == index_building))
+        .collect()
+}
+
+/// What the daemon is doing or what most needs attention, in the words the
+/// view's headline and `--line` share.
+enum Headline {
+    Blocked(String),
+    /// An index is being built; the words name its step.
+    Building(String),
+    /// No figures yet ([`crate::protocol::status::AnswersFrom::words`]).
+    NotReadYet(&'static str),
+    /// The first note, and how many more follow.
+    Note(String, usize),
+    UpToDate,
+}
+
+impl Headline {
+    fn of(status: &Answer, notes: &[&String]) -> Self {
+        if let Mode::Blocked { path, error, .. } = &status.mode {
+            return Self::Blocked(format!(
+                "blocked: {}: {}",
                 clean(&path.display().to_string()),
                 clean(error)
-            ),
-        )
-    } else if status.index_build.is_some() {
-        let progress = status.build_progress.as_ref();
-        let mut words = "building the index".to_owned();
-        if let Some(progress) = progress
-            && progress.current.is_some()
-        {
-            words.push_str(&format!(
-                ", step {} of {}",
-                progress.finished.len() + 1,
-                progress.finished.len() + 1 + progress.to_come.len()
             ));
         }
-        if progress.is_some_and(|progress| progress.failed_attempt.is_some()) {
-            words.push_str(", again after a failed attempt");
+        if status.index_build.is_some() {
+            let progress = status.build_progress.as_ref();
+            let mut words = "building the index".to_owned();
+            if let Some(progress) = progress
+                && progress.current.is_some()
+            {
+                words.push_str(&format!(
+                    ", step {} of {}",
+                    progress.finished.len() + 1,
+                    progress.finished.len() + 1 + progress.to_come.len()
+                ));
+            }
+            if progress.is_some_and(|progress| progress.failed_attempt.is_some()) {
+                words.push_str(", again after a failed attempt");
+            }
+            return Self::Building(words);
         }
-        view.paint("1;33", &format!("◐ {words}"))
-    } else if status.warming {
-        view.paint("1;33", "◐ warming up after the index was installed")
-    } else if let Some(first) = notes.first() {
-        let more = match notes.len() {
-            1 => String::new(),
-            n => format!("  (+{} more under NOTES)", n - 1),
-        };
-        view.paint("1;33", &format!("⚠ {}{more}", clean(first)))
-    } else {
-        view.paint("1;32", "✓ up to date")
+        if let Some(words) = status.answers_from.words() {
+            return Self::NotReadYet(words);
+        }
+        match notes.first() {
+            Some(first) => Self::Note(clean(first), notes.len() - 1),
+            None => Self::UpToDate,
+        }
+    }
+
+    /// The headline as `--line` prints it.
+    fn words(&self) -> String {
+        match self {
+            Self::Blocked(words) | Self::Building(words) | Self::Note(words, 0) => words.clone(),
+            Self::NotReadYet(words) => (*words).to_owned(),
+            Self::Note(words, more) => format!("{words} (+{more} more)"),
+            Self::UpToDate => "up to date".into(),
+        }
+    }
+}
+
+/// The headline, then the daemon's facts dimmed: what it is doing (blocked,
+/// building the index, without figures yet) or whether the reply is current,
+/// and otherwise the first note.
+fn header(status: &Answer, notes: &[&String], view: &View<'_>) -> Vec<String> {
+    let headline = match Headline::of(status, notes) {
+        Headline::Blocked(words) => view.paint("1;31", &format!("✖ {words}")),
+        Headline::Building(words) => view.paint("1;33", &format!("◐ {words}")),
+        Headline::NotReadYet(words) => view.paint("1;33", &format!("◐ {words}")),
+        Headline::Note(first, more) => {
+            let more = match more {
+                0 => String::new(),
+                n => format!("  (+{n} more under NOTES)"),
+            };
+            view.paint("1;33", &format!("⚠ {first}{more}"))
+        }
+        Headline::UpToDate => view.paint("1;32", "✓ up to date"),
     };
     let mode = match &status.mode {
         Mode::Standalone => "standalone",
@@ -190,14 +232,16 @@ fn archive(status: &Answer, view: &View<'_>) -> Vec<String> {
             count(store.documents)
         ));
         lines.push(format!(
-            "{} inputs · {} stored · {} revisions",
+            "{} inputs ({} decoded) · {} revisions",
             count(store.inputs),
             bytes(store.stored_bytes),
             count(store.revisions)
         ));
-    } else if status.index_build.is_none()
-        && let Some(error) = &status.totals_error
-    {
+        // A build beside a readable index: these are the installed index's.
+        if status.index_build.is_some() {
+            lines.push(view.dim("from the installed index, until the build replaces it"));
+        }
+    } else if let Some(error) = &status.totals_error {
         lines.push(view.error(&format!("totals unavailable: {error}")));
     }
     if let Some(vectors) = &status.vectors {
@@ -314,19 +358,21 @@ fn reading(status: &Answer, view: &View<'_>) -> Vec<String> {
 /// the running one in bold with its count, rate and estimate, those to come)
 /// and the time left.
 fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
-    use polylogue_store::archive::index_rebuild::IndexRebuildReason;
+    let failed = status
+        .index
+        .as_ref()
+        .and_then(|index| index.install_failure.as_ref())
+        .map(|failure| {
+            format!(
+                "the rebuilt index could not be installed: {}; it is tried again at the next commit",
+                failure.message
+            )
+        });
     let Some(build) = &status.index_build else {
-        return Vec::new();
+        return failed.into_iter().collect();
     };
     let progress = status.build_progress.as_ref();
-    let why = match progress.and_then(|progress| progress.reason.as_ref()) {
-        None => "the archive had no index".to_owned(),
-        Some(IndexRebuildReason::SchemaDiffers) => "its tables changed".to_owned(),
-        Some(IndexRebuildReason::FormatVersion { found, wanted }) => {
-            format!("its format changed ({found} to {wanted})")
-        }
-        Some(IndexRebuildReason::OlderFormat) => "it was written by an older Polylogue".to_owned(),
-    };
+    let why = &build.reason;
     let mut lines = vec![if build.bytes > 0 {
         format!(
             "building the index from {} of stored files: {why}",
@@ -335,11 +381,16 @@ fn index(status: &Answer, view: &View<'_>) -> Vec<String> {
     } else {
         format!("building the index: {why}")
     }];
-    lines.push(view.dim(if build.serving_previous {
-        "reads and searches use the previous index until the new one is installed"
+    let serving = matches!(
+        status.answers_from,
+        crate::protocol::status::AnswersFrom::Snapshot { .. }
+    );
+    lines.push(view.dim(if serving {
+        "reads and searches use the installed index until the rebuilt one replaces it"
     } else {
         "reads and searches answer \"index building\" until it is installed"
     }));
+    lines.extend(failed);
     let Some(progress) = progress else {
         return lines;
     };
@@ -593,9 +644,12 @@ fn last_check(status: &Answer, view: &View<'_>) -> Vec<String> {
 }
 
 fn running(status: &Answer, view: &View<'_>) -> Vec<String> {
-    match &status.running {
+    let Some(running) = &status.running else {
+        return Vec::new();
+    };
+    match running {
         Running::Measured { sessions, .. } if !sessions.is_empty() => {
-            let mut lines = vec![status.running.line(view.now_ms)];
+            let mut lines = vec![running.line(view.now_ms)];
             for session in sessions {
                 use polylogue_model::live::LiveState;
                 let mark = match session.state {
@@ -641,15 +695,16 @@ fn running(status: &Answer, view: &View<'_>) -> Vec<String> {
             }
             lines
         }
-        Running::Unavailable { error } if status.index_build.is_none() => {
-            vec![view.error(&format!("unavailable: {error}"))]
-        }
-        _ => Vec::new(),
+        Running::Unavailable { error } => vec![view.error(&format!("unavailable: {error}"))],
+        Running::Measured { .. } => Vec::new(),
     }
 }
 
 fn notices(status: &Answer, view: &View<'_>) -> Vec<String> {
-    match &status.notices {
+    let Some(notices) = &status.notices else {
+        return Vec::new();
+    };
+    match notices {
         Notices::Measured { last_day, latest } if *last_day > 0 => {
             let mut line = format!("{last_day} in the last day");
             if let Some(newest) = latest.first() {
@@ -661,10 +716,8 @@ fn notices(status: &Answer, view: &View<'_>) -> Vec<String> {
             }
             vec![line]
         }
-        Notices::Unavailable { error } if status.index_build.is_none() => {
-            vec![view.error(&format!("unavailable: {error}"))]
-        }
-        _ => Vec::new(),
+        Notices::Unavailable { error } => vec![view.error(&format!("unavailable: {error}"))],
+        Notices::Measured { .. } => Vec::new(),
     }
 }
 
@@ -736,71 +789,121 @@ fn pending(status: &Answer, view: &View<'_>) -> Vec<String> {
     lines
 }
 
-fn capture(status: &Answer, view: &View<'_>) -> Vec<String> {
+/// The sources the daemon watches, from each machine's last full walk: a
+/// line naming the walk, then one per root with the origins whose files it
+/// collected, its state, and its files collected, ignored by reason and
+/// unrecognized.
+fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
     use polylogue_model::capture::{Accessibility, Classification};
+    use std::os::unix::ffi::OsStrExt as _;
     let Some(store) = &status.store else {
         return Vec::new();
     };
     let mut lines = Vec::new();
     for coverage in &store.capture_coverage {
-        let roots = coverage.roots.len();
-        let mut parts = vec![format!(
-            "{}: {roots} {} walked {}",
-            clean(&coverage.machine),
-            if roots == 1 { "root" } else { "roots" },
-            view.time(coverage.observed_at.unix_ms())
-        )];
-        for (state, word) in [
-            (Accessibility::Absent, "absent"),
-            (Accessibility::Unavailable, "unavailable"),
-            (Accessibility::Incomplete, "incomplete"),
-        ] {
-            let n = coverage
-                .roots
-                .iter()
-                .filter(|root| root.status == state)
-                .count();
-            if n > 0 {
-                parts.push(format!("{n} {word}"));
-            }
-        }
-        let mut ignored = std::collections::BTreeMap::<&str, u64>::new();
-        let mut unrecognized = 0;
-        for entry in coverage.roots.iter().flat_map(|root| &root.entries) {
-            match entry.class {
-                Classification::Ignored => {
-                    *ignored
-                        .entry(entry.reason.as_deref().unwrap_or("ignored"))
-                        .or_default() += entry.files;
-                }
-                Classification::Unrecognized => unrecognized += entry.files,
-                Classification::Collected => {}
-            }
-        }
-        let ignored_files: u64 = ignored.values().sum();
-        if ignored_files > 0 {
-            let (top, _) = ignored
-                .iter()
-                .max_by_key(|(reason, files)| (**files, std::cmp::Reverse(**reason)))
-                .expect("ignored entries are present");
-            parts.push(format!(
-                "{} files ignored, most as {}",
-                count(ignored_files),
-                clean(top)
-            ));
-        }
-        if unrecognized > 0 {
-            lines.push(parts.join(" · "));
-            lines.push(view.warning(&format!(
-                "{} unrecognized files on {}",
-                count(unrecognized),
-                coverage.machine
-            )));
+        // The machine is named only where the archive holds several walks.
+        let walked = format!("walked {}", view.time(coverage.observed_at.unix_ms()));
+        lines.push(view.dim(&if store.capture_coverage.len() > 1 {
+            format!("{walked} on {}", clean(&coverage.machine))
         } else {
+            walked
+        }));
+        for root in &coverage.roots {
+            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&root.path_bytes));
+            let mut names: Vec<&str> = Vec::new();
+            let mut collected = 0;
+            let mut unrecognized = 0;
+            let mut ignored = std::collections::BTreeMap::<&str, u64>::new();
+            for entry in &root.entries {
+                match entry.class {
+                    Classification::Collected => {
+                        collected += entry.files;
+                        if let Some(name) = collected_by(path, &entry.pattern)
+                            && !names.contains(&name)
+                        {
+                            names.push(name);
+                        }
+                    }
+                    Classification::Ignored => {
+                        *ignored
+                            .entry(entry.reason.as_deref().unwrap_or("ignored"))
+                            .or_default() += entry.files;
+                    }
+                    Classification::Unrecognized => unrecognized += entry.files,
+                }
+            }
+            let shown = clean(&path.display().to_string());
+            let mut parts = vec![if names.is_empty() {
+                shown
+            } else {
+                format!("{} {shown}", names.join(", "))
+            }];
+            parts.push(match root.status {
+                Accessibility::Accessible => "present".to_owned(),
+                Accessibility::Absent => "absent".to_owned(),
+                Accessibility::Unavailable => view.warning_text("unavailable"),
+                Accessibility::Incomplete => view.warning_text(&format!(
+                    "incomplete, {} {} unreadable",
+                    count(root.unavailable_paths.len() as u64),
+                    if root.unavailable_paths.len() == 1 {
+                        "path"
+                    } else {
+                        "paths"
+                    }
+                )),
+            });
+            if collected > 0 {
+                parts.push(format!("{} collected", count(collected)));
+            }
+            let mut reasons: Vec<(&str, u64)> = ignored.into_iter().collect();
+            reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            if !reasons.is_empty() {
+                let total: u64 = reasons.iter().map(|(_, files)| files).sum();
+                parts.push(format!("{} ignored", count(total)));
+            }
+            if unrecognized > 0 {
+                parts.push(view.warning_text(&format!("{} unrecognized", count(unrecognized))));
+            }
             lines.push(parts.join(" · "));
+            // The reasons on a line of their own, so a narrow terminal does
+            // not cut the counts.
+            if !reasons.is_empty() {
+                let each: Vec<String> = reasons
+                    .iter()
+                    .map(|(reason, files)| format!("{} {}", count(*files), clean(reason)))
+                    .collect();
+                lines.push(view.dim(&format!("  ignored: {}", each.join(", "))));
+            }
         }
     }
     lines
+}
+
+/// The origin or tool whose declared location under `root` is `pattern`,
+/// which names what the root's collected files are. A pattern several
+/// origins declare names the one whose default root `root` is, and nothing
+/// when that does not settle it (the walk records no origin per root).
+fn collected_by(root: &std::path::Path, pattern: &str) -> Option<&'static str> {
+    let mut found: Vec<(&'static str, &'static str)> = polylogue_sources::ORIGINS
+        .iter()
+        .filter(|origin| origin.locations.contains(&pattern))
+        .map(|origin| (origin.name, origin.root.default))
+        .chain(
+            polylogue_sources::locations::TOOLS
+                .iter()
+                .filter(|tool| tool.locations.contains(&pattern))
+                .map(|tool| (tool.name, tool.root.default)),
+        )
+        .collect();
+    found.sort_unstable();
+    found.dedup_by_key(|(name, _)| *name);
+    if found.len() > 1 {
+        found.retain(|(_, default)| !default.is_empty() && root.ends_with(default));
+    }
+    match found.as_slice() {
+        [(name, _)] => Some(name),
+        _ => None,
+    }
 }
 
 fn unused(status: &Answer) -> Vec<String> {
@@ -810,9 +913,16 @@ fn unused(status: &Answer) -> Vec<String> {
     let Some((field, n)) = store.unused.first() else {
         return Vec::new();
     };
-    let more = store.unused.len() - 1;
     let mut line = format!("{} ×{} not yet read", clean(field), count(*n));
-    if more > 0 {
+    // `unused` is cut; `unused_fields` counts them all.
+    let more = store.unused_fields.saturating_sub(1);
+    let listed = store.unused.len() as u64 - 1;
+    if more > listed {
+        line.push_str(&format!(
+            " · {} more, {listed} of them in --json",
+            count(more)
+        ));
+    } else if more > 0 {
         line.push_str(&format!(" · {more} more in --json"));
     }
     vec![line]
@@ -906,6 +1016,48 @@ fn recent(status: &Answer, view: &View<'_>) -> Vec<String> {
         );
     }
     lines
+}
+
+/// `status --line`: the headline's words, the running and waiting counts,
+/// and each measured subscription window, grouped by tool
+/// (`up to date · 2 running · 1 waiting 7m · claude-code 5h 61% 7d 20%`).
+/// A window not measured is left out; `--json` says why.
+pub(crate) fn line(status: &Answer, problems: &[String], now_ms: i64) -> String {
+    use polylogue_store::measure::quota::CurrentUse;
+    let notes = notes(status, problems);
+    let mut parts = vec![Headline::of(status, &notes).words()];
+    if let Some(running) = &status.running {
+        parts.push(running.line(now_ms));
+    }
+    let mut tools: Vec<(&str, Vec<String>)> = Vec::new();
+    for window in &status.quota {
+        let CurrentUse::Measured { used_percent, .. } = window.state else {
+            continue;
+        };
+        let used = format!("{} {used_percent:.0}%", window_name(window.window_minutes));
+        match tools.iter_mut().find(|(tool, _)| *tool == window.tool) {
+            Some((_, windows)) => windows.push(used),
+            None => tools.push((&window.tool, vec![used])),
+        }
+    }
+    parts.extend(
+        tools
+            .into_iter()
+            .map(|(tool, windows)| format!("{} {}", clean(tool), windows.join(" "))),
+    );
+    parts.retain(|part| !part.is_empty());
+    parts.join(" · ")
+}
+
+/// A window's length as a status bar names it: `5h`, `7d`, `90m`.
+fn window_name(minutes: i64) -> String {
+    if minutes > 0 && minutes % (24 * 60) == 0 {
+        format!("{}d", minutes / (24 * 60))
+    } else if minutes > 0 && minutes % 60 == 0 {
+        format!("{}h", minutes / 60)
+    } else {
+        format!("{minutes}m")
+    }
 }
 
 impl View<'_> {

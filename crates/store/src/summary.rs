@@ -55,6 +55,8 @@ mod tool_calls;
 pub(crate) mod values;
 
 pub use fold::Key;
+#[cfg(any(test, feature = "fixture"))]
+pub use fold::rows_folded;
 
 /// Sessions taken per round, so one of the writer's summary transactions
 /// stays short.
@@ -792,6 +794,9 @@ pub(crate) fn apply(index: &Connection, write: &Write) -> Result<Vec<bool>> {
         apply_output(&tx, session.pk, &session.output, counter)?;
         if let Some((after, kept)) = &session.folded {
             live::apply(&tx, session.pk, after, &session.output.live, counter)?;
+            if let Some(found) = &session.output.links {
+                links::apply(&tx, session.pk, after, found)?;
+            }
             fold::keep(&tx, session.pk, after, kept)?;
         }
         for &i in &session.computed {
@@ -836,9 +841,6 @@ fn apply_output(tx: &Transaction<'_>, pk: i64, output: &Output, counter: i64) ->
         title::apply(tx, pk, title.as_deref())?;
     }
     tool_calls::apply_reasons(tx, &output.reasons)?;
-    if let Some(found) = &output.links {
-        links::apply(tx, pk, found)?;
-    }
     if let Some(facts) = &output.session {
         session::apply(tx, pk, facts)?;
     }

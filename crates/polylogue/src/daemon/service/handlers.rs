@@ -1,7 +1,7 @@
-//! The handlers of the archive's own operations: queries and their
-//! conveniences, reads of state, authored writes and prepared context. Acts
-//! on live sessions live in `acts`, the browser extension's in `browser`,
-//! and reads in `read`.
+//! The handlers of the archive's own commands: reads of state, authored
+//! writes, imports and the advisory. The verbs of a line are in
+//! `daemon::verbs`, acts on live sessions in `acts`, the browser extension's
+//! in `browser`.
 use super::{
     Failure, advisory_silence, context, delivery_event, error, ok, query_targets_in,
     repeated_request, status, store_error, write, write_from_read,
@@ -11,111 +11,16 @@ use crate::cli::print;
 use crate::commands::ToolAccess;
 use crate::daemon::handler::{Bound, Call, Lane, Late, Operation, Policy};
 use crate::protocol;
-use command_surface::{Answer, TextStyle};
+use command_surface::{Answer, JsonSchema, TextStyle};
 use polylogue_model::authorship::Channel;
 use polylogue_model::user::UserWrite;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::mpsc::sync_channel;
 
 /// The answer when the engine loop no longer takes requests.
 fn loop_stopped<T>() -> Answer<T> {
     error(polylogue_model::Code::Internal, "the loop has stopped")
-}
-
-/// What a query convenience asks for.
-struct QueryInput<'a> {
-    text: &'a str,
-    page_size: Option<u64>,
-    why: bool,
-    session: Option<String>,
-    fields: &'a [String],
-}
-
-impl<'a> QueryInput<'a> {
-    fn of(arguments: &'a protocol::query::Arguments) -> Self {
-        Self {
-            text: &arguments.query,
-            page_size: arguments.limit,
-            why: arguments.why,
-            session: arguments.session.clone(),
-            fields: &arguments.fields,
-        }
-    }
-}
-
-/// Runs one query with the ranking the archive's settings allow.
-fn run_query(
-    call: &Call<'_>,
-    input: QueryInput<'_>,
-) -> Result<Answer<protocol::query::Answer>, Failure> {
-    query_reply(call, input, true)
-}
-
-fn query_reply(
-    call: &Call<'_>,
-    input: QueryInput<'_>,
-    finish_reads: bool,
-) -> Result<Answer<protocol::query::Answer>, Failure> {
-    let reader = call.reader()?;
-    let context = call.context()?;
-    let d = call.daemon;
-    let freshness = d.freshness(&reader)?;
-    Ok(super::super::query::with_ranking(
-        &reader,
-        &d.warm,
-        &d.config,
-        |embeddings, ranking_identity, near| {
-            let ask = super::super::query::Ask {
-                text: input.text,
-                cursor: call.cursor,
-                page_size: input.page_size,
-                why: input.why,
-                session: input.session,
-                context,
-                embeddings,
-                ranking_identity,
-                near: Some(near),
-                fields: input.fields,
-            };
-            match super::super::query::prepare(&reader, ask).and_then(|prepared| {
-                if finish_reads || !prepared.is_empty() || !freshness.up_to_date() {
-                    call.hand_over("optional query count")?;
-                    prepared.complete_within(call.limit)
-                } else {
-                    prepared.complete()
-                }
-            }) {
-                Ok(answer) => super::query_outcome(answer, &freshness),
-                Err(failure) => failure.answer(),
-            }
-        },
-    ))
-}
-
-pub(crate) struct Query;
-impl Operation for Query {
-    type Arguments = protocol::query::Arguments;
-    type Reply = protocol::query::Answer;
-    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::query;
-    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
-        Ok(Policy {
-            pages: true,
-            ..Policy::READ
-        })
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
-        call.runs_query(&arguments.query);
-        super::super::query::prefetch_ranking(call, &arguments.query);
-        run_query(call, QueryInput::of(&arguments))
-    }
-}
-
-/// A listing that keeps the wait's read phase open while it has no answer.
-pub(super) fn waiting_query(
-    arguments: &protocol::query::Arguments,
-    call: &Call<'_>,
-) -> Result<Answer<protocol::query::Answer>, Failure> {
-    query_reply(call, QueryInput::of(arguments), false)
 }
 
 pub(crate) struct Sql;
@@ -340,7 +245,7 @@ impl Operation for Help {
             "units" | "fields" | "transforms" => topic,
             "query" => "syntax",
             _ => {
-                let steps = crate::protocol::steps::declarations();
+                let steps = crate::daemon::verbs::declarations();
                 if let Some(verb) = steps.verbs().iter().find(|verb| verb.verb() == topic) {
                     return Ok(ok(serde_json::json!({
                         "verb": topic,
@@ -716,36 +621,6 @@ impl Operation for Setting {
     }
 }
 
-/// With a session, its resume commands; without, the sessions in a
-/// directory worth resuming.
-pub(crate) struct Continue;
-impl Operation for Continue {
-    type Arguments = protocol::resume::Arguments;
-    type Reply = protocol::resume::Answer;
-    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::resume;
-    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
-        Ok(Policy::READ)
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
-        let reader = call.reader()?;
-        if let Some(session) = arguments.session {
-            return Ok(match crate::resume::plan(&reader, &session) {
-                Ok(plan) => Answer::ok(protocol::resume::Answer::Plan(plan)),
-                Err(e) => store_error(&e),
-            });
-        }
-        let cwd = call.directory(arguments.cwd.as_deref())?;
-        let context = call.context()?;
-        let sessions =
-            crate::resume::resumable(&reader, &cwd, arguments.limit.unwrap_or(10), &context)?;
-        Ok(if sessions.is_empty() {
-            Answer::empty(protocol::resume::Answer::Sessions(sessions))
-        } else {
-            Answer::ok(protocol::resume::Answer::Sessions(sessions))
-        })
-    }
-}
-
 /// Previews embedding work, or builds it when the caller confirms.
 pub(crate) struct Embed;
 impl Operation for Embed {
@@ -802,7 +677,7 @@ fn context_policy(channel: Channel) -> Policy {
 pub(crate) fn prepare_context(
     call: &Call<'_>,
     ask: Ask,
-) -> Result<Answer<protocol::context::Answer>, Failure> {
+) -> Result<Answer<crate::brief::BriefReply>, Failure> {
     let advisory = matches!(ask, Ask::Advisory { .. });
     match call.reader() {
         Ok(reader) => drop(reader),
@@ -822,37 +697,26 @@ pub(crate) fn prepare_context(
     ))
 }
 
-pub(crate) struct Brief;
-impl Operation for Brief {
-    type Arguments = protocol::context::Brief;
-    type Reply = protocol::context::Answer;
-    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::context;
-    fn policy(_: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
-        Ok(Policy {
-            lane: Lane::Interactive,
-            budgeted: true,
-            ..context_policy(channel)
-        })
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
-        let cwd = call.directory(arguments.cwd.as_deref())?;
-        prepare_context(
-            call,
-            Ask::SessionStart {
-                cwd,
-                session: arguments.session,
-                source: arguments.source,
-            },
-        )
-    }
+/// What `internal advisory` asks about: the prompt a session is about to
+/// run.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AdvisoryArguments {
+    /// The prompt naming a file
+    #[schemars(extend("argument_form" = "words"))]
+    pub prompt: String,
+    /// The directory (default: the caller's working directory)
+    pub cwd: Option<std::path::PathBuf>,
+    /// The receiving session
+    pub session: polylogue_model::SessionId,
 }
 
 /// One operator-judged file pointer, silent when unavailable within its cap.
 pub(crate) struct Advisory;
 impl Operation for Advisory {
-    type Arguments = protocol::context::Advisory;
-    type Reply = protocol::context::Answer;
-    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::context;
+    type Arguments = AdvisoryArguments;
+    type Reply = crate::brief::BriefReply;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::brief;
     fn policy(_: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
         Ok(Policy {
             late: Late::AnswerEmpty,
@@ -872,58 +736,19 @@ impl Operation for Advisory {
     }
 }
 
-pub(crate) struct Takeover;
-impl Operation for Takeover {
-    type Arguments = protocol::context::Takeover;
-    type Reply = protocol::context::Answer;
-    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::context;
-    fn policy(_: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
-        Ok(Policy {
-            budgeted: true,
-            ..context_policy(channel)
-        })
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
-        prepare_context(
-            call,
-            Ask::Takeover {
-                session: arguments.session,
-                for_session: arguments.for_session,
-            },
-        )
-    }
-}
-
-pub(crate) struct Recall;
-impl Operation for Recall {
-    type Arguments = protocol::context::Recall;
-    type Reply = protocol::context::Answer;
-    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::context;
-    fn policy(_: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
-        Ok(Policy {
-            pages: true,
-            budgeted: true,
-            ..context_policy(channel)
-        })
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
-        call.runs_query(&arguments.query);
-        prepare_context(
-            call,
-            Ask::Recall {
-                text: arguments.query,
-                cwd: call.directory(arguments.cwd.as_deref()).ok(),
-                for_session: arguments.for_session,
-                cursor: call.cursor.map(str::to_owned),
-            },
-        )
-    }
+/// What a hook reports about a delivery it was handed.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DeliveryEventArguments {
+    pub delivery: String,
+    pub what: polylogue_model::DeliveryOutcome,
+    pub detail: Option<String>,
 }
 
 /// What happened to a delivery after it was handed out; queued at once.
 pub(crate) struct DeliveryEvent;
 impl Operation for DeliveryEvent {
-    type Arguments = protocol::act::DeliveryEvent;
+    type Arguments = DeliveryEventArguments;
     type Reply = Value;
     fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
         Ok(Policy::write(ToolAccess::Write))

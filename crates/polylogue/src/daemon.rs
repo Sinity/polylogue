@@ -14,7 +14,6 @@ pub(crate) mod lifecycle;
 pub mod measure;
 pub(crate) mod output;
 pub mod query;
-pub(crate) mod queued_deliveries;
 pub(crate) mod schema;
 pub mod scope;
 pub mod seen;

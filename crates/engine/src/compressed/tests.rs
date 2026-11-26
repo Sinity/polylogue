@@ -10,8 +10,8 @@ pub(super) fn rollout(session_id: &str) -> String {
 }
 fn captured(e: &Engine, id: &str) -> Vec<u8> {
     let r = e.reads.reader().unwrap();
-    let p = r.input_progress(id).unwrap().unwrap();
-    r.stored_range(id, p.chain, 0, p.length, &e.blobs).unwrap()
+    let p = r.latest_chain(id).unwrap().unwrap();
+    r.stored_range(id, p.chain, 0, p.stored, &e.blobs).unwrap()
 }
 
 #[test]

@@ -294,9 +294,14 @@ fn build(rows: &Rows) -> TestArchive {
 
 /// Runs a query for its whole answer.
 fn all(w: &TestArchive, text: &str) -> Value {
+    all_through(&w.fx.reads().unwrap().reader().unwrap(), text)
+}
+
+/// [`all`] through a reader the caller keeps for several queries.
+fn all_through(reader: &Reader<'_>, text: &str) -> Value {
     let mut request = ask(text);
     request.page_size = Some(1 << 40);
-    run_q(w, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.code(), f.message))
+    run(reader, request).unwrap_or_else(|f| panic!("{text}: {} {}", f.code(), f.message))
 }
 
 fn result_rows(v: &Value) -> Vec<Value> {
@@ -735,6 +740,8 @@ proptest! {
         c in cond(Unit::ToolCalls),
     ) {
         let w = build(&rows);
+        let pool = w.fx.reads().unwrap();
+        let reader = pool.reader().unwrap();
         let queries = [
             over(Unit::Sessions, &format!("({})", s.text())),
             over(Unit::Sessions, &format!("({}) | sort by cost", s.text())),
@@ -749,7 +756,7 @@ proptest! {
             over(Unit::ToolCalls, "| group by outcome | count"),
         ];
         for query in &queries {
-            let whole = all(&w, query);
+            let whole = all_through(&reader, query);
             let want = result_rows(&whole);
             for size in 1..=want.len() as u64 + 1 {
                 let mut got = vec![];
@@ -758,7 +765,7 @@ proptest! {
                     let mut request = ask(query);
                     request.page_size = Some(size);
                     request.cursor = cursor.as_deref();
-                    let page = run_q(&w, request)
+                    let page = run(&reader, request)
                         .unwrap_or_else(|f| panic!("{query} by {size}: {} {}", f.code(), f.message));
                     prop_assert_eq!(&page["count"], &whole["count"], "{} by {}", query, size);
                     got.extend(result_rows(&page));
@@ -838,13 +845,15 @@ proptest! {
 
     /// The matches of `exists`, `seq(...)` and `| matches` never depend on
     /// the order the rows were written in: the same rows written with
-    /// sessions and messages shuffled give the same answers.
+    /// sessions and messages shuffled give the same answers. Each case
+    /// draws its own rows and its own order, so one shuffle per case
+    /// covers as many orders as the cases.
     #[test]
     fn matches_do_not_depend_on_the_order_rows_are_read(
         rows in rows(),
         a in cond(Unit::ToolCalls),
         b in cond(Unit::ToolCalls),
-        shuffles in prop::collection::vec(any::<u64>(), 3),
+        seed in any::<u64>(),
     ) {
         let (a, b) = (a.text(), b.text());
         let queries = [
@@ -856,54 +865,84 @@ proptest! {
             over(Unit::ToolCalls, &format!("({a})")),
         ];
         let answers = |w: &TestArchive| -> Vec<Value> {
-            queries.iter().map(|q| all(w, q)["rows"].clone()).collect()
+            let pool = w.fx.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            queries.iter().map(|q| all_through(&reader, q)["rows"].clone()).collect()
         };
-        let first = answers(&build(&rows));
-        for seed in shuffles {
-            let mut order = written_order(&rows);
-            shuffle(&mut order, seed);
-            prop_assert_eq!(&answers(&write(&rows, &order)), &first, "shuffled by {}", seed);
-        }
+        let mut order = written_order(&rows);
+        shuffle(&mut order, seed);
+        prop_assert_eq!(&answers(&write(&rows, &order)), &answers(&build(&rows)), "shuffled by {}", seed);
     }
 
-    /// Values in a query stay values: search words, quoted values and IDs
-    /// full of SQL and search syntax either run or are refused as a bad
-    /// query, never break the statement, never return more rows than the
-    /// unit holds, and leave the archive as it was.
-    #[test]
-    fn query_values_never_become_statements(payload in payload()) {
-        let w = morrow();
-        let quoted = format!("\"{}\"", payload.replace('\\', "\\\\").replace('"', "\\\""));
-        let before = all(&w, "messages where active:* parser")["count"].clone();
-        for (unit, text) in [
-            ("sessions", quoted.clone()),
-            ("sessions", format!("kind:* title:{quoted}")),
-            ("sessions", format!("kind:* repo:{quoted}")),
-            ("sessions", format!("kind:* origin:{quoted}")),
-            ("sessions", format!("kind:* id:{quoted}")),
-            ("sessions", format!("kind:* tag:{quoted}")),
-            ("messages", format!("messages where active:* {quoted}")),
-            ("messages", format!("messages where active:* model:{quoted}")),
-            ("tool_calls", format!("tool_calls where action:* command:{quoted}")),
-            ("tool_calls", format!("tool_calls where action:* output:{quoted}")),
-            ("annotations", format!("annotations where value:{quoted}")),
-        ] {
-            let total = match unit {
-                "sessions" => all(&w, "kind:*")["count"].as_u64(),
-                "messages" => all(&w, "messages where active:*")["count"].as_u64(),
-                "tool_calls" => all(&w, "tool_calls where action:*")["count"].as_u64(),
-                _ => all(&w, "annotations")["count"].as_u64(),
-            };
-            match run_q(&w, ask(&text)) {
-                Ok(v) => prop_assert!(v["count"].as_u64() <= total, "{}: {}", text, v["count"]),
-                Err(f) => prop_assert!(
-                    !matches!(f.code(), "store" | "internal"),
-                    "{}: {} {}", text, f.code(), f.message
+}
+
+/// Values in a query stay values: search words, quoted values and IDs
+/// full of SQL and search syntax either run or are refused as a bad
+/// query, never break the statement, never return more rows than the
+/// unit holds, and leave the archive as it was. Every case reads the same
+/// archive, so each case also shows the cases before it changed nothing.
+#[test]
+fn query_values_never_become_statements() {
+    let w = morrow();
+    let before = all(&w, "messages where active:* parser")["count"].clone();
+    let totals = [
+        ("sessions", all(&w, "kind:*")["count"].as_u64()),
+        (
+            "messages",
+            all(&w, "messages where active:*")["count"].as_u64(),
+        ),
+        (
+            "tool_calls",
+            all(&w, "tool_calls where action:*")["count"].as_u64(),
+        ),
+        ("annotations", all(&w, "annotations")["count"].as_u64()),
+    ];
+    let total = |unit: &str| totals.iter().find(|(name, _)| *name == unit).unwrap().1;
+    proptest::test_runner::TestRunner::new(config(48))
+        .run(&payload(), |payload| {
+            let quoted = format!("\"{}\"", payload.replace('\\', "\\\\").replace('"', "\\\""));
+            for (unit, text) in [
+                ("sessions", quoted.clone()),
+                ("sessions", format!("kind:* title:{quoted}")),
+                ("sessions", format!("kind:* repo:{quoted}")),
+                ("sessions", format!("kind:* origin:{quoted}")),
+                ("sessions", format!("kind:* id:{quoted}")),
+                ("sessions", format!("kind:* tag:{quoted}")),
+                ("messages", format!("messages where active:* {quoted}")),
+                (
+                    "messages",
+                    format!("messages where active:* model:{quoted}"),
                 ),
+                (
+                    "tool_calls",
+                    format!("tool_calls where action:* command:{quoted}"),
+                ),
+                (
+                    "tool_calls",
+                    format!("tool_calls where action:* output:{quoted}"),
+                ),
+                ("annotations", format!("annotations where value:{quoted}")),
+            ] {
+                match run_q(&w, ask(&text)) {
+                    Ok(v) => prop_assert!(
+                        v["count"].as_u64() <= total(unit),
+                        "{}: {}",
+                        text,
+                        v["count"]
+                    ),
+                    Err(f) => prop_assert!(
+                        !matches!(f.code(), "store" | "internal"),
+                        "{}: {} {}",
+                        text,
+                        f.code(),
+                        f.message
+                    ),
+                }
             }
-        }
-        prop_assert_eq!(&all(&w, "messages where active:* parser")["count"], &before);
-    }
+            prop_assert_eq!(&all(&w, "messages where active:* parser")["count"], &before);
+            Ok(())
+        })
+        .unwrap();
 }
 
 /// SQL and full-text syntax, quotes, control and direction characters,

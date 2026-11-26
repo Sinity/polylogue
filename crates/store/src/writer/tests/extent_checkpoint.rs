@@ -43,9 +43,9 @@ fn extent_writer_refuses_stale_append_without_replacing_prefix() {
 fn stored_bytes(w: &TestArchive) -> Vec<u8> {
     let reads = ReadPool::open(&w.archive).unwrap();
     let reader = reads.reader().unwrap();
-    let progress = reader.input_progress("input").unwrap().unwrap();
+    let progress = reader.latest_chain("input").unwrap().unwrap();
     let chain = reader
-        .stored_chain("input", progress.chain, progress.length)
+        .stored_chain("input", progress.chain, progress.stored)
         .unwrap();
     let mut actual = Vec::new();
     chain
@@ -126,12 +126,13 @@ fn a_stale_step_is_refused_for_its_own_cause_not_the_bytes() {
     let mut stale = bytes(&w.archive, 3, b"def");
     stale.batch.parse = vec![step(1..4)];
     match store(&w, stale) {
-        Err(error @ StoreError::RowsRefused { .. }) => {
+        Err(error @ StoreError::StalePart { .. }) => {
             assert_eq!(
                 error.to_string(),
-                "reading starts at 1 after committed position 3"
+                "the part of input chain 1 starts at byte 1 under synthetic=1, where its stored parse ends at 3 under synthetic=1"
             );
-            assert_eq!(error.cause(), Cause::Request, "{error}");
+            assert_eq!(error.cause(), Cause::Transient, "{error}");
+            assert!(!error.cause().recurs());
         }
         other => panic!("expected the stale step's refusal, got {other:?}"),
     }
