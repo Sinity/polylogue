@@ -1230,51 +1230,49 @@ static CHAT_ACTIONS: UnitSpec = UnitSpec {
 /// Every turn of every session, as a subquery: the `turns` unit's rows.
 pub fn turns() -> String {
     format!(
-        "(SELECT g.*, \
-     (SELECT count(*) FROM message ax WHERE ax.parent_id = g.last_prompt \
-        AND ax.role = 'assistant' AND ax.written_by = 'model') AS attempts, \
-     (SELECT min(lx.at) FROM message lx WHERE lx.session_pk = g.session_pk \
-        AND lx.role = 'assistant' AND lx.written_by = 'model' AND lx.at >= g.last_prompt_at) - g.last_prompt_at AS latency, \
-     (g.answer IS NULL AND g.turn = max(g.turn) OVER (PARTITION BY g.session_pk)) AS abandoned \
-   FROM (SELECT tm.session_pk AS session_pk, tm.turn AS turn, min(tm.pk) AS pk, \
-       substr(min(printf('%012d ', tm.ord) || tm.id), 14) AS first_id, \
-       COALESCE(substr(min(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14), \
-                substr(min(printf('%012d ', tm.ord) || tm.id), 14)) AS id, \
-       substr(max(CASE WHEN tm.hp THEN printf('%012d ', tm.ord) || tm.id END), 14) AS last_prompt, \
-       max(CASE WHEN tm.hp THEN tm.at END) AS last_prompt_at, \
-       min(tm.at) AS start, max(tm.at) AS \"end\", \
-       sum(tm.hp) AS burst, \
-       json_group_array(tm.id ORDER BY tm.ord) FILTER (WHERE tm.hp) AS prompts, \
-       substr(min(printf('%012d ', tm.ord) || COALESCE(tm.prompt_kind, '')), 14) = 'command' AS slash_command, \
-       substr(max(CASE WHEN tm.role = 'assistant' AND tm.written_by = 'model' THEN printf('%012d ', tm.ord) || tm.id END), 14) AS answer, \
-       CASE WHEN min(COALESCE(tm.on_active_path, -1)) < 0 THEN 'unknown' ELSE 'active' END AS path, \
-       sum(tm.tc) AS tool_calls, sum(tm.te) AS errors, \
-       sum(tm.input_tokens) AS input_tokens, sum(tm.output_tokens) AS output_tokens, \
-       sum(tm.cost_nusd) AS cost_nusd, \
-       sum(tm.unpriced) AS unpriced_responses, NOT max(tm.unknown_cost) AS cost_complete \
-     FROM (SELECT o.*, \
-         sum(CASE WHEN o.hp AND (o.prompt_kind = 'command' OR NOT o.prev_hp) THEN 1 ELSE 0 END) \
-           OVER (PARTITION BY o.session_pk ORDER BY o.session_order, o.id \
-                 ROWS UNBOUNDED PRECEDING) AS turn, \
-         row_number() OVER (PARTITION BY o.session_pk ORDER BY o.session_order, o.id) AS ord \
-       FROM (SELECT m.pk, m.id, m.session_pk, m.session_order, m.role, m.written_by, m.prompt_kind, \
-             m.at, m.on_active_path, \
-             {input_tokens} AS input_tokens, \
-             {output_tokens} AS output_tokens, \
-             {cost} AS cost_nusd, \
-             {unpriced} AS unpriced, \
-             {unknown_cost} AS unknown_cost, \
-             (m.written_by = 'human') AS hp, \
-             COALESCE(lag(m.written_by = 'human') OVER (PARTITION BY m.session_pk \
-               ORDER BY m.session_order, m.id), 0) AS prev_hp, \
-             (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
-               WHERE cb.message_pk = m.pk) AS tc, \
-             (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk = c.call_block_pk \
-               WHERE cb.message_pk = m.pk AND c.outcome = 'error') AS te \
-           FROM message m WHERE {own_messages} \
-             AND m.written_by IN ('human', 'model')) o) tm \
-     GROUP BY tm.session_pk, tm.turn) g)",
-        own_messages = "m.duplicate_of IS NULL AND (COALESCE(m.on_active_path,1)=1 OR m.role='assistant' AND m.written_by='model')",
+        "(WITH ordered AS (
+           SELECT m.pk,m.id,m.session_pk,m.session_order,m.role,m.written_by,m.prompt_kind,m.at,m.on_active_path,
+             (m.written_by='human') AS hp,
+             coalesce(lag(m.written_by='human') OVER (PARTITION BY m.session_pk ORDER BY m.session_order,m.id),0) AS prev_hp,
+             (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk=c.call_block_pk WHERE cb.message_pk=m.pk) AS tc,
+             (SELECT count(*) FROM tool_call c JOIN block cb ON cb.pk=c.call_block_pk WHERE cb.message_pk=m.pk AND c.outcome='error') AS te
+           FROM message m WHERE {own_messages} AND m.written_by IN ('human','model')
+         ), numbered AS (
+           SELECT o.*,
+             sum(CASE WHEN o.hp AND (o.prompt_kind='command' OR NOT o.prev_hp) THEN 1 ELSE 0 END)
+               OVER (PARTITION BY o.session_pk ORDER BY o.session_order,o.id ROWS UNBOUNDED PRECEDING) AS turn,
+             row_number() OVER (PARTITION BY o.session_pk ORDER BY o.session_order,o.id) AS ord
+           FROM ordered o
+         ), grouped AS (
+           SELECT tm.session_pk,tm.turn,min(tm.pk) AS pk,min(tm.session_order) AS first_order,
+             substr(min(printf('%012d ',tm.ord)||tm.id),14) AS first_id,
+             coalesce(substr(min(CASE WHEN tm.hp THEN printf('%012d ',tm.ord)||tm.id END),14),substr(min(printf('%012d ',tm.ord)||tm.id),14)) AS id,
+             substr(max(CASE WHEN tm.hp THEN printf('%012d ',tm.ord)||tm.id END),14) AS last_prompt,
+             max(CASE WHEN tm.hp THEN tm.at END) AS last_prompt_at,
+             min(tm.at) AS start,max(tm.at) AS \"end\",sum(tm.hp) AS burst,
+             json_group_array(tm.id ORDER BY tm.ord) FILTER (WHERE tm.hp) AS prompts,
+             substr(min(printf('%012d ',tm.ord)||coalesce(tm.prompt_kind,'')),14)='command' AS slash_command,
+             substr(max(CASE WHEN tm.role='assistant' AND tm.written_by='model' THEN printf('%012d ',tm.ord)||tm.id END),14) AS answer,
+             CASE WHEN min(coalesce(tm.on_active_path,-1))<0 THEN 'unknown' ELSE 'active' END AS path,
+             sum(tm.tc) AS tool_calls,sum(tm.te) AS errors
+           FROM numbered tm GROUP BY tm.session_pk,tm.turn
+         ), bounds AS (
+           SELECT g.*,
+             row_number() OVER (PARTITION BY g.session_pk ORDER BY g.turn)=1 AS first_turn,
+             lead(g.first_order) OVER (PARTITION BY g.session_pk ORDER BY g.turn) AS next_order,
+             lead(g.first_id) OVER (PARTITION BY g.session_pk ORDER BY g.turn) AS next_id
+           FROM grouped g
+         ) SELECT g.*,
+           (SELECT count(*) FROM message ax WHERE ax.parent_id=g.last_prompt AND ax.role='assistant' AND ax.written_by='model') AS attempts,
+           (SELECT min(lx.at) FROM message lx WHERE lx.session_pk=g.session_pk AND lx.role='assistant' AND lx.written_by='model' AND lx.at>=g.last_prompt_at)-g.last_prompt_at AS latency,
+           (g.answer IS NULL AND g.turn=max(g.turn) OVER (PARTITION BY g.session_pk)) AS abandoned,
+           sum({input_tokens}) AS input_tokens,sum({output_tokens}) AS output_tokens,
+           sum({cost}) AS cost_nusd,sum({unpriced}) AS unpriced_responses,NOT max({unknown_cost}) AS cost_complete
+         FROM bounds g JOIN message m ON m.session_pk=g.session_pk AND m.duplicate_of IS NULL
+           AND (g.first_turn OR (m.session_order,m.id)>=(g.first_order,g.first_id))
+           AND (g.next_order IS NULL OR (m.session_order,m.id)<(g.next_order,g.next_id))
+         GROUP BY g.session_pk,g.turn)",
+        own_messages = fields::own_messages("m", None),
         unpriced = crate::session_sql::response_unpriced(),
         input_tokens = crate::session_sql::response_value("input_tokens"),
         output_tokens = crate::session_sql::response_value("output_tokens"),

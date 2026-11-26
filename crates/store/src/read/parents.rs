@@ -114,6 +114,7 @@ struct Frame {
     keys: Vec<Key>,
     copied: Vec<CopiedKey>,
     issues: Vec<ParentIssue>,
+    unstored_copy: bool,
     /// The fork whose parent view this frame is constructing.
     via: Option<(SessionId, Option<String>)>,
 }
@@ -161,7 +162,7 @@ impl<'a> Reader<'a> {
         let Some(pk) = self.session_pk(id)? else {
             return Ok((Vec::new(), Parents { issues: Vec::new() }, false));
         };
-        let (keys, issues) = parent_keys(self.conn()?, pk, id)?;
+        let (keys, issues, unstored) = parent_keys(self.conn()?, pk, id)?;
         let mut parts: Vec<polylogue_model::read::Part> = Vec::new();
         for key in keys.into_iter().filter(|key| key.session_pk != pk) {
             let message = MessageId::parse(&key.id)
@@ -184,19 +185,6 @@ impl<'a> Reader<'a> {
                 });
             }
         }
-        let mut unstored = false;
-        for (parent, _, copied) in
-            crate::lineage::inherited_prefixes(self.conn()?, &id.to_string())?
-        {
-            if copied
-                && self
-                    .conn()?
-                    .value::<i64>("SELECT pk FROM session WHERE id=?1 AND stub=0", [parent])?
-                    .is_none()
-            {
-                unstored = true;
-            }
-        }
         Ok((parts, Parents { issues }, unstored))
     }
 
@@ -208,9 +196,9 @@ impl<'a> Reader<'a> {
         let own = self.session_pk(id)?.map(|pk| (pk, id.clone()));
         let has_parents = with_parents
             && !crate::lineage::inherited_prefixes(self.conn()?, &id.to_string())?.is_empty();
-        let (keys, issues) = match own.as_ref().filter(|_| has_parents) {
+        let (keys, issues, _) = match own.as_ref().filter(|_| has_parents) {
             Some((pk, _)) => parent_keys(self.conn()?, *pk, id)?,
-            None => (Vec::new(), Vec::new()),
+            None => (Vec::new(), Vec::new(), false),
         };
         self.check()?;
         Ok(MessageSelection {
@@ -291,6 +279,7 @@ fn parent_frame(
         keys: Vec::new(),
         copied: Vec::new(),
         issues,
+        unstored_copy: false,
         via,
     })
 }
@@ -299,7 +288,7 @@ fn parent_keys(
     conn: &Connection,
     pk: SessionPk,
     id: &SessionId,
-) -> Result<(Vec<Key>, Vec<ParentIssue>)> {
+) -> Result<(Vec<Key>, Vec<ParentIssue>, bool)> {
     let mut frames = vec![parent_frame(conn, pk, id.clone(), None)?];
     let mut active = HashSet::from([pk]);
     loop {
@@ -333,7 +322,9 @@ fn parent_keys(
             let Some(parent_pk) = parent_pk else {
                 // A copied prefix whose source is not stored leaves the
                 // child's messages its own; it is no broken link.
-                if !link.copies_prefix {
+                if link.copies_prefix {
+                    frame.unstored_copy = true;
+                } else {
                     frame.issues.push(ParentIssue::MissingParent {
                         child: frame.session.clone(),
                         parent,
@@ -421,7 +412,7 @@ fn parent_keys(
         let Some(child_frame) = frames.last_mut() else {
             let mut seen = HashSet::new();
             done.keys.retain(|key| seen.insert(key.message_pk));
-            return Ok((done.keys, done.issues));
+            return Ok((done.keys, done.issues, done.unstored_copy));
         };
         let (child, branch_point) = done.via.expect("only the root has no incoming fork");
         match done
@@ -447,6 +438,7 @@ fn parent_keys(
             child_frame.keys.extend(done.keys);
         }
         child_frame.issues.extend(done.issues);
+        child_frame.unstored_copy |= done.unstored_copy;
     }
 }
 
@@ -490,7 +482,7 @@ pub(crate) fn compare_session_messages(
         }
         .into());
     }
-    let (keys, issues) = parent_keys(conn, target_pk, target)?;
+    let (keys, issues, _) = parent_keys(conn, target_pk, target)?;
     let locate = |id: &str| -> Result<usize> {
         keys.iter().position(|key| key.id == id).ok_or_else(|| {
             issues.first().map_or_else(

@@ -20,7 +20,7 @@ fn path_range(path: &str, [exact, first, end]: [String; 3]) -> String {
     format!("({path} = {exact} OR ({path} >= {first} AND {path} < {end}))")
 }
 
-/// Bind the directory once; the path column remains available to range indexes.
+/// Bound directory values let SQLite scan the path column by range.
 pub fn path_under_sql(path: &str, directory: &str, mut bind: impl FnMut(&str) -> String) -> String {
     path_range(path, directory_bounds(directory).map(|value| bind(&value)))
 }

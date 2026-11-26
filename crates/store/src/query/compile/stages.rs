@@ -119,18 +119,17 @@ impl<'a> Compiler<'a> {
                     ColKind::Number,
                 ));
             }
-            // A session cost known only in part (some request-bearing messages
-            // unpriced) is a lower bound, and the total says how many. A tree
-            // cost is one too when a session in the tree is, or when a
-            // subagent the tree spawned is not in the archive.
-            if scope.unit == Unit::Sessions
+            // Partly priced rows contribute a lower bound. A tree cost is
+            // also partial when a spawning call names an unstored child.
+            if matches!(scope.unit, Unit::Sessions | Unit::Turns)
                 && matches!(f.function, AggregateFunction::Sum | AggregateFunction::Avg)
             {
                 let s = &scope.a.s;
                 let unpriced = |sessions: &str| crate::measure::unpriced_in(sessions);
-                let partial = match field {
-                    "cost" => Some(unpriced(&format!("SELECT {s}.pk"))),
-                    "tree_cost" => {
+                let partial = match (scope.unit, field) {
+                    (Unit::Turns, "cost") => Some(format!("NOT {}.cost_complete", scope.a.r)),
+                    (Unit::Sessions, "cost") => Some(unpriced(&format!("SELECT {s}.pk"))),
+                    (Unit::Sessions, "tree_cost") => {
                         let tree = fields::descendants(s);
                         Some(format!(
                             "({} OR EXISTS (SELECT 1 FROM link xl JOIN session xs ON xs.id = xl.parent_id \

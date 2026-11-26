@@ -60,8 +60,8 @@ fn a_one_turn_session_costs_what_its_turn_costs() {
     for (id, role, by, cost, active) in [
         ("codex:prompt", "user", "human", None, true),
         ("codex:priced", "assistant", "model", Some(7), true),
-        ("codex:other-branch", "assistant", "model", Some(11), false),
         ("codex:unpriced", "assistant", "model", None, true),
+        ("codex:other-branch", "assistant", "model", Some(11), false),
     ] {
         f.message(
             pk,
@@ -98,6 +98,20 @@ fn a_one_turn_session_costs_what_its_turn_costs() {
     assert_eq!(turn[0]["cost_complete"], 0);
     assert_eq!(turn[0]["cost"], session[0]["cost"]);
     assert_eq!(turn[0]["cost_complete"], session[0]["cost_complete"]);
+    let mut turn_options = opts.clone();
+    turn_options.fields = vec!["answer".into()];
+    let answers = r
+        .query_page(
+            &crate::query::compile("turns", &turn_options).unwrap(),
+            None,
+        )
+        .unwrap();
+    assert_eq!(answers.rows[0]["answer"], "codex:unpriced");
+    assert_eq!(
+        group_rows(&r, "turns | agg sum(cost)")[0]["partial_cost"],
+        1
+    );
+
     for (column, expected) in [("input_tokens", 9), ("output_tokens", 15)] {
         assert_eq!(turn[0][column], expected);
         assert_eq!(turn[0][column], session[0][column]);
