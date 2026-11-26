@@ -581,10 +581,25 @@ fn status_names_update_errors_and_failed_snapshot_parts() {
     let d = &daemon.daemon;
     let mut snapshot = Snapshot::read(d, &d.reads.reader().unwrap(), 0);
     snapshot.notices = Err("synthetic notices read failed".into());
+    snapshot.store.as_mut().unwrap().capture_coverage =
+        [d.config.identity.machine.clone(), "other-machine".into()]
+            .into_iter()
+            .map(|machine| polylogue_model::capture::Coverage {
+                version: 1,
+                machine,
+                observed_at: polylogue_model::Timestamp::from(d.clock.now()),
+                roots: vec![polylogue_model::capture::RootCoverage {
+                    path_bytes: b"/home/op/root".to_vec(),
+                    status: polylogue_model::capture::Accessibility::Unavailable,
+                    entries: Vec::new(),
+                    unavailable_paths: Vec::new(),
+                }],
+            })
+            .collect();
     *d.status_snapshot.0.locked() = Latest::Read(std::sync::Arc::new(snapshot));
     d.status.update(|s| {
         s.last_pass.errors = vec![polylogue_model::Failure::stated(
-            "/home/op/root",
+            "source root /home/op/root",
             polylogue_model::Cause::Environment,
             polylogue_model::Code::Io,
             "permission denied",
@@ -598,11 +613,16 @@ fn status_names_update_errors_and_failed_snapshot_parts() {
     assert_eq!(
         missing,
         [
-            "/home/op/root: permission denied",
+            "source root /home/op/root: permission denied",
             "notices: synthetic notices read failed"
         ]
     );
-    assert!(value.store.is_some());
+    let roots = value.store.unwrap().capture_coverage;
+    assert_eq!(
+        roots[0].roots[0].error.as_deref(),
+        Some("source root /home/op/root: permission denied")
+    );
+    assert_eq!(roots[1].roots[0].error, None);
     assert!(
         matches!(value.notices, Some(crate::protocol::status::Notices::Unavailable { error }) if error == "synthetic notices read failed")
     );

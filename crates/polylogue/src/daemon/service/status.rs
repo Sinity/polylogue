@@ -160,6 +160,7 @@ pub(super) fn answer(
                 store.clone(),
                 details,
                 &loop_status.last_pass.errors,
+                &d.config.identity.machine,
             )),
             None,
         ),

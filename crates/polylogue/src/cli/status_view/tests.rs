@@ -184,6 +184,7 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
         },
         true,
         &[],
+        "host",
     ));
     status.freshness.local.parsing =
         CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind]);
@@ -972,6 +973,7 @@ fn a_new_archive_is_up_to_date_with_its_sources_watched() {
         },
         true,
         &[],
+        "host",
     ));
     assert_eq!(
         plain(&status, &[]),
@@ -1054,6 +1056,7 @@ fn a_rebuild_beside_a_readable_index_labels_the_installed_figures() {
         },
         true,
         &[],
+        "host",
     ));
     status.index_build = Some(IndexBuild {
         reason: polylogue_store::index::file::RebuildReason::SchemaDiffers,
@@ -1210,6 +1213,7 @@ fn sources_show_an_absent_root_and_unrecognized_files() {
         },
         true,
         &[],
+        "host",
     ));
     let text = plain(&status, &[]);
     let sources = text

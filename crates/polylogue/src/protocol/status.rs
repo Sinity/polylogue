@@ -351,6 +351,7 @@ impl Store {
         store: polylogue_store::Status,
         details: bool,
         errors: &[polylogue_model::Failure],
+        machine: &str,
     ) -> Self {
         use polylogue_model::capture::Classification;
         Self {
@@ -368,39 +369,48 @@ impl Store {
             capture_coverage: store
                 .capture_coverage
                 .into_iter()
-                .map(|coverage| Coverage {
-                    machine: coverage.machine,
-                    observed_at: coverage.observed_at,
-                    roots: coverage
-                        .roots
-                        .into_iter()
-                        .map(|root| {
-                            let path = String::from_utf8_lossy(&root.path_bytes).into_owned();
-                            let count = |class| {
-                                root.entries
-                                    .iter()
-                                    .filter(|entry| entry.class == class)
-                                    .map(|entry| entry.files)
-                                    .sum()
-                            };
-                            Root {
-                                error: errors
-                                    .iter()
-                                    .find(|error| error.subject == format!("source root {path}"))
-                                    .map(ToString::to_string),
-                                path,
-                                path_bytes: std::str::from_utf8(&root.path_bytes)
-                                    .is_err()
-                                    .then_some(root.path_bytes),
-                                status: root.status,
-                                collected: count(Classification::Collected),
-                                ignored: count(Classification::Ignored),
-                                unrecognized: count(Classification::Unrecognized),
-                                unreadable: root.unavailable_paths.len(),
-                                entries: if details { root.entries } else { Vec::new() },
-                            }
-                        })
-                        .collect(),
+                .map(|coverage| {
+                    let errors = if coverage.machine == machine {
+                        errors
+                    } else {
+                        &[]
+                    };
+                    Coverage {
+                        machine: coverage.machine,
+                        observed_at: coverage.observed_at,
+                        roots: coverage
+                            .roots
+                            .into_iter()
+                            .map(|root| {
+                                let path = String::from_utf8_lossy(&root.path_bytes).into_owned();
+                                let count = |class| {
+                                    root.entries
+                                        .iter()
+                                        .filter(|entry| entry.class == class)
+                                        .map(|entry| entry.files)
+                                        .sum()
+                                };
+                                Root {
+                                    error: errors
+                                        .iter()
+                                        .find(|error| {
+                                            error.subject == format!("source root {path}")
+                                        })
+                                        .map(ToString::to_string),
+                                    path,
+                                    path_bytes: std::str::from_utf8(&root.path_bytes)
+                                        .is_err()
+                                        .then_some(root.path_bytes),
+                                    status: root.status,
+                                    collected: count(Classification::Collected),
+                                    ignored: count(Classification::Ignored),
+                                    unrecognized: count(Classification::Unrecognized),
+                                    unreadable: root.unavailable_paths.len(),
+                                    entries: if details { root.entries } else { Vec::new() },
+                                }
+                            })
+                            .collect(),
+                    }
                 })
                 .collect(),
             index_rebuild: store.index_rebuild,
