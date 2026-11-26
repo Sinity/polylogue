@@ -162,11 +162,11 @@ impl Fixture {
         crate::summary::run_with_catalog(&mut self.index, catalog)
     }
 
-    /// The writer indexes each session's items as it commits; fixture rows
-    /// are written directly, so sessions they changed are indexed before
-    /// reads open.
+    /// The summary worker writes each session's transcript lines once it
+    /// is due; fixture rows are written directly and mark nothing, so every
+    /// session's lines are written before reads open.
     pub fn reads(&self) -> Result<ReadPool> {
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(&self.index)?;
         ReadPool::open(&self.archive)
     }
 
@@ -235,7 +235,7 @@ impl Fixture {
             "UPDATE session SET changed=changed+1, last_activity_at=(SELECT max(at) FROM message WHERE session_pk=session.pk) WHERE pk=(SELECT session_pk FROM message WHERE pk=?1)",
             [message_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(&self.index)?;
         Ok(())
     }
 
@@ -392,7 +392,7 @@ impl Fixture {
             )?;
         }
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(&self.index)?;
         Ok(pk)
     }
 
@@ -455,7 +455,7 @@ impl Fixture {
             [session_pk],
         )?;
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(&self.index)?;
         Ok(pk)
     }
 
@@ -574,7 +574,7 @@ impl Fixture {
              VALUES (?1, ?2, ?3, ?4, 'fixture', ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(&self.index)?;
         Ok(())
     }
 
@@ -585,7 +585,7 @@ impl Fixture {
              VALUES (?1, ?2, ?3, 1, 'fixture', ?4)",
             params![parent, child, kind, self.input_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(&self.index)?;
         Ok(())
     }
 
@@ -665,7 +665,7 @@ impl Fixture {
             [session_pk],
         )?;
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(&self.index)?;
         Ok(())
     }
 
@@ -721,7 +721,7 @@ impl Fixture {
              WHERE pk = (SELECT session_pk FROM message WHERE pk = ?1)",
             [message_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(&self.index)?;
         Ok(())
     }
 

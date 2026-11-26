@@ -1,6 +1,5 @@
 //! Recorded clocks and interval calculations. No notes, settings or clock reads.
 use super::Selection;
-use crate::change_summary::OrderKey;
 use crate::encoding::Columns as _;
 use crate::session_sql;
 use crate::{Reader, Result};
@@ -8,6 +7,10 @@ use polylogue_model::derived::CLUSTER_GAP_MS;
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+
+/// A message's place in session order (`message_session`): its
+/// `session_order` and ID.
+pub(crate) type OrderKey = (String, String);
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Span {

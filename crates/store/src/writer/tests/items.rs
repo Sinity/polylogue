@@ -31,18 +31,20 @@ pub(super) fn assert_matches_rows(w: &TestArchive, session: &str) {
     let reader = pool.reader().unwrap();
     let index = reader.item_index(&sid(session)).unwrap().expect("indexed");
     let computed =
-        crate::items::computed_entries(reader.conn().unwrap(), index.session_pk).unwrap();
+        crate::summary::lines::computed_entries(reader.conn().unwrap(), index.session_pk).unwrap();
     assert_eq!(index.entries, computed, "session {session}");
     // What is stored beside the entries equals a recount of every entry.
     let classes = polylogue_model::read::entry_classes(&computed);
     let (columns, entries, total) =
-        crate::items::stored_columns(reader.conn().unwrap(), index.session_pk).unwrap();
+        crate::summary::lines::stored_columns(reader.conn().unwrap(), index.session_pk).unwrap();
     assert_eq!(entries, computed.len() as u64, "session {session}");
     let mut running = polylogue_model::read::ItemCounts::default();
     let units: Vec<bool> = {
         let conn = reader.conn().unwrap();
         let mut statement = conn
-            .prepare("SELECT unit IS NOT NULL FROM session_item WHERE session_pk = ?1 ORDER BY seq")
+            .prepare(
+                "SELECT unit IS NOT NULL FROM transcript_line WHERE session_pk = ?1 ORDER BY seq",
+            )
             .unwrap();
         statement
             .query_map([index.session_pk], |row| row.get::<_, bool>(0))
@@ -63,6 +65,15 @@ pub(super) fn assert_matches_rows(w: &TestArchive, session: &str) {
         running.add(entry, *class);
     }
     assert_eq!(total, running, "session {session}");
+}
+
+/// What the transcript line runs of `work` read and wrote: event rows,
+/// units placed, messages made from their blocks, lines written.
+fn lines_counted<T>(work: impl FnOnce() -> T) -> (T, [u64; 4]) {
+    let before = crate::summary::lines::counted::now();
+    let out = work();
+    let after = crate::summary::lines::counted::now();
+    (out, [0, 1, 2, 3].map(|n| after[n] - before[n]))
 }
 
 fn message(id: &str, role: Role, text: &str) -> Message {
@@ -260,7 +271,7 @@ fn identical_lower_priority_messages_leave_items_unchanged() {
         Some(&SOURCE_RECORD),
     )
     .unwrap();
-    let report = w.writer.flush().unwrap();
+    let (report, counted) = lines_counted(|| w.writer.flush().unwrap());
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     let claims: i64 = conn
         .query_row("SELECT count(*) FROM message_parse", [], |r| r.get(0))
@@ -272,9 +283,9 @@ fn identical_lower_priority_messages_leave_items_unchanged() {
         .query_row("SELECT n FROM test_message_updates", [], |r| r.get(0))
         .unwrap();
     assert_eq!(
-        (updates, report.item_units_read),
-        (0, 0),
-        "unchanged displayed message updates and session item reads"
+        (updates, counted[2], counted[3]),
+        (0, 0, 0),
+        "unchanged displayed message updates, message bodies read and lines written"
     );
 }
 
@@ -298,7 +309,7 @@ fn a_new_citation_chain_does_not_reread_unchanged_message_items() {
     let mut rewrite = batch("main", Route::Live, 0, messages, &[]);
     rewrite.change = Change::Rewritten;
     w.store_reading(rewrite, Some(&[b'x'; 100])).unwrap();
-    let report = w.writer.flush().unwrap();
+    let (report, counted) = lines_counted(|| w.writer.flush().unwrap());
     assert!(report.errors.is_empty(), "{:?}", report.errors);
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     assert_eq!(
@@ -319,8 +330,9 @@ fn a_new_citation_chain_does_not_reread_unchanged_message_items() {
     assert_eq!(stored(&w, "s").entries, before);
     assert_matches_rows(&w, "s");
     assert_eq!(
-        report.item_units_read, 0,
-        "citation-only changes preserve the indexed message units"
+        (counted[2], counted[3]),
+        (0, 0),
+        "citation-only changes keep every message's lines"
     );
 }
 
@@ -430,8 +442,6 @@ fn removing_a_redundant_source_invalidates_derivations() {
             .unwrap(),
         0
     );
-    assert_eq!(report.item_units_read, 0);
-    assert_eq!(stored(&w, "s").entries, before);
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM summary_due WHERE from_order < X'FF'",
@@ -442,6 +452,9 @@ fn removing_a_redundant_source_invalidates_derivations() {
         1,
         "source membership remains an input to session derivations"
     );
+    let (entries, counted) = lines_counted(|| stored(&w, "s").entries);
+    assert_eq!(entries, before);
+    assert_eq!((counted[2], counted[3]), (0, 0), "{counted:?}");
 }
 
 #[test]
@@ -715,9 +728,11 @@ fn long_session_append_visits_only_suffix() {
         .events
         .push(hook_event(5_005, (115, 116)));
     w.store_reading(append, Some(&SOURCE_RECORD)).unwrap();
-    let report = w.writer.flush().unwrap();
-    // The last earlier message and its hook line, then the two new units.
-    assert_eq!(report.item_units_read, 4, "{report:?}");
+    let (report, counted) = lines_counted(|| w.writer.flush().unwrap());
+    assert!(report.errors.is_empty(), "{report:?}");
+    // The last earlier message and its hook line, then the two new units;
+    // only the new message is read from its blocks.
+    assert_eq!(counted[1..], [4, 1, 3], "{counted:?}");
     let after = stored(&w, "s");
     assert_eq!(after.rewrite_version, before.rewrite_version);
     assert_eq!(after.append_seq, before.append_seq + 1);
@@ -726,7 +741,7 @@ fn long_session_append_visits_only_suffix() {
 }
 
 #[test]
-fn settling_an_old_call_does_not_revisit_its_session_items() {
+fn settling_an_old_call_rewrites_none_of_its_session_lines() {
     for history in [64, 768u64] {
         let w = test_archive();
         let mut call = text_message("early-call", "s", Role::Assistant, "", None);
@@ -774,9 +789,12 @@ fn settling_an_old_call_does_not_revisit_its_session_items() {
         let mut append = batch("i1", Route::Live, 100, vec![row(110, next)], &["s"]);
         append.parse[0].output.background.push(settled.clone());
         w.store_reading(append, Some(&SOURCE_RECORD)).unwrap();
-        let report = w.writer.flush().unwrap();
+        let (report, counted) = lines_counted(|| w.writer.flush().unwrap());
         assert!(report.errors.is_empty(), "{report:?}");
-        assert_eq!(report.item_units_read, 2, "{history}: {report:?}");
+        // The settled call's message is reached, so the session's rows from
+        // it are placed again; only the new message is read from its
+        // blocks, and only its two lines are written.
+        assert_eq!(counted[2..], [1, 2], "{history}: {counted:?}");
         let after = stored(&w, "s");
         assert_eq!(after.entries[..before.entries.len()], before.entries[..]);
         assert_eq!(after.append_seq, before.append_seq + 1);
@@ -804,9 +822,9 @@ fn settling_an_old_call_does_not_revisit_its_session_items() {
         let mut edit = batch("i1", Route::Live, 200, vec![row(0, call)], &["s"]);
         edit.parse[0].output.background.push(settled);
         w.store_reading(edit, Some(&SOURCE_RECORD)).unwrap();
-        let report = w.writer.flush().unwrap();
+        let (report, counted) = lines_counted(|| w.writer.flush().unwrap());
         assert!(report.errors.is_empty(), "{report:?}");
-        assert_eq!(report.item_units_read, history + 2, "{report:?}");
+        assert_eq!(counted[1..3], [history + 2, 1], "{counted:?}");
         assert!(stored(&w, "s").rewrite_version > after.rewrite_version);
         assert_matches_rows(&w, "s");
     }
@@ -832,107 +850,10 @@ fn a_late_hook_line_is_placed_by_its_time_from_the_suffix() {
     let mut late = batch("i2", Route::Live, 0, Vec::new(), &["s"]);
     late.parse[0].output.events.push(hook_event(1_155, (1, 2)));
     w.store_reading(late, Some(&SOURCE_RECORD)).unwrap();
-    let report = w.writer.flush().unwrap();
-    assert!(report.item_units_read < 10, "{report:?}");
+    let (report, counted) = lines_counted(|| w.writer.flush().unwrap());
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(counted[1] < 10, "{counted:?}");
     assert_matches_rows(&w, "s");
-}
-
-/// A failed item refresh must reject the rows, even when the old index exists.
-#[test]
-fn indexing_errors_abort_the_changed_rows_transaction() {
-    for invalid_json in [false, true] {
-        let w = test_archive();
-        w.store_reading(
-            batch(
-                "i1",
-                Route::Live,
-                0,
-                vec![row(10, message("a", Role::User, "original"))],
-                &["s"],
-            ),
-            Some(&SOURCE_RECORD),
-        )
-        .unwrap();
-        w.writer.flush().unwrap();
-        let before = stored(&w, "s");
-        let mut conn =
-            crate::archive::open_write(&w.archive.index_db(), crate::archive::cache::SETUP)
-                .unwrap();
-        {
-            let tx = conn.transaction().unwrap();
-            let counter = bump_counter(&tx).unwrap();
-            tx.execute(
-                "UPDATE session SET changed = ?1 WHERE pk = ?2",
-                params![counter, before.session_pk],
-            )
-            .unwrap();
-            let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-            let messages: Vec<i64> = tx
-                .prepare("SELECT pk FROM message WHERE session_pk = ?1")
-                .unwrap()
-                .query_map([before.session_pk], |row| row.get(0))
-                .unwrap()
-                .collect::<rusqlite::Result<_>>()
-                .unwrap();
-            for pk in messages {
-                changes.message(&tx, pk).unwrap();
-            }
-            tx.execute("UPDATE message SET on_active_path = 0", [])
-                .unwrap();
-            if invalid_json {
-                let body = serde_json::to_vec(&serde_json::json!({"type":"not-a-block"})).unwrap();
-                let blocks: Vec<i64> = tx
-                    .prepare("SELECT pk FROM block")
-                    .unwrap()
-                    .query_map([], |r| r.get(0))
-                    .unwrap()
-                    .collect::<rusqlite::Result<_>>()
-                    .unwrap();
-                for block in blocks {
-                    crate::content::rewrite_piece(&tx, "block", block, Some(&body), None).unwrap();
-                }
-            } else {
-                tx.execute("UPDATE block SET idx = -1, ordinal = NULL", [])
-                    .unwrap();
-            }
-            // The independent row reader still diagnoses malformed bodies and
-            // ordinals. Item maintenance refuses an unprepared content change
-            // rather than reconstructing that content inside the writer.
-            let error = crate::items::computed_entries(&tx, before.session_pk)
-                .expect_err("malformed natural rows must not become readable items");
-            if invalid_json {
-                assert!(
-                    matches!(
-                        error,
-                        crate::StoreError::Invalid(_) | crate::StoreError::Json(_)
-                    ),
-                    "{error}"
-                );
-            } else {
-                assert!(
-                    matches!(
-                        error,
-                        crate::StoreError::StoredValue {
-                            column: Some(1),
-                            ..
-                        }
-                    ),
-                    "{error}"
-                );
-            }
-            let error = crate::items::refresh(&tx, &changes)
-                .expect_err("a transaction cannot commit unprepared content changes");
-            assert!(
-                matches!(&error, crate::StoreError::Internal(reason)
-                if reason == "changed message items were not prepared"),
-                "{error}"
-            );
-            // Dropping the same transaction production callers own rolls all
-            // changed rows back together with any attempted index updates.
-        }
-        assert_eq!(stored(&w, "s"), before);
-        assert_matches_rows(&w, "s");
-    }
 }
 
 #[test]
@@ -1022,13 +943,13 @@ fn reply_batches_keep_changed_and_unchanged_parent_branch_points_current() {
 }
 
 /// An append reads from the event table only the events it reaches. Events
-/// placed after the last message (timed later than it, or with no time and no
-/// message) are stored history the append does not change; their number
-/// changes what the refresh moves in the item index, not what it reads from
-/// the event table.
+/// placed before the appended message (after the message they follow, or
+/// by their time) are stored history the append does not change; their
+/// number changes neither what the line run reads from the event table nor
+/// what it writes.
 #[test]
 fn an_append_reads_no_event_rows_of_stored_history() {
-    let mut reads = Vec::new();
+    let mut counts = Vec::new();
     for history in [8u64, 256] {
         let w = test_archive();
         let rows = (0..20u64)
@@ -1043,15 +964,15 @@ fn an_append_reads_no_event_rows_of_stored_history() {
             Some(&SOURCE_RECORD),
         )
         .unwrap();
-        // Side records of the session from another input: half with no time
-        // and no message, half timed after every message.
+        // Side records of the session from another input, before the
+        // append: half timed between the messages, half following one.
         let mut side = batch("i2", Route::Live, 0, Vec::new(), &["s"]);
         for n in 0..history {
-            let mut event = hook_event(900_000 + n as i64, (n % 99, n % 99 + 1));
+            let mut event = hook_event(1_001 + (n % 190) as i64, (n % 99, n % 99 + 1));
             event.data = serde_json::json!({"number": n});
             if n % 2 == 0 {
-                event.at = None;
                 event.kind = "file_snapshot".into();
+                event.after = Some(MessageId::parse(&format!("claude-code:m{}", n % 19)).unwrap());
             }
             side.parse[0].output.events.push(event);
         }
@@ -1067,18 +988,19 @@ fn an_append_reads_no_event_rows_of_stored_history() {
             .output
             .events
             .push(hook_event(5_005, (115, 116)));
-        let read_before = crate::items::event_rows_read();
         w.store_reading(append, Some(&SOURCE_RECORD)).unwrap();
-        let report = w.writer.flush().unwrap();
+        let (report, counted) = lines_counted(|| w.writer.flush().unwrap());
         assert!(report.errors.is_empty(), "{report:?}");
-        reads.push(crate::items::event_rows_read() - read_before);
+        counts.push([counted[0], counted[2], counted[3]]);
 
         let after = stored(&w, "s");
         assert_eq!(after.entries.len(), before.entries.len() + 3);
+        assert_eq!(after.entries[..before.entries.len()], before.entries[..]);
         assert_matches_rows(&w, "s");
     }
     assert_eq!(
-        reads[0], reads[1],
-        "event rows read by one append, with 8 and with 256 events of stored history"
+        counts[0], counts[1],
+        "event rows read, message bodies read and lines written by one append, \
+         with 8 and with 256 events of stored history"
     );
 }

@@ -1,9 +1,8 @@
 //! A build's sessions composed on several threads (docs/architecture.md,
 //! one path). The stream's reader groups whole sessions into batches; each
 //! composer composes a batch with the composition upkeep uses, into an
-//! index of its own held in memory, together with what follows from the
-//! shown rows (the item index, counts, values, live facts), and hands the
-//! batch's rows back with keys that count from one. The writer only appends
+//! index of its own held in memory (the sessions' summaries are computed
+//! once the build is installed), and hands the batch's rows back with keys that count from one. The writer only appends
 //! them, in stream order, adding to each key the keys its table already
 //! gave, and the composer's index is rolled back for the next batch.
 use super::super::shown::{Composer, Context};
@@ -51,8 +50,6 @@ pub(super) struct Shared {
     pub inputs: HashMap<String, (i64, Option<i64>)>,
     pub aliases: Arc<super::super::identity::Aliases>,
     pub shared_events: Arc<HashSet<String>>,
-    /// Messages a session's event follows that another session shows.
-    pub elsewhere: Arc<HashSet<String>>,
     /// The build file, whose content groups composition reads.
     pub build: std::path::PathBuf,
     pub counter: i64,
@@ -67,7 +64,6 @@ impl Shared {
         index: &Connection,
         aliases: Arc<super::super::identity::Aliases>,
         shared_events: Arc<HashSet<String>>,
-        elsewhere: Arc<HashSet<String>>,
         counter: i64,
     ) -> Result<Self> {
         let build = index
@@ -99,7 +95,6 @@ impl Shared {
             inputs,
             aliases,
             shared_events,
-            elsewhere,
             build,
             counter,
             links,
@@ -314,7 +309,7 @@ impl Composing {
                 copy.execute(rusqlite::params![group, hash, body])?;
             }
         }
-        let changes = ChangeSummary::start_sessions_alone(&tx, Arc::clone(&shared.elsewhere))?;
+        let changes = ChangeSummary::start(&tx)?;
         let context = Context {
             tx: &tx,
             counter: shared.counter,

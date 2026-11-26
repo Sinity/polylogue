@@ -460,6 +460,9 @@ generated page of the thing they belong to, or on the area page that owns them.
   sessions marked due.
 - **fold**: a session summary computed over the session's rows in order,
   resumed from a state stored after an earlier row.
+- **transcript line**: one layout item a transcript of a session can show
+  (a message header, a block, an in-place event), with its token estimates
+  and the counts before it; a session summary pages read from.
 - **validity kind**: how a derivation's validity is shown: `exact`,
   `parameterized`, `extracted` or `judged`.
 - **measure**: a computation a pipeline cannot express, named after `| measure`

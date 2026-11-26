@@ -83,16 +83,11 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<String
     Ok(changed)
 }
 
-pub(super) fn apply(
-    tx: &Transaction<'_>,
-    marks: &[(i64, Option<String>)],
-    changes: &crate::change_summary::ChangeSummary,
-) -> Result<()> {
+pub(super) fn apply(tx: &Transaction<'_>, marks: &[(i64, Option<String>)]) -> Result<()> {
     let mut mark = tx.prepare_cached(
         "UPDATE message SET duplicate_of = ?2, duplicate_reason = ?3 WHERE pk = ?1",
     )?;
     for (pk, of) in marks {
-        changes.message_metadata(tx, *pk)?;
         mark.execute(params![pk, of, of.as_ref().map(|_| REASON)])?;
     }
     Ok(())

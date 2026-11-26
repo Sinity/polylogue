@@ -288,7 +288,7 @@ impl StoreError {
     }
 
     /// Stored data this build cannot read back that no one column holds:
-    /// extents, item indexes, stored sums.
+    /// extents, transcript lines, stored sums.
     pub fn stored_data(reason: impl ToString) -> Self {
         Self::StoredValue {
             column: None,

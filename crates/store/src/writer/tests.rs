@@ -58,7 +58,7 @@ fn write_test_rows(
         },
         &mut touched,
     )?;
-    let (written, _) = rows::finish(tx, touched, &changes, counter)?;
+    let written = rows::finish(tx, touched, &changes, counter)?;
     Ok(written)
 }
 

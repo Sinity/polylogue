@@ -278,13 +278,6 @@ proptest! {
         }
     }
 
-    /// A message's entries cross a build's composition stream as one record.
-    #[test]
-    fn a_message_record_round_trips(entries in message_entries()) {
-        let record = encode_message(&entries).unwrap();
-        prop_assert_eq!(decode_message(&record, &message_id()).unwrap(), entries.clone());
-        prop_assert!(decode_message(&record[..record.len() - 1], &message_id()).is_err());
-    }
 }
 
 #[test]

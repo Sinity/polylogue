@@ -884,7 +884,7 @@ fn threads_show_their_work_progress_and_long_statements() {
             seconds_since_progress: Some(3500.),
             statements: vec![Statement {
                 connection: "writer".into(),
-                sql: "UPDATE session_item SET shown = 1".into(),
+                sql: "UPDATE transcript_line SET class = 1".into(),
                 seconds: 3500.,
             }],
         },
@@ -903,7 +903,7 @@ fn threads_show_their_work_progress_and_long_statements() {
             "             running 5s on the reader connection: SELECT 1",
             "           search-fill  reading texts for the search index  40s · no progress for 30s",
             "           writer  building the index › indexing sessions  1h2m · stalled, no progress for 58m",
-            "             running 58m on the writer connection: UPDATE session_item SET shown = 1",
+            "             running 58m on the writer connection: UPDATE transcript_line SET class = 1",
         ]
     );
 }
