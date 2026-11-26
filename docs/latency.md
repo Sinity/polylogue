@@ -47,7 +47,7 @@ Because one daemon assembly answers every transport, the same line gives identic
 
 ## Warm state
 
-The daemon keeps derived state warm so the classes hold. Each item is keyed by what it depends on, so no reply from before a write is served after it; none is a second archive, and each is rebuilt from the archive after a restart (`status` says `warming` until they are built). An LRU may evict items; it never limits replies.
+The daemon keeps derived state warm so the classes hold. Each item is keyed by what it depends on, so no reply from before a write is served after it; none is a second archive, and each is rebuilt from the archive after a restart: until the status snapshot is read, `status` answers that its figures are not read yet, and `warm.scope_index_loaded` says whether the scope index is built ([operations.md#status](operations.md#status)). An LRU may evict items; it never limits replies.
 
 | Warm item | Serves | Keyed by | Refreshed |
 |---|---|---|---|

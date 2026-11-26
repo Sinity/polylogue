@@ -460,7 +460,7 @@ fn vector_write_appends_without_reload() {
     assert_eq!(similarity.of(&[1]), similarity.of(&[2]));
     agree((*current).clone(), 9);
     assert_eq!(
-        warm.summary().vector_loads,
+        warm.summary(false).vector_loads,
         1,
         "every later revision extended the held vectors"
     );
@@ -510,7 +510,7 @@ fn one_provider_call_per_query_text_in_flight() {
         let (peer, _) = listener.accept().unwrap();
         let until = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let waiting = d.warm.summary().query_vectors_reused as usize;
+            let waiting = d.warm.summary(false).query_vectors_reused as usize;
             if waiting == readers - 1 {
                 break;
             }
@@ -771,8 +771,8 @@ fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
         }
         store.restore(&batch).unwrap();
     }
-    assert!(warm.summary().vectors.is_none());
-    assert_eq!(warm.summary().vector_loads, 0);
+    assert!(warm.summary(false).vectors.is_none());
+    assert_eq!(warm.summary(false).vector_loads, 0);
     let reads = polylogue_store::ReadPool::open(&archive).unwrap();
     let reader = reads.reader().unwrap();
     let loaded = warm
@@ -783,7 +783,7 @@ fn restore_without_vector_demand_never_starts_a_model_reload_per_commit() {
         (7, 7),
         "one initial demand reads only the final rows"
     );
-    assert_eq!(warm.summary().vector_loads, 1);
+    assert_eq!(warm.summary(false).vector_loads, 1);
     let revision = loaded.revision;
     drop(reader);
     store.restore(&[restored_vector(1, 600, [1., 0.])]).unwrap();

@@ -66,6 +66,7 @@ fn header_markup(header: &ReadHeader) -> Markup {
 /// checked. Images become links so an export never fetches archive text URLs.
 fn markdown(text: &str) -> Markup {
     use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd};
+    let text = &crate::terminal::escape(text);
     let events = Parser::new_ext(
         text,
         Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS,

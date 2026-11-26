@@ -27,8 +27,14 @@ fn each_stage_is_fitted_as_fixed_seconds_plus_seconds_per_mb() {
 #[test]
 fn one_sample_size_is_not_a_fit() {
     let one = [point(1000.0, 1.0, &[]), point(1000.0, 2.0, &[])];
-    assert!(fit(&one, 5000.0).is_err());
-    assert!(fit(&[], 5000.0).is_err());
+    assert_eq!(
+        fit(&one, 5000.0).unwrap_err(),
+        "a fit needs runs of one build at two or more sample sizes"
+    );
+    assert_eq!(
+        fit(&[], 5000.0).unwrap_err(),
+        "a fit needs runs of one build at two or more sample sizes"
+    );
 }
 
 #[test]
@@ -47,7 +53,10 @@ fn a_full_run_is_compared_stage_by_stage() {
     assert_eq!(report["seconds"]["relative_error"], -0.2);
     assert_eq!(report["stages"]["rows"]["estimated"], 200.0);
     assert_eq!(report["stages"]["rows"]["actual"], 160.0);
-    assert!(comparison(&estimate, &json!({})).is_err());
+    assert_eq!(
+        comparison(&estimate, &json!({})).unwrap_err(),
+        "the supplied run has no valid seconds value"
+    );
 }
 
 #[test]
@@ -85,10 +94,9 @@ fn a_negative_stage_prediction_refuses_an_otherwise_positive_wall_estimate() {
         point(3000.0, 310.0, &[("derive", 10.0)]),
     ];
     let error = fit(&points, 10000.0).unwrap_err();
-    assert!(error.contains("derive"), "{error}");
-    assert!(
-        error.contains("do not support a corpus estimate"),
-        "{error}"
+    assert_eq!(
+        error,
+        "the sampled derive times predict a negative or non-finite duration; these runs do not support a corpus estimate"
     );
 }
 
@@ -96,13 +104,20 @@ fn a_negative_stage_prediction_refuses_an_otherwise_positive_wall_estimate() {
 fn a_negative_wall_prediction_is_refused_without_clamping_it() {
     let points = [point(1000.0, 100.0, &[]), point(3000.0, 50.0, &[])];
     let error = fit(&points, 10000.0).unwrap_err();
-    assert!(error.contains("wall time"), "{error}");
+    assert_eq!(
+        error,
+        "the sampled wall time times predict a negative or non-finite duration; these runs do not support a corpus estimate"
+    );
 }
 
 #[test]
 fn an_unknown_or_non_finite_corpus_size_is_not_estimated() {
     let points = [point(1000.0, 100.0, &[]), point(3000.0, 300.0, &[])];
     for input in [0.0, -1.0, f64::INFINITY, f64::NAN] {
-        assert!(fit(&points, input).is_err());
+        assert_eq!(
+            fit(&points, input).unwrap_err(),
+            "the corpus input size must be positive and finite",
+            "input: {input}"
+        );
     }
 }
