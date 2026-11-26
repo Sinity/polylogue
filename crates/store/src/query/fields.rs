@@ -108,7 +108,19 @@ pub(crate) struct StoredTime {
     pub cache: String,
     pub bytes: String,
     pub storage: TimeStorage,
+    /// A condition that holds for every row whose time may be other than a
+    /// plain instant, read from an index. A row it does not hold for is an
+    /// instant, so a bound its `cache` misses it cannot meet, and its stored
+    /// time is not read. `None`: every row's stored time is read to learn
+    /// whether it is an instant.
+    pub periods: Option<String>,
 }
+
+/// The messages whose time is not a plain instant, as the `message_period`
+/// index holds them: the statement names the index, so its condition must
+/// stay the index's own.
+const MESSAGE_PERIODS: &str = "message INDEXED BY message_period \
+     WHERE at IS NOT NULL AND json_extract(at_time,'$[1].precision') IS NOT 'instant'";
 impl StoredTime {
     fn attribute(&self, attribute: TimeAttribute) -> String {
         format!(
@@ -120,27 +132,59 @@ impl StoredTime {
     }
 }
 pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<StoredTime> {
-    let (cache, bytes, storage) = match (unit, field) {
-        (Messages | Blocks, "at") => ("{m}.at", "{m}.at_time", TimeStorage::Tuple),
-        (ToolCalls, "at") => ("{m}.at", "{m}.at_time", TimeStorage::Tuple),
-        (Sessions, "started") => ("{s}.started_at", "{s}.started_time", TimeStorage::Tuple),
+    let message_periods = || format!("{{m}}.pk IN (SELECT pk FROM {MESSAGE_PERIODS})");
+    let session_periods = || format!("{{s}}.pk IN (SELECT session_pk FROM {MESSAGE_PERIODS})");
+    let (cache, bytes, storage, periods) = match (unit, field) {
+        (Messages | Blocks | ToolCalls, "at") => (
+            "{m}.at",
+            "{m}.at_time".to_owned(),
+            TimeStorage::Tuple,
+            Some(message_periods()),
+        ),
+        (Sessions, "started") => (
+            "{s}.started_at",
+            "{s}.started_time".to_owned(),
+            TimeStorage::Tuple,
+            None,
+        ),
+        // The latest of the session's message times. With only instants
+        // that is the latest of the messages in their greatest millisecond,
+        // found by two index seeks; a session holding a period reads all
+        // its messages, since a period that starts earlier can end later.
         (Sessions, "last_active") => (
             "{s}.last_activity_at",
-            "(SELECT pl_time_latest({s}_activity.at_time) FROM message {s}_activity WHERE {s}_activity.session_pk={s}.pk AND {s}_activity.at IS NOT NULL)",
+            format!(
+                "(CASE WHEN {} \
+                  THEN (SELECT pl_time_latest({{s}}_activity.at_time) FROM message {{s}}_activity \
+                        WHERE {{s}}_activity.session_pk={{s}}.pk AND {{s}}_activity.at IS NOT NULL) \
+                  ELSE (SELECT pl_time_latest({{s}}_activity.at_time) FROM message {{s}}_activity \
+                        WHERE {{s}}_activity.session_pk={{s}}.pk \
+                          AND {{s}}_activity.at=(SELECT max({{s}}_latest.at) FROM message {{s}}_latest \
+                                                 WHERE {{s}}_latest.session_pk={{s}}.pk)) END)",
+                session_periods()
+            ),
             TimeStorage::Latest,
+            Some(session_periods()),
         ),
-        (Events, "at") => ("{r}.at", crate::content::BODY_BYTES_SQL, TimeStorage::Event),
+        (Events, "at") => (
+            "{r}.at",
+            crate::content::BODY_BYTES_SQL.to_owned(),
+            TimeStorage::Event,
+            None,
+        ),
         (Documents, "source_time") => (
             "{r}.source_time",
-            "(SELECT {r}_time.time FROM document_parse {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)",
+            "(SELECT {r}_time.time FROM document_parse {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)".to_owned(),
             TimeStorage::Tuple,
+            None,
         ),
         _ => return None,
     };
     Some(StoredTime {
         cache: a.expand(cache),
-        bytes: a.expand(bytes),
+        bytes: a.expand(&bytes),
         storage,
+        periods: periods.map(|periods| a.expand(&periods)),
     })
 }
 pub(crate) fn time_window(unit: Unit, since: bool, a: &Aliases) -> Option<StoredTime> {

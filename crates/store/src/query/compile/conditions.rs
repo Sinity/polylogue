@@ -623,14 +623,20 @@ impl<'a> Compiler<'a> {
             stored.storage.as_str()
         );
         if broad == "1" {
-            exact
-        } else {
-            format!(
-                "(({broad} OR NOT pl_time_is_instant({}, '{}')) AND {exact})",
+            return exact;
+        }
+        // A period can meet a bound its cached start misses, so the rows
+        // that may hold one are tested whatever their cache says. Where the
+        // field names them (`periods`), no other row's stored time is read.
+        let may_be_period = match &stored.periods {
+            Some(periods) => periods.clone(),
+            None => format!(
+                "NOT pl_time_is_instant({}, '{}')",
                 stored.bytes,
                 stored.storage.as_str()
-            )
-        }
+            ),
+        };
+        format!("(({broad} OR {may_be_period}) AND {exact})")
     }
 
     fn time_condition(
