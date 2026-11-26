@@ -151,7 +151,8 @@ the checkout's own host target and seeds its dependency artifacts through
 with `-p <package>` and a target flag; the suite runs in the hosted check,
 and a local `check` only reproduces a failure the hosted check reported.
 `fast` and `compile` share the one-slot `compile` queue; `focused` runs in
-the `normal` queue beside them, and full checks and Nix checks in `bulk`. `measure` is the one operation for
+the `normal` queue beside them, and full checks and Nix checks in `bulk`.
+`measure` is the one operation for
 benchmarks, archive rebuilds and measurement drivers: it runs one at a time,
 waits until 10 GiB of memory is free rather than starting a run its memory
 limit would end, runs at low CPU and I/O priority, and never sees the paid
@@ -221,17 +222,18 @@ changed since the tested base. A package is a directory with a `Cargo.toml`;
 another path counts as its top-level directory; the root manifest,
 `Cargo.lock`, `rust-toolchain.toml`, the flake, `.cargo/`, `.config/` and
 `.github/` count as every package; Markdown counts as none. When the two sets
-meet, or the run recorded no tested base, it merges master into the branch
+meet, or the run recorded no tested base and the pull request changes more
+than Markdown, it merges master into the branch
 with GitHub's update-branch, waits for the check on the new head and compares
 again; a conflict stops it. Otherwise it squash-merges with
 `--match-head-commit` and prints the head, tested base, master's tip, both
 package sets and the runs it waited for. A failed check stops it with the
 failing jobs' names; it never reruns one. `--dry-run` prints the decision and
 exits 0 only when the pull request would merge now. Master can still move in
-the second or two between the last comparison and the merge. A change that
-breaks a package neither side changed (a new caller of an API the other side
-removed) is not caught by this comparison; the master run after the merge
-finds it.
+the second or two between the last comparison and the merge. The comparison
+does not see a break across packages, such as a new caller in one crate of
+an API master removed from another; master's own run after the merge finds
+it.
 
 ## Published package
 
