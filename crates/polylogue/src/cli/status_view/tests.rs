@@ -1209,6 +1209,7 @@ SOURCES    walked 14:04:00 on host
            codex /home/op/.codex · present · 21 collected · 3 unrecognized
            /home/op/.claude · absent
            /home/op/.gemini · incomplete, 1 path unreadable · 1 ignored
-             ignored: 1 symbolic link is not followed"
+             ignored: 1 symbolic link is not followed
+"
     );
 }
