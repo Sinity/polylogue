@@ -858,4 +858,5 @@ fn signal_events(conn: &Connection) -> Result<(u64, u64), Error> {
 }
 
 #[cfg(test)]
+#[path = "stored_keys/tests.rs"]
 mod tests;

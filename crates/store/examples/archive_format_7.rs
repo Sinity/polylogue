@@ -58,6 +58,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+#[path = "archive_format_7/stored_keys.rs"]
 mod stored_keys;
 
 type Error = Box<dyn std::error::Error>;
