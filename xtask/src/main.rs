@@ -271,8 +271,11 @@ fn run(command: &str, args: &[String], steps: impl FnOnce(&mut Run) -> devkit::R
 }
 
 /// The sccache server the development shell routes compilations through,
-/// when it does: its counters are zeroed when a run starts and reported when
-/// it ends, so a run says how much of its compiling the cache answered.
+/// when it does. A run starts its own server, which outlives pauses between
+/// compilations, zeroes its counters, and at the end reports how much of the
+/// run's compiling the cache answered and stops it. The server's start
+/// creates a socket in its temporary directory, so it gets the short runtime
+/// directory; the compilations keep the run's.
 struct CompilerCache;
 
 impl CompilerCache {
@@ -281,21 +284,41 @@ impl CompilerCache {
         if !wrapper.to_string_lossy().contains("sccache") {
             return None;
         }
-        let zeroed = std::process::Command::new("sccache")
-            .arg("--zero-stats")
-            .stdout(std::process::Stdio::null())
-            .status();
+        let sccache = |args: &[&str]| {
+            let mut command = std::process::Command::new("sccache");
+            command
+                .args(args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            command
+        };
+        // The server `cargo xtask` itself started stops after 10 idle
+        // seconds; replace it with one that waits through the test run.
+        let _ = sccache(&["--stop-server"]).status();
+        let mut start = sccache(&["--start-server"]);
+        start.env("SCCACHE_IDLE_TIMEOUT", "0");
+        if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR") {
+            start.env("TMPDIR", runtime);
+        }
+        let _ = start.status();
+        let zeroed = sccache(&["--zero-stats"]).status();
         zeroed.is_ok_and(|status| status.success()).then_some(Self)
     }
 
     fn report(self) {
-        let Ok(output) = std::process::Command::new("sccache")
+        let output = std::process::Command::new("sccache")
             .args(["--show-stats", "--stats-format", "json"])
-            .output()
+            .output();
+        let _ = std::process::Command::new("sccache")
+            .arg("--stop-server")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        let Some(stats) = output
+            .ok()
+            .and_then(|output| serde_json::from_slice::<serde_json::Value>(&output.stdout).ok())
         else {
-            return;
-        };
-        let Ok(stats) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
             return;
         };
         let stats = &stats["stats"];

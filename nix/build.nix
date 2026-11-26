@@ -213,17 +213,18 @@ in
         fi
       fi
       # Where the host names a compiler cache, compilations go through
-      # sccache. Each checkout's shell starts its own server on a socket under
-      # the runtime directory (starting one under a long TMPDIR fails); a
-      # server that stops with the job that started it costs the next
+      # sccache, with one server per checkout on a socket under the runtime
+      # directory. A job lasts until its last process exits, so a server
+      # started by a compilation stops 10 s after its last one; xtask starts
+      # and stops its own around a run. A server that is gone costs the next
       # compilation a cache lookup, not a failure.
       if [ -n "''${SCCACHE_DIR:-}" ] && [ -z "''${RUSTC_WRAPPER:-}" ] && [ -n "''${XDG_RUNTIME_DIR:-}" ]; then
         export RUSTC_WRAPPER=${sccacheRustc}
         export SCCACHE_IGNORE_SERVER_IO_ERROR=1
+        export SCCACHE_IDLE_TIMEOUT=10
         export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-40G}"
         SCCACHE_SERVER_UDS="$XDG_RUNTIME_DIR/sccache-$(printf %s "$PWD" | sha256sum | cut -c1-16).sock"
         export SCCACHE_SERVER_UDS
-        TMPDIR="$XDG_RUNTIME_DIR" ${pkgs.sccache}/bin/sccache --start-server >/dev/null 2>&1 || true
       fi
     ''
     + installGitHooks;
