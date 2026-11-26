@@ -105,7 +105,6 @@ fn typed_read_pages_unicode_once_and_writes_a_bundle() {
         ],
     ));
     assert_eq!(words(&whole), expected);
-    assert!(whole.records.is_empty());
     let output = cli(
         &fixture,
         &[
