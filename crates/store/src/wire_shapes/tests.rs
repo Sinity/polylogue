@@ -366,6 +366,69 @@ fn reset_replaces_counts_keeping_complete_presence() {
     store(&mut conn, source(1, 1, 20, 3), &later);
     assert_eq!(read(&conn, Scope::current(None)).unwrap(), report);
 }
+/// A file tailed to each end it had, then read again from its first byte in
+/// ranges that end elsewhere, starts its observations again with its rows:
+/// the row writer takes the chain's parse position back to the first range's
+/// end, so the reading's position goes back with it and the range that
+/// passes the earlier end continues the reading.
+#[test]
+fn a_chain_read_again_from_its_start_in_other_ranges_starts_its_observations_again() {
+    let mut conn = database();
+    let seen = |path| vec![root(), shape(path, "string", &["string"])];
+    store(
+        &mut conn,
+        source(1, 1, 30, 1),
+        &step("v1", 0..30, true, seen("/first")),
+    );
+    store(
+        &mut conn,
+        source(1, 1, 50, 2),
+        &step("v1", 30..50, true, seen("/second")),
+    );
+    store(
+        &mut conn,
+        source(1, 1, 50, 3),
+        &step("v1", 0..40, false, seen("/first")),
+    );
+    store(
+        &mut conn,
+        source(1, 1, 70, 4),
+        &step("v1", 40..70, true, seen("/second")),
+    );
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(report.coverage[0].parsed_bytes, 70);
+    assert_eq!(report.coverage[0].status(), CoverageStatus::Complete);
+    assert_eq!(at(&report, "").types["object"].count, 2);
+    assert_eq!(at(&report, "/first").types["string"].count, 1);
+    assert_eq!(at(&report, "/second").types["string"].count, 1);
+    // Where each path was first seen stays through the restart.
+    assert_eq!(at(&report, "/first").first.sequence, 1);
+}
+
+/// The row writer decides whether a step continues its chain's reading; the
+/// observations never refuse a step it took. Where they already reach past
+/// the step's start (an index whose observations were left ahead of its
+/// rows), the step is counted and the chain's coverage says its earlier part
+/// is not what these counts describe, as for a step that starts after them.
+#[test]
+fn a_step_that_starts_inside_what_was_observed_is_counted_with_partial_coverage() {
+    let mut conn = database();
+    let seen = |path| vec![root(), shape(path, "string", &["string"])];
+    store(
+        &mut conn,
+        source(1, 1, 50, 1),
+        &step("v1", 0..50, true, seen("/first")),
+    );
+    let mut later = step("v1", 40..70, true, seen("/second"));
+    later.reset = false;
+    store(&mut conn, source(1, 1, 70, 2), &later);
+    let report = read(&conn, Scope::current(None)).unwrap();
+    assert_eq!(report.coverage[0].parsed_bytes, 70);
+    assert_eq!(report.coverage[0].status(), CoverageStatus::Partial);
+    assert_eq!(at(&report, "/first").types["string"].count, 1);
+    assert_eq!(at(&report, "/second").types["string"].count, 1);
+}
+
 #[test]
 fn wire_shape_empty_eof_finishes_coverage_without_recounting() {
     let mut conn = database();

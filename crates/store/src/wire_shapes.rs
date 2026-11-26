@@ -406,8 +406,19 @@ fn apply_inner(
         .delivery
         .map_or(computed_hash, |delivery| delivery.body_hash.to_string());
     let previous = stored_reading(tx, source, &step.parse_version)?;
+    // The observations are of the reading's rows and follow them. A step
+    // from the chain's first byte that ends before the observations do
+    // starts the reading again: the row writer drops the chain's rows and
+    // takes its parse position back to this step's end, so the observations
+    // start again here too. Taken as seen already, they would stay ahead of
+    // the rows they describe.
+    let restarts = step.reset
+        && previous
+            .as_ref()
+            .is_some_and(|old| step.parsed_upto < old.parsed_upto);
     let duplicate = !replacement
         && !export_delivery
+        && !restarts
         && previous.as_ref().is_some_and(|old| {
             step.parsed_upto <= old.parsed_upto
                 && (step.parsed_upto < old.parsed_upto
@@ -416,21 +427,14 @@ fn apply_inner(
         });
     if let Some(old) = &previous
         && !export_delivery
+        && !replacement
+        && step.parsed_upto == old.last_end
+        && step.start == old.last_start
+        && hash != old.last_hash
     {
-        if !replacement
-            && step.parsed_upto == old.last_end
-            && step.start == old.last_start
-            && hash != old.last_hash
-        {
-            return Err(StoreError::internal(
-                "the same wire source range has different observations under one parse version",
-            ));
-        }
-        if !duplicate && !step.reset && step.start < old.parsed_upto {
-            return Err(StoreError::internal(
-                "wire step overlaps a committed source range",
-            ));
-        }
+        return Err(StoreError::internal(
+            "the same wire source range has different observations under one parse version",
+        ));
     }
     if duplicate {
         if let Some(mut old) = previous {
