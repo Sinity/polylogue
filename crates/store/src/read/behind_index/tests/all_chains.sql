@@ -19,7 +19,7 @@ inputs AS MATERIALIZED (
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
-                COALESCE(f.format, i.format),
+                COALESCE(f.format, i.origin),
                 COALESCE(f.path_bytes, o.path_bytes),
                 p.input_pk, p.chain, p.state, p.parser_version, p.parsed_to,
                 p.waiting, p.used, p.skipped, p.unreadable, p.resume IS NOT NULL, p.failure_kind, p.failure_detail

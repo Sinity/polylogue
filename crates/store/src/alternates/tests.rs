@@ -329,7 +329,7 @@ fn alternate_early_stop_precedes_later_body_decode() {
     });
     write_request(&mut conn, &request, 10);
     conn.execute(
-        "UPDATE alternate_part SET body=?1 WHERE alternate='early-stop' AND n=1",
+        "UPDATE alternate_part SET body=?1 WHERE alternate='early-stop' AND position=1",
         [vec![255u8]],
     )
     .unwrap();

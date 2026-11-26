@@ -315,7 +315,7 @@ fn verifying_changes_no_row() {
 #[test]
 fn a_counter_that_differs_from_its_rows_is_reported() {
     let stored = two_inputs();
-    stored.edit("UPDATE row_count SET n = n + 1 WHERE name = 'revision'");
+    stored.edit("UPDATE row_count SET count = count + 1 WHERE name = 'revision'");
     let found = stored.verify(None);
     assert_eq!(kinds(&found), [ProblemKind::RowCount]);
     assert_eq!(found.problems[0].subject, "revision");
