@@ -176,7 +176,7 @@ polylogue 'repo:sinex since:30d' read --to ~/out/sinex/ --format json
 
 This writes a bundle; `read --to FILE` writes one document. Annotations are written out the same way: `polylogue annotations read --to ~/out/notes`. Pages written out as a static site or a folder of Markdown files are [page-working-copy.md](page-working-copy.md#writing-pages-out).
 
-**The bundle** is a typed record stream, `polylogue-bundle` version 5:
+**The bundle** is a typed record stream, `polylogue-bundle` version 6:
 
 - the first record is the manifest: the query text and its `query:<hash>`, `ran_at`, the archive and index positions read, whether the index was up to date, counts, the reading options as the caller wrote them (view, show and hide words and the rest), enabled alternates, and the computed author;
 - then one record per physical session (its messages, blocks, events, links and attachment descriptors inline), per document, per input event, per annotation, kept result and delivery, and per alternate, in commit order;

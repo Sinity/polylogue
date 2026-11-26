@@ -147,7 +147,7 @@ fn changed_generation_refuses_content_continuation_and_replaces_change_populatio
         let (status, _, body) = send(&r, authed(get(&url)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         let frames = feed_frames(&body);
-        assert_eq!(frames[0]["generation_changed"], true);
+        assert_eq!(frames[0]["index_instance_changed"], true);
         assert_eq!(frames[0]["replacement"], true);
     });
 }

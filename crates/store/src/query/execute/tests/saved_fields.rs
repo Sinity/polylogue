@@ -1217,7 +1217,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
                         resolved_times: vec![],
                         random_seed: 7,
                         read_positions: BTreeMap::from([
-                            ("generation".into(), position.index_instance.clone()),
+                            ("index_instance".into(), position.index_instance.clone()),
                             ("index".into(), position.index.to_string()),
                             ("archive".into(), position.archive.to_string()),
                         ]),

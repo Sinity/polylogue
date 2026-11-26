@@ -85,8 +85,8 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
     }
     let fresh = run(&reader, ask("sessions", T0)).unwrap();
     assert_ne!(
-        fresh["read_position"]["generation"],
-        initial["read_position"]["generation"]
+        fresh["read_position"]["index_instance"],
+        initial["read_position"]["index_instance"]
     );
     let after = format!(
         "feed where after:{}",
@@ -139,8 +139,8 @@ fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
     let reader = pool.reader().unwrap();
     let changes = run(&reader, ask(&after, T0)).unwrap();
     assert_eq!(
-        changes["read_position"]["generation"],
-        initial["read_position"]["generation"]
+        changes["read_position"]["index_instance"],
+        initial["read_position"]["index_instance"]
     );
     assert!(
         changes["read_position"]["index"].as_i64().unwrap()

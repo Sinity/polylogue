@@ -85,7 +85,7 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
                         resolved_times: vec![],
                         random_seed: 7,
                         read_positions: BTreeMap::from([
-                            ("generation".into(), position.index_instance),
+                            ("index_instance".into(), position.index_instance),
                             ("index".into(), position.index.to_string()),
                             ("archive".into(), position.archive.to_string()),
                         ]),

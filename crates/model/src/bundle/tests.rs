@@ -385,10 +385,10 @@ fn hook_injection_keeps_message_and_imports_as_declared() {
 fn declared_blob_records_require_blob_transfer() {
     let mut value: Manifest = serde_json::from_str(
         r#"{
-        "format":"polylogue-bundle","version":5,
+        "format":"polylogue-bundle","version":6,
         "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
         "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
-        "read_position":{"generation":"synthetic","index":0,"archive":0},
+        "read_position":{"index_instance":"synthetic","index":0,"archive":0},
         "counts":{"sessions":0,"messages":0,"documents":0,"events":0,"links":0,
                   "authored":0,"annotations":0,"text_fragments":0,"alternates":0,"alternate_parts":0,"blobs":1},
         "flags":{"format":"jsonl","with_blobs":false,

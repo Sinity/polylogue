@@ -15,7 +15,7 @@ fn wire(lines: &[Value]) -> Vec<u8> {
 
 fn example() -> Vec<Value> {
     vec![
-        json!({"type":"begin","position":"g:1:1","generation":"g","replacement":false,"generation_changed":false}),
+        json!({"type":"begin","position":"g:1:1","index_instance":"g","replacement":false,"index_instance_changed":false}),
         json!({"type":"change","position":"g:1:1","component":"archive","change":{"kind":"note","ref":"a","seq":2}}),
         json!({"type":"change","position":"g:1:1","component":"archive","change":{"kind":"note","ref":"b","seq":2}}),
         json!({"type":"change","position":"g:1:1","component":"index","change":{"kind":"session","ref":"test:a","seq":2}}),

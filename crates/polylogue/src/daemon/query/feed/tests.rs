@@ -46,7 +46,7 @@ fn replacement_delivers_every_reference_and_policy_before_its_only_new_checkpoin
     fixture_counters(&fixture, 1, 3);
     let result = batch(&fixture, Some("old-generation:8:9"));
     assert_eq!(result[0]["type"], "begin");
-    assert_eq!(result[0]["generation_changed"], true);
+    assert_eq!(result[0]["index_instance_changed"], true);
     assert_eq!(result[0]["replacement"], true);
     assert_eq!(result.last().unwrap()["type"], "complete");
     assert_eq!(result.last().unwrap()["count"], 301);

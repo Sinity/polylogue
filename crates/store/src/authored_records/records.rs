@@ -80,7 +80,7 @@ fn delivery_events_from(
         let kind: String = row.get(0)?;
         events.push(DeliveryEvent {
             request: row.get(3)?,
-            what: serde_json::from_value(serde_json::Value::String(kind))?,
+            outcome: serde_json::from_value(serde_json::Value::String(kind))?,
             at: time(row.get(1)?)?,
             detail: row.get(2)?,
         });
