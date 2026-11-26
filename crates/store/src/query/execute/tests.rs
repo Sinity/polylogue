@@ -1,6 +1,7 @@
 use super::*;
 use crate::fixture::{CallFacts, Fixture, MessageFacts, SessionFacts};
 
+mod hidden_totals;
 mod lineage;
 mod saved_fields;
 mod search;

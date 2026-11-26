@@ -1606,16 +1606,25 @@ impl Reader<'_> {
         let parse_states = self.chain_census_at_position(contracts)?.by_status();
         let c = self.conn()?;
         let count = |sql: &str| -> Result<u64> { c.scalar::<u64>(sql, []) };
+        // A summed total is of the visible sessions, as the `messages` and
+        // `tool_calls` units list them: all, less the hidden few.
+        let hidden = crate::query::fields::hidden_session_ids();
+        let visible = |column: &str| -> Result<u64> {
+            count(&format!(
+                "SELECT (SELECT coalesce(sum({column}), 0) FROM main.session)
+                      - (SELECT coalesce(sum({column}), 0) FROM main.session WHERE id IN ({hidden}))"
+            ))
+        };
         let unused = self.unused_at_position()?;
         let (search_pending, search_pending_is_minimum) = search_pending(c, SEARCH_PENDING_BOUND)?;
         Ok(Status {
             // Sessions and documents are counted; messages and tool calls
-            // are summed from the sessions' count summaries, which follow
-            // the index by the summary worker.
+            // are summed from the visible sessions' count summaries, which
+            // follow the index by the summary worker.
             sessions: count("SELECT count(*) FROM main.session")?,
-            messages: count("SELECT coalesce(sum(message_count), 0) FROM main.session")?,
+            messages: visible("message_count")?,
             documents: count("SELECT count(*) FROM main.document")?,
-            tool_calls: count("SELECT coalesce(sum(tool_call_count), 0) FROM main.session")?,
+            tool_calls: visible("tool_call_count")?,
             inputs: count("SELECT count FROM source_row_count WHERE name = 'input'")?,
             revisions: count("SELECT count FROM source_row_count WHERE name = 'revision'")?,
             stored_bytes: count("SELECT count FROM source_row_count WHERE name = 'stored_bytes'")?,
