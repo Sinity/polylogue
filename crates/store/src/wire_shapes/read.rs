@@ -21,7 +21,7 @@ WITH readings AS (
  WHERE (?1 IS NULL OR i.origin=?1) AND (?2 IS NULL OR p.parser_version=?2)
    AND NOT EXISTS(SELECT 1 FROM wire_parse r WHERE r.input_pk=p.input_pk AND r.chain=p.chain AND r.active=1)
 ), latest AS (
- SELECT origin,parser_version,MAX(json_extract(state,'$.last.sequence')) AS occurrence
+ SELECT origin,parser_version,MAX(json_extract(state,'$.last.write_counter')) AS occurrence
  FROM readings GROUP BY origin,parser_version
 )
 "#;
@@ -98,11 +98,11 @@ SELECT r.origin,s.parser_version,s.record_kind,s.path,json_extract(s.table_key,'
  pl_wire_last(CASE WHEN EXISTS(SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain
      AND t.parser_version=s.parser_version AND t.record_kind=s.record_kind AND t.path=s.path
      AND t.table_key=s.table_key AND t.count>0)
-   THEN CASE WHEN json_extract(first_occurrence.occurrence,'$.sequence')<=json_extract(r.state,'$.completed.sequence')
+   THEN CASE WHEN json_extract(first_occurrence.occurrence,'$.write_counter')<=json_extract(r.state,'$.completed.write_counter')
      THEN json_extract(r.state,'$.completed') END
-   ELSE CASE WHEN json_extract(last_occurrence.occurrence,'$.sequence')<=json_extract(r.state,'$.completed_before_reset.sequence')
+   ELSE CASE WHEN json_extract(last_occurrence.occurrence,'$.write_counter')<=json_extract(r.state,'$.completed_before_reset.write_counter')
      THEN json_extract(r.state,'$.completed_before_reset') END END),
- MAX(CASE WHEN json_extract(r.state,'$.last.sequence')=l.occurrence AND EXISTS(
+ MAX(CASE WHEN json_extract(r.state,'$.last.write_counter')=l.occurrence AND EXISTS(
    SELECT 1 FROM wire_type t WHERE t.input_pk=s.input_pk AND t.chain=s.chain AND t.parser_version=s.parser_version
      AND t.record_kind=s.record_kind AND t.path=s.path AND t.table_key=s.table_key AND t.count>0)
    THEN 1 ELSE 0 END),SUM(s.unused)
@@ -277,9 +277,14 @@ fn latest_occurrence(drift: &Drift) -> i64 {
     drift
         .compared_with
         .iter()
-        .filter_map(|source| source.last.as_ref().map(|occurrence| occurrence.sequence))
+        .filter_map(|source| {
+            source
+                .last
+                .as_ref()
+                .map(|occurrence| occurrence.write_counter)
+        })
         .max()
-        .unwrap_or(drift.shape.last.sequence)
+        .unwrap_or(drift.shape.last.write_counter)
 }
 fn integer(row: &rusqlite::Row<'_>, at: usize) -> Result<u64> {
     u64::try_from(row.get::<_, i64>(at)?).or_stored("negative wire count in index")
@@ -356,7 +361,7 @@ impl Aggregate<Option<Occurrence>, Option<String>> for OccurrenceOrder {
         let next: Occurrence = serde_json::from_value(value).map_err(error)?;
         let key = |occurrence: &Occurrence| {
             (
-                occurrence.sequence,
+                occurrence.write_counter,
                 occurrence.input.clone(),
                 occurrence.chain,
                 occurrence.observation.clone(),

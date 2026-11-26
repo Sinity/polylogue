@@ -41,18 +41,18 @@ pub struct Source<'a> {
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Occurrence {
-    pub sequence: i64,
+    pub write_counter: i64,
     pub id: Option<String>,
     pub input: String,
     pub chain: i64,
     pub covered: ReadRange,
     pub observation: Option<String>,
-    pub observed_at_ms: Option<i64>,
+    pub observed_at: Option<i64>,
 }
 impl From<Source<'_>> for Occurrence {
     fn from(source: Source<'_>) -> Self {
         Self {
-            sequence: source.commit_sequence,
+            write_counter: source.commit_sequence,
             id: source.commit_id.map(str::to_owned),
             input: source.input.to_owned(),
             chain: source.chain,
@@ -61,7 +61,7 @@ impl From<Source<'_>> for Occurrence {
                 end: source.length,
             },
             observation: source.observation.map(str::to_owned),
-            observed_at_ms: source.observed_at_ms,
+            observed_at: source.observed_at_ms,
         }
     }
 }

@@ -103,9 +103,9 @@ fn partial_retry_is_idempotent_and_keeps_first_last() {
     let body = at(&report, "/body");
     assert_eq!(body.types["string"].count, 1);
     assert_eq!(body.types["number"].count, 1);
-    assert_eq!(body.first.sequence, 1);
-    assert_eq!(body.last.sequence, 2);
-    assert!(body.first.observed_at_ms > body.last.observed_at_ms);
+    assert_eq!(body.first.write_counter, 1);
+    assert_eq!(body.last.write_counter, 2);
+    assert!(body.first.observed_at > body.last.observed_at);
     assert_eq!(report.coverage[0].status(), CoverageStatus::Complete);
     assert!(
         report
@@ -149,7 +149,7 @@ fn wire_shape_completed_chain_includes_earlier_chunks_in_presence() {
             .complete_presence
             .as_ref()
             .unwrap()
-            .sequence,
+            .write_counter,
         2
     );
 }
@@ -355,8 +355,8 @@ fn reset_replaces_counts_keeping_complete_presence() {
     assert_eq!(at(&report, "").types["object"].count, 1);
     let gone = at(&report, "/gone");
     assert_eq!(gone.types["string"].count, 0);
-    assert_eq!(gone.last.sequence, 1);
-    assert_eq!(gone.complete_presence.as_ref().unwrap().sequence, 1);
+    assert_eq!(gone.last.write_counter, 1);
+    assert_eq!(gone.complete_presence.as_ref().unwrap().write_counter, 1);
     assert!(
         report
             .drift
@@ -402,7 +402,7 @@ fn a_chain_read_again_from_its_start_in_other_ranges_starts_its_observations_aga
     assert_eq!(at(&report, "/first").types["string"].count, 1);
     assert_eq!(at(&report, "/second").types["string"].count, 1);
     // Where each path was first seen stays through the restart.
-    assert_eq!(at(&report, "/first").first.sequence, 1);
+    assert_eq!(at(&report, "/first").first.write_counter, 1);
 }
 
 /// The row writer decides whether a step continues its chain's reading; the
@@ -572,7 +572,7 @@ fn wire_shape_unknown_observation_times_remain_unknown_and_formats_stay_distinct
         ),
     );
     let report = read(&conn, Scope::current(None)).unwrap();
-    assert_eq!(at(&report, "/old").first.observed_at_ms, None);
+    assert_eq!(at(&report, "/old").first.observed_at, None);
     assert_eq!(at(&report, "/old").first.observation, None);
     assert!(
         !report
@@ -632,8 +632,8 @@ fn wire_shape_sql_aggregation_returns_schema_rows_and_exact_counts() {
     assert_eq!(report.drift.len(), 1);
     let row = &report.drift[0];
     assert_eq!(row.shape.types["string"].count, 200);
-    assert_eq!(row.shape.first.sequence, 10);
-    assert_eq!(row.shape.last.sequence, 209);
+    assert_eq!(row.shape.first.write_counter, 10);
+    assert_eq!(row.shape.last.write_counter, 209);
 }
 #[test]
 fn source_tables_stay_distinct_and_unused_counted() {
@@ -715,7 +715,7 @@ fn writer_stores_occurrences_and_reparse_versions() {
     assert_eq!(observed.types["number"].count, 1);
     assert!(observed.last.id.is_none());
     assert!(observed.last.observation.is_some());
-    assert_eq!(observed.last.observed_at_ms, Some(1));
+    assert_eq!(observed.last.observed_at, Some(1));
     let source = Connection::open(archive.archive.archive_db()).unwrap();
     let commit_seq: i64 = source
         .query_row(
@@ -724,7 +724,7 @@ fn writer_stores_occurrences_and_reparse_versions() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(observed.last.sequence, commit_seq);
+    assert_eq!(observed.last.write_counter, commit_seq);
     archive.writer.send(batch.clone()).unwrap();
     let report = archive.writer.flush().unwrap();
     assert!(report.errors.is_empty(), "{:?}", report.errors);
@@ -761,7 +761,7 @@ fn writer_stores_occurrences_and_reparse_versions() {
     assert_eq!(current.shapes.len(), 2);
     assert!(current.drift.is_empty());
     assert_eq!(current.shapes[0].parse_version, "v2");
-    assert_eq!(current.shapes[0].last.sequence, commit_seq);
+    assert_eq!(current.shapes[0].last.write_counter, commit_seq);
     let history = pool
         .reader()
         .unwrap()
