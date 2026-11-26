@@ -499,60 +499,34 @@ fn scope_of(reader: &Reader<'_>) -> SharedScopeIndex {
 }
 
 /// A brief's archive reads depend on what it reports, not on how much work
-/// happened under its directory: at `/`, under a prefix holding 30,000
-/// sessions and over a million messages, in one of its subdirectories and in
-/// a directory nobody worked in, a brief reads at most 100 pages through a
-/// reader whose page cache starts empty.
+/// happened under its directory (docs/agent-context.md, latency): at `/`,
+/// under a prefix holding every session and in a directory nobody worked
+/// in, the brief says the same over 100,000 messages as over 10,000, and
+/// reads the same pages, at most 100, through a reader whose page cache
+/// starts empty. In a subdirectory the brief reports each session there
+/// that fits, and each one it expands reads that session's summary and
+/// annotations, so its reads follow the sessions there rather than the
+/// archive; its content is checked at both sizes.
 #[test]
 fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
-    use polylogue_store::fixture::{Fixture, ManySessions};
-    const SESSIONS: usize = 30_000;
-    const MESSAGES: usize = 34;
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    let pks = f
-        .many_sessions(ManySessions {
-            prefix: "/work/dense",
-            sessions: SESSIONS,
-            messages: MESSAGES,
-            answered: 20,
-            last: T0 - 60_000,
-        })
-        .unwrap();
-    const { assert!(SESSIONS * MESSAGES >= 1_000_000) };
-    // Three of the newest are working there now.
-    for &pk in &pks[SESSIONS - 3..] {
-        f.live(pk, "hook_pre_tool_use", T0 - 30_000, None, None)
-            .unwrap();
+    let smaller = brief_page_reads(1_000, 10);
+    let larger = brief_page_reads(10_000, 10);
+    for ((cwd, small), (_, large)) in smaller.into_iter().zip(larger) {
+        if cwd == "/work/dense/d5" {
+            continue;
+        }
+        assert!(large <= 100, "{cwd}: {large} pages read");
+        assert_eq!(large, small, "{cwd}: page reads at 10x the sessions");
     }
-    let scope = scope_of(&f.reads().unwrap().reader().unwrap());
-    let now = Timestamp::from_unix_ms(T0).unwrap();
-    for cwd in ["/", "/work/dense", "/work/dense/d5", "/unvisited/place"] {
-        // A new pool: its connections' page caches start empty.
-        let pool = f.reads().unwrap();
-        let reader = pool.reader().unwrap();
-        reader.take_page_reads().unwrap();
-        let p = prepare(
-            crate::brief::BriefContext {
-                reader: &reader,
-                pending_deliveries: &[],
-                delivery_id: "d1",
-                context: &fixture_context(now),
-                ranking_identity: None,
-                near: None,
-            },
-            &scope,
-            &[],
-            &Ask::SessionStart {
-                cwd: cwd.into(),
-                session: None,
-                source: StartSource::Startup,
-            },
-            Default::default(),
-        )
-        .unwrap();
-        let pages = reader.take_page_reads().unwrap();
-        assert!(pages <= 100, "{cwd}: {pages} pages read\n{}", p.text);
+}
+
+/// The pages a brief reads at each directory of
+/// [`a_brief_reads_a_bounded_number_of_pages_at_any_directory`], after
+/// checking what each brief says.
+fn brief_page_reads(sessions: usize, messages: usize) -> Vec<(&'static str, u64)> {
+    let mut reads = vec![];
+    for (cwd, pages, p) in briefs_at_each_directory(sessions, messages) {
+        reads.push((cwd, pages));
         if cwd == "/unvisited/place" {
             assert!(
                 !p.empty && p.text.contains(&crate::manual::text()),
@@ -561,17 +535,17 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             );
             continue;
         }
-        let newest = if cwd == "/work/dense/d5" {
-            // The newest session in d5 is the highest n with n % 97 == 5.
-            (0..SESSIONS).rev().find(|n| n % 97 == 5).unwrap()
-        } else {
-            SESSIONS - 1
-        };
+        // Session n works in d<n mod 97>, so d5 holds every n with
+        // n % 97 == 5; the other directories hold every session.
+        let here: Vec<usize> = (0..sessions)
+            .filter(|n| cwd != "/work/dense/d5" || n % 97 == 5)
+            .collect();
+        let newest = *here.last().unwrap();
         for expected in [
             "Recent sessions here, and what they did:".to_owned(),
             format!("test:many-{newest}"),
-            format!("{MESSAGES} messages"),
-            format!("omitted; expand: `polylogue 'cwd:\"{cwd}\"'"),
+            format!("{messages} messages"),
+            "Entry map".to_owned(),
         ] {
             assert!(
                 p.text.contains(&expected),
@@ -579,17 +553,84 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
                 p.text
             );
         }
-        assert!(p.text.contains("Entry map"), "{}", p.text);
-        assert!(
-            p.refs
-                .iter()
-                .filter(|reference| reference.starts_with("session:test:many-"))
-                .count()
-                > 5,
-            "{}",
-            p.text
-        );
+        let shown = p
+            .refs
+            .iter()
+            .filter(|reference| reference.starts_with("session:test:many-"))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        assert!(shown > 5, "{cwd}: {shown} sessions in\n{}", p.text);
+        // Sessions that did not fit are counted with the line that lists
+        // them all.
+        if shown < here.len() {
+            let pointer = format!("omitted; expand: `polylogue 'cwd:\"{cwd}\"'");
+            assert!(
+                p.text.contains(&pointer),
+                "{cwd}: missing {pointer:?} in\n{}",
+                p.text
+            );
+        } else {
+            assert_eq!(shown, here.len(), "{cwd}: {}", p.text);
+        }
     }
+    reads
+}
+
+/// A brief at `/`, under the prefix every session works in, in one of its
+/// subdirectories and in a directory nobody worked in, with the pages each
+/// read, over an archive of `sessions` sessions of `messages` messages.
+fn briefs_at_each_directory(
+    sessions: usize,
+    messages: usize,
+) -> Vec<(&'static str, u64, crate::brief::Prepared)> {
+    use polylogue_store::fixture::{Fixture, ManySessions};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pks = f
+        .many_sessions(ManySessions {
+            prefix: "/work/dense",
+            sessions,
+            messages,
+            answered: 20,
+            last: T0 - 60_000,
+        })
+        .unwrap();
+    // Three of the newest are working there now.
+    for &pk in &pks[sessions - 3..] {
+        f.live(pk, "hook_pre_tool_use", T0 - 30_000, None, None)
+            .unwrap();
+    }
+    let scope = scope_of(&f.reads().unwrap().reader().unwrap());
+    let now = Timestamp::from_unix_ms(T0).unwrap();
+    ["/", "/work/dense", "/work/dense/d5", "/unvisited/place"]
+        .into_iter()
+        .map(|cwd| {
+            // A new pool: its connections' page caches start empty.
+            let pool = f.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            reader.take_page_reads().unwrap();
+            let p = prepare(
+                crate::brief::BriefContext {
+                    reader: &reader,
+                    pending_deliveries: &[],
+                    delivery_id: "d1",
+                    context: &fixture_context(now),
+                    ranking_identity: None,
+                    near: None,
+                },
+                &scope,
+                &[],
+                &Ask::SessionStart {
+                    cwd: cwd.into(),
+                    session: None,
+                    source: StartSource::Startup,
+                },
+                Default::default(),
+            )
+            .unwrap();
+            (cwd, reader.take_page_reads().unwrap(), p)
+        })
+        .collect()
 }
 
 /// A brief that meets its deadline answers with the sections it has, names
