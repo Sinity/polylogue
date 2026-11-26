@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::{Output, RecordCounts};
 fn database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT NOT NULL,format TEXT NOT NULL); CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,parse_version TEXT,status TEXT,parsed_upto INTEGER); INSERT INTO input_ref VALUES(1,'first','fixture'),(2,'second','fixture'),(3,'third','other');").unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT NOT NULL,format TEXT NOT NULL); CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,parser_version TEXT,state TEXT,parsed_to INTEGER,waiting INTEGER,failure_kind TEXT); INSERT INTO input_ref VALUES(1,'first','fixture'),(2,'second','fixture'),(3,'third','other');").unwrap();
     conn.execute_batch(SCHEMA).unwrap();
     conn
 }
@@ -485,23 +485,13 @@ fn wire_shape_unknown_kinds_and_tables_are_counted() {
         && row.shape.table.as_deref() == Some("new_schema_table")));
 }
 #[test]
-fn wire_shape_no_parser_and_failed_refused_coverage_are_visible() {
-    let mut conn = database();
-    let mut marker = step("", 0..0, true, vec![]);
-    marker.counts = RecordCounts::default();
-    marker.progress = polylogue_model::batch::StepProgress::NoParserYet { at_end: true };
-    store(&mut conn, source(1, 1, 10, 1), &marker);
+fn wire_shape_failed_and_refused_coverage_are_visible() {
+    let conn = database();
     conn.execute_batch(
-        "INSERT INTO parse_state VALUES(2,1,'v1','failed',0),(3,1,'v1','refused',0);",
+        "INSERT INTO parse_state VALUES(2,1,'v1','failed',0,0,'malformed'),(3,1,'v1','failed',0,0,'refused');",
     )
     .unwrap();
     let report = read(&conn, Scope::current(None)).unwrap();
-    assert!(
-        report
-            .coverage
-            .iter()
-            .any(|row| row.states.contains_key(&CoverageStatus::NoParserYet))
-    );
     assert!(
         report
             .coverage
@@ -748,7 +738,7 @@ fn writer_stores_occurrences_and_reparse_versions() {
     let chain = pool
         .reader()
         .unwrap()
-        .input_progress("wire-input")
+        .latest_chain("wire-input")
         .unwrap()
         .unwrap()
         .chain;
@@ -880,13 +870,12 @@ fn wire_coverage_survives_parser_status_changes() {
     // `Unknown` came only from the retired export reading marker.
     for wire in [
         CoverageStatus::Unreadable,
-        CoverageStatus::NoParserYet,
         CoverageStatus::Complete,
         CoverageStatus::Partial,
     ] {
         let mut conn = database();
         let version = "v1";
-        let end = if matches!(wire, CoverageStatus::Partial | CoverageStatus::NoParserYet) {
+        let end = if wire == CoverageStatus::Partial {
             0
         } else {
             10
@@ -900,28 +889,32 @@ fn wire_coverage_survives_parser_status_changes() {
                 &polylogue_model::RecordOutcome::unreadable("stored source diagnostic"),
             );
         }
-        if wire == CoverageStatus::NoParserYet {
-            reading.progress = polylogue_model::batch::StepProgress::NoParserYet {
-                at_end: reading.progress.reached_end(),
-            };
-        }
         store(&mut conn, source(1, 1, 10, 1), &reading);
         let original: String = conn
             .query_row("SELECT state FROM wire_reading", [], |row| row.get(0))
             .unwrap();
-        for status in ["parsing", "waiting", "done", "failed", "refused"] {
+        for (status, state, waiting, failure) in [
+            ("waiting", "parsed", 5, None),
+            ("done", "parsed", 0, None),
+            ("failed", "failed", 0, Some("malformed")),
+            ("refused", "failed", 0, Some("refused")),
+        ] {
             conn.execute("DELETE FROM parse_state", []).unwrap();
             conn.execute(
-                "INSERT INTO parse_state VALUES(1,1,?1,?2,?3)",
-                params![version, status, i64::try_from(end).unwrap()],
+                "INSERT INTO parse_state VALUES(1,1,?1,?2,?3,?4,?5)",
+                params![
+                    version,
+                    state,
+                    i64::try_from(end).unwrap(),
+                    waiting,
+                    failure
+                ],
             )
             .unwrap();
             let expected = match status {
                 "failed" => CoverageStatus::Failed,
                 "refused" => CoverageStatus::Refused,
-                "parsing" | "waiting" if wire == CoverageStatus::Complete => {
-                    CoverageStatus::Partial
-                }
+                "waiting" if wire == CoverageStatus::Complete => CoverageStatus::Partial,
                 _ => wire,
             };
             let report = read(&conn, Scope::current(Some("fixture"))).unwrap();

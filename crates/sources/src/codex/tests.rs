@@ -282,14 +282,47 @@ fn a_reading_that_returns_is_a_new_report_in_its_place() {
     );
     assert_eq!(reports[0].1, reports[2].1);
     assert_ne!(reports[0].1, reports[1].1);
-    let ids: std::collections::BTreeSet<&str> = step
+    // Each report is named by BLAKE3 of the hand-written canonical JSON of
+    // its record's time and its reading (`content_ids::untagged_hash`).
+    let named = |second: u32, used: &str| {
+        blake3::hash(
+            format!(
+                r#"["2026-03-01T10:00:{second:02}Z",{{"windows":[{{"limit":"codex","minutes":300,"used_percent":{used}}}]}}]"#
+            )
+            .as_bytes(),
+        )
+        .to_hex()
+        .to_string()
+    };
+    let ids: Vec<&str> = step
         .output
         .events
         .iter()
         .filter(|e| e.kind == "quota_report")
         .filter_map(|e| e.data["report_id"].as_str())
         .collect();
-    assert_eq!(ids.len(), 3);
+    assert_eq!(ids, [named(2, "12.0"), named(3, "40.0"), named(4, "12.0")]);
+}
+
+/// The quota report of the `turn-with-command` golden is named from its
+/// record's time and its reading, written out here by hand.
+#[test]
+fn the_golden_quota_report_is_named_by_its_time_and_reading() {
+    let input = include_bytes!("../../../../examples/sources/codex/turn-with-command/input.jsonl");
+    let step = run(&rollout(), &mut ParserState::default(), input, 0).unwrap();
+    let ids: Vec<&str> = step
+        .output
+        .events
+        .iter()
+        .filter(|e| e.kind == "quota_report")
+        .filter_map(|e| e.data["report_id"].as_str())
+        .collect();
+    let expected = blake3::hash(
+        br#"["2026-03-01T10:00:09Z",{"windows":[{"limit":"codex","minutes":300,"resets_at":"2026-03-01T13:00:00Z","used_percent":4.0}]}]"#,
+    )
+    .to_hex()
+    .to_string();
+    assert_eq!(ids, [expected.as_str()]);
 }
 
 #[test]

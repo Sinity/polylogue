@@ -47,7 +47,6 @@ fn unfinished_readings(engine: &Engine) -> usize {
                     .unwrap()
                     .parse_version(),
             )],
-            polylogue_store::StoppedChains::Finished,
             RevisionChains::All,
             None,
         )

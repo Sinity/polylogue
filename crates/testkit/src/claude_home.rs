@@ -50,8 +50,7 @@ impl ClaudeHome {
     pub fn engine(&self, chunk: u64) -> (Engine, ArchiveLock) {
         let (archive, lock) = Archive::open_or_create(&self.root).expect("open the archive");
         (
-            Engine::new(self.config(chunk), archive, crate::stopped_attempt())
-                .expect("start the engine"),
+            Engine::new(self.config(chunk), archive).expect("start the engine"),
             lock,
         )
     }

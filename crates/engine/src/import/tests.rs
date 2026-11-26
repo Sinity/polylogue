@@ -25,11 +25,11 @@ fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
         assert_eq!(w.texts("s1"), ["captured"]);
         let reader = engine.reads.reader().unwrap();
         let stored = reader
-            .input_progress(blake3::hash(original.as_bytes()).to_hex().as_ref())
+            .latest_chain(blake3::hash(original.as_bytes()).to_hex().as_ref())
             .unwrap()
             .unwrap();
-        assert_eq!(stored.length, original.len() as u64);
-        assert_eq!(stored.parsed_upto, original.len() as u64);
+        assert_eq!(stored.stored, original.len() as u64);
+        assert_eq!(stored.state.parsed_to(), original.len() as u64);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.blob"), 1);
     }
@@ -115,7 +115,7 @@ fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
             .import_plan(&path, origin, captured, None, &mut ImportReport::default())
             .unwrap()
             .unwrap();
-        let job = plan.next_job(&engine.stopped_attempt);
+        let job = plan.next_job();
         assert_eq!((job.start, job.end), (0, cursor));
         let (batch, done) = pool::run(job, &engine.archive, &engine.blobs, true, None);
         assert!(done.error.is_none(), "{done:?}");
@@ -124,24 +124,15 @@ fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
             result.unwrap();
         }
         let reader = engine.reads.reader().unwrap();
-        let checkpoint = reader
-            .parser_checkpoint(
-                &plan.input.id,
-                plan.parser_chain.unwrap(),
-                &origin.parse_version(),
-            )
-            .unwrap()
+        let state = reader
+            .chain_state(&plan.input.id, plan.parser_chain.unwrap())
             .unwrap();
-        assert_eq!(
-            checkpoint.progress,
-            polylogue_model::batch::ParseProgress::Parsing
-        );
-        assert_eq!(checkpoint.parsed_upto, cursor);
-        assert!(checkpoint.checkpoint.is_some());
+        assert_eq!(state.version(), Some(origin.parse_version().as_str()));
+        assert_eq!(state.parsed_to(), cursor);
+        assert!(state.resume().is_some());
     }
 
     let (mut engine, _lock) = engine(&home, cursor);
-    engine.stopped_attempt.executable = polylogue_model::BlobHash::of(b"different executable");
     let retry = engine
         .import_with_options(std::slice::from_ref(&path), &options)
         .unwrap();
@@ -160,15 +151,15 @@ fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
     assert_eq!(messages[1].blocks[0].text(), Some("continued answer"));
     assert_eq!(messages[1].model.as_deref(), Some("checkpoint-model"));
     let input = blake3::hash(original.as_bytes()).to_hex();
-    let progress = reader.input_progress(input.as_ref()).unwrap().unwrap();
-    assert_eq!(progress.parsed_upto, original.len() as u64);
+    let progress = reader.latest_chain(input.as_ref()).unwrap().unwrap();
+    assert_eq!(progress.state.parsed_to(), original.len() as u64);
     assert_eq!(
         reader
             .stored_range(
                 input.as_ref(),
                 progress.chain,
                 0,
-                progress.length,
+                progress.stored,
                 &engine.blobs
             )
             .unwrap(),
@@ -211,14 +202,14 @@ fn file_of_declared_origin_without_parser_is_stored_by_import() {
     assert_eq!(report.packages[0].assets, 0);
     let input = blake3::hash(bytes).to_hex();
     let reader = engine.reads.reader().unwrap();
-    let progress = reader.input_progress(input.as_ref()).unwrap().unwrap();
+    let progress = reader.latest_chain(input.as_ref()).unwrap().unwrap();
     assert_eq!(
         reader
             .stored_range(
                 input.as_ref(),
                 progress.chain,
                 0,
-                progress.length,
+                progress.stored,
                 &engine.blobs
             )
             .unwrap(),
@@ -326,7 +317,7 @@ pub(crate) fn engine(
         live_every: std::time::Duration::from_secs(2),
         reads_sources: true,
     };
-    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    let mut engine = Engine::new(config, archive).unwrap();
     if new {
         // Imports and these tests' passes meet an installed index: the first
         // pass of a loop without sources installs a new archive's empty build
@@ -413,10 +404,10 @@ fn container_members_keep_their_original_hash_and_duplicate_members_share_one_bl
             .reads
             .reader()
             .unwrap()
-            .input_progress(&id)
+            .latest_chain(&id)
             .unwrap()
             .unwrap()
-            .length,
+            .stored,
         bytes.len() as u64
     );
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 3);
@@ -579,7 +570,7 @@ mod strict;
 
 #[cfg(feature = "faults")]
 #[test]
-fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes() {
+fn repeated_explicit_import_keeps_a_failed_chain_until_its_parser_version_changes() {
     use polylogue_store::fault::{self, Action};
     use polylogue_testkit::{ClaudeHome, claude_user};
     let home = ClaudeHome::new();
@@ -599,24 +590,18 @@ fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes
     assert!(!failed.pass.errors.is_empty(), "{failed:?}");
     let config = engine.config.clone();
     let archive = engine.archive.clone();
-    let attempt = engine.stopped_attempt;
     drop(engine);
-    let mut engine = Engine::new(config.clone(), archive.clone(), attempt).unwrap();
+    let mut engine = Engine::new(config, archive).unwrap();
     let repeat = engine
         .import_with_options(std::slice::from_ref(&path), &options)
         .unwrap();
     assert!(repeat.pass.errors.is_empty(), "{repeat:?}");
     assert_eq!(repeat.pass.bytes_read, 0, "{repeat:?}");
     assert_eq!(
-        home.count("SELECT count(*) AS n FROM parse_state WHERE status='failed'"),
+        home.count("SELECT count(*) AS n FROM parse_state WHERE state='failed'"),
         1
     );
-    drop(engine);
-    let changed = StoppedAttempt {
-        executable: polylogue_model::BlobHash::of(b"new executable image"),
-        ..attempt
-    };
-    let mut engine = Engine::new(config, archive, changed).unwrap();
+    polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
     let retried = engine
         .import_with_options(std::slice::from_ref(&path), &options)
         .unwrap();
@@ -624,9 +609,7 @@ fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes
     assert_eq!(retried.pass.bytes_read, content.len() as u64, "{retried:?}");
     assert_eq!(retried.pass.bytes_stored, 0, "{retried:?}");
     assert_eq!(
-        home.count(
-            "SELECT count(*) AS n FROM parse_state WHERE status='done' AND stopped_attempt IS NULL"
-        ),
+        home.count("SELECT count(*) AS n FROM parse_state WHERE state='parsed'"),
         1
     );
     assert_eq!(home.count("SELECT count(*) AS n FROM a.revision"), 1);

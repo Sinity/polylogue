@@ -1,22 +1,24 @@
 use super::*;
 use polylogue_store::fault::{self, Action};
 
+/// The one claude-code chain's stored state word, failure sentence and the
+/// stored length its parser saw.
 fn standing(engine: &Engine) -> (String, Option<String>, Option<i64>) {
     let rows = engine
         .reads
         .reader()
         .unwrap()
         .query(
-            "SELECT p.status,p.reason,p.at_length FROM parse_state p
+            "SELECT p.state,p.failure_detail,p.parsed_to+p.waiting AS seen_to FROM parse_state p
              JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code'",
             &[],
         )
         .unwrap();
     assert_eq!(rows.len(), 1, "{rows:?}");
     (
-        rows[0]["status"].as_str().unwrap().to_owned(),
-        rows[0]["reason"].as_str().map(str::to_owned),
-        rows[0]["at_length"].as_i64(),
+        rows[0]["state"].as_str().unwrap().to_owned(),
+        rows[0]["failure_detail"].as_str().map(str::to_owned),
+        rows[0]["seen_to"].as_i64(),
     )
 }
 
@@ -44,15 +46,21 @@ fn a_parser_failure_is_the_chains_failed_parse_state_until_the_bytes_change() {
     let unchanged = engine.run_pass().unwrap();
     assert!(unchanged.errors.is_empty(), "{unchanged:?}");
     assert_eq!(standing(&engine).0, "failed");
-    // Growth reads the chain again from where it stopped.
+    // Growth reads the chain again.
     home.append(
         "broken-standing.jsonl",
         &claude_user("two", "session", "second body"),
     );
     let grown = engine.run_pass().unwrap();
     assert!(grown.errors.is_empty(), "{grown:?}");
+    let length = std::fs::metadata(home.file("broken-standing.jsonl"))
+        .unwrap()
+        .len() as i64;
     let (status, reason, at) = standing(&engine);
-    assert_eq!((status.as_str(), reason, at), ("done", None, None));
+    assert_eq!(
+        (status.as_str(), reason, at),
+        ("parsed", None, Some(length))
+    );
 }
 
 #[test]
@@ -82,97 +90,88 @@ fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
     assert_eq!(home.texts("resumed"), ["kept discovery"]);
 }
 
-fn stopped_reading(engine: &Engine, path: &Path) -> polylogue_store::read::StoredParserCheckpoint {
+fn stored_state(engine: &Engine, path: &Path) -> polylogue_model::chain::ChainState {
     let input = &engine.inputs[path];
-    let reader = engine.reads.reader().unwrap();
-    let progress = reader.input_progress(&input.input_id).unwrap().unwrap();
-    reader
-        .parser_checkpoint(
-            &input.input_id,
-            progress.chain,
-            &input.origin.parse_version(),
-        )
+    engine
+        .reads
+        .reader()
+        .unwrap()
+        .latest_chain(&input.input_id)
         .unwrap()
         .unwrap()
+        .state
 }
 
-#[test]
-fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes() {
-    let home = ClaudeHome::new();
-    let name = "dependency-stop.jsonl";
+/// A chain that parsed one record and failed at the next.
+fn failed_after_a_prefix(home: &ClaudeHome, name: &str) -> (Engine, polylogue_store::ArchiveLock) {
     let first = claude_user("one", "dependency-stop", "first stored body");
     let second = claude_user("two", "dependency-stop", "second stored body");
     home.append(name, &first);
-    let (mut engine, lock) = crate::import::tests::engine(&home, first.len() as u64);
+    let (mut engine, lock) = crate::import::tests::engine(home, first.len() as u64);
     let seeded = engine.run_pass().unwrap();
     assert!(seeded.errors.is_empty(), "{seeded:?}");
     let path = home.file(name);
-    let prefix = stopped_reading(&engine, &path);
+    let prefix = stored_state(&engine, &path);
     assert!(
-        prefix.checkpoint.is_some(),
-        "the successful prefix owns a real continuation"
+        prefix.resume().is_some(),
+        "the successful prefix keeps what its parser carries"
     );
     home.append(name, &second);
-    // This stop must cover the complete append. If the spool later adds even
-    // one byte, the changed stored length makes the next attempt run again.
     engine.config.chunk = second.len() as u64;
     fault::arm("parse", "dependency-stop", Action::Panic, 0, u32::MAX);
     let failed = engine.run_pass().unwrap();
     fault::clear();
     assert!(!failed.errors.is_empty(), "{failed:?}");
-    let attempt = engine.stopped_attempt;
-    let stopped = stopped_reading(&engine, &path);
-    assert!(stopped.progress.stopped());
-    assert!(
-        stopped.parsed_upto > 0,
-        "the failure follows a real parsed prefix"
-    );
-    assert_eq!(stopped.stopped_attempt, Some(attempt));
-    let stored_length = engine
-        .reads
-        .reader()
-        .unwrap()
-        .input_progress(&engine.inputs[&path].input_id)
-        .unwrap()
-        .unwrap()
-        .length;
+    let stopped = stored_state(&engine, &path);
+    let stored_length = std::fs::metadata(&path).unwrap().len();
+    let polylogue_model::chain::ChainState::Failed {
+        parsed_to,
+        seen_to,
+        failure,
+        ..
+    } = &stopped
+    else {
+        panic!("the chain failed: {stopped:?}");
+    };
     assert_eq!(
-        stopped.progress.at_length(),
-        Some(stored_length),
-        "the stopped attempt must already name all stored bytes before an unchanged restart"
+        *parsed_to,
+        prefix.parsed_to(),
+        "the failure follows the parsed prefix"
     );
-    assert_eq!(stopped.parsed_upto, prefix.parsed_upto);
     assert_eq!(
-        stopped.checkpoint, prefix.checkpoint,
-        "the failed suffix preserves only the genuine checkpoint already confirmed at this cursor"
+        *seen_to, stored_length,
+        "the failure names every stored byte"
     );
+    assert_eq!(
+        failure.kind,
+        polylogue_model::ChainFailureKind::ParserPanicked
+    );
+    (engine, lock)
+}
+
+#[test]
+fn a_recorded_failure_stays_stopped_across_restart_until_the_reading_version_changes() {
+    let home = ClaudeHome::new();
+    let name = "dependency-stop.jsonl";
+    let (engine, lock) = failed_after_a_prefix(&home, name);
+    let path = home.file(name);
+    let stopped = stored_state(&engine, &path);
     let config = engine.config.clone();
     let archive = engine.archive.clone();
     let revisions = home.count("SELECT count(*) AS n FROM a.revision");
     drop(engine);
-    let mut engine = Engine::new(config.clone(), archive.clone(), attempt).unwrap();
+    let mut engine = Engine::new(config, archive).unwrap();
     let unchanged = engine.run_pass().unwrap();
     assert!(unchanged.errors.is_empty(), "{unchanged:?}");
     assert_eq!(unchanged.bytes_read, 0, "{unchanged:?}");
-    assert_eq!(
-        stopped_reading(&engine, &path).stopped_attempt,
-        Some(attempt)
-    );
-    assert_eq!(standing(&engine).0, "failed");
-    drop(engine);
-
-    let changed = StoppedAttempt {
-        executable: polylogue_model::BlobHash::of(b"different actual executable bytes"),
-        parser_settings: None,
-    };
-    let mut engine = Engine::new(config, archive, changed).unwrap();
+    assert_eq!(stored_state(&engine, &path), stopped);
+    // A new parser version reads the chain again.
+    polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
     let retried = engine.run_pass().unwrap();
     assert!(retried.errors.is_empty(), "{retried:?}");
     assert!(retried.bytes_read > 0, "{retried:?}");
     assert_eq!(retried.bytes_stored, 0, "{retried:?}");
-    let completed = stopped_reading(&engine, &path);
-    assert!(!completed.progress.stopped());
-    assert_eq!(completed.stopped_attempt, None);
+    assert_eq!(standing(&engine).0, "parsed");
     assert_eq!(
         home.texts("dependency-stop"),
         ["first stored body", "second stored body"]
@@ -186,99 +185,22 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
 }
 
 #[test]
-fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
+fn a_new_executable_does_not_reread_failed_chains() {
     let home = ClaudeHome::new();
-    let name = "unrecorded-stop.jsonl";
-    home.append(
-        name,
-        &claude_user("one", "unrecorded-stop", "stored source"),
-    );
-    let (mut engine, lock) = crate::import::tests::engine(&home, 4096);
-    fault::arm("parse", "unrecorded-stop", Action::Panic, 0, u32::MAX);
-    let failed = engine.run_pass().unwrap();
-    fault::clear();
-    assert!(!failed.errors.is_empty(), "{failed:?}");
+    let name = "dependency-stop.jsonl";
+    let (engine, lock) = failed_after_a_prefix(&home, name);
     let path = home.file(name);
-    let state = &engine.inputs[&path];
-    let progress = engine
-        .reads
-        .reader()
-        .unwrap()
-        .input_progress(&state.input_id)
-        .unwrap()
-        .unwrap();
-    // A historical progress payload has the real failure and no attempt metadata.
-    let mut step =
-        polylogue_store::ParseStep::new(Default::default(), Default::default(), 0..0, false);
-    step.progress = polylogue_model::batch::StepProgress::Failed {
-        error: "unrecorded synthetic failure".into(),
-    };
-    step.parse_version = state.origin.parse_version();
-    engine
-        .writer
-        .send(polylogue_store::Batch {
-            input: InputKey {
-                id: state.input_id.clone(),
-                format: state.origin.name.into(),
-                route: polylogue_model::Route::Live,
-            },
-            change: Change::Reparse {
-                chain: progress.chain,
-            },
-            observation: None,
-            continues: false,
-            new_blob: None,
-            blobs: vec![],
-            length: progress.length,
-            parse: vec![step],
-            capture_read: None,
-            release: Default::default(),
-        })
-        .unwrap();
-    assert!(engine.writer.flush().unwrap().errors.is_empty());
-    let unrecorded = stopped_reading(&engine, &path);
-    assert_eq!(unrecorded.stopped_attempt, None);
-    let config = engine.config.clone();
-    let archive = engine.archive.clone();
-    let attempt = engine.stopped_attempt;
+    let stopped = stored_state(&engine, &path);
+    let (config, archive) = (engine.config.clone(), engine.archive.clone());
     drop(engine);
-    let mut engine = Engine::new(config.clone(), archive.clone(), attempt).unwrap();
-    fault::arm("parse", "unrecorded-stop", Action::Panic, 0, u32::MAX);
-    let retry = engine.run_pass().unwrap();
-    fault::clear();
-    assert_eq!(retry.errors.len(), 1, "{retry:?}");
-    assert!(
-        retry.errors[0]
-            .to_string()
-            .contains("injected panic at parse"),
-        "{retry:?}"
-    );
-    assert!(
-        retry.bytes_read > 0,
-        "the unrecorded stop got a real attempt: {retry:?}"
-    );
-    assert_eq!(retry.bytes_stored, 0, "{retry:?}");
-    let recorded = stopped_reading(&engine, &path);
-    assert_eq!(recorded.stopped_attempt, Some(attempt));
-    assert_eq!(
-        recorded.progress, unrecorded.progress,
-        "the committed error remains intact"
-    );
-    assert_eq!(recorded.parsed_upto, unrecorded.parsed_upto);
-    assert_eq!(recorded.checkpoint, unrecorded.checkpoint);
-    drop(engine);
-    let mut engine = Engine::new(config, archive, attempt).unwrap();
-    let finished = engine.run_pass().unwrap();
-    assert!(finished.errors.is_empty(), "{finished:?}");
-    assert_eq!(finished.bytes_read, 0, "{finished:?}");
-    assert_eq!(standing(&engine).0, "failed");
-    // Reading-version change also invalidates the stop, even with the same binary.
-    polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
-    let reread = engine.run_pass().unwrap();
-    assert!(reread.errors.is_empty(), "{reread:?}");
-    assert!(reread.bytes_read > 0, "{reread:?}");
-    assert_eq!(stopped_reading(&engine, &path).stopped_attempt, None);
-    assert_eq!(standing(&engine).0, "done");
-    drop(engine);
+    // Nothing of the program that recorded the failure is kept: any other
+    // build that starts on the archive reads the same state.
+    for _ in 0..2 {
+        let mut engine = Engine::new(config.clone(), archive.clone()).unwrap();
+        let pass = engine.run_pass().unwrap();
+        assert!(pass.errors.is_empty(), "{pass:?}");
+        assert_eq!(pass.bytes_read, 0, "{pass:?}");
+        assert_eq!(stored_state(&engine, &path), stopped);
+    }
     drop(lock);
 }

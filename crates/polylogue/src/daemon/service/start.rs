@@ -251,17 +251,6 @@ pub enum ArchiveMode {
     },
 }
 
-impl ArchiveMode {
-    pub(crate) fn needs_engine(&self) -> bool {
-        match self {
-            Self::Standalone => true,
-            #[cfg(feature = "sinex")]
-            Self::Primary => true,
-            Self::Blocked { .. } => false,
-        }
-    }
-}
-
 /// Primary mode is not built in this version (`docs/primary-mode.md`).
 #[cfg(feature = "sinex")]
 fn primary_not_built() -> std::io::Error {
@@ -280,7 +269,6 @@ pub fn start(
     config: Config,
     mode: ArchiveMode,
     lifetime: Lifetime,
-    stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     progress: &Progress,
 ) -> std::io::Result<Runtime> {
     let mut steps = progress.steps(Phase::Opening);
@@ -296,11 +284,6 @@ pub fn start(
     let budget = config.memory_budget;
     let config = config.with_memory_budget(budget);
     let settings = config.clone();
-    let attempt = || {
-        stopped_attempt.ok_or_else(|| {
-            std::io::Error::other("the executable identity is required to start the Engine")
-        })
-    };
     // An archive recorded as primary is refused before anything opens it,
     // so it is left as it was.
     #[cfg(feature = "sinex")]
@@ -311,12 +294,11 @@ pub fn start(
     }
     let (archive, lock, mode, engine, completion_scope) = match mode {
         ArchiveMode::Standalone => {
-            let attempt = attempt()?;
             let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
                 .map_err(std::io::Error::other)?;
             let archive = archive.with_memory_budget(settings.memory_budget);
             steps.next("starting the writer");
-            let engine = Engine::new(config, archive.clone(), attempt).map_err(|e| to_io(&e))?;
+            let engine = Engine::new(config, archive.clone()).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
         ArchiveMode::Blocked {

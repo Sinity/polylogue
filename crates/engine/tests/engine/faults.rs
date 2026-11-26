@@ -8,10 +8,9 @@ use polylogue_store::fault::{self, Action};
 use polylogue_testkit::{Morrow, Set, session};
 use std::fs;
 
-mod identical_chains;
 mod older_chains;
-mod prefix_copies;
 mod reparse;
+mod repeated_chains;
 
 #[test]
 fn arming_an_undeclared_point_names_it() {

@@ -5,7 +5,7 @@ use super::*;
 #[test]
 fn cache_schema_renames_tables_without_changing_input_columns_or_counter_keys() {
     let cache = Connection::open_in_memory().unwrap();
-    cache.execute_batch(crate::schema::INDEX).unwrap();
+    cache.execute_batch(&crate::schema::INDEX).unwrap();
     cache.execute_batch(&schema().unwrap().ddl).unwrap();
     cache
         .execute(
