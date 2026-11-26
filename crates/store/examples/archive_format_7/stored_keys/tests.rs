@@ -388,6 +388,17 @@ fn signal_event_row(conn: &Connection, body: &Value) {
     .unwrap();
 }
 
+/// The delivery the signal events of these tests belong to, its left-out
+/// list in format 9's shape.
+fn delivery_row(conn: &Connection) {
+    conn.execute(
+        "INSERT INTO delivery(id, recipient_kind, sender, event, at, content_hash, bytes, body, refs_json, left_out_json, commit_seq)
+         VALUES ('d', 'session', 'hook', 'session_start', 1, ?1, 0, ?2, '[]', ?3, 1)",
+        params![vec![0u8; 32], packed(&json!("")), r#"[{"what":"session:codex:other","reason":"budget"}]"#],
+    )
+    .unwrap();
+}
+
 /// Writes every earlier payload into an archive; returns what each should
 /// read as after the step.
 fn earlier_archive(conn: &Connection) -> Vec<(Case, Option<Case>)> {
@@ -421,12 +432,7 @@ fn earlier_archive(conn: &Connection) -> Vec<(Case, Option<Case>)> {
         params![saved["read_at"].as_str(), saved["rows_json"].as_str()],
     )
     .unwrap();
-    conn.execute(
-        "INSERT INTO delivery(id, recipient_kind, sender, event, at, content_hash, bytes, body, refs_json, left_out_json, commit_seq)
-         VALUES ('d', 'session', 'hook', 'session_start', 1, ?1, 0, ?2, '[]', ?3, 1)",
-        params![vec![0u8; 32], packed(&json!("")), r#"[{"what":"session:codex:other","reason":"budget"}]"#],
-    )
-    .unwrap();
+    delivery_row(conn);
     conn.execute(
         "INSERT INTO annotation(id, root, kind, value, author, via, machine, commit_seq)
          VALUES ('slot', 'slot', 'slot', ?1, 'operator', 'cli', 'm', 1)",
@@ -636,6 +642,7 @@ fn checkpoint(now: i64) -> Checkpoint {
 #[test]
 fn a_signal_checkpoint_chain_keeps_its_hashes() {
     let (_dir, conn) = archive();
+    delivery_row(&conn);
     let mut prior = None;
     let mut identities = Vec::new();
     for n in 0..3_i64 {
@@ -690,7 +697,7 @@ fn a_signal_checkpoint_chain_keeps_its_hashes() {
 
     convert(&conn).unwrap();
     let mut before: Option<BlobHash> = None;
-    for n in 0..3 {
+    for (n, identity) in identities.iter().enumerate() {
         let request: UserRequest = serde_json::from_value(stored(
             &conn,
             "SELECT request FROM client_request WHERE id = ?1",
@@ -701,8 +708,8 @@ fn a_signal_checkpoint_chain_keeps_its_hashes() {
             panic!("a signal commit")
         };
         assert_eq!(commit.prior, before);
-        assert_eq!(commit.checkpoint.identity().unwrap(), identities[n]);
-        before = Some(identities[n]);
+        assert_eq!(commit.checkpoint.identity().unwrap(), *identity);
+        before = Some(*identity);
     }
     let state: Checkpoint = serde_json::from_value(stored(
         &conn,

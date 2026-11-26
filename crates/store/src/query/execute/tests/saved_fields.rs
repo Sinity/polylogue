@@ -1250,7 +1250,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     assert_eq!(begun[0]["query"], format!("query:{}", object.id));
     assert_eq!(begun[0]["author"], "operator");
     assert_eq!(begun[0]["via"], "mcp");
-    assert_eq!(begun[0]["read_position"], position.to_string());
+    assert_eq!(begun[0]["read_at"], position.to_string());
     assert_eq!(
         serde_json::from_value::<Timestamp>(begun[0]["at"].clone()).unwrap(),
         expected.at

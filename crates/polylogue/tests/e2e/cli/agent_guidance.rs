@@ -139,7 +139,7 @@ fn gemini_start_and_prompt_events_request_context_through_respond() {
             let request: Value = serde_json::from_str(&line).unwrap();
             assert_eq!(request["operation"], "internal delivery-event");
             assert_eq!(request["arguments"]["delivery"], delivery);
-            assert_eq!(request["arguments"]["what"], "delivered");
+            assert_eq!(request["arguments"]["outcome"], "delivered");
             write!(
                 stream,
                 "event: answer\ndata: {}\n\n",

@@ -465,10 +465,10 @@ fn cli_reads_deep_parents_and_reports_incomplete_parent_prefixes() {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|row| row["what"] == "inherited session content")
+        .filter(|row| row["item"] == "inherited session content")
         .collect();
     assert_eq!(
         inherited,
-        [&json!({"what": "inherited session content", "reason": issue})]
+        [&json!({"item": "inherited session content", "reason": issue})]
     );
 }

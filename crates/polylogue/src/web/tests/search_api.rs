@@ -143,7 +143,7 @@ fn filtered_semantic_and_mixed_results_keep_lower_ranked_matches() {
             &format!(
                 "result:{}",
                 serde_json::to_string(
-                    outcome["kept"]["result"]
+                    outcome["saved_rows"]["result"]
                         .as_str()
                         .unwrap()
                         .strip_prefix("result:")

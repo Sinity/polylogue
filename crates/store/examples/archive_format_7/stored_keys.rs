@@ -833,7 +833,7 @@ fn each_signal_event(
 fn signal_events_earlier(conn: &Connection) -> Result<u64, Error> {
     let mut n = 0;
     each_signal_event(conn, |_, _, body| {
-        n += u64::from(rename(&mut unpack(body)?, "ordinal", "request_position"));
+        n += rename(&mut unpack(body)?, "ordinal", "request_position");
         Ok(())
     })?;
     Ok(n)
