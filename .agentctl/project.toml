@@ -141,3 +141,12 @@ result = "exit"
 timeout_seconds = 900
 scratch = "nvme"
 cache = "none"
+
+[operations.codex]
+description = "Run one Codex worker in this checkout: codex-worker <effort> <prompt-file> <output-schema> <output-dir> [model]"
+exec = ["codex-worker"]
+arguments = "required"
+pool = "codex"
+result = "exit"
+timeout_seconds = 28800
+cache = "none"
