@@ -1700,7 +1700,7 @@ impl Engine {
             if c.current && origin.arrival == polylogue_sources::Arrival::Live {
                 plan.priority = Priority::Live;
             }
-            if from.is_none() && c.state != polylogue_model::chain::ChainState::Unparsed {
+            if from.is_none() && replaces(&c.state, origin) {
                 plan.replace = true;
                 replacements.push(plan);
                 continue;
@@ -1837,7 +1837,7 @@ impl Engine {
             self.config.chunk,
             tracked,
         );
-        plan.replace = *state != polylogue_model::chain::ChainState::Unparsed && parse_pos == 0;
+        plan.replace = replaces(state, origin) && parse_pos == 0;
         Ok(plan)
     }
 
@@ -2042,10 +2042,19 @@ impl Engine {
             let Some(mut plan) = self.admit(plan, pass)? else {
                 continue;
             };
+            // A file read from its first byte over a chain whose parse holds
+            // records stores its new bytes first and parses the chain again
+            // as a replacement. One whose parse holds none (a first line
+            // still being written) has nothing to replace: it is read on
+            // from the first byte like any append.
             let store_first = matches!(plan.source, pool::Bytes::File)
                 && plan.parse_pos == 0
                 && plan.stored_upto > 0
-                && !matches!(plan.change, Change::First | Change::Rewritten);
+                && !matches!(plan.change, Change::First | Change::Rewritten)
+                && self
+                    .inputs
+                    .get(&plan.path)
+                    .is_some_and(|st| st.parsed_upto > 0);
             if store_first {
                 let later = later_paths(&plan, &plans);
                 self.execute_pool(std::mem::take(&mut pooled), Vec::new(), &later, pass)?;
@@ -2965,6 +2974,22 @@ fn changed_since_read(path: &Path, st: &InputState) -> bool {
             .or(st.facts)
             .is_some_and(|read| read.unchanged_as(&now))
     })
+}
+
+/// Whether parsing a chain from its first byte replaces the parse it has.
+/// A parse at the current version that holds no complete record yet (a
+/// first line still being written) has nothing to replace: reading from the
+/// first byte continues it, where its state already stands.
+fn replaces(state: &polylogue_model::chain::ChainState, origin: &OriginSpec) -> bool {
+    match state {
+        polylogue_model::chain::ChainState::Unparsed => false,
+        polylogue_model::chain::ChainState::Parsed {
+            version,
+            parsed_to: 0,
+            ..
+        } => *version != origin.parse_version(),
+        _ => true,
+    }
 }
 
 /// A stored input at a path this build's parser does not read: refused for

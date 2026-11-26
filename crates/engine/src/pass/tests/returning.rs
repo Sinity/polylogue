@@ -105,3 +105,45 @@ fn a_shorter_equal_file_is_observed_back_and_starts_no_chain() {
         1
     );
 }
+
+/// A session file whose first line is written in several pieces before its
+/// newline is stored and read as it grows, wherever the pieces are cut:
+/// until a record is complete there is nothing parsed to replace, so each
+/// pass reads on from the start of the file.
+#[test]
+fn a_first_line_written_in_three_pieces_is_stored() {
+    let first = claude_user("u1", "pieces", "first line");
+    let second = claude_user("u2", "pieces", "second line");
+    let whole = format!("{first}{second}");
+    let one = first.len();
+    for cuts in [
+        vec![10, 20],
+        vec![10, one + 10],
+        vec![10, 20, one + 10],
+        vec![one + 5, one + 15],
+    ] {
+        let home = ClaudeHome::new();
+        let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 20);
+        let mut at = 0;
+        for end in cuts.iter().copied().chain([whole.len()]) {
+            home.append("pieces.jsonl", &whole[at..end]);
+            at = end;
+            let pass = engine.run_pass().unwrap();
+            assert!(
+                pass.errors.is_empty(),
+                "cuts {cuts:?} at {end}: {:?}",
+                pass.errors
+            );
+        }
+        assert_eq!(
+            home.texts("pieces"),
+            ["first line", "second line"],
+            "cuts {cuts:?}"
+        );
+        assert_eq!(
+            home.count("SELECT count(DISTINCT chain) AS n FROM a.revision"),
+            1,
+            "cuts {cuts:?}"
+        );
+    }
+}
