@@ -126,6 +126,7 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
         crate::daemon::service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilIdle,
         Some(polylogue_testkit::stopped_attempt()),
+        &Default::default(),
     )
     .unwrap();
     assert!(
