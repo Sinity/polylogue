@@ -119,6 +119,9 @@ fn parser_versions_include_referenced_modules() {
         .collect();
     assert_eq!(opens.len(), ORIGINS.len());
     for (origin, open) in ORIGINS.iter().zip(opens) {
+        if origin.support != Support::Parsed {
+            continue;
+        }
         let version = origin.parse_version();
         let declared: BTreeSet<_> = version
             .split(',')

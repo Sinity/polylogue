@@ -152,8 +152,7 @@ macro_rules! modules {
             $(modules!(@children $kind $module)),*
         )
     };
-    ($($module:path),* $(,)?) => { modules!($($module),*;) };
-    ($($module:path),*; $($external:path),* $(,)?) => { modules!(@list
+    (@base $($kind:ident $name:expr => $module:path),* $(,)?) => { modules!(@list
         source "parse" => crate::parse,
         source "lines" => crate::lines,
         source "records" => crate::records,
@@ -161,6 +160,13 @@ macro_rules! modules {
         source "document" => crate::document,
         source "time" => crate::time,
         external "command" => polylogue_model::command,
+        $($kind $name => $module),*
+    ) };
+    (@no_parser $module:path) => { modules!(@base
+        source concat!(stringify!($module), "::VERSION") => $module
+    ) };
+    ($($module:path),* $(,)?) => { modules!($($module),*;) };
+    ($($module:path),*; $($external:path),* $(,)?) => { modules!(@base
         source "content_ids" => crate::content_ids,
         source "chain_names" => crate::chain_names,
         source "export" => crate::export,
@@ -303,7 +309,7 @@ impl OriginSpec {
     /// Stable, ordered tuple of module names and versions.
     pub fn parse_version(&self) -> String {
         let modules = if self.support == Support::NoParser && self.capture.is_row_dump() {
-            modules!(crate::row_dump)
+            modules!(@no_parser crate::row_dump)
         } else {
             self.modules
         };
