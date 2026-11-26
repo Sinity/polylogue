@@ -92,12 +92,15 @@ fn default_pages_read_in_index_order() {
             continue;
         };
         // A derived relation, and a unit whose rows are an aggregate
-        // (`files`), is computed whole before its page.
+        // (`files`), is computed whole before its page. Annotations are
+        // rows of the archive, whose indexes the archive format owns.
         if !matches!(
             program.statements,
             crate::query::compile::Statements::Keyed(_)
-        ) || unit == polylogue_query::units::Unit::Files
-        {
+        ) || matches!(
+            unit,
+            polylogue_query::units::Unit::Files | polylogue_query::units::Unit::Annotations
+        ) {
             continue;
         }
         let steps = page_steps(&f, text);

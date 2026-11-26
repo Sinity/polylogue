@@ -545,7 +545,9 @@ fn recency_scope_and_index_agree_across_batches_shared_children_and_unknown_time
                     "sessions where kind:main ({identities}) {term} | sort by last_active desc"
                 ),
                 3,
-                vec!["test:a", "test:d", "test:e", "test:f", "test:g"],
+                // Newest first is the default order read backwards: e and d
+                // share a time, so the greater ID comes first.
+                vec!["test:a", "test:e", "test:d", "test:f", "test:g"],
             ),
             (
                 format!(

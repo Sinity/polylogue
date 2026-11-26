@@ -250,8 +250,10 @@ fn identical_lower_priority_messages_leave_items_unchanged() {
             row(n as u64 / 3, m)
         })
         .collect();
+    // The shown place comes from the input that sorts first.
+    let main = input_sorting_before("z-extra", "a-main");
     w.store_reading(
-        batch("a-main", Route::Live, 0, messages.clone(), &["s"]),
+        batch(&main, Route::Live, 0, messages.clone(), &["s"]),
         Some(&SOURCE_RECORD),
     )
     .unwrap();

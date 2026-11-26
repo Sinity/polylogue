@@ -654,7 +654,7 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
     // another shape would not decode. Bumping the span fold's version folds
     // every session from its start, so a change here needs a new version.
     let prefix = Prefix {
-        end: Some((("1order".into(), "m".into()), 3)),
+        end: Some(((b"1order".to_vec(), "m".into()), 3)),
         first: Some(4),
         last: Some(5),
         timed: 6,
@@ -687,9 +687,9 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
             serde_json::to_value(&prefix).unwrap()
         ),
         (
-            4,
+            5,
             json!({
-                "end":[["1order","m"],3],"first":4,"last":5,"timed":6,"untimed":7,
+                "end":[[[49,111,114,100,101,114],"m"],3],"first":4,"last":5,"timed":6,"untimed":7,
                 "unordered_gaps":8,"previous":[9,"model"],"tools":10,"intervals":11,"tool_untimed":12,
                 "tool_no_result":13,"tool_same_timestamp":14,"tool_reversed":15,"tool_sum_ms":16,
                 "tool_union_ms":17,"clustered_ms":18,"prompts":19,"failure":[20,21],"stop_reported":true,
