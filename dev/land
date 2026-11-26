@@ -348,8 +348,14 @@ await_run() {
         [ "$(gh run view "$run" -R "$owner/$name" --json status --jq .status)" = completed ]; do
         polls=$((polls + 1)); sleep 10
     done
-    gh run watch "$run" -R "$owner/$name" --interval 60 >/dev/null 2>&1 || true
-    conclusion=$(gh run view "$run" -R "$owner/$name" --json conclusion --jq .conclusion)
+    # gh run watch can return before the run ends (an API error ends it).
+    while true; do
+        gh run watch "$run" -R "$owner/$name" --interval 60 >/dev/null 2>&1 || true
+        read -r status conclusion < <(gh run view "$run" -R "$owner/$name" --json status,conclusion \
+            --jq '"\(.status) \(.conclusion)"') || { sleep 60; continue; }
+        [ "$status" != completed ] || return 0
+        sleep 60
+    done
 }
 
 failed_jobs() {
