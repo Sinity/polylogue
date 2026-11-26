@@ -64,7 +64,7 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
             );
             let ranges = r
                 .query(
-                    "SELECT source_start,source_end FROM message_parse ORDER BY source_start",
+                    "SELECT source_start,source_start+source_length AS source_end FROM message_parse ORDER BY source_start",
                     &[],
                 )
                 .unwrap();

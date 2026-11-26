@@ -257,7 +257,10 @@ fn status_answers_within_its_default_deadline_while_a_pass_ingests_a_large_corpu
             continue;
         };
         let messages = value["store"]["messages"].as_u64();
-        if value["busy"] == true && messages.is_some_and(|n| n > 1 && n < total) {
+        // Sessions are counted with each commit; the message total follows
+        // the session summaries, which may fold the corpus in one run.
+        let sessions = value["store"]["sessions"].as_u64();
+        if value["busy"] == true && sessions.is_some_and(|n| n > 1 && n < 1 + SESSIONS as u64) {
             during_ingest += 1;
         }
         if messages == Some(total) && value["busy"] == false {
