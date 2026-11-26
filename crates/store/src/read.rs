@@ -75,9 +75,9 @@ pub struct MessageParse {
     pub ordinal: u64,
 }
 
+/// Where a shown message sits, and the byte range its commit is read from.
 struct MessageArrival {
     order: Option<i64>,
-    fact: Option<i64>,
     source: Option<(String, i64, i64)>,
 }
 
@@ -91,11 +91,6 @@ impl MessageArrival {
     }
 
     fn resolve(self, conn: &Connection) -> Result<Option<u64>> {
-        if let Some(fact) = self.fact {
-            return u64::try_from(fact)
-                .map(Some)
-                .map_err(|_| StoreError::stored(0, "negative message commit"));
-        }
         let Some((input, chain, end)) = self.source else {
             return Ok(None);
         };
@@ -133,16 +128,14 @@ row! {
 }
 
 row! {
-    /// The commit facts of a shown message's reading.
+    /// Where a shown message's reading ends in its chain.
     struct MessageCommit {
-        committed: Option<i64>,
         input: String,
         source_chain: i64,
         source_end: i64,
     }
     statements {
-        const OF_MESSAGE = "SELECT (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash) AS committed,
-            i.id AS input, m.source_chain, m.source_end
+        const OF_MESSAGE = "SELECT i.id AS input, m.source_chain, m.source_end
             FROM message m JOIN input_ref i ON i.pk=m.input_pk WHERE m.id=?1 AND m.version_hash IS NOT NULL";
     }
 }
@@ -167,7 +160,6 @@ macro_rules! message_columns {
             m.cache_write_1h_tokens, m.speed, m.version_hash, m.layout,
             CASE WHEN m.layout IS NULL THEN
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END AS stored_block_count,
-            (SELECT max(r.committed) FROM message_parse r WHERE r.message_id=m.id AND r.hash=m.version_hash) AS committed,
             CASE WHEN m.version_hash IS NOT NULL THEN source_input.id END AS source_input,
             CASE WHEN m.version_hash IS NOT NULL THEN m.source_chain END AS source_chain,
             CASE WHEN m.version_hash IS NOT NULL THEN m.source_end END AS source_end, "
@@ -198,7 +190,6 @@ row! {
         version_hash: Option<Vec<u8>>,
         layout: Option<Vec<u8>>,
         stored_block_count: i64,
-        committed: Option<i64>,
         source_input: Option<String>,
         source_chain: Option<i64>,
         source_end: Option<i64>,
@@ -1231,7 +1222,6 @@ impl Reader<'_> {
         match conn.maybe(&MessageCommit::OF_MESSAGE, [id.to_string()])? {
             Some(commit) => MessageArrival {
                 order: None,
-                fact: commit.committed,
                 source: Some((commit.input, commit.source_chain, commit.source_end)),
             }
             .resolve(conn),
@@ -1434,7 +1424,6 @@ impl Reader<'_> {
                 .transpose()?;
             let commit = MessageArrival {
                 order: row.record_order,
-                fact: row.committed,
                 source: row
                     .source_input
                     .zip(row.source_chain)

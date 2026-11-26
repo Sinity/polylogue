@@ -7,16 +7,14 @@ use polylogue_model::{DocumentId, Link, SessionId};
 use rusqlite::params;
 
 row! {
-    /// The shown reading of a document: its commit position when recorded,
-    /// else where it ends in its chain.
+    /// Where the shown reading of a document ends in its chain.
     struct DocumentCommit {
-        committed: Option<i64>,
         input: String,
         chain: i64,
         source_end: u64,
     }
     statements {
-        const OF_DOCUMENT = "SELECT ds.committed, i.id AS input, ds.chain, ds.source_end FROM document d
+        const OF_DOCUMENT = "SELECT i.id AS input, ds.chain, ds.source_end FROM document d
             JOIN document_parse ds ON ds.document_id=d.id AND ds.input_pk=d.input_pk AND ds.chain=d.source_chain
             JOIN input_ref i ON i.pk=ds.input_pk WHERE d.id=?1";
     }
@@ -62,10 +60,8 @@ impl Reader<'_> {
         else {
             return Ok(None);
         };
-        match positive(source.committed)? {
-            Some(committed) => Ok(Some(committed)),
-            None => self.source_commit(&source.input, source.chain, Some(source.source_end)),
-        }
+        // A document reading has a byte range: its commit is the archive's.
+        self.source_commit(&source.input, source.chain, Some(source.source_end))
     }
 
     /// Greatest commit position among the stored link facts.

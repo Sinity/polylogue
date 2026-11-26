@@ -134,6 +134,9 @@ CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_o
 
 -- What a chain states about a session (model Session, as JSON), merged in
 -- byte order. A session exists while some reading states it.
+-- A parse row with a byte range gets its commit position from the archive's
+-- extents for that range; a row without one (sessions, links, prefix copies)
+-- keeps `committed`, the commit of the step that stated it.
 CREATE TABLE session_record (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
@@ -184,7 +187,6 @@ CREATE TABLE message_parse (
   layout            BLOB NOT NULL,          -- original block count and selected ordinals
   response_key      TEXT,                   -- the key the source gives the records of one response
   content_name      TEXT,                   -- a content-named message's name without its number
-  committed         INTEGER CHECK(committed > 0),
   content_group     INTEGER NOT NULL REFERENCES content_group(id),
   content_start     INTEGER NOT NULL,       -- its content's place in the group's decoded bytes
   content_length    INTEGER NOT NULL,
@@ -250,7 +252,6 @@ CREATE TABLE event_parse (
   at                INTEGER,
   hash              BLOB NOT NULL,          -- the value's hash
   imported_sources  TEXT NOT NULL CHECK(json_valid(imported_sources)),
-  committed         INTEGER CHECK(committed > 0),
   content_group     INTEGER NOT NULL REFERENCES content_group(id),
   content_start     INTEGER NOT NULL,       -- its fields' place in the group's decoded bytes,
   content_length    INTEGER NOT NULL,       --   and their length
@@ -294,7 +295,6 @@ CREATE TABLE document_parse (
   time              BLOB NOT NULL,
   hash              BLOB NOT NULL,
   body              BLOB NOT NULL,          -- the model Document with text moved to `text`
-  committed         INTEGER CHECK(committed > 0),
   PRIMARY KEY (input_pk, chain, document_id)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX document_parse_id ON document_parse(document_id);
