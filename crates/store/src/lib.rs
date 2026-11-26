@@ -228,13 +228,17 @@ pub enum StoreError {
     /// A state no request can cause: a broken invariant in Polylogue.
     #[error("{0}; this is a Polylogue bug; report it with the request ID")]
     Internal(String),
-    /// A batch's bytes were stored and its parsed rows refused for their
-    /// content (a content, request or bug cause): the bytes are in `stored`'s chain,
-    /// the reading of them is not.
+    /// A batch's bytes were stored and its parsed rows refused, for a cause
+    /// that writing them again would meet again: the bytes are in
+    /// `stored`'s chain, the reading of them is not. `cause` is the
+    /// refusal's own: only a `Content` one (the parser's reading of these
+    /// bytes) stands as the chain's failure; a stale or inconsistent step
+    /// (`Request`, `Bug`) leaves the chain due.
     #[error("{reason}")]
     RowsRefused {
         stored: staging::StoredInput,
         reason: String,
+        cause: polylogue_model::Cause,
     },
     /// A value in the archive that this build cannot read back: corrupt or
     /// unrecognized stored data, never the caller's request.
@@ -409,7 +413,7 @@ impl polylogue_model::Caused for StoreError {
             Self::Invalid(_) => Cause::Request,
             Self::Refused(_) => Cause::Request,
             Self::Internal(_) => Cause::Bug,
-            Self::RowsRefused { .. } => Cause::Content,
+            Self::RowsRefused { cause, .. } => *cause,
             Self::StoredValue { .. } => Cause::StoredData,
             Self::Query(_) => Cause::Request,
             Self::ReferenceUnavailable { .. } => Cause::Transient,

@@ -115,9 +115,12 @@ pub struct Done {
     pub error: Option<EngineError>,
     pub cancelled: bool,
     pub write_failed: bool,
-    /// The writer refused the batch's content, so the same range is refused
-    /// again; any other failed write is retried. When the bytes were stored
-    /// before the rows were refused, `chain` names where they are.
+    /// The writer refused the batch for its bytes' content under this
+    /// reading version, so the chain fails until either changes; any other
+    /// failed write, a stale or inconsistent step among them, leaves the
+    /// chain due and it is planned again from the record. When the bytes
+    /// were stored before the rows were refused, `chain` names where they
+    /// are.
     pub content_refused: bool,
     /// The batch carries a step that records the parser's failure.
     pub failure_recorded: bool,
@@ -714,7 +717,8 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
                             }
                             Some(Err(error)) => {
                                 result.write_failed = true;
-                                result.content_refused = error.cause().recurs();
+                                result.content_refused =
+                                    error.cause() == polylogue_model::Cause::Content;
                                 result.stored = 0;
                                 if let polylogue_store::StoreError::RowsRefused { stored, .. } =
                                     &error
