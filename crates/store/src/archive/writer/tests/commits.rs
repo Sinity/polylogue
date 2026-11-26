@@ -194,18 +194,23 @@ fn accepted_deliveries_are_pending_until_their_commit() {
         }),
         ..setting("delivery-one", "on")
     };
-    let committed = sender.accept_delivery(delivery).unwrap();
+    let committed = sender.accept_delivery(delivery.clone(), Some(7)).unwrap();
     pause.wait().unwrap();
     assert_eq!(
         sender
             .pending_deliveries()
             .iter()
-            .map(|request| request.id.as_str())
+            .map(|pending| (pending.request.id.as_str(), pending.prepared_at))
             .collect::<Vec<_>>(),
-        ["delivery-one"]
+        [("delivery-one", Some(7))]
     );
+    let repeated = sender.accept_delivery(delivery, Some(9)).unwrap();
+    assert_eq!(sender.pending_deliveries()[0].prepared_at, Some(7));
     pause.release();
-    committed.recv().unwrap().unwrap();
+    let first = committed.recv().unwrap().unwrap();
+    let again = repeated.recv().unwrap().unwrap();
+    assert_eq!(again.position, first.position);
+    assert!(again.outcome.outcome.repeat);
     assert!(sender.pending_deliveries().is_empty());
 }
 
@@ -517,7 +522,7 @@ fn imported_on_two_archives() -> Vec<Vec<String>> {
         let conn = crate::archive::open_read(&w.archive.archive_db()).unwrap();
         let mut statement = conn
             .prepare(
-                "SELECT 'input', id, format, '', '' FROM input
+                "SELECT 'input', id, origin, '', '' FROM input
                  UNION ALL SELECT 'revision', input, number, chain, length FROM revision
                  UNION ALL SELECT 'extent', input, chain, offset, hex(blob) FROM extent
                  ORDER BY 1, 2, 3",

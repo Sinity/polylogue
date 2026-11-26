@@ -36,7 +36,7 @@ impl ChainRows {
         let input_pk = conn
             .query_row(
                 "SELECT i.pk FROM input_ref i JOIN parse_state p ON p.input_pk=i.pk
-                 WHERE i.id=?1 AND p.chain=?2 AND p.parse_version=?3 AND p.parsed_upto=?4",
+                 WHERE i.id=?1 AND p.chain=?2 AND p.parser_version=?3 AND p.parsed_to=?4",
                 params![input, chain, parse_version, cursor],
                 |row| row.get::<_, i64>(0),
             )

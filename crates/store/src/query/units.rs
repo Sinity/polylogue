@@ -751,7 +751,7 @@ static ANNOTATIONS: UnitSpec = UnitSpec {
         (
             "about",
             T(
-                "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_annotation_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))",
+                "(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_annotation_link nt WHERE nt.annotation = {r}.id AND nt.role = 'about' ORDER BY nt.ref))",
             ),
             Text,
         ),
@@ -764,7 +764,7 @@ static ANNOTATIONS: UnitSpec = UnitSpec {
     session_pk: "{r}.session_pk",
     session_scope: Some(
         "EXISTS (SELECT 1 FROM source_annotation_link snt JOIN session ss ON 'session:' || ss.id = snt.ref \
-         WHERE snt.record = {r}.id AND snt.role = 'about' AND ss.pk IN ({sessions}))",
+         WHERE snt.annotation = {r}.id AND snt.role = 'about' AND ss.pk IN ({sessions}))",
     ),
     search: Search::Substring("{r}.value"),
     relations: &[],
@@ -1019,7 +1019,7 @@ static QUERIES: UnitSpec = UnitSpec {
         (
             "kept",
             T(
-                "(SELECT 'result:'||k.id FROM source_kept_result k WHERE k.name={r}.name ORDER BY k.id DESC LIMIT 1)",
+                "(SELECT 'result:'||k.id FROM source_saved_rows k WHERE k.name={r}.name ORDER BY k.id DESC LIMIT 1)",
             ),
             Text,
         ),
@@ -1050,7 +1050,7 @@ static RUNS: UnitSpec = UnitSpec {
         ("id", T("'run:'||{r}.id"), Text),
         ("query", T("'query:'||{r}.query"), Text),
         ("at", T("(CAST({r}.at AS INTEGER)/1000000)"), Time),
-        ("read_at", T("{r}.read_at"), Text),
+        ("read_at", T("{r}.read_position"), Text),
         ("author", T("json_extract({r}.author,'$')"), Text),
         ("via", T("{r}.via"), Text),
         ("count", T("CAST({r}.count AS INTEGER)"), Number),
@@ -1069,7 +1069,7 @@ static RUNS: UnitSpec = UnitSpec {
     parents: &[],
 };
 static RESULTS: UnitSpec = UnitSpec {
-    from: T("source_kept_result {r}"),
+    from: T("source_saved_rows {r}"),
     key: "{r}.rowid",
     identity: &["{r}.id"],
     columns: &[
@@ -1099,7 +1099,7 @@ static RESULTS: UnitSpec = UnitSpec {
 /// over its events in order. A job always has its `started` event.
 pub(crate) fn import_job_part(a: &Aliases, now: i64, part: &str) -> String {
     let fold = a.expand(&format!(
-        "(SELECT pl_import_job('{part}',{now},{{r}}_ev.kind,{{r}}_ev.by,{{r}}_ev.at ORDER BY {{r}}_ev.n) \
+        "(SELECT pl_import_job('{part}',{now},{{r}}_ev.kind,{{r}}_ev.by,{{r}}_ev.at ORDER BY {{r}}_ev.position) \
          FROM source_import_job_event {{r}}_ev WHERE {{r}}_ev.job={{r}}.id)"
     ));
     if part == "state" {
@@ -1117,7 +1117,7 @@ pub(crate) fn import_job_holder(a: &Aliases, now: i64) -> String {
 /// Where a chat action stands at `now`, or its holder, by the model's rule.
 pub(crate) fn chat_action_part(a: &Aliases, now: i64, part: &str) -> String {
     let fold = a.expand(&format!(
-        "(SELECT pl_chat_action('{part}',{now},{{r}}.needs_approval,{{r}}_ev.kind,{{r}}_ev.phase,{{r}}_ev.by,{{r}}_ev.at ORDER BY {{r}}_ev.n) \
+        "(SELECT pl_chat_action('{part}',{now},{{r}}.needs_approval,{{r}}_ev.kind,{{r}}_ev.phase,{{r}}_ev.by,{{r}}_ev.at ORDER BY {{r}}_ev.position) \
          FROM source_chat_action_event {{r}}_ev WHERE {{r}}_ev.action={{r}}.id)"
     ));
     if part == "state" {
@@ -1134,11 +1134,11 @@ pub(crate) fn chat_action_state(a: &Aliases, now: i64) -> String {
 pub(crate) fn chat_action_holder(a: &Aliases, now: i64) -> String {
     chat_action_part(a, now, "claimed_by")
 }
-pub(crate) const IMPORT_JOB_POSITION: &str = "(SELECT {r}_ev.position FROM source_import_job_event {r}_ev WHERE {r}_ev.job={r}.id AND {r}_ev.position IS NOT NULL ORDER BY {r}_ev.n DESC LIMIT 1)";
+pub(crate) const IMPORT_JOB_POSITION: &str = "(SELECT {r}_ev.provider_position FROM source_import_job_event {r}_ev WHERE {r}_ev.job={r}.id AND {r}_ev.provider_position IS NOT NULL ORDER BY {r}_ev.position DESC LIMIT 1)";
 pub(crate) const IMPORT_JOB_UPDATED: &str = "coalesce((SELECT max({r}_ev.at) FROM source_import_job_event {r}_ev WHERE {r}_ev.job={r}.id),{r}.created_at)";
 pub(crate) const CHAT_ACTION_UPDATED: &str = "coalesce((SELECT max({r}_ev.at) FROM source_chat_action_event {r}_ev WHERE {r}_ev.action={r}.id),{r}.created_at)";
-pub(crate) const CHAT_ACTION_PHASE: &str = "coalesce((SELECT {r}_ev.phase FROM source_chat_action_event {r}_ev WHERE {r}_ev.action={r}.id ORDER BY {r}_ev.n DESC LIMIT 1),'queued')";
-pub(crate) const CHAT_ACTION_DETAIL: &str = "(SELECT {r}_ev.detail FROM source_chat_action_event {r}_ev WHERE {r}_ev.action={r}.id ORDER BY {r}_ev.n DESC LIMIT 1)";
+pub(crate) const CHAT_ACTION_PHASE: &str = "coalesce((SELECT {r}_ev.phase FROM source_chat_action_event {r}_ev WHERE {r}_ev.action={r}.id ORDER BY {r}_ev.position DESC LIMIT 1),'queued')";
+pub(crate) const CHAT_ACTION_DETAIL: &str = "(SELECT {r}_ev.detail FROM source_chat_action_event {r}_ev WHERE {r}_ev.action={r}.id ORDER BY {r}_ev.position DESC LIMIT 1)";
 pub(crate) const CHAT_ACTION_KIND: &str = "CASE WHEN {r}.stage_only THEN 'draft' ELSE 'submit' END";
 
 /// One of a job's counts as its latest event reports it.
@@ -1147,7 +1147,7 @@ macro_rules! import_job_count {
         concat!(
             "(SELECT {r}_ev.",
             $column,
-            " FROM source_import_job_event {r}_ev WHERE {r}_ev.job={r}.id ORDER BY {r}_ev.n DESC LIMIT 1)"
+            " FROM source_import_job_event {r}_ev WHERE {r}_ev.job={r}.id ORDER BY {r}_ev.position DESC LIMIT 1)"
         )
     };
 }

@@ -192,9 +192,9 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     for (path, ..) in &expected {
         let input = engine.location_id(path);
         let reader = engine.reads.reader().unwrap();
-        let progress = reader.input_progress(&input).unwrap().unwrap();
+        let progress = reader.latest_chain(&input).unwrap().unwrap();
         let stored = reader
-            .stored_chain(&input, progress.chain, progress.length)
+            .stored_chain(&input, progress.chain, progress.stored)
             .unwrap();
         plans.push(Plan::stored(
             path.clone(),
@@ -208,7 +208,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
                 chain: progress.chain,
             },
             None,
-            progress.length,
+            progress.stored,
             0,
             Bytes::Import(Arc::new(Mutex::new(Imported::from_chain(
                 stored,
@@ -227,7 +227,6 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         engine.archive.clone(),
         done,
         crate::pool::ChainSettings {
-            stopped_attempt: engine.stopped_attempt,
             read_memory: engine.config.reader_memory_per_connection().unwrap(),
             yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
@@ -235,7 +234,7 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
     // Match the scheduler's read-ahead: kept plans are not advanced while
     // their completed jobs release the byte budget and later inputs enter.
     for plan in &mut plans {
-        assert!(pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt())));
+        assert!(pool.submit(plan.next_job()));
     }
     drop(pool);
     engine.writer.flush().unwrap();
@@ -285,13 +284,12 @@ fn stored_chain_pool_releases_consumed_chunks_before_done_is_drained() {
         engine.archive.clone(),
         done,
         crate::pool::ChainSettings {
-            stopped_attempt: engine.stopped_attempt,
             read_memory: engine.config.reader_memory_per_connection().unwrap(),
             yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
     );
     for plan in &mut plans {
-        assert!(pool.submit(plan.next_job(&polylogue_testkit::stopped_attempt())));
+        assert!(pool.submit(plan.next_job()));
     }
     drop(pool);
     engine.writer.flush().unwrap();
@@ -368,9 +366,9 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     for (path, span) in paths.iter().zip(spans) {
         let input = engine.location_id(path);
         let reader = engine.reads.reader().unwrap();
-        let progress = reader.input_progress(&input).unwrap().unwrap();
+        let progress = reader.latest_chain(&input).unwrap().unwrap();
         let stored = reader
-            .stored_chain(&input, progress.chain, progress.length)
+            .stored_chain(&input, progress.chain, progress.stored)
             .unwrap();
         let mut plan = Plan::stored(
             path.clone(),
@@ -384,7 +382,7 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
                 chain: progress.chain,
             },
             None,
-            progress.length,
+            progress.stored,
             0,
             Bytes::Import(Arc::new(Mutex::new(Imported::from_chain(
                 stored,
@@ -393,7 +391,7 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
             span as u64,
             false,
         );
-        jobs.push(plan.next_job(&polylogue_testkit::stopped_attempt()));
+        jobs.push(plan.next_job());
     }
     let [started, queued, waiting] = <[_; 3]>::try_from(jobs).ok().unwrap();
     let (done, received) = channel();
@@ -406,7 +404,6 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
         engine.archive.clone(),
         done,
         crate::pool::ChainSettings {
-            stopped_attempt: engine.stopped_attempt,
             read_memory: engine.config.reader_memory_per_connection().unwrap(),
             yielding: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         },
@@ -466,14 +463,14 @@ fn a_submit_waiting_for_room_returns_when_a_stop_is_requested() {
     let reads = polylogue_store::ReadPool::open(&engine.archive.reopened()).unwrap();
     let reader = reads.reader().unwrap();
     let input = engine.location_id(&paths[0]);
-    let progress = reader.input_progress(&input).unwrap().unwrap();
-    assert_eq!(progress.parsed_upto, 0);
-    assert!(!progress.parsed);
+    let progress = reader.latest_chain(&input).unwrap().unwrap();
+    assert_eq!(progress.state.parsed_to(), 0);
+    assert!((progress.state == polylogue_model::chain::ChainState::Unparsed));
     let source = reader
-        .stored_chain(&input, progress.chain, progress.length)
+        .stored_chain(&input, progress.chain, progress.stored)
         .unwrap();
     let bytes = source
-        .read_range(&engine.blobs, 0, progress.length)
+        .read_range(&engine.blobs, 0, progress.stored)
         .unwrap();
     let body = "x".repeat(CHUNK);
     let original = polylogue_testkit::claude_user("first-0", "room-0", &body)
@@ -618,7 +615,7 @@ fn new_empty_file_has_body_and_eof_without_progress() {
         !plan.finished(),
         "an unrecorded observation is still local capture work"
     );
-    let mut job = plan.next_job(&polylogue_testkit::stopped_attempt());
+    let mut job = plan.next_job();
     assert_eq!(job.store_from, Some(0));
     let mut context = engine.source_read_context(
         &path,
@@ -646,9 +643,9 @@ fn new_empty_file_has_body_and_eof_without_progress() {
     let hash = hashed_blobs::Hash(*blake3::hash(b"").as_bytes());
     assert_eq!(engine.blobs.extent(&hash).unwrap().decoded_len, 0);
     let reader = engine.reads.reader().unwrap();
-    let progress = reader.input_progress(&input.id).unwrap().unwrap();
-    assert_eq!(progress.length, 0);
-    assert!(!progress.parsed);
+    let progress = reader.latest_chain(&input.id).unwrap().unwrap();
+    assert_eq!(progress.stored, 0);
+    assert!((progress.state == polylogue_model::chain::ChainState::Unparsed));
 }
 
 #[test]
@@ -681,17 +678,17 @@ fn malformed_middle_is_unreadable_and_later_facts_stay() {
             )
             .unwrap()
             .unwrap();
-        let progress = reader.input_progress(&known.input_id).unwrap().unwrap();
-        assert_eq!(progress.length, bytes.len() as u64);
-        assert_eq!(progress.parsed_upto, bytes.len() as u64);
-        assert!(progress.parsed);
+        let progress = reader.latest_chain(&known.input_id).unwrap().unwrap();
+        assert_eq!(progress.stored, bytes.len() as u64);
+        assert_eq!(progress.state.parsed_to(), bytes.len() as u64);
+        assert!((progress.state != polylogue_model::chain::ChainState::Unparsed));
         assert_eq!(
             reader
                 .stored_range(
                     &known.input_id,
                     progress.chain,
                     0,
-                    progress.length,
+                    progress.stored,
                     &engine.blobs
                 )
                 .unwrap(),
@@ -700,16 +697,10 @@ fn malformed_middle_is_unreadable_and_later_facts_stay() {
         let version = polylogue_sources::origin::by_name("claude-code")
             .unwrap()
             .parse_version();
-        let checkpoint = reader
-            .parser_checkpoint(&known.input_id, progress.chain, &version)
-            .unwrap()
-            .unwrap();
-        assert!(
-            checkpoint
-                .checkpoint
-                .unwrap()
-                .matches(&version, bytes.len() as u64)
-        );
+        let state = reader.chain_state(&known.input_id, progress.chain).unwrap();
+        assert_eq!(state.version(), Some(version.as_str()));
+        assert_eq!(state.parsed_to(), bytes.len() as u64);
+        assert!(state.resume().is_some());
         let session = polylogue_model::SessionId::parse("claude-code:raw-error").unwrap();
         assert_eq!(
             reader
@@ -729,7 +720,10 @@ fn malformed_middle_is_unreadable_and_later_facts_stay() {
         }
         commit = Some(current);
         drop(reader);
-        assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 3);
+        assert_eq!(
+            home.count("SELECT sum(used+skipped+unreadable) AS n FROM parse_state"),
+            3
+        );
         assert_eq!(
             home.count("SELECT sum(unreadable) AS n FROM parse_state"),
             1
@@ -759,7 +753,9 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         let (mut engine, lock) = crate::import::tests::engine(&home, first.len() as u64);
         fault::clear();
         // The real pool failure boundary is before provider parsing and after
-        // byte preparation. Reopen retries that same failing parser boundary.
+        // byte preparation. The failure stands at the stored length, so a
+        // reopen reads nothing of the chain again (docs/archive.md, parse
+        // versions).
         fault::arm(
             "parse",
             &home.file("failed.jsonl").to_string_lossy(),
@@ -770,12 +766,17 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         let result = engine.run_pass();
         fault::clear();
         let pass = result.unwrap();
-        assert!(
-            pass.errors
-                .iter()
-                .any(|error| error.to_string().contains("injected panic at parse")),
-            "attempt {attempt}: {pass:?}"
-        );
+        if attempt == 0 {
+            assert!(
+                pass.errors
+                    .iter()
+                    .any(|error| error.to_string().contains("injected panic at parse")),
+                "attempt {attempt}: {pass:?}"
+            );
+        } else {
+            assert!(pass.errors.is_empty(), "attempt {attempt}: {pass:?}");
+            assert_eq!(pass.bytes_read, 0, "attempt {attempt}: {pass:?}");
+        }
         if attempt == 1 {
             assert_eq!(pass.bytes_stored, 0);
         }
@@ -787,18 +788,20 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
             )
             .unwrap()
             .unwrap();
-        let progress = reader.input_progress(&known.input_id).unwrap().unwrap();
-        assert_eq!(progress.length, bytes.len() as u64);
-        assert_eq!(progress.parsed_upto, first.len() as u64);
-        assert!(progress.parsed, "the valid prefix keeps its reading");
-        assert!(!progress.waiting);
+        let progress = reader.latest_chain(&known.input_id).unwrap().unwrap();
+        assert_eq!(progress.stored, bytes.len() as u64);
+        assert_eq!(progress.state.parsed_to(), first.len() as u64);
+        assert!(
+            (progress.state != polylogue_model::chain::ChainState::Unparsed),
+            "the valid prefix keeps its reading"
+        );
         assert_eq!(
             reader
                 .stored_range(
                     &known.input_id,
                     progress.chain,
                     0,
-                    progress.length,
+                    progress.stored,
                     &engine.blobs
                 )
                 .unwrap(),
@@ -807,18 +810,13 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         let version = polylogue_sources::origin::by_name("claude-code")
             .unwrap()
             .parse_version();
-        let checkpoint = reader
-            .parser_checkpoint(&known.input_id, progress.chain, &version)
-            .unwrap()
-            .unwrap();
-        assert_eq!(checkpoint.parsed_upto, first.len() as u64);
-        assert!(
-            checkpoint
-                .checkpoint
-                .as_ref()
-                .unwrap()
-                .matches(&version, first.len() as u64)
-        );
+        let checkpoint = reader.chain_state(&known.input_id, progress.chain).unwrap();
+        assert_eq!(checkpoint.version(), Some(version.as_str()));
+        assert_eq!(checkpoint.parsed_to(), first.len() as u64);
+        assert!(matches!(
+            checkpoint,
+            polylogue_model::chain::ChainState::Failed { .. }
+        ));
         if let Some(previous) = &kept_checkpoint {
             assert_eq!(&checkpoint, previous);
         }
@@ -852,13 +850,16 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
             polylogue_store::wire_shapes::CoverageStatus::Failed
         );
         drop(reader);
-        assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 1);
+        assert_eq!(
+            home.count("SELECT sum(used+skipped+unreadable) AS n FROM parse_state"),
+            1
+        );
         assert_eq!(
             home.count("SELECT sum(unreadable) AS n FROM parse_state"),
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM parse_state WHERE status='failed' AND reason LIKE '%injected panic at parse%'"),
+            home.count("SELECT count(*) AS n FROM parse_state WHERE state='failed' AND failure_detail LIKE '%injected panic at parse%'"),
             1
         );
         drop(engine);

@@ -6,32 +6,34 @@ fn path(home: &ClaudeHome) -> std::path::PathBuf {
 }
 
 fn startup(home: &ClaudeHome) -> crate::config::Startup {
-    use crate::config::{EnvSnapshot, Identity, Overrides, ProcessInputs, Startup};
-    Startup::load(
-        &ProcessInputs {
-            environment: EnvSnapshot::from_values([
-                ("HOME".into(), home.home.clone().into_os_string()),
-                (
-                    "XDG_CONFIG_HOME".into(),
-                    home.dir.path().join("config").into_os_string(),
-                ),
-            ]),
-            output: crate::config::OutputConfig::new(false, false, true, None),
-            clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
-            identity: Some(Identity {
-                machine: "synthetic-machine".into(),
-                host: "synthetic-host".into(),
-            }),
-            memory_bytes: Some(4 << 30),
-            workers: Some(1),
-            cwd: Some(home.dir.path().into()),
-        },
+    use crate::config::{Client, EnvSnapshot, Identity, Overrides, ProcessInputs, Startup};
+    let process = ProcessInputs {
+        environment: EnvSnapshot::from_values([
+            ("HOME".into(), home.home.clone().into_os_string()),
+            (
+                "XDG_CONFIG_HOME".into(),
+                home.dir.path().join("config").into_os_string(),
+            ),
+        ]),
+        output: crate::config::OutputConfig::new(false, false, true, None),
+        clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
+        identity: Some(Identity {
+            machine: "synthetic-machine".into(),
+            host: "synthetic-host".into(),
+        }),
+        memory_bytes: Some(4 << 30),
+        workers: Some(1),
+        cwd: Some(home.dir.path().into()),
+    };
+    Client::load(
+        &process,
         Overrides {
             archive: Some(home.root.clone()),
             listen: Some("127.0.0.1:0".parse().unwrap()),
             ..Default::default()
         },
     )
+    .and_then(|client| Startup::extend(client, &process))
     .unwrap()
 }
 
@@ -43,16 +45,12 @@ fn loaded(home: &ClaudeHome, text: &str) -> crate::config::Startup {
 }
 
 fn launch(startup: crate::config::Startup) -> std::io::Result<Runtime> {
-    let attempt = startup
-        .mode
-        .needs_engine()
-        .then(polylogue_testkit::stopped_attempt);
     start(
         startup.config,
         startup.engine,
         startup.mode,
         polylogue_engine::Lifetime::UntilStopped,
-        attempt,
+        &Default::default(),
     )
 }
 

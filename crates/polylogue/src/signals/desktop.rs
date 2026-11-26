@@ -65,14 +65,10 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) -> Result<(), H
     // The subscription precedes both startup snapshots. It carries wakeups,
     // not work counters or observation timestamps to rely on.
     let commits = writes.completion_commits();
-    #[cfg(test)]
-    super::observations::emit(&d, super::observations::Phase::Subscribed);
     let wake = commits.wake_handle();
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped = Arc::clone(&done);
     let (changed, mut changes) = mpsc::channel(1);
-    #[cfg(test)]
-    let trace_daemon = Arc::clone(&d);
     let archive = d.archive.clone();
     let bridge = tokio::task::spawn_blocking(move || {
         let mut building = archive.index_build().is_some();
@@ -80,11 +76,6 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) -> Result<(), H
             let Ok(committed) = commits.recv() else {
                 break;
             };
-            #[cfg(test)]
-            super::observations::emit(
-                &trace_daemon,
-                super::observations::Phase::SubscriptionReceived,
-            );
             if stopped.load(std::sync::atomic::Ordering::Acquire) {
                 break;
             }
@@ -98,18 +89,9 @@ pub(super) async fn run(d: Arc<Daemon>, stop: CancellationToken) -> Result<(), H
             let installed = building && archive.index_build().is_none();
             building = archive.index_build().is_some();
             if !committed.authored && !installed {
-                #[cfg(test)]
-                super::observations::emit(&trace_daemon, super::observations::Phase::CueIgnored);
                 continue;
             }
             let forwarded = changed.try_send(());
-            #[cfg(test)]
-            super::observations::emit(
-                &trace_daemon,
-                super::observations::Phase::CueForwarded {
-                    queued: forwarded.is_ok(),
-                },
-            );
             if matches!(forwarded, Err(mpsc::error::TrySendError::Closed(()))) {
                 break;
             }
@@ -183,15 +165,13 @@ async fn drive(
         }
         // Rules read the index; while it is being built with nothing to
         // serve, the next commit (its install among them) evaluates again.
-        if evaluate && matches!(d.archive.index_build(), Some(build) if !build.serving_previous) {
+        if evaluate && d.archive.index_files().is_ok_and(|files| !files.serves()) {
             evaluate = false;
             due = d.config.requests.now().unix_ms().saturating_add(30_000);
         }
         if evaluate {
             let now = d.config.requests.now().unix_ms();
             due = now.saturating_add(30_000);
-            #[cfg(test)]
-            super::observations::emit(d, super::observations::Phase::TickStarted { at: now });
             let authorship =
                 polylogue_reading::operation::Context::worker_authorship("polylogue-signals");
             let context = tokio::select! {
@@ -217,11 +197,6 @@ async fn drive(
                     }
                 }
                 Err(error) => {
-                    #[cfg(test)]
-                    super::observations::emit(
-                        d,
-                        super::observations::Phase::TickFailed(json!(&error)),
-                    );
                     report(d, &error);
                 }
             }
@@ -231,8 +206,6 @@ async fn drive(
             evaluate = false;
         }
         let wait = due.saturating_sub(d.config.requests.now().unix_ms()).max(1) as u64;
-        #[cfg(test)]
-        super::observations::emit(d, super::observations::Phase::ControllerWaiting);
         tokio::select! {
             update=returned.recv(),if worker.is_some()=>{
                 let Some(update) = update else {
@@ -252,13 +225,9 @@ async fn drive(
                     }
                     break;
                 }
-                #[cfg(test)]
-                super::observations::emit(d, super::observations::Phase::ControllerWake { refresh: false });
                 evaluate=true;
             }
             _=tokio::time::sleep(std::time::Duration::from_millis(wait))=>{
-                #[cfg(test)]
-                super::observations::emit(d, super::observations::Phase::ControllerWake { refresh: true });
                 evaluate=true;
             }
             _=stop.cancelled()=>break,

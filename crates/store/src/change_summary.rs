@@ -2,11 +2,8 @@
 //! that writes a message, event or link row records it here before it
 //! changes the row. When the transaction ends, each session it touched is
 //! marked due for its summaries from the earliest row key its changes
-//! reached ([`ChangeSummary::mark_due`]), and the session item index is
-//! brought up to date from the summary alone, so a transaction's cost
-//! follows what it changed, not the length of the sessions it touched. A
-//! summary lives for one transaction and is never stored; nothing here is
-//! a value of a session.
+//! reached ([`ChangeSummary::mark_due`]). A summary lives for one
+//! transaction and is never stored; nothing here is a value of a session.
 use crate::Result;
 use crate::summary::Key;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -15,38 +12,21 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) struct ChangeSummary {
     changed: RefCell<Changed>,
-    /// The sessions the transaction composes hold every message their
-    /// events follow, or the message is one of these, shown in another
-    /// session, or none shows it (a build's stream).
-    sessions_alone: Option<std::sync::Arc<std::collections::HashSet<String>>>,
 }
-
-/// A message's place in session order (`message_session`): its
-/// `session_order` and ID.
-pub(crate) type OrderKey = (String, String);
 
 /// A message as it was before the transaction changed it.
 struct Before {
     session: i64,
     parent: Option<String>,
-    key: OrderKey,
-}
-
-struct MessageChange {
-    before: Option<Before>,
-    /// The session a message new in this transaction was written in, when
-    /// that session is composed whole: nothing about it is read back.
-    whole_in: Option<i64>,
+    key: Key,
 }
 
 #[derive(Default)]
 struct Changed {
-    /// Entries prepared from the selected typed content, kept only until commit.
-    items: BTreeMap<i64, MessageItems>,
-    /// Messages whose row, blocks, place or visibility changed, with the
-    /// session, parent and place each had before the change (none for a
-    /// new one).
-    messages: BTreeMap<i64, MessageChange>,
+    /// Messages whose row, blocks, place, readings or visibility changed,
+    /// with the session, parent and place each had before the change (none
+    /// for a new one).
+    messages: BTreeMap<i64, Option<Before>>,
     /// Events whose row changed, with the session and row key each had
     /// before.
     events: BTreeMap<i64, Option<(i64, Key)>>,
@@ -54,116 +34,23 @@ struct Changed {
     sessions: BTreeSet<i64>,
     /// Sessions whose links as a child changed, by session ID.
     link_children: BTreeMap<String, String>,
-    /// Sessions to bring up to date from their first unit: a change the
-    /// writer does not describe row by row.
+    /// Sessions due from their first row: a change the writer does not
+    /// describe row by row.
     whole: BTreeSet<i64>,
 }
 
-enum MessageItems {
-    Content,
-    Metadata,
-    Prepared(Vec<polylogue_model::read::IndexEntry>),
-}
-
-/// One session's part of a summary.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub(crate) struct SessionChange {
-    /// Messages of the session, before or after the change, that changed.
-    pub messages: BTreeSet<i64>,
-    /// IDs of the parents those messages had before or have now: a new or
-    /// removed reply changes whether its parent is a branch point.
-    pub parents: BTreeSet<String>,
-    pub events: BTreeSet<i64>,
-    pub links: bool,
-    pub whole: bool,
-    /// A changed message of the session existed before the transaction:
-    /// something already stored was rewritten, not only added to.
-    pub rewritten: bool,
-}
-
 impl ChangeSummary {
-    pub(crate) fn prepare_items(&self, pk: i64, entries: Vec<polylogue_model::read::IndexEntry>) {
-        self.changed
-            .borrow_mut()
-            .items
-            .insert(pk, MessageItems::Prepared(entries));
-    }
-
-    pub(crate) fn has_prepared_items(&self, pk: i64) -> bool {
-        matches!(
-            self.changed.borrow().items.get(&pk),
-            Some(MessageItems::Prepared(_))
-        )
-    }
-
-    pub(crate) fn prepared_items(&self, pk: i64) -> Option<Vec<polylogue_model::read::IndexEntry>> {
-        match self.changed.borrow().items.get(&pk) {
-            Some(MessageItems::Prepared(entries)) => Some(entries.clone()),
-            _ => None,
-        }
-    }
-
-    pub(crate) fn reuses_items(&self, pk: i64) -> bool {
-        let changed = self.changed.borrow();
-        matches!(changed.items.get(&pk), None | Some(MessageItems::Metadata))
-    }
-
     /// Starts the summary of a transaction.
     pub(crate) fn start(_conn: &Connection) -> Result<Self> {
         Ok(Self {
             changed: RefCell::default(),
-            sessions_alone: None,
         })
     }
 
-    /// Starts the summary of a transaction composing sessions each of which
-    /// holds every message its events follow, unless the message is one of
-    /// `elsewhere`, shown in another session, or none shows it: the item
-    /// index finds those messages among the session's own.
-    pub(crate) fn start_sessions_alone(
-        conn: &Connection,
-        elsewhere: std::sync::Arc<std::collections::HashSet<String>>,
-    ) -> Result<Self> {
-        Ok(Self {
-            sessions_alone: Some(elsewhere),
-            ..Self::start(conn)?
-        })
-    }
-
-    /// When the transaction composes sessions alone, the messages their
-    /// events follow that other sessions show.
-    pub(crate) fn sessions_alone(&self) -> Option<&std::collections::HashSet<String>> {
-        self.sessions_alone.as_deref()
-    }
-
-    /// Records a message before its row changes or is inserted.
+    /// Records a message before its row changes or is inserted, or one the
+    /// transaction composed without changing its row: its readings may have
+    /// changed, which its session's summaries read.
     pub(crate) fn message(&self, conn: &Connection, pk: i64) -> Result<()> {
-        self.record_message(conn, pk)?;
-        self.changed
-            .borrow_mut()
-            .items
-            .insert(pk, MessageItems::Content);
-        Ok(())
-    }
-
-    /// Records a message the transaction composed without changing its row:
-    /// its readings may have changed, which its session's summaries read.
-    pub(crate) fn reached(&self, conn: &Connection, pk: i64) -> Result<()> {
-        self.record_message(conn, pk)
-    }
-
-    /// Placement and visibility change without changing the selected content.
-    pub(crate) fn message_metadata(&self, conn: &Connection, pk: i64) -> Result<()> {
-        self.record_message(conn, pk)?;
-        self.changed
-            .borrow_mut()
-            .items
-            .entry(pk)
-            .or_insert(MessageItems::Metadata);
-        Ok(())
-    }
-
-    fn record_message(&self, conn: &Connection, pk: i64) -> Result<()> {
         if self.changed.borrow().messages.contains_key(&pk) {
             return Ok(());
         }
@@ -176,41 +63,20 @@ impl ChangeSummary {
                 Ok(Before {
                     session: row.get(0)?,
                     parent: row.get(1)?,
-                    key: (row.get(2)?, row.get(3)?),
+                    key: Key::message(&row.get::<_, String>(2)?, &row.get::<_, String>(3)?),
                 })
             })
             .optional()?;
         if let Some(before) = &before {
             self.session(before.session);
         }
-        self.changed.borrow_mut().messages.insert(
-            pk,
-            MessageChange {
-                before,
-                whole_in: None,
-            },
-        );
+        self.changed.borrow_mut().messages.insert(pk, before);
         Ok(())
     }
 
+    /// Records a message new in this transaction.
     pub(crate) fn new_message(&self, pk: i64) {
-        let mut changed = self.changed.borrow_mut();
-        changed.messages.entry(pk).or_insert(MessageChange {
-            before: None,
-            whole_in: None,
-        });
-        changed.items.entry(pk).or_insert(MessageItems::Content);
-    }
-
-    /// Records a message new in this transaction, written in `session`,
-    /// which the transaction composes whole ([`Self::whole_session`]).
-    pub(crate) fn new_message_in(&self, pk: i64, session: i64) {
-        let mut changed = self.changed.borrow_mut();
-        changed.messages.entry(pk).or_insert(MessageChange {
-            before: None,
-            whole_in: Some(session),
-        });
-        changed.items.entry(pk).or_insert(MessageItems::Content);
+        self.changed.borrow_mut().messages.entry(pk).or_insert(None);
     }
 
     /// Records an event the transaction inserted.
@@ -284,67 +150,6 @@ impl ChangeSummary {
         self.changed.borrow_mut().whole.insert(pk);
     }
 
-    /// Tool outcomes contribute to counts and measures. They leave the
-    /// selected content and placement that the item index stores alone.
-    pub(crate) fn item_sessions(&self, conn: &Connection) -> Result<BTreeMap<i64, SessionChange>> {
-        self.changed_sessions(conn, |items| items.is_some())
-    }
-
-    fn changed_sessions(
-        &self,
-        conn: &Connection,
-        includes: impl Fn(Option<&MessageItems>) -> bool,
-    ) -> Result<BTreeMap<i64, SessionChange>> {
-        let changed = self.changed.borrow();
-        let mut out: BTreeMap<i64, SessionChange> = BTreeMap::new();
-        let mut now =
-            conn.prepare_cached("SELECT session_pk, parent_id FROM message WHERE pk = ?1")?;
-        for (&pk, change) in &changed.messages {
-            if !includes(changed.items.get(&pk)) {
-                continue;
-            }
-            // A whole session is brought up to date from all its rows.
-            if let Some(session) = change.whole_in.filter(|s| changed.whole.contains(s)) {
-                out.entry(session).or_default().messages.insert(pk);
-                continue;
-            }
-            let before = &change.before;
-            let after: Option<(i64, Option<String>)> = now
-                .query_row([pk], |row| <(_, _)>::try_from(row))
-                .optional()?;
-            let before = before.as_ref().map(|b| (b.session, b.parent.clone()));
-            for (session, parent) in before.iter().chain(after.iter()) {
-                let change = out.entry(*session).or_default();
-                change.messages.insert(pk);
-                change.rewritten |= before.is_some();
-                if let Some(parent) = parent {
-                    change.parents.insert(parent.clone());
-                }
-            }
-        }
-        let mut now = conn.prepare_cached("SELECT session_pk FROM event WHERE pk = ?1")?;
-        for (&pk, before) in &changed.events {
-            let after: Option<i64> = now.query_row([pk], |row| row.get(0)).optional()?.flatten();
-            for session in before
-                .iter()
-                .map(|(session, _)| session)
-                .chain(after.iter())
-            {
-                out.entry(*session).or_default().events.insert(pk);
-            }
-        }
-        let mut child = conn.prepare_cached("SELECT pk FROM session WHERE id = ?1")?;
-        for id in changed.link_children.keys() {
-            if let Some(pk) = child.query_row([id], |row| row.get(0)).optional()? {
-                out.entry(pk).or_default().links = true;
-            }
-        }
-        for &pk in &changed.whole {
-            out.entry(pk).or_default().whole = true;
-        }
-        Ok(out)
-    }
-
     /// Records that the transaction touched a session's rows or readings.
     pub(crate) fn session(&self, pk: i64) {
         self.changed.borrow_mut().sessions.insert(pk);
@@ -361,7 +166,7 @@ impl ChangeSummary {
             .query_map(params![session, id], |row| row.get::<_, i64>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         for message in messages {
-            self.record_message(conn, message)?;
+            self.message(conn, message)?;
         }
         Ok(())
     }
@@ -369,7 +174,10 @@ impl ChangeSummary {
     /// Ends the transaction's part in the sessions' summaries: each session
     /// it touched takes `counter` as the change of its own rows and is
     /// marked due from the earliest row key its changes reached, before or
-    /// after them. A session composed whole is due from the start.
+    /// after them. A session composed whole is due from the start. A reply
+    /// that arrives, goes or moves can change whether its parent is a
+    /// branch point, so the parent's key is reached too when the parent
+    /// has more than one reply or the reply existed before.
     pub(crate) fn mark_due(&self, conn: &Connection, counter: i64) -> Result<()> {
         let changed = self.changed.borrow();
         let mut reach: BTreeMap<i64, Key> = BTreeMap::new();
@@ -385,17 +193,46 @@ impl ChangeSummary {
         for &session in &changed.whole {
             lower(session, Key::start());
         }
-        let mut message_now =
-            conn.prepare_cached("SELECT session_pk, session_order, id FROM message WHERE pk = ?1")?;
-        for (&pk, change) in &changed.messages {
-            if let Some(before) = &change.before {
-                lower(before.session, Key::message(&before.key.0, &before.key.1));
+        let mut message_now = conn.prepare_cached(
+            "SELECT session_pk, session_order, id, parent_id FROM message WHERE pk = ?1",
+        )?;
+        let mut parent = conn.prepare_cached(
+            "SELECT p.session_order, p.id,
+                    (SELECT count(*) FROM (SELECT 1 FROM message c
+                                           WHERE c.session_pk = ?1 AND c.parent_id = ?2
+                                             AND c.duplicate_of IS NULL LIMIT 2))
+             FROM message p WHERE p.id = ?2 AND p.session_pk = ?1",
+        )?;
+        let mut parent_of = |session: i64, id: &str, existed: bool| -> Result<Option<Key>> {
+            Ok(parent
+                .query_row(params![session, id], |row| {
+                    <(String, String, i64)>::try_from(row)
+                })
+                .optional()?
+                .filter(|(_, _, replies)| existed || *replies > 1)
+                .map(|(order, id, _)| Key::message(&order, &id)))
+        };
+        for (&pk, before) in &changed.messages {
+            if let Some(before) = before {
+                lower(before.session, before.key.clone());
+                if let Some(id) = &before.parent
+                    && let Some(key) = parent_of(before.session, id, true)?
+                {
+                    lower(before.session, key);
+                }
             }
-            if let Some((session, order, id)) = message_now
-                .query_row([pk], |row| <(i64, String, String)>::try_from(row))
+            if let Some((session, order, id, parent)) = message_now
+                .query_row([pk], |row| {
+                    <(i64, String, String, Option<String>)>::try_from(row)
+                })
                 .optional()?
             {
                 lower(session, Key::message(&order, &id));
+                if let Some(parent) = parent
+                    && let Some(key) = parent_of(session, &parent, before.is_some())?
+                {
+                    lower(session, key);
+                }
             }
         }
         let mut event_now =

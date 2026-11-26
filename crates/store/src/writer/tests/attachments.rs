@@ -75,7 +75,6 @@ fn absent_and_present_blobs_keep_other_prepared_values() {
             let groups = packer.finish().unwrap();
             let actual = &indexed.parse[0].prepared;
             assert_eq!(actual.messages[0].hash, expected.hash);
-            assert_eq!(actual.messages[0].items, expected.items);
             assert_eq!(
                 actual.content.read(actual.messages[0].content).unwrap(),
                 groups.read(expected.content).unwrap()

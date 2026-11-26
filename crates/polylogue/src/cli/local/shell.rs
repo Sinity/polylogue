@@ -42,7 +42,7 @@ pub(super) fn install(
     };
     let completion = read(&path)?;
     let startup_path = match shell {
-        "zsh" => Some(startup.zsh_directory.join(".zshrc")),
+        "zsh" => Some(startup.client.zsh_directory.join(".zshrc")),
         "fish" => Some(
             paths
                 .config

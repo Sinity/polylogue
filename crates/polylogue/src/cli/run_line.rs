@@ -135,7 +135,7 @@ pub(crate) fn read_stdin(parsed: &mut ParsedLine, input: &mut impl Read) -> io::
     }
     Ok(())
 }
-pub(crate) fn refusal(error: Refusal, startup: &crate::config::Startup, json: bool) -> ExitCode {
+pub(crate) fn refusal(error: Refusal, client: &crate::config::Client, json: bool) -> ExitCode {
     let mut failure = crate::protocol::failure(error.code, error.message);
     failure.position = error.position.map(|start| command_surface::InputSpan {
         offset: start,
@@ -148,7 +148,7 @@ pub(crate) fn refusal(error: Refusal, startup: &crate::config::Startup, json: bo
             .get_or_insert_default()
             .push_str(&format!("\n{}", error.candidates.join("\n")));
     }
-    super::fail_with(startup.output, json, &failure, &[])
+    super::fail_with(client.output, json, &failure, &[])
 }
 fn call(
     archive: &Archive,
@@ -185,14 +185,14 @@ fn decoded(answer: &Answer<Value>) -> Result<LineAnswer, command_surface::Failur
     serde_json::from_value(answer.value().cloned().unwrap_or(Value::Null))
         .map_err(|error| crate::protocol::protocol_mismatch("rows", error.to_string()))
 }
-pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> ExitCode {
+pub(crate) fn run(mut parsed: ParsedLine, client: &crate::config::Client) -> ExitCode {
     let json = parsed.line.json;
     if parsed.first == FirstWord::Nothing {
         let words = vec!["polylogue", "status"];
         let matches = super::command()
             .try_get_matches_from(words)
             .expect("status command");
-        return super::run(&matches, startup);
+        return super::run(&matches, client);
     }
     if parsed.line.explain && !json {
         println!(
@@ -207,19 +207,16 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
         println!("line options: {:?}", parsed.line);
     }
     if parsed.first == FirstWord::RowNumbers {
-        let shown = match crate::row_numbers::last_listing(
-            &startup.config.paths,
-            &startup.config.archive,
-        ) {
+        let shown = match crate::row_numbers::last_listing(&client.paths, &client.archive) {
             Ok(shown) => shown,
-            Err(error) => return refusal(Refusal::new(Code::BadRequest, error), startup, json),
+            Err(error) => return refusal(Refusal::new(Code::BadRequest, error), client, json),
         };
         let Some(SelectionWord::Text(selection)) = &parsed.selection else {
             unreachable!()
         };
         let references = match crate::row_numbers::select(selection, &shown) {
             Ok(references) => references,
-            Err(error) => return refusal(Refusal::new(Code::BadRequest, error), startup, json),
+            Err(error) => return refusal(Refusal::new(Code::BadRequest, error), client, json),
         };
         if parsed
             .steps
@@ -227,7 +224,7 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
             .any(|step| !matches!(step.verb, "read" | "brief" | "pick"))
             && !parsed.line.explain
         {
-            let minutes = (startup.clock.now().as_millisecond() - shown.shown_at).max(0) / 60_000;
+            let minutes = (client.clock.now().as_millisecond() - shown.shown_at).max(0) / 60_000;
             eprintln!(
                 "rows of '{}' shown {minutes} min ago",
                 polylogue_render::terminal::escape(&shown.question)
@@ -236,7 +233,7 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
         parsed.selection = Some(SelectionWord::References(references));
     }
     if let Err(error) = read_stdin(&mut parsed, &mut io::stdin().lock()) {
-        return super::fail(startup.output, json, Code::Io, &error.to_string());
+        return super::fail(client.output, json, Code::Io, &error.to_string());
     }
     for step in &mut parsed.steps {
         if step.verb == "read" {
@@ -261,9 +258,9 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
     }
     let mut request = match request(&parsed) {
         Ok(request) => request,
-        Err(error) => return refusal(error, startup, json),
+        Err(error) => return refusal(error, client, json),
     };
-    let archive = Archive::at(&startup.config.archive);
+    let archive = Archive::at(&client.archive);
     let mut output_state = OutputState::default();
     let needs_choice = parsed.selection.is_none()
         && matches!(
@@ -315,41 +312,37 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
             let streamed = parsed.steps[..split].iter().any(|step| {
                 step.verb == "read"
                     && (matches!(step.to, Some(Destination::File(_) | Destination::Dir(_)))
-                        || step.step["delivery"] == "stream")
+                        || matches!(step.step["delivery"].as_str(), Some("stream" | "bundle")))
             });
             let code = if streamed {
-                super::write_out::line_stream(startup, &before, &parsed, &mut output_state)
+                super::write_out::line_stream(client, &before, &parsed, &mut output_state)
             } else {
                 let answer = match call(&archive, &before) {
                     Ok(answer) => answer,
-                    Err(error) => return super::fail_with(startup.output, json, &error, &[]),
+                    Err(error) => return super::fail_with(client.output, json, &error, &[]),
                 };
                 let line = match decoded(&answer) {
                     Ok(line) => line,
-                    Err(error) => return super::fail_with(startup.output, json, &error, &[]),
+                    Err(error) => return super::fail_with(client.output, json, &error, &[]),
                 };
-                output(&parsed, &line, &answer, startup, &mut output_state)
+                output(&parsed, &line, &answer, client, &mut output_state)
             };
-            if output_state.failed.is_some()
-                || (code != ExitCode::SUCCESS
-                    && code != ExitCode::from(1)
-                    && code != ExitCode::from(5))
-            {
+            if output_state.failed.is_some() || !matches!(code, 0 | 1 | 5) {
                 for step in &parsed.steps[split..] {
                     eprintln!("{} not run", step.verb);
                 }
-                return code;
+                return ExitCode::from(code);
             }
             let Some(population) = output_state.population.take() else {
                 return super::fail(
-                    startup.output,
+                    client.output,
                     json,
                     Code::DaemonProtocolMismatch,
                     "the line omitted its requested population",
                 );
             };
             if let Outcome::Error(error) = &population.outcome {
-                return super::fail_with(startup.output, json, error, &[]);
+                return super::fail_with(client.output, json, error, &[]);
             }
             match population
                 .value()
@@ -357,16 +350,16 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
                 .and_then(query_candidates)
             {
                 Ok(page) => page,
-                Err(error) => return super::fail_with(startup.output, json, &error, &[]),
+                Err(error) => return super::fail_with(client.output, json, &error, &[]),
             }
         } else {
             let first = match call(&archive, &before) {
                 Ok(answer) => answer,
-                Err(error) => return super::fail_with(startup.output, json, &error, &[]),
+                Err(error) => return super::fail_with(client.output, json, &error, &[]),
             };
             match candidates(&first) {
                 Ok(page) => page,
-                Err(error) => return super::fail_with(startup.output, json, &error, &[]),
+                Err(error) => return super::fail_with(client.output, json, &error, &[]),
             }
         };
         let one = choices.rows.len() == 1 && choices.next.is_none();
@@ -396,15 +389,15 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
                     "polylogue SESSION read".into(),
                 ]);
             }
-            return self::refusal(refusal, startup, json);
+            return self::refusal(refusal, client, json);
         }
         let chosen = if one {
             vec![choices.rows[0].reference.clone()]
         } else {
             let source = Arc::new(Source {
-                archive: startup.config.archive.clone(),
-                paths: startup.config.paths.clone(),
-                shown_at: startup.clock.now().as_millisecond(),
+                archive: client.archive.clone(),
+                paths: client.paths.clone(),
+                shown_at: client.clock.now().as_millisecond(),
                 question: question.clone(),
                 request: before.clone(),
                 frozen: frozen.then(|| choices.rows.clone()),
@@ -434,7 +427,7 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
                 Ok(picker::Choice::Cancelled) => {
                     return ExitCode::from(if output_state.exit_code() == 5 { 5 } else { 0 });
                 }
-                Err(error) => return super::fail_with(startup.output, json, &error.error, &[]),
+                Err(error) => return super::fail_with(client.output, json, &error.error, &[]),
             }
         };
         let after = split + usize::from(pick.is_some());
@@ -466,9 +459,9 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
             .filter(|destination| **destination != Destination::Stdout)
     {
         return match destination {
-            Destination::File(path) => super::attachment::write_to(startup, &request, path, json),
+            Destination::File(path) => super::attachment::write_to(client, &request, path, json),
             _ => super::fail(
-                startup.output,
+                client.output,
                 json,
                 Code::BadRequest,
                 "an attachment's bytes are written to a file: read --to FILE",
@@ -478,16 +471,21 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
     if parsed.steps.iter().any(|step| {
         step.verb == "read"
             && (matches!(step.to, Some(Destination::File(_) | Destination::Dir(_)))
-                || step.step["delivery"] == "stream"
+                || matches!(step.step["delivery"].as_str(), Some("stream" | "bundle"))
                 || step.step["follow"] == true)
     }) && !parsed.line.dry_run
         && !parsed.line.explain
     {
-        return super::write_out::line_stream(startup, &request, &parsed, &mut output_state);
+        return ExitCode::from(super::write_out::line_stream(
+            client,
+            &request,
+            &parsed,
+            &mut output_state,
+        ));
     }
     let answer = match call(&archive, &request) {
         Ok(answer) => answer,
-        Err(error) => return super::fail_with(startup.output, json, &error, &[]),
+        Err(error) => return super::fail_with(client.output, json, &error, &[]),
     };
     if json {
         println!(
@@ -501,9 +499,9 @@ pub(crate) fn run(mut parsed: ParsedLine, startup: &crate::config::Startup) -> E
     }
     let line = match decoded(&answer) {
         Ok(line) => line,
-        Err(error) => return super::fail_with(startup.output, json, &error, &[]),
+        Err(error) => return super::fail_with(client.output, json, &error, &[]),
     };
-    output(&parsed, &line, &answer, startup, &mut output_state)
+    ExitCode::from(output(&parsed, &line, &answer, client, &mut output_state))
 }
 fn failed_code(answer: &Answer<Value>) -> Option<u8> {
     let line = decoded(answer).ok()?;
@@ -513,16 +511,16 @@ fn output(
     parsed: &ParsedLine,
     line: &LineAnswer,
     answer: &Answer<Value>,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     state: &mut OutputState,
-) -> ExitCode {
+) -> u8 {
     state.accept(answer);
     let offset = state.offset;
     match line {
         LineAnswer::Listing(found) => {
             if let crate::protocol::query::Answer::Rows(rows) = found.as_ref() {
                 remember(
-                    startup,
+                    client,
                     parsed
                         .selection
                         .as_ref()
@@ -535,17 +533,17 @@ fn output(
                 );
             }
             if let Err(error) = text_output(
-                &super::print::query(found, super::style(startup.output)),
+                &super::print::query(found, super::style(client.output)),
                 parsed.listing.to.as_ref(),
-                startup,
+                client,
             ) {
-                state.failed.get_or_insert(error.kind.exit_code());
-                return super::fail_with(startup.output, false, &error, &[]);
+                super::fail_with(client.output, false, &error, &[]);
+                return *state.failed.get_or_insert(error.kind.exit_code());
             }
         }
         LineAnswer::Explained(explained) => println!(
             "{}",
-            super::print::json(explained, super::style(startup.output))
+            super::print::json(explained, super::style(client.output))
         ),
         LineAnswer::Steps(steps) => {
             if let Some(population) = steps
@@ -561,8 +559,8 @@ fn output(
                 let index = offset + relative;
                 match &report.outcome {
                     StepOutcome::Failed { error } => {
-                        state.failed.get_or_insert(error.kind.exit_code());
-                        failed = Some(super::fail_with(startup.output, false, error, &[]));
+                        super::fail_with(client.output, false, error, &[]);
+                        failed.get_or_insert(*state.failed.get_or_insert(error.kind.exit_code()));
                     }
                     StepOutcome::NotRun => eprintln!("{} not run", report.verb),
                     StepOutcome::WouldDo { would, refusal } => {
@@ -576,7 +574,7 @@ fn output(
                         let to = parsed.steps.get(index).and_then(|step| step.to.as_ref());
                         let result = match reply {
                             StepAnswer::Read(page) => super::write_out::line_page(
-                                startup,
+                                client,
                                 page,
                                 index + 1 == parsed.steps.len(),
                                 to,
@@ -587,14 +585,14 @@ fn output(
                             ),
                             StepAnswer::Streamed(_) | StepAnswer::Followed(_) => Ok(()),
                             StepAnswer::Attachment(page) => text_output(
-                                &super::print::json(page, super::style(startup.output)),
+                                &super::print::json(page, super::style(client.output)),
                                 to,
-                                startup,
+                                client,
                             ),
                             StepAnswer::Brief(brief) => text_output(
-                                &super::print::context(brief, super::style(startup.output)),
+                                &super::print::brief(brief, super::style(client.output)),
                                 to,
-                                startup,
+                                client,
                             ),
                             StepAnswer::Resume(resume) => {
                                 if terminal()
@@ -606,28 +604,29 @@ fn output(
                                 }
                                 print!(
                                     "{}",
-                                    super::print::resume(resume, super::style(startup.output))
+                                    super::print::resume(resume, super::style(client.output))
                                 );
                                 Ok(())
                             }
                             StepAnswer::Saved(report) => {
                                 eprint!(
                                     "{}",
-                                    super::print::saved(report, super::style(startup.output))
+                                    super::print::saved(report, super::style(client.output))
                                 );
                                 Ok(())
                             }
                             other => {
                                 eprintln!(
                                     "{}",
-                                    super::print::json(other, super::style(startup.output))
+                                    super::print::json(other, super::style(client.output))
                                 );
                                 Ok(())
                             }
                         };
                         if let Err(error) = result {
-                            state.failed.get_or_insert(error.kind.exit_code());
-                            failed = Some(super::fail_with(startup.output, false, &error, &[]));
+                            super::fail_with(client.output, false, &error, &[]);
+                            failed
+                                .get_or_insert(*state.failed.get_or_insert(error.kind.exit_code()));
                         }
                     }
                 }
@@ -639,8 +638,8 @@ fn output(
             }
             let count = resume_plans.len();
             for (index, plan) in resume_plans.into_iter().enumerate() {
-                let code = super::run_plan(plan, startup.output, index + 1 == count);
-                if code != ExitCode::SUCCESS {
+                let code = super::run_plan(plan, client.output, index + 1 == count);
+                if code != 0 {
                     return code;
                 }
             }
@@ -648,14 +647,14 @@ fn output(
     }
     super::notes(
         &crate::protocol::notes(answer).cloned().collect::<Vec<_>>(),
-        startup.output,
+        client.output,
     );
-    ExitCode::from(state.exit_code())
+    state.exit_code()
 }
 fn text_output(
     text: &str,
     to: Option<&Destination>,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
 ) -> Result<(), command_surface::Failure> {
     match to {
         Some(Destination::Clipboard | Destination::Browser) => {
@@ -679,7 +678,7 @@ fn text_output(
         Some(Destination::Pager) => {
             let mut child = std::process::Command::new("sh")
                 .arg("-c")
-                .arg(&startup.pager)
+                .arg(&client.pager)
                 .stdin(std::process::Stdio::piped())
                 .spawn()
                 .map_err(|error| crate::protocol::failure(Code::Io, error.to_string()))?;
@@ -694,11 +693,11 @@ fn text_output(
     }
     .map_err(|error| crate::protocol::failure(Code::Io, error.to_string()))
 }
-fn remember(startup: &crate::config::Startup, question: &str, rows: &crate::protocol::query::Rows) {
+fn remember(client: &crate::config::Client, question: &str, rows: &crate::protocol::query::Rows) {
     let native = rows.references.as_deref().unwrap_or_default();
     let shown = crate::row_numbers::ShownRows {
         question: question.into(),
-        shown_at: startup.clock.now().as_millisecond(),
+        shown_at: client.clock.now().as_millisecond(),
         rows: rows
             .rows
             .iter()
@@ -717,7 +716,7 @@ fn remember(startup: &crate::config::Startup, question: &str, rows: &crate::prot
             })
             .collect(),
     };
-    crate::row_numbers::remember_listing(&startup.config.paths, &startup.config.archive, &shown);
+    crate::row_numbers::remember_listing(&client.paths, &client.archive, &shown);
 }
 fn candidates(answer: &Answer<Value>) -> Result<picker::Page, command_surface::Failure> {
     let line = decoded(answer)?;
@@ -914,51 +913,9 @@ impl picker::Source for Source {
     }
 }
 
-/// Deployment options are captured once before either line or command parsing.
-pub(crate) fn deployment_arguments(
-    arguments: &[std::ffi::OsString],
-) -> Result<(crate::config::Overrides, Vec<String>), String> {
-    let mut overrides = crate::config::Overrides::default();
-    let mut words = vec![];
-    let mut index = 0;
-    while index < arguments.len() {
-        let word = arguments[index]
-            .to_str()
-            .ok_or("command arguments must be UTF-8")?;
-        let target = match word {
-            "--archive" => Some(&mut overrides.archive),
-            "--config" => Some(&mut overrides.config_file),
-            "--auth-token-file" => Some(&mut overrides.auth_token_file),
-            _ => None,
-        };
-        if let Some(target) = target {
-            index += 1;
-            *target = Some(
-                arguments
-                    .get(index)
-                    .ok_or_else(|| format!("{word} needs a path"))?
-                    .into(),
-            );
-        } else if word == "--listen" {
-            index += 1;
-            overrides.listen = Some(
-                arguments
-                    .get(index)
-                    .and_then(|value| value.to_str())
-                    .ok_or("--listen needs an address")?
-                    .parse()
-                    .map_err(|error| format!("--listen: {error}"))?,
-            );
-        } else {
-            words.push(word.to_owned());
-        }
-        index += 1;
-    }
-    Ok((overrides, words))
-}
 /// Commands and verb signatures are available while the daemon is down.
 pub(crate) fn help(words: &[String]) -> bool {
-    let declarations = crate::protocol::steps::declarations();
+    let declarations = crate::daemon::verbs::declarations();
     if words.is_empty() {
         println!(
             "polylogue SELECTION [VERB [WORD] [OPTIONS]]…\nA query is one quoted argument; a single word searches it.\n"
@@ -990,16 +947,11 @@ pub(crate) fn help(words: &[String]) -> bool {
     false
 }
 
-/// Chrome invokes the executable with one extension-origin argument.
-pub(crate) fn native_host(words: &[String]) -> bool {
-    words.len() == 1 && words[0].starts_with("chrome-extension://")
-}
-
 /// Render one ordered stream batch at its declared step positions.
 pub(crate) fn stream_steps(
     data: &str,
     parsed: &ParsedLine,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     state: &mut OutputState,
 ) -> io::Result<std::ops::ControlFlow<u8, u8>> {
     let answer: Answer<Value> = serde_json::from_str(data).map_err(io::Error::other)?;
@@ -1008,7 +960,9 @@ pub(crate) fn stream_steps(
         return Err(io::Error::other("a steps event must contain step reports"));
     }
     let code = failed_code(&answer).unwrap_or_else(|| answer.exit_code());
-    if parsed.line.json {
+    // What delivering the steps' output here ended with: a failed
+    // delivery or a resumed harness's own status stops the line.
+    let delivered = if parsed.line.json {
         println!(
             "{}",
             polylogue_render::terminal::json(
@@ -1016,20 +970,20 @@ pub(crate) fn stream_steps(
                 false
             )
         );
-    } else {
-        // A failed delivery is recorded in `state.failed`; the printed exit
-        // status is not needed here.
-        output(parsed, &line, &answer, startup, state);
-    }
-    if parsed.line.json {
         state.accept(&answer);
         if let LineAnswer::Steps(steps) = &line {
             state.offset += steps.steps.len();
         }
-    }
-    Ok(if let Some(code) = failed_code(&answer).or(state.failed) {
-        std::ops::ControlFlow::Break(code)
+        None
     } else {
-        std::ops::ControlFlow::Continue(if code == 5 { 5 } else { 0 })
-    })
+        Some(output(parsed, &line, &answer, client, state))
+            .filter(|code| !matches!(code, 0 | 1 | 5))
+    };
+    Ok(
+        if let Some(code) = failed_code(&answer).or(state.failed).or(delivered) {
+            std::ops::ControlFlow::Break(code)
+        } else {
+            std::ops::ControlFlow::Continue(if code == 5 { 5 } else { 0 })
+        },
+    )
 }

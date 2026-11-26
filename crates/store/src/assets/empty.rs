@@ -17,7 +17,7 @@ pub(crate) fn source(
         return Ok(None);
     }
     let mut query = conn.prepare(&format!(
-        "SELECT o.id,o.machine,o.path_bytes,o.details_json,i.format
+        "SELECT o.id,o.machine,o.path_bytes,o.details_json,i.origin
          FROM {prefix}observation o JOIN {prefix}input i ON i.id=o.input
          LEFT JOIN {prefix}revision r ON r.input=o.input AND r.number=o.revision
          WHERE o.input=?1 AND o.commit_seq>0 AND coalesce(o.chain,r.chain)=?2 AND coalesce(o.length,r.length)=0

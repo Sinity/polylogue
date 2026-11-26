@@ -1,4 +1,5 @@
 use super::*;
+use crate::signals::tests::operation;
 use shared_signals::notifications::Notice;
 
 fn fixture() -> crate::test_daemon::TestDaemon {

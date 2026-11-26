@@ -483,5 +483,249 @@ fn total_tokens(u: &UsageMeasure) -> u64 {
         + l.reasoning.tokens
 }
 
+/// One subscription limit as status shows it: the latest reading in the
+/// window that contains now, or why there is none.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+pub struct CurrentWindow {
+    /// The origin whose subscription it is (`claude-code`, `codex`).
+    pub tool: String,
+    /// The tool's name for the limit (`five_hour`, `seven_day`, …).
+    pub limit: String,
+    pub window_minutes: i64,
+    #[serde(flatten)]
+    pub state: CurrentUse,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum CurrentUse {
+    Measured {
+        used_percent: f64,
+        /// When the tool measured it.
+        measured_at: Timestamp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        resets_at: Option<Timestamp>,
+        /// The tool's own word for the state (`allowed`, `rejected`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+    },
+    NotMeasured {
+        reason: NotMeasured,
+    },
+}
+
+/// Why a limit has no use to show.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum NotMeasured {
+    /// Nothing reported the limit within its window's length.
+    NoReading,
+    /// The latest reading says the state but not how much is used (Claude
+    /// Code records a percent only when it refuses a turn).
+    NoPercent,
+    /// The window of the latest reading has ended; the next reading
+    /// measures the new one.
+    WindowReset,
+}
+
+impl CurrentWindow {
+    /// The same limit at `now`: a measurement whose window has ended by
+    /// then is no longer the current one.
+    pub fn at(mut self, now: i64) -> Self {
+        if let CurrentUse::Measured {
+            measured_at,
+            resets_at,
+            ..
+        } = &self.state
+        {
+            let ends = resets_at.map_or_else(
+                || {
+                    measured_at
+                        .unix_ms()
+                        .saturating_add(self.window_minutes.saturating_mul(MINUTE))
+                },
+                Timestamp::unix_ms,
+            );
+            if ends <= now {
+                self.state = CurrentUse::NotMeasured {
+                    reason: NotMeasured::WindowReset,
+                };
+            }
+        }
+        self
+    }
+}
+
+/// The current window of every limit `known` declares and every limit a
+/// reading names, from the newest reading of each. Only readings within the
+/// longest window's length can be in a current window, so this reads the
+/// quota events of that span (by kind and time) and the messages of the
+/// sessions active in it, newest first, and skips a session once every
+/// limit of its tool has a reading at least as new as its last activity:
+/// its cost follows the recent readings, not the archive's size.
+pub fn current(
+    reader: &Reader<'_>,
+    now: i64,
+    known: &[(&str, &[QuotaLimit])],
+) -> Result<Vec<CurrentWindow>> {
+    type Key = (String, String, i64);
+    let longest = known
+        .iter()
+        .flat_map(|(_, limits)| limits.iter().map(|limit| limit.minutes))
+        .chain([polylogue_model::WEEK_MINUTES])
+        .max()
+        .unwrap_or(polylogue_model::WEEK_MINUTES);
+    let since = now.saturating_sub(longest.saturating_mul(MINUTE));
+    let mut newest: std::collections::BTreeMap<Key, Observation> = Default::default();
+    // Keeps the newest reading of each limit; a reset earlier than its
+    // reading is stale (as in `quota`).
+    fn offer(newest: &mut std::collections::BTreeMap<Key, Observation>, reading: Observation) {
+        let Some(at) = reading.measured_at.or(reading.at) else {
+            return;
+        };
+        if reading.resets_at.is_some_and(|reset| reset < at) {
+            return;
+        }
+        let key = (
+            reading.tool.clone(),
+            reading.limit.clone(),
+            reading.window_minutes,
+        );
+        if newest
+            .get(&key)
+            .is_none_or(|held| held.measured_at.or(held.at) < Some(at))
+        {
+            newest.insert(key, reading);
+        }
+    }
+    let conn = reader.conn()?;
+    {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT s.origin, m.at, {} FROM event m JOIN session s ON s.pk = m.session_pk
+             WHERE m.kind = ?1 AND m.at >= ?2 ORDER BY m.at DESC, m.id DESC",
+            crate::content::sql_for(crate::content::DATA_BYTES_SQL, "m"),
+        ))?;
+        let mut rows = stmt.query(rusqlite::params![
+            polylogue_model::reports::QUOTA_REPORT,
+            since
+        ])?;
+        while let Some(row) = rows.next()? {
+            let tool: String = row.get(0)?;
+            let at: Option<i64> = row.get(1)?;
+            let value: serde_json::Value = crate::encoding::read_json(&row.get::<_, Vec<u8>>(2)?)?;
+            let report: polylogue_model::QuotaReport = serde_json::from_value(value)?;
+            for mut reading in observations(&tool, at, &report.reading) {
+                reading.measured_at = report.measured_at.map(Timestamp::unix_ms).or(at);
+                offer(&mut newest, reading);
+            }
+        }
+    }
+    let tools: Vec<&str> = known.iter().map(|(tool, _)| *tool).collect();
+    if !tools.is_empty() {
+        let placeholders = (0..tools.len())
+            .map(|n| format!("?{}", n + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+        let mut sessions = conn.prepare(&format!(
+            "SELECT pk, origin, last_activity_at FROM session
+             WHERE last_activity_at >= ?1 AND origin IN ({placeholders})
+             ORDER BY last_activity_at DESC"
+        ))?;
+        let mut params: Vec<rusqlite::types::Value> = vec![since.into()];
+        params.extend(tools.iter().map(|tool| (*tool).to_owned().into()));
+        let recent: Vec<(i64, String, i64)> = sessions
+            .query_map(rusqlite::params_from_iter(params), |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let mut readings = conn.prepare(
+            "SELECT at, json_extract(attrs_json, '$.production.quota') FROM message
+             WHERE session_pk = ?1 AND at >= ?2
+               AND json_extract(attrs_json, '$.production.quota') IS NOT NULL",
+        )?;
+        for (session, tool, last_activity) in recent {
+            // Each limit of the tool, declared or read, is settled once a
+            // reading of it is at least as new as this session's last
+            // activity, which bounds every reading the session holds.
+            let as_new = |held: &Observation| {
+                held.measured_at
+                    .or(held.at)
+                    .is_some_and(|at| at >= last_activity)
+            };
+            let mine = || newest.iter().filter(|((t, _, _), _)| *t == tool);
+            let mut declared = known
+                .iter()
+                .filter(|(t, _)| *t == tool)
+                .flat_map(|(_, limits)| limits.iter())
+                .peekable();
+            let any = declared.peek().is_some() || mine().next().is_some();
+            let settled =
+                any && declared.all(|limit| {
+                    mine().any(|((_, _, minutes), held)| *minutes == limit.minutes && as_new(held))
+                }) && mine().all(|(_, held)| as_new(held));
+            if settled {
+                continue;
+            }
+            let rows = readings.query_map(rusqlite::params![session, since], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+            for row in rows {
+                let (at, reading) = row?;
+                let reading: QuotaReading = serde_json::from_str(&reading)?;
+                for reading in observations(&tool, Some(at), &reading) {
+                    offer(&mut newest, reading);
+                }
+            }
+        }
+    }
+    let mut windows: Vec<CurrentWindow> = Vec::new();
+    for (tool, limits) in known {
+        for limit in *limits {
+            if !newest
+                .keys()
+                .any(|(t, _, minutes)| t == tool && *minutes == limit.minutes)
+            {
+                windows.push(CurrentWindow {
+                    tool: (*tool).to_owned(),
+                    limit: limit.limit.to_string(),
+                    window_minutes: limit.minutes,
+                    state: CurrentUse::NotMeasured {
+                        reason: NotMeasured::NoReading,
+                    },
+                });
+            }
+        }
+    }
+    for ((tool, limit, window_minutes), reading) in newest {
+        let measured_at = reading
+            .measured_at
+            .or(reading.at)
+            .and_then(Timestamp::from_unix_ms);
+        let state = match (reading.used_percent, measured_at) {
+            (Some(used_percent), Some(measured_at)) => CurrentUse::Measured {
+                used_percent,
+                measured_at,
+                resets_at: reading.resets_at.and_then(Timestamp::from_unix_ms),
+                status: reading.status,
+            },
+            _ => CurrentUse::NotMeasured {
+                reason: NotMeasured::NoPercent,
+            },
+        };
+        windows.push(CurrentWindow {
+            tool,
+            limit,
+            window_minutes,
+            state,
+        });
+    }
+    windows.sort_by(|a, b| {
+        (&a.tool, a.window_minutes, &a.limit).cmp(&(&b.tool, b.window_minutes, &b.limit))
+    });
+    Ok(windows.into_iter().map(|window| window.at(now)).collect())
+}
+
 #[cfg(test)]
 mod tests;

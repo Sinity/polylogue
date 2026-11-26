@@ -1,4 +1,4 @@
-//! Session pages and finite context streams over the session item index. A page is a run of
+//! Session pages and finite context streams over transcript lines. A page is a run of
 //! shown entries read in windows from its first entry; where it sits among the
 //! shown entries, and the counts a reading shows, come from the counts the
 //! writer stores per entry class, so a page reads its own entries and the
@@ -260,7 +260,24 @@ fn prefix(reader: &Reader<'_>, session: &SessionId, composed: &mut Composed) -> 
     Ok(())
 }
 
+/// Composes the reading. Reading a due session's lines waits for its
+/// summary and starts a newer read ([`Reader::restarts`]); then every
+/// session is composed again, so that all its parts come from one read.
 fn compose(reader: &Reader<'_>, scope: &Scope, options: &ReadOptions) -> Result<Composed, Error> {
+    loop {
+        let restarts = reader.restarts();
+        let composed = compose_once(reader, scope, options)?;
+        if reader.restarts() == restarts {
+            return Ok(composed);
+        }
+    }
+}
+
+fn compose_once(
+    reader: &Reader<'_>,
+    scope: &Scope,
+    options: &ReadOptions,
+) -> Result<Composed, Error> {
     let around = options.around.unwrap_or(0) as usize;
     let own = session_index(reader, &scope.session)?
         .ok_or_else(|| Error::not_found(format!("no session {}", scope.session)))?;
@@ -322,7 +339,7 @@ fn compose(reader: &Reader<'_>, scope: &Scope, options: &ReadOptions) -> Result<
     });
     composed.indexes.push(own);
     children(reader, scope, &mut composed)?;
-    if let SpawnDisplay::Inline { depth } = options.spawns {
+    if let SpawnDisplay::Inline { depth } = options.spawns() {
         inline_spawns(reader, &mut composed, depth)?;
     }
     Ok(composed)
@@ -601,20 +618,13 @@ fn card(
 ) -> Result<ReadItem, Error> {
     let reference = format!("session:{child}");
     let open = services.continuation(
-        &ReadRequest {
-            start: Default::default(),
-            references: None,
-            target: reference.clone(),
-            options: ReadOptions {
+        &ReadRequest::new(
+            reference.clone(),
+            ReadOptions {
                 view,
                 ..ReadOptions::default()
             },
-            delivery: ReadDelivery::Page,
-            format: Format::Json.name().into(),
-            budget: ReadBudget::Default,
-            with_blobs: false,
-            cursor: None,
-        },
+        ),
         None,
         command_surface::Deadline::Default,
     )?;
@@ -676,7 +686,7 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
                 .parts
                 .iter()
                 .enumerate()
-                .filter(|(_, part)| options.inherited || !part.inherited)
+                .filter(|(_, part)| options.inherited() || !part.inherited)
                 .map(|(at, part)| (at, part.start, part.end))
                 .collect(),
             evicted: Vec::new(),
@@ -706,17 +716,14 @@ fn runs(reader: &Reader<'_>, composed: &Composed, options: &ReadOptions) -> Resu
             .collect()
     };
     let last = composed.parts.len() - 1;
-    let latest = Place {
+    // The composition ends at the selected message, or the session's latest.
+    let at = Place {
         part: last,
         entry: composed.parts[last].end.saturating_sub(1),
     };
     let place_of = |message: &MessageId| -> Result<Place, Error> {
         find(&composed.parts, entries, &EntryKey::header(message))
             .ok_or_else(|| Error::not_found(format!("message {message} is not in the reading")))
-    };
-    let at = match &options.at {
-        Some(ReadAt::Message(message)) => place_of(message)?,
-        _ => latest,
     };
     let context = context_at(&composed.parts, entries, at);
     let Some(diff) = &options.diff else {
@@ -907,7 +914,7 @@ pub(super) fn stream(
         &request.target,
         &session,
         0,
-        if options.annotations {
+        if options.annotations() {
             layout_facts::annotations(
                 reader,
                 &Reference::Session(session.id.clone()),
@@ -925,9 +932,7 @@ pub(super) fn stream(
         still_wanted()
     };
     let begin = ReadBegin {
-        format: Format::parse(&request.format).ok_or_else(|| Reason::UnknownReadFormat {
-            format: request.format.clone(),
-        })?,
+        format: request.format,
         snapshot,
         header,
         options: options.clone(),
@@ -950,8 +955,7 @@ pub(super) fn stream(
             parts: vec![ReadPart::Item(item)],
         })?;
     }
-    let mut blobs = request
-        .with_blobs
+    let mut blobs = (request.delivery == ReadDelivery::Bundle)
         .then(|| super::blobs::Blobs::new(reader))
         .transpose()?;
     let mut cache = None;
@@ -1284,7 +1288,7 @@ pub(super) fn page(
         }
         Ok(None)
     };
-    let inherited_messages = if !options.inherited && options.view != View::Context {
+    let inherited_messages = if !options.inherited() && options.view != View::Context {
         let mut total = 0;
         for (at, part) in composed.parts.iter().enumerate() {
             if part.inherited {
@@ -1303,7 +1307,7 @@ pub(super) fn page(
         target,
         &read_session,
         inherited_messages,
-        if options.annotations {
+        if options.annotations() {
             layout_facts::annotations(
                 reader,
                 &polylogue_model::Reference::Session(read_session.id.clone()),
@@ -1317,7 +1321,6 @@ pub(super) fn page(
     let tokens = limits.tokens.get();
     let items = limits.items.get();
     let (page_entries, next_entry): (Vec<PageEntry>, Option<PageEntry>) = match &opened {
-        None if options.latest => (shown.page_before(shown.end(), tokens, items)?, None),
         // The first page's lead lines spend its budget first; when they
         // use all of it, the page is those lines alone.
         None => {
@@ -1509,7 +1512,7 @@ pub(super) fn page(
             session_read: session_read(request).cloned(),
             target: continuation.target.clone(),
             digest: digest.clone(),
-            alternates: request.options.alternates.clone(),
+            alternates: request.alternates.clone(),
             versions,
             position: PagePosition::Entry {
                 key: entry.entry.key.clone(),
@@ -1597,7 +1600,7 @@ pub(super) fn page(
                 session_read: session_read(request).cloned(),
                 target: continuation.target.clone(),
                 digest: digest.clone(),
-                alternates: request.options.alternates.clone(),
+                alternates: request.alternates.clone(),
                 versions,
                 position: PagePosition::Entry {
                     key: entry_key,
@@ -1703,7 +1706,7 @@ fn lead_items(
                 session: Box::new(session.clone()),
                 // Whether the parents composed, when the reading shows them,
                 // as the stream's session record says.
-                lineage_complete: if options.inherited {
+                lineage_complete: if options.inherited() {
                     ValueState::known(composed.issues.is_empty())
                 } else {
                     ValueState::NotApplicable
@@ -1719,7 +1722,7 @@ fn lead_items(
         });
     }
     let source = Source::record(target);
-    for issue in composed.issues.iter().filter(|_| options.inherited) {
+    for issue in composed.issues.iter().filter(|_| options.inherited()) {
         out.push(ReadItem {
             source: source.clone(),
             kind: ItemKind::LinkIssue {
@@ -1737,7 +1740,7 @@ fn lead_items(
             },
         });
     }
-    if !options.inherited
+    if !options.inherited()
         && options.view != View::Context
         && let Some(parent) = composed.parts.iter().rev().find(|part| part.inherited)
     {
@@ -2076,7 +2079,7 @@ fn decorate(
         let (part, at) = (*part, *at);
         let mut before: Vec<ReadItem> =
             composed.before.get(&entry.key).cloned().unwrap_or_default();
-        if options.turns && human_prompt(entry) {
+        if options.turns() && human_prompt(entry) {
             let (number, calls) = turn(reader, composed, part, at)?;
             before.push(ReadItem {
                 source: Source::record(entry.key.reference()),
@@ -2087,7 +2090,7 @@ fn decorate(
                 },
             });
         }
-        if options.context_meter && entry.written_by == polylogue_model::WrittenBy::Model {
+        if options.context_meter() && entry.written_by == polylogue_model::WrittenBy::Model {
             let meter = context_meter(reader, composed, part, at, entry)?;
             for item in items.iter_mut() {
                 if let ItemKind::MessageHeader { header } = &mut item.kind {
@@ -2328,7 +2331,7 @@ fn place_cards(
             continue;
         }
         // A spawned session's card is a delegation.
-        if options.spawns == SpawnDisplay::Hidden && card_slot.link.kind == "spawn" {
+        if options.spawns() == SpawnDisplay::Hidden && card_slot.link.kind == "spawn" {
             continue;
         }
         let slot = page.partition_point(|entry| entry.place() < place);
@@ -2402,7 +2405,7 @@ fn project_layout(
             .retain(|item| row.block_ordinals.binary_search(&item.block).is_ok());
     }
     let mut facts = facts;
-    if options.annotations {
+    if options.annotations() {
         layout_facts::annotate(reader, &record, &mut facts, at, options.annotation_at())?;
     }
     if options.view == View::Context {

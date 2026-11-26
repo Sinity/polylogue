@@ -19,7 +19,6 @@ pub mod blobs;
 pub mod bytes;
 pub mod calendar;
 pub mod cancellation;
-mod chain_progress;
 mod change_summary;
 pub mod chat_actions;
 mod commit_positions;
@@ -37,6 +36,7 @@ pub mod fault;
 pub mod fixture;
 mod fragment;
 pub mod import_jobs;
+pub mod index;
 pub mod input_rows;
 pub mod items;
 mod kept;
@@ -48,11 +48,14 @@ pub use live::{
     FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveEditedFiles, LiveRoot,
     LiveSession, ProcessRow, RunningCandidates, RunningSession,
 };
+pub mod activity;
+pub mod alternates;
 pub mod authored_records;
 pub mod capture_read;
-mod identical_chains;
+pub mod follow;
 pub mod measure;
 mod ordered_blocks;
+mod parse_state;
 pub mod python_polylogue;
 pub mod query;
 pub mod query_objects;
@@ -60,12 +63,6 @@ pub mod read;
 pub mod reference;
 mod repo_lookup;
 pub mod row;
-pub use identical_chains::{
-    ChainLayout, ChainLayouts, PrefixCopies, PrefixCopy, ReadingCopy, SharedPrefixes,
-    StoredParseState,
-};
-pub mod activity;
-pub mod alternates;
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;
@@ -96,8 +93,8 @@ pub use archive::{Archive, ArchiveLock};
 pub use blobs::{Change, Chunk, FileFacts, NewBlob};
 pub use context::{DeliveryRow, OpenItems, Prompt, SessionSummary};
 pub use read::{
-    BehindChain, CapturedSession, KnownInput, Lane, ReadPool, Reader, ReadingContract,
-    RevisionChains, SqlValue, Status, StoppedChains, StoredSource,
+    BehindChain, CapturedSession, ChainCensus, KnownInput, Lane, LatestChain, ReadPool, Reader,
+    ReadingContract, RevisionChains, SqlValue, Status, StoredSource,
     scope::{ReadScopeToken, ScopeInvalidation},
 };
 pub use scope_index::{
@@ -187,9 +184,7 @@ pub enum StoreError {
     ReadPoolNested,
     #[error("the access scope changed while this read was in progress")]
     ScopeChanged,
-    #[error("the index was replaced; acquire a new reader")]
-    ReadIndexReplaced,
-    /// No index can be read until the build in progress ends
+    /// No index can be read until the rebuild in progress is installed
     /// ([`archive::index_build`]).
     #[error("{0}")]
     IndexBuilding(Box<archive::index_build::IndexBuild>),
@@ -261,6 +256,21 @@ pub enum StoreError {
     /// A source file changed while it was read: it is read again.
     #[error("{0}")]
     SourceChanged(&'static str),
+    /// A part of a chain's parse that does not start where the chain's
+    /// stored parse ends: it was planned from an earlier state. Nothing is
+    /// written, and the chain stays due from its stored state.
+    #[error(
+        "the part of {input} chain {chain} starts at byte {start} under {version}, where its stored parse ends at {parsed_to} under {}",
+        stored_version.as_deref().unwrap_or("no parser version")
+    )]
+    StalePart {
+        input: String,
+        chain: i64,
+        start: u64,
+        version: String,
+        parsed_to: u64,
+        stored_version: Option<String>,
+    },
 }
 
 impl StoreError {
@@ -288,7 +298,7 @@ impl StoreError {
     }
 
     /// Stored data this build cannot read back that no one column holds:
-    /// extents, item indexes, stored sums.
+    /// extents, transcript lines, stored sums.
     pub fn stored_data(reason: impl ToString) -> Self {
         Self::StoredValue {
             column: None,
@@ -340,7 +350,6 @@ impl StoreError {
             Self::ReadPoolClosed => Code::ShuttingDown,
             Self::ReadPoolNested => Code::Internal,
             Self::ScopeChanged => Code::ScopeChanged,
-            Self::ReadIndexReplaced => Code::Conflict,
             Self::IndexBuilding(_) => Code::IndexBuilding,
             Self::Conflict(_) => Code::Conflict,
             Self::Stale { .. } => Code::Stale,
@@ -359,6 +368,7 @@ impl StoreError {
             Self::Selection { code, .. } => *code,
             Self::Failed(failure) => failure.code,
             Self::SourceChanged(_) => Code::Conflict,
+            Self::StalePart { .. } => Code::Stale,
         }
     }
 }
@@ -387,7 +397,6 @@ impl polylogue_model::Caused for StoreError {
             Self::ReadPoolClosed => Cause::Stopping,
             Self::ReadPoolNested => Cause::Bug,
             Self::ScopeChanged => Cause::Transient,
-            Self::ReadIndexReplaced => Cause::Transient,
             Self::IndexBuilding(_) => Cause::Transient,
             Self::Conflict(_) => Cause::Request,
             Self::Stale { .. } => Cause::Request,
@@ -406,6 +415,7 @@ impl polylogue_model::Caused for StoreError {
             Self::Selection { .. } => Cause::Request,
             Self::Failed(failure) => failure.cause,
             Self::SourceChanged(_) => Cause::Transient,
+            Self::StalePart { .. } => Cause::Transient,
         }
     }
 

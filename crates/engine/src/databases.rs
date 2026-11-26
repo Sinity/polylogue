@@ -253,12 +253,12 @@ impl<'a> InputWriter<'a> {
     ) -> Result<Self, DatabaseError> {
         let reads = ReadPool::open(archive)?;
         let reader = reads.reader()?;
-        let progress = reader.input_progress(&source.input.id)?;
+        let progress = reader.latest_chain(&source.input.id)?;
         let out = Self {
             archive,
             writer,
             source,
-            length: progress.as_ref().map_or(0, |p| p.length),
+            length: progress.as_ref().map_or(0, |p| p.stored),
             exists: progress.is_some(),
             staged: Vec::new(),
             acknowledgment: None,
@@ -399,7 +399,7 @@ impl Engine {
         let reader = self.reads.reader()?;
         for (path, &origin) in &self.databases {
             let input_id = self.database_input_id(path, origin);
-            let Some(progress) = reader.input_progress(&input_id)? else {
+            let Some(progress) = reader.latest_chain(&input_id)? else {
                 continue;
             };
             self.inputs

@@ -24,6 +24,7 @@ mod block;
 pub mod bundle;
 pub mod capture;
 pub mod capture_log;
+pub mod chain;
 mod change_position;
 pub mod clock;
 pub mod freshness;

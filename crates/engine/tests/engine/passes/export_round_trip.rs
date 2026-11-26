@@ -25,14 +25,14 @@ const USER_STATE: &[(&str, &str)] = &[
         "annotation",
         "id,root,kind,key,value,author,via,machine,created_at,valid_until",
     ),
-    ("annotation_link", "record,role,ref,seen_hash,quote"),
+    ("annotation_link", "annotation,role,ref,seen_hash,quote"),
     ("revision_state", "*"),
-    ("kept_result", "*"),
+    ("saved_rows", "*"),
     (
         "delivery",
         "id, recipient_kind, recipient_id, sender, event, cwd, at, content_hash, bytes, body, refs_json, left_out_json",
     ),
-    ("delivery_event", "delivery, what, at, detail"),
+    ("delivery_event", "delivery, outcome, at, detail"),
     (
         "chat_action",
         "id, request_key, request_hash, request_json, stage_only, needs_approval, created_at",
@@ -40,12 +40,12 @@ const USER_STATE: &[(&str, &str)] = &[
     ("chat_action_attachment", "*"),
     (
         "chat_action_event",
-        "action, n, at, kind, phase, detail, by, receipt_json",
+        "action, position, at, kind, phase, detail, by, receipt_json",
     ),
     ("import_job", "id, provider, since, created_at"),
     (
         "import_job_event",
-        "job, n, at, kind, by, position, listed, captured, unchanged, failed, detail",
+        "job, position, at, kind, by, provider_position, listed, captured, unchanged, failed, detail",
     ),
 ];
 

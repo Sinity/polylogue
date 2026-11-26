@@ -22,7 +22,7 @@ fn the_ranges_of_a_lone_input_run_on_one_worker() {
     let (archive, _lock) = Archive::open_or_create(&w.root).unwrap();
     let mut config = w.config(CHUNK);
     config.workers = 8;
-    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    let mut engine = Engine::new(config, archive).unwrap();
     // Upkeep reads the file: a first build reads each chain on a build
     // worker of its own.
     polylogue_testkit::install_empty_index(&mut engine);

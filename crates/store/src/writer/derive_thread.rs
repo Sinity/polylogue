@@ -2,7 +2,10 @@
 //! session's rows on its own read connection and computing its derived
 //! values there, and sends each wave's values to the writer, which only
 //! applies them ([`crate::summary::apply`]). Parse batches and user writes
-//! are served while a derivation computes.
+//! are served while a derivation computes. A reader waiting for one due
+//! session's summary asks this thread directly
+//! ([`crate::summary::ask`]); it is answered before the next session of the
+//! pass in progress, or at once when none runs.
 
 use super::*;
 use std::sync::mpsc::{Sender, channel};
@@ -15,6 +18,8 @@ pub(super) enum Waiting {
     Flush(SyncSender<Result<WriteReport>>, Box<WriteReport>),
     /// A background pass, requested without waiting for its derived values.
     Nobody,
+    /// One session a reader waits for.
+    Session(crate::summary::ask::Asked),
 }
 
 /// The derive thread's handle. Dropping it stops the thread: a computation
@@ -25,6 +30,9 @@ pub(super) struct DeriveThread {
     stopping: crate::cancellation::Cancellation,
     interrupt: Arc<Mutex<Option<rusqlite::InterruptHandle>>>,
     handle: Option<JoinHandle<()>>,
+    /// Where readers of this archive ask for sessions, and this thread's
+    /// registration there.
+    asking: (Arc<crate::summary::ask::Asking>, u64),
 }
 
 impl DeriveThread {
@@ -35,6 +43,16 @@ impl DeriveThread {
         cache_mib: i64,
     ) -> Result<Self> {
         let (requests, rx) = channel::<Waiting>();
+        let asking = Arc::clone(&queue.location.summaries);
+        let asked = Mutex::new(requests.clone());
+        let registration = asking.serve(move |question| {
+            if let Ok(asked) = asked.lock()
+                && let Err(refused) = asked.send(Waiting::Session(question))
+                && let Waiting::Session(question) = refused.0
+            {
+                question.answer(Ok(false));
+            }
+        });
         let interrupt = Arc::new(Mutex::new(None));
         let thread = Worker {
             index_db,
@@ -51,6 +69,7 @@ impl DeriveThread {
             stopping,
             interrupt,
             handle: Some(handle),
+            asking: (asking, registration),
         })
     }
 
@@ -72,11 +91,14 @@ impl DeriveThread {
                 ));
                 let _ = reply.send(Ok(*report));
             }
+            Some(Waiting::Session(question)) => question.answer(Err(StoreError::WriterGone)),
             Some(Waiting::Nobody) | None => {}
         }
     }
 
     pub(super) fn stop(&mut self) {
+        // Readers stop asking first: the registration holds a sender.
+        self.asking.0.end(self.asking.1);
         self.requests.take();
         self.stopping.cancel();
         if let Ok(interrupt) = self.interrupt.lock()
@@ -137,12 +159,47 @@ impl Unreported {
 impl Worker {
     fn run(mut self, requests: &Receiver<Waiting>) {
         let _worker = crate::timing::worker();
-        while let Ok(first) = requests.recv() {
-            // Every request waiting now is answered by one pass, which
-            // starts after all of them were made.
-            let mut waiting = vec![first];
-            waiting.extend(requests.try_iter());
-            let result = crate::timing::time(crate::timing::Stage::Derive, || self.pass());
+        let mut queued = Vec::new();
+        loop {
+            if queued.is_empty() {
+                match requests.recv() {
+                    Ok(first) => queued.push(first),
+                    Err(_) => break,
+                }
+            }
+            queued.extend(requests.try_iter());
+            // Readers' sessions first; every other request waiting now is
+            // answered by one pass, which starts after all of them were made.
+            let (asked, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut queued)
+                .into_iter()
+                .partition(|w| matches!(w, Waiting::Session(_)));
+            self.answer(
+                asked
+                    .into_iter()
+                    .filter_map(|w| match w {
+                        Waiting::Session(question) => Some(question),
+                        _ => None,
+                    })
+                    .collect(),
+            );
+            if waiting.is_empty() {
+                continue;
+            }
+            // Requests that arrive during the pass: readers' sessions are
+            // answered between its sessions, the rest after it.
+            let later = std::cell::RefCell::new(Vec::new());
+            let asked = || {
+                let mut asked = Vec::new();
+                for w in requests.try_iter() {
+                    match w {
+                        Waiting::Session(question) => asked.push(question),
+                        other => later.borrow_mut().push(other),
+                    }
+                }
+                asked
+            };
+            let result = crate::timing::time(crate::timing::Stage::Derive, || self.pass(&asked));
+            queued.extend(later.into_inner());
             for waiting in waiting {
                 match waiting {
                     Waiting::Derive(reply) => {
@@ -169,12 +226,51 @@ impl Worker {
                                 .push(polylogue_model::Failure::new("derive", e));
                         }
                     }
+                    Waiting::Session(_) => unreachable!("answered before the pass"),
                 }
             }
         }
     }
 
-    fn pass(&mut self) -> Result<u64> {
+    /// Computes the sessions readers wait for. While a build is in progress
+    /// this thread's index is not the one being written, so none is
+    /// computed: the readers read the lines as stored.
+    fn answer(&mut self, asked: Vec<crate::summary::ask::Asked>) {
+        if asked.is_empty() {
+            return;
+        }
+        if self.queue.location.index_build.building() {
+            for question in asked {
+                question.answer(Ok(false));
+            }
+            return;
+        }
+        let pass = match self.open().and_then(|_| crate::summary::Pass::builtin()) {
+            Ok(pass) => pass,
+            Err(e) => {
+                let failure = polylogue_model::Failure::new("derive", &e);
+                for question in asked {
+                    question.answer(Err(StoreError::Failed(failure.clone())));
+                }
+                return;
+            }
+        };
+        let conn = self.conn.as_ref().expect("opened above");
+        let queue = &self.queue;
+        let stopping = &self.stopping;
+        let result = pass.answer(
+            conn,
+            &mut |write| queue.ask(|reply| Msg::DeriveWrite(Box::new(write), reply)),
+            &|| stopping.is_cancelled(),
+            asked,
+        );
+        if let Err(e) = result {
+            self.unreported
+                .push(polylogue_model::Failure::new("derive", &e));
+        }
+    }
+
+    fn open(&mut self) -> Result<()> {
         if self.conn.is_none() {
             let conn = crate::archive::open_read(&self.index_db)?;
             conn.pragma_update(None, "cache_size", -(self.cache_mib * 1024))?;
@@ -184,6 +280,11 @@ impl Worker {
                 Some(conn.get_interrupt_handle());
             self.conn = Some(conn);
         }
+        Ok(())
+    }
+
+    fn pass(&mut self, asked: &dyn Fn() -> Vec<crate::summary::ask::Asked>) -> Result<u64> {
+        self.open()?;
         let conn = self.conn.as_ref().expect("opened above");
         let pass = crate::summary::Pass::builtin()?;
         let queue = &self.queue;
@@ -199,6 +300,7 @@ impl Worker {
                 queue.ask(|reply| Msg::DeriveWrite(Box::new(write), reply))
             },
             &|| stopping.is_cancelled(),
+            asked,
         );
         match result {
             Err(StoreError::Sqlite(error))

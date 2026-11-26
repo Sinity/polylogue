@@ -11,7 +11,7 @@
 //! snapshot as their rows, and brings them to a newer revision by reading
 //! only appended rows when the revision shows an append-only change
 //! ([`Vectors::append`]), and reloading the snapshot after a replacement,
-//! on a cue from [`write_events`]. [`writes`] is a coarse process-local invalidation
+//! when a request needs that revision. [`writes`] is a coarse process-local invalidation
 //! counter for query continuations, not the identity of a loaded snapshot.
 //! Query vectors the provider answered are stored too
 //! ([`Vectors::query_vector`]), so a query text is paid for once and ranks
@@ -67,17 +67,6 @@ pub fn writes() -> u64 {
 
 pub(crate) fn wrote() {
     WRITES.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-    WRITE_EVENTS.committed(crate::completion::Committed::CONTENT);
-}
-
-/// Cues after each commit that stored vectors in this process.
-static WRITE_EVENTS: std::sync::LazyLock<crate::completion::CommitEvents> =
-    std::sync::LazyLock::new(Default::default);
-
-/// A coalesced cue after each commit that stores vectors; the daemon's
-/// vectors worker extends its loaded set on it.
-pub fn write_events() -> crate::completion::CommitSubscription {
-    WRITE_EVENTS.subscribe()
 }
 
 /// One vector to store.
@@ -146,7 +135,7 @@ impl Vectors {
     }
 
     /// A read-only handle on its own snapshot of the embeddings database,
-    /// for the daemon's vectors worker, which reads outside any request.
+    /// for query-vector lookups outside a reader.
     pub fn snapshot(archive: &Archive, cache_kib: i64) -> Result<Self> {
         Self::for_reader(archive, cache_kib, false, None)
     }
@@ -518,6 +507,7 @@ impl Vectors {
 
     fn read_after(&self, base: &Loaded, revision: i64) -> Result<Loaded> {
         let key = base.key.as_str();
+        crate::fault::check("vectors.read", key)?;
         let mut loaded = Loaded {
             key: key.to_owned(),
             revision,

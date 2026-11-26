@@ -124,14 +124,8 @@ fn after_restart_only_the_changed_input_resumes() {
             .find(|known| known.path_bytes.as_slice() == path.as_os_str().as_encoded_bytes())
             .unwrap();
         let chain = known.chain.unwrap();
-        let version = polylogue_sources::origin::by_name("claude-code")
-            .unwrap()
-            .parse_version();
-        let stored = reader
-            .parser_checkpoint(&known.input_id, chain, &version)
-            .unwrap()
-            .unwrap();
-        assert!(stored.checkpoint.is_some(), "the continuation is saved");
+        let stored = reader.chain_state(&known.input_id, chain).unwrap();
+        assert!(stored.resume().is_some(), "the continuation is saved");
         (known.input_id, chain, stored)
     };
     let (before_changed, before_unchanged) = {
@@ -143,7 +137,7 @@ fn after_restart_only_the_changed_input_resumes() {
             checkpoint(&e, &w.file("s2.jsonl")),
         )
     };
-    assert_eq!(before_changed.2.parsed_upto, first.len() as u64);
+    assert_eq!(before_changed.2.parsed_to(), first.len() as u64);
     let (mut e, _lock) = w.engine(64 << 20);
     let quiet = e.run_pass().unwrap();
     assert!(quiet.errors.is_empty(), "{quiet:?}");
@@ -173,7 +167,7 @@ fn after_restart_only_the_changed_input_resumes() {
     assert_eq!(after_changed.0, before_changed.0);
     assert_eq!(after_changed.1, before_changed.1);
     assert_eq!(
-        after_changed.2.parsed_upto,
+        after_changed.2.parsed_to(),
         (first.len() + line.len()) as u64
     );
     assert_eq!(checkpoint(&e, &w.file("s2.jsonl")), before_unchanged);
@@ -228,7 +222,7 @@ fn large_files_go_in_chunks_and_a_record_longer_than_a_chunk_still_parses() {
         text.len() as i64
     );
     assert_eq!(
-        w.count("SELECT COUNT(*) AS n FROM parse_state WHERE status = 'done'"),
+        w.count("SELECT COUNT(*) AS n FROM parse_state WHERE (state='parsed' AND waiting=0)"),
         1
     );
 }
@@ -290,11 +284,11 @@ fn a_session_growing_across_range_boundaries_stays_one_chain() {
         whole.len() as i64
     );
     assert_eq!(
-        w.count("SELECT count(*) AS n FROM parse_state WHERE status <> 'done'"),
+        w.count("SELECT count(*) AS n FROM parse_state WHERE NOT (state='parsed' AND waiting=0)"),
         0
     );
     assert_eq!(
-        w.count("SELECT records AS n FROM parse_state"),
+        w.count("SELECT used+skipped+unreadable AS n FROM parse_state"),
         records.len() as i64
     );
     assert_eq!(
@@ -411,7 +405,7 @@ fn import_without_final_newline_reads_last_record() {
     assert!(report.pass.errors.is_empty(), "{report:?}");
     assert_eq!(w.texts("s8"), ["first", "last"]);
     assert_eq!(
-        w.count("SELECT COUNT(*) AS n FROM parse_state WHERE status = 'done'"),
+        w.count("SELECT COUNT(*) AS n FROM parse_state WHERE (state='parsed' AND waiting=0)"),
         1
     );
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM parse_state"), 1);
@@ -427,7 +421,7 @@ fn growing_live_file_without_newline_still_waits() {
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(w.texts("s1"), ["first"]);
     assert_eq!(
-        w.count("SELECT COUNT(*) AS n FROM parse_state WHERE status = 'waiting'"),
+        w.count("SELECT COUNT(*) AS n FROM parse_state WHERE (state='parsed' AND waiting>0)"),
         1
     );
     w.append("s1.jsonl", "\n");
@@ -508,7 +502,7 @@ fn a_zip_export_imports_its_conversations_and_keeps_its_other_files() {
     assert_eq!(msgs.len(), 1);
     assert_eq!(msgs[0].text(), "look at this");
     assert_eq!(
-        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'export-file'"),
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE origin = 'export-file'"),
         2,
         "the original ZIP and image are kept as bytes"
     );
@@ -628,7 +622,7 @@ fn a_rollout_with_an_unread_record_and_an_unknown_item_is_read_to_its_end() {
     let state = reads
         .reader()
         .unwrap()
-        .query("SELECT status, parsed_upto FROM parse_state", &[])
+        .query("SELECT CASE WHEN state='failed' AND failure_kind='refused' THEN 'refused' WHEN state='failed' THEN 'failed' WHEN waiting>0 THEN 'waiting' ELSE 'done' END AS status, parsed_to AS parsed_upto FROM parse_state", &[])
         .unwrap();
     assert_eq!(
         state,
@@ -941,7 +935,7 @@ fn copied_tool_history_keeps_items_after_restart() {
     let reader = reads.reader().unwrap();
     let states = reader
         .query(
-            "SELECT status,parsed_upto FROM parse_state ORDER BY parsed_upto",
+            "SELECT CASE WHEN state='failed' AND failure_kind='refused' THEN 'refused' WHEN state='failed' THEN 'failed' WHEN waiting>0 THEN 'waiting' ELSE 'done' END AS status,parsed_to AS parsed_upto FROM parse_state ORDER BY parsed_to",
             &[],
         )
         .unwrap();
@@ -966,7 +960,7 @@ fn copied_tool_history_keeps_items_after_restart() {
     assert_eq!(
         reader
             .query(
-                "SELECT count(*) AS n FROM session_item WHERE message_pk IS NOT NULL",
+                "SELECT count(*) AS n FROM transcript_line WHERE message_pk IS NOT NULL",
                 &[]
             )
             .unwrap(),
@@ -993,4 +987,76 @@ fn copied_tool_history_keeps_items_after_restart() {
             "parent prompt"
         ]
     );
+}
+
+/// A rate-limit reading that returns to an earlier value is a new report in
+/// its own place: appending it marks the session due from the appended
+/// rows, so the summary worker reads those rows, not the session from the
+/// earlier report's place.
+#[test]
+fn a_repeated_rate_limit_reading_costs_the_appended_rows() {
+    use std::io::Write as _;
+    let w = ClaudeHome::new();
+    let rollouts = w.home.join(".codex/sessions/2026/03/03");
+    fs::create_dir_all(&rollouts).unwrap();
+    let thread = "019a0000-0000-7000-8000-000000000003";
+    let env = |n: u64, ty: &str, payload: serde_json::Value| {
+        serde_json::json!({"timestamp": format!("2026-03-03T{:02}:{:02}:{:02}.000Z", n / 3600, n / 60 % 60, n % 60),
+                           "type": ty, "payload": payload})
+        .to_string()
+            + "\n"
+    };
+    let limits = |used: f64| {
+        serde_json::json!({"type": "token_count", "info": null,
+            "rate_limits": {"primary": {"used_percent": used, "window_minutes": 300}}})
+    };
+    let prompt = |n: u64| {
+        serde_json::json!({"type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": format!("prompt {n} of a long session")}]})
+    };
+    let mut codex = env(
+        0,
+        "session_meta",
+        serde_json::json!({"id": thread, "timestamp": "2026-03-03T00:00:00.000Z", "cwd": "/work/q"}),
+    );
+    // The first reading, then 1,200 prompts with the limits moving on.
+    codex += &env(1, "event_msg", limits(10.0));
+    for n in 2..1_202 {
+        codex += &env(n, "response_item", prompt(n));
+        if n % 100 == 0 {
+            codex += &env(n, "event_msg", limits(10.0 + n as f64 / 100.0));
+        }
+    }
+    let path = rollouts.join(format!("rollout-2026-03-03T00-00-00-{thread}.jsonl"));
+    fs::write(&path, &codex).unwrap();
+    let (mut e, _lock) = w.engine(64 << 20);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    // A prompt and the first reading again.
+    let appended =
+        env(1_300, "response_item", prompt(1_300)) + &env(1_301, "event_msg", limits(10.0));
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(appended.as_bytes())
+        .unwrap();
+    let before = polylogue_store::summary::rows_folded();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let read = polylogue_store::summary::rows_folded() - before;
+    assert!(
+        read <= 4,
+        "the summary worker read {read} rows for an append of two"
+    );
+    let reports = w
+        .reads()
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT count(*) AS n FROM event WHERE kind = 'quota_report'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(reports, [serde_json::json!({"n": 14})]);
 }

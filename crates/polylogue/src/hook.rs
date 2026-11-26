@@ -14,7 +14,7 @@
 //!   off switch. After compaction it carries every prompt the operator
 //!   typed in the session.
 //! - a prompt (`UserPromptSubmit`; Hermes: `pre_llm_call`): a session ID
-//!   or supported web link pasted into it brings that session's takeover context.
+//!   or supported web link pasted into it brings that session's brief.
 //!
 //! Claude Code, Codex and Gemini CLI take context as `hookSpecificOutput.additionalContext`,
 //! Hermes as `{"context": ...}`. Other events are only recorded. Hooks fail
@@ -153,7 +153,7 @@ fn append_record(
                 .is_some_and(|caller_harness| caller_harness.as_str() == harness.origin())
         })
         .unwrap_or_else(std::os::unix::process::parent_id);
-    let at = startup.clock.now();
+    let at = startup.client.clock.now();
     let ns = at.as_nanosecond();
     let event_id = request_id(at)?;
     let mut payload = payload.clone();
@@ -487,7 +487,7 @@ fn context(
     until: Instant,
 ) -> Option<(String, String)> {
     let advisory = matches!(&ask, Ask::Advisory { .. });
-    let request_id = match request_id(startup.clock.now()) {
+    let request_id = match request_id(startup.client.clock.now()) {
         Ok(id) => id,
         Err(error) => {
             report("no context", &error);
@@ -511,7 +511,7 @@ fn context(
             "internal advisory",
             json!({"prompt":prompt,"cwd":cwd,"session":session}),
         ),
-        Ask::Takeover {
+        Ask::Session {
             session,
             for_session,
         } => (
@@ -528,7 +528,7 @@ fn context(
                 "steps": [{"verb": "brief", "for": for_session}],
             }),
         ),
-        Ask::Recall {
+        Ask::Words {
             text,
             cwd,
             for_session,
@@ -567,7 +567,7 @@ fn context(
     )
     .and_then(|data| {
         if advisory {
-            serde_json::from_value::<crate::protocol::context::Answer>(data)
+            serde_json::from_value::<crate::brief::BriefReply>(data)
                 .map_err(|error| Unanswered::Undecodable(error.to_string()))
         } else {
             brief_of(data)
@@ -580,7 +580,7 @@ fn context(
             // No prepared bytes were emitted. Only the daemon's existing
             // queue may confirm preparation; without it, acceptance stays
             // unresolved.
-            let accepted = self::request_id(startup.clock.now())
+            let accepted = self::request_id(startup.client.clock.now())
                 .map_err(Unanswered::Exchange)
                 .and_then(|id| {
                     ask_daemon(
@@ -615,7 +615,7 @@ fn context(
 }
 
 /// The brief a one-step `rows` line answered, or why there is none.
-fn brief_of(data: Value) -> Result<crate::protocol::context::Answer, Unanswered> {
+fn brief_of(data: Value) -> Result<crate::brief::BriefReply, Unanswered> {
     use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
     let line = serde_json::from_value::<LineAnswer>(data)
         .map_err(|error| Unanswered::Undecodable(error.to_string()))?;
@@ -637,7 +637,7 @@ fn brief_of(data: Value) -> Result<crate::protocol::context::Answer, Unanswered>
 }
 
 fn delivered(startup: &Startup, delivery: &str, budget: Duration) {
-    let accepted = request_id(startup.clock.now())
+    let accepted = request_id(startup.client.clock.now())
         .map_err(Unanswered::Exchange)
         .and_then(|request_id| {
             ask_daemon(
@@ -706,9 +706,9 @@ fn start(
 }
 
 /// Context for the sessions pasted into a prompt, which share one budget:
-/// one or two each get a takeover, split evenly; three or more get one
+/// one or two each get their session brief, split evenly; three or more get one
 /// index of them (docs/agent-context.md).
-fn takeovers(
+fn pasted_sessions(
     harness: Harness,
     payload: &Value,
     prompt: &str,
@@ -733,7 +733,7 @@ fn takeovers(
             until,
         );
     }
-    // Separators and every session share the named takeover budget.
+    // Separators and every session share the named sessions' budget.
     let separators = sessions
         .len()
         .saturating_sub(1)
@@ -745,7 +745,7 @@ fn takeovers(
     for id in sessions {
         if let Some((d, t)) = context(
             startup,
-            Ask::Takeover {
+            Ask::Session {
                 session: id,
                 for_session: me.clone(),
             },
@@ -774,7 +774,7 @@ fn prompt_context(
     until: Instant,
 ) -> Option<(String, String)> {
     if !pasted_session_ids(prompt).is_empty() {
-        return takeovers(harness, payload, prompt, startup, until);
+        return pasted_sessions(harness, payload, prompt, startup, until);
     }
     if crate::advisory::paths(prompt).is_empty() {
         return None;
@@ -793,7 +793,7 @@ fn prompt_context(
     )
 }
 
-/// Session-start and takeover context for an event, with its deliveries.
+/// Session-start and the context of the sessions pasted into its prompt, with its deliveries.
 pub fn respond(
     harness: Harness,
     event: &str,
@@ -819,19 +819,19 @@ pub fn respond(
             until,
         ),
         // Hermes injects context only into a turn's prompt: the first
-        // turn's carries the brief, and any turn's the takeovers it asks for.
+        // turn's carries the brief, and any turn's the session briefs it asks for.
         (Harness::Hermes, "pre_llm_call") => {
             let extra = &payload["extra"];
             let prompt = extra["user_message"].as_str().unwrap_or("");
             let brief = (extra["is_first_turn"].as_bool() == Some(true))
                 .then(|| start(harness, payload, StartSource::Startup, startup, until))
                 .flatten();
-            let takeover = if brief.as_ref().is_some_and(|(id, _)| id.is_empty()) {
+            let pasted = if brief.as_ref().is_some_and(|(id, _)| id.is_empty()) {
                 None
             } else {
                 prompt_context(harness, payload, prompt, startup, until)
             };
-            match (brief, takeover) {
+            match (brief, pasted) {
                 (Some((d1, t1)), Some((d2, t2))) => {
                     Some((format!("{d1},{d2}"), format!("{t1}\n\n{t2}")))
                 }

@@ -7,7 +7,7 @@ fn closed_pools_refuse_new_readers_and_let_started_reads_finish() {
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
-    reader.status().unwrap();
+    reader.status(&[]).unwrap();
     pool.close();
     assert!(matches!(pool.reader(), Err(StoreError::ReadPoolClosed)));
     assert_eq!(
@@ -41,7 +41,7 @@ fn concurrent_readers_wait_at_the_cap_and_reuse_released_connections() {
             let pool = &pool;
             scope.spawn(move || {
                 let reader = pool.reader().unwrap();
-                reader.status().unwrap();
+                reader.status(&[]).unwrap();
                 started.send(id).unwrap();
                 released.recv().unwrap();
             });
@@ -68,7 +68,7 @@ fn close_wakes_all_full_pool_waiters_without_cancelling_a_started_read() {
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 1, 8 << 20).unwrap();
     let reader = pool.reader().unwrap();
-    reader.status().unwrap();
+    reader.status(&[]).unwrap();
     std::thread::scope(|scope| {
         let mut threads = Vec::new();
         for _ in 0..4 {
@@ -97,7 +97,7 @@ fn nested_readers_are_allowed_but_self_exhaustion_refuses() {
     assert!(matches!(pool.reader(), Err(StoreError::ReadPoolNested)));
     drop(first);
     let third = pool.reader().unwrap();
-    third.status().unwrap();
+    third.status(&[]).unwrap();
     drop((second, third));
     assert!(pool.state.lock().unwrap().holders.is_empty());
 }
@@ -114,7 +114,7 @@ fn open_and_begin_failures_release_the_slot_for_waiters() {
             let pool = &pool;
             let dir = &dir;
             let attempt = scope.spawn(move || {
-                let result = pool.acquire(Lane::Ordinary, None, |path| {
+                let result = pool.acquire_with(Lane::Ordinary, None, |path| {
                     opening.send(()).unwrap();
                     released.recv().unwrap();
                     if begin_failure {
@@ -128,7 +128,7 @@ fn open_and_begin_failures_release_the_slot_for_waiters() {
                 assert!(matches!(result, Err(StoreError::Sqlite(_))));
             });
             opened.recv().unwrap();
-            let waiter = scope.spawn(|| pool.reader().unwrap().status().unwrap());
+            let waiter = scope.spawn(|| pool.reader().unwrap().status(&[]).unwrap());
             wait_for_waiters(pool, 1);
             release.send(()).unwrap();
             attempt.join().unwrap();
@@ -152,7 +152,7 @@ fn close_while_connecting_refuses_the_pending_reader_and_releases_its_slot() {
         let pool = &pool;
         let attempt = scope.spawn(move || {
             assert!(matches!(
-                pool.acquire(Lane::Ordinary, None, |path| {
+                pool.acquire_with(Lane::Ordinary, None, |path| {
                     opening.send(()).unwrap();
                     released.recv().unwrap();
                     pool.connect(path)
@@ -180,7 +180,7 @@ fn failed_transaction_completion_discards_the_connection_and_releases_its_slot()
     reader.conn().unwrap().execute_batch("ROLLBACK").unwrap();
     drop(reader);
     assert_eq!(pool.state.lock().unwrap().live, 0);
-    pool.reader().unwrap().status().unwrap();
+    pool.reader().unwrap().status(&[]).unwrap();
 }
 
 #[test]
@@ -219,7 +219,7 @@ fn nested_readers_keep_distinct_consistent_reads_when_connections_are_reused() {
     let mut fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let pool = ReadPool::with_budget(&fixture.archive, 2, 8 << 20).unwrap();
     let first = pool.reader().unwrap();
-    assert_eq!(first.status().unwrap().sessions, 0);
+    assert_eq!(first.status(&[]).unwrap().sessions, 0);
     fixture
         .session(crate::fixture::SessionFacts {
             id: "test:new",
@@ -227,12 +227,12 @@ fn nested_readers_keep_distinct_consistent_reads_when_connections_are_reused() {
         })
         .unwrap();
     let second = pool.reader().unwrap();
-    assert_eq!(second.status().unwrap().sessions, 1);
-    assert_eq!(first.status().unwrap().sessions, 0);
+    assert_eq!(second.status(&[]).unwrap().sessions, 1);
+    assert_eq!(first.status(&[]).unwrap().sessions, 0);
     drop(second);
     let reused = pool.reader().unwrap();
-    assert_eq!(reused.status().unwrap().sessions, 1);
-    assert_eq!(first.status().unwrap().sessions, 0);
+    assert_eq!(reused.status(&[]).unwrap().sessions, 1);
+    assert_eq!(first.status(&[]).unwrap().sessions, 0);
 }
 
 #[test]
@@ -266,7 +266,7 @@ fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
     let counted = |f: &Fixture| {
         let pool = f.reads().unwrap();
         let reader = pool.reader().unwrap();
-        let status = reader.status().unwrap();
+        let status = reader.status(&[]).unwrap();
         let rows = |table: &str| -> u64 {
             reader
                 .query(&format!("SELECT COUNT(*) AS n FROM {table}"), &[])

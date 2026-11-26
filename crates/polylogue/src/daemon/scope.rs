@@ -88,9 +88,7 @@ impl SharedScopeIndex {
     }
 }
 
-/// The worker that keeps [`SharedScopeIndex`] and the status snapshot
-/// current and, after each commit, hands delivery records that found the
-/// writer's queue full to the writer.
+/// The worker that keeps [`SharedScopeIndex`] and the status snapshot current.
 pub(crate) struct ScopeWorker {
     stop: Arc<AtomicBool>,
     expected_exit: Arc<AtomicBool>,
@@ -118,95 +116,32 @@ impl ScopeWorker {
                 TERMINATED,
                 Some(Arc::clone(&completed)),
             );
-            let mut last_error = None;
-            loop {
-                if stopped.load(Ordering::Acquire) {
-                    completed.store(true, Ordering::Release);
-                    return;
-                }
-                let commits_read = daemon
-                    .writes
-                    .as_ref()
-                    .map_or(0, polylogue_store::WriterSender::commits_made);
-                let result = daemon.reads.reader().and_then(|reader| {
-                    daemon.scope.refresh(&reader)?;
-                    daemon
-                        .status_snapshot
-                        .refresh(&daemon, &reader, commits_read);
-                    Ok(())
-                });
-                if let Err(error) = result {
-                    // The daemon's stop request ends the worker as its
-                    // own stop does.
-                    if stopped.load(Ordering::Acquire)
-                        || matches!(error, polylogue_store::StoreError::Stopped)
-                    {
-                        completed.store(true, Ordering::Release);
-                        return;
-                    }
-                    let building = matches!(error, polylogue_store::StoreError::IndexBuilding(_));
-                    if building {
+            let expected = polylogue_store::follow::follow(
+                "scope index",
+                subscription.as_ref(),
+                &stopped,
+                || daemon.config.requests.now(),
+                || daemon.status.changed(),
+                || {
+                    let commits_read = daemon
+                        .writes
+                        .as_ref()
+                        .map_or(0, polylogue_store::WriterSender::commits_made);
+                    let result = daemon.reads.reader().and_then(|reader| {
+                        daemon.scope.refresh(&reader)?;
+                        daemon
+                            .status_snapshot
+                            .refresh(&daemon, &reader, commits_read);
+                        Ok(())
+                    });
+                    if matches!(result, Err(polylogue_store::StoreError::IndexBuilding(_))) {
                         daemon.status_snapshot.clear(&daemon);
                     }
-                    // A build's message carries its progress; waiting for it
-                    // is logged once, not at every commit.
-                    let error = error.to_string();
-                    let condition = if building {
-                        "the index is being built".to_owned()
-                    } else {
-                        error.clone()
-                    };
-                    if last_error.as_ref() != Some(&condition) {
-                        if building {
-                            // Waiting for a build is normal; its progress is in `status`.
-                            polylogue_store::log!(
-                                info,
-                                "scope index: waits for the index being built"
-                            );
-                        } else {
-                            polylogue_store::log!(warning, "scope index: {error}");
-                        }
-                        last_error = Some(condition);
-                    }
-                    // Nothing is readable until the index being built is
-                    // installed, which is a commit: wait for it.
-                    if building && let Some(subscription) = &subscription {
-                        if !crate::daemon::lifecycle::wait_for_index(
-                            subscription,
-                            &stopped,
-                            &completed,
-                        ) {
-                            return;
-                        }
-                        continue;
-                    }
-                    // Retry from the same position; a commit cue is not needed.
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                    continue;
-                }
-                last_error = None;
-                // A commit leaves room in the writer's queue for records
-                // that found it full.
-                if let Some(writes) = &daemon.writes
-                    && let Err(error) = daemon.queued_deliveries.hand_over(writes)
-                {
-                    polylogue_store::log!(warning, "queued deliveries: {error}");
-                }
-                match &subscription {
-                    Some(subscription) => {
-                        if subscription.recv().is_err() {
-                            if stopped.load(Ordering::Acquire) {
-                                completed.store(true, Ordering::Release);
-                            }
-                            return;
-                        }
-                    }
-                    None => {
-                        completed.store(true, Ordering::Release);
-                        return;
-                    }
-                }
-            }
+                    result?;
+                    Ok(())
+                },
+            );
+            completed.store(expected, Ordering::Release);
         })?;
         Ok(Self {
             stop,

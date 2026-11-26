@@ -112,7 +112,7 @@ pub(crate) fn read(conn: &Connection, table_prefix: &str, id: &str) -> Result<Op
     let events = conn
         .prepare_cached(&format!(
             "SELECT at, kind, phase, detail, by, receipt_json, request FROM {table_prefix}chat_action_event
-             WHERE action = ?1 ORDER BY n"
+             WHERE action = ?1 ORDER BY position"
         ))?
         .query_map([id], |r| <(i64, String, String, Option<String>, Option<String>, Option<String>, String)>::try_from(r))?
         .map(|row| {
@@ -383,8 +383,8 @@ fn add_event(tx: &Connection, event: ChatEventReport<'_>) -> Result<()> {
     } = event;
     let source = crate::source::Source::of(tx)?;
     tx.execute(
-        &source.sql("INSERT INTO @source.chat_action_event(action, n, at, kind, phase, detail, by, receipt_json, request, commit_seq)
-         VALUES (?1, (SELECT COALESCE(max(n), 0) + 1 FROM @source.chat_action_event WHERE action = ?1),
+        &source.sql("INSERT INTO @source.chat_action_event(action, position, at, kind, phase, detail, by, receipt_json, request, commit_seq)
+         VALUES (?1, (SELECT COALESCE(max(position), 0) + 1 FROM @source.chat_action_event WHERE action = ?1),
                  ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"),
         params![
             id,

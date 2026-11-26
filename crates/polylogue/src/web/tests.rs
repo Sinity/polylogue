@@ -168,6 +168,38 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 #[test]
+fn clean_http_stop_removes_its_token_and_port() {
+    let daemon = test_daemon::start("Web shutdown");
+    let directory = daemon
+        .daemon
+        .config
+        .paths
+        .runtime_dir(&daemon.daemon.archive.root);
+    let runtime = directory.parent().unwrap();
+    let mut server = start_on(Arc::clone(&daemon.daemon), 0).unwrap();
+    for name in ["token", "port"] {
+        assert_eq!(
+            std::fs::symlink_metadata(directory.join(name))
+                .map(|metadata| metadata.is_file())
+                .map_err(|error| error.kind()),
+            Ok(true),
+            "{name} while HTTP is running"
+        );
+    }
+    server.shutdown().unwrap();
+    assert!(runtime.is_dir());
+    for name in ["token", "port"] {
+        assert_eq!(
+            std::fs::symlink_metadata(directory.join(name))
+                .map(|metadata| metadata.is_file())
+                .map_err(|error| error.kind()),
+            Err(std::io::ErrorKind::NotFound),
+            "{name} after HTTP shutdown"
+        );
+    }
+}
+
+#[test]
 fn access_rules() {
     let r = reader();
     rt().block_on(async {
@@ -393,12 +425,12 @@ fn search_renders_the_cli_answer_with_session_links() {
         assert_eq!(s, StatusCode::OK, "{page}");
         assert!(page.contains("<mark>"), "{page}");
         assert_copy_command(&page, "polylogue parser");
-        // A query error shows its message instead of failing the page.
+        // A query error shows its message with the failure status.
         let req = authed(get("/search?q=repo%3A%28"))
             .body(Body::empty())
             .unwrap();
         let (s, _, page) = send(&r, req).await;
-        assert_eq!(s, StatusCode::OK);
+        assert_eq!(s, StatusCode::BAD_REQUEST);
         assert!(page.contains("role=\"alert\""), "{page}");
     });
 }
@@ -1253,3 +1285,5 @@ fn status_vector_details_use_the_http_route_but_verification_is_cli_only() {
         }
     });
 }
+
+mod failure_pages;

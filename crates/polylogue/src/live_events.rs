@@ -379,9 +379,8 @@ impl Watcher {
 
     /// Reads the descendants of every root whose sample is due and returns
     /// lines for what changed.
-    pub(crate) fn sample(&mut self, now: jiff::Timestamp) -> Vec<Value> {
+    pub(crate) fn sample(&mut self, now: jiff::Timestamp, instant: Instant) -> Vec<Value> {
         let mut out = Vec::new();
-        let instant = Instant::now();
         for (session_key, w) in &mut self.watched {
             if w.next_sample > instant {
                 continue;
@@ -1203,7 +1202,7 @@ pub(crate) fn run(
             let _ = writes.live_clock(due);
         }
         let mut process_lines = watcher.update_roots(&roots, now);
-        process_lines.extend(watcher.sample(now));
+        process_lines.extend(watcher.sample(now, Instant::now()));
         let _ = watcher.append_process(&paths.spool, &process_lines);
         let _ = registry_lines.append(&paths.spool, &boot, &registry.read(now, identity));
         let _ = git_lines.append(

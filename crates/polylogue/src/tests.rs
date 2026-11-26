@@ -4,7 +4,7 @@ fn the_command_tree_is_well_formed() {
 }
 
 #[test]
-fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
+fn deployment_flags_preserve_daemon_signal_policy() {
     let daemon = super::cli::command()
         .try_get_matches_from([
             "polylogue",
@@ -16,77 +16,10 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
         ])
         .unwrap();
     assert!(super::keeps_sigpipe_ignored(&daemon));
-    assert!(super::cli::needs_engine(
-        &daemon,
-        &super::daemon::service::ArchiveMode::Standalone
-    ));
     let tour = super::cli::command()
         .try_get_matches_from(["polylogue", "demo", "/synthetic/tour"])
         .unwrap();
-    assert!(super::cli::needs_engine(
-        &tour,
-        &super::daemon::service::ArchiveMode::Standalone
-    ));
     assert!(!super::keeps_sigpipe_ignored(&tour));
-    #[cfg(feature = "sinex")]
-    {
-        let blocked = super::daemon::service::ArchiveMode::Blocked {
-            configured: Some("primary"),
-            path: "/synthetic/sinex.toml".into(),
-            error: "invalid configuration".into(),
-        };
-        assert!(!super::cli::needs_engine(&daemon, &blocked));
-        assert!(super::cli::needs_engine(&tour, &blocked));
-    }
-    let origin = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/";
-    assert!(super::cli::run_line::native_host(&[origin.into()]));
-    assert!(!super::cli::run_line::native_host(&[
-        origin.into(),
-        "extra".into()
-    ]));
-    let (overrides, words) = super::cli::run_line::deployment_arguments(&[
-        "--archive".into(),
-        "/synthetic/archive".into(),
-        "--config".into(),
-        "/synthetic/config".into(),
-        origin.into(),
-    ])
-    .unwrap();
-    assert!(super::cli::run_line::native_host(&words));
-    assert_eq!(
-        overrides.archive.unwrap(),
-        std::path::Path::new("/synthetic/archive")
-    );
-    assert_eq!(
-        overrides.config_file.unwrap(),
-        std::path::Path::new("/synthetic/config")
-    );
-}
-
-#[test]
-fn stopped_attempts_hash_executable_bytes_instead_of_paths() {
-    let dir = tempfile::tempdir().unwrap();
-    let first = dir.path().join("first-image");
-    let second = dir.path().join("second-image");
-    std::fs::write(&first, b"synthetic executable one").unwrap();
-    std::fs::copy(&first, &second).unwrap();
-    let before = super::attempt_from_executable(std::fs::File::open(&first).unwrap()).unwrap();
-    assert_eq!(
-        before,
-        super::attempt_from_executable(std::fs::File::open(&second).unwrap()).unwrap()
-    );
-    assert_eq!(
-        before.executable,
-        polylogue_model::BlobHash::of(b"synthetic executable one")
-    );
-    assert_eq!(before.parser_settings, None);
-    std::fs::write(&first, b"synthetic executable two").unwrap();
-    let after = super::attempt_from_executable(std::fs::File::open(&first).unwrap()).unwrap();
-    assert_ne!(before, after);
-    assert_eq!(
-        after.executable,
-        polylogue_model::BlobHash::of(b"synthetic executable two")
-    );
 }
 
 /// Each catalog key, set to a value other than its default, changes what its
@@ -226,26 +159,4 @@ fn every_catalog_key_changes_an_output() {
         let after = output(&snapshot(&changed));
         assert_ne!(before, after, "{key} changes nothing");
     }
-}
-
-#[test]
-fn completion_keeps_valid_deployment_flags_beside_an_invalid_one() {
-    let words = |words: &[&str]| -> Vec<std::ffi::OsString> {
-        words.iter().map(std::ffi::OsString::from).collect()
-    };
-    let overrides = super::completion_overrides(&words(&[
-        "polylogue",
-        "--listen",
-        "not-an-address",
-        "--archive",
-        "/synthetic/archive",
-        "rows",
-        "--config",
-    ]));
-    assert_eq!(
-        overrides.archive,
-        Some(std::path::PathBuf::from("/synthetic/archive"))
-    );
-    assert_eq!(overrides.listen, None);
-    assert_eq!(overrides.config_file, None);
 }

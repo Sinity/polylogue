@@ -27,18 +27,14 @@ fn restart_resumes_response_assembly_without_rereading_provider_prefix() {
         assert!(pass.errors.is_empty(), "{pass:?}");
         let state = engine.inputs.get(&home.file("continuation.jsonl")).unwrap();
         let reader = engine.reads.reader().unwrap();
-        let progress = reader.input_progress(&state.input_id).unwrap().unwrap();
-        let stored = reader
-            .parser_checkpoint(
-                &state.input_id,
-                progress.chain,
-                &state.origin.parse_version(),
-            )
-            .unwrap()
-            .unwrap();
-        let checkpoint = stored.checkpoint.unwrap();
-        assert_eq!(checkpoint.parsed_upto, prefix);
-        assert!(checkpoint.matches(&state.origin.parse_version(), prefix));
+        let progress = reader.latest_chain(&state.input_id).unwrap().unwrap();
+        let stored = reader.chain_state(&state.input_id, progress.chain).unwrap();
+        assert_eq!(stored.parsed_to(), prefix);
+        assert_eq!(
+            stored.version(),
+            Some(state.origin.parse_version().as_str())
+        );
+        assert!(stored.resume().is_some());
     }
     home.append("continuation.jsonl", &fragment("last", "Final fragment."));
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
@@ -88,7 +84,6 @@ fn job(
         finished: false,
         length: size,
         parser_state: None,
-        stopped_attempt: None,
         parser_chain: None,
         store_only: false,
         priority: crate::pool::Priority::Bulk,
@@ -115,7 +110,7 @@ fn missing_parser_state_reads_the_chain_again_from_its_start() {
         assert!(done.error.is_none());
         let mut batch = batch.unwrap();
         // A stored source reading whose parser control is unavailable.
-        batch.batch.parse.last_mut().unwrap().checkpoint = None;
+        batch.batch.parse.last_mut().unwrap().resume = None;
         let result = engine.writer.store_group(vec![batch]).unwrap();
         assert_eq!(result.len(), 1);
         assert!(result[0].is_ok());
@@ -134,18 +129,18 @@ fn missing_parser_state_reads_the_chain_again_from_its_start() {
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(pass.bytes_stored, suffix.len() as u64);
     let reader = engine.reads.reader().unwrap();
-    let progress = reader.input_progress(&input).unwrap().unwrap();
-    assert_eq!(progress.length, prefix + suffix.len() as u64);
+    let progress = reader.latest_chain(&input).unwrap().unwrap();
+    assert_eq!(progress.stored, prefix + suffix.len() as u64);
     // docs/archive.md, Parse versions: without its carried state the
     // chain is read from its start, which gives the same reading.
-    assert_eq!(progress.parsed_upto, prefix + suffix.len() as u64);
+    assert_eq!(progress.state.parsed_to(), prefix + suffix.len() as u64);
     assert_eq!(
         reader
             .stored_range(
                 &input,
                 progress.chain,
                 prefix,
-                progress.length,
+                progress.stored,
                 &engine.blobs
             )
             .unwrap(),
@@ -180,10 +175,10 @@ fn one_call_multiple_capture_steps_only_checkpoints_its_final_cursor() {
     assert!(done.error.is_none(), "{done:?}");
     let steps = batch.unwrap().batch.parse;
     assert_eq!(steps.len(), 2);
-    assert!(steps[0].checkpoint.is_none());
-    let last = steps[1].checkpoint.as_ref().unwrap();
-    assert_eq!(last.parsed_upto, bytes.len() as u64);
-    assert!(last.matches(&origin.parse_version(), bytes.len() as u64));
+    assert!(steps[0].resume.is_none());
+    assert!(steps[1].resume.is_some());
+    assert_eq!(steps[1].parsed_upto, bytes.len() as u64);
+    assert_eq!(steps[1].parse_version, origin.parse_version());
 }
 
 #[test]
@@ -204,24 +199,19 @@ fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replayi
         }
         let input = engine.location_id(&path);
         let reader = engine.reads.reader().unwrap();
-        let progress = reader.input_progress(&input).unwrap().unwrap();
-        assert_eq!(progress.length, bytes.len() as u64);
-        assert_eq!(progress.parsed_upto, 0);
-        assert!(!progress.parsed);
-        assert!(
-            reader
-                .parser_checkpoint(&input, progress.chain, "")
-                .unwrap()
-                .is_none()
-        );
+        let progress = reader.latest_chain(&input).unwrap().unwrap();
+        assert_eq!(progress.stored, bytes.len() as u64);
+        assert_eq!(progress.state.parsed_to(), 0);
+        assert!((progress.state == polylogue_model::chain::ChainState::Unparsed));
         let rows = reader.query("SELECT count(*) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1", &[polylogue_store::read::SqlValue::Text(input)]).unwrap();
         assert_eq!(rows[0]["n"], 0);
         let completeness = reader.completeness(&crate::reading_contracts()).unwrap();
-        assert!(
-            matches!(completeness.parsing, polylogue_model::freshness::CompletenessDimension::Incomplete(ref reasons) if reasons.contains(&polylogue_model::freshness::CompletenessReason::KnownRawOnly))
+        assert_eq!(
+            completeness.parsing,
+            polylogue_model::freshness::CompletenessDimension::Complete
         );
         assert_eq!(completeness.raw_only_chains, 1);
-        assert!(!completeness.caught_up());
+        assert!(completeness.caught_up());
     }
 }
 
@@ -501,7 +491,7 @@ fn lost_parser_state_reads_again_keeping_message_sessions() {
         assert!(engine.run_pass().unwrap().errors.is_empty());
         let index = rusqlite::Connection::open(engine.archive.index_db()).unwrap();
         index
-            .execute_batch("UPDATE parse_state SET checkpoint=NULL")
+            .execute_batch("UPDATE parse_state SET resume=NULL")
             .unwrap();
     }
     home.append("keyed.jsonl", &keyed_fragment("late", "response-a", "last"));

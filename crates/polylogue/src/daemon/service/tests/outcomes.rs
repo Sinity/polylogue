@@ -149,7 +149,7 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
 #[test]
 fn an_import_answered_during_a_build_says_the_index_is_being_built() {
     let build = polylogue_store::archive::index_build::IndexBuild {
-        serving_previous: false,
+        reason: polylogue_store::index::file::RebuildReason::NoIndex,
         chains: 3,
         chains_read: 1,
         bytes: 300,
@@ -165,7 +165,7 @@ fn an_import_answered_during_a_build_says_the_index_is_being_built() {
     assert_eq!(
         notes,
         [
-            "the index is being built: 100 of 300 bytes parsed; 1 of 3 input chains read; the imported inputs are readable once it is installed"
+            "the index is being built (the archive had no index): 100 of 300 bytes parsed; 1 of 3 input chains read; the imported inputs are readable once it is installed"
         ]
     );
 }

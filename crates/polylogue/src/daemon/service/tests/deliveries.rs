@@ -501,3 +501,183 @@ fn undelivered_brief_does_not_move_the_changes_since_point() {
         "{text}"
     );
 }
+
+#[test]
+fn a_pending_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
+    use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
+    use polylogue_store::writer::{DispatchPhase, Queued};
+    let d = daemon_with_a_project();
+    let at = polylogue_model::Timestamp::from_unix_ms(1_800_000_000_000).unwrap();
+    let brief = |request_id: &str, source: StartSource| {
+        let request = crate::test_daemon::Call::new(
+            "rows",
+            serde_json::json!({"steps":[{"verb":"brief", "cwd":"/home/op/proj", "for":"claude-code:newcomer", "source":source}]}),
+        ).id(request_id).channel(command_surface::Via::Hook).at(at);
+        match crate::test_answers::step(request.answer(&d.daemon)) {
+            crate::protocol::line::StepAnswer::Brief(reply) => serde_json::to_value(reply).unwrap(),
+            other => panic!("expected a directory brief: {other:?}"),
+        }
+    };
+    let (pause, held) = hold_writer(&d, "held-before-note");
+    let writer = d.daemon.writes.as_ref().unwrap();
+    let invocation = d
+        .daemon
+        .invocation(&polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        });
+    let note = invocation.request(
+        "note-before-delivery".into(),
+        UserWrite::Assert {
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Lesson,
+                key: None,
+                value: Some(serde_json::json!("the otter release needs release notes")),
+                valid_until: None,
+                links: vec![NewAnnotationLink {
+                    role: LinkRole::About,
+                    reference: polylogue_model::Reference::Cwd("/home/op/proj".into()),
+                }],
+            }],
+        },
+    );
+    let Queued::Committing(note) = writer.archive().try_submit(note).unwrap() else {
+        panic!("the note fits in the writer queue");
+    };
+    let delivery_pause =
+        writer.pause_user_dispatch_for_test("brief-before-note-commit-1", DispatchPhase::Owned);
+    let startup = brief("brief-before-note-commit", StartSource::Startup);
+    assert!(
+        !startup["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("the otter release needs release notes")
+    );
+    delivered(&d, startup["delivery"].as_str().unwrap());
+    pause.release();
+    delivery_pause.wait().unwrap();
+    note.recv().unwrap().unwrap();
+    let resume = brief("brief-after-note-commit", StartSource::Resume);
+    delivered(&d, resume["delivery"].as_str().unwrap());
+    let compact = brief("brief-after-delivered-resume", StartSource::Compact);
+    assert!(
+        compact["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing changed.")
+    );
+    assert_eq!(compact["prepared"]["refs"], serde_json::json!([]));
+    delivery_pause.release();
+    held.join().unwrap();
+    let text = resume["prepared"]["text"].as_str().unwrap();
+    assert!(
+        text.contains("the otter release needs release notes"),
+        "{text}"
+    );
+}
+
+#[test]
+fn a_pending_outcome_makes_a_committed_brief_the_start_of_the_next_delta() {
+    let d = daemon_with_a_project();
+    lesson(&d, "the otter release needs a signed tag");
+    let startup = brief(&d, "committed-start", StartSource::Startup);
+    after_queued_writes(&d);
+    lesson(&d, "the otter release also needs release notes");
+    let (pause, held) = hold_writer(&d, "held-before-outcome");
+    delivered(&d, startup["delivery"].as_str().unwrap());
+    let resume = brief(&d, "pending-outcome-resume", StartSource::Resume);
+    let text = resume["prepared"]["text"].as_str().unwrap();
+    assert!(text.contains("Changes since your last brief at"), "{text}");
+    assert!(
+        text.contains("the otter release also needs release notes"),
+        "{text}"
+    );
+    assert!(
+        !text.contains("the otter release needs a signed tag"),
+        "{text}"
+    );
+    pause.release();
+    held.join().unwrap();
+}
+
+#[test]
+fn a_delivery_sent_while_the_writer_is_busy_is_committed_and_read_by_the_next_brief() {
+    use polylogue_store::writer::Queued;
+    let mut d = daemon_with_a_project();
+    lesson(&d, "the otter release needs a signed tag");
+    let (pause, held) = hold_writer(&d, "busy-delivery-writer");
+    let writes = d.daemon.writes.as_ref().unwrap();
+    let invocation =
+        d.daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "delivery-test",
+            ));
+    let repeated = invocation.request(
+        "busy-delivery-fill".into(),
+        UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+    );
+    while matches!(
+        writes.archive().try_submit(repeated.clone()).unwrap(),
+        Queued::Committing(_)
+    ) {}
+    let startup = brief(&d, "busy-delivery-start", StartSource::Startup);
+    assert!(
+        startup["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("the otter release needs a signed tag")
+    );
+    let delivery = startup["delivery"].as_str().unwrap();
+    delivered(&d, delivery);
+    let status = crate::test_answers::ok(
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&d.daemon),
+    );
+    assert_eq!(status["pending_writes"]["delivery_outcomes"], 1);
+    let compact = brief(&d, "busy-delivery-compact", StartSource::Compact);
+    assert!(
+        compact["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing changed.")
+    );
+    assert_eq!(compact["prepared"]["refs"], serde_json::json!([]));
+    assert_eq!(compact["prepared"]["left_out"], serde_json::json!([]));
+    // Release the writer only once shutdown has cancelled normal reads.
+    let stop = d.daemon.archive.stop().clone();
+    let pause = std::sync::Mutex::new(Some(pause));
+    let release = stop.on_cancel(move || {
+        if let Some(pause) = pause.lock().unwrap().take() {
+            pause.release();
+        }
+    });
+    d.restart_after_stop(|| {});
+    drop(release);
+    held.join().unwrap();
+    let (row, body) = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .delivery(delivery)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.events, ["delivered"]);
+    assert_eq!(body, startup["prepared"]["text"].as_str().unwrap());
+    let resume = brief(&d, "busy-delivery-resume", StartSource::Resume);
+    assert_eq!(resume["prepared"]["refs"], serde_json::json!([]));
+    assert_eq!(resume["prepared"]["left_out"], serde_json::json!([]));
+    assert!(
+        resume["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing changed.")
+    );
+    let status = crate::test_answers::ok(
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&d.daemon),
+    );
+    assert_eq!(status["pending_writes"]["delivery_outcomes"], 0);
+}

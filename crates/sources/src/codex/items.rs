@@ -8,6 +8,11 @@
 //! has no such marker and that runs commands has an unknown outcome, never
 //! a success.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use crate::parse::ExtractedBlob;
 use base64::Engine;
 use polylogue_model::JsonExt;

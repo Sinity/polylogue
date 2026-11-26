@@ -27,6 +27,52 @@ pub struct Fixture {
     input_pk: i64,
     seq: i64,
     commit_seq: i64,
+    /// Each session's `changed` when its transcript lines were last written.
+    lines_written: std::cell::RefCell<std::collections::HashMap<i64, i64>>,
+}
+
+/// A file's bytes, or `None` for a directory, at a path under an archive root.
+type ArchiveFile = (std::path::PathBuf, Option<Vec<u8>>);
+
+/// The files and directories of a new archive whose empty build is
+/// installed, parents first, made once per process and read once its
+/// writer has stopped. The lock file and the databases' shared-memory
+/// files belong to that archive's open connections and are left out.
+fn empty_archive() -> Result<&'static [ArchiveFile]> {
+    static FILES: std::sync::OnceLock<Vec<ArchiveFile>> = std::sync::OnceLock::new();
+    if let Some(files) = FILES.get() {
+        return Ok(files);
+    }
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().join("archive");
+    {
+        let (archive, _lock) = Archive::open_or_create(&root)?;
+        crate::Writer::start(&archive)?.build(Vec::new())?;
+    }
+    let mut files = Vec::new();
+    let mut pending = vec![root.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| crate::StoreError::internal("fixture file outside its archive"))?
+                .to_owned();
+            if entry.file_type()?.is_dir() {
+                files.push((relative, None));
+                pending.push(path);
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == "lock" || name.ends_with("-shm") {
+                continue;
+            }
+            files.push((relative, Some(std::fs::read(&path)?)));
+        }
+    }
+    Ok(FILES.get_or_init(|| files))
 }
 
 /// A session's facts; everything not given is unknown, except that an empty
@@ -89,11 +135,26 @@ pub struct CallFacts<'a> {
 
 impl Fixture {
     pub fn new(root: &Path) -> Result<Self> {
-        let (archive, lock) = Archive::open_or_create(root)?;
         // Fixture rows are written directly into an installed index: the
         // new archive's empty build is installed first, as a daemon's first
-        // pass over nothing does.
-        crate::Writer::start(&archive)?.build(Vec::new())?;
+        // pass over nothing does. That build is the same for every fixture,
+        // so it is made once per process and its files written out here.
+        std::fs::create_dir_all(root)?;
+        for (path, bytes) in empty_archive()? {
+            let path = root.join(path);
+            match bytes {
+                Some(bytes) => std::fs::write(path, bytes)?,
+                None => std::fs::create_dir_all(path)?,
+            }
+        }
+        // Each fixture has its own index generation and cursor key, as a
+        // fresh build gives, so a cursor from one fixture is foreign to
+        // another.
+        crate::archive::generation::rotate(&open_write(
+            &root.join("index.db"),
+            crate::archive::cache::SETUP,
+        )?)?;
+        let (archive, lock) = Archive::open_or_create(root)?;
         let index = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
         // Fixture rows count their changes from 1, after a write position of
         // 0; the empty build's own commits are not part of the fixture.
@@ -126,6 +187,7 @@ impl Fixture {
             input_pk,
             seq: 0,
             commit_seq: 0,
+            lines_written: Default::default(),
         })
     }
 
@@ -162,11 +224,15 @@ impl Fixture {
         crate::summary::run_with_catalog(&mut self.index, catalog)
     }
 
-    /// The writer indexes each session's items as it commits; fixture rows
-    /// are written directly, so sessions they changed are indexed before
-    /// reads open.
+    /// The summary worker writes each session's transcript lines once it
+    /// is due; fixture rows are written directly and mark nothing, so the
+    /// lines of every session changed since they were written are written
+    /// before reads open.
     pub fn reads(&self) -> Result<ReadPool> {
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         ReadPool::open(&self.archive)
     }
 
@@ -235,7 +301,10 @@ impl Fixture {
             "UPDATE session SET changed=changed+1, last_activity_at=(SELECT max(at) FROM message WHERE session_pk=session.pk) WHERE pk=(SELECT session_pk FROM message WHERE pk=?1)",
             [message_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -392,7 +461,10 @@ impl Fixture {
             )?;
         }
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(pk)
     }
 
@@ -455,7 +527,10 @@ impl Fixture {
             [session_pk],
         )?;
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(pk)
     }
 
@@ -574,7 +649,10 @@ impl Fixture {
              VALUES (?1, ?2, ?3, ?4, 'fixture', ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -585,7 +663,10 @@ impl Fixture {
              VALUES (?1, ?2, ?3, 1, 'fixture', ?4)",
             params![parent, child, kind, self.input_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -665,7 +746,10 @@ impl Fixture {
             [session_pk],
         )?;
         self.refresh_counts(session_pk)?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -721,7 +805,10 @@ impl Fixture {
              WHERE pk = (SELECT session_pk FROM message WHERE pk = ?1)",
             [message_pk],
         )?;
-        crate::items::refresh_stale(&self.index)?;
+        crate::summary::lines::write_fixture_lines(
+            &self.index,
+            &mut self.lines_written.borrow_mut(),
+        )?;
         Ok(())
     }
 
@@ -729,7 +816,7 @@ impl Fixture {
     pub fn kept_result(&mut self, id: &str, query: &str, rows_json: &str) -> Result<()> {
         crate::kept::validate_body(id, rows_json)?;
         self.archive_conn.execute(
-            "INSERT INTO kept_result(id, query, ran_at, read_at, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
+            "INSERT INTO saved_rows(id, query, ran_at, read_position, rows_json) VALUES (?1, ?2, 0, '{}', ?3)",
             params![id, query, rows_json],
         )?;
         Ok(())
@@ -738,7 +825,7 @@ impl Fixture {
     /// Replace a stored kept body with deliberately damaged bytes for read tests.
     pub fn corrupt_kept_body(&mut self, id: &str, body: &str) -> Result<()> {
         self.archive_conn.execute(
-            "UPDATE kept_result SET rows_json=?1 WHERE id=?2",
+            "UPDATE saved_rows SET rows_json=?1 WHERE id=?2",
             params![body, id],
         )?;
         Ok(())
@@ -913,6 +1000,15 @@ impl Fixture {
     }
 }
 
+/// The parser version the writer fixtures parse `claude-code` chains under,
+/// as the reading contract status and completeness judge them by.
+pub fn synthetic_contracts() -> Vec<crate::ReadingContract> {
+    vec![crate::ReadingContract::Expected {
+        origin: "claude-code".into(),
+        version: "synthetic=1".into(),
+    }]
+}
+
 /// Marks one origin's readings as older, in an isolated test or benchmark archive.
 /// The caller serializes writes and keeps the archive lock.
 pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
@@ -922,10 +1018,12 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
         [archive.archive_db().to_string_lossy().as_ref()],
     )?;
     crate::source::views(&conn)?;
-    crate::chain_progress::install_triggers(&conn)?;
     let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
         FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
-    conn.execute("UPDATE parse_state SET parse_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("UPDATE parse_state SET parser_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    crate::archive::bump_counter(&tx)?;
+    tx.commit()?;
     Ok(size)
 }
 

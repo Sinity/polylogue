@@ -1,2 +1,2 @@
-CREATE INDEX IF NOT EXISTS kept_result_name
-  ON kept_result(name, ran_at, id) WHERE name IS NOT NULL;
+CREATE INDEX IF NOT EXISTS saved_rows_name
+  ON saved_rows(name, ran_at, id) WHERE name IS NOT NULL;

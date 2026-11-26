@@ -214,6 +214,9 @@ stored_names! {
         BytesDiffer => "bytes_differ",
         /// The parser panicked; the message and location are in the detail.
         ParserPanicked => "parser_panicked",
+        /// The input failed its origin's shape check: no parser reads its
+        /// recorded path, or it recorded none.
+        Refused => "refused",
     }
 }
 
@@ -221,7 +224,9 @@ stored_names! {
 /// stands until either changes. Built only from a parser's own error, a
 /// count mismatch, a hash mismatch or a caught parser panic, so a store or
 /// I/O error can never be recorded against a chain.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 pub struct ChainFailure {
     pub kind: ChainFailureKind,
     /// The parser's own sentence, for people.
@@ -232,6 +237,13 @@ impl ChainFailure {
     pub fn malformed(detail: impl Into<String>) -> Self {
         Self {
             kind: ChainFailureKind::Malformed,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn refused(detail: impl Into<String>) -> Self {
+        Self {
+            kind: ChainFailureKind::Refused,
             detail: detail.into(),
         }
     }

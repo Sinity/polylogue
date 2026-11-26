@@ -274,12 +274,8 @@ pub fn payload(product: &Product, occurrence: u64) -> Result<Value> {
         Product::Coverage(_) => json!({}),
         Product::Input { rows, .. } => json!({"input": rows.input}),
         Product::Blob(material) => json!({"blob": material.hash}),
-        Product::ParseProgress {
-            reading,
-            counts,
-            stopped_attempt,
-        } => json!({
-            "input": reading.input.id, "counts": counts, "stopped_attempt": stopped_attempt,
+        Product::ParseProgress { reading, counts } => json!({
+            "input": reading.input.id, "counts": counts,
         }),
     };
     payload["record_key"] = key(product, occurrence)?.into();
@@ -355,18 +351,6 @@ pub fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Result<Produ
             if reading.source_length.is_none() {
                 return Err(Error::invalid("export reading has no actual source length"));
             }
-        }
-        if event_type == "polylogue.parse_progress"
-            && !payload["stopped_attempt"].is_null()
-            && !matches!(
-                reading.progress,
-                polylogue_model::batch::StepProgress::Failed { .. }
-                    | polylogue_model::batch::StepProgress::Refused { .. }
-            )
-        {
-            return Err(Error::invalid(
-                "only stopped progress has a stopped attempt",
-            ));
         }
         return Ok(Product::Interpreted { reading, record });
     }
@@ -482,8 +466,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                     json!({
                         "type":"object", "properties": {
                             "input":{"type":"string"}, "counts":fields["counts"],
-                            "stopped_attempt":fields["stopped_attempt"],
-                        }, "required":["input","counts","stopped_attempt"],
+                        }, "required":["input","counts"],
                     })
                 })
             } else {
@@ -612,7 +595,6 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 "data",
                 "imported",
                 "counts",
-                "stopped_attempt",
                 "content",
                 "provenance",
                 "coverage",
@@ -669,17 +651,18 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                         *name,
                         "polylogue.line_resolution" | "polylogue.line_resolution_restore"
                     ) {
-                        7
+                        8
                     } else {
                         match *product {
-                            "message" => 10,
+                            "message" => 11,
                             "request" | "restored_request" => 11,
-                            "session" | "link" | "parse_progress" => 8,
-                            "input" => 7,
-                            "document" | "event" | "background" | "repository" => 7,
-                            "fragment" => 5,
-                            "query_run" => 9,
-                            "tool_call" | "prefix_copy" | "prefix_member" | "query" => 3,
+                            "session" | "link" | "parse_progress" => 9,
+                            "input" => 8,
+                            "document" | "event" | "background" | "repository" => 8,
+                            "fragment" => 6,
+                            "query_run" => 10,
+                            "tool_call" | "prefix_copy" | "prefix_member" => 4,
+                            "query" => 3,
                             "query_run_outcome" => 2,
                             "attachment_binding" => 2,
                             "restored_history" => 1,

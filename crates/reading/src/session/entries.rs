@@ -1,6 +1,6 @@
-//! The entries a composed reading shows, read from the session item index
+//! The entries a composed reading shows, read from transcript lines
 //! in windows next to a page. Where an entry sits among the shown entries
-//! comes from the counts the writer stores per entry class, so a page in the
+//! comes from the counts stored per entry class, so a page in the
 //! middle of a long session reads its own entries and the unit it starts
 //! in, not the entries before it.
 use super::{Composed, Runs};
@@ -277,16 +277,11 @@ impl<'r, 'c> ShownEntries<'r, 'c> {
         Ok(out)
     }
 
-    /// Where the reading starts and where it ends.
+    /// Where the reading starts.
     pub(super) fn start(&self) -> (usize, usize) {
         self.spans
             .first()
             .map_or((0, 0), |span| (span.part, span.start))
-    }
-    pub(super) fn end(&self) -> (usize, usize) {
-        self.spans
-            .last()
-            .map_or((0, 0), |span| (span.part, span.end))
     }
 }
 

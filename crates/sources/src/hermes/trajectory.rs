@@ -1,9 +1,15 @@
 //! ATIF trajectory files: each becomes a transcript document and a
 //! `hermes_trajectory` event. Its run ID is not a session ID, and a step's
 //! role does not say who wrote it.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {
+    mod step;
+}
+
 use crate::fields::ExpectedType as T;
 use polylogue_model::JsonExt;
-mod step;
 
 use super::{Event, Json, Parse, Sink, identity};
 use crate::RecordOutcome;

@@ -1,4 +1,4 @@
-//! Kept context a harness records crosses parsing, writing and the stored item index.
+//! Kept context a harness records crosses parsing, writing and the stored transcript lines.
 use super::*;
 use polylogue_model::read::{EntryKind, Part, Place, context_at};
 

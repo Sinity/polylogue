@@ -165,7 +165,7 @@ impl Cli {
 pub type OutputHandler = fn(
     &command_surface::ParsedCommand,
     &command_surface::Answer<Value>,
-    &crate::config::Startup,
+    &crate::config::Client,
     bool,
 ) -> ExitCode;
 
@@ -173,7 +173,7 @@ pub type OutputHandler = fn(
 /// writes a file or a directory, or follows a stream.
 pub type Deliver = fn(
     &command_surface::ParsedCommand,
-    &crate::config::Startup,
+    &crate::config::Client,
     &command_surface::RunnableRequest,
 ) -> ExitCode;
 
@@ -193,8 +193,16 @@ pub enum Run {
         fn(&mut command_surface::DeclarationsBuilder, &'static Command),
         fn(&Value) -> Result<(), String>,
     ),
+    /// Runs in the calling process with the whole deployment: the daemon,
+    /// and the commands that run the engine or read the machine identity.
     ConfiguredLocal(
         fn(&Command, &command_surface::ParsedCommand, &crate::config::Startup, bool) -> ExitCode,
+        fn(&mut command_surface::DeclarationsBuilder, &'static Command),
+        fn(&Value) -> Result<(), String>,
+    ),
+    /// Runs in the calling process with the client's configuration alone.
+    ClientLocal(
+        fn(&Command, &command_surface::ParsedCommand, &crate::config::Client, bool) -> ExitCode,
         fn(&mut command_surface::DeclarationsBuilder, &'static Command),
         fn(&Value) -> Result<(), String>,
     ),
@@ -214,6 +222,11 @@ const fn configured_local<A: command_surface::JsonSchema + serde::de::Deserializ
     run: fn(&Command, &command_surface::ParsedCommand, &crate::config::Startup, bool) -> ExitCode,
 ) -> Run {
     Run::ConfiguredLocal(run, declare_local::<A>, validate_local::<A>)
+}
+const fn client_local<A: command_surface::JsonSchema + serde::de::DeserializeOwned>(
+    run: fn(&Command, &command_surface::ParsedCommand, &crate::config::Client, bool) -> ExitCode,
+) -> Run {
+    Run::ClientLocal(run, declare_local::<A>, validate_local::<A>)
 }
 fn validate_local<A: serde::de::DeserializeOwned>(arguments: &Value) -> Result<(), String> {
     A::deserialize(arguments)
@@ -257,7 +270,8 @@ pub struct Command {
     /// Mutates state: POST over HTTP, where the origin is checked.
     pub writes: bool,
     /// What the command line does with the answer in place of printing it
-    /// (`export` writes a file, `continue --exec` runs the plan).
+    /// (`dev schema` writes its result where `--to` names, `status` prints
+    /// its own view).
     pub output: Option<OutputHandler>,
     /// What the command line does in place of one request and its printed
     /// answer: `dev feed` follows its events.
@@ -269,7 +283,7 @@ impl Command {
     pub(crate) fn operation(&self) -> Option<&'static dyn Row> {
         match self.run {
             Run::Daemon(operation) => Some(operation),
-            Run::Local(..) | Run::ConfiguredLocal(..) => None,
+            Run::Local(..) | Run::ConfiguredLocal(..) | Run::ClientLocal(..) => None,
         }
     }
 
@@ -482,7 +496,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions. With --in chatgpt, the browser extension drafts a new web conversation (--model, --effort, --project, --attach); --submit sends it, held for the operator's answer when anyone else asks",
         reason: "Starts a harness session; no query selects one that does not exist yet",
-        run: Run::Daemon(daemon::<acts::Start>()),
+        run: Run::Daemon(daemon::<acts::StartSession>()),
         tool: Some(Tool::Act),
         http: true,
         writes: true,
@@ -502,7 +516,7 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "web",
         help: "Open the web reader",
-        run: configured_local::<local::arguments::Empty>(local::web),
+        run: client_local::<local::arguments::Empty>(local::web),
         ..CLI
     },
     Command {
@@ -516,12 +530,12 @@ pub static COMMANDS: &[Command] = &[
     Command {
         name: "mcp",
         help: "Serve MCP over stdio",
-        run: configured_local::<local::arguments::Empty>(local::mcp),
+        run: client_local::<local::arguments::Empty>(local::mcp),
         ..CLI
     },
     Command {
         name: "internal hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, the brief of a session whose ID or supported web link is pasted",
         run: configured_local::<local::arguments::Hook>(local::hook),
         tool: None,
         cli: Cli::Hidden,
@@ -562,7 +576,7 @@ pub static COMMANDS: &[Command] = &[
         name: "internal mail-claim",
         reason: "A session's hook takes the messages and notices waiting for it",
         help: "Take the messages and notices pending for a session",
-        run: Run::Daemon(daemon::<acts::Claim>()),
+        run: Run::Daemon(daemon::<acts::MailClaim>()),
         cli: Cli::Hidden,
         writes: true,
         tool: None,
@@ -572,7 +586,7 @@ pub static COMMANDS: &[Command] = &[
         name: "internal permission",
         reason: "The synchronous permission hook asks for a decision given ahead",
         help: "A decision given ahead for a session's pending tool request",
-        run: Run::Daemon(daemon::<acts::Permission>()),
+        run: Run::Daemon(daemon::<acts::StandingPermission>()),
         cli: Cli::Hidden,
         writes: true,
         tool: None,
@@ -758,18 +772,14 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
             }
             for command in COMMANDS.iter() {
                 match command.run {
-                    Run::Local(_, declare, _) | Run::ConfiguredLocal(_, declare, _) => {
-                        declare(&mut declarations, command)
-                    }
+                    Run::Local(_, declare, _)
+                    | Run::ConfiguredLocal(_, declare, _)
+                    | Run::ClientLocal(_, declare, _) => declare(&mut declarations, command),
                     Run::Daemon(operation) => operation.declare(&mut declarations, command),
                 }
                 if command.cli == Cli::Line {
                     declarations
-                        .declare_steps(
-                            command.name,
-                            "steps",
-                            crate::protocol::steps::declarations(),
-                        )
+                        .declare_steps(command.name, "steps", crate::daemon::verbs::declarations())
                         .expect("the line's steps are declared once");
                 }
             }

@@ -127,7 +127,10 @@ pub enum CompletenessReason {
     MissingCheckpoint,
     ParseVersionChanged,
     ParserBehind,
-    MissingSourcePrefix,
+    /// Some stored inputs failed their origin's shape check.
+    Refused,
+    /// Some stored inputs' bytes could not be parsed under the current parser.
+    ParseFailed,
     KnownRawOnly,
     DerivationBehind,
     SearchPending,
@@ -151,9 +154,8 @@ impl CompletenessReason {
                 "some stored inputs await the current parser"
             }
             CompletenessReason::ParserBehind => "parsing is behind the stored bytes",
-            CompletenessReason::MissingSourcePrefix => {
-                "some stored inputs have missing earlier bytes"
-            }
+            CompletenessReason::Refused => "some stored inputs were refused by their parser",
+            CompletenessReason::ParseFailed => "some stored inputs failed to parse",
             CompletenessReason::KnownRawOnly => "some stored inputs have no parser",
             CompletenessReason::DerivationBehind => "session figures are still being computed",
             CompletenessReason::SearchPending => "search text is pending",
