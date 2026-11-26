@@ -22,6 +22,16 @@ fn visible_context(text: &str) -> String {
     out
 }
 
+fn section_text(text: &str, heading: &str) -> String {
+    let (_, body) = text
+        .split_once(&format!("\n{heading}\n"))
+        .expect("the brief has the requested section");
+    format!(
+        "{heading}\n{}",
+        visible_context(body.split("\n\n").next().unwrap())
+    )
+}
+
 #[test]
 fn a_checkout_root_joins_the_scope() {
     let dir = tempfile::tempdir().unwrap();
@@ -323,23 +333,29 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         start(command_surface::TokenBudget::Tokens(manual_tokens)),
         Err(StoreError::Refused(polylogue_model::Reason::BudgetTooSmall { part })) if part == "the required header"
     ));
-    let visible = visible_context(&p.text);
-    let t = &visible;
     assert!(!p.empty);
-    for expected in [
-        "parser work",
-        "1 commit (abc1234f)",
-        "changed 1 file: a.rs",
-        "claimed pl-1; no close or release observed",
-        "last answer: \"Finished the parser fix; one test still fails.\"",
-        "Bead claims last observed here, with no observed close or release:",
-        "pl-1: last observed claim",
-        "formatting",
-    ] {
-        assert!(t.contains(expected), "missing {expected:?} in:\n{t}");
-    }
-    // A session's own failing commands are not reported.
-    assert!(!t.contains("`cargo test`"), "{t}");
+    assert_eq!(
+        section_text(
+            &p.text,
+            "Bead claims last observed here, with no observed close or release:"
+        ),
+        concat!(
+            "Bead claims last observed here, with no observed close or release:\n",
+            "- pl-1: last observed claim by claude-code:s1; session last active 2026-10-01 12:00 +00:00; no close or release observed; current external state unverified\n",
+        )
+    );
+    assert_eq!(
+        section_text(&p.text, "Recent sessions here, and what they did:"),
+        concat!(
+            "Recent sessions here, and what they did:\n",
+            "fix the parser\n\nStored session/model record:\n",
+            "- 2026-10-01 12:00 +00:00  recorded title: parser work  (3 messages)  claude-code:s1\n",
+            "    did: 1 commit (abc1234f); changed 1 file: a.rs; claimed pl-1; no close or release observed\n",
+            "    last answer: \"Finished the parser fix; one test still fails.\"\n",
+            "- 2026-10-01 11:59 +00:00  recorded title: formatting  (1 messages)  claude-code:s2\n",
+            "    open: a tool call never finished\n",
+        )
+    );
     assert!(p.text.len() <= DEFAULT_BUDGET as usize * 4);
     assert!(p.text.contains(&crate::manual::text()));
     assert!(p.refs.contains(&"session:claude-code:s1".to_owned()));
@@ -1087,8 +1103,16 @@ fn older_observed_claims_remain_visible_without_claiming_external_state() {
         Default::default(),
     )
     .unwrap();
-    assert!(visible_context(&p.text).contains("pl-1: last observed claim"));
-    assert!(p.text.contains("current external state unverified"));
+    assert_eq!(
+        section_text(
+            &p.text,
+            "Bead claims last observed here, with no observed close or release:"
+        ),
+        concat!(
+            "Bead claims last observed here, with no observed close or release:\n",
+            "- pl-1: last observed claim by claude-code:s1; session last active 2026-10-01 12:00 +00:00; no close or release observed; current external state unverified\n",
+        )
+    );
     assert!(p.refs.contains(&"session:claude-code:s1".into()));
 }
 
@@ -1120,21 +1144,15 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
         .chain(links)
         .collect(),
     };
-    let original = fact(
-        "original",
-        "CLAIM THAT MUST NOT APPEAR UNQUALIFIED".into(),
-        vec![],
-    );
+    let original = fact("original", "The parser accepts cedar.".into(), vec![]);
     archive
         .writer
         .archive()
         .restore_annotation(original.clone(), None)
         .unwrap();
-    let correction_text =
-        "Correction: the earlier claim is false; check the current source. ".repeat(1000);
     let correction = fact(
         "correction",
-        correction_text.clone(),
+        "Correction: the parser accepts birch.".into(),
         vec![
             AnnotationLink {
                 role: LinkRole::About,
@@ -1179,12 +1197,21 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
     );
     let (text, refs, _) = fit.finish("", |_| Ok(None)).unwrap();
     assert!(text.len() <= 1600);
-    let source = visible_context(&text);
-    assert!(source.contains("Correction: the earlier claim is false"));
-    assert!(!source.contains("CLAIM THAT MUST NOT APPEAR UNQUALIFIED"));
-    assert!(refs.contains(&"annotation:correction@correction-v1".into()));
-    assert!(text.contains("judgment:operator-authored"));
-    assert!(text.contains("expand: `polylogue annotation:original@original-v1 read`"));
+    assert_eq!(
+        section_text(&text, "Notes:"),
+        concat!(
+            "Notes:\n",
+            "Contrary note, author:operator via:cli; judgment operator-authored: - [note] Correction: the parser accepts birch. (annotation:original@original-v1, repo:synthetic, 2026-10-01 12:00 +00:00)  annotation:correction@correction-v1\n",
+            "- [note] The parser accepts cedar. (repo:synthetic, 2026-10-01 12:00 +00:00)  annotation:original@original-v1\n",
+        )
+    );
+    assert_eq!(
+        refs,
+        [
+            "annotation:correction@correction-v1",
+            "annotation:original@original-v1"
+        ]
+    );
 }
 
 #[test]
