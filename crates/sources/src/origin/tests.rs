@@ -107,3 +107,93 @@ fn a_synthetic_home_moves_every_declared_root_under_it() {
         ]
     );
 }
+
+#[test]
+fn parser_versions_include_referenced_modules() {
+    use std::collections::BTreeSet;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let opens: Vec<_> = include_str!("../origin.rs")
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("open: "))
+        .collect();
+    assert_eq!(opens.len(), ORIGINS.len());
+    for (origin, open) in ORIGINS.iter().zip(opens) {
+        let version = origin.parse_version();
+        let declared: BTreeSet<_> = version
+            .split(',')
+            .filter_map(|entry| entry.split_once('='))
+            .map(|(name, _)| {
+                name.strip_prefix("crate::")
+                    .unwrap_or(name)
+                    .trim_end_matches("::VERSION")
+                    .to_owned()
+            })
+            .collect();
+        if let Some(open) = open.strip_prefix("crate::") {
+            let (module, _) = open.rsplit_once("::").unwrap();
+            assert!(
+                declared.contains(module),
+                "{}: parser version is missing module {module}",
+                origin.name
+            );
+        } else {
+            assert_eq!(
+                open, "opens_nothing,",
+                "{}: read the parser's module path",
+                origin.name
+            );
+        }
+        let mut files: Vec<_> = declared
+            .iter()
+            .filter(|name| !name.starts_with("polylogue_model::") && *name != "command")
+            .map(|name| root.join(name.replace("::", "/")).with_extension("rs"))
+            .collect();
+        let mut read = BTreeSet::new();
+        while let Some(path) = files.pop() {
+            if !read.insert(path.clone()) {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).unwrap();
+            let mut test_only = false;
+            for line in source.lines().map(str::trim) {
+                if line == "#[cfg(test)]" {
+                    test_only = true;
+                    continue;
+                }
+                if std::mem::take(&mut test_only) {
+                    continue;
+                }
+                if line.starts_with("//") {
+                    continue;
+                }
+                // Private children are versioned with their parent; public
+                // parser modules have their own entry in the origin.
+                if let Some(child) = line.strip_prefix("mod ").and_then(|s| s.strip_suffix(';'))
+                    && child != "tests"
+                {
+                    files.push(path.with_extension("").join(child).with_extension("rs"));
+                }
+                for reference in line.split("crate::").skip(1) {
+                    let module: String = reference
+                        .chars()
+                        .take_while(|c| c.is_ascii_lowercase() || *c == '_')
+                        .collect();
+                    // The registry describes origins, rather than parsing rows.
+                    if module.is_empty()
+                        || module == "origin"
+                        || !root.join(&module).with_extension("rs").exists()
+                    {
+                        continue;
+                    }
+                    assert!(
+                        declared.contains(&module),
+                        "{}: parser version is missing module {module} (referenced by {})",
+                        origin.name,
+                        path.strip_prefix(&root).unwrap().display()
+                    );
+                }
+            }
+        }
+    }
+}

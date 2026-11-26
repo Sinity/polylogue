@@ -18,6 +18,9 @@
 //! record (`<session>~<role>-<hash>@<position>`), and the number is settled
 //! when the chain's reading is formed ([`crate::chain_names`]).
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
 use polylogue_model::{MessageId, Role, SessionId};
 use serde::Serialize;
 

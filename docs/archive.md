@@ -77,6 +77,7 @@ A *reading* is what a parser, at its parse version, makes of one chain: one row 
 ### Parse versions
 
 - **Each parser module declares its parse version.** A chain is read again when the parse version of the module that parsed it changes or its stored bytes change, and nothing else triggers a re-parse: there is no index-wide version, and a new build of Polylogue with the same parse versions reads nothing again. A parser fix that changes what a chain yields raises that module's parse version.
+- **An origin declares its parser modules once.** The module macro requires each named module's `VERSION` and includes the shared record readers, content IDs, file-version names and export reader. A module's private children share its version. The parser version is the ordered list of those module names and versions; source bytes are never hashed. A test follows `crate::` references in the declared modules and their private children and checks that every referenced parser module is included. Registry metadata is outside that check; changes in model types, external crates or indirect calls still require the author to raise the affected module's version.
 - **A chain is in one of three states.**
 
   | State | Meaning | Shown as |
