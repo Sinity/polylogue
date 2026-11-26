@@ -13,20 +13,23 @@
 //! turn whose shape differs stays shown from both inputs. The result
 //! depends only on the stored rows, never on which input arrived first.
 
-use super::{Class, Derivation, Output, Version};
+use super::{Kind, Summary, Version, When};
 use crate::Result;
 use polylogue_model::Block;
 use rusqlite::{Connection, Transaction, params};
 use std::collections::HashMap;
 
-pub(super) const DERIVATION: Derivation = Derivation {
+pub(super) const SUMMARY: Summary = Summary {
     name: "duplicates",
-    class: Class::Session,
     products: &[],
     version: Version::Rules(1),
-    after: &[],
-    dirtied_by: &[],
-    compute: |conn, pk, _| compute(conn, pk).map(Output::Duplicates),
+    kind: Kind::Marks {
+        compute: |conn, pk, out| {
+            out.duplicates = compute(conn, pk)?;
+            Ok(())
+        },
+        when: When::RowsReached,
+    },
 };
 
 /// The format of browser captures (`input_ref.format`).

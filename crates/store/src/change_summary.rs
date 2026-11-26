@@ -1,14 +1,17 @@
 //! What one index transaction changed in the rows sessions show. The code
 //! that writes a message, event or link row records it here before it
-//! changes the row; before the transaction commits, the session item index
-//! is brought up to date from the summary alone, so a transaction's cost
+//! changes the row. When the transaction ends, each session it touched is
+//! marked due for its summaries from the earliest row key its changes
+//! reached ([`ChangeSummary::mark_due`]), and the session item index is
+//! brought up to date from the summary alone, so a transaction's cost
 //! follows what it changed, not the length of the sessions it touched. A
-//! summary lives for one transaction and is never stored.
+//! summary lives for one transaction and is never stored; nothing here is
+//! a value of a session.
 use crate::Result;
-use rusqlite::{Connection, OptionalExtension};
+use crate::summary::Key;
+use rusqlite::{Connection, OptionalExtension, params};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
-mod counts;
 
 pub(crate) struct ChangeSummary {
     changed: RefCell<Changed>,
@@ -27,9 +30,6 @@ struct Before {
     session: i64,
     parent: Option<String>,
     key: OrderKey,
-    /// What it contributed to completion ([`crate::session_values`]).
-    values: Vec<crate::session_values::Value>,
-    counts: crate::derive::counts::Counts,
 }
 
 struct MessageChange {
@@ -37,11 +37,6 @@ struct MessageChange {
     /// The session a message new in this transaction was written in, when
     /// that session is composed whole: nothing about it is read back.
     whole_in: Option<i64>,
-}
-
-struct SessionBefore {
-    script: bool,
-    counts_known: bool,
 }
 
 #[derive(Default)]
@@ -52,10 +47,11 @@ struct Changed {
     /// session, parent and place each had before the change (none for a
     /// new one).
     messages: BTreeMap<i64, MessageChange>,
-    /// Events whose row changed, with the session each had before.
-    events: BTreeMap<i64, Option<(i64, bool)>>,
-    /// The session-wide rule for counting script calls, before any mutation.
-    sessions: BTreeMap<i64, SessionBefore>,
+    /// Events whose row changed, with the session and row key each had
+    /// before.
+    events: BTreeMap<i64, Option<(i64, Key)>>,
+    /// Sessions whose rows or readings the transaction touched.
+    sessions: BTreeSet<i64>,
     /// Sessions whose links as a child changed, by session ID.
     link_children: BTreeMap<String, String>,
     /// Sessions to bring up to date from their first unit: a change the
@@ -150,6 +146,12 @@ impl ChangeSummary {
         Ok(())
     }
 
+    /// Records a message the transaction composed without changing its row:
+    /// its readings may have changed, which its session's summaries read.
+    pub(crate) fn reached(&self, conn: &Connection, pk: i64) -> Result<()> {
+        self.record_message(conn, pk)
+    }
+
     /// Placement and visibility change without changing the selected content.
     pub(crate) fn message_metadata(&self, conn: &Connection, pk: i64) -> Result<()> {
         self.record_message(conn, pk)?;
@@ -175,21 +177,11 @@ impl ChangeSummary {
                     session: row.get(0)?,
                     parent: row.get(1)?,
                     key: (row.get(2)?, row.get(3)?),
-                    values: Vec::new(),
-                    counts: crate::derive::counts::Counts::default(),
                 })
             })
-            .optional()?
-            .map(|mut before| {
-                before.values = crate::session_values::of_message(conn, pk, before.session)?;
-                before.counts = crate::derive::counts::message(conn, pk)?
-                    .ok_or_else(|| crate::StoreError::internal("changed message disappeared"))?
-                    .1;
-                Ok::<_, crate::StoreError>(before)
-            })
-            .transpose()?;
+            .optional()?;
         if let Some(before) = &before {
-            self.session(conn, before.session)?;
+            self.session(before.session);
         }
         self.changed.borrow_mut().messages.insert(
             pk,
@@ -232,12 +224,14 @@ impl ChangeSummary {
             return Ok(());
         }
         let before = conn
-            .prepare_cached("SELECT session_pk,kind='compaction' FROM event WHERE pk = ?1")?
-            .query_row([pk], |row| <(Option<i64>, bool)>::try_from(row))
+            .prepare_cached("SELECT session_pk, session_order, id FROM event WHERE pk = ?1")?
+            .query_row([pk], |row| {
+                <(Option<i64>, Option<String>, String)>::try_from(row)
+            })
             .optional()?
-            .and_then(|(session, compaction)| session.map(|session| (session, compaction)));
-        if let Some((session, _)) = before {
-            self.session(conn, session)?;
+            .and_then(|(session, order, id)| Some((session?, Key::event(order.as_deref()?, &id))));
+        if let Some((session, _)) = &before {
+            self.session(*session);
         }
         self.changed.borrow_mut().events.insert(pk, before);
         Ok(())
@@ -285,65 +279,9 @@ impl ChangeSummary {
         Ok(())
     }
 
-    /// What a changed message contributed to completion before the
-    /// transaction, when it was in `session_pk` then.
-    pub(crate) fn values_before(
-        &self,
-        pk: i64,
-        session_pk: i64,
-    ) -> Vec<crate::session_values::Value> {
-        match self
-            .changed
-            .borrow()
-            .messages
-            .get(&pk)
-            .map(|change| &change.before)
-        {
-            Some(Some(before)) if before.session == session_pk => before.values.clone(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// The places in `session_pk`'s order that changed messages of it held
-    /// before the transaction or hold now; `messages` are the session's
-    /// changed messages ([`SessionChange::messages`]).
-    pub(crate) fn places(
-        &self,
-        conn: &Connection,
-        session_pk: i64,
-        messages: &BTreeSet<i64>,
-    ) -> Result<Vec<OrderKey>> {
-        let changed = self.changed.borrow();
-        let mut now = conn.prepare_cached(
-            "SELECT session_order, id FROM message
-             WHERE pk = ?1 AND session_pk = ?2",
-        )?;
-        let mut places = Vec::new();
-        for pk in messages {
-            if let Some(Some(before)) = changed.messages.get(pk).map(|change| &change.before)
-                && before.session == session_pk
-            {
-                places.push(before.key.clone());
-            }
-            if let Some(key) = now
-                .query_row([*pk, session_pk], |row| <(_, _)>::try_from(row))
-                .optional()?
-            {
-                places.push(key);
-            }
-        }
-        Ok(places)
-    }
-
     /// Records a session whose rows changed in a way not described here.
     pub(crate) fn whole_session(&self, pk: i64) {
         self.changed.borrow_mut().whole.insert(pk);
-    }
-
-    /// The changes by session, read after the rows changed. A message or
-    /// event that moved between sessions belongs to both.
-    pub(crate) fn sessions(&self, conn: &Connection) -> Result<BTreeMap<i64, SessionChange>> {
-        self.changed_sessions(conn, |_| true)
     }
 
     /// Tool outcomes contribute to counts and measures. They leave the
@@ -405,5 +343,86 @@ impl ChangeSummary {
             out.entry(pk).or_default().whole = true;
         }
         Ok(out)
+    }
+
+    /// Records that the transaction touched a session's rows or readings.
+    pub(crate) fn session(&self, pk: i64) {
+        self.changed.borrow_mut().sessions.insert(pk);
+    }
+
+    /// A result can change the count of a call in a different message: the
+    /// messages holding the calls named `id` in `session` are recorded.
+    pub(crate) fn call_result(&self, conn: &Connection, session: i64, id: &str) -> Result<()> {
+        let messages = conn
+            .prepare_cached(
+                "SELECT b.message_pk FROM tool_call t JOIN block b ON b.pk=t.call_block_pk
+                 WHERE t.session_pk=?1 AND t.call_id=?2",
+            )?
+            .query_map(params![session, id], |row| row.get::<_, i64>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        for message in messages {
+            self.record_message(conn, message)?;
+        }
+        Ok(())
+    }
+
+    /// Ends the transaction's part in the sessions' summaries: each session
+    /// it touched takes `counter` as the change of its own rows and is
+    /// marked due from the earliest row key its changes reached, before or
+    /// after them. A session composed whole is due from the start.
+    pub(crate) fn mark_due(&self, conn: &Connection, counter: i64) -> Result<()> {
+        let changed = self.changed.borrow();
+        let mut reach: BTreeMap<i64, Key> = BTreeMap::new();
+        let mut lower = |session: i64, key: Key| {
+            let held = reach.entry(session).or_insert_with(Key::past_every_row);
+            if key < *held {
+                *held = key;
+            }
+        };
+        for &session in changed.sessions.iter().chain(&changed.whole) {
+            lower(session, Key::past_every_row());
+        }
+        for &session in &changed.whole {
+            lower(session, Key::start());
+        }
+        let mut message_now =
+            conn.prepare_cached("SELECT session_pk, session_order, id FROM message WHERE pk = ?1")?;
+        for (&pk, change) in &changed.messages {
+            if let Some(before) = &change.before {
+                lower(before.session, Key::message(&before.key.0, &before.key.1));
+            }
+            if let Some((session, order, id)) = message_now
+                .query_row([pk], |row| <(i64, String, String)>::try_from(row))
+                .optional()?
+            {
+                lower(session, Key::message(&order, &id));
+            }
+        }
+        let mut event_now =
+            conn.prepare_cached("SELECT session_pk, session_order, id FROM event WHERE pk = ?1")?;
+        for (&pk, before) in &changed.events {
+            if let Some((session, key)) = before {
+                lower(*session, key.clone());
+            }
+            if let Some((Some(session), Some(order), id)) = event_now
+                .query_row([pk], |row| {
+                    <(Option<i64>, Option<String>, String)>::try_from(row)
+                })
+                .optional()?
+            {
+                lower(session, Key::event(&order, &id));
+            }
+        }
+        let mut exists =
+            conn.prepare_cached("SELECT EXISTS(SELECT 1 FROM session WHERE pk = ?1)")?;
+        let mut stamp = conn.prepare_cached("UPDATE session SET changed = ?2 WHERE pk = ?1")?;
+        for (session, from) in reach {
+            if !exists.query_row([session], |row| row.get::<_, bool>(0))? {
+                continue;
+            }
+            stamp.execute(params![session, counter])?;
+            crate::summary::mark(conn, session, &from)?;
+        }
+        Ok(())
     }
 }

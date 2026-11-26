@@ -400,7 +400,7 @@ fn removing_a_redundant_source_invalidates_derivations() {
     let before = stored(&w, "s").entries;
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     assert_eq!(
-        conn.query_row("SELECT count(*) FROM derive_due", [], |r| r
+        conn.query_row("SELECT count(*) FROM summary_due", [], |r| r
             .get::<_, i64>(0))
             .unwrap(),
         0
@@ -434,7 +434,7 @@ fn removing_a_redundant_source_invalidates_derivations() {
     assert_eq!(stored(&w, "s").entries, before);
     assert_eq!(
         conn.query_row(
-            "SELECT count(*) FROM derive_due WHERE rows_changed=1",
+            "SELECT count(*) FROM summary_due WHERE from_order < X'FF'",
             [],
             |r| r.get::<_, i64>(0)
         )

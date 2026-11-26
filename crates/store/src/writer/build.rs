@@ -34,10 +34,6 @@ const SCRATCH_KEPT: i64 = 64 << 20;
 /// Sessions composed per transaction.
 const SESSIONS_PER_TRANSACTION: usize = 512;
 
-/// Live events a transaction composing sessions from the index gathers
-/// before it ends, at a session's end.
-const LIVE_PER_TRANSACTION: usize = 10_000;
-
 /// Rows the merge writes per transaction, at most.
 const ROWS_PER_TRANSACTION: u64 = 200_000;
 
@@ -1837,6 +1833,9 @@ impl Inner {
                         .transaction_with_behavior(TransactionBehavior::Immediate)?;
                     super::shown::mark_searched_texts(&tx)?;
                     tx.execute_batch(crate::schema::SEARCH_TRIGGERS)?;
+                    // Sessions were assembled without their summaries: each is
+                    // summarized from its first row once the file is installed.
+                    crate::summary::mark_every_session(&tx)?;
                     tx.commit()?;
                     job.search
                         .as_mut()
@@ -2351,14 +2350,9 @@ impl Inner {
             }
             Step::Index { next } => {
                 let mut touched = super::readings::Touched::default();
-                // A transaction composes up to its share of sessions, and
-                // ends early once their live events, which it holds decoded
-                // until it applies them, are many.
+                // A transaction composes up to its share of sessions.
                 let mut end = next;
-                while end < state.fallback.len()
-                    && end < next + SESSIONS_PER_TRANSACTION
-                    && touched.live.len() < LIVE_PER_TRANSACTION
-                {
+                while end < state.fallback.len() && end < next + SESSIONS_PER_TRANSACTION {
                     let session = &state.fallback[end];
                     end += 1;
                     touched.whole.insert(session.clone());
@@ -2371,26 +2365,6 @@ impl Inner {
                         .query_map([session], |r| <(String, String)>::try_from(r))?
                     {
                         touched.calls.insert(row?);
-                    }
-                    let live = self
-                        .index
-                        .prepare_cached(
-                            "SELECT content_group,content_start,content_length,data_length,kind
-                             FROM event_parse WHERE session_id=?1 ORDER BY at,input_pk,chain,seq",
-                        )?
-                        .query_map([session], |r| {
-                            Ok((crate::content::Piece::of(r, 0)?, r.get::<_, String>(4)?))
-                        })?
-                        .collect::<rusqlite::Result<Vec<_>>>()?;
-                    let mut reader = crate::content::Reader::default();
-                    for (piece, kind) in live {
-                        if polylogue_model::live::is_live_event(&kind) {
-                            touched.live.push(super::readings::read_event(
-                                &self.index,
-                                &mut reader,
-                                piece,
-                            )?);
-                        }
                     }
                 }
                 state.joined += (end - next) as u64;

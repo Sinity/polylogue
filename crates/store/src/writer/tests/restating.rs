@@ -278,14 +278,14 @@ fn absent_or_malformed_leaf_is_unknown_and_rule_upgrade_rederives_an_empty_path(
         assert_eq!(activity(), 0);
         let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
         // As after a rule change: the last pass derived at the earlier version.
-        conn.execute_batch("UPDATE message SET on_active_path=NULL; UPDATE derive_state SET version='4' WHERE name='active_path'; UPDATE meta SET value=json_set(value,'$.active_path','4') WHERE key='derived_versions';").unwrap();
+        conn.execute_batch("UPDATE message SET on_active_path=NULL; UPDATE summary_state SET version='4' WHERE name='active_path'; UPDATE meta SET value=json_set(value,'$.active_path','4') WHERE key='summary_versions';").unwrap();
         w.writer.derive().unwrap();
         assert_eq!(activity(), 0);
         assert_eq!(
             pool.reader()
                 .unwrap()
                 .query(
-                    "SELECT version FROM derive_state WHERE name='active_path'",
+                    "SELECT version FROM summary_state WHERE name='active_path'",
                     &[]
                 )
                 .unwrap()[0]["version"],

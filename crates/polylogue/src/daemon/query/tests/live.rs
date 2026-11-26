@@ -435,8 +435,7 @@ fn stored_facts_equal_applying_the_stored_lines() {
             data,
         ));
     }
-    let stored = w.rows("SELECT live_facts, live_reparse FROM session WHERE id = 'claude-code:f'");
-    assert_eq!(stored[0]["live_reparse"], 0);
+    let stored = w.rows("SELECT live_facts FROM session WHERE id = 'claude-code:f'");
     let stored_facts: polylogue_model::live::LiveFacts =
         serde_json::from_str(stored[0]["live_facts"].as_str().unwrap()).unwrap();
     assert_eq!(stored_facts, facts);

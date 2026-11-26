@@ -102,7 +102,7 @@ impl Reader<'_> {
         };
         // The marks the derive step works from, and the versions it last
         // derived at; read in constant time.
-        let derivation = if crate::derive::caught_up(conn)? {
+        let derivation = if crate::summary::caught_up(conn)? {
             CompletenessDimension::Complete
         } else {
             CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind])

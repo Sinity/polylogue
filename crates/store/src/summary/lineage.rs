@@ -1,23 +1,24 @@
 //! The session lineage row (root, depth, pending root and issue), computed by
 //! [`crate::lineage`] and written to `session_lineage`.
 
-use super::{Cause, Class, Derivation, Output, Version};
+use super::{Kind, Summary, Version, When};
 use crate::Result;
 use polylogue_model::read::SessionLineage;
 use rusqlite::{Transaction, params};
 
-pub(super) const DERIVATION: Derivation = Derivation {
+pub(super) const SUMMARY: Summary = Summary {
     name: "lineage",
-    class: Class::PerChange,
     products: &[polylogue_model::derived::SESSION_LINEAGE],
     version: Version::Rules(1),
-    after: &[],
-    dirtied_by: &[Cause::LineageChanged],
-    compute: |conn, pk, _| {
-        Ok(Output::Lineage(
-            crate::lineage::compute_lineage(conn, crate::row::SessionPk(pk))?
-                .expect("derived session exists"),
-        ))
+    kind: Kind::Marks {
+        compute: |conn, pk, out| {
+            out.lineage = Some(
+                crate::lineage::compute_lineage(conn, crate::row::SessionPk(pk))?
+                    .ok_or_else(|| crate::StoreError::internal("a due session has no row"))?,
+            );
+            Ok(())
+        },
+        when: When::Lineage,
     },
 };
 

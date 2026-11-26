@@ -45,7 +45,7 @@ pub const INDEX: &str = concat!(
     "\n",
     include_str!("schema/session_items.sql"),
     "\n",
-    include_str!("schema/session_values.sql"),
+    include_str!("schema/summary.sql"),
     "\n",
     include_str!("schema/lineage.sql")
 );
@@ -165,7 +165,7 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 pub const ARCHIVE_VERSION: u32 = 6;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 15;
+pub const INDEX_VERSION: u32 = 16;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A versioned file without it was written by an

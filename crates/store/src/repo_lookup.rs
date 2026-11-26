@@ -55,8 +55,8 @@ pub(crate) fn upsert_lookup(
         // `cwd` under the directory sorts between `<path>/` and `<path>0`
         // ('0' follows '/'), so the session index serves the range.
         tx.prepare_cached(
-            "INSERT INTO derive_due(session_pk, rows_changed, repo_lookup)
-             SELECT pk, 0, 1 FROM session
+            "INSERT INTO summary_due(session_pk, from_order, repo_lookup)
+             SELECT pk, X'FF', 1 FROM session
              WHERE cwd = ?1 OR (cwd >= ?1 || '/' AND cwd < ?1 || '0')
              ON CONFLICT(session_pk) DO UPDATE SET repo_lookup = 1, marked = marked + 1",
         )?

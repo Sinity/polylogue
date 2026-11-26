@@ -190,7 +190,7 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
 fn due_derivations(root: &std::path::Path) -> i64 {
     rusqlite::Connection::open(root.join("index.db"))
         .unwrap()
-        .query_row("SELECT count(*) FROM derive_due", [], |row| row.get(0))
+        .query_row("SELECT count(*) FROM summary_due", [], |row| row.get(0))
         .unwrap()
 }
 

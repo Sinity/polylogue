@@ -7,23 +7,38 @@
 //! choose each input's latest marker; known event time and content identity
 //! resolve different inputs without depending on row insertion order.
 
-use super::{Class, Derivation, Output, Version};
+use super::{Kind, Summary, Version, When};
 use crate::Result;
 use rusqlite::{Connection, Transaction};
 
-pub(super) const DERIVATION: Derivation = Derivation {
+pub(super) const SUMMARY: Summary = Summary {
     name: "active_path",
-    class: Class::Session,
     products: &[],
     version: Version::Rules(5),
-    after: &[],
-    dirtied_by: &[],
-    compute: |conn, pk, _| compute(conn, pk).map(Output::ActivePath),
+    kind: Kind::Marks {
+        compute: |conn, pk, out| {
+            out.active_path = compute(conn, pk)?;
+            Ok(())
+        },
+        when: When::RowsReached,
+    },
 };
 
 /// The session's messages whose place on the path changes, with their new
-/// place.
+/// place. A session with no path marker and no message placed by one, as
+/// every live session is, is answered by two index probes.
 fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>> {
+    let placed: bool = conn
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM event INDEXED BY event_path_marker WHERE session_pk = ?1
+                             AND kind IN ('active_leaf','active_path_empty','active_path_unknown'))
+                 OR EXISTS(SELECT 1 FROM message INDEXED BY message_branch WHERE session_pk = ?1
+                             AND on_active_path IS NOT NULL)",
+        )?
+        .query_row([session_pk], |r| r.get(0))?;
+    if !placed {
+        return Ok(Vec::new());
+    }
     Ok(conn
         .prepare_cached(
             "WITH RECURSIVE
@@ -36,6 +51,7 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Vec<(i64, Option<i64>)>
              FROM event e LEFT JOIN message m ON m.id = e.after_message_id
              JOIN input_ref r ON r.pk = e.input_pk
              WHERE e.session_pk = ?1
+               AND e.kind IN ('active_leaf','active_path_empty','active_path_unknown')
                AND ((e.kind = 'active_leaf' AND m.pk IS NOT NULL)
                  OR (e.kind IN ('active_path_empty','active_path_unknown') AND m.pk IS NULL))),
            marker(id, kind) AS (

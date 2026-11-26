@@ -54,12 +54,11 @@ CREATE TABLE session (
   error_count INTEGER,
   changed           INTEGER NOT NULL,       -- write counter of the last change to its own rows
                                             --   (not its derived values or live columns)
-  derived_changed   INTEGER,                -- write counter of the derive transaction that last derived it
-  live_reparse      INTEGER NOT NULL DEFAULT 0,
+  derived_changed   INTEGER,                -- write counter of the summary transaction that last wrote its summaries
   live_changed      INTEGER,                -- write counter value of the last change to its live columns
-  -- Live facts: computed from the session's live events (hook, process and
-  -- registry lines), written in the transaction that stores each line; the
-  -- live state is computed at read time from these and now (`pl_live`).
+  -- Live facts: the live summary of the session's live events (hook, process
+  -- and registry lines, summary/live.rs); the live state is computed at read
+  -- time from these and now (`pl_live`).
   live_facts TEXT,                          -- polylogue_model::live::LiveFacts as JSON
   live_last_at INTEGER                      -- time of the latest live event included
 ) STRICT;
@@ -122,7 +121,7 @@ CREATE TABLE message (
 CREATE UNIQUE INDEX message_id ON message(id);
 CREATE INDEX message_session ON message(session_pk, session_order, id);   -- reading in order; [last:N]
 CREATE INDEX message_prose   ON message(session_pk) WHERE written_by = 'human' AND prompt_kind = 'prose';
-CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path = 0;
+CREATE INDEX message_branch  ON message(session_pk) WHERE on_active_path IS NOT NULL;   -- off the path; the active path summary
 CREATE INDEX message_parent  ON message(session_pk, parent_id) WHERE duplicate_of IS NULL;   -- branch points
 
 -- Readings. Each chain's reading owns its rows: every row below carries the
@@ -593,9 +592,15 @@ CREATE TABLE event (
   content_group     INTEGER NOT NULL,       -- the shown reading's content (event_parse): the encoded Event
   content_start     INTEGER NOT NULL,       --   without its data, with its session and the message it
   content_length    INTEGER NOT NULL,       --   follows as stated (this row names them as shown), then
-  data_length       INTEGER NOT NULL        --   its normalized payload as JSON; export `data`
+  data_length       INTEGER NOT NULL,       --   its normalized payload as JSON; export `data`
+  session_order     TEXT                    -- its place among its session's rows for the session's summaries:
+                                            --   time, input ID, position, as message.session_order; NULL without
+                                            --   a session
 ) STRICT;
 CREATE UNIQUE INDEX event_id ON event(id);
+CREATE INDEX event_session_order ON event(session_pk, session_order, id) WHERE session_pk IS NOT NULL;  -- summary folds
+CREATE INDEX event_path_marker ON event(session_pk)
+  WHERE kind IN ('active_leaf','active_path_empty','active_path_unknown');   -- the active path summary
 CREATE INDEX event_session ON event(session_pk, seq);
 CREATE INDEX event_input   ON event(input_pk, source_chain, source_start);
 CREATE INDEX event_after_id ON event(after_message_id) WHERE after_message_id IS NOT NULL;
@@ -697,42 +702,6 @@ CREATE TABLE repo_lookup (
 
 
 
--- Which derivation (derive.rs) made a session's derived rows, and at which
--- version; a derivation whose version moved derives the session again.
-CREATE TABLE derive_state (
-  name              TEXT NOT NULL,
-  session_pk        INTEGER NOT NULL REFERENCES session(pk) ON DELETE CASCADE,
-  version           TEXT NOT NULL,
-  PRIMARY KEY (name, session_pk)
-) STRICT, WITHOUT ROWID;
-CREATE INDEX derive_state_session ON derive_state(session_pk);
--- Sessions whose derived rows are behind, marked by their causes in the
--- transaction that caused them: the derive step finds its work here, never
--- by scanning sessions. `rows_changed` 1: the session's rows changed, so
--- every session derivation runs; `repo_lookup` 1: a repository lookup at or
--- above its working directory changed, so the derivations it dirties run
--- (the repository); `rewritten` 1: a stored message of it was rewritten, so
--- the derivations that cannot add a rewrite's share run (the links); all 0: only
--- derivations whose version moved. `marked` counts the markings: the derive
--- step stores what it computed only while the count is the one it read.
-CREATE TABLE derive_due (
-  session_pk        INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
-  rows_changed      INTEGER NOT NULL,
-  repo_lookup       INTEGER NOT NULL DEFAULT 0,
-  lineage           INTEGER NOT NULL DEFAULT 0,
-  rewritten         INTEGER NOT NULL DEFAULT 0,
-  marked            INTEGER NOT NULL DEFAULT 0
-) STRICT;
-CREATE TRIGGER session_derive_due AFTER INSERT ON session BEGIN
-  INSERT INTO derive_due(session_pk, rows_changed) VALUES (NEW.pk, 1)
-    ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1, marked = marked + 1;
-END;
-CREATE TRIGGER session_rows_derive_due AFTER UPDATE OF changed ON session
-WHEN NEW.changed IS NOT OLD.changed BEGIN
-  INSERT INTO derive_due(session_pk, rows_changed) VALUES (NEW.pk, 1)
-    ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1, marked = marked + 1;
-END;
-
 -- Clocks and interval calculations over one session's parsed rows.
 CREATE TABLE session_span (
   session_pk INTEGER PRIMARY KEY REFERENCES session(pk) ON DELETE CASCADE,
@@ -756,9 +725,7 @@ CREATE TABLE session_span (
   prompted INTEGER NOT NULL,
   ends_with TEXT NOT NULL,
   ends_with_message TEXT,
-  last_stop_reason TEXT,
-  prefix TEXT                               -- JSON: the calculation's state at the last settled message,
-                                            --   from which the next derivation resumes; NULL: from the start
+  last_stop_reason TEXT
 ) STRICT;
 CREATE INDEX session_span_wall ON session_span(wall_ms);
 CREATE INDEX session_span_clustered ON session_span(clustered_ms);
@@ -956,9 +923,11 @@ CREATE TABLE live_interval (
   start_at   INTEGER NOT NULL,
   end_at     INTEGER NOT NULL,
   closed_by  TEXT NOT NULL,                 -- the kind of the live event that closed it
+  closed     BLOB NOT NULL,                 -- that event's place in the live summary (summary/live.rs)
   PRIMARY KEY (session_pk, aspect, start_at)
 ) STRICT;
 CREATE INDEX live_interval_end ON live_interval(end_at);
+CREATE INDEX live_interval_closed ON live_interval(session_pk, closed);
 
 -- Processes of live sessions from the process watcher's lines: the harness
 -- root and its descendants, one row per process identity.
@@ -974,6 +943,8 @@ CREATE TABLE process (
   started_at INTEGER,
   ended_at   INTEGER,
   role       TEXT NOT NULL,                 -- harness | child
+  opened     BLOB NOT NULL,                 -- the place in the live summary of the line that made the row
+  ended      BLOB,                          --   and of the line that ended it
   PRIMARY KEY (session_pk, boot_id, pid, start)
 ) STRICT;
 

@@ -59,12 +59,6 @@ pub(super) fn write_step(
     let source_commit = w.source_commit;
     let checkpoint = checkpoint::Update::new(b, p, previous.as_ref(), w.counter)?;
     if p.reset {
-        // A chain read again starts its sessions' live facts afresh.
-        tx.execute(
-            "UPDATE session SET live_reparse=1 WHERE live_reparse IS NOT 1 AND id IN
-             (SELECT session_id FROM session_record WHERE input_pk=?1 AND chain=?2)",
-            params![input_pk, chain],
-        )?;
         readings::delete(tx, w.changes, input_pk, chain, touched)?;
     }
     let committed = Some(source_commit.sequence).filter(|n| *n > 0);
@@ -130,9 +124,9 @@ pub(super) fn write_step(
 }
 
 /// Ends a transaction that wrote readings: computes the shown rows of what
-/// they state, then brings counts, the session item index and the values
-/// kept with each change up to date. Returns the messages written and the
-/// item units read.
+/// they state, marks the sessions it touched due for their summaries and
+/// brings the session item index up to date. Returns the messages written
+/// and the item units read.
 pub(crate) fn finish(
     tx: &Transaction<'_>,
     touched: Touched,
@@ -151,37 +145,19 @@ pub(crate) fn finish(
     Ok((written, read))
 }
 
-/// [`finish`] for upkeep of an installed index: the sessions it changed also
-/// get the links of the calls they finished, and their settled measures are
-/// forgotten. A build derives every session once, after it is installed.
-pub(crate) fn finish_upkeep(
-    tx: &Transaction<'_>,
-    touched: Touched,
-    changes: &ChangeSummary,
-    counter: i64,
-) -> Result<(u64, u64)> {
-    let finished = finish(tx, touched, changes, counter)?;
-    let sessions = changes.sessions(tx)?;
-    crate::derive::links::add_finished_links(tx, &sessions)?;
-    crate::measure::time::forget_settled(tx, changes, &sessions)?;
-    Ok(finished)
-}
-
-/// Brings counts, the session item index and the values kept with each
-/// change up to date with the shown rows a transaction wrote; returns the
-/// item units read.
+/// Marks the sessions a transaction's shown rows changed due for their
+/// summaries, and brings the session item index up to date with the rows;
+/// returns the item units read. Nothing of a summary is computed here.
 pub(super) fn finish_summaries(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
     counter: i64,
 ) -> Result<u64> {
-    changes.finish_summaries(tx, Some(counter))?;
+    changes.mark_due(tx, counter)?;
     changes.finish_links(tx)?;
-    let read = crate::timing::time(crate::timing::Stage::Items, || {
+    crate::timing::time(crate::timing::Stage::Items, || {
         crate::items::refresh(tx, changes)
-    })?;
-    crate::session_values::refresh(tx, changes)?;
-    Ok(read)
+    })
 }
 
 fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {

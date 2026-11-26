@@ -216,13 +216,13 @@ fn lineage_has_no_silent_depth_limit_and_unrelated_components_are_not_dirtied() 
       COMMIT;").unwrap();
     assert_eq!(read(&f, "test:1005"), rooted("test:0", 1005));
     let conn = db(&f);
-    conn.execute("DELETE FROM derive_due WHERE session_pk=?1", [unrelated])
+    conn.execute("DELETE FROM summary_due WHERE session_pk=?1", [unrelated])
         .unwrap();
     conn.execute("DELETE FROM link WHERE child_id='test:1'", [])
         .unwrap();
     assert_eq!(
         conn.query_row(
-            "SELECT count(*) FROM derive_due WHERE session_pk=?1",
+            "SELECT count(*) FROM summary_due WHERE session_pk=?1",
             params![unrelated],
             |r| r.get::<_, i64>(0)
         )

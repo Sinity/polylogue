@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 /// Increments the database's write counter; one value per transaction.
 pub(crate) fn bump_counter(tx: &Transaction<'_>) -> Result<i64> {
-    let next: i64 = crate::session_values::write_counter(tx)?
+    let next: i64 = crate::write_counter(tx)?
         .checked_add(1)
         .or_internal("write counter exhausted")?;
     crate::meta_set(tx, "write_counter", next.to_string())?;

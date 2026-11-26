@@ -1,7 +1,7 @@
 //! The derive thread: it runs derive passes beside the writer, reading each
 //! session's rows on its own read connection and computing its derived
 //! values there, and sends each wave's values to the writer, which only
-//! applies them ([`crate::derive::apply`]). Parse batches and user writes
+//! applies them ([`crate::summary::apply`]). Parse batches and user writes
 //! are served while a derivation computes.
 
 use super::*;
@@ -185,7 +185,7 @@ impl Worker {
             self.conn = Some(conn);
         }
         let conn = self.conn.as_ref().expect("opened above");
-        let pass = crate::derive::Pass::builtin()?;
+        let pass = crate::summary::Pass::builtin()?;
         let queue = &self.queue;
         let stopping = &self.stopping;
         let result = pass.run(

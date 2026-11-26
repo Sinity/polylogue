@@ -77,7 +77,7 @@ fn stored_counts_match_the_shown_path_and_action_population() {
         (4, 1, 1, 6, 3, 3, 1, 2, 2)
     );
     let tx = conn.unchecked_transaction().unwrap();
-    apply_values(&tx, pk, &compute(&tx, pk).unwrap(), None).unwrap();
+    apply(&tx, pk, &compute(&tx, pk).unwrap()).unwrap();
     tx.commit().unwrap();
     let stored = read(&conn, pk, true).unwrap();
     assert_eq!(
@@ -296,7 +296,7 @@ fn recomputing_counts_reuses_queries_and_binds_each_session() {
         .unwrap();
     assert_eq!(
         compute(&connection, first).unwrap(),
-        Counts {
+        Value {
             messages: 1,
             human_prompts: 1,
             words: 2,
@@ -308,7 +308,7 @@ fn recomputing_counts_reuses_queries_and_binds_each_session() {
     assert!(cold > 0, "the authorizer must observe a cold query");
     assert_eq!(
         compute(&connection, second).unwrap(),
-        Counts {
+        Value {
             messages: 2,
             human_prompts: 1,
             words: 7,

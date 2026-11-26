@@ -258,8 +258,8 @@ fn observed_lineage_sql(session: &str) -> String {
 /// A query during ingestion uses the very same walk, without exposing stale roots.
 pub(crate) fn lineage_column_sql(session: &str, column: &str) -> String {
     let valid = format!("v.session_pk={session} AND EXISTS(
-      SELECT 1 FROM derive_state ds WHERE ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_derived_current(ds.name,ds.version))
-      AND NOT EXISTS(SELECT 1 FROM derive_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)");
+      SELECT 1 FROM summary_state ds WHERE ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_summary_current(ds.name,ds.version))
+      AND NOT EXISTS(SELECT 1 FROM summary_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)");
     format!(
         "(CASE WHEN EXISTS(SELECT 1 FROM session_lineage v WHERE {valid})
       THEN (SELECT v.{column} FROM session_lineage v WHERE v.session_pk={session})
@@ -291,8 +291,8 @@ row! {
     }
     statements {
         const CURRENT = "SELECT v.root, v.depth, v.root_pending, v.issue FROM session_lineage v
-            JOIN derive_state ds ON ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_derived_current(ds.name,ds.version)
-            WHERE v.session_pk=?1 AND NOT EXISTS(SELECT 1 FROM derive_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)";
+            JOIN summary_state ds ON ds.session_pk=v.session_pk AND ds.name='lineage' AND pl_summary_current(ds.name,ds.version)
+            WHERE v.session_pk=?1 AND NOT EXISTS(SELECT 1 FROM summary_due dd WHERE dd.session_pk=v.session_pk AND dd.lineage=1)";
     }
 }
 

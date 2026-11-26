@@ -317,11 +317,14 @@ store's module documentation, not of this page.
   as they change ([search](search.md#index-maintenance)); derived values are
   computed by their own steps.
 - **Session-grain values have one mechanism.** A value of one session that
-  is not a column of one of its rows (its counts, spans, active path,
-  links, the place of each transcript entry among the others) is a
-  derivation: declared, versioned, computed from the session's shown rows
-  for the sessions marked due, and never kept by adding and subtracting
-  what a change contributed ([measures](measures.md#convergence)).
+  is not a column of one of its rows (its counts, spans, values, live
+  facts, active path, links, the place of each transcript entry among the
+  others) is a session summary: declared, versioned, computed from the
+  session's shown rows off the writer for the sessions marked due, and
+  never kept by adding and subtracting what a change contributed. The code
+  that composes a session marks it due with the earliest place its change
+  reached; a summary that depends on the rows in order is a fold, resumed
+  from the state stored before that place ([measures](measures.md#convergence)).
 
 ### One path
 

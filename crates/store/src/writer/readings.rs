@@ -34,8 +34,6 @@ pub(crate) struct Touched {
     /// names any more leave before the commit, once the shown rows name the
     /// readings present.
     pub released_groups: BTreeSet<i64>,
-    /// Live events to apply once their sessions' rows exist.
-    pub live: Vec<Event>,
 }
 
 /// The chain a step's rows belong to and what they are written with.
@@ -940,12 +938,6 @@ fn write_events(
             prepared.data_length() as i64,
         ])?;
         touched.events.insert((session, id.clone()));
-        if event.session.is_some() && polylogue_model::live::is_live_event(&event.kind) {
-            touched.live.push(Event {
-                data: step.prepared.event_data(i)?,
-                ..event.clone()
-            });
-        }
     }
     Ok(())
 }

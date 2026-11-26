@@ -106,9 +106,9 @@ pub fn register(conn: &Connection) -> rusqlite::Result<()> {
             .to_string(),
         )
     })?;
-    let versions = crate::derive::current_versions()
+    let versions = crate::summary::current_versions()
         .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-    conn.create_scalar_function("pl_derived_current", 2, FLAGS, move |ctx| {
+    conn.create_scalar_function("pl_summary_current", 2, FLAGS, move |ctx| {
         let name: String = ctx.get(0)?;
         let version: String = ctx.get(1)?;
         Ok(versions.get(&name).is_some_and(|wanted| *wanted == version))

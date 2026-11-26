@@ -6,25 +6,24 @@
 //! member of its set; its `repo` comes from the lookup too, unless a record
 //! of its own named the repository (`record_repo`).
 
-use super::{Cause, Class, Derivation, Output, Version};
+use super::{Kind, Output, Summary, Version};
 use crate::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-pub(super) const DERIVATION: Derivation = Derivation {
+pub(super) const SUMMARY: Summary = Summary {
     name: "repository",
-    class: Class::Session,
     products: &[],
     version: Version::Rules(2),
-    // Reads the session's working directory and recorded repository.
-    after: &["session"],
-    dirtied_by: &[Cause::RepoLookupChanged],
-    compute: |conn, pk, _| compute(conn, pk),
+    kind: Kind::AfterFolds,
 };
 
-fn compute(conn: &Connection, session_pk: i64) -> Result<Output> {
-    let (cwd, own): (Option<String>, Option<String>) = conn
-        .prepare_cached("SELECT cwd, record_repo FROM session WHERE pk = ?1")?
-        .query_row([session_pk], |r| <(_, _)>::try_from(r))?;
+/// The repository of the session's working directory and records, as the
+/// session summary computed them in this run ([`super::session::compute`]).
+pub(super) fn compute(conn: &Connection, session_pk: i64, out: &mut Output) -> Result<()> {
+    let Some(facts) = &out.session else {
+        return Ok(());
+    };
+    let (cwd, own) = super::session::place(conn, session_pk, facts)?;
     let lookup: Option<(Option<String>, Option<String>)> = match &cwd {
         Some(cwd) => conn
             .prepare_cached(
@@ -37,10 +36,8 @@ fn compute(conn: &Connection, session_pk: i64) -> Result<Output> {
         None => None,
     };
     let (remote, root) = lookup.unwrap_or((None, None));
-    Ok(Output::Repository {
-        repo: own.or(remote),
-        root,
-    })
+    out.repository = Some((own.or(remote), root));
+    Ok(())
 }
 
 pub(super) fn apply(

@@ -1,5 +1,5 @@
 use super::*;
-use crate::derive::{Derived, Output, SessionWrite, Token, Write};
+use crate::summary::{Output, SessionWrite, Token, Write};
 use crate::writer::{ChainParse, InputKey, ParseStep};
 use rusqlite::{Connection, params};
 
@@ -23,11 +23,12 @@ fn duplicate_write(
             pk: session,
             token,
             items,
-            outputs: vec![Derived {
-                name: "duplicates",
-                version: "synthetic".into(),
-                output: Output::Duplicates(vec![(message, duplicate.map(str::to_owned))]),
-            }],
+            computed: Vec::new(),
+            output: Output {
+                duplicates: vec![(message, duplicate.map(str::to_owned))],
+                ..Output::default()
+            },
+            folded: None,
         }],
         finish: false,
     }
@@ -46,13 +47,9 @@ fn hidden() -> (WriterArchive, Connection, i64, i64) {
             Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
         })
         .unwrap();
-    conn.execute(
-        "UPDATE session SET changed=changed+1 WHERE pk=?1",
-        [session],
-    )
-    .unwrap();
+    crate::summary::mark(&conn, session, &crate::summary::Key::start()).unwrap();
     let hide = duplicate_write(&conn, session, message, Some("synthetic-repeat"));
-    assert_eq!(crate::derive::apply(&conn, &hide).unwrap(), vec![true]);
+    assert_eq!(crate::summary::apply(&conn, &hide).unwrap(), vec![true]);
     assert_eq!(
         conn.query_row("SELECT count(*) FROM session_item", [], |row| row
             .get::<_, i64>(0))
@@ -76,7 +73,7 @@ fn revealed_message_items_are_prepared_before_the_derive_commit() {
         _ => Authorization::Allow,
     }))
     .unwrap();
-    assert_eq!(crate::derive::apply(&conn, &reveal).unwrap(), vec![true]);
+    assert_eq!(crate::summary::apply(&conn, &reveal).unwrap(), vec![true]);
     conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
         .unwrap();
     let expected = crate::items::computed_entries(&conn, session).unwrap();
@@ -134,7 +131,7 @@ fn stale_reveal_cannot_restore_an_old_version_or_retracted_message() {
             .unwrap()
             .collect::<rusqlite::Result<_>>()
             .unwrap();
-        assert_eq!(crate::derive::apply(&conn, &reveal).unwrap(), vec![false]);
+        assert_eq!(crate::summary::apply(&conn, &reveal).unwrap(), vec![false]);
         let after: Vec<Vec<u8>> = conn
             .prepare("SELECT entry FROM session_item ORDER BY seq")
             .unwrap()

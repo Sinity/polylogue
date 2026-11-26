@@ -47,7 +47,7 @@ fn unrelated_reading(engine: &Engine, home: &ClaudeHome) {
     engine.writer.send(batch).unwrap();
     let report = engine.writer.flush_rows().unwrap();
     assert!(report.errors.is_empty(), "{report:?}");
-    assert_eq!(home.count("SELECT COUNT(*) AS n FROM derive_due"), 1);
+    assert_eq!(home.count("SELECT COUNT(*) AS n FROM summary_due"), 1);
 }
 
 /// Observe whether the caller returned while the derive wave was held. Always
@@ -120,7 +120,7 @@ fn unchanged_import_returns_while_unrelated_derivation_is_held_and_wakes_it() {
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
             .expect("background derivation committed");
     }
-    assert_eq!(home.count("SELECT COUNT(*) AS n FROM derive_due"), 0);
+    assert_eq!(home.count("SELECT COUNT(*) AS n FROM summary_due"), 0);
     let current = import(&mut engine, &repeat.already_stored[0]);
     assert!(!current.pass.derivation_pending, "{current:?}");
 }
@@ -152,5 +152,5 @@ fn changed_import_waits_for_its_derivation() {
     assert!(!changed.pass.derivation_pending, "{changed:?}");
     assert_eq!(home.texts("selected"), ["first", "second"]);
     assert_eq!(derivation(&home), CompletenessDimension::Complete);
-    assert_eq!(home.count("SELECT COUNT(*) AS n FROM derive_due"), 0);
+    assert_eq!(home.count("SELECT COUNT(*) AS n FROM summary_due"), 0);
 }

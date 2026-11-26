@@ -174,7 +174,7 @@ fn command_only_links_do_not_read_tool_result_bodies() {
         }))
         .unwrap();
     let tx = index.transaction().unwrap();
-    super::replace(&tx, session_pk, &super::compute(&tx, session_pk).unwrap()).unwrap();
+    from_start(&tx, session_pk);
     tx.commit().unwrap();
     index
         .authorizer(None::<fn(AuthContext<'_>) -> Authorization>)
@@ -220,7 +220,7 @@ fn compound_commands_keep_text_and_result_source() {
             })
             .unwrap();
         let tx = index.transaction().unwrap();
-        super::replace(&tx, session_pk, &super::compute(&tx, session_pk).unwrap()).unwrap();
+        from_start(&tx, session_pk);
         tx.commit().unwrap();
         assert_eq!(w.rows("SELECT c.commit_hash, c.evidence, c.evidence_block_pk=t.call_block_pk AS original_call FROM commit_link c JOIN tool_call t ON t.session_pk=c.session_pk"),
             vec![json!({"commit_hash":"1a2b3c4", "evidence":"commit-output", "original_call":1})]);
@@ -259,59 +259,11 @@ fn stored_and_derived(w: &WriterArchive) -> (Vec<serde_json::Value>, Vec<serde_j
         .collect::<rusqlite::Result<_>>()
         .unwrap();
     for pk in sessions {
-        super::replace(&tx, pk, &super::compute(&tx, pk).unwrap()).unwrap();
+        from_start(&tx, pk);
     }
     let derived = links(&tx);
     tx.rollback().unwrap();
     (stored, derived)
-}
-
-#[test]
-fn changed_block_link_lookup_does_not_walk_the_sessions_other_calls() {
-    let mut w = WriterArchive::new();
-    let command = "git commit -m fixture";
-    w.write(
-        "s",
-        bash("s", 1, 1_000, command, true, "[main 1a2b3c4] fixture"),
-    );
-
-    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
-    let (call, session, call_message, result_message): (i64, i64, i64, i64) = index
-        .query_row(
-            "SELECT t.pk, t.session_pk, c.message_pk, r.message_pk
-             FROM tool_call t JOIN block c ON c.pk = t.call_block_pk
-             JOIN message rm ON rm.id = t.result_message_id
-             JOIN block r ON r.message_pk = rm.pk AND r.idx = t.result_idx WHERE t.command = ?1",
-            [command],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        )
-        .unwrap();
-    let work = |message| {
-        let mut query = index.prepare(super::FINISHED_CALLS_BY_MESSAGE).unwrap();
-        let rows = query
-            .query_map(rusqlite::params![message, session], |r| {
-                <(i64, String)>::try_from(r)
-            })
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        assert_eq!(rows, [(call, command.to_owned())]);
-        query.get_status(rusqlite::StatementStatus::VmStep)
-    };
-    let before = [work(call_message), work(result_message)];
-
-    let history = (2..=257)
-        .flat_map(|n| bash("s", n, i64::from(n) * 1_000, "cargo test", true, "ok"))
-        .collect();
-    w.write("s", history);
-
-    for (message, before) in [call_message, result_message].into_iter().zip(before) {
-        let after = work(message);
-        assert!(
-            after <= before + 32,
-            "link lookup grew from {before} to {after} steps"
-        );
-    }
 }
 
 #[test]
@@ -379,7 +331,9 @@ fn links_after_append_equal_full_recompute() {
     );
     check(&w, "another session");
     // The same commit and pull request reported again by calls timed before
-    // the ones already stored: the earlier calls stay the recorded ones.
+    // the ones already stored but later in session order (docs/measures.md,
+    // commit and pull-request links): the calls first in session order stay
+    // the recorded ones, so nothing changes.
     w.write(
         "t",
         bash(
@@ -407,7 +361,7 @@ fn links_after_append_equal_full_recompute() {
         "same commit and pull request arriving out of time order",
     );
     seen.dedup();
-    assert_eq!(seen.len(), 7, "{seen:?}");
+    assert_eq!(seen.len(), 6, "{seen:?}");
 }
 
 #[test]
@@ -428,25 +382,26 @@ fn links_derived_by_the_earlier_rules_are_derived_again() {
     let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     let version: String = conn
         .query_row(
-            "SELECT version FROM derive_state WHERE name='links'",
+            "SELECT version FROM summary_state WHERE name='links'",
             [],
             |r| r.get(0),
         )
         .unwrap();
-    // `["<rules>",{dependencies}]`, at the rules #6808 shipped.
-    let earlier = format!("[\"2\",{}", &version[version.find(',').unwrap() + 1..]);
+    // The rules #6808 shipped.
+    assert_ne!(version, "2");
+    let earlier = "2".to_owned();
     conn.execute(
         "UPDATE pr_link SET url='https://github.com/Sinity/polylogue/pull/6300/files'",
         [],
     )
     .unwrap();
     conn.execute(
-        "UPDATE derive_state SET version=?1 WHERE name='links'",
+        "UPDATE summary_state SET version=?1 WHERE name='links'",
         [&earlier],
     )
     .unwrap();
     conn.execute(
-        "UPDATE meta SET value=json_set(value,'$.links',?1) WHERE key='derived_versions'",
+        "UPDATE meta SET value=json_set(value,'$.links',?1) WHERE key='summary_versions'",
         [&earlier],
     )
     .unwrap();
@@ -456,4 +411,12 @@ fn links_derived_by_the_earlier_rules_are_derived_again() {
         w.rows("SELECT url FROM pr_link"),
         vec![json!({"url": "https://github.com/Sinity/polylogue/pull/6300"})]
     );
+}
+
+/// The session's links folded from its first row, written in `tx`.
+fn from_start(tx: &rusqlite::Transaction<'_>, pk: i64) {
+    let folded = crate::summary::fold::Run { conn: tx }
+        .session(pk, &crate::summary::Key::start())
+        .unwrap();
+    super::apply(tx, pk, folded.output.links.as_ref().unwrap()).unwrap();
 }
