@@ -134,6 +134,8 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
         ],
         unused_fields: 41,
         search_pending: 0,
+        search_pending_is_minimum: false,
+        summaries_due: 0,
         capture_coverage: vec![Coverage {
             version: 1,
             machine: "host".into(),

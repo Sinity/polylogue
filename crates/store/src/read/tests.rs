@@ -236,7 +236,7 @@ fn nested_readers_keep_distinct_consistent_reads_when_connections_are_reused() {
 }
 
 #[test]
-fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
+fn status_counts_rows_and_sums_the_session_count_summaries() {
     use crate::fixture::{MessageFacts, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
@@ -263,6 +263,16 @@ fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
             .unwrap();
         }
     }
+    // What the counts summary writes for each session.
+    let summarize = |f: &Fixture| {
+        rusqlite::Connection::open(f.archive.index_db())
+            .unwrap()
+            .execute_batch(
+                "UPDATE session SET message_count=(SELECT count(*) FROM message m WHERE m.session_pk=session.pk)",
+            )
+            .unwrap();
+    };
+    summarize(&f);
     let counted = |f: &Fixture| {
         let pool = f.reads().unwrap();
         let reader = pool.reader().unwrap();
@@ -275,14 +285,13 @@ fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
                 .unwrap()
         };
         assert_eq!(status.sessions, rows("session"));
-        assert_eq!(status.messages, rows("message"));
         assert_eq!(status.documents, rows("document"));
         assert_eq!(status.tool_calls, rows("tool_call"));
         assert_eq!(status.inputs, rows("a.input"));
         assert_eq!(status.revisions, rows("a.revision"));
-        (status.sessions, status.messages)
+        (status.sessions, status.messages, rows("message"))
     };
-    assert_eq!(counted(&f), (2, 5));
+    assert_eq!(counted(&f), (2, 5, 5));
     let index = rusqlite::Connection::open(f.archive.index_db()).unwrap();
     index
         .execute_batch(
@@ -291,7 +300,9 @@ fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
              DELETE FROM message WHERE id = 'claude-code:one-0';",
         )
         .unwrap();
-    assert_eq!(counted(&f), (2, 4));
+    assert_eq!(counted(&f), (2, 5, 4), "messages follow the summaries");
+    summarize(&f);
+    assert_eq!(counted(&f), (2, 4, 4));
 }
 
 mod selection;
@@ -364,4 +375,30 @@ fn lanes_decide_the_reserved_connection_and_one_background_holder() {
         holder.join().unwrap();
         assert!(pool.checkout(Lane::Background, &expired()).is_ok());
     });
+}
+
+#[test]
+fn status_counts_pending_search_text_up_to_a_bound() {
+    let dir = tempfile::tempdir().unwrap();
+    let f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let conn = rusqlite::Connection::open(f.archive.index_db()).unwrap();
+    conn.execute_batch(
+        "PRAGMA foreign_keys=OFF;
+         WITH RECURSIVE n(v) AS (SELECT 1 UNION ALL SELECT v+1 FROM n WHERE v<5)
+         INSERT INTO search_pending(text_id, fts_table) SELECT v, 1 FROM n;",
+    )
+    .unwrap();
+    assert_eq!(super::search_pending(&conn, 3).unwrap(), (3, true));
+    assert_eq!(super::search_pending(&conn, 5).unwrap(), (5, false));
+    assert_eq!(super::search_pending(&conn, 10).unwrap(), (5, false));
+    // The statement stops its scan at the limit, so a long queue costs it
+    // no more than the bound.
+    let opcodes: Vec<String> = conn
+        .prepare(&format!("EXPLAIN {}", super::SEARCH_PENDING_COUNT))
+        .unwrap()
+        .query_map([1], |row| row.get(1))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert!(opcodes.iter().any(|op| op == "DecrJumpZero"), "{opcodes:?}");
 }
