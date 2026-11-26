@@ -12,15 +12,23 @@ extern crate self as polylogue_sources;
 // A parser's child declarations also collect their row versions.
 macro_rules! parser_modules {
     (@join $($part:expr),* $(,)?) => { &{
-        const LEN: usize = 0 $(+ ($part).len())*;
-        let parts: &[&[crate::origin::ParserModule]] = &[$($part),*];
+        const PARTS: &[&[crate::origin::ParserModule]] = &[$($part),*];
+        const LEN: usize = {
+            let mut len = 0;
+            let mut part = 0;
+            while part < PARTS.len() {
+                len += PARTS[part].len();
+                part += 1;
+            }
+            len
+        };
         let mut modules = [crate::origin::ParserModule { name: "", version: 0 }; LEN];
         let mut next = 0;
         let mut part = 0;
-        while part < parts.len() {
+        while part < PARTS.len() {
             let mut index = 0;
-            while index < parts[part].len() {
-                modules[next] = parts[part][index];
+            while index < PARTS[part].len() {
+                modules[next] = PARTS[part][index];
                 next += 1;
                 index += 1;
             }
