@@ -184,7 +184,7 @@ fn every_declaration_checks_its_parse_version() {
         if let Some(previous) = saved.get(origin.name) {
             assert!(
                 previous.1 == tuple.1 || previous.0 != tuple.0,
-                "{} output changed without a parser module version bump",
+                "{} output changed without a parser module version bump: {tuple:?}",
                 origin.name
             );
         }

@@ -635,7 +635,7 @@ fn previous_pages_end_at_the_current_start_and_next_reopens_it() {
         .unwrap();
     assert!(boundary > 0);
     assert!(
-        matches!(&whole.document.items[boundary-1].kind, ItemKind::LinkIssue { issue: polylogue_model::read::ParentIssue::MissingParent { child, parent } }
+        matches!(&whole.document.items[boundary-1].kind, ItemKind::LinkIssue { issue: polylogue_model::read::ParentIssue::MissingBranchPoint { child, parent, branch_point: None } }
         if child.to_string() == "claude-code:issue-child" && parent.to_string() == "claude-code:missing-parent")
     );
     // Calibrate the payload cap through the public encoder and sole estimator,

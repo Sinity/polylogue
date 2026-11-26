@@ -279,7 +279,7 @@ impl ClaudeCode {
                         .filter(|session| session.starts_with(&format!("{base}~side-")));
                     let first = format!("{base}~side-{uuid}");
                     RecordSession {
-                        sidechain_start: earlier.is_none(),
+                        sidechain_start: earlier.is_none_or(|session| *session == first),
                         native: earlier.cloned().unwrap_or(first),
                         kind: SessionKind::Sidechain,
                     }
@@ -666,7 +666,7 @@ impl ClaudeCode {
             (Some(&parent) != child.as_ref()).then_some((parent, message))
         });
         let session_kind = record_session.kind;
-        let sidechain = session_kind == SessionKind::Sidechain;
+        let sidechain_start = record_session.sidechain_start;
         let Some(session) = self.state_session(
             parser_state,
             v,
@@ -718,9 +718,10 @@ impl ClaudeCode {
         let prompt_kind = if role == Role::User {
             let own_subagent = session_kind == SessionKind::Subagent
                 && matches!(&self.file, File::Subagent { stem } if stem == session.native().as_str());
-            let delegated = (sidechain || session_kind == SessionKind::Subagent)
-                && written_parent(v).is_none()
-                || own_subagent && !parser_state.subagent_prompt_seen;
+            let delegated = sidechain_start
+                || session_kind == SessionKind::Subagent
+                    && (written_parent(v).is_none()
+                        || own_subagent && !parser_state.subagent_prompt_seen);
             let kind = prompt_kind(v, content, session_kind, delegated);
             if own_subagent && kind.is_some_and(|kind| !kind.is_harness()) {
                 parser_state.subagent_prompt_seen = true;
@@ -1329,6 +1330,7 @@ impl Parser for ClaudeCode {
                 .map(str::to_owned)
                 .unwrap_or_else(|| crate::content_ids::untagged_hash(v));
             if record_session.sidechain_start
+                && !parser_state.sidechains.contains_key(&uuid)
                 && let Some(parent) = v.str("sessionId").and_then(session_id)
                 && let Some(child) = session_id(&record_session.native)
             {
