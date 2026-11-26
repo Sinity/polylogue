@@ -40,6 +40,9 @@ pub struct Job {
     pub change: Change,
     pub observation: Option<Observation>,
     pub(crate) source_read: Option<crate::source_read::SourceReadContext>,
+    /// Bytes of the file this plan already holds, ending where its stored
+    /// bytes end: a file that grows while it is read must still hold them.
+    pub(crate) proven_tail: Option<read::ProvenTail>,
     pub continues: bool,
     /// Where parsing starts: after the last complete record parsed, or 0
     /// when parser state is rebuilt by parsing the input again.
@@ -1073,12 +1076,18 @@ pub(crate) fn run(
             .read_range(store, job.start, job.end)
             .map_err(EngineError::from),
         Bytes::File => match &job.source_read {
-            Some(context) => read::read_source_range(&job.path, job.start, job.end, context.facts)
-                .map(|(bytes, observed)| {
-                    file_snapshot = Some(observed);
-                    bytes
-                })
-                .map_err(EngineError::from),
+            Some(context) => read::read_source_range(
+                &job.path,
+                job.start,
+                job.end,
+                context.facts,
+                job.proven_tail.as_ref(),
+            )
+            .map(|(bytes, observed)| {
+                file_snapshot = Some(observed);
+                bytes
+            })
+            .map_err(EngineError::from),
             None => read::read_range(&job.path, job.start, job.end).map_err(EngineError::from),
         },
         Bytes::Unloaded { .. } => Err(EngineError::internal(

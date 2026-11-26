@@ -162,6 +162,70 @@ fn read_with(
     Some(lookup)
 }
 
+/// Repository lookups taken on a thread of their own. A working directory
+/// on a slow filesystem (an automount waiting for an absent device answers
+/// its first look after a long timeout) or a slow repository never holds
+/// the loop: its files are collected by a pass after they are written.
+#[derive(Default)]
+pub struct Background {
+    running: Option<std::thread::JoinHandle<(Cache, io::Result<usize>)>>,
+    cache: Cache,
+}
+
+impl Background {
+    /// Starts writing the lookups of the working directories `rows` name
+    /// (session rows with `cwd` and `cwd_json`) into `dir`, unless the last
+    /// refresh is still running. `Ok(false)`: nothing started. An error is
+    /// the finished refresh's; a new one has started regardless.
+    pub fn start(
+        &mut self,
+        rows: Vec<serde_json::Value>,
+        dir: PathBuf,
+        read_at: String,
+    ) -> io::Result<bool> {
+        let finished = match self.running.take() {
+            Some(running) if !running.is_finished() => {
+                self.running = Some(running);
+                return Ok(false);
+            }
+            Some(running) => match running.join() {
+                Ok((cache, outcome)) => {
+                    self.cache = cache;
+                    outcome.map(|_| ())
+                }
+                Err(_) => Err(io::Error::other("the repository lookup thread panicked")),
+            },
+            None => Ok(()),
+        };
+        let mut cache = std::mem::take(&mut self.cache);
+        self.running = Some(
+            std::thread::Builder::new()
+                .name("polylogue-repos".into())
+                .spawn(move || {
+                    let outcome = polylogue_store::fault::check("repo_lookup.refresh", "")
+                        .map_err(io::Error::other)
+                        .and_then(|()| {
+                            refresh(working_directories(&rows), &dir, &mut cache, &read_at)
+                        });
+                    (cache, outcome)
+                })?,
+        );
+        finished.map(|()| true)
+    }
+
+    /// Whether a refresh is still running.
+    pub fn running(&self) -> bool {
+        self.running
+            .as_ref()
+            .is_some_and(|running| !running.is_finished())
+    }
+
+    /// Forgets the cached repository results; a running refresh finishes.
+    pub fn forget(&mut self) {
+        self.cache = Cache::default();
+    }
+}
+
 /// Writes the lookups for `cwds` into `dir`, one file per repository named
 /// by the hash of its path. Returns how many files changed. A repository
 /// whose file cannot be written does not stop the others; the first such

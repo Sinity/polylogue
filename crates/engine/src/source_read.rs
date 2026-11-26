@@ -12,7 +12,7 @@ pub(crate) struct SourceReadContext {
     /// source coordinates.
     pub base: Option<polylogue_store::primary::SourceBase>,
     /// The file's facts when the plan was made; the read refuses a file that
-    /// no longer matches them.
+    /// changed since in any way other than growing.
     pub facts: Option<FileFacts>,
     /// The last body already held in the spool, which the read's first range
     /// continues; it becomes the receipt's predecessor.

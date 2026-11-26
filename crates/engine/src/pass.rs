@@ -243,9 +243,9 @@ impl Engine {
         }
     }
 
-    /// Writes the repository lookups for the working directories the index
-    /// holds, at most once a minute. The files it writes are collected in
-    /// this same pass.
+    /// Starts writing the repository lookups for the working directories
+    /// the index holds, at most once a minute, on their own thread
+    /// ([`repo_lookup::Background`]); a later pass collects what it writes.
     fn refresh_lookups(&mut self) -> Result<(), polylogue_model::Failure> {
         if self
             .lookups_at
@@ -253,7 +253,9 @@ impl Engine {
         {
             return Ok(());
         }
-        self.lookups_at = Some(Instant::now());
+        if self.lookups.running() {
+            return Ok(());
+        }
         let rows = self
             .reads
             .reader()
@@ -271,14 +273,11 @@ impl Engine {
             polylogue_model::Timestamp::from_unix_ms(self.config.clock.now().as_millisecond())
                 .map(|t| t.to_string())
                 .unwrap_or_default();
-        repo_lookup::refresh(
-            repo_lookup::working_directories(&rows),
-            &dir,
-            &mut self.lookups,
-            &read_at,
-        )
-        .map(|_| ())
-        .map_err(|e| {
+        let started = self.lookups.start(rows, dir.clone(), read_at);
+        if !matches!(started, Ok(false)) {
+            self.lookups_at = Some(Instant::now());
+        }
+        started.map(|_| ()).map_err(|e| {
             polylogue_model::Failure::new(
                 format_args!("repository lookups in {}", dir.display()),
                 &EngineError::from(e),
@@ -407,7 +406,7 @@ impl Engine {
         self.pass_open = true;
         self.capture_checked = None;
         self.collectors_at = None;
-        self.lookups = repo_lookup::Cache::default();
+        self.lookups.forget();
         self.lookups_at = None;
     }
 
@@ -756,6 +755,30 @@ impl Engine {
             );
             self.execute(fresh, &mut pass)?;
         }
+        // Known files that changed since they were read (sessions being
+        // written) are read next, before the catch-up of stored chains;
+        // unchanged ones are planned after it, from the state it leaves.
+        let (changed_known, found): (Vec<_>, Vec<_>) = found.into_iter().partition(|f| {
+            self.inputs
+                .get(&f.path)
+                .is_some_and(|st| changed_since_read(&f.path, st))
+        });
+        let mut changed_plans = self.plan_found(changed_known, &mut pass, &mut seen)?;
+        let mut planned = HashSet::new();
+        changed_plans.retain(|plan| planned.insert(plan.input.id.clone()));
+        if !changed_plans.is_empty() || !self.rollout_captures.is_empty() {
+            changed_inputs += (changed_plans.len() + self.rollout_captures.len()) as u64;
+            self.log_build_step(
+                "storing and reading changed files",
+                format_args!(
+                    "{} files to store, {} rollouts to capture",
+                    changed_plans.len(),
+                    self.rollout_captures.len()
+                ),
+            );
+            self.execute(changed_plans, &mut pass)?;
+        }
+        let mut live_waiting = false;
         if self.readings_pending && !self.yielding() && !self.archive.stop().is_cancelled() {
             self.log_build_step(
                 "reading the newest stored files",
@@ -765,9 +788,12 @@ impl Engine {
                     pass.bytes_read as f64 / 1e6
                 ),
             );
-            self.reparse_behind(RevisionChains::Newest, &mut pass)?;
+            live_waiting = self.reparse_behind(RevisionChains::Newest, &mut pass)?;
         }
-        if self.yielding() {
+        if self.yielding() || live_waiting {
+            // The files found and not yet planned go to the next pass.
+            seen.extend(found.into_iter().map(|f| f.path));
+            pass.inputs_changed = changed_inputs;
             pass.capture_pending = true;
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
@@ -948,10 +974,10 @@ impl Engine {
                     "reading older stored files",
                     format_args!("{} sessions derived", pass.sessions_derived),
                 );
-                self.reparse_behind(RevisionChains::Older, &mut pass)?;
+                live_waiting = self.reparse_behind(RevisionChains::Older, &mut pass)?;
             }
         }
-        if self.yielding() {
+        if self.yielding() || live_waiting {
             pass.capture_pending = true;
             pass.seconds = started.elapsed().as_secs_f64();
             return Ok((pass, seen));
@@ -1396,6 +1422,7 @@ impl Engine {
             // Stored only in part (a stop in the middle of a large file).
             change = Change::Appended { from: st.stored };
         }
+        let mut proven_tail = None;
         if let Change::Appended { from } = &mut change {
             // The source observation may describe a larger file than the
             // committed prefix after an interrupted import.
@@ -1415,7 +1442,9 @@ impl Engine {
             } else {
                 Vec::new()
             };
-            if !read::tail_intact(path, *from, &tail)? {
+            if read::tail_intact(path, *from, &tail)? {
+                proven_tail = Some(tail);
+            } else {
                 change = Change::Rewritten;
             }
         }
@@ -1481,7 +1510,7 @@ impl Engine {
             storing_only: source_uncertain || never_parsed && st.stored > 0,
             parser_state,
             parser_chain,
-            tail: None,
+            tail: proven_tail,
             span: span(st.origin, path, self.config.chunk),
             chunk: self.config.chunk,
             priority,
@@ -1511,11 +1540,15 @@ impl Engine {
     ///
     /// Replacements commit each chain once. Continuing readings run in
     /// rounds with one range plan per path, preserving each path's order.
+    ///
+    /// True when it stopped after a page because a live input changed: the
+    /// pass ends so the next one reads that input first, and this catch-up
+    /// resumes after the last page it finished.
     pub(crate) fn reparse_behind(
         &mut self,
         chains: RevisionChains,
         pass: &mut Pass,
-    ) -> Result<(), EngineError> {
+    ) -> Result<bool, EngineError> {
         let versions = crate::reading_contracts()
             .into_iter()
             .filter_map(|contract| match contract {
@@ -1532,7 +1565,7 @@ impl Engine {
                 .as_ref()
                 .is_some_and(|planning| planning.phase == Some(RevisionChains::Older))
         {
-            return Ok(());
+            return Ok(false);
         }
         if self
             .stored_planning
@@ -1555,7 +1588,7 @@ impl Engine {
         }
         loop {
             if self.archive.stop().is_cancelled() || self.poll_request() {
-                return Ok(());
+                return Ok(false);
             }
             let planning = self.stored_planning.as_ref().expect("planning started");
             let ids = if let Some(through) = &planning.through {
@@ -1579,7 +1612,7 @@ impl Engine {
                     None
                 };
                 planning.after = None;
-                return Ok(());
+                return Ok(false);
             };
             let behind = self.reads.reader()?.chains_behind_index(
                 &versions,
@@ -1590,13 +1623,31 @@ impl Engine {
             self.reparse_chains(behind, pass)?;
             self.shared_prefixes.get_mut().clear();
             if self.yielding() || self.archive.stop().is_cancelled() {
-                return Ok(());
+                return Ok(false);
             }
             self.stored_planning
                 .as_mut()
                 .expect("planning started")
                 .after = Some(last);
+            if self.live_input_changed() {
+                return Ok(true);
+            }
         }
+    }
+
+    /// Whether a live input written in the last minutes changed since it
+    /// was read. Bulk work stops for it at its next page boundary.
+    fn live_input_changed(&self) -> bool {
+        if !self.config.reads_sources {
+            return false;
+        }
+        let now_ns = i128::from(self.config.clock.now().as_millisecond()) * 1_000_000;
+        self.inputs.iter().any(|(path, st)| {
+            st.origin.arrival == polylogue_sources::Arrival::Live
+                && !st.origin.is_row_dump(path)
+                && st.facts.is_some_and(|f| now_ns - f.mtime_ns < RECENT_NS)
+                && changed_since_read(path, st)
+        })
     }
 
     fn stored_readings_are_behind(&self) -> Result<bool, EngineError> {
@@ -2638,9 +2689,15 @@ impl Engine {
                     continue;
                 }
                 pass.bytes_stored += d.stored;
-                if let Some(e) = &d.error {
-                    pass.errors
-                        .push(polylogue_model::Failure::new(d.path.display(), e));
+                match &d.error {
+                    // Replaced or rewritten since it was planned: the file is
+                    // planned again, from what it then holds, by the next
+                    // pass, which starts at once.
+                    Some(e) if e.source_changed() => pass.capture_pending = true,
+                    Some(e) => pass
+                        .errors
+                        .push(polylogue_model::Failure::new(d.path.display(), e)),
+                    None => {}
                 }
                 let parsed = has_reading(plan.origin);
                 if parsed {
@@ -3327,6 +3384,17 @@ impl Engine {
         self.stored_planning = None;
         summary
     }
+}
+
+/// Whether the file at `path` differs from the facts its input was last
+/// read or refused at. A file that is gone is left to discovery.
+fn changed_since_read(path: &Path, st: &InputState) -> bool {
+    std::fs::metadata(path).is_ok_and(|meta| {
+        let now = FileFacts::of(&meta);
+        !st.unread
+            .or(st.facts)
+            .is_some_and(|read| read.unchanged_as(&now))
+    })
 }
 
 /// A stored input at a path this build's parser does not read: refused for

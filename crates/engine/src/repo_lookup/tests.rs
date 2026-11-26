@@ -454,3 +454,60 @@ fn a_failed_repository_lookup_keeps_the_previous_lookup() {
     assert_eq!(doc["remote"], "https://example.invalid/team/project.git");
     assert_eq!(doc["root_commits"], serde_json::json!([root]));
 }
+
+/// A pass never waits for repository lookups, which may stall on a slow
+/// filesystem: the pass reads its sessions while a lookup is held, and the
+/// lookup file written afterwards is collected by a later pass.
+#[cfg(feature = "faults")]
+#[test]
+fn a_pass_does_not_wait_for_repository_lookups() {
+    use polylogue_store::fault::{self, Action};
+    fault::clear();
+    let home = polylogue_testkit::ClaudeHome::new();
+    let repo = home.dir.path().join("project");
+    repository(&repo);
+    let record = |uuid: &str, text: &str| {
+        format!(
+            "{}\n",
+            serde_json::json!({
+                "type": "user", "uuid": uuid, "sessionId": "inrepo",
+                "timestamp": "2026-03-01T10:00:00Z", "cwd": repo.display().to_string(),
+                "message": {"role": "user", "content": text}
+            })
+        )
+    };
+    home.append("inrepo.jsonl", &record("u1", "first"));
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
+    let first = engine.run_pass().unwrap();
+    assert!(first.errors.is_empty(), "{first:?}");
+    while engine.lookups.running() {
+        std::thread::yield_now();
+    }
+    let spool = engine
+        .config
+        .spool_dir(polylogue_sources::repo_lookup::ORIGIN);
+    let lookup_files = || fs::read_dir(&spool).map_or(0, |files| files.count());
+    assert_eq!(lookup_files(), 0, "no session named the repository yet");
+    engine.lookups_at = None;
+    fault::arm("repo_lookup.refresh", "", Action::Hold, 0, 1);
+    home.append("inrepo.jsonl", &record("u2", "second"));
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(
+        fault::wait_held_within(Duration::from_secs(60)),
+        "the pass started a lookup"
+    );
+    assert_eq!(home.texts("inrepo"), ["first", "second"]);
+    assert_eq!(lookup_files(), 0, "the pass returned before the lookup");
+    fault::release();
+    while engine.lookups.running() {
+        std::thread::yield_now();
+    }
+    fault::clear();
+    assert_eq!(lookup_files(), 1);
+    engine.lookups_at = None;
+    engine.collectors_at = None;
+    let collected = engine.run_pass().unwrap();
+    assert!(collected.errors.is_empty(), "{collected:?}");
+    assert_eq!(home.count("SELECT count(*) AS n FROM repo_lookup"), 1);
+}
