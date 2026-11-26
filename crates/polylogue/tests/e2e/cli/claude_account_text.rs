@@ -4,14 +4,18 @@ use serde_json::json;
 use polylogue_model::bundle::Record;
 use polylogue_model::read::ReadPage;
 
-/// The report of an import that succeeded, once the daemon has caught up
-/// with it, so what follows reads the imported inputs whole.
-pub(super) fn import_report(env: &crate::Fixture, out: &Output) -> polylogue_engine::ImportReport {
+/// The report of an import that succeeded. Its inputs are readable when it
+/// answers (docs/capture.md, Import), so what follows reads them at once.
+pub(super) fn import_report(out: &Output) -> polylogue_engine::ImportReport {
     assert!(out.status.success(), "{out:?}");
     let report: polylogue_engine::ImportReport = serde_json::from_value(json(out)).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
-    wait_caught_up(env);
+    assert_eq!(
+        report.readable,
+        polylogue_engine::Readable::Now,
+        "{report:?}"
+    );
     report
 }
 pub(super) fn target(reference: &str) -> String {
@@ -163,7 +167,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let daemon = start_daemon(&env);
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-    let _ = import_report(&env, &imported);
+    let _ = import_report(&imported);
     let old = messages(&env, "claude-ai:old-conversation");
     assert_eq!(old[0]["blocks"][0]["text"], "Existing conversation text.");
     let documents = cli(
@@ -266,7 +270,7 @@ fn account_and_project_text_import_without_turns_or_invented_document_authorship
             .any(|record| matches!(record, Record::Session(_)))
     );
     let imported = cli(&env, &["--json", "import", copy.to_str().unwrap()]);
-    let _ = import_report(&env, &imported);
+    let _ = import_report(&imported);
     assert_eq!(document(&env, reference), before);
     let note = cli(
         &env,

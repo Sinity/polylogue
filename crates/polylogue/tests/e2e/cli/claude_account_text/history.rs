@@ -41,7 +41,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
         )
         .unwrap();
         let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-        let _ = import_report(&env, &imported);
+        let _ = import_report(&imported);
         let out = cli(&env, &["--json", instruction, "read"]);
         assert!(out.status.success(), "{out:?}");
         assert_eq!(document(&env, instruction)["blocks"][0]["text"], body);

@@ -24,7 +24,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
     let first = {
         let _daemon = start_daemon(&env);
         let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-        let _ = import_report(&env, &imported);
+        let _ = import_report(&imported);
         let out = cli(
             &env,
             &[
@@ -105,7 +105,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
                 &second_env,
                 &["--json", "import", imported_path.to_str().unwrap()],
             );
-            let _ = import_report(&second_env, &result);
+            let _ = import_report(&result);
             let imported = cli(
                 &second_env,
                 &[
@@ -367,7 +367,7 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_ordered_parts() {
     std::fs::write(&source, &raw).unwrap();
     let _daemon = start_daemon(&env);
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
-    let _ = import_report(&env, &imported);
+    let _ = import_report(&imported);
     let listed = cli(
         &env,
         &["--json", "documents where origin:hermes | sort by id"],

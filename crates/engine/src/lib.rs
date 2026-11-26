@@ -559,6 +559,25 @@ pub struct ImportReport {
     /// What became of each vector of a Python Polylogue vector store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_import: Option<PythonImportReport>,
+    /// When what the import stored can be read.
+    #[serde(default)]
+    pub readable: Readable,
+}
+
+/// When an import's inputs can be read. An import parses and derives what
+/// it stored before it answers, so its rows are readable at once, except
+/// while an index is built: the build reads them, and they are readable
+/// once it is installed.
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(tag = "when", rename_all = "snake_case")]
+pub enum Readable {
+    #[default]
+    Now,
+    AfterBuild {
+        build: polylogue_store::archive::index_build::IndexBuild,
+    },
 }
 
 /// Historical authored records restored through the recorded import ingress.

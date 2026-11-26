@@ -519,8 +519,7 @@ impl Operation for Import {
         }
         Ok(match wait.recv() {
             Ok(Ok(report)) => {
-                super::import_answer(report, d.archive.index_build())
-                    .map(|r| protocol::import::Answer::Files(Box::new(r)))
+                super::import_answer(report).map(|r| protocol::import::Answer::Files(Box::new(r)))
             }
             Ok(Err(polylogue_engine::ImportFailure::Parent(error))) => store_error(&error),
             Ok(Err(polylogue_engine::ImportFailure::Import(

@@ -81,6 +81,9 @@ impl Engine {
         } else {
             report.pass.derivation_pending = self.writer.derive_in_background()?;
         }
+        if let Some(build) = self.archive.index_build() {
+            report.readable = Readable::AfterBuild { build };
+        }
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
     }

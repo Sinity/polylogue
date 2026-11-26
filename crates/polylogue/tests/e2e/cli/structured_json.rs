@@ -61,7 +61,6 @@ fn read_to_bundle_import_round_trip_preserves_structured_values_and_unknown_tool
                 ],
             );
             assert!(imported.status.success(), "{imported:?}");
-            wait_caught_up(&restored);
             let second = bundle(&restored, &directory.join("second"));
             let actual: Vec<_> = second
                 .iter()
