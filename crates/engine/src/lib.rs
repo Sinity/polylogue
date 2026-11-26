@@ -32,7 +32,7 @@ use pool::{Pool, Priority};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
+use std::sync::mpsc::{Receiver, SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -515,7 +515,7 @@ pub enum LoopMsg {
 }
 
 struct Requests {
-    receiver: Receiver<LoopMsg>,
+    receiver: crossbeam_channel::Receiver<LoopMsg>,
     pending: Option<LoopMsg>,
     yielding: Arc<std::sync::atomic::AtomicBool>,
     serving: bool,
@@ -558,7 +558,7 @@ pub struct Engine {
     /// to find it: the turn after the build looks at these again rather than
     /// walking a second time.
     found_before_build: Option<(bool, Vec<collect::Found>)>,
-    wake: Option<Sender<LoopMsg>>,
+    wake: Option<crossbeam_channel::Sender<LoopMsg>>,
     watcher: Option<watch::Roots>,
     databases: BTreeMap<PathBuf, &'static OriginSpec>,
     live_checked: Instant,

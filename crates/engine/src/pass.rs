@@ -4,6 +4,7 @@
 use crate::plan::{InputState, Plan, span, whole};
 use crate::source_read::PlannedFile;
 use crate::*;
+use crossbeam_channel::RecvTimeoutError;
 use polylogue_sources::export::ExportParser;
 use polylogue_store::RevisionChains;
 
@@ -58,7 +59,7 @@ pub(crate) fn unread_path(origin: &OriginSpec, path: &Path) -> Option<String> {
 }
 
 impl Requests {
-    fn new(receiver: Receiver<LoopMsg>) -> Self {
+    fn new(receiver: crossbeam_channel::Receiver<LoopMsg>) -> Self {
         Self {
             receiver,
             pending: None,
@@ -111,8 +112,13 @@ impl Requests {
         )
     }
 
-    fn try_recv(&mut self) -> Result<LoopMsg, std::sync::mpsc::TryRecvError> {
+    fn try_recv(&mut self) -> Result<LoopMsg, crossbeam_channel::TryRecvError> {
         self.queued().map_or_else(|| self.receiver.try_recv(), Ok)
+    }
+
+    /// The channel requests arrive on, to wait on beside other work.
+    pub(crate) fn receiver(&self) -> &crossbeam_channel::Receiver<LoopMsg> {
+        &self.receiver
     }
 
     fn queued(&mut self) -> Option<LoopMsg> {
@@ -2952,8 +2958,8 @@ impl Engine {
     /// for imports.
     pub fn run(
         &mut self,
-        tx: Sender<LoopMsg>,
-        rx: Receiver<LoopMsg>,
+        tx: crossbeam_channel::Sender<LoopMsg>,
+        rx: crossbeam_channel::Receiver<LoopMsg>,
         status: &Arc<Mutex<LoopStatus>>,
         lifetime: Lifetime,
         ready: impl FnOnce(),
@@ -3142,14 +3148,14 @@ impl Engine {
                 }
                 loop {
                     match self.requests.as_mut().expect("running inbox").try_recv() {
-                        Ok(LoopMsg::Stop) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        Ok(LoopMsg::Stop) | Err(crossbeam_channel::TryRecvError::Disconnected) => {
                             return Ok(self.stopped(summary));
                         }
                         Ok(message) => {
                             more = true;
                             self.answer(message, &busy, pending, &mut summary);
                         }
-                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(crossbeam_channel::TryRecvError::Empty) => break,
                     }
                 }
                 more |= self.take_watched(&mut changed, &mut watch_errors);
@@ -3188,8 +3194,8 @@ impl Engine {
                         .expect("running inbox")
                         .try_recv()
                         .map_err(|e| match e {
-                            std::sync::mpsc::TryRecvError::Empty => RecvTimeoutError::Timeout,
-                            std::sync::mpsc::TryRecvError::Disconnected => {
+                            crossbeam_channel::TryRecvError::Empty => RecvTimeoutError::Timeout,
+                            crossbeam_channel::TryRecvError::Disconnected => {
                                 RecvTimeoutError::Disconnected
                             }
                         });

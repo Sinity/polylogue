@@ -58,7 +58,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
     assert!(engine.run_pass().unwrap().errors.is_empty());
     engine.config.workers = 2;
     engine.config.live_every = Duration::from_millis(10);
-    let (wake, _changes) = channel();
+    let (wake, _changes) = crossbeam_channel::unbounded();
     engine.watcher = Some(watch::Roots::new(&engine.config, wake.clone()).unwrap());
     engine.wake = Some(wake);
     let reads = ReadPool::open(&engine.archive).unwrap();

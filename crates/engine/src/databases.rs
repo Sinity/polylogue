@@ -43,7 +43,7 @@ impl Databases {
         inputs: Vec<DatabaseInput>,
         archive: Archive,
         writer: polylogue_store::WriterSender,
-        wake: Option<Sender<LoopMsg>>,
+        wake: Option<crossbeam_channel::Sender<LoopMsg>>,
     ) -> Result<(), EngineError> {
         if self.pending() || inputs.is_empty() {
             return Ok(());
@@ -241,7 +241,7 @@ struct InputWriter<'a> {
     acknowledgment: Option<Acknowledgment>,
     bytes: u64,
     notify: SyncSender<()>,
-    wake: Option<Sender<LoopMsg>>,
+    wake: Option<crossbeam_channel::Sender<LoopMsg>>,
     captured: Arc<std::sync::atomic::AtomicU64>,
 }
 impl<'a> InputWriter<'a> {
@@ -250,7 +250,7 @@ impl<'a> InputWriter<'a> {
         writer: &'a polylogue_store::WriterSender,
         source: &'a DatabaseInput,
         notify: SyncSender<()>,
-        wake: Option<Sender<LoopMsg>>,
+        wake: Option<crossbeam_channel::Sender<LoopMsg>>,
         captured: Arc<std::sync::atomic::AtomicU64>,
     ) -> Result<Self, DatabaseError> {
         let reads = ReadPool::open(archive)?;

@@ -107,7 +107,7 @@ enum Msg {
     Build(
         Vec<std::path::PathBuf>,
         usize,
-        Option<std::sync::mpsc::Sender<&'static str>>,
+        Option<crossbeam_channel::Sender<&'static str>>,
         SyncSender<Result<Vec<build::BuildPhase>>>,
     ),
     ReplaceChain(InputKey, i64, u64, Box<ChainParse>, SyncSender<Result<u64>>),
@@ -688,7 +688,7 @@ impl WriterSender {
         &self,
         runs: Vec<std::path::PathBuf>,
         composers: usize,
-        announce: std::sync::mpsc::Sender<&'static str>,
+        announce: crossbeam_channel::Sender<&'static str>,
     ) -> Result<Receiver<Result<Vec<build::BuildPhase>>>> {
         let (reply, wait) = sync_channel(1);
         self.0

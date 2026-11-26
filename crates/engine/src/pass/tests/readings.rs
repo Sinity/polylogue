@@ -2,6 +2,7 @@ use super::*;
 use polylogue_sources::origin::{Arrival, Capture, ParserModule, Root};
 use polylogue_sources::parse::{Parse, ParseError, Step, StepParser};
 use polylogue_testkit::{ClaudeHome, claude_user};
+use std::sync::mpsc::Sender;
 use std::sync::{
     Barrier,
     atomic::{AtomicUsize, Ordering},

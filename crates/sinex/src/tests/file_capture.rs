@@ -964,7 +964,7 @@ fn idle_continuation_reports_errors_and_keeps_spool() {
 #[test]
 fn a_disappeared_pending_source_survives_reader_failure_and_no_event_continuations() {
     use polylogue_engine::{Lifetime, LoopMsg, LoopStatus};
-    use std::sync::{Mutex, mpsc::channel};
+    use std::sync::Mutex;
     use std::time::{Duration, Instant};
 
     let home = ClaudeHome::new();
@@ -999,7 +999,7 @@ fn a_disappeared_pending_source_survives_reader_failure_and_no_event_continuatio
     engine.config.live_every = Duration::from_millis(10);
     let status = Arc::new(Mutex::new(LoopStatus::default()));
     let shared = Arc::clone(&status);
-    let (tx, rx) = channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
         let result = engine.run(worker_tx, rx, &shared, Lifetime::UntilIdle, || {});

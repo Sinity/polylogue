@@ -28,7 +28,7 @@ fn a_fenced_pass_leaves_the_next_recovery_commit_able_to_wake_the_loop() {
     let mut engine =
         Engine::on_sinex(config, archive, sdk, polylogue_testkit::stopped_attempt()).unwrap();
     let writer = engine.writer();
-    let (tx, rx) = mpsc::channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let run_tx = tx.clone();
     let (ready, started) = mpsc::sync_channel(1);
     let (release, held) = mpsc::sync_channel(1);

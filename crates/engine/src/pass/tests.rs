@@ -663,7 +663,7 @@ fn idle_loop_turns_do_not_repeat_the_startup_discovery_walk() {
     engine.config.live_every = Duration::from_millis(1);
     let status = Arc::new(Mutex::new(LoopStatus::default()));
     let shared = Arc::clone(&status);
-    let (tx, rx) = channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
         engine.run(worker_tx, rx, &shared, Lifetime::UntilStopped, || {})

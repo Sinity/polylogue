@@ -197,7 +197,7 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
     // composition step's last count; its steps are recorded as the engine
     // records them, from the names the writer announces.
     crate::fault::arm("index.deferred", "", crate::fault::Action::Hold, 0, 1);
-    let (announce, announced) = std::sync::mpsc::channel();
+    let (announce, announced) = crossbeam_channel::unbounded();
     let built = writer.start_build(runs, 2, announce).unwrap();
     crate::fault::wait_held();
     for step in announced.try_iter() {

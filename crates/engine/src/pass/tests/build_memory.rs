@@ -344,7 +344,7 @@ fn content_named_messages_keep_their_occurrence_after_ranges_and_restart() {
 #[test]
 fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
     use polylogue_model::authorship::{Author, Authorship, Channel};
-    use std::sync::mpsc::{channel, sync_channel};
+    use std::sync::mpsc::sync_channel;
     let home = ClaudeHome::new();
     let large: String = (0..12_000)
         .map(|n| {
@@ -367,7 +367,7 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
     // Only the stored record is read: no file is looked at again.
     engine.config.reads_sources = false;
     let archive = engine.archive.clone();
-    let (tx, rx) = channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
         let status = Arc::new(Mutex::new(LoopStatus::default()));

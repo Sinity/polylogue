@@ -13,6 +13,7 @@ publish = false
 # focused tests resolve the primary workspace graph, then select execution
 # and Cargo targets without changing that feature union.
 [workspace.dependencies]
+crossbeam-channel = "0.5"
 web-shell = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }
 command-surface = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master", default-features = false }
 authored = { git = "https://github.com/Sinity/polylogue-sinex-common", branch = "master" }

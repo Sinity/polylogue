@@ -3,6 +3,7 @@ use crate::daemon::Failure;
 use polylogue_engine::{LoopMsg, LoopStatus};
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -34,7 +35,7 @@ pub struct Daemon {
     /// Live-session acts: the mailbox, resumed runs and hosted sessions.
     pub(crate) acts: crate::live_acts::Acts,
     pub(super) mode: ModeState,
-    pub(super) loop_tx: Mutex<Sender<LoopMsg>>,
+    pub(super) loop_tx: Mutex<crossbeam_channel::Sender<LoopMsg>>,
     pub(crate) status: Arc<Mutex<LoopStatus>>,
     pub(super) started: Instant,
     /// The signal rules in force and the ones refused, for `status`.

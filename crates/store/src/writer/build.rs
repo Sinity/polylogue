@@ -1428,7 +1428,7 @@ pub(super) struct BuildJob {
     stage: Stage,
     /// The threads that compose the stream's sessions.
     composers: usize,
-    announce: Option<std::sync::mpsc::Sender<&'static str>>,
+    announce: Option<crossbeam_channel::Sender<&'static str>>,
     reply: SyncSender<Result<Vec<BuildPhase>>>,
     phases: Vec<BuildPhase>,
     clock: Option<(PhaseClock, u64)>,
@@ -1552,7 +1552,7 @@ impl BuildJob {
     pub(super) fn new(
         runs: Vec<PathBuf>,
         composers: usize,
-        announce: Option<std::sync::mpsc::Sender<&'static str>>,
+        announce: Option<crossbeam_channel::Sender<&'static str>>,
         reply: SyncSender<Result<Vec<BuildPhase>>>,
     ) -> Self {
         Self {

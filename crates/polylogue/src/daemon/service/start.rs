@@ -355,7 +355,7 @@ pub fn start(
     let readers = settings.workers + 1;
     let reads =
         ReadPool::serving(&archive, readers, per_reader * readers as u64).map_err(|e| to_io(&e))?;
-    let (tx, rx) = channel();
+    let (tx, rx) = crossbeam_channel::unbounded();
     let (act_reports, act_reports_received) = channel();
     // The loop's first pass starts as soon as it runs.
     let status = Arc::new(Mutex::new(LoopStatus {
