@@ -49,6 +49,56 @@ fn visit(value: &Json, emit: &mut impl FnMut(&str) -> std::io::Result<()>) -> st
     Ok(())
 }
 
+/// Whether a record refers to a local file by a relative path.
+fn has_relative_reference(value: &Json) -> bool {
+    let mut relative = false;
+    let _ = visit(value, &mut |raw| {
+        relative |= !Path::new(raw.strip_prefix("file://").unwrap_or(raw)).is_absolute();
+        Ok(())
+    });
+    relative
+}
+
+/// The working directory the last record before `start` recorded: read
+/// backwards from `start` in windows, whole lines only.
+fn directory_before(
+    stored: &polylogue_store::blobs::StoredChain,
+    blobs: &polylogue_store::blobs::Blobs,
+    start: u64,
+) -> Result<Option<PathBuf>, EngineError> {
+    const WINDOW: u64 = 1 << 16;
+    let mut end = start;
+    let mut carry = Vec::new();
+    while end > 0 {
+        let from = end.saturating_sub(WINDOW);
+        let mut bytes = stored.read_range(blobs, from, end)?;
+        bytes.extend_from_slice(&carry);
+        // The first piece may be the end of a line that began earlier.
+        let first_line_end = if from == 0 {
+            0
+        } else {
+            match bytes.iter().position(|b| *b == b'\n') {
+                Some(at) => at + 1,
+                None => {
+                    carry = bytes;
+                    end = from;
+                    continue;
+                }
+            }
+        };
+        for line in bytes[first_line_end..].split(|b| *b == b'\n').rev() {
+            if let Ok(value) = serde_json::from_slice::<Json>(line)
+                && let Some(cwd) = polylogue_sources::codex::recorded_directory(&value)
+            {
+                return Ok(Some(PathBuf::from(cwd)));
+            }
+        }
+        carry = bytes[..first_line_end].to_vec();
+        end = from;
+    }
+    Ok(None)
+}
+
 impl Engine {
     /// Source positions cannot advance before attachment observations. This
     /// plan path also resumes a capture interrupted after byte commit.
@@ -71,8 +121,25 @@ impl Engine {
         let stored = self
             .reads
             .read_current(|reader| reader.stored_chain(&plan.input.id, chain, plan.size))?;
+        // Only the records this reading parses are looked at: an append's
+        // records, or every record when the reading starts again.
+        let start = plan.parse_pos.min(plan.size);
+        let blobs = Arc::clone(&self.blobs);
+        let mut before = || directory_before(&stored, &blobs, start);
+        if start == 0 {
+            return self.capture_local_files(
+                std::io::BufReader::new(stored.reader(Arc::clone(&self.blobs))),
+                0,
+                &mut before,
+                &plan.input.id,
+                pass,
+            );
+        }
+        let appended = stored.read_range(&self.blobs, start, plan.size)?;
         self.capture_local_files(
-            std::io::BufReader::new(stored.reader(Arc::clone(&self.blobs))),
+            std::io::Cursor::new(appended),
+            start,
+            &mut before,
             &plan.input.id,
             pass,
         )
@@ -81,19 +148,29 @@ impl Engine {
     pub(crate) fn capture_local_files(
         &mut self,
         mut source: impl BufRead,
+        start: u64,
+        directory_before: &mut dyn FnMut() -> Result<Option<PathBuf>, EngineError>,
         transcript: &str,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
         let mut manifest = tempfile::tempfile_in(self.archive.staging_dir())?;
         let mut directory: Option<PathBuf> = None;
+        // The directory recorded before `start`, looked up only when a
+        // relative reference needs it.
+        let mut looked_before = start == 0;
         let mut line = Vec::new();
-        let mut offset = 0u64;
+        let mut offset = start;
         let mut references = 0u64;
         while source.read_until(b'\n', &mut line)? > 0 {
             if let Ok(value) = serde_json::from_slice::<Json>(&line) {
                 if let Some(cwd) = polylogue_sources::codex::recorded_directory(&value) {
                     // A relative recorded cwd is insufficient to resolve a ref.
                     directory = Some(PathBuf::from(cwd));
+                }
+                let relative = has_relative_reference(&value);
+                if relative && directory.is_none() && !looked_before {
+                    looked_before = true;
+                    directory = directory_before()?;
                 }
                 visit(&value, &mut |raw| {
                     references += 1;

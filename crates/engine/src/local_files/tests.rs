@@ -237,6 +237,8 @@ fn fifo_local_reference_child() {
     engine
         .capture_local_files(
             std::io::Cursor::new(format!("{row}\n")),
+            0,
+            &mut || Ok(None),
             "fifo-source",
             &mut pass,
         )
@@ -396,6 +398,8 @@ fn recorded_directory_follows_turn_context_and_ignores_relative_cwd() {
     let (mut e, _lock) = engine(&w, 64);
     e.capture_local_files(
         std::io::Cursor::new(text.into_bytes()),
+        0,
+        &mut || Ok(None),
         "cwd-tracking",
         &mut Pass::default(),
     )
@@ -432,4 +436,71 @@ fn recorded_directory_follows_turn_context_and_ignores_relative_cwd() {
             Some(blake3::hash(expected).to_hex().to_string().as_str())
         );
     }
+}
+
+/// An append to a stored rollout is looked through for local files from
+/// where its reading resumes: a relative reference in the appended records
+/// resolves against the directory recorded before them, and records read
+/// before are not reported again.
+#[test]
+fn an_appended_rollout_reports_the_local_files_of_its_new_records() {
+    let w = ClaudeHome::new();
+    let cwd = w.dir.path().join("recorded");
+    std::fs::create_dir_all(&cwd).unwrap();
+    std::fs::write(cwd.join("early.png"), b"early image").unwrap();
+    std::fs::write(cwd.join("late.png"), b"late image").unwrap();
+    let dir = w.home.join(".codex/sessions");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("rollout-appended-images.jsonl");
+    let header =
+        serde_json::json!({"type":"session_meta","payload":{"id":"appended-images","cwd":cwd}});
+    let early = serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"early","local_images":["early.png"]}});
+    let mut first = format!("{header}\n{early}\n");
+    for i in 0..300 {
+        let filler = serde_json::json!({"type":"event_msg","payload":{"type":"agent_message","message":format!("filler {i}")}});
+        first.push_str(&format!("{filler}\n"));
+    }
+    std::fs::write(&path, &first).unwrap();
+    let (mut e, _lock) = engine(&w, 1 << 20);
+    let p = e.run_pass().unwrap();
+    assert!(p.errors.is_empty(), "{p:?}");
+    let late = serde_json::json!({"type":"event_msg","payload":{"type":"user_message","message":"late","local_images":["late.png"]}});
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(format!("{late}\n").as_bytes())
+        .unwrap();
+    let p = e.run_pass().unwrap();
+    assert!(p.errors.is_empty(), "{p:?}");
+    let r = e.reads.reader().unwrap();
+    let rows = r
+        .query(
+            "SELECT DISTINCT o.input FROM a.observation o WHERE o.path='codex-local-references/codex:rollout:appended-images.jsonl'",
+            &[],
+        )
+        .unwrap();
+    let mut records = Vec::new();
+    for row in rows {
+        let id = row["input"].as_str().unwrap();
+        let p = r.input_progress(id).unwrap().unwrap();
+        let bytes = r.stored_range(id, p.chain, 0, p.length, &e.blobs).unwrap();
+        for line in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+            records.push(serde_json::from_slice::<Json>(line).unwrap());
+        }
+    }
+    records.sort_by_key(|record| record["source_start"].as_u64());
+    let references: Vec<_> = records
+        .iter()
+        .map(|record| record["reference"].as_str().unwrap())
+        .collect();
+    assert_eq!(references, ["early.png", "late.png"], "{records:?}");
+    let late = &records[1];
+    assert_eq!(late["source_start"], first.len() as u64);
+    assert_eq!(late["status"], "collected");
+    assert_eq!(late["cwd"], cwd.to_string_lossy().as_ref());
+    assert_eq!(
+        late["input"].as_str(),
+        Some(blake3::hash(b"late image").to_hex().as_str())
+    );
 }
