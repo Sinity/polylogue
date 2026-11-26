@@ -155,7 +155,7 @@ fn capture_continues_the_input_at_the_observed_path() {
         "source":{"machine":"test-machine","path":db.to_string_lossy()}
     });
     let expected_suffix_length = serde_json::to_vec(&expected_header).unwrap().len() + 1;
-    let mut engine = Engine::new(config, archive, polylogue_testkit::stopped_attempt()).unwrap();
+    let mut engine = Engine::new(config, archive).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     assert_eq!(engine.inputs[&db].input_id, "stored-database");
@@ -167,10 +167,10 @@ fn capture_continues_the_input_at_the_observed_path() {
             .unwrap()[0]["n"],
         1
     );
-    let progress = reader.input_progress("stored-database").unwrap().unwrap();
+    let progress = reader.latest_chain("stored-database").unwrap().unwrap();
     assert_eq!(progress.chain, initial_chain);
     assert_eq!(
-        progress.length,
+        progress.stored,
         (bytes.len() + expected_suffix_length) as u64
     );
     let captured = reader
@@ -178,7 +178,7 @@ fn capture_continues_the_input_at_the_observed_path() {
             "stored-database",
             progress.chain,
             0,
-            progress.length,
+            progress.stored,
             &engine.blobs,
         )
         .unwrap();
@@ -209,7 +209,7 @@ fn capture_continues_the_input_at_the_observed_path() {
             .unwrap()[0]["n"],
         1
     );
-    let commit = reader.query("SELECT s.id,r.chain,r.committed FROM session_record r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap();
+    let commit = reader.query("SELECT s.id,r.chain,r.committed FROM session_parse r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap();
     assert_eq!(commit.len(), 1);
     assert_eq!(
         commit[0]["id"],
@@ -226,13 +226,13 @@ fn capture_continues_the_input_at_the_observed_path() {
     let reader = reads.reader().unwrap();
     assert_eq!(
         reader
-            .input_progress("stored-database")
+            .latest_chain("stored-database")
             .unwrap()
             .unwrap()
-            .length,
-        progress.length
+            .stored,
+        progress.stored
     );
-    assert_eq!(reader.query("SELECT s.id,r.chain,r.committed FROM session_record r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), commit);
+    assert_eq!(reader.query("SELECT s.id,r.chain,r.committed FROM session_parse r JOIN session s ON s.id=r.session_id JOIN input_ref i ON i.pk=r.input_pk WHERE i.id='stored-database'", &[]).unwrap(), commit);
 }
 
 #[test]
@@ -297,12 +297,12 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
         .reads
         .reader()
         .unwrap()
-        .input_progress(&input)
+        .latest_chain(&input)
         .unwrap()
         .unwrap();
-    assert!(before.parsed && before.waiting);
-    assert_eq!(before.parsed_upto, 0);
-    assert_eq!(before.length, bytes.len() as u64);
+    assert_eq!(before.state.parsed_to(), 0);
+    assert_eq!(before.state.seen_to(), bytes.len() as u64);
+    assert_eq!(before.stored, bytes.len() as u64);
     std::fs::remove_file(&db).unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
@@ -314,7 +314,7 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
             .reads
             .reader()
             .unwrap()
-            .input_progress(&input)
+            .latest_chain(&input)
             .unwrap()
             .unwrap(),
         before

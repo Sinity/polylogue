@@ -3,7 +3,7 @@ use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
 
 fn message_parses(w: &ClaudeHome) -> Vec<polylogue_model::Json> {
     let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
-    pool.reader().unwrap().query("SELECT m.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.hash) AS version FROM message_parse s JOIN message m ON m.id=s.message_id JOIN input_ref r ON r.pk=s.input_pk ORDER BY m.id,r.id,s.chain,s.source_start",&[]).unwrap()
+    pool.reader().unwrap().query("SELECT m.id,r.id AS input,s.chain,s.source_start,s.source_start+s.source_length AS source_end,hex(s.hash) AS version FROM message_parse s JOIN message m ON m.id=s.message_id JOIN input_ref r ON r.pk=s.input_pk ORDER BY m.id,r.id,s.chain,s.source_start",&[]).unwrap()
 }
 
 #[test]
@@ -143,10 +143,10 @@ fn refused_import_can_be_imported_under_its_declared_structure() {
             .reader()
             .unwrap()
             .query(
-                "SELECT format FROM a.input WHERE id=?1",
+                "SELECT origin FROM a.input WHERE id=?1",
                 &[polylogue_store::SqlValue::Text(id.clone())]
             )
-            .unwrap()[0]["format"],
+            .unwrap()[0]["origin"],
         "grok"
     );
     let after = register(&w.root);
@@ -174,10 +174,10 @@ fn refused_import_can_be_imported_under_its_declared_structure() {
             .reader()
             .unwrap()
             .query(
-                "SELECT format FROM a.input WHERE id=?1",
+                "SELECT origin FROM a.input WHERE id=?1",
                 &[polylogue_store::SqlValue::Text(id)]
             )
-            .unwrap()[0]["format"],
+            .unwrap()[0]["origin"],
         "grok"
     );
 }
@@ -265,7 +265,7 @@ fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions()
         serde_json::json!({
             "messages": reader.messages(&id, false).unwrap(),
             "sessions": reader.query("SELECT id FROM session WHERE stub=0 ORDER BY id", &[]).unwrap(),
-            "sources": reader.query("SELECT m.id,s.source_start,s.source_end FROM message_parse s JOIN message m ON m.id=s.message_id ORDER BY m.id", &[]).unwrap(),
+            "sources": reader.query("SELECT m.id,s.source_start,s.source_start+s.source_length AS source_end FROM message_parse s JOIN message m ON m.id=s.message_id ORDER BY m.id", &[]).unwrap(),
         })
     }
     let w = ClaudeHome::new();

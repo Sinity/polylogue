@@ -12,7 +12,7 @@ fn exactly_stored(w: &ClaudeHome, file: &str) {
         .unwrap();
     let expected = fs::read(w.file(file)).unwrap();
     assert_eq!(known.stored, expected.len() as u64);
-    assert_eq!(known.parsed_upto, known.stored);
+    assert_eq!(known.state.parsed_to(), known.stored);
     let chain = r
         .stored_chain(&known.input_id, known.chain.unwrap(), known.stored)
         .unwrap();

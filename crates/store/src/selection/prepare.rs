@@ -308,7 +308,7 @@ fn named_kept_bindings<'a>(
     let mut kept = kept_results_named(conn, source, ids.iter().copied())?;
     let mut names = BTreeMap::new();
     let mut lookup = conn.prepare_cached(&source.sql(
-        "SELECT id FROM @source.kept_result WHERE name=?1 ORDER BY ran_at DESC,id DESC LIMIT 1",
+        "SELECT id FROM @source.saved_rows WHERE name=?1 ORDER BY ran_at DESC,id DESC LIMIT 1",
     ))?;
     for name in ids {
         // Client request IDs are opaque. An exact existing ID always remains

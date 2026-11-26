@@ -950,7 +950,18 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
             limit.check()?;
         }
         let answer = rows_page(call, &rows, &query, true)?;
-        if !matches!(answer.outcome, command_surface::Outcome::Empty(_)) {
+        // A listing waits for rows: an answer with none keeps waiting, also
+        // when it is degraded because the index is behind its archive.
+        let no_rows = match &answer.outcome {
+            command_surface::Outcome::Empty(_) => true,
+            command_surface::Outcome::Degraded { value, .. } => matches!(
+                value,
+                LineAnswer::Listing(found)
+                    if matches!(&**found, crate::protocol::query::Answer::Rows(rows) if rows.rows.is_empty())
+            ),
+            _ => false,
+        };
+        if !no_rows {
             return Ok(answer);
         }
         let left = until.saturating_duration_since(Instant::now());

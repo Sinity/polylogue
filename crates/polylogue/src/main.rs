@@ -166,21 +166,10 @@ fn run() -> ExitCode {
                     cli::run(&matches, &client)
                 }
                 cli::Configuration::Deployment => {
-                    let mut startup = match load_startup(&process, &invocation, &start) {
+                    let startup = match load_startup(&process, &invocation, &start) {
                         Ok(startup) => startup,
                         Err(exit) => return exit,
                     };
-                    if cli::needs_engine(&matches, &startup.mode) {
-                        startup.stopped_attempt = match executable_attempt() {
-                            Ok(attempt) => Some(attempt),
-                            Err(error) => {
-                                return start.failed(&protocol::failure(
-                                    polylogue_model::Code::Io,
-                                    format!("reading this executable: {error}"),
-                                ));
-                            }
-                        };
-                    }
                     cli::run_configured(&matches, &startup)
                 }
             }
@@ -281,29 +270,6 @@ fn complete(
     })
     .complete();
     ExitCode::SUCCESS
-}
-
-/// The process boundary captures the running image, rather than a build label.
-fn executable_attempt() -> std::io::Result<polylogue_model::batch::StoppedAttempt> {
-    // Opening the process image keeps the running executable even after an upgrade
-    // replaces its former path.
-    #[cfg(target_os = "linux")]
-    let file = std::fs::File::open("/proc/self/exe")?;
-    #[cfg(not(target_os = "linux"))]
-    let file = std::fs::File::open(std::env::current_exe()?)?;
-    attempt_from_executable(file)
-}
-
-fn attempt_from_executable(
-    file: std::fs::File,
-) -> std::io::Result<polylogue_model::batch::StoppedAttempt> {
-    let mut digest = blake3::Hasher::new();
-    digest.update_reader(file)?;
-    Ok(polylogue_model::batch::StoppedAttempt {
-        executable: polylogue_model::BlobHash(*digest.finalize().as_bytes()),
-        // Parser selection currently has no configurable parser settings.
-        parser_settings: None,
-    })
 }
 
 /// The daemon and `polylogue internal host` write to peers that may go away, so a

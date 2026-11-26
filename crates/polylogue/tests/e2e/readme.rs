@@ -154,10 +154,11 @@ fn readme_examples_run_against_morrow() {
     assert_eq!(status["store"]["sessions"], 8);
 
     // The orientation screen counts what FACTS.md lists: eight sessions and
-    // 12 + 18 + 6 + 11 + 13 + 10 + (6 + 2) + 4 = 82 messages.
+    // the messages they count, 12 + 18 + 6 + 11 + 13 + 10 + 6 + 4 = 80 (#7's
+    // abandoned branch of 2 is stored but off the active path).
     let orientation = terminal.run(&env, &examples[2]);
     assert!(
-        orientation.contains("ARCHIVE    8 sessions   82 messages"),
+        orientation.contains("ARCHIVE    8 sessions   80 messages"),
         "{orientation}"
     );
 

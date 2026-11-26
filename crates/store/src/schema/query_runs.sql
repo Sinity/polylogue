@@ -8,7 +8,7 @@ CREATE TABLE query_run (
         OR (substr(object_ref,1,8)='request:' AND length(CAST(object_ref AS BLOB))>8)
         OR (substr(object_ref,1,4)='run:' AND length(CAST(object_ref AS BLOB))=40)),
     at TEXT,
-    read_at TEXT,
+    read_position TEXT,
     author TEXT CHECK(author IS NULL OR json_valid(author)),
     via TEXT,
     outcome TEXT CHECK(outcome IS NULL OR json_valid(outcome)),

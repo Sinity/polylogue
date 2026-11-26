@@ -1,6 +1,7 @@
-//! Completeness is read from the index snapshot of the read: the chain
-//! counts the writer keeps, the derivation marks, search's pending entries
-//! (the applied stream position of primary mode is not applicable here).
+//! Completeness is read from the index snapshot of the read: every chain's
+//! status as the model judges it, the derivation marks, search's pending
+//! entries (the applied stream position of primary mode is not applicable
+//! here).
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -34,6 +35,25 @@ impl ReadingContract {
 use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, ReadCompleteness};
 
 impl Reader<'_> {
+    /// [`Reader::chain_census`] of this read's position, computed once for
+    /// every reader of the pool at that position: completeness is part of
+    /// every reply.
+    pub(crate) fn chain_census_at_position(
+        &self,
+        contracts: &[ReadingContract],
+    ) -> Result<std::sync::Arc<ChainCensus>> {
+        let position = self.change_position()?;
+        if let Some((at, of, census)) = self.pool.census.locked().as_ref()
+            && *at == position
+            && of.as_slice() == contracts
+        {
+            return Ok(census.clone());
+        }
+        let census = std::sync::Arc::new(self.chain_census(contracts)?);
+        *self.pool.census.locked() = Some((position, contracts.to_vec(), census.clone()));
+        Ok(census)
+    }
+
     pub fn completeness(&self, contracts: &[ReadingContract]) -> Result<ReadCompleteness> {
         let token = self.scope_token();
         let conn = self.conn()?;
@@ -58,37 +78,32 @@ impl Reader<'_> {
         let mut unknown = false;
         let mut kept_chains = 0_u64;
         let mut raw_only_chains = 0_u64;
-        // Chains counted by origin, parse version and state, which the
-        // writer keeps with each change (`crate::chain_progress`).
-        for (origin, parse_version, state, n) in crate::chain_progress::counts(conn)? {
-            use crate::chain_progress::State;
+        // Every chain judged by the model's `status`, from its state and the
+        // archive's facts; read once per read position.
+        let census = self.chain_census_at_position(contracts)?;
+        for ((origin, status), n) in &census.chains {
+            use polylogue_model::chain::ChainStatusName as Status;
+            let n = *n;
             match declared.get(origin.as_str()).copied() {
                 None => {
                     unknown = true;
                     missing.insert(CompletenessReason::MissingDeclaration);
                 }
                 Some(ReadingContract::Kept { .. }) => kept_chains += n,
-                Some(ReadingContract::RawOnly { .. }) => {
-                    raw_only_chains += n;
-                    missing.insert(CompletenessReason::KnownRawOnly);
-                }
-                Some(ReadingContract::Expected { version, .. }) => match state {
-                    State::NoCheckpoint => {
-                        missing.insert(CompletenessReason::MissingCheckpoint);
+                // Bytes kept with no parser are as far as they can be: they
+                // are counted, and leave the index complete.
+                Some(ReadingContract::RawOnly { .. }) => raw_only_chains += n,
+                Some(ReadingContract::Expected { .. }) => match status {
+                    Status::Done | Status::Waiting | Status::Repeated => {}
+                    Status::NoParser => raw_only_chains += n,
+                    Status::Refused => {
+                        missing.insert(CompletenessReason::Refused);
                     }
-                    _ if &parse_version != version => {
-                        missing.insert(CompletenessReason::ParseVersionChanged);
+                    Status::Failed => {
+                        missing.insert(CompletenessReason::ParseFailed);
                     }
-                    State::Current => {}
-                    State::NoParser => {
-                        raw_only_chains += n;
-                        missing.insert(CompletenessReason::KnownRawOnly);
-                    }
-                    State::Partial => {
-                        missing.insert(CompletenessReason::MissingSourcePrefix);
-                    }
-                    State::Behind => {
-                        missing.insert(CompletenessReason::ParserBehind);
+                    Status::Parsing => {
+                        missing.extend(census.behind.get(origin).into_iter().flatten().copied());
                     }
                 },
             }

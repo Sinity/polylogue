@@ -4,19 +4,15 @@ use crate::fixture::{
     writer::{WriterArchive, prose, step},
 };
 
-/// An index connection on which parse-state edits keep the chain counts,
-/// as they are on the writer's connection.
-fn index_editor(archive: &Archive) -> Connection {
-    let index = Connection::open(archive.index_db()).unwrap();
-    index
-        .execute(
-            "ATTACH DATABASE ?1 AS a",
-            [archive.archive_db().to_string_lossy().as_ref()],
-        )
-        .unwrap();
-    crate::source::views(&index).unwrap();
-    crate::chain_progress::install_triggers(&index).unwrap();
-    index
+/// Runs `sql` on `database` in one transaction that advances its write
+/// counter, as every writer transaction does: a read position names what
+/// it reads.
+fn edit(database: &std::path::Path, sql: &str) {
+    let mut conn = Connection::open(database).unwrap();
+    let tx = conn.transaction().unwrap();
+    tx.execute_batch(sql).unwrap();
+    crate::archive::bump_counter(&tx).unwrap();
+    tx.commit().unwrap();
 }
 
 fn expected(origin: &str, version: &str) -> ReadingContract {
@@ -68,21 +64,17 @@ fn derived_writes_count_checkpoints_across_counter_domains() {
 fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     let root = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(root.path()).unwrap();
-    let archive = Connection::open(fixture.archive.archive_db()).unwrap();
-    archive
-        .execute_batch(
-            "INSERT INTO input VALUES('waiting','synthetic');
+    edit(
+        &fixture.archive.archive_db(),
+        "INSERT INTO input VALUES('waiting','synthetic');
         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('waiting',1,'first',1,10,1);",
-        )
-        .unwrap();
-    let index = index_editor(&fixture.archive);
-    index
-        .execute_batch(
-            "INSERT INTO input_ref(id,format) VALUES('waiting','synthetic');
-        INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto,at_length)
-        SELECT pk,1,'v1','waiting',4,10 FROM input_ref WHERE id='waiting';",
-        )
-        .unwrap();
+    );
+    edit(
+        &fixture.archive.index_db(),
+        "INSERT INTO input_ref(id,format) VALUES('waiting','synthetic');
+        INSERT INTO parse_state(input_pk,chain,parser_version,state,parsed_to,waiting)
+        SELECT pk,1,'v1','parsed',4,6 FROM input_ref WHERE id='waiting';",
+    );
     let pool = fixture.reads().unwrap();
     let matching = pool
         .reader()
@@ -102,12 +94,11 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
     assert!(kept.caught_up());
     assert_eq!(kept.kept_chains, 1);
     assert_eq!(kept.raw_only_chains, 0);
-    index
-        .execute(
-            "UPDATE parse_state SET at_length=9 WHERE parse_version='v1'",
-            [],
-        )
-        .unwrap();
+    // The parser saw 9 bytes of the 10 stored.
+    edit(
+        &fixture.archive.index_db(),
+        "UPDATE parse_state SET waiting=5 WHERE parser_version='v1'",
+    );
     let behind = pool
         .reader()
         .unwrap()
@@ -118,23 +109,34 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind])
     );
     assert!(!behind.caught_up());
-    index
-        .execute(
-            "UPDATE parse_state SET status='no_parser_yet',parsed_upto=10,at_length=NULL",
-            [],
-        )
-        .unwrap();
-    let raw = pool
+    // A failure at the stored length waits for new bytes; it is shown, and
+    // the index is not complete while it stands.
+    edit(
+        &fixture.archive.index_db(),
+        "UPDATE parse_state SET state='failed',waiting=6,failure_kind='refused',failure_detail='not a synthetic file'",
+    );
+    let refused = pool
         .reader()
         .unwrap()
         .completeness(&[expected("synthetic", "v1")])
         .unwrap();
-    assert_eq!(raw.raw_only_chains, 1);
     assert_eq!(
-        raw.parsing,
-        CompletenessDimension::Incomplete(vec![CompletenessReason::KnownRawOnly])
+        refused.parsing,
+        CompletenessDimension::Incomplete(vec![CompletenessReason::Refused])
     );
-    assert!(!raw.caught_up());
+    edit(
+        &fixture.archive.index_db(),
+        "UPDATE parse_state SET failure_kind='malformed'",
+    );
+    let failed = pool
+        .reader()
+        .unwrap()
+        .completeness(&[expected("synthetic", "v1")])
+        .unwrap();
+    assert_eq!(
+        failed.parsing,
+        CompletenessDimension::Incomplete(vec![CompletenessReason::ParseFailed])
+    );
 }
 
 #[test]
@@ -148,19 +150,16 @@ fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
     let empty = pool.reader().unwrap().completeness(&contracts).unwrap();
     assert_eq!(empty.parsing, CompletenessDimension::Complete);
     assert_eq!(empty.raw_only_chains, 0);
-    let source = Connection::open(fixture.archive.archive_db()).unwrap();
-    crate::chain_progress::record_source_changes(&source).unwrap();
-    source.execute_batch("INSERT INTO input VALUES('raw-input','unparsed-provider'); INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('raw-input',1,'first',1,12,1);").unwrap();
-    let changes = crate::chain_progress::recorded(&source).unwrap();
-    crate::chain_progress::refresh(&index_editor(&fixture.archive), &changes).unwrap();
-    let present = pool.reader().unwrap().completeness(&contracts).unwrap();
-    assert_eq!(
-        present.parsing,
-        CompletenessDimension::Incomplete(vec![CompletenessReason::KnownRawOnly])
+    edit(
+        &fixture.archive.archive_db(),
+        "INSERT INTO input VALUES('raw-input','unparsed-provider'); INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('raw-input',1,'first',1,12,1);",
     );
+    // Bytes kept with no parser are counted and leave the index complete.
+    let present = pool.reader().unwrap().completeness(&contracts).unwrap();
+    assert_eq!(present.parsing, CompletenessDimension::Complete);
     assert_eq!(present.raw_only_chains, 1);
     assert_eq!(present.kept_chains, 0);
-    assert!(!present.caught_up());
+    assert!(present.caught_up());
     assert!(matches!(
         pool.reader()
             .unwrap()
@@ -170,10 +169,9 @@ fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
 }
 
 /// The parsing answer of a walk over every chain of the source joined with
-/// its parse state, as completeness was computed before the writer kept
-/// chain counts: the independent oracle for those counts.
+/// its parse state, written from the rules of `docs/archive.md` (parse
+/// versions) rather than through `model::chain`: the independent oracle.
 fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDimension, u64, u64) {
-    use polylogue_model::batch::ParseProgress;
     let declared: BTreeMap<&str, &ReadingContract> =
         contracts.iter().map(|c| (c.origin(), c)).collect();
     let conn = reader.conn().unwrap();
@@ -189,8 +187,8 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
                 FROM source_observation o WHERE o.class = 'imported' AND json_valid(o.details_json)
                     AND json_type(o.details_json, '$.import_format') = 'text'
             )
-            SELECT COALESCE(f.format, i.format), c.length, COALESCE(p.parsed_upto, 0),
-                p.input_pk IS NOT NULL, p.parse_version, p.status, p.at_length, p.reason
+            SELECT COALESCE(f.format, i.origin), c.length, p.state, p.parser_version,
+                p.parsed_to + p.waiting, p.failure_kind
             FROM chains c JOIN source_input i ON i.id = c.input
             LEFT JOIN formats f ON f.input = c.input AND f.choice = 1
             LEFT JOIN input_ref ir ON ir.id = c.input
@@ -202,46 +200,32 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
     while let Some(row) = rows.next().unwrap() {
         let origin: String = row.get(0).unwrap();
         let length: i64 = row.get(1).unwrap();
-        let parsed_upto: i64 = row.get(2).unwrap();
-        let parsed: bool = row.get(3).unwrap();
-        let version: Option<String> = row.get(4).unwrap();
-        let progress = row.get::<_, Option<String>>(5).unwrap().map(|status| {
-            let at: Option<i64> = row.get(6).unwrap();
-            ParseProgress::from_stored(&status, at.map(|at| at as u64), row.get(7).unwrap())
-                .unwrap()
-        });
+        let state: Option<String> = row.get(2).unwrap();
+        let version: Option<String> = row.get(3).unwrap();
+        let seen_to: Option<i64> = row.get(4).unwrap();
+        let failure: Option<String> = row.get(5).unwrap();
         match declared.get(origin.as_str()) {
             None => {
                 unknown = true;
                 missing.insert(CompletenessReason::MissingDeclaration);
             }
             Some(ReadingContract::Kept { .. }) => kept += 1,
-            Some(ReadingContract::RawOnly { .. }) => {
-                raw_only += 1;
-                missing.insert(CompletenessReason::KnownRawOnly);
-            }
+            Some(ReadingContract::RawOnly { .. }) => raw_only += 1,
             Some(ReadingContract::Expected {
                 version: wanted, ..
             }) => {
-                if !parsed {
-                    missing.insert(CompletenessReason::MissingCheckpoint);
+                if state.is_none() {
+                    if length > 0 {
+                        missing.insert(CompletenessReason::MissingCheckpoint);
+                    }
                 } else if version.as_ref() != Some(wanted) {
                     missing.insert(CompletenessReason::ParseVersionChanged);
-                } else {
-                    match progress {
-                        Some(ParseProgress::NoParserYet) => {
-                            raw_only += 1;
-                            missing.insert(CompletenessReason::KnownRawOnly);
-                        }
-                        Some(ParseProgress::Partial) => {
-                            missing.insert(CompletenessReason::MissingSourcePrefix);
-                        }
-                        Some(ParseProgress::Waiting { length: at }) if at == length as u64 => {}
-                        Some(ParseProgress::Done) if parsed_upto >= length => {}
-                        _ => {
-                            missing.insert(CompletenessReason::ParserBehind);
-                        }
-                    }
+                } else if seen_to != Some(length) {
+                    missing.insert(CompletenessReason::ParserBehind);
+                } else if failure.as_deref() == Some("refused") {
+                    missing.insert(CompletenessReason::Refused);
+                } else if failure.is_some() {
+                    missing.insert(CompletenessReason::ParseFailed);
                 }
             }
         }
@@ -400,20 +384,9 @@ fn caught_up_equals_a_full_walk() {
     assert!(stored.writer.flush().unwrap().errors.is_empty());
     agree("import parsed");
 
-    // A new writer on the same archive starts from the counts the last one
-    // kept; after one that stopped without closing, it counts every chain.
+    // A new writer on the same archive reads the same states.
     stored.restart();
     agree("writer restarted");
-    stored.writer.stop();
-    Connection::open(stored.archive.index_db())
-        .unwrap()
-        .execute_batch(
-            "UPDATE meta SET value = 'open' WHERE key = 'chain_progress';
-             DELETE FROM chain_progress WHERE input = 'input-a';",
-        )
-        .unwrap();
-    stored.restart();
-    agree("writer restarted after an unclosed stop");
     // The stages differ, so agreement is not that of answers that never change.
     answers.sort_by_key(|answer| format!("{answer:?}"));
     answers.dedup();
@@ -421,7 +394,7 @@ fn caught_up_equals_a_full_walk() {
 }
 
 #[test]
-fn caught_up_read_steps_independent_of_chain_count() {
+fn a_second_read_at_one_position_does_not_judge_the_chains_again() {
     let steps = |sessions: usize| {
         let mut stored = WriterArchive::new();
         for n in 0..sessions {
@@ -451,28 +424,20 @@ fn caught_up_read_steps_independent_of_chain_count() {
 }
 
 #[test]
-fn unreadable_chain_counts_are_stored_value_errors() {
-    for (state, n) in [("lost", 1), ("current", -1)] {
-        let mut stored = WriterArchive::new();
-        stored.write("s", prose("s", 1, 1, "text"));
-        let index = Connection::open(stored.archive.index_db()).unwrap();
-        index
-            .execute(
-                "INSERT INTO chain_progress_count(origin, parse_version, state, n)
-                 VALUES ('claude-code', 'other=1', ?1, ?2)",
-                rusqlite::params![state, n],
-            )
-            .unwrap();
-        let pool = ReadPool::open(&stored.archive).unwrap();
-        let error = pool
-            .reader()
-            .unwrap()
-            .completeness(&[expected("claude-code", "synthetic=1")])
-            .unwrap_err();
-        assert!(
-            matches!(error, crate::StoreError::StoredValue { .. }),
-            "{state} {n}: {error:?}"
-        );
-        assert_eq!(error.code(), polylogue_model::Code::Store, "{state} {n}");
-    }
+fn an_empty_chain_is_done_without_a_parse_state() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(root.path()).unwrap();
+    edit(
+        &fixture.archive.archive_db(),
+        "INSERT INTO input VALUES('empty','synthetic');
+        INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('empty',1,'first',1,0,1);",
+    );
+    let contracts = [expected("synthetic", "v1")];
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    assert!(reader.completeness(&contracts).unwrap().caught_up());
+    assert_eq!(
+        reader.status(&contracts).unwrap().parse_states,
+        BTreeMap::from([("done".to_owned(), 1)])
+    );
 }

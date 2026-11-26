@@ -23,7 +23,7 @@ impl Reader<'_> {
     ) -> Result<Option<InputRevision>> {
         let conn = self.conn()?;
         let row = conn.query_row(
-            "SELECT i.format,r.number,r.chain,r.length,
+            "SELECT i.origin,r.number,r.chain,r.length,
              coalesce((SELECT o.path_bytes FROM source_observation o WHERE o.input=i.id AND o.commit_seq<=r.commit_seq ORDER BY o.id DESC LIMIT 1),X'')
              FROM source_input i JOIN source_revision r ON r.input=i.id
              WHERE i.id=?1 AND (?2 IS NULL OR r.number=?2) ORDER BY r.number DESC LIMIT 1",
@@ -76,12 +76,12 @@ impl Reader<'_> {
         }
         let conn = self.conn()?;
         let base = "WITH selected AS (
-          SELECT i.id,i.format,r.number,r.chain,r.length,
+          SELECT i.id,i.origin,r.number,r.chain,r.length,
             coalesce((SELECT o.path_bytes FROM source_observation o WHERE o.input=i.id AND o.commit_seq<=r.commit_seq ORDER BY o.id DESC LIMIT 1),X'') AS path,
             (SELECT o.seen_at FROM source_observation o WHERE o.input=i.id AND o.commit_seq<=r.commit_seq ORDER BY o.id DESC LIMIT 1) AS observed_at
           FROM source_input i LEFT JOIN source_revision r ON r.input=i.id
             AND r.number=coalesce(?2,(SELECT max(newer.number) FROM source_revision newer WHERE newer.input=i.id))
-          WHERE (?1 IS NULL OR i.format=?1))";
+          WHERE (?1 IS NULL OR i.origin=?1))";
         let unknown_time_inputs = if after.is_none() {
             let count: i64 = conn.scalar(&format!("{base} SELECT count(*) FROM selected WHERE number IS NOT NULL AND observed_at IS NULL"), params![origin, revision])?;
             Some(
@@ -95,7 +95,7 @@ impl Reader<'_> {
         let limit = i64::try_from(page_size.saturating_add(1)).unwrap_or(i64::MAX);
         let mut statement = conn.prepare_cached(&format!(
             "{base}
-          SELECT id,format,number,chain,length,path FROM selected
+          SELECT id,origin,number,chain,length,path FROM selected
           WHERE (?3 IS NULL OR observed_at>=?3 OR number IS NULL) AND (?4 IS NULL OR id>?4)
           ORDER BY id LIMIT ?5"
         ))?;

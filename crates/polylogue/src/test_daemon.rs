@@ -47,7 +47,6 @@ fn start_with_deployment(
         engine,
         mode,
         polylogue_engine::Lifetime::UntilStopped,
-        Some(polylogue_testkit::stopped_attempt()),
         &Default::default(),
     )?;
     // Reads answer `index_building` until the loop's first pass installs the
@@ -249,7 +248,6 @@ impl TestDaemon {
             self.config.clone(),
             service::ArchiveMode::Standalone,
             polylogue_engine::Lifetime::UntilStopped,
-            Some(polylogue_testkit::stopped_attempt()),
             &Default::default(),
         )
         .unwrap();
