@@ -144,11 +144,9 @@ pub(crate) fn visit_rows(
             polylogue_store::read::VisitFrom::Before(&row_position),
             rendering.near,
             |row| {
-                ordinal = ordinal.checked_sub(1).ok_or_else(|| {
-                    Error::Internal(
-                        "a backward page counted more than 2^32 rows before its start".into(),
-                    )
-                })?;
+                ordinal = ordinal
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Internal("a page counted more than 2^64 rows".into()))?;
                 keys.keys.insert(ordinal, row.position.clone());
                 Ok(if walk.visit_row(ordinal, row, None, start.direction)? {
                     ControlFlow::Continue(())
@@ -159,9 +157,9 @@ pub(crate) fn visit_rows(
             },
         )?;
         if !full && let Some(history) = history {
-            let row = ordinal.checked_sub(1).ok_or_else(|| {
-                Error::internal("saved history lies before the row coordinate range")
-            })?;
+            let row = ordinal
+                .checked_add(1)
+                .ok_or_else(|| Error::Internal("a page counted more than 2^64 rows".into()))?;
             visit_history(reader, history, rendering, None, row, true, emit)?;
         }
     } else {
