@@ -148,10 +148,9 @@ pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<Stored
             None,
         ),
         // The latest of the session's message times. With only instants
-        // that is the latest of the messages at its last activity (the
-        // column is their greatest millisecond), found by one index seek;
-        // a session holding a period reads all its messages, since a
-        // period that starts earlier can end later.
+        // that is the latest of the messages in their greatest millisecond,
+        // found by two index seeks; a session holding a period reads all
+        // its messages, since a period that starts earlier can end later.
         (Sessions, "last_active") => (
             "{s}.last_activity_at",
             format!(
@@ -160,7 +159,8 @@ pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<Stored
                         WHERE {{s}}_activity.session_pk={{s}}.pk AND {{s}}_activity.at IS NOT NULL) \
                   ELSE (SELECT pl_time_latest({{s}}_activity.at_time) FROM message {{s}}_activity \
                         WHERE {{s}}_activity.session_pk={{s}}.pk \
-                          AND {{s}}_activity.at={{s}}.last_activity_at) END)",
+                          AND {{s}}_activity.at=(SELECT max({{s}}_latest.at) FROM message {{s}}_latest \
+                                                 WHERE {{s}}_latest.session_pk={{s}}.pk)) END)",
                 session_periods()
             ),
             TimeStorage::Latest,

@@ -366,9 +366,10 @@ fn a_time_bound_tests_periods_by_their_end_and_instants_by_their_time() {
         ids("sessions where last_active < 2026-10-10"),
         ["test:before", "test:just-before"]
     );
+    // The bound names a whole second, which `just-after` falls inside.
     assert_eq!(
         ids("sessions where last_active > 2026-10-10T00:00:00Z"),
-        ["test:after", "test:just-after"]
+        ["test:after"]
     );
 }
 
