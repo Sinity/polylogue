@@ -273,7 +273,6 @@ fn current(name: &str, minutes: i64, count: Option<StepCount>) -> CurrentStep {
 
 fn progress(current: CurrentStep, finished: Vec<FinishedStep>, to_come: &[&str]) -> BuildProgress {
     BuildProgress {
-        reason: None,
         finished,
         current: Some(current),
         to_come: to_come.iter().map(|step| (*step).to_owned()).collect(),
