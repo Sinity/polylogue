@@ -236,7 +236,7 @@ fn nested_readers_keep_distinct_consistent_reads_when_connections_are_reused() {
 }
 
 #[test]
-fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
+fn status_counts_rows_and_sums_the_session_count_summaries() {
     use crate::fixture::{MessageFacts, SessionFacts};
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
@@ -263,6 +263,16 @@ fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
             .unwrap();
         }
     }
+    // What the counts summary writes for each session.
+    let summarize = |f: &Fixture| {
+        rusqlite::Connection::open(f.archive.index_db())
+            .unwrap()
+            .execute_batch(
+                "UPDATE session SET message_count=(SELECT count(*) FROM message m WHERE m.session_pk=session.pk)",
+            )
+            .unwrap();
+    };
+    summarize(&f);
     let counted = |f: &Fixture| {
         let pool = f.reads().unwrap();
         let reader = pool.reader().unwrap();
@@ -291,6 +301,8 @@ fn status_counts_are_the_row_counts_after_inserts_and_deletes() {
              DELETE FROM message WHERE id = 'claude-code:one-0';",
         )
         .unwrap();
+    assert_eq!(counted(&f).1, 5, "messages follow the summaries");
+    summarize(&f);
     assert_eq!(counted(&f), (2, 4));
 }
 

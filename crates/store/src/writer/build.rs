@@ -1219,9 +1219,6 @@ pub(super) struct ComposeState {
     step: Step,
     /// Indexes to make once the stream is composed.
     indexes: Vec<String>,
-    /// The triggers that keep `row_count`, dropped while composition writes
-    /// and made again once every table is counted.
-    counting: Vec<String>,
     /// The stream's runs (the composition records and each message
     /// reading's text keys), until composition reaches them.
     unread: Option<(Merger, Merger, Arc<GroupKeys>)>,
@@ -1259,8 +1256,6 @@ enum Step {
     Index {
         next: usize,
     },
-    /// Counts each counted table and makes its triggers again.
-    Count,
     Done,
 }
 
@@ -1282,18 +1277,6 @@ impl ComposeState {
             groups,
         } = loaded;
         let aliases = Arc::new(super::identity::Aliases::load(index)?);
-        // Composing runs no trigger per row: each counted table is counted
-        // once when composition ends.
-        let counting: Vec<(String, String)> = index
-            .prepare(
-                "SELECT name,sql FROM sqlite_schema
-                 WHERE type='trigger' AND sql LIKE '%UPDATE row_count %'",
-            )?
-            .query_map([], |r| <(String, String)>::try_from(r))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (name, _) in &counting {
-            index.execute(&format!("DROP TRIGGER \"{name}\""), [])?;
-        }
         // The sessions a copy name involves are decided across sessions.
         fallback.extend(
             index
@@ -1337,7 +1320,6 @@ impl ComposeState {
         Ok(Self {
             step: Step::Links,
             indexes,
-            counting: counting.into_iter().map(|(_, sql)| sql).collect(),
             unread: Some((merged, texts, groups)),
             composing: None,
             ahead,
@@ -1360,7 +1342,7 @@ impl ComposeState {
         match self.step {
             Step::Links | Step::Stream => ASSEMBLING_SESSIONS,
             Step::Indexes => INDEXING_SESSIONS,
-            Step::Index { .. } | Step::Count | Step::Done => JOINING_SESSIONS,
+            Step::Index { .. } | Step::Done => JOINING_SESSIONS,
         }
     }
 
@@ -2273,30 +2255,20 @@ impl Inner {
                 state.step = if end < state.fallback.len() {
                     Step::Index { next: end }
                 } else {
-                    Step::Count
-                };
-            }
-            Step::Count => {
-                let tx = self
-                    .index
-                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let tables: Vec<String> = tx
-                    .prepare("SELECT name FROM row_count")?
-                    .query_map([], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                for table in tables {
+                    // Every session's lineage is computed once the build's
+                    // sessions and links are all written.
+                    let tx = self
+                        .index
+                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
                     tx.execute(
-                        &format!(
-                            "UPDATE row_count SET n=(SELECT count(*) FROM \"{table}\") WHERE name=?1"
-                        ),
-                        [&table],
+                        "INSERT INTO summary_due(session_pk,from_order,lineage)
+                         SELECT pk,X'FF',1 FROM session WHERE true
+                         ON CONFLICT(session_pk) DO UPDATE SET lineage=1,marked=marked+1",
+                        [],
                     )?;
-                }
-                for sql in std::mem::take(&mut state.counting) {
-                    tx.execute(&sql, [])?;
-                }
-                tx.commit()?;
-                state.step = Step::Done;
+                    tx.commit()?;
+                    Step::Done
+                };
             }
             Step::Done => {}
         }

@@ -541,6 +541,7 @@ impl<'c> Work<'_, 'c> {
             .execute(params![session, id.origin().as_str(), id.native().as_str(), self.context.counter])?;
         let pk = self.tx().last_insert_rowid();
         self.sessions.insert(session.to_owned(), pk);
+        crate::lineage::mark_due(self.tx(), session)?;
         Ok(pk)
     }
 
@@ -556,9 +557,7 @@ impl<'c> Work<'_, 'c> {
             let pk = self.session_row(session)?;
             self.context.changes.whole_session(pk);
             self.context.changes.session(pk);
-            self.tx()
-                .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
-                .execute(params![pk, !own])?;
+            self.set_stub(pk, session, !own)?;
             return Ok(());
         }
         let stated = self.ids.stated(session)?;
@@ -593,17 +592,26 @@ impl<'c> Work<'_, 'c> {
                 }
                 crate::session_row::remove(self.tx(), pk, session, self.context.counter)?;
                 self.sessions.remove(session);
-                Ok(())
+                crate::lineage::mark_due(self.tx(), session)
             }
             (_, true) => {
                 let pk = self.session_row(session)?;
                 self.context.changes.session(pk);
-                self.tx()
-                    .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
-                    .execute(params![pk, !own])?;
-                Ok(())
+                self.set_stub(pk, session, !own)
             }
         }
+    }
+
+    /// Makes session `pk` a stub or not; a change marks its lineage due.
+    fn set_stub(&mut self, pk: i64, session: &str, stub: bool) -> Result<()> {
+        let changed = self
+            .tx()
+            .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
+            .execute(params![pk, stub])?;
+        if changed > 0 {
+            crate::lineage::mark_due(self.tx(), session)?;
+        }
+        Ok(())
     }
 
     /// Each input's reading of a shown message (see [`latest_readings`]).
@@ -1785,6 +1793,9 @@ impl<'c> Work<'_, 'c> {
                 self.context.changes.link(self.tx(), pk)?;
                 self.mark_link_sessions(&parent, &child)?;
                 self.tx().execute("DELETE FROM link WHERE pk=?1", [pk])?;
+                if crate::lineage::is_lineage(&kind) {
+                    crate::lineage::mark_due(self.tx(), &child)?;
+                }
             }
             return Ok(());
         };
@@ -1814,6 +1825,9 @@ impl<'c> Work<'_, 'c> {
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 )?
                 .execute(params![parent, child, kind, how, link.evidence, input_pk, chain, at, call, link.copies_prefix])?;
+                if crate::lineage::is_lineage(&kind) {
+                    crate::lineage::mark_due(self.tx(), &child)?;
+                }
             }
         }
         self.mark_link_sessions(&parent, &child)

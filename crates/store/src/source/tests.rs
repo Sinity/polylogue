@@ -34,12 +34,6 @@ fn cache_schema_renames_tables_without_changing_input_columns_or_counter_keys() 
         )
         .unwrap();
     assert_eq!(parent, "source_input");
-    let index_count: i64 = cache
-        .query_row("SELECT n FROM row_count WHERE name='message'", [], |row| {
-            row.get(0)
-        })
-        .unwrap();
-    assert_eq!(index_count, 0);
 }
 
 #[test]

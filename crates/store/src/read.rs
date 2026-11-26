@@ -247,7 +247,8 @@ row! {
         n: u64,
     }
     statements {
-        const UNUSED = "SELECT what AS name, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20";
+        const UNUSED = "SELECT what AS name, sum(count) AS n FROM unused GROUP BY what
+            ORDER BY n DESC, what LIMIT 20";
     }
 }
 
@@ -1450,24 +1451,29 @@ impl Reader<'_> {
         limit::ReadLimit::set_stage("status counts");
         let parse_states = self.chain_census_at_position(contracts)?.by_status();
         let c = self.conn()?;
-        let count = |sql: &str| -> Result<u64> { Ok(c.scalar::<i64>(sql, [])? as u64) };
+        let count = |sql: &str| -> Result<u64> { c.scalar::<u64>(sql, []) };
         let unused = c
             .all(&NamedCount::UNUSED, [])?
             .into_iter()
             .map(|count| (count.name, count.n))
             .collect();
         Ok(Status {
-            sessions: count("SELECT n FROM main.row_count WHERE name = 'session'")?,
-            messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
-            documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
-            tool_calls: count("SELECT n FROM main.row_count WHERE name = 'tool_call'")?,
+            // Sessions and documents are counted; messages and tool calls
+            // are summed from the sessions' count summaries, which follow
+            // the index by the summary worker.
+            sessions: count("SELECT count(*) FROM main.session")?,
+            messages: count("SELECT coalesce(sum(message_count), 0) FROM main.session")?,
+            documents: count("SELECT count(*) FROM main.document")?,
+            tool_calls: count("SELECT coalesce(sum(tool_call_count), 0) FROM main.session")?,
             inputs: count("SELECT n FROM source_row_count WHERE name = 'input'")?,
             revisions: count("SELECT n FROM source_row_count WHERE name = 'revision'")?,
             stored_bytes: count("SELECT n FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
             unused,
-            unused_fields: count("SELECT count(*) FROM unused_count WHERE n > 0")?,
-            search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
+            unused_fields: count(
+                "SELECT count(*) FROM (SELECT what FROM unused GROUP BY what HAVING sum(count) > 0)",
+            )?,
+            search_pending: count("SELECT count(*) FROM main.search_pending")?,
             capture_coverage: self.all_capture_coverage()?,
             index_rebuild: crate::archive::index_rebuild::status(c, &self.pool.archive)?,
         })
