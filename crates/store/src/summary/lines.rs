@@ -146,12 +146,12 @@ pub(crate) fn apply(tx: &Connection, session_pk: i64, lines: &Lines) -> Result<(
         tx.prepare_cached("DELETE FROM transcript_line WHERE session_pk = ?1 AND position >= ?2")?
             .execute(params![session_pk, from])?;
         let mut head = tx.prepare_cached(
-            "INSERT INTO transcript_line(session_pk, position, unit, message_pk, event_pk, time_bound,
-                                         row_key, entry, class, call_id, counts)
+            "INSERT INTO transcript_line(session_pk, position, source_key, message_pk, event_pk, time_bound,
+                                         row_key, body, class, call_id, counts)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )?;
         let mut later = tx.prepare_cached(
-            "INSERT INTO transcript_line(session_pk, position, entry, class, call_id)
+            "INSERT INTO transcript_line(session_pk, position, body, class, call_id)
              VALUES (?1, ?2, ?3, ?4, ?5)",
         )?;
         let mut call = tx.prepare_cached(
@@ -835,7 +835,7 @@ fn events_from(
     // Each written event's key, with its stored identity, entry and call ID.
     let written: Vec<(i64, EventBody)> = conn
         .prepare_cached(
-            "SELECT event_pk, unit, entry, call_id FROM transcript_line
+            "SELECT event_pk, source_key, body, call_id FROM transcript_line
              WHERE session_pk = ?1 AND position >= ?2 AND event_pk IS NOT NULL",
         )?
         .query_map(params![session_pk, point.seq], |row| {
@@ -943,8 +943,8 @@ fn rebuild(
     let identities: Vec<Vec<u8>> = units.iter().map(Unit::identity).collect::<Result<_>>()?;
     let written: Vec<Written> = conn
         .prepare_cached(
-            "SELECT position, unit, message_pk, event_pk, row_key FROM transcript_line
-             WHERE session_pk = ?1 AND position >= ?2 AND unit IS NOT NULL ORDER BY position",
+            "SELECT position, source_key, message_pk, event_pk, row_key FROM transcript_line
+             WHERE session_pk = ?1 AND position >= ?2 AND source_key IS NOT NULL ORDER BY position",
         )?
         .query_map(params![session_pk, first_seq], |row| {
             Ok(Written {

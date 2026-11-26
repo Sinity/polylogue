@@ -43,7 +43,7 @@ pub(super) fn assert_matches_rows(w: &TestArchive, session: &str) {
         let conn = reader.conn().unwrap();
         let mut statement = conn
             .prepare(
-                "SELECT unit IS NOT NULL FROM transcript_line WHERE session_pk = ?1 ORDER BY position",
+                "SELECT source_key IS NOT NULL FROM transcript_line WHERE session_pk = ?1 ORDER BY position",
             )
             .unwrap();
         statement

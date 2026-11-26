@@ -100,7 +100,7 @@ pub(crate) fn stored_entries(
 
 /// What a read of stored entries selects: the row, and the message or
 /// event its unit's first row names.
-const ENTRY_SELECT: &str = "SELECT i.position, i.class, i.entry, i.call_id, m.id, e.id, i.unit IS NOT NULL FROM transcript_line i";
+const ENTRY_SELECT: &str = "SELECT i.position, i.class, i.body, i.call_id, m.id, e.id, i.source_key IS NOT NULL FROM transcript_line i";
 const ENTRY_JOINS: &str =
     "LEFT JOIN message m ON m.pk = i.message_pk LEFT JOIN event e ON e.pk = i.event_pk";
 
@@ -289,9 +289,9 @@ impl<'c> Run<'c> {
         let found: Option<StartRow> = self
             .conn
             .prepare_cached(
-                "SELECT i.position, i.entry, i.call_id, m.id
+                "SELECT i.position, i.body, i.call_id, m.id
                  FROM transcript_line i LEFT JOIN message m ON m.pk = i.message_pk
-                 WHERE i.session_pk = ?1 AND i.position <= ?2 AND i.unit IS NOT NULL
+                 WHERE i.session_pk = ?1 AND i.position <= ?2 AND i.source_key IS NOT NULL
                  ORDER BY i.position DESC LIMIT 1",
             )?
             .query_row(params![self.session_pk, seq], |row| {

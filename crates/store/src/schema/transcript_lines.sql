@@ -6,14 +6,14 @@
 CREATE TABLE transcript_line (
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   position               INTEGER NOT NULL,       -- place in the session's reading order, from 0
-  unit              BLOB,                   -- on the first line of a message version or an event: its identity
+  source_key        BLOB,                   -- on the first line of a message version or an event: its identity
   message_pk        INTEGER,                -- on a message version's first line: the message
   event_pk          INTEGER,                -- on an event's line: the event
   time_bound        INTEGER,                -- on a message version's first line: the latest message time up to it,
                                             --   the session's first message aside; places events that name no message
   row_key           BLOB,                   -- on a unit's first line: its row's key in session order (summary/fold.rs,
                                             --   `Key`) when the line was written; a change at or before it reaches the unit
-  entry             BLOB NOT NULL,          -- the model IndexEntry, compact and without what the row,
+  body              BLOB NOT NULL,          -- the model IndexEntry, compact and without what the row,
                                             --   its unit's first row and call_id hold (items/entry_bytes.rs)
   class             INTEGER NOT NULL,       -- the model EntryClass: what decides whether a reading shows the line
   call_id           TEXT,                   -- on a call or result: its provider call ID

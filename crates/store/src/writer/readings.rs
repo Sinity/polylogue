@@ -765,7 +765,7 @@ fn write_documents(
         let time = row.document.source_time;
         let stored: Option<(Option<i64>, String, Vec<u8>)> = tx
             .prepare_cached(
-                "SELECT source_time,route,hash FROM document_parse WHERE input_pk=?1 AND chain=?2 AND document_id=?3",
+                "SELECT at,route,hash FROM document_parse WHERE input_pk=?1 AND chain=?2 AND document_id=?3",
             )?
             .query_row(params![chain.input_pk, chain.chain, id], |r| <(_, _, _)>::try_from(r))
             .optional()?;
@@ -803,10 +803,10 @@ fn write_documents(
             touched,
         )?;
         tx.prepare_cached(
-            "INSERT INTO document_parse(input_pk,chain,document_id,route,source_start,source_length,source_time,time,hash,body)
+            "INSERT INTO document_parse(input_pk,chain,document_id,route,source_start,source_length,at,at_details,hash,body)
              VALUES (?1,?2,?3,?4,?5,?6-?5,?7,?8,?9,?10)
              ON CONFLICT(input_pk,chain,document_id) DO UPDATE SET route=excluded.route,source_start=excluded.source_start,
-                 source_length=excluded.source_length,source_time=excluded.source_time,time=excluded.time,hash=excluded.hash,
+                 source_length=excluded.source_length,at=excluded.at,at_details=excluded.at_details,hash=excluded.hash,
                  body=excluded.body",
         )?
         .execute(params![

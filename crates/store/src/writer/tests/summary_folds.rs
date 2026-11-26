@@ -365,7 +365,7 @@ fn summaries(w: &WriterArchive) -> Json {
         ),
         (
             "lines",
-            "SELECT s.id, i.position, hex(i.unit) AS unit, hex(i.entry) AS entry, i.class, i.call_id,
+            "SELECT s.id, i.position, hex(i.source_key) AS source_key, hex(i.body) AS body, i.class, i.call_id,
                     hex(i.counts) AS counts, m.id AS message, e.id AS event
              FROM transcript_line i JOIN session s ON s.pk = i.session_pk
              LEFT JOIN message m ON m.pk = i.message_pk LEFT JOIN event e ON e.pk = i.event_pk

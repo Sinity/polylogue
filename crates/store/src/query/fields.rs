@@ -196,7 +196,7 @@ pub(crate) fn stored_time(unit: Unit, field: &str, a: &Aliases) -> Option<Stored
             "{r}.at_until",
             "{r}.at_precision",
             None,
-            "(SELECT {r}_time.time FROM document_parse {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)".to_owned(),
+            "(SELECT {r}_time.at_details FROM document_parse {r}_time WHERE {r}_time.document_id={r}.id AND {r}_time.input_pk={r}.input_pk AND {r}_time.chain={r}.source_chain)".to_owned(),
             TimeStorage::Tuple,
         ),
         _ => return None,

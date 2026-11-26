@@ -1939,7 +1939,7 @@ impl<'c> Work<'_, 'c> {
         let mut found = self
             .tx()
             .prepare_cached(
-                "SELECT i.id,r.input_pk,r.chain,r.route,r.source_time,r.hash,r.source_start,r.source_start+r.source_length
+                "SELECT i.id,r.input_pk,r.chain,r.route,r.at,r.hash,r.source_start,r.source_start+r.source_length
                  FROM document_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.document_id=?1",
             )?
             .query_map([id], |r| {

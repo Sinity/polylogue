@@ -306,8 +306,8 @@ CREATE TABLE document_parse (
   route             TEXT NOT NULL CHECK (route IN (@names(Route))),
   source_start      INTEGER NOT NULL,
   source_length        INTEGER NOT NULL CHECK (source_length >= 0),
-  source_time       INTEGER,
-  time              BLOB NOT NULL,
+  at                INTEGER,
+  at_details        BLOB NOT NULL,
   hash              BLOB NOT NULL,
   body              BLOB NOT NULL,          -- the model Document with text moved to `text`
   PRIMARY KEY (input_pk, chain, document_id)
