@@ -682,3 +682,32 @@ fn a_shorter_copy_differing_inside_the_stored_length_starts_a_chain() {
         2
     );
 }
+
+/// A compressed copy that decodes to nothing names no session (a rollout
+/// is named by its first record), so nothing is stored for it and the
+/// stored chain stays current.
+#[test]
+fn an_empty_compressed_copy_stores_nothing() {
+    let w = ClaudeHome::new();
+    let (mut e, _lock, parts) = stored_then_grown(&w, "empty-native");
+    std::fs::write(
+        w.home
+            .join(".codex/archived_sessions/rollout-empty.jsonl.zst"),
+        zstd::stream::encode_all(&b""[..], 1).unwrap(),
+    )
+    .unwrap();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    let input = "codex:rollout:empty-native@test-machine";
+    assert_eq!(
+        w.count(&format!(
+            "SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='{input}'"
+        )),
+        1
+    );
+    assert_eq!(captured(&e, input), parts.concat().into_bytes());
+    assert_eq!(
+        session_texts(&e, "empty-native"),
+        ["independent payload", "second turn", "third turn"]
+    );
+}
