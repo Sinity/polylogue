@@ -203,9 +203,12 @@ selection. Keep the experimental target exclusive to the same checkout.
 
 To build against a local checkout of the shared crates, run
 `cargo xtask link-common PATH`, and `cargo xtask unlink-common` before
-committing a lock file, as the shared
+committing a lock file. New common commits arrive as a pull request on the
+`update-polylogue-sinex-common` branch, opened by common's `Update product
+locks` workflow once Sinex's master has adopted them; it moves the Sinex
+revision and the common lock together. The shared
 [dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
-describes.
+describes the route.
 
 For an early type-check of one package, `cargo check --locked -p
 polylogue-sinex --tests` checks its library target without compiling a test
