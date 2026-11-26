@@ -408,7 +408,7 @@ fn no_sort_key_holds_bytes() {
                             program.statements.page(
                                 &program.order,
                                 program.params.len(),
-                                false,
+                                None,
                                 false,
                                 polylogue_store::query::PageColumns::All,
                             )
