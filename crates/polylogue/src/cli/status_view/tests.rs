@@ -136,6 +136,8 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
             ],
             unused_fields: 41,
             search_pending: 0,
+            search_pending_is_minimum: false,
+            summaries_due: 0,
             capture_coverage: vec![Coverage {
                 version: 1,
                 machine: "host".into(),
@@ -1245,7 +1247,7 @@ fn whole_log_prints_every_long_record_whole() {
         .collect();
     for building in [false, true] {
         status.index_build = building.then_some(IndexBuild {
-            serving_previous: false,
+            reason: polylogue_store::index::file::RebuildReason::NoIndex,
             chains: 0,
             chains_read: 0,
             bytes: 0,

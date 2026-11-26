@@ -508,7 +508,12 @@ fn lasting_worker_failure_is_a_status_problem() {
 fn status_summarizes_twenty_roots_and_details_are_explicit() {
     use polylogue_model::capture::{Accessibility, Classification, Coverage, Entry, RootCoverage};
     let morrow = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
-    let mut store = morrow.reads().reader().unwrap().status().unwrap();
+    let mut store = morrow
+        .reads()
+        .reader()
+        .unwrap()
+        .status(&polylogue_engine::reading_contracts())
+        .unwrap();
     store.unused = vec![("synthetic:field".into(), 2)];
     store.unused_fields = 1;
     store.capture_coverage = vec![Coverage {

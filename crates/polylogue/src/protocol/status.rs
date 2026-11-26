@@ -305,7 +305,8 @@ pub struct Store {
     /// Bytes of input content stored, decoded: what the inputs hold, not
     /// what the segment log takes on disk.
     pub stored_bytes: u64,
-    /// Input chains by parse status (`done`, `parsing`, `waiting` for growth).
+    /// Input chains by how they are shown: `parsing`, `repeated`, `no_parser`,
+    /// `done`, `waiting`, `refused`, or `failed`.
     pub parse_states: BTreeMap<String, u64>,
     /// The 20 most frequent unread fields, with --details only.
     pub unused: Vec<(String, u64)>,
@@ -314,11 +315,15 @@ pub struct Store {
     /// Texts stored but not yet in the search index: how far search lags
     /// the writer.
     pub search_pending: u64,
+    /// The count stopped at its bound. More texts are waiting when this is true.
+    pub search_pending_is_minimum: bool,
+    /// Sessions waiting for their summaries to be folded.
+    pub summaries_due: u64,
     /// The latest confirmed full discovery walk from each source machine.
     pub capture_coverage: Vec<Coverage>,
-    /// Set when this index replaced one written for another schema.
+    /// Why this index replaced the one before it, as its rebuild recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_rebuild: Option<polylogue_store::archive::index_rebuild::IndexRebuild>,
+    pub index_rebuild: Option<polylogue_store::index::file::IndexRebuild>,
 }
 
 /// The last scan on one machine.
@@ -366,6 +371,8 @@ impl Store {
             unused: if details { store.unused } else { Vec::new() },
             unused_fields: store.unused_fields,
             search_pending: store.search_pending,
+            search_pending_is_minimum: store.search_pending_is_minimum,
+            summaries_due: store.summaries_due,
             capture_coverage: store
                 .capture_coverage
                 .into_iter()
