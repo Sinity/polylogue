@@ -192,7 +192,7 @@ fn freshness_notice(
             Some((state, text)) if text == note => state.as_str(),
             _ => "behind",
         };
-        (web_shell::values::view_state(state, note, command))
+        (web_shell::values::view_state(state, &note, command))
     } }
 }
 

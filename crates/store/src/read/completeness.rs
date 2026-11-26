@@ -75,6 +75,9 @@ impl Reader<'_> {
                 ));
             }
         }
+        // Every chain judged by the model's `status`, from its state and the
+        // archive's facts; read once per read position.
+        let census = self.chain_census_at_position(contracts)?;
         // Chains by why they are behind and by origin; and those whose
         // parse failed or was refused, which waiting does not end and which
         // therefore leave parsing complete.
@@ -83,9 +86,6 @@ impl Reader<'_> {
         let mut unknown = false;
         let mut kept_chains = 0_u64;
         let mut raw_only_chains = 0_u64;
-        // Every chain judged by the model's `status`, from its state and the
-        // archive's facts; read once per read position.
-        let census = self.chain_census_at_position(contracts)?;
         for ((origin, status), n) in &census.chains {
             use polylogue_model::chain::ChainStatusName as Status;
             let n = *n;

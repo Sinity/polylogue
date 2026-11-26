@@ -406,9 +406,11 @@ impl ReadFreshness {
             .dimensions()
             .into_iter()
             .flat_map(CompletenessDimension::reasons);
-        let failed = failed_parses
-            .then_some(self.local.failed_parses.as_slice())
-            .unwrap_or_default();
+        let failed: &[CountedReason] = if failed_parses {
+            &self.local.failed_parses
+        } else {
+            &[]
+        };
         let mut notes: Vec<String> = reasons.chain(failed).map(say).collect();
         if let Some((_, note)) = self.sinex_note() {
             notes.push(note.to_owned());
