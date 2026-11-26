@@ -3,11 +3,8 @@ use super::*;
 #[test]
 fn set_key_reads_declaration_choices_without_changing_write_or_scope_policy() {
     let daemon = crate::test_daemon::start("synthetic setting reader");
-    let (_, _, arguments) = crate::cli::request_arguments(
-        &["polylogue", "set", "browser.actions"],
-        std::path::Path::new("/"),
-    )
-    .unwrap();
+    let (_, _, arguments) =
+        crate::cli::request_arguments(&["polylogue", "set", "browser.actions"]).unwrap();
     let answer = crate::client::call_ready(
         &daemon.daemon.archive,
         &request("set", Value::Object(arguments), "setting-details-cli"),

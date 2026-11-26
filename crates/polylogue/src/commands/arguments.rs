@@ -6,8 +6,7 @@
 //! (`positional`, `words` or `rest`, set with `#[schemars(extend(...))]`);
 //! without one a boolean is a flag, a list a repeated `--name` whose values
 //! may also be comma-separated, and anything else `--name VALUE`. The key
-//! `unlisted` leaves a field out of the MCP tool list and `hidden` out of
-//! command-line help.
+//! `unlisted` leaves a field out of the MCP tool list.
 use command_surface::{ArgumentForm, ArgumentSpec};
 use serde_json::Value;
 
@@ -44,11 +43,6 @@ pub(crate) fn from_schema(schema: &schemars::Schema, calling_process: bool) -> V
             argument
         })
         .collect()
-}
-
-/// Whether a property's schema marks it left out of command-line help.
-pub(crate) fn hidden(property: &Value) -> bool {
-    property.get("hidden") == Some(&Value::Bool(true))
 }
 
 /// The one JSON type a property holds apart from `null`, following `$ref`

@@ -5,8 +5,7 @@ fn command(daemon: &crate::test_daemon::TestDaemon, query: &str, yes: bool) -> A
     if yes {
         words.push("--yes");
     }
-    let (_, _, arguments) =
-        crate::cli::request_arguments(&words, std::path::Path::new("/")).unwrap();
+    let (_, _, arguments) = crate::cli::request_arguments(&words).unwrap();
     let request = crate::client::request(
         "embed",
         Value::Object(arguments),
@@ -252,11 +251,9 @@ fn embed_query_bound_selects_all_texts_and_chunks_of_physical_rows_without_previ
 
 #[test]
 fn embed_carries_query_limits_in_the_query() {
-    let (_, _, values) = crate::cli::request_arguments(
-        &["polylogue", "embed", "--query", "sessions | limit 2"],
-        std::path::Path::new("/"),
-    )
-    .unwrap();
+    let (_, _, values) =
+        crate::cli::request_arguments(&["polylogue", "embed", "--query", "sessions | limit 2"])
+            .unwrap();
     let arguments: crate::protocol::embed::Arguments =
         serde_json::from_value(Value::Object(values)).unwrap();
     assert_eq!(arguments.query.as_deref(), Some("sessions | limit 2"));

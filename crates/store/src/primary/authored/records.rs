@@ -324,7 +324,7 @@ fn append_chat(
     }
     Ok(())
 }
-fn insert_backfill(
+fn insert_import_job(
     conn: &Connection,
     value: &ImportJob,
     counter: i64,
@@ -348,7 +348,7 @@ fn insert_backfill(
     conn.execute(&source.sql("INSERT INTO @source.import_job(id,provider,since,created_at,execution,commit_seq) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.provider,value.since,value.created_at,execution.as_str(),counter])?;
     Ok(())
 }
-fn append_backfill(
+fn append_import_job_events(
     conn: &Connection,
     id: &str,
     events: &[polylogue_model::user::ImportJobEvent],
@@ -399,8 +399,8 @@ pub(super) fn apply(
     }
     crate::signals::apply(conn, effect, counter, historical)?;
     for value in &effect.import_jobs {
-        insert_backfill(conn, &value.job, counter, historical)?;
-        append_backfill(conn, &value.job.id, &value.job.events, counter)?;
+        insert_import_job(conn, &value.job, counter, historical)?;
+        append_import_job_events(conn, &value.job.id, &value.job.events, counter)?;
     }
     Ok(())
 }
@@ -419,7 +419,7 @@ pub(super) fn copy(from: &Connection, to: &Connection) -> Result<()> {
         ),
         ("delivery", copy_delivery),
         ("chat_action", copy_chat),
-        ("import_job", copy_backfill),
+        ("import_job", copy_import_job),
     ] {
         let mut statement =
             from.prepare(&source.sql(&format!("SELECT id FROM @source.{table} ORDER BY id")))?;
@@ -467,10 +467,10 @@ fn copy_chat(from: &Connection, to: &Connection, id: &str) -> Result<()> {
     insert_chat(to, &value, 0, false)?;
     append_chat(to, id, &value.events, 0)
 }
-fn copy_backfill(from: &Connection, to: &Connection, id: &str) -> Result<()> {
+fn copy_import_job(from: &Connection, to: &Connection, id: &str) -> Result<()> {
     let source = Source::reading(from)?;
     let value = crate::import_jobs::read(from, source.prefix(), id)?
         .ok_or_else(|| StoreError::NotFound(id.into()))?;
-    insert_backfill(to, &value, 0, false)?;
-    append_backfill(to, id, &value.events, 0)
+    insert_import_job(to, &value, 0, false)?;
+    append_import_job_events(to, id, &value.events, 0)
 }

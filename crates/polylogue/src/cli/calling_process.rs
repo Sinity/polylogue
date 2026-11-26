@@ -12,14 +12,6 @@ pub(crate) struct SchemaOutput {
     pub to: Option<String>,
 }
 
-/// `chat send`: the files read here and sent as bytes.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub(crate) struct ChatSend {
-    /// Files to attach
-    #[serde(default)]
-    pub attach: Vec<String>,
-}
-
 /// The schema of a row's calling-process options, for the command table.
 pub(crate) fn schema<T: JsonSchema>() -> schemars::Schema {
     schemars::schema_for!(T)

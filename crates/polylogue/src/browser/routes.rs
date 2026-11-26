@@ -27,7 +27,7 @@ pub fn router(host: Arc<BrowserHost>) -> Router {
         .route("/v1/notes", post(selection_note))
         .route("/v1/chat-actions", get(chat_actions))
         .route("/v1/chat-actions/{id}/report", post(chat_report))
-        .route("/v1/chat-actions/{id}/decision", post(chat_decision))
+        .route("/v1/chat-actions/{id}/answer", post(chat_answer))
         .route(
             "/v1/chat-actions/{id}/attachments/{attachment}",
             get(chat_attachment),
@@ -384,21 +384,21 @@ async fn chat_report(
 }
 
 #[derive(Deserialize)]
-struct Decision {
-    by: String,
-    approve: bool,
+struct HeldAnswer {
+    value: String,
     #[serde(default)]
-    detail: Option<String>,
+    reason: Option<String>,
 }
 
-/// The operator's decision from the extension's popup.
-async fn chat_decision(
+/// The operator's Allow or Deny from the extension's popup, answered as
+/// `answer allow|deny` is.
+async fn chat_answer(
     State(host): State<Arc<BrowserHost>>,
     UrlPath(id): UrlPath<String>,
-    Json(d): Json<Decision>,
+    Json(a): Json<HeldAnswer>,
 ) -> HttpResponse {
-    let arguments = json!({ "id": id, "approve": d.approve, "by": d.by, "detail": d.detail });
-    answer(host, "internal chat decide", arguments).await
+    let arguments = json!({ "id": id, "value": a.value, "reason": a.reason });
+    answer(host, "internal chat answer", arguments).await
 }
 
 async fn chat_attachment(

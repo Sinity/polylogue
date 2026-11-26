@@ -60,7 +60,7 @@ describe("the popup", () => {
     expect(rows).toEqual(["problem 0", "problem 1", "problem 2", "problem 3", "problem 4", "3 older not shown"]);
   });
 
-  it("shows a held turn in full and sends the operator's decision", async () => {
+  it("extension_popup_decision_uses_answer: shows a held turn in full and sends the operator's answer", async () => {
     const text = "word ".repeat(100).trim();
     const approvals = [{ id: "a1", provider: "chatgpt", conversation: "c1", text }];
     const { window, sent } = await open((message) => (message.type === "polylogue.popup" ? state({ approvals }) : { ok: true }));
@@ -70,11 +70,11 @@ describe("the popup", () => {
     const [allow, deny] = row.querySelectorAll("button");
     expect([allow.textContent, deny.textContent]).toEqual(["Allow", "Deny"]);
     deny.click();
-    await until(() => sent.some((m) => m.type === "polylogue.decide"), "the decision");
-    expect(sent.find((m) => m.type === "polylogue.decide")).toEqual({ type: "polylogue.decide", id: "a1", approve: false });
+    await until(() => sent.some((m) => m.type === "polylogue.answer"), "the answer");
+    expect(sent.find((m) => m.type === "polylogue.answer")).toEqual({ type: "polylogue.answer", id: "a1", value: "deny" });
     allow.click();
-    await until(() => sent.filter((m) => m.type === "polylogue.decide").length === 2, "the second decision");
-    expect(sent.filter((m) => m.type === "polylogue.decide")[1]).toMatchObject({ approve: true });
+    await until(() => sent.filter((m) => m.type === "polylogue.answer").length === 2, "the second answer");
+    expect(sent.filter((m) => m.type === "polylogue.answer")[1]).toMatchObject({ value: "allow" });
   });
 
   it("keeps Capture available and says why when the capture request fails", async () => {

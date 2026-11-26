@@ -190,8 +190,7 @@ fn row_args(c: &Command) -> Vec<clap::Arg> {
 
 /// A row's arguments on the command line: its declared request fields and
 /// calling-process options, with the product's choice lists the input
-/// schema cannot carry. Fields whose schema marks them hidden are filled
-/// by the command line itself (`chat send`'s files) and are left out.
+/// schema cannot carry.
 pub(crate) fn arguments_of(command: &Command) -> Vec<CliArgument> {
     shown_arguments(command)
         .into_iter()
@@ -234,7 +233,6 @@ fn shown_arguments(command: &Command) -> Vec<(CliArgument, Option<&'static Value
             }
             (argument, property)
         })
-        .filter(|(_, property)| !property.is_some_and(crate::commands::arguments::hidden))
         .collect()
 }
 
@@ -392,11 +390,10 @@ pub fn parse(argv: &[&str]) -> Result<(&'static Command, ParsedCommand), String>
 }
 
 /// The command a command line names and the request arguments it sends,
-/// prepared in `cwd`, for tests.
+/// for tests.
 #[cfg(test)]
 pub fn request_arguments(
     argv: &[&str],
-    cwd: &std::path::Path,
 ) -> Result<
     (
         &'static Command,
@@ -410,15 +407,12 @@ pub fn request_arguments(
         .map_err(|e| e.to_string())?;
     let (c, m) = chosen(&matches).ok_or("no command")?;
     let values = parsed(c, m)?;
-    let mut arguments = values
+    let arguments = values
         .request
         .arguments
         .as_object()
         .ok_or("operation arguments must be an object")?
         .clone();
-    if let Some(prepare) = c.prepare {
-        prepare(&values, cwd, &mut arguments)?;
-    }
     Ok((c, values, arguments))
 }
 
@@ -468,11 +462,7 @@ pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> O
     Some(run(command, &parsed, output, parsed.json))
 }
 
-pub fn run(
-    matches: &ArgMatches,
-    startup: &crate::config::Startup,
-    cwd: &std::path::Path,
-) -> ExitCode {
+pub fn run(matches: &ArgMatches, startup: &crate::config::Startup) -> ExitCode {
     let policy = startup.output;
     let json = matches.get_flag("json");
     let Some((cmd, m)) = chosen(matches) else {
@@ -483,7 +473,7 @@ pub fn run(
             "no such command",
         );
     };
-    let mut values = match parsed(cmd, m) {
+    let values = match parsed(cmd, m) {
         Ok(parsed) => parsed,
         Err(error) => return fail(policy, json, polylogue_model::Code::BadRequest, &error),
     };
@@ -501,22 +491,6 @@ pub fn run(
             };
         }
         Run::Daemon(_) | Run::Feed { .. } => {}
-    }
-    if m.get_one::<String>("request").is_none()
-        && let Some(prepare) = cmd.prepare
-    {
-        let Some(mut arguments) = values.request.arguments.as_object().cloned() else {
-            return fail(
-                policy,
-                json,
-                polylogue_model::Code::BadRequest,
-                "operation arguments must be an object",
-            );
-        };
-        if let Err(message) = prepare(&values, cwd, &mut arguments) {
-            return fail(policy, json, polylogue_model::Code::BadRequest, &message);
-        }
-        values.request.arguments = Value::Object(arguments);
     }
     let call = &values.request;
     if let Run::Feed {

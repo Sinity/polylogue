@@ -200,3 +200,107 @@ fn a_native_selection_note_is_readable_by_cli_after_daemon_restart() {
     let (status, refused) = native("/v1/notes", &changed);
     assert_eq!(status, 409, "{refused}");
 }
+
+/// Web chats driven as a person drives them: `send`, `answer`, `start --in`
+/// and `import PROVIDER` on the command line against a running daemon, and
+/// the popup's Allow through the host's answer route.
+#[test]
+fn web_chat_acts_run_through_the_command_line_and_the_popup() {
+    use serde_json::{Value, json};
+    let dir = tempfile::tempdir().unwrap();
+    let environment = crate::Fixture::new(
+        &dir.path().join("archive"),
+        &dir.path().join("home"),
+        &dir.path().join("config"),
+    );
+    let _daemon = crate::cli::start_daemon(&environment);
+    let cli = |args: &[&str]| -> String {
+        let output = environment.command().args(args).output().unwrap();
+        assert!(output.status.success(), "{args:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let json_of = |args: &[&str]| -> Value {
+        let mut all = vec!["--json"];
+        all.extend(args);
+        serde_json::from_str(&cli(&all)).unwrap()
+    };
+    let found = |value: &Value, key: &str, wanted: &str| {
+        value
+            .to_string()
+            .contains(&format!("\"{key}\":\"{wanted}\""))
+    };
+
+    cli(&["set", "browser.actions", "on"]);
+    let held = json_of(&[
+        "session:chatgpt:conv-1",
+        "send",
+        "a turn the operator approves",
+    ]);
+    assert!(found(&held, "status", "awaiting_approval"), "{held}");
+    let allowed = json_of(&["session:chatgpt:conv-1", "answer", "allow"]);
+    assert!(found(&allowed, "status", "queued"), "{allowed}");
+
+    let draft = json_of(&[
+        "start",
+        "a new draft",
+        "--in",
+        "chatgpt",
+        "--model",
+        "GPT X",
+    ]);
+    assert!(
+        found(&draft, "status", "queued") && draft.to_string().contains("\"submit\":false"),
+        "{draft}"
+    );
+    let submitted = json_of(&["start", "a new conversation", "--in", "chatgpt", "--submit"]);
+    assert!(
+        submitted.to_string().contains("\"needs_approval\":false"),
+        "{submitted}"
+    );
+
+    // The popup's Deny reaches the same answer.
+    let other = json_of(&[
+        "https://chatgpt.com/c/conv-2",
+        "send",
+        "a turn the operator denies",
+    ]);
+    let id = other
+        .to_string()
+        .split("\"id\":\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_owned();
+    let mut child = environment
+        .command()
+        .arg("chrome-extension://abcdefghijklmnop/")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let body = br#"{"value":"deny"}"#;
+    let mut input = frame(&json!({"type":"request","version":1,"method":"POST",
+        "path": format!("/v1/chat-actions/{id}/answer"), "headers":{"content-type":"application/json"}}));
+    use base64::Engine as _;
+    input.extend(frame(&json!({"type":"body","sequence":0,"data":base64::engine::general_purpose::STANDARD.encode(body)})));
+    input.extend(frame(&json!({"type":"body_end"})));
+    for _ in 0..4 {
+        input.extend(frame(&json!({"type":"response_next"})));
+    }
+    child.stdin.take().unwrap().write_all(&input).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let response = frames(&output.stdout)
+        .into_iter()
+        .find(|v| v["type"] == "response")
+        .unwrap();
+    assert_eq!(response["status"], 200, "{output:?}");
+
+    let job = json_of(&["import", "chatgpt", "--since", "2026-01-01"]);
+    assert!(found(&job, "status", "waiting"), "{job}");
+    let cancelled = json_of(&["import", "chatgpt", "--cancel"]);
+    assert!(found(&cancelled, "status", "cancelled"), "{cancelled}");
+    let help = cli(&["help", "backfill"]);
+    assert!(help.contains("import PROVIDER"), "{help}");
+}

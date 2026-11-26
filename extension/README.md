@@ -40,26 +40,31 @@ token or pairing step.
 
 ## Provider imports
 
-`polylogue backfill start chatgpt` (or `claude-ai`, `grok`; `--since DATE`
-limits it) asks the extension to capture a provider's older conversations.
+`polylogue import chatgpt` (or `claude-ai`, `grok`; `--since DATE` limits
+it) asks the extension to capture a provider's older conversations.
 The job lives in Polylogue: the extension claims it, pages through the
 provider's conversation list in an open tab of that provider (or a background
 tab it opens and closes), captures each conversation the archive lacks or
 holds an older copy of, and reports where it got to. A restarted extension
-continues from there. `polylogue import_jobs` shows how far each job got;
-`polylogue backfill cancel ID` stops one.
+continues from there. Running the import again shows how far the job got, and
+`polylogue import_jobs` lists every job;
+`polylogue import chatgpt --cancel` stops it and `--wait 10m` waits for it.
 
 ## Chat actions
 
-`polylogue chat send chatgpt "TEXT" --model "MODEL"` asks the extension to
-draft a turn in a new ChatGPT conversation, or in an existing one with
-`--conversation ID`; `--submit` sends it, `--attach FILE` attaches files. The
-archive setting `browser.actions` must be `on` (`polylogue setting
+`polylogue start "TEXT" --in chatgpt` asks the extension to draft a new
+ChatGPT conversation (`--model`, `--effort`, `--project`, `--attach FILE`);
+`--submit` sends it. `polylogue SESSION send "TEXT"` on a ChatGPT session, or
+on a pasted conversation URL, writes a turn into that conversation. The
+archive setting `browser.actions` must be `on` (`polylogue set
 browser.actions on`); setting it to anything else stops the extension from
-taking more. A send into an existing conversation waits for approval in the
-extension's popup or with `polylogue chat approve ID`. The extension works in
-a background tab, leaves a draft open there, and captures the conversation
-after a send. `polylogue chat_actions` lists the actions and where each stands.
+taking more. A turn into an existing conversation, and a submit asked for by
+anyone but the operator, waits for the operator's answer: **Allow** or
+**Deny** in the extension's popup, or `polylogue SESSION answer allow|deny`.
+The extension works in a background tab, leaves a draft open there, and
+captures the conversation after a send. `polylogue chat_actions` lists the
+actions and where each stands. Over MCP these are the `send` and `start`
+steps of `polylogue_act`.
 
 ## The in-page button
 

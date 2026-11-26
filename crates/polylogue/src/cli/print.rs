@@ -302,8 +302,16 @@ fn plan(found: &crate::resume::Plan) -> String {
     out
 }
 
-/// `backfill start` and `cancel`: the job's line, or a write still
-/// awaiting confirmation as JSON.
+/// `import`: the files report as JSON; a provider import as its job's line.
+pub fn import(answer: &protocol::import::Answer, style: TextStyle) -> String {
+    match answer {
+        protocol::import::Answer::Files(report) => json(report, style),
+        protocol::import::Answer::Provider(job) => import_job_answer(job, style),
+    }
+}
+
+/// `import PROVIDER`: the job's line, or a write still awaiting
+/// confirmation as JSON.
 pub fn import_job_answer(answer: &protocol::browser::ImportJobAnswer, style: TextStyle) -> String {
     match answer {
         protocol::browser::ImportJobAnswer::Current(current) => polylogue_render::terminal::escape(

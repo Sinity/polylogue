@@ -254,32 +254,61 @@ fn chat_request(conversation: Option<&str>, submit: bool) -> actions::ChatReques
         conversation: conversation.map(str::to_owned),
         project: None,
         text: "summarize this".into(),
-        model: "GPT X".into(),
+        model: Some("GPT X".into()),
         effort: Some("Standard".into()),
         submit,
     }
 }
 
-/// Queues an action as the operator does; the action, or the refusal's code.
+/// Queues an action as the operator does: `start --in chatgpt` for a new
+/// conversation, `send` on its session for an existing one. The action, or
+/// the refusal's code.
 fn send(
     w: &TestDaemon,
     key: &str,
     action: actions::ChatRequest,
     files: Vec<actions::ChatFile>,
 ) -> Result<Value, String> {
-    let mut arguments = serde_json::to_value(action).unwrap();
-    arguments["files"] = serde_json::json!(files);
-    let request = crate::test_daemon::Call::new("chat send", arguments).id(key);
-    match request.answer(&w.daemon) {
+    let dir = w.home.join("attached");
+    std::fs::create_dir_all(&dir).unwrap();
+    let attach: Vec<String> = files
+        .iter()
+        .map(|file| {
+            let path = dir.join(&file.name);
+            std::fs::write(&path, &file.bytes).unwrap();
+            path.to_string_lossy().into_owned()
+        })
+        .collect();
+    let request = match &action.conversation {
+        None => crate::test_daemon::Call::new(
+            "start",
+            json!({"text": action.text, "in": action.provider, "model": action.model,
+                   "effort": action.effort, "submit": action.submit, "attach": attach}),
+        ),
+        Some(conversation) => crate::test_daemon::Call::new(
+            "rows",
+            json!({"selection": format!("session:{}:{conversation}", action.provider),
+                   "steps": [{"verb": "send", "text": action.text, "attach": attach}]}),
+        ),
+    };
+    let data = match request.id(key).answer(&w.daemon) {
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(data),
             ..
-        } => Ok(data["action"].clone()),
+        } => data,
         command_surface::Answer {
             outcome: command_surface::Outcome::Error(error),
             ..
-        } => Err(error.code.unwrap_or_default()),
+        } => return Err(error.code.unwrap_or_default()),
         other => panic!("a queued action is ok or refused, got {other:?}"),
+    };
+    if action.conversation.is_none() {
+        return Ok(data["action"].clone());
+    }
+    let step = &data["reply"]["steps"][0]["outcome"];
+    match step["error"]["code"].as_str() {
+        Some(code) => Err(code.to_owned()),
+        None => Ok(step["reply"]["reply"]["reached"][0]["action"].clone()),
     }
 }
 
@@ -368,10 +397,27 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     let approve = exchange(
         &host,
         "POST",
-        &format!("/v1/chat-actions/{held_id}/decision"),
-        br#"{"by":"popup","approve":true}"#,
+        &format!("/v1/chat-actions/{held_id}/answer"),
+        br#"{"value":"allow"}"#,
     );
     assert_eq!(approve.status, 200);
+    assert_eq!(approve.json()["action"]["status"], "queued");
+    // The first answer wins; a late one is refused with what won.
+    let late = exchange(
+        &host,
+        "POST",
+        &format!("/v1/chat-actions/{held_id}/answer"),
+        br#"{"value":"deny"}"#,
+    );
+    assert_eq!(late.status, 409, "{:?}", late.json());
+    assert!(
+        late.json()["message"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!(
+                "already_answered: the held turn {held_id} was allowed by "
+            ))
+    );
 
     // The switch: nothing is handed out once the setting is off.
     w.set("browser.actions", "off");
@@ -401,8 +447,8 @@ fn a_import_job_runs_through_the_daemon_and_survives_an_extension_restart() {
     let host = host(&w);
     let start = |provider: &str| {
         crate::test_daemon::Call::new(
-            "backfill start",
-            serde_json::json!({"provider": provider, "since": Some("2026-01-01")}),
+            "import",
+            serde_json::json!({"paths": [provider], "since": Some("2026-01-01")}),
         )
         .answer(&w.daemon)
     };

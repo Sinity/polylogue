@@ -127,8 +127,9 @@ export class Host {
   chatActions() { return this.json("GET", "/v1/chat-actions"); }
   claimChatAction(by) { return this.json("GET", `/v1/chat-actions?by=${encodeURIComponent(by)}`); }
   reportChatAction(id, update) { return this.json("POST", `/v1/chat-actions/${encodeURIComponent(id)}/report`, update); }
-  decideChatAction(id, by, approve) {
-    return this.json("POST", `/v1/chat-actions/${encodeURIComponent(id)}/decision`, { by, approve });
+  /** The operator's answer to a held turn: "allow" or "deny". */
+  answerChatAction(id, value) {
+    return this.json("POST", `/v1/chat-actions/${encodeURIComponent(id)}/answer`, { value });
   }
   async chatAttachment(id, attachment) {
     const answer = await exchange(this.runtime, "GET",

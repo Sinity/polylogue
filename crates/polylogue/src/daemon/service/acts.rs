@@ -1,5 +1,6 @@
 //! Live-session acts: messages (one session, a role's running instance, or
-//! every session a query selects when sent), signal notices to sessions,
+//! every session a query selects when sent; a web chat's turns are in
+//! [`web_chat`]), signal notices to sessions,
 //! the mailbox claim a hook makes, answers to permission requests,
 //! interrupts, and new hosted sessions (`start`, role instances,
 //! `hand-off`). Each act is recorded as a delivery with its computed
@@ -20,6 +21,7 @@ use serde_json::{Value, json};
 
 #[cfg(test)]
 mod tests;
+pub(crate) mod web_chat;
 
 /// The acts' handlers: each records its act and reaches its session.
 macro_rules! act {
@@ -74,23 +76,24 @@ act!(Interrupt, protocol::Interrupt, |a, call| interrupt(
     &a.session
 ));
 act!(Start, protocol::Start, |a, call| {
+    if let Some(provider) = a
+        .harness
+        .as_deref()
+        .and_then(polylogue_sources::origin::web_chat_name)
+    {
+        return web_chat::start(call, provider, a);
+    }
     let pending = [
-        (
-            a.harness
-                .as_deref()
-                .is_some_and(|name| matches!(name, "chatgpt" | "claude-ai" | "grok")),
-            format!("--in {}", a.harness.as_deref().unwrap_or_default()),
-        ),
-        (a.submit, "--submit".to_owned()),
-        (a.model.is_some(), "--model".to_owned()),
-        (a.effort.is_some(), "--effort".to_owned()),
-        (a.project.is_some(), "--project".to_owned()),
-        (!a.attach.is_empty(), "--attach".to_owned()),
+        (a.submit, "--submit"),
+        (a.model.is_some(), "--model"),
+        (a.effort.is_some(), "--effort"),
+        (a.project.is_some(), "--project"),
+        (!a.attach.is_empty(), "--attach"),
     ];
     if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
         return Ok(error(
             polylogue_model::Code::NotBuilt,
-            format!("start {option} is not built yet"),
+            format!("start {option} on a harness session is not built yet"),
         ));
     }
     if a.harness.is_none() && a.role.is_none() {

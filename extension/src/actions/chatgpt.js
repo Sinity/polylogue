@@ -240,7 +240,10 @@ export async function chatActionInPage(action, runId) {
       return observed.chat && !observed.work;
     }, 5_000, "chat_surface_selection");
 
-    if (hasComposerPill()) {
+    // Without a requested model the conversation keeps the one it has.
+    if (!expectedModel) {
+      // Nothing to select.
+    } else if (hasComposerPill()) {
       const pill = await waitFor(composerPill, 10_000, "effort_pill");
       pointerClick(pill);
       const modelMenu = await waitFor(
@@ -311,8 +314,10 @@ export async function chatActionInPage(action, runId) {
     }
 
     const finalMode = selectedMode();
-    let finalSelectionVerified = false;
-    if (hasComposerPill()) {
+    let finalSelectionVerified = !expectedModel;
+    if (!expectedModel) {
+      // The page's own model stands.
+    } else if (hasComposerPill()) {
       const finalPill = composerPill();
       if (finalPill) pointerClick(finalPill);
       const finalModelMenu = finalPill

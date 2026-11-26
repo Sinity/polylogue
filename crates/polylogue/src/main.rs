@@ -253,9 +253,6 @@ fn run() -> ExitCode {
             &startup.config.paths,
         );
     }
-    let Some(cwd) = process.cwd.as_deref() else {
-        return startup_error(hook, "the working directory is unavailable", process.output);
-    };
     if matches
         .as_ref()
         .is_some_and(|matches| cli::needs_engine(matches, &startup.mode))
@@ -266,8 +263,8 @@ fn run() -> ExitCode {
         };
     }
     match matches {
-        Some(matches) => cli::run(&matches, &startup, cwd),
-        None => cli::run_line::run(parsed, &startup, cwd),
+        Some(matches) => cli::run(&matches, &startup),
+        None => cli::run_line::run(parsed, &startup),
     }
 }
 

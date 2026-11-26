@@ -1,48 +1,9 @@
 //! Chat actions and import jobs the browser extension runs, and what the
 //! extension asks the archive about the conversations it sees.
-use crate::browser::actions::{ActionSummary, ChatFile, Update};
+use crate::browser::actions::{ActionSummary, Update};
 use crate::browser::import_job::JobSummary;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-
-/// Queues a chat action with the files it attaches; only the operator does.
-/// The request ID is the action's idempotency key.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ChatSend {
-    /// The web chat: chatgpt
-    #[schemars(extend("argument_form" = "positional"))]
-    pub provider: String,
-    /// What to write
-    #[schemars(extend("argument_form" = "words"))]
-    pub text: String,
-    /// The model, as the provider's model menu names it
-    pub model: String,
-    /// The reasoning effort, as the provider's menu names it
-    #[schemars(extend("unlisted" = true))]
-    pub effort: Option<String>,
-    /// Reply in this conversation (its ID); without it a new conversation starts
-    pub conversation: Option<String>,
-    /// Start the conversation in this project
-    #[schemars(extend("unlisted" = true))]
-    pub project: Option<String>,
-    /// Send the turn instead of leaving a draft
-    #[serde(default)]
-    pub submit: bool,
-    /// The attached files with their bytes; the command line reads `--attach`
-    #[serde(default)]
-    #[schemars(extend("hidden" = true, "unlisted" = true))]
-    pub files: Vec<ChatFile>,
-}
-
-/// The operator's approval or refusal of a queued chat action.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ChatDecide {
-    /// The chat action
-    #[schemars(extend("argument_form" = "positional"))]
-    pub id: String,
-}
 
 /// The extension instance `by` takes the oldest queued chat action, while
 /// chat actions are on.
@@ -62,18 +23,17 @@ pub struct ChatReport {
     pub update: Update,
 }
 
-/// A chat action's decision as the extension's page reports it.
+/// The operator's answer to a held turn from the extension's popup: the
+/// same answer as `answer allow|deny` on its web-chat session.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct ChatDecision {
+pub struct HeldTurnAnswer {
     /// The chat action
     pub id: String,
-    /// Approve it; without this it is declined
-    pub approve: bool,
-    /// Who decided, as the extension reports it
-    pub by: String,
-    /// Why, in the decider's words
-    pub detail: Option<String>,
+    /// allow or deny
+    pub value: String,
+    /// A reason given with the answer
+    pub reason: Option<String>,
 }
 
 /// A chat action attachment's bytes, base64.
@@ -84,26 +44,6 @@ pub struct ChatAttachment {
     pub id: String,
     /// The attachment's ID within the action
     pub attachment: String,
-}
-
-/// Starts capturing a web chat's older conversations; the provider's job
-/// that has not ended is answered instead of a second one.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ImportJobStart {
-    /// The web chat: chatgpt, claude-ai or grok
-    #[schemars(extend("argument_form" = "positional"))]
-    pub provider: String,
-    /// Only conversations changed on or after this date or time
-    pub since: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ImportJobCancel {
-    /// The job
-    #[schemars(extend("argument_form" = "positional"))]
-    pub id: String,
 }
 
 /// The extension instance `by` takes the import job it holds or the

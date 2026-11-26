@@ -269,18 +269,15 @@ fn typed_schema_selection_refuses_conflicting_origin_controls_on_the_socket() {
 
 #[test]
 fn local_schema_output_path_stays_out_of_the_typed_request() {
-    let (_, _, arguments) = crate::cli::request_arguments(
-        &[
-            "polylogue",
-            "dev",
-            "schema",
-            "infer",
-            "--all",
-            "--to",
-            "/synthetic/schema.json",
-        ],
-        std::path::Path::new("/"),
-    )
+    let (_, _, arguments) = crate::cli::request_arguments(&[
+        "polylogue",
+        "dev",
+        "schema",
+        "infer",
+        "--all",
+        "--to",
+        "/synthetic/schema.json",
+    ])
     .unwrap();
     assert!(arguments.get("to").is_none());
     assert!(
@@ -627,11 +624,8 @@ fn answer_errors_keep_credential_shaped_messages_and_hints() {
 #[test]
 fn setting_write_returns_its_result_and_value() {
     let daemon = crate::test_daemon::start("setting transport example");
-    let (_, _, arguments) = crate::cli::request_arguments(
-        &["polylogue", "set", "reading.alternates", "[]"],
-        std::path::Path::new("/"),
-    )
-    .unwrap();
+    let (_, _, arguments) =
+        crate::cli::request_arguments(&["polylogue", "set", "reading.alternates", "[]"]).unwrap();
     let ready = request("set", Value::Object(arguments), "setting-cli-socket");
     let first = crate::client::call_ready(&daemon.daemon.archive, &ready).unwrap();
     let crate::protocol::setting::Answer::Outcome(write_result) =

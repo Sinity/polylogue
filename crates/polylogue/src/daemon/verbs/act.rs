@@ -1,6 +1,6 @@
 //! The acts on live sessions: `send`, `answer` and `interrupt`, through the
-//! handlers of the acts they replace. Each recipient's act is its own
-//! request.
+//! acts' handlers; a web-chat session's turns go through
+//! [`acts::web_chat`]. Each recipient's act is its own request.
 use super::{
     RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use, sessions,
 };
@@ -37,6 +37,36 @@ impl Verb for Send {
         let mut envelope = Envelope::default();
         let mut outcome = command_surface::Outcome::Empty(());
         for (n, target) in targets.into_iter().enumerate() {
+            let request_id = format!("{}-{}", call.call.request_id, n + 1);
+            let child = Call {
+                request_id: &request_id,
+                ..call.call.copy()
+            };
+            let one = if several { &child } else { &call.call };
+            let web_chat = SessionId::parse(&target)
+                .ok()
+                .filter(|session| acts::web_chat::conversation(session).is_some());
+            if let Some(session) = web_chat {
+                let done = delegated(
+                    acts::web_chat::send(one, &session, &step.text, &step.attach)?,
+                    |reached| {
+                        StepAnswer::Sent(SendReport {
+                            reached: vec![reached],
+                            skipped: Vec::new(),
+                        })
+                    },
+                )?;
+                super::merge_outcome(&mut outcome, done.outcome);
+                envelope.notes.extend(done.envelope.notes);
+                envelope.next.extend(done.envelope.next);
+                if let StepAnswer::Sent(sent) = done.reply {
+                    report.reached.extend(sent.reached);
+                }
+                continue;
+            }
+            if !step.attach.is_empty() {
+                return Err(not_built("send", "attach to a harness session"));
+            }
             if several {
                 // The same notion of running as `would`: a session just
                 // started and still hosted has no live events yet.
@@ -59,11 +89,6 @@ impl Verb for Send {
                     continue;
                 }
             }
-            let request_id = format!("{}-{}", call.call.request_id, n + 1);
-            let child = Call {
-                request_id: &request_id,
-                ..call.call.copy()
-            };
             let done = delegated(
                 acts::SendMessage::run(
                     act::SendMessage {
@@ -72,7 +97,7 @@ impl Verb for Send {
                         live: several,
                         about: step.about.clone(),
                     },
-                    if several { &child } else { &call.call },
+                    one,
                 )?,
                 |reached| {
                     StepAnswer::Sent(SendReport {
@@ -128,6 +153,12 @@ impl Verb for Send {
                 } else {
                     SessionId::parse(target).map_err(Failure::bad_value)?
                 };
+                if acts::web_chat::conversation(&session).is_some() {
+                    return Ok(format!(
+                        "would send {:?} to {target}: the browser extension, held for the operator's answer",
+                        step.text
+                    ));
+                }
                 let state = acts::session_state(d, &session, now)?;
                 let delivery = match state {
                     Some((state, _, _)) if several && !state.running() => {
@@ -156,10 +187,11 @@ impl Verb for Send {
     }
 }
 
-/// Sessions or one role, preserving its send-time resolution.
+/// Sessions or one role, preserving its send-time resolution. A pasted
+/// conversation URL the archive does not hold yet names its web-chat
+/// session.
 fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Failure> {
     for (given, option) in [
-        (!step.attach.is_empty(), "attach"),
         (step.page.is_some(), "page"),
         (step.section.is_some(), "section"),
     ] {
@@ -168,6 +200,12 @@ fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Fai
         }
     }
     let references = selection.references()?;
+    if references.is_empty()
+        && let super::Given::Query(text) = &selection.given
+        && let Some(session) = polylogue_sources::origin::conversation_session(text)
+    {
+        return Ok(vec![session.to_string()]);
+    }
     references
         .iter()
         .map(|reference| match reference {
@@ -192,6 +230,9 @@ impl Verb for Answer {
     ) -> Result<StepDone, Failure> {
         let decision = decision(&step)?;
         each_session(Self::NAME, selection, call, |session, call| {
+            if acts::web_chat::conversation(&session).is_some() {
+                return acts::web_chat::answer(call, &session, &step.value, step.reason.clone());
+            }
             acts::AnswerRequest::run(
                 act::Answer {
                     session,
@@ -212,6 +253,12 @@ impl Verb for Answer {
         sessions("answer", selection)?
             .iter()
             .map(|session| {
+                if acts::web_chat::conversation(session).is_some() {
+                    return Ok(format!(
+                        "would answer {} for {session}: its held web chat turn",
+                        step.value
+                    ));
+                }
                 let state = acts::session_state(
                     call.call.daemon,
                     session,

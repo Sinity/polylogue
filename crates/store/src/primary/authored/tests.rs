@@ -405,7 +405,7 @@ fn pending_attachment_metadata_is_validated_once_and_reference_survives_missing_
     assert_eq!(hash, blob.hash.0);
 }
 #[test]
-fn backfill_claim_replays_its_original_job_and_preserves_reports() {
+fn import_job_claim_replays_its_original_job_and_preserves_reports() {
     let mut conn = cache();
     for (id, provider, at) in [("a", "service-a", 10), ("b", "service-b", 20)] {
         let p = prepare_with(

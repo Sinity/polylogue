@@ -67,8 +67,7 @@ fn cli(
     serde_json::Value,
 ) {
     let (c, values, arguments) =
-        crate::cli::request_arguments(argv, std::path::Path::new("/home/me/repo"))
-            .unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+        crate::cli::request_arguments(argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
     (c, values, serde_json::Value::Object(arguments))
 }
 
@@ -214,43 +213,6 @@ fn line_listing_carries_its_selection_and_page_size() {
     assert_eq!(rows.selection.as_deref(), Some("sessions"));
     assert_eq!(rows.page_size.unwrap().get(), 5);
     assert!(rows.steps.is_empty());
-}
-
-#[test]
-fn chat_send_reads_attached_files_on_the_command_line() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("notes.md"), b"synthetic").unwrap();
-    let (_, _, arguments) = crate::cli::request_arguments(
-        &[
-            "polylogue",
-            "chat",
-            "send",
-            "chatgpt",
-            "draft",
-            "this",
-            "--model",
-            "X",
-            "--attach",
-            "notes.md",
-        ],
-        dir.path(),
-    )
-    .unwrap();
-    let send: crate::protocol::browser::ChatSend =
-        serde_json::from_value(serde_json::Value::Object(arguments)).unwrap();
-    assert_eq!(
-        (send.text.as_str(), send.model.as_str(), send.submit),
-        ("draft this", "X", false)
-    );
-    assert_eq!(send.files.len(), 1);
-    assert_eq!(
-        (
-            send.files[0].name.as_str(),
-            send.files[0].media_type.as_str()
-        ),
-        ("notes.md", "text/plain")
-    );
-    assert_eq!(send.files[0].bytes, b"synthetic");
 }
 
 mod client_answers;
