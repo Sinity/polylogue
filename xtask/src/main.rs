@@ -1,6 +1,7 @@
 mod bench;
 mod common_link;
 mod nix;
+mod prune;
 mod selection;
 
 use clap::Parser;
@@ -15,6 +16,46 @@ use std::process::ExitCode;
 const FEATURES: &str = "polylogue/sinex,polylogue-model/fixture,polylogue-query/fixture,polylogue-sources/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
 /// The standalone Clippy pass: the same features without `sinex`.
 const STANDALONE_FEATURES: &str = "polylogue-model/fixture,polylogue-query/fixture,polylogue-engine/faults,polylogue-store/faults,polylogue-store/fixture";
+
+/// Clippy over every target with every test feature.
+const CLIPPY: &[&str] = &[
+    "clippy",
+    "--locked",
+    "--workspace",
+    "--all-targets",
+    "--features",
+    FEATURES,
+    "--",
+    "-D",
+    "warnings",
+];
+/// Only the code behind the `sinex` feature differs; the units below the
+/// application are the ones the first pass checked.
+const CLIPPY_STANDALONE: &[&str] = &[
+    "clippy",
+    "--locked",
+    "--workspace",
+    "--exclude",
+    "polylogue-sinex",
+    "--all-targets",
+    "--features",
+    STANDALONE_FEATURES,
+    "--",
+    "-D",
+    "warnings",
+];
+/// Every test binary of the workspace feature graph.
+const BUILD_TESTS: &[&str] = &[
+    "test",
+    "--no-run",
+    "--locked",
+    "--workspace",
+    "--features",
+    FEATURES,
+    "--tests",
+];
+/// The xtask binary `cargo xtask` runs.
+const BUILD_XTASK: &[&str] = &["build", "--locked", "-p", "xtask"];
 
 #[derive(Parser)]
 #[command(name = "xtask", about = "Polylogue development checks")]
@@ -55,6 +96,10 @@ enum Cli {
         #[command(flatten)]
         base: Base,
     },
+    /// Remove from the target directory every artifact that Clippy's two
+    /// configurations, the test build and xtask's own build do not use:
+    /// master's saved build, before it is saved.
+    PruneBuild,
     /// Corpus builds and interactive read measurements of the real binary.
     Bench(bench::Bench),
     /// Build against a local checkout of polylogue-sinex-common instead of
@@ -89,51 +134,12 @@ fn workspace_hack(run: &mut Run) -> devkit::Result {
 }
 
 fn clippy(run: &mut Run) -> devkit::Result {
-    run.cargo(
-        "clippy",
-        &[
-            "clippy",
-            "--locked",
-            "--workspace",
-            "--all-targets",
-            "--features",
-            FEATURES,
-            "--",
-            "-D",
-            "warnings",
-        ],
-    )?;
-    // Only the code behind the `sinex` feature differs; the units below
-    // the application are the ones the first pass checked.
-    run.cargo(
-        "clippy-standalone",
-        &[
-            "clippy",
-            "--locked",
-            "--workspace",
-            "--exclude",
-            "polylogue-sinex",
-            "--all-targets",
-            "--features",
-            STANDALONE_FEATURES,
-            "--",
-            "-D",
-            "warnings",
-        ],
-    )
+    run.cargo("clippy", CLIPPY)?;
+    run.cargo("clippy-standalone", CLIPPY_STANDALONE)
 }
 
 fn build_tests(run: &mut Run) -> devkit::Result {
-    let arguments = [
-        "test",
-        "--no-run",
-        "--locked",
-        "--workspace",
-        "--features",
-        FEATURES,
-        "--tests",
-    ];
-    run.cargo("test build", &arguments)
+    run.cargo("test build", BUILD_TESTS)
 }
 
 fn nextest(args: Vec<String>) -> Nextest {
@@ -434,6 +440,16 @@ fn main() -> ExitCode {
         }
         Cli::Nix { base } => run("nix", &base.arguments(), |run| {
             nix_checks(run, base.reference()).map(drop)
+        }),
+        Cli::PruneBuild => run("prune-build", &[], |run| {
+            let target = run.target_dir()?;
+            run.step("prune", |run| {
+                Ok(prune::prune(
+                    &run.root,
+                    &target,
+                    &[CLIPPY, CLIPPY_STANDALONE, BUILD_TESTS, BUILD_XTASK],
+                )?)
+            })
         }),
         Cli::Bench(command) => bench::execute(command),
         Cli::LinkCommon { checkout } => exit_code(common_link::link(checkout)),

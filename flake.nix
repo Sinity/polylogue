@@ -40,7 +40,6 @@
           paths = [
             pkgs.cargo-nextest
             pkgs.cargo-hakari
-            pkgs.cargo-sweep
             pkgs.zsh
             pkgs.fish
             pkgs.zip
