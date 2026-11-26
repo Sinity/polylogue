@@ -6,6 +6,7 @@ use std::{
 };
 
 const REPOSITORY: &str = "https://github.com/Sinity/polylogue-sinex-common";
+pub const PATCH_FILE: &str = ".cargo/local.toml";
 
 pub fn link(checkout: Option<PathBuf>) -> Result<(), String> {
     let root = workspace_root()?;
@@ -41,7 +42,7 @@ fn with_link<T>(
     root: &Path,
     operation: impl FnOnce(LocalLink<'_>) -> Result<T, String>,
 ) -> Result<T, String> {
-    let patch = root.join(".cargo/local.toml");
+    let patch = root.join(PATCH_FILE);
     let lock = root.join("Cargo.lock");
     let backup = root.join(".cargo/common-link.lock");
     let fuzz_lock = root.join("fuzz/Cargo.lock");

@@ -74,6 +74,24 @@ fn owned(args: &[&str]) -> Vec<String> {
 const STORE_FEATURES: &str = "polylogue-model/fixture,polylogue-query/fixture,polylogue-store/faults,polylogue-store/fixture";
 
 #[test]
+fn workspace_hack_verification_is_skipped_while_linked() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    assert_eq!(workspace_hack_skip_reason(root), None);
+
+    fs::create_dir(root.join(".cargo")).unwrap();
+    fs::write(
+        root.join(".cargo/local.toml"),
+        "[patch.'https://github.com/Sinity/polylogue-sinex-common']\ndevkit = { path = '../common/crates/devkit' }\n",
+    )
+    .unwrap();
+    assert_eq!(
+        workspace_hack_skip_reason(root),
+        Some("Skipped workspace-hack verification because the shared crates are linked.")
+    );
+}
+
+#[test]
 fn a_package_selection_builds_that_package_with_the_test_features_it_reaches() {
     assert_eq!(
         arguments(&[]).unwrap().unwrap(),
