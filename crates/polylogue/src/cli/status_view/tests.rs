@@ -1137,7 +1137,7 @@ fn the_line_carries_measured_quota_windows_after_the_counts() {
             "reason": "no_reading",
         })
     );
-    status.quota.truncate(0);
+    status.quota.clear();
     status
         .quota
         .push(window("codex", "codex", 300, measured(12.0)));
