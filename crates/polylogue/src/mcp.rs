@@ -299,25 +299,38 @@ async fn answer_call(
     let Some(tool) = Tool::named(name) else {
         return Err(bad_request(&format!("unknown MCP tool {name}")));
     };
-    // A call without an operation runs the read tool's declared default.
-    let home = match arguments.get("operation") {
-        None => Tool::Read,
-        Some(value) => {
-            let operation = value
-                .as_str()
-                .ok_or_else(|| bad_request("operation must be text"))?;
-            crate::commands::command(operation)
-                .and_then(|command| command.tool)
-                .ok_or_else(|| bad_request(&format!("unknown operation {operation}")))?
+    let operation = match arguments.get("operation") {
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| bad_request("operation must be text"))?
+            .to_owned(),
+        // A call without an operation runs the read tool's declared default.
+        None => {
+            crate::commands::declarations()
+                .parse_mcp_call(Tool::Read.name(), json!({"arguments": {}}))
+                .map_err(|failure| error_text(&failure))?
+                .operation
         }
     };
+    let Some(command) =
+        crate::commands::command(&operation).filter(|command| command.tool.is_some())
+    else {
+        return Err(bad_request(&format!("unknown operation {operation}")));
+    };
+    let home = command.tool.expect("tool operation");
+    if let Some(unbuilt) = arguments
+        .get("arguments")
+        .and_then(|given| crate::unbuilt::in_arguments(command.name, given))
+    {
+        return Ok(refusal(unbuilt, None));
+    }
     let caller = crate::client::this_process();
     let author = command_surface::author_of(&caller, command_surface::Via::Mcp, None).author;
+    let mut arguments = Value::Object(arguments);
+    arguments["operation"] = json!(command.name);
     let request = crate::commands::declarations()
-        .parse_mcp_call_as(home.name(), Value::Object(arguments), &author)
+        .parse_mcp_call_as(home.name(), arguments, &author)
         .map_err(|failure| error_text(&failure))?;
-    let command = crate::commands::command(&request.operation)
-        .ok_or_else(|| bad_request(&format!("unknown operation {}", request.operation)))?;
     if request.request_id.is_empty() {
         return Err(bad_request("request_id must not be empty"));
     }
