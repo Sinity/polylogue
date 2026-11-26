@@ -87,16 +87,7 @@ pub fn scan_paths(
         }
     }
     for tool in polylogue_sources::locations::TOOLS {
-        let base = config.root(tool.root);
-        let mut roots = vec![base.clone()];
-        if tool.name == "hermes" {
-            roots.extend(
-                entries(&base.join("profiles"), &mut unreadable)
-                    .into_iter()
-                    .filter(|p| p.is_dir()),
-            );
-        }
-        for root in roots {
+        for root in tool_roots(config, tool, &mut unreadable) {
             for pattern in tool.locations {
                 let mut matched = Vec::new();
                 let segs: Vec<_> = pattern.split('/').collect();
@@ -259,18 +250,33 @@ pub fn scan_spools(config: &Config) -> Vec<Found> {
     found
 }
 
+/// The directories a tool's locations are matched under: its root and, for
+/// Hermes, each profile directory. A symlinked profile is not followed, as
+/// nowhere in discovery.
+fn tool_roots(
+    config: &Config,
+    tool: &polylogue_sources::locations::Tool,
+    unreadable: &mut Vec<PathBuf>,
+) -> Vec<PathBuf> {
+    let base = config.root(tool.root);
+    let mut roots = Vec::new();
+    if tool.name == "hermes" {
+        roots.extend(
+            entries(&base.join("profiles"), unreadable)
+                .into_iter()
+                .filter(|profile| fs::symlink_metadata(profile).is_ok_and(|m| m.is_dir())),
+        );
+    }
+    roots.insert(0, base);
+    roots
+}
+
 pub fn scan_with_coverage(config: &Config) -> Scan {
     use std::collections::{BTreeMap, BTreeSet};
     let mut areas = BTreeMap::new();
     for tool in polylogue_sources::locations::TOOLS {
-        let root = config.root(tool.root);
-        areas.insert(root.clone(), Some(tool));
-        if tool.name == "hermes" {
-            for profile in entries(&root.join("profiles"), &mut Vec::new()) {
-                if fs::symlink_metadata(&profile).is_ok_and(|m| m.is_dir()) {
-                    areas.insert(profile, Some(tool));
-                }
-            }
+        for root in tool_roots(config, tool, &mut Vec::new()) {
+            areas.insert(root, Some(tool));
         }
     }
     for origin in collected() {

@@ -125,6 +125,19 @@ pub enum LineAnswer {
     Explained(LineExplanation),
 }
 
+impl LineAnswer {
+    /// The failure of the step that stopped the line, when one did.
+    pub fn failed_step(&self) -> Option<&command_surface::Failure> {
+        let Self::Steps(steps) = self else {
+            return None;
+        };
+        steps.steps.iter().find_map(|step| match &step.outcome {
+            StepOutcome::Failed { error } => Some(error),
+            _ => None,
+        })
+    }
+}
+
 /// The rows a line resolved and what each step did with them.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

@@ -50,10 +50,7 @@ fn database(path: &Path) -> Option<&str> {
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.extension().is_some_and(|e| e == "jsonl")
         && database(path).is_some()
-        && head
-            .iter()
-            .find(|b| !b.is_ascii_whitespace())
-            .is_none_or(|&b| b == b'{')
+        && crate::document::starts_object_lines(head)
 }
 
 /// Whether `path` is a database this origin exports.

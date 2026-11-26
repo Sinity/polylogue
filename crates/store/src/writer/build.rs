@@ -1527,14 +1527,15 @@ fn shown(stating: &[Statement], newest: &std::collections::HashMap<String, Optio
     })
 }
 
+/// The newest chain of input `i` read to its end or waiting for more, as an
+/// SQL expression.
+const NEWEST_READ_CHAIN: &str = "(SELECT max(p.chain) FROM parse_state p
+    WHERE p.input_pk=i.pk AND p.status IN ('done','waiting'))";
+
 /// Each input's newest chain read to its end or waiting for more.
 fn newest_read_chains(conn: &Connection) -> Result<std::collections::HashMap<String, Option<i64>>> {
     Ok(conn
-        .prepare(
-            "SELECT i.id,(SELECT max(p.chain) FROM parse_state p WHERE p.input_pk=i.pk
-                 AND p.status IN ('done','waiting'))
-             FROM input_ref i",
-        )?
+        .prepare(&format!("SELECT i.id,{NEWEST_READ_CHAIN} FROM input_ref i"))?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?)
 }

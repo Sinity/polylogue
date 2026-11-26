@@ -91,11 +91,7 @@ impl Engine {
         let mut references = 0u64;
         while source.read_until(b'\n', &mut line)? > 0 {
             if let Ok(value) = serde_json::from_slice::<Json>(&line) {
-                if matches!(
-                    value.str("type"),
-                    Some("session_meta" | "turn_context" | "older_header")
-                ) && let Some(cwd) = value.get("payload").and_then(|p| p.str("cwd"))
-                {
+                if let Some(cwd) = polylogue_sources::codex::recorded_directory(&value) {
                     // A relative recorded cwd is insufficient to resolve a ref.
                     directory = Some(PathBuf::from(cwd));
                 }

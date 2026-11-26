@@ -296,6 +296,29 @@ fn root_follows_tool_variable_and_hermes_profiles_are_full_homes() {
 }
 
 #[test]
+fn a_symlinked_hermes_profile_is_not_followed_by_the_walk_or_its_coverage() {
+    let home = tempfile::tempdir().unwrap();
+    let own = home.path().join(".hermes");
+    let outside = home.path().join("outside");
+    fs::create_dir_all(own.join("profiles")).unwrap();
+    fs::create_dir_all(outside.join("memories")).unwrap();
+    fs::write(own.join("SOUL.md"), "context").unwrap();
+    fs::write(outside.join("memories/MEMORY.md"), "memory").unwrap();
+    std::os::unix::fs::symlink(&outside, own.join("profiles/linked")).unwrap();
+    let scan = scan_with_coverage(&config(home.path()));
+    let found: Vec<_> = scan.found.iter().map(|file| file.path.clone()).collect();
+    assert_eq!(found, [own.join("SOUL.md")]);
+    let links: Vec<_> = scan
+        .coverage
+        .iter()
+        .filter(|row| row.reason.as_deref() == Some("symbolic link is not followed"))
+        .map(|row| (row.root.clone(), row.files))
+        .collect();
+    assert_eq!(links, [(own, 1)]);
+    assert_eq!(scan.coverage.iter().map(|row| row.files).sum::<u64>(), 2);
+}
+
+#[test]
 fn known_locations_fully_recognized() {
     let home = tempfile::tempdir().unwrap();
     let c = config(home.path());

@@ -76,11 +76,10 @@ impl Shared {
             .map(std::path::PathBuf::from)
             .ok_or_else(|| StoreError::Invalid("a build file has no path".into()))?;
         let inputs = index
-            .prepare(
-                "SELECT i.id,i.pk,(SELECT max(p.chain) FROM parse_state p WHERE p.input_pk=i.pk
-                     AND p.status IN ('done','waiting'))
-                 FROM input_ref i",
-            )?
+            .prepare(&format!(
+                "SELECT i.id,i.pk,{} FROM input_ref i",
+                super::NEWEST_READ_CHAIN
+            ))?
             .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
             .collect::<rusqlite::Result<_>>()?;
         let mut links = Vec::new();

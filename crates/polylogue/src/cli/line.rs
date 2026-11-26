@@ -172,7 +172,7 @@ impl SelectionRules for FirstWordCatalog {
             || word.starts_with("https://")
             || word.starts_with("http://")
             || polylogue_query::catalog::REFERENCE_WORDS.contains(&word)
-            || (word.len() >= 8 && word.chars().all(|c| c.is_ascii_hexdigit() || c == '-'))
+            || polylogue_query::defaults::id_shaped(word)
             || word
                 .strip_prefix('@')
                 .is_some_and(|name| name.starts_with(char::is_alphabetic))

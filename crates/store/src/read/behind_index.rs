@@ -46,16 +46,16 @@ pub enum RevisionChains {
     Older,
 }
 
-const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
+fn chains_behind() -> String {
+    use crate::source::{IMPORT_FORMAT, IMPORT_FORMAT_ORDER, STATES_IMPORT_FORMAT};
+    format!(
+        r#"first_paths AS MATERIALIZED (
                 SELECT input, min(rowid) AS observation
                 FROM observations GROUP BY input
             ), formats AS (
-                SELECT o.input, o.path, o.path_bytes, json_extract(o.details_json, '$.import_format') AS format,
-                    row_number() OVER (PARTITION BY o.input
-                        ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
-                                 o.rowid DESC) AS choice
-                FROM observations o WHERE o.class = 'imported' AND json_valid(o.details_json)
-                    AND json_type(o.details_json, '$.import_format') = 'text'
+                SELECT o.input, o.path, o.path_bytes, {IMPORT_FORMAT} AS format,
+                    row_number() OVER (PARTITION BY o.input ORDER BY {IMPORT_FORMAT_ORDER}) AS choice
+                FROM observations o WHERE {STATES_IMPORT_FORMAT}
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
@@ -79,7 +79,9 @@ const CHAINS_BEHIND: &str = r#"first_paths AS MATERIALIZED (
                 OR EXISTS(SELECT 1 FROM json_each(?1) expected
                     WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
                       AND json_extract(expected.value, '$[1]') IS NOT p.parse_version)))
-            "#;
+            "#
+    )
+}
 
 fn planning_sql(selected: bool, chains: RevisionChains) -> String {
     format!(
@@ -118,6 +120,7 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
             GROUP BY r.input,r.chain",
     };
     let database = crate::source::database_original("c.input");
+    let chains_behind = chains_behind();
     format!(
         "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?3)),
          revisions AS NOT MATERIALIZED ({revisions}),
@@ -125,7 +128,7 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
          inputs AS MATERIALIZED (
              SELECT input,max(number) AS number,max(produced='imported') AS imported
              FROM revisions GROUP BY input
-         ), chains AS MATERIALIZED ({chain_rows}), {CHAINS_BEHIND}
+         ), chains AS MATERIALIZED ({chain_rows}), {chains_behind}
          AND NOT {database}"
     )
 }
@@ -160,8 +163,10 @@ impl Reader<'_> {
     pub fn newest_parse_bytes(&self, versions: &[(String, String)]) -> Result<(u64, u64)> {
         let token = self.scope_token();
         let database = crate::source::database_original("c.input");
+        let format = crate::source::parse_format("i.id", "i.format");
         let progress = self.conn()?.query_row(
-            &format!("WITH latest AS (
+            &format!(
+                "WITH latest AS (
                  SELECT input,max(number) AS number FROM source_revision GROUP BY input
              ), newest AS (
                  SELECT r.input,r.chain,
@@ -169,13 +174,7 @@ impl Reader<'_> {
                       WHERE s.input=r.input AND s.chain=r.chain) AS length
                  FROM latest l JOIN source_revision r ON r.input=l.input AND r.number=l.number
              ), formats AS (
-                 SELECT i.id,COALESCE((
-                     SELECT json_extract(o.details_json,'$.import_format')
-                     FROM source_observation o WHERE o.input=i.id AND o.class='imported'
-                     AND json_valid(o.details_json)
-                     AND json_type(o.details_json,'$.import_format')='text'
-                     ORDER BY (json_extract(o.details_json,'$.import_format')='export-file'),o.rowid DESC
-                     LIMIT 1),i.format) AS format FROM source_input i
+                 SELECT i.id,{format} AS format FROM source_input i
              )
              SELECT coalesce(sum(c.length),0),coalesce(sum(
                  CASE WHEN p.parse_version=json_extract(e.value,'$[1]')
@@ -184,9 +183,10 @@ impl Reader<'_> {
              JOIN json_each(?1) e ON json_extract(e.value,'$[0]')=f.format
              LEFT JOIN input_ref i ON i.id=c.input
              LEFT JOIN parse_state p ON p.input_pk=i.pk AND p.chain=c.chain
-             WHERE NOT {database}"),
+             WHERE NOT {database}"
+            ),
             [serde_json::to_string(versions)?],
-            |row| Ok((row.get(0)?,row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
         token.check()?;
         Ok(progress)

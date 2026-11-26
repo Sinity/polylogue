@@ -388,7 +388,8 @@ fn recorded_directory_follows_turn_context_and_ignores_relative_cwd() {
         image.clone(),
         serde_json::json!({"type":"turn_context","payload":{"cwd":second}}),
         image.clone(),
-        serde_json::json!({"type":"older_header","payload":{"cwd":"relative/dir"}}),
+        // A mid-2025 header: no type, its fields at the top level.
+        serde_json::json!({"id":"019d0f2a","cwd":"relative/dir"}),
         image,
     ];
     let text = lines.iter().map(|l| format!("{l}\n")).collect::<String>();

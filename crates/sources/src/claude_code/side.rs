@@ -139,11 +139,7 @@ fn is_history_file(path: &Path) -> bool {
 }
 
 pub fn recognize_history(path: &Path, head: &[u8]) -> bool {
-    is_history_file(path)
-        && head
-            .iter()
-            .find(|b| !b.is_ascii_whitespace())
-            .is_none_or(|&b| b == b'{')
+    is_history_file(path) && crate::document::starts_object_lines(head)
 }
 
 pub fn open_history(path: &Path) -> Option<Parse> {

@@ -54,14 +54,10 @@ pub const LOCATIONS: &[&str] = &[
 ];
 
 mod header;
-pub use header::rollout_id;
+pub use header::{recorded_directory, rollout_id};
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    File::from_path(path).is_some()
-        && head
-            .iter()
-            .find(|b| !b.is_ascii_whitespace())
-            .is_none_or(|&b| b == b'{')
+    File::from_path(path).is_some() && crate::document::starts_object_lines(head)
 }
 
 /// A token count's `rate_limits`: the plan, credits, and a `primary` and
