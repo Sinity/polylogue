@@ -1554,12 +1554,41 @@ fn a_morrow_brief_names_an_unloaded_scope_and_an_unrecorded_directory() {
         assert!(!prepared.text.contains("--deadline none"));
         assert!(!prepared.empty);
     }
+    let mut runtime = crate::test_daemon::start_runtime(
+        &archive.root,
+        archive.config(),
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
+    let reply = crate::test_answers::step(crate::test_daemon::call(
+        &runtime.daemon,
+        "rows",
+        serde_json::json!({"steps":[{"verb":"brief", "cwd":"/an/unrecorded/dir"}]}),
+    ));
+    let crate::protocol::line::StepAnswer::Brief(reply) = reply else {
+        panic!("expected a brief");
+    };
+    assert_eq!(
+        reply
+            .prepared
+            .text
+            .lines()
+            .find(|line| line.starts_with("No session is recorded")),
+        Some("No session is recorded for this directory: /an/unrecorded/dir.")
+    );
+    runtime.shutdown().unwrap();
 }
 
 #[test]
 fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
     let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
     let session = polylogue_testkit::session(1);
+    let mut runtime = crate::test_daemon::start_runtime(
+        &archive.root,
+        archive.config(),
+        crate::daemon::service::ArchiveMode::Standalone,
+    )
+    .unwrap();
     // A malformed stored JSON value makes this section's real SQLite read fail.
     let index = polylogue_store::archive::open_write(&archive.root.join("index.db"), 1).unwrap();
     index
@@ -1572,14 +1601,15 @@ fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
     let pool = archive.reads();
     let reader = pool.reader().unwrap();
     let prompts = reader.prompts(&session.to_string()).unwrap();
-    let prepared = takeover(
-        &reader,
-        &session,
-        u64::MAX,
-        "d1",
-        &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
-    )
-    .unwrap();
+    let reply = crate::test_answers::step(crate::test_daemon::call(
+        &runtime.daemon,
+        "rows",
+        serde_json::json!({"selection":format!("session:{session}"), "steps":[{"verb":"brief"}]}),
+    ));
+    let crate::protocol::line::StepAnswer::Brief(reply) = reply else {
+        panic!("expected a brief");
+    };
+    let prepared = reply.prepared;
     assert!(!prepared.empty);
     assert_eq!(
         prepared
@@ -1601,4 +1631,5 @@ fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
         assert!(visible.contains(&prompt.text), "{visible}");
     }
     assert!(prepared.text.contains("Its last answer:"));
+    runtime.shutdown().unwrap();
 }

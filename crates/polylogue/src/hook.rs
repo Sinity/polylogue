@@ -903,7 +903,7 @@ fn pasted_sessions(
             Some(budget),
             until,
         ) {
-            let timed_out = d.is_empty();
+            let timed_out = t == TIMEOUT_NOTICE;
             deliveries.push(d);
             texts.push(t);
             if timed_out {
@@ -977,7 +977,10 @@ pub fn respond(
             let brief = (extra["is_first_turn"].as_bool() == Some(true))
                 .then(|| start(harness, payload, StartSource::Startup, startup, until))
                 .flatten();
-            let pasted = if brief.as_ref().is_some_and(|(id, _)| id.is_empty()) {
+            let pasted = if brief
+                .as_ref()
+                .is_some_and(|(_, text)| text == TIMEOUT_NOTICE)
+            {
                 None
             } else {
                 prompt_context(harness, payload, prompt, startup, until)

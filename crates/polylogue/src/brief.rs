@@ -1423,11 +1423,18 @@ fn session_start(
                 reason: "deadline".into(),
             });
         }
-        fit.late = Some(format!(
-            "Not available before the deadline: {}; the whole brief: `polylogue brief --cwd {} --deadline none`",
-            deadline.late.join(", "),
-            polylogue_render::shell_quote(&here)
-        ));
+        fit.late = Some(if scope_loaded {
+            format!(
+                "Not available before the deadline: {}; the whole brief: `polylogue brief --cwd {} --deadline none`",
+                deadline.late.join(", "),
+                polylogue_render::shell_quote(&here)
+            )
+        } else {
+            format!(
+                "Not available before the deadline: {}; check `polylogue status` while the scope index loads",
+                deadline.late.join(", ")
+            )
+        });
     }
     let no_candidates = fit.refs.is_empty()
         && fit.sections.is_empty()

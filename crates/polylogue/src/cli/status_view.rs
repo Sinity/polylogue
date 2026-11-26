@@ -53,7 +53,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         out.push_str(&view.cut_to(line, view.width.saturating_sub(LABEL)));
         out.push('\n');
     }
-    let sections: [(&str, Vec<String>); 14] = [
+    let sections = [
         ("ARCHIVE", archive(status, view)),
         (
             "READING",

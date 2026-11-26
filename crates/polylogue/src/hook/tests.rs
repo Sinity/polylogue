@@ -1111,11 +1111,11 @@ fn a_morrow_session_start_without_context_is_stored_and_counted_after_daemon_sta
             "since":"2026-10-07T10:00:00Z", "causes":{"daemon_unreachable":1}
         })
     );
-    let rows = crate::protocol::into_value(crate::test_daemon::call(
+    let rows = crate::protocol::into_value(crate::test_answers::listing(crate::test_daemon::call(
         &runtime.daemon,
         "rows",
         json!({"selection":"events where kind:hook_session_context", "fields":["data", "session"]}),
-    ))
+    )))
     .unwrap();
     assert_eq!(rows["count"], 1, "{rows}");
     assert_eq!(rows["rows"][0]["session"], session.to_string());
