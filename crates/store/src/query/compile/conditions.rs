@@ -303,7 +303,7 @@ impl<'a> Compiler<'a> {
                 format!(" AND av.to_lang IN ({})", language.join(","))
             };
             let from = format!(
-                "FROM {alternates} ah JOIN source_alternate_part ap ON ap.alternate=ah.alternate AND ap.n=ah.n JOIN source_alternate av ON av.id=ap.alternate WHERE {} AND {}{language}",
+                "FROM {alternates} ah JOIN source_alternate_part ap ON ap.alternate=ah.alternate AND ap.position=ah.n JOIN source_alternate av ON av.id=ap.alternate WHERE {} AND {}{language}",
                 crate::alternates::current_sql("av"),
                 fields::message_alternate_match("av", "ap", &a.m)
             );

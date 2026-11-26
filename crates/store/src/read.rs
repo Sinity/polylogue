@@ -263,10 +263,10 @@ row! {
 }
 
 row! {
-    /// A path's latest observation, its input's format and latest revision.
+    /// A path's latest observation, its input's origin and latest revision.
     struct Observation {
         input: String,
-        format: String,
+        origin: String,
         class: String,
         device: Option<i64>,
         inode: Option<i64>,
@@ -1550,9 +1550,9 @@ impl Reader<'_> {
             messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
             documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
             tool_calls: count("SELECT n FROM main.row_count WHERE name = 'tool_call'")?,
-            inputs: count("SELECT n FROM source_row_count WHERE name = 'input'")?,
-            revisions: count("SELECT n FROM source_row_count WHERE name = 'revision'")?,
-            stored_bytes: count("SELECT n FROM source_row_count WHERE name = 'stored_bytes'")?,
+            inputs: count("SELECT count FROM source_row_count WHERE name = 'input'")?,
+            revisions: count("SELECT count FROM source_row_count WHERE name = 'revision'")?,
+            stored_bytes: count("SELECT count FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
             unused,
             unused_fields: count("SELECT count(*) FROM unused_count WHERE n > 0")?,
@@ -1817,7 +1817,7 @@ impl Reader<'_> {
             )
         };
         let sql = format!(
-            "SELECT o.input, i.format, o.class, o.device, o.inode,
+            "SELECT o.input, i.origin, o.class, o.device, o.inode,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.length ELSE o.size END AS size,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.mtime_ns ELSE o.mtime_ns END AS mtime_ns,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.ctime_ns ELSE o.ctime_ns END AS ctime_ns,
@@ -1843,7 +1843,7 @@ impl Reader<'_> {
         for o in observed {
             let f = [o.device, o.inode, o.size, o.mtime_ns, o.ctime_ns];
             let (input_id, format, chain, length, path_bytes) =
-                (o.input, o.format, o.chain, o.length, o.path_bytes);
+                (o.input, o.origin, o.chain, o.length, o.path_bytes);
             let path = String::from_utf8_lossy(&path_bytes).into_owned();
             let gone = crate::input_rows::ObservationClass::from_name(&o.class)
                 == Some(crate::input_rows::ObservationClass::Deleted);
@@ -1975,7 +1975,7 @@ pub(crate) fn retitled_sessions(
     for root in crate::annotations::changed_roots(conn, after)? {
         sessions.extend(conn.values::<String>(
             "SELECT DISTINCT substr(l.ref, 9) FROM source_annotation a \
-             JOIN source_annotation_link l ON l.record = a.id AND l.role = 'about' \
+             JOIN source_annotation_link l ON l.annotation = a.id AND l.role = 'about' \
              WHERE a.root = ?1 AND a.kind = 'title' AND l.ref LIKE 'session:%'",
             [&root],
         )?);

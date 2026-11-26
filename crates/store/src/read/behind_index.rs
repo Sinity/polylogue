@@ -101,7 +101,7 @@ fn chain_rows() -> String {
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
-                COALESCE(f.format, i.format) AS format,
+                COALESCE(f.format, i.origin) AS format,
                 COALESCE(f.path_bytes, o.path_bytes),
                 {state}
             FROM chains c JOIN source_input i ON i.id = c.input
@@ -197,7 +197,7 @@ impl Reader<'_> {
     pub fn newest_parse_bytes(&self, versions: &[(String, String)]) -> Result<(u64, u64)> {
         let token = self.scope_token();
         let database = crate::source::database_original("c.input");
-        let format = crate::source::parse_format("i.id", "i.format");
+        let format = crate::source::parse_format("i.id", "i.origin");
         let progress = self.conn()?.query_row(
             &format!(
                 "WITH latest AS (
@@ -280,7 +280,7 @@ impl Reader<'_> {
     pub fn chain_census(&self, contracts: &[ReadingContract]) -> Result<ChainCensus> {
         let token = self.scope_token();
         let database = crate::source::database_original("c.input");
-        let format = crate::source::parse_format("c.input", "i.format");
+        let format = crate::source::parse_format("c.input", "i.origin");
         let state = crate::parse_state::PLANNED_COLUMNS;
         let sql = format!(
             "SELECT c.input, c.length,

@@ -12,8 +12,8 @@ CREATE INDEX query_commit_seq ON query(commit_seq,hash);
 CREATE TABLE query_edge (
     query TEXT NOT NULL REFERENCES query(hash),
     uses TEXT NOT NULL,
-    how TEXT NOT NULL CHECK(how IN (@names(QueryEdgeKind))),
+    kind TEXT NOT NULL CHECK(kind IN (@names(QueryEdgeKind))),
     edge BLOB NOT NULL,
-    PRIMARY KEY(query,uses,how)
+    PRIMARY KEY(query,uses,kind)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX query_edge_uses ON query_edge(uses,query);

@@ -282,7 +282,7 @@ pub const SESSION_HAS: [Has; 8] = [
         name: "note",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
+                "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.annotation = hn.id AND ht.role = 'about' \
                  WHERE (ht.ref = 'session:' || {s}.id OR ht.ref IN (SELECT 'message:' || xm.id FROM message xm WHERE xm.session_pk = {s}.pk)) \
                  AND {})",
                 current_annotation("hn")
@@ -293,7 +293,7 @@ pub const SESSION_HAS: [Has; 8] = [
         name: "conflict",
         sql: |s| {
             format!(
-                "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
+                "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.annotation = hn.id AND ht.role = 'about' \
                  WHERE ht.ref = 'session:' || {s}.id AND {} AND {})",
                 current_annotation("hn"),
                 crate::annotations::sql::in_conflict("hn")
@@ -397,14 +397,14 @@ pub fn rule(id: FieldId) -> Rule {
         QueriesRevision => Rule::NONE.sql("{r}.revision"),
         QueriesText => Rule::NONE.sql("{r}.text"),
         QueriesSavedAt => Rule::NONE.sql("{r}.saved_at"),
-        QueriesKept => Rule::NONE.sql("(SELECT 'result:'||k.id FROM source_kept_result k WHERE k.name={r}.name ORDER BY k.id DESC LIMIT 1)"),
+        QueriesKept => Rule::NONE.sql("(SELECT 'result:'||k.id FROM source_saved_rows k WHERE k.name={r}.name ORDER BY k.id DESC LIMIT 1)"),
         QueriesWatched => Rule::NONE.sql("EXISTS(SELECT 1 FROM source_annotation w JOIN source_revision_state ws ON ws.id=w.id AND ws.current=1 AND ws.withdrawn=0 WHERE w.kind='signal' AND w.key={r}.name)"),
         QueriesSince => Rule::NONE.custom(custom::since),
         QueriesUntil => Rule::NONE.custom(custom::until),
         RunsId => Rule::NONE.sql("'run:'||{r}.id"),
         RunsQuery => Rule::NONE.sql("'query:'||{r}.query"),
         RunsAt => Rule::NONE.sql("(CAST({r}.at AS INTEGER)/1000000)"),
-        RunsReadAt => Rule::NONE.sql("{r}.read_at"),
+        RunsReadAt => Rule::NONE.sql("{r}.read_position"),
         RunsAuthor => Rule::NONE.sql("json_extract({r}.author,'$')"),
         RunsVia => Rule::NONE.sql("{r}.via"),
         RunsCount => Rule::NONE.sql("CAST({r}.count AS INTEGER)"),
@@ -669,7 +669,7 @@ pub fn rule(id: FieldId) -> Rule {
         AnnotationsAgent => Rule::NONE.sql("({r}.author = 'agent' OR {r}.author LIKE 'agent:%')"),
         AnnotationsVia => Rule::NONE.sql("{r}.via"),
         AnnotationsJudged => Rule::NONE.sql_fn(notes_judged),
-        AnnotationsAbout => Rule::NONE.custom(custom::annotation_about).sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_annotation_link nt WHERE nt.record = {r}.id AND nt.role = 'about' ORDER BY nt.ref))"),
+        AnnotationsAbout => Rule::NONE.custom(custom::annotation_about).sql("(SELECT group_concat(ref, ' ') FROM (SELECT nt.ref FROM source_annotation_link nt WHERE nt.annotation = {r}.id AND nt.role = 'about' ORDER BY nt.ref))"),
         AnnotationsWriteCounter => Rule::NONE.sql("{r}.commit_seq"),
         AnnotationsCreatedAt => Rule::NONE.sql("{r}.created_at"),
         AnnotationsRoot => Rule::NONE.sql("{r}.root"),
@@ -836,7 +836,7 @@ fn sessions_title(a: &Aliases) -> String {
 
 fn sessions_outcome(a: &Aliases) -> String {
     format!(
-        "(SELECT CASE WHEN count(*)=0 THEN 'none' WHEN count(*)=1 THEN min(lower(CASE json_type(n.value) WHEN 'text' THEN json_extract(n.value,'$') ELSE json_extract(n.value,'$.text') END)) ELSE NULL END FROM source_annotation n JOIN source_annotation_link nt ON nt.record=n.id AND nt.role='about' WHERE n.kind='outcome' AND nt.ref='session:' || {s}.id AND {live})",
+        "(SELECT CASE WHEN count(*)=0 THEN 'none' WHEN count(*)=1 THEN min(lower(CASE json_type(n.value) WHEN 'text' THEN json_extract(n.value,'$') ELSE json_extract(n.value,'$.text') END)) ELSE NULL END FROM source_annotation n JOIN source_annotation_link nt ON nt.annotation=n.id AND nt.role='about' WHERE n.kind='outcome' AND nt.ref='session:' || {s}.id AND {live})",
         s = a.s,
         live = current_annotation("n"),
     )
@@ -865,7 +865,7 @@ fn latest_delivery_event(r: &str, col: &str) -> String {
 pub(crate) fn deliveries_outcome(a: &Aliases) -> String {
     format!(
         "COALESCE({}, 'prepared')",
-        latest_delivery_event(&a.row, "what")
+        latest_delivery_event(&a.row, "outcome")
     )
 }
 
@@ -875,7 +875,7 @@ fn deliveries_detail(a: &Aliases) -> String {
 
 fn turns_corrected(a: &Aliases) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM source_annotation nc JOIN source_annotation_link nct ON nct.record = nc.id AND nct.role = 'about' \
+        "EXISTS (SELECT 1 FROM source_annotation nc JOIN source_annotation_link nct ON nct.annotation = nc.id AND nct.role = 'about' \
          WHERE nc.kind = 'correction' AND nct.ref = 'message:' || {r}.answer \
          AND {} AND NOT {})",
         current_annotation("nc"),
@@ -981,7 +981,7 @@ fn notes_current(a: &Aliases) -> String {
 /// family holds it; several current values that differ are `conflict`.
 fn notes_judged(a: &Aliases) -> String {
     format!(
-        "(SELECT CASE WHEN count(DISTINCT j.key) > 1 THEN 'conflict' ELSE min(j.key) END FROM source_annotation j JOIN source_annotation_link jt ON jt.record=j.id AND jt.role='about' WHERE jt.ref='annotation:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
+        "(SELECT CASE WHEN count(DISTINCT j.key) > 1 THEN 'conflict' ELSE min(j.key) END FROM source_annotation j JOIN source_annotation_link jt ON jt.annotation=j.id AND jt.role='about' WHERE jt.ref='annotation:' || {r}.root || '@' || {r}.id AND j.kind='judgment' AND j.author='operator' AND {live})",
         r = a.row,
         live = current_annotation("j"),
     )
@@ -1047,7 +1047,7 @@ pub fn event_first_seen(a: &Aliases) -> String {
 /// A current `hidden` note targets the session.
 pub fn hidden(s: &str) -> String {
     format!(
-        "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
+        "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.annotation = hn.id AND ht.role = 'about' \
          WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
         current_annotation("hn")
     )
@@ -1076,7 +1076,7 @@ mod tests;
 
 pub(crate) fn message_alternate_match(alternate: &str, part: &str, message: &str) -> String {
     format!(
-        "({alternate}.source='message:'||{message}.id OR ({alternate}.source>'message:'||{message}.id||'#' AND {alternate}.source<'message:'||{message}.id||'$') OR {part}.of='message:'||{message}.id OR ({part}.of>'block:'||{message}.id||'#' AND {part}.of<'block:'||{message}.id||'$'))"
+        "({alternate}.source='message:'||{message}.id OR ({alternate}.source>'message:'||{message}.id||'#' AND {alternate}.source<'message:'||{message}.id||'$') OR {part}.source='message:'||{message}.id OR ({part}.source>'block:'||{message}.id||'#' AND {part}.source<'block:'||{message}.id||'$'))"
     )
 }
 fn message_alternate(a: &Aliases) -> String {

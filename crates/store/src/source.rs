@@ -11,7 +11,7 @@ mod confirmed;
 /// the original a kept database.
 pub(crate) fn database_rows(link: &str) -> String {
     format!(
-        "{link}.kind = 'sqlite' AND {link}.member_index = 0
+        "{link}.kind = 'sqlite' AND {link}.member_position = 0
             AND {link}.path_bytes = CAST('rows.jsonl' AS BLOB)"
     )
 }
@@ -116,7 +116,7 @@ pub(crate) fn from_archive(archive: &str) -> Result<SourceSchema> {
         ddl.push_str(";\n");
     }
     if tables.iter().any(|name| name == "row_count") {
-        ddl.push_str("INSERT INTO source_row_count(name,n) VALUES ('input',0),('revision',0),('stored_bytes',0);\n");
+        ddl.push_str("INSERT INTO source_row_count(name,count) VALUES ('input',0),('revision',0),('stored_bytes',0);\n");
     }
     Ok(SourceSchema { ddl, views })
 }
