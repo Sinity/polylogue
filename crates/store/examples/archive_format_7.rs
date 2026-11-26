@@ -4,10 +4,22 @@
 //!
 //! `cargo run -p polylogue-store --example archive_format_7 -- <archive root>`
 //!
-//! The format-7 file is created by the store's own schema code, filled from
-//! the format-6 file row by row, and checked before it replaces it: every
-//! revision's bytes read through its chain hash the same before and after.
-//! The format-6 file is kept beside it as `archive.db.format-6`.
+//! The new file is created by the store's own schema code, filled from the
+//! format-6 file row by row, and checked before it replaces it:
+//! - every `extent` and `blob` row is carried over exactly (inputs renamed
+//!   through the rename table, nothing else different), and every revision
+//!   keeps its input, number, chain and length. The conversion never writes
+//!   the segment log, so a revision's bytes, which these rows determine
+//!   entirely, read back as they did;
+//! - each table whose stored names changed holds as many rows as before;
+//! - no row names a row that is missing;
+//! - the file opens as this build's format (version and schema text).
+//!
+//! Not checked: whether the segment log is readable and its bytes match their
+//! hashes. That is `polylogue verify`'s question, asked of the archive
+//! itself. The chain step reads the prefixes it compares, and nothing else is
+//! read from the segments. The format-6 file is kept beside the new one as
+//! `archive.db.format-6`.
 //!
 //! What changes:
 //! - `meta.archive_id` is written (the new file's own);
@@ -38,14 +50,11 @@
 //! each renamed table holds as many rows after as before.
 use polylogue_store::archive::writer::agreement::Chains;
 use polylogue_store::blobs::{ChainSource, StoredChain};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 type Error = Box<dyn std::error::Error>;
-
-/// Each revision's length and the BLAKE3 of its bytes, by input and number.
-type Manifest = BTreeMap<(String, i64), (u64, String)>;
 
 fn main() -> Result<(), Error> {
     let root = PathBuf::from(
@@ -75,7 +84,6 @@ fn convert(root: &Path) -> Result<(), Error> {
         conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
     }
     let before = counts(&Connection::open(&old)?)?;
-    let manifest_before = manifest(&root)?;
 
     let conn = Connection::open(&new)?;
     conn.pragma_update(None, "journal_mode", "wal")?;
@@ -137,6 +145,7 @@ fn convert(root: &Path) -> Result<(), Error> {
     if violations != 0 {
         return Err(format!("{violations} rows name rows that are not there").into());
     }
+    let carried = carried_over(&conn)?;
     conn.execute("DETACH DATABASE old", [])?;
     conn.pragma_update(
         None,
@@ -170,22 +179,6 @@ fn convert(root: &Path) -> Result<(), Error> {
         from.push(suffix);
         let _ = std::fs::remove_file(from);
     }
-    let expected: Manifest = manifest_before
-        .into_iter()
-        .map(|((input, number), value)| {
-            (
-                (renamed.get(&input).cloned().unwrap_or(input), number),
-                value,
-            )
-        })
-        .collect();
-    let manifest_after = manifest(&root)?;
-    if expected != manifest_after {
-        // The format-6 file goes back; the converted one stays beside it.
-        std::fs::rename(&old, &new)?;
-        std::fs::rename(&kept, &old)?;
-        return Err("a revision's bytes read back differently after the conversion".into());
-    }
     println!("all tables\ttable\tbefore\tafter");
     for (table, n) in &after {
         let earlier = earlier_table(table);
@@ -214,7 +207,10 @@ fn convert(root: &Path) -> Result<(), Error> {
         }
     }
     println!("rollout inputs named with their machine\t{}", renamed.len());
-    println!("revisions read back equal\t{}", expected.len());
+    println!(
+        "carried over exactly\textents {}\tblobs {}\trevisions {}",
+        carried.extents, carried.blobs, carried.revisions
+    );
     Ok(())
 }
 
@@ -235,37 +231,66 @@ fn counts(conn: &Connection) -> Result<BTreeMap<String, i64>, Error> {
     Ok(counts)
 }
 
-/// Every revision's length and the BLAKE3 of its bytes, read through its
-/// chain, from the archive's `archive.db`.
-fn manifest(root: &Path) -> Result<Manifest, Error> {
-    let db = root.join("archive.db");
-    let conn = Connection::open(&db)?;
-    let store = std::sync::Arc::new(polylogue_store::Archive::at(root).blobs()?);
-    let source = ChainSource {
-        path: db.clone(),
-        table_prefix: "",
+/// How many rows [`carried_over`] found equal in both files.
+struct Carried {
+    extents: i64,
+    blobs: i64,
+    revisions: i64,
+}
+
+/// Refuses the conversion unless the rows that place each revision's bytes
+/// came over exactly: every `extent` and `blob` row of the format-6 file
+/// (attached as `old`) is in the new one and the new one has no other, with
+/// inputs renamed through `temp.renamed`, and every revision keeps its input,
+/// number, chain and length. Names the first row that differs.
+fn carried_over(conn: &Connection) -> Result<Carried, Error> {
+    let renamed = |column: &str| {
+        format!("coalesce((SELECT new FROM temp.renamed WHERE old = {column}), {column})")
     };
-    let mut out = BTreeMap::new();
-    let mut statement =
-        conn.prepare("SELECT input, number, chain, length FROM revision ORDER BY input, number")?;
-    let rows: Vec<(String, i64, i64, i64)> = statement
-        .query_map([], |r| <(_, _, _, _)>::try_from(r))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (input, number, chain, length) in rows {
-        let length = u64::try_from(length)?;
-        let stored = StoredChain::load(&source, &input, chain, length)?;
-        let mut reader = stored.reader(std::sync::Arc::clone(&store));
-        let mut hash = blake3::Hasher::new();
-        let read = std::io::copy(&mut reader, &mut hash)?;
-        if read != length {
-            return Err(format!("{input} revision {number} reads {read} of {length} bytes").into());
+    let compare = |what: &str, old: String, new: &str| -> Result<i64, Error> {
+        for (side, from, to) in [
+            ("missing from", &old, new),
+            ("added to", &new.to_owned(), old.as_str()),
+        ] {
+            let first: Option<String> = conn
+                .query_row(
+                    &format!("SELECT quote(t.k) FROM (SELECT * FROM ({from}) EXCEPT SELECT * FROM ({to})) t LIMIT 1"),
+                    [],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if let Some(first) = first {
+                return Err(format!("{what} row {side} the new file: {first}").into());
+            }
         }
-        out.insert(
-            (input, number),
-            (length, hash.finalize().to_hex().to_string()),
-        );
-    }
-    Ok(out)
+        Ok(conn.query_row(&format!("SELECT count(*) FROM ({new})"), [], |r| r.get(0))?)
+    };
+    let extents = compare(
+        "extent",
+        format!(
+            "SELECT json_array({}, chain, offset, length, hex(blob), blob_offset, commit_seq) AS k FROM old.extent",
+            renamed("input")
+        ),
+        "SELECT json_array(input, chain, offset, length, hex(blob), blob_offset, commit_seq) AS k FROM main.extent",
+    )?;
+    let blobs = compare(
+        "blob",
+        "SELECT json_array(hex(hash), size, stored_size, hex(storage)) AS k FROM old.blob".into(),
+        "SELECT json_array(hex(hash), size, stored_size, hex(storage)) AS k FROM main.blob",
+    )?;
+    let revisions = compare(
+        "revision",
+        format!(
+            "SELECT json_array({}, number, chain, length) AS k FROM old.revision",
+            renamed("input")
+        ),
+        "SELECT json_array(input, number, chain, length) AS k FROM main.revision",
+    )?;
+    Ok(Carried {
+        extents,
+        blobs,
+        revisions,
+    })
 }
 
 /// The new name of each Codex rollout input named without its machine.
@@ -1274,3 +1299,7 @@ mod tests {
 #[cfg(test)]
 #[path = "archive_format_7/stored_names.rs"]
 mod stored_names;
+
+#[cfg(test)]
+#[path = "archive_format_7/carried_over.rs"]
+mod carried_over;
