@@ -2,7 +2,7 @@
 //! (docs/architecture.md, Durability; docs/operations.md, Replacing an index
 //! from another schema).
 use super::*;
-use crate::archive::index_build::Paths;
+use crate::index::file::{IndexFiles, Installed, Paths, RebuildReason, Rebuilding};
 
 fn one_message(input: &str, message: &str, text: &str) -> Batch {
     batch(
@@ -255,7 +255,7 @@ fn a_build_is_private_until_installed_and_reads_answer_its_progress() {
         Err(StoreError::IndexBuilding(build)) => assert_eq!(
             *build,
             crate::archive::index_build::IndexBuild {
-                serving_previous: false,
+                reason: RebuildReason::NoIndex,
                 chains: 1,
                 chains_read: 0,
                 bytes: 0,
@@ -310,7 +310,7 @@ fn a_stopped_build_starts_again_from_the_stored_bytes() {
         drop(writer);
     }
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    assert!(!paths.runs.exists());
+    assert!(!paths.sorted.exists());
     assert!(archive.index_build().is_some());
     assert_eq!(messages(&ReadPool::open(&archive).unwrap()), 0);
     let writer = Writer::start(&archive).unwrap();
@@ -382,11 +382,11 @@ fn a_rebuild_keeps_serving_a_same_schema_index_until_it_is_installed() {
         .execute_batch("CREATE INDEX synthetic_extra ON message(pk)")
         .unwrap();
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
-    assert!(paths.previous.exists());
+    assert!(paths.index.exists());
     assert_eq!(
         archive.index_build(),
         Some(crate::archive::index_build::IndexBuild {
-            serving_previous: true,
+            reason: RebuildReason::SchemaDiffers,
             chains: 0,
             chains_read: 0,
             bytes: 0,
@@ -398,8 +398,8 @@ fn a_rebuild_keeps_serving_a_same_schema_index_until_it_is_installed() {
     let writer = Writer::start(&archive).unwrap();
     assert_eq!(messages(&pool), 1);
     writer.build(Vec::new()).unwrap();
-    // The installed index replaced the previous one; it holds what the
-    // build loaded, which here is nothing.
+    // The rebuild replaced the index; it holds what the rebuild loaded,
+    // which here is nothing.
     assert!(!paths.dir.exists());
     assert_eq!(messages(&pool), 0);
 }
@@ -419,7 +419,7 @@ fn a_rebuild_of_an_index_in_another_format_answers_index_building() {
     let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     assert!(matches!(
         serving(&archive).reader().err(),
-        Some(StoreError::IndexBuilding(build)) if !build.serving_previous
+        Some(StoreError::IndexBuilding(build)) if build.reason == RebuildReason::SchemaDiffers
     ));
     Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
     let tables: i64 = crate::archive::open_read(&paths.index)
@@ -530,10 +530,10 @@ fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
     for point in ["index.build.prepare", "index.build.loading"] {
         let directory = crash_at(point);
         let paths = Paths::of(directory.path());
-        assert!(paths.runs.exists(), "{point}");
+        assert!(paths.sorted.exists(), "{point}");
         assert!(!paths.index.exists(), "{point}");
         let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
-        assert!(!paths.runs.exists(), "{point}");
+        assert!(!paths.sorted.exists(), "{point}");
         assert!(!paths.index.exists(), "{point}");
         assert!(
             matches!(
@@ -562,7 +562,7 @@ fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
 fn a_crash_between_the_finish_sync_and_the_rename_installs_at_the_next_open() {
     let directory = crash_at("index.build.before_rename");
     let paths = Paths::of(directory.path());
-    assert!(paths.built.exists());
+    assert!(paths.ready.exists());
     assert!(!paths.index.exists());
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
     assert!(!paths.dir.exists());
@@ -583,7 +583,7 @@ fn a_crash_after_the_finish_sync_before_the_rename_rebuilds() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn pipeline_readers_open_the_ready_build_and_refuse_it_after_install() {
+fn a_pipeline_reader_opened_before_an_install_reads_the_installed_index() {
     crate::fault::clear();
     let dir = tempfile::tempdir().unwrap();
     let chains = due_a_build(dir.path(), &["ready-build"]);
@@ -614,11 +614,14 @@ fn pipeline_readers_open_the_ready_build_and_refuse_it_after_install() {
     assert!(held, "the install reached its rename boundary");
     installed.unwrap().unwrap();
     let reader = checkout.expect("a pipeline reader opens the ready build before install");
-    assert_eq!(selected_path, paths.built);
-    assert!(matches!(
-        reader.status(&[]),
-        Err(StoreError::ReadIndexReplaced)
-    ));
+    assert_eq!(selected_path, paths.ready);
+    // Its read had not started: it starts on the installed index.
+    assert_eq!(rows(&reader), 1);
+    assert_eq!(reader.index_identity().unwrap(), {
+        use std::os::unix::fs::MetadataExt as _;
+        let installed = std::fs::metadata(&paths.index).unwrap();
+        (installed.dev(), installed.ino())
+    });
     drop(reader);
     assert_eq!(archive.index_db(), paths.index);
     assert_eq!(messages(&pipeline), 1);
@@ -626,7 +629,7 @@ fn pipeline_readers_open_the_ready_build_and_refuse_it_after_install() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn a_current_read_that_meets_the_install_reads_the_installed_index() {
+fn a_request_read_that_meets_the_install_reads_the_installed_index() {
     crate::fault::clear();
     let dir = tempfile::tempdir().unwrap();
     let chains = due_a_build(dir.path(), &["read-current"]);
@@ -651,22 +654,21 @@ fn a_current_read_that_meets_the_install_reads_the_installed_index() {
         crate::fault::held(),
         "the install reached its rename boundary"
     );
-    // The first reader opens the build file; the install completes before
-    // its read starts, as when the writer installs while an import is read.
-    let installer = std::cell::RefCell::new(Some(installer));
-    let opened = std::cell::RefCell::new(Vec::new());
-    let status = pipeline.read_current(|reader| {
-        opened.borrow_mut().push(archive.index_db());
-        if let Some(installer) = installer.borrow_mut().take() {
-            crate::fault::release();
-            installer.join().unwrap().unwrap();
-        }
-        Ok::<_, crate::StoreError>(rows(reader))
-    });
+    // A request's reader is checked out on the ready file; the install
+    // completes before its read starts, as when the writer installs while
+    // a request is answered.
+    let limit = crate::read::limit::ReadLimit::without_deadline(archive.stop().child());
+    let reader = pipeline
+        .checkout(crate::read::Lane::Interactive, &limit)
+        .unwrap();
+    let opened = archive.index_db();
+    crate::fault::release();
+    installer.join().unwrap().unwrap();
     crate::fault::clear();
 
-    assert_eq!(status.unwrap(), 1);
-    assert_eq!(*opened.borrow(), [paths.built.clone(), paths.index.clone()]);
+    assert_eq!(opened, paths.ready);
+    assert_eq!(rows(&reader), 1);
+    assert_eq!(archive.index_db(), paths.index);
 }
 
 #[cfg(feature = "faults")]
@@ -706,4 +708,174 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
     drop(writer);
     assert_eq!(rows(&reader), 1);
     assert_eq!(messages(&pipeline), 2);
+}
+
+/// Opens an archive whose index names another archive, stopping the
+/// process at `POLYLOGUE_PRIVATE_BUILD_POINT` in the open's start of the
+/// rebuild.
+#[cfg(feature = "faults")]
+#[test]
+fn index_reason_crash_child() {
+    let Some(root) = std::env::var_os("POLYLOGUE_PRIVATE_BUILD_ROOT") else {
+        return;
+    };
+    let point = std::env::var("POLYLOGUE_PRIVATE_BUILD_POINT").unwrap();
+    let root = std::path::Path::new(&root);
+    {
+        let (archive, _lock) = Archive::open_or_create(root).unwrap();
+        Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+    }
+    let index =
+        crate::archive::open_write(&root.join("index.db"), crate::archive::cache::SETUP).unwrap();
+    crate::meta_set(&index, "archive_id", "0123456789abcdef0123456789abcdef").unwrap();
+    drop(index);
+    crate::fault::arm(&point, "", crate::fault::Action::StopProcess, 0, 1);
+    let _ = Archive::open_or_create(root);
+    panic!("the configured durability boundary was not reached");
+}
+
+/// A kill right after the rebuild's reason is written keeps the reason:
+/// with the index that gave it gone, the next open rebuilds for it, and
+/// reads and `status` name it.
+#[cfg(feature = "faults")]
+#[test]
+fn the_reason_survives_a_kill_after_it_is_written() {
+    let directory = crash_test_at(
+        "writer::tests::private_build::index_reason_crash_child",
+        "index.after_reason",
+    );
+    let paths = Paths::of(directory.path());
+    assert!(paths.reason.exists());
+    assert!(!paths.build.exists());
+    for suffix in ["", "-wal", "-shm"] {
+        let _ = std::fs::remove_file(crate::index::file::with_suffix(&paths.index, suffix));
+    }
+    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+    assert_eq!(
+        archive.index_files().unwrap(),
+        IndexFiles {
+            installed: Installed::None,
+            rebuilding: Rebuilding::Writing {
+                reason: RebuildReason::OtherArchive
+            },
+        }
+    );
+    assert_eq!(
+        archive.index_build().unwrap().reason,
+        RebuildReason::OtherArchive
+    );
+    assert!(matches!(
+        serving(&archive).reader().err(),
+        Some(StoreError::IndexBuilding(build)) if build.reason == RebuildReason::OtherArchive
+    ));
+}
+
+/// A kill at each step of an install restarts to a complete installed
+/// index or to an install of the finished rebuild, never to a half state.
+/// The fault fires in the child, which `crash_test_at` sees stopped at it.
+#[cfg(feature = "faults")]
+#[test]
+fn a_kill_at_each_step_of_the_install_ends_installed() {
+    for point in ["index.install.after_reason", "index.install.after_rename"] {
+        let directory = crash_at(point);
+        let paths = Paths::of(directory.path());
+        let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
+        assert!(!paths.dir.exists(), "{point}");
+        let files = archive.index_files().unwrap();
+        assert_eq!(files.rebuilding, Rebuilding::No, "{point}");
+        assert!(files.serves(), "{point}");
+        assert_eq!(messages(&serving(&archive)), 2, "{point}");
+    }
+}
+
+/// An install that fails at its rename in a running daemon leaves the
+/// rebuild ready and the writer without an index connection: reads go on
+/// from the index they had, `status` shows the failure, and the next commit
+/// installs it.
+#[cfg(feature = "faults")]
+#[test]
+fn a_failed_install_is_installed_at_the_next_commit() {
+    crate::fault::clear();
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::of(dir.path());
+    {
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        let writer = Writer::start(&archive).unwrap();
+        writer.build(Vec::new()).unwrap();
+        store_message(&archive, &writer, "served", "served while rebuilt");
+    }
+    crate::archive::open_write(&paths.index, crate::archive::cache::SETUP)
+        .unwrap()
+        .execute_batch("CREATE INDEX synthetic_extra ON message(pk)")
+        .unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let pool = serving(&archive);
+    let writer = Writer::start(&archive).unwrap();
+    crate::fault::arm(
+        "index.build.before_rename",
+        &archive.root.to_string_lossy(),
+        crate::fault::Action::Fail,
+        0,
+        1,
+    );
+    assert!(writer.build(Vec::new()).is_err());
+    assert_eq!(
+        crate::fault::recorded("index.build.before_rename"),
+        [(
+            archive.root.to_string_lossy().into_owned(),
+            crate::writer::WRITER_THREAD.to_owned()
+        )]
+    );
+    crate::fault::clear();
+    assert_eq!(archive.index_files().unwrap().rebuilding, Rebuilding::Ready);
+    assert!(paths.ready.exists());
+    let failure = archive.index_status().unwrap().install_failure.unwrap();
+    assert_eq!(failure.subject, "installing the rebuilt index");
+    assert_eq!(messages(&pool), 1);
+    // The next commit event installs the rebuild before the write it
+    // carries is applied.
+    store_message(
+        &archive,
+        &writer,
+        "after-failure",
+        "written after the failure",
+    );
+    let status = archive.index_status().unwrap();
+    assert_eq!(status.files.rebuilding, Rebuilding::No);
+    assert!(status.files.serves());
+    assert_eq!(status.install_failure, None);
+    assert!(!paths.dir.exists());
+    assert_eq!(messages(&pool), 1);
+}
+
+/// A read keeps the index it started on through an install; the read after
+/// its restart is a new read and starts on the installed index.
+#[test]
+fn a_restarted_read_starts_on_the_installed_index() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::of(dir.path());
+    {
+        let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+        let writer = Writer::start(&archive).unwrap();
+        writer.build(Vec::new()).unwrap();
+        store_message(&archive, &writer, "served", "served while rebuilt");
+    }
+    crate::archive::open_write(&paths.index, crate::archive::cache::SETUP)
+        .unwrap()
+        .execute_batch("CREATE INDEX synthetic_extra ON message(pk)")
+        .unwrap();
+    let (archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
+    let pool = serving(&archive);
+    let reader = pool.reader().unwrap();
+    assert_eq!(rows(&reader), 1);
+    // The rebuild loads nothing, so the installed index holds no message.
+    Writer::start(&archive).unwrap().build(Vec::new()).unwrap();
+    assert_eq!(rows(&reader), 1);
+    reader.restart().unwrap();
+    assert_eq!(rows(&reader), 0);
+    assert_eq!(reader.index_identity().unwrap(), {
+        use std::os::unix::fs::MetadataExt as _;
+        let installed = std::fs::metadata(&paths.index).unwrap();
+        (installed.dev(), installed.ino())
+    });
 }

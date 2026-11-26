@@ -45,6 +45,7 @@ mod compose;
 mod derive_thread;
 mod hook_fields;
 pub(crate) mod identity;
+mod index_connection;
 pub(crate) use readings::{read_message, shown_message};
 pub(crate) mod readings;
 mod rows;
@@ -295,7 +296,7 @@ impl Writer {
             commits: commits.clone(),
             followed: archive_writer.sender(),
             archive: archive_reads,
-            index,
+            index: index_connection::IndexConnection::Open(index),
             report: WriteReport::default(),
             // Both read the installed index, once a build has ended.
             search: Search::start(
@@ -585,7 +586,7 @@ struct Inner {
     published: Arc<Published>,
     /// `archive.db`, read only.
     archive: Connection,
-    index: Connection,
+    index: index_connection::IndexConnection,
     report: WriteReport,
     /// The search thread ([`search_thread`]): woken after each commit, and
     /// allowed to write once the index is out of a first build.
@@ -660,6 +661,7 @@ impl Inner {
             };
             let _busy = crate::timing::start_stage(crate::timing::Stage::Writer);
             let _doing = crate::activity::doing("writing");
+            self.retry_lost_index();
             let mut stopping = false;
             let mut group = Vec::new();
             let mut rows = 0;
@@ -749,7 +751,10 @@ impl Inner {
                     let _ = reply.send(Ok(vec![false; write.len()]));
                     continue;
                 }
-                let result = crate::summary::apply(&self.index, &write);
+                let result = self
+                    .index
+                    .get()
+                    .and_then(|index| crate::summary::apply(index, &write));
                 if result.is_ok() {
                     self.commits
                         .committed(crate::completion::Committed::CONTENT);
@@ -757,7 +762,10 @@ impl Inner {
                 let _ = reply.send(result);
             }
             for (entries, reply) in search_writes.drain(..) {
-                let result = crate::text_rows::apply_entries(&self.index, &entries);
+                let result = self
+                    .index
+                    .get()
+                    .and_then(|index| crate::text_rows::apply_entries(index, &entries));
                 // Settled search text is a commit its readers see: status
                 // stops saying search text is pending.
                 if matches!(result, Ok(applied) if applied > 0) {
@@ -791,16 +799,22 @@ impl Inner {
                 }
             }
             for (staged, reply) in assets.drain(..) {
-                let before = self.index.total_changes();
+                let changes =
+                    |inner: &Self| inner.index.get().map_or(0, |index| index.total_changes());
+                let before = changes(self);
                 let result = self.install_assets(*staged);
-                if result.is_ok() && self.index.total_changes() != before {
+                if result.is_ok() && changes(self) != before {
                     self.commits
                         .committed(crate::completion::Committed::CONTENT);
                 }
                 let _ = reply.send(result);
             }
             for reply in background_derives.drain(..) {
-                let pending = crate::summary::caught_up(&self.index).map(|current| !current);
+                let pending = self
+                    .index
+                    .get()
+                    .and_then(crate::summary::caught_up)
+                    .map(|current| !current);
                 let requested = pending.as_ref().is_ok_and(|pending| *pending);
                 // A caller with no new reading must not wait for an unrelated
                 // computation, including the work preparing that computation.
@@ -865,7 +879,7 @@ impl Inner {
         while self.follow.try_recv().is_ok() {}
         let followed = self.followed.committed_position();
         let position = followed.0.to_string();
-        let kept = crate::meta_get(&self.index, ARCHIVE_POSITION)?;
+        let kept = crate::meta_get(self.index.get()?, ARCHIVE_POSITION)?;
         if kept.as_deref() == Some(position.as_str()) {
             self.published.publish(followed);
             return Ok(());
@@ -873,6 +887,7 @@ impl Inner {
         let after: i64 = kept.and_then(|kept| kept.parse().ok()).unwrap_or(-1);
         let tx = self
             .index
+            .get_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let before = tx.total_changes();
         let alternates: bool = tx.query_row(
@@ -900,8 +915,8 @@ impl Inner {
 
     /// Projects every alternate's text into the index.
     fn project_alternate_text(&mut self) -> Result<()> {
-        let before = self.index.total_changes();
-        let tx = self.index.transaction()?;
+        let before = self.index.get()?.total_changes();
+        let tx = self.index.get_mut()?.transaction()?;
         crate::alternates::project(&tx)?;
         let changed = tx.total_changes() != before;
         if changed {
@@ -922,23 +937,27 @@ impl Inner {
         if self.stop.is_cancelled() {
             return;
         }
+        // Without an index connection there is no log of its to restart.
+        let Ok(index) = self.index.get() else {
+            return;
+        };
         let wait = std::time::Duration::from_millis(100);
         let limit = crate::archive::WAL_AUTOCHECKPOINT;
         let mut results = vec![crate::archive::restart_full_log(
-            &self.index,
+            index,
             "main",
             &self.location.index_db(),
             limit,
             wait,
         )];
         // The full-text files the writer has attached, once a build is installed.
-        if crate::search::files::attached(&self.index).unwrap_or(false)
-            && let Ok(Some(files)) = crate::search::files::paths(&self.index)
+        if crate::search::files::attached(index).unwrap_or(false)
+            && let Ok(Some(files)) = crate::search::files::paths(index)
         {
             for (n, path) in files.iter().enumerate() {
                 if !self.stop.is_cancelled() {
                     results.push(crate::archive::restart_full_log(
-                        &self.index,
+                        index,
                         &crate::search::files::schema(n),
                         path,
                         limit,
@@ -961,7 +980,7 @@ impl Inner {
         if sessions.is_empty() {
             return Ok(());
         }
-        let tx = self.index.transaction()?;
+        let tx = self.index.get_mut()?.transaction()?;
         let counter = bump_counter(&tx)?;
         for session in sessions {
             tx.prepare_cached("UPDATE session SET live_changed = ?2 WHERE id = ?1")?
@@ -979,7 +998,7 @@ impl Inner {
         coverage
             .validate()
             .map_err(|error| StoreError::Invalid(error.into()))?;
-        let tx = self.index.transaction()?;
+        let tx = self.index.get_mut()?.transaction()?;
         bump_counter(&tx)?;
         crate::coverage::apply(&tx, &coverage)?;
         crate::write_lock::commit(tx)?;
@@ -1000,8 +1019,8 @@ impl Inner {
                     return Err(StoreError::WriterGone);
                 }
                 inner.project_alternate_text()?;
-                crate::text_rows::index_pending(&inner.index)?;
-                crate::summary::mark_moved_versions(&mut inner.index)
+                crate::text_rows::index_pending(inner.index.get()?)?;
+                crate::summary::mark_moved_versions(inner.index.get_mut()?)
             })
             .and_then(|prepared| prepared.ok_or(StoreError::WriterGone));
         match (prepared, waiting) {
@@ -1043,9 +1062,13 @@ impl Inner {
         }
         let stop = self.stop.clone();
         self.index
+            .get()?
             .progress_handler(1_000, Some(move || stop.is_cancelled()))?;
         let result = work(self);
-        self.index.progress_handler(0, None::<fn() -> bool>)?;
+        // An install or restart replaced the connection, or left none.
+        if let Ok(index) = self.index.get() {
+            index.progress_handler(0, None::<fn() -> bool>)?;
+        }
         match result {
             Ok(value) => Ok(Some(value)),
             Err(StoreError::Stopped) if self.stop.is_cancelled() => Ok(None),
@@ -1092,37 +1115,105 @@ impl Inner {
         }
     }
 
-    /// Discards a build that failed and makes its file again, empty, as
-    /// opening the archive after a crash does. The next build reads every
-    /// chain again and composes from its own runs; the failed build's
-    /// readings and partly composed sessions would otherwise read as
-    /// upkeep's, which composition takes from the index session by session.
+    /// Discards a rebuild that failed and starts it again for the same
+    /// reason, its file made again, empty, as opening the archive after a
+    /// crash does. The next rebuild reads every chain again and composes from
+    /// its own sorted files; the failed rebuild's readings and partly composed
+    /// sessions would otherwise read as upkeep's, which composition takes
+    /// from the index session by session. A restart that fails leaves the
+    /// writer without an index connection until it succeeds.
     fn restart_build(&mut self, error: &str) -> Result<()> {
-        self.index.flush_prepared_statement_cache();
-        let failed = std::mem::replace(&mut self.index, Connection::open_in_memory()?);
-        let restarted = failed
-            .close()
-            .map_err(|(_, error)| StoreError::from(error))
-            .and_then(|()| crate::archive::index_build::restart(&self.location, error));
-        // The writer goes on with the build file there is, made again or not.
-        self.index = open_index_writer(&self.location, true)?;
+        let retry = index_connection::Retry::Restart {
+            error: error.to_owned(),
+        };
+        let restarted = self
+            .index
+            .close(retry)
+            .and_then(|()| crate::archive::index_build::restart(&self.location, error))
+            .and_then(|()| self.open_index());
+        if let Err(failed) = &restarted {
+            self.lose_index(
+                "starting the index rebuild again",
+                failed,
+                index_connection::Retry::Restart {
+                    error: error.to_owned(),
+                },
+            );
+        }
         restarted
     }
 
-    /// Closes the writer's connection to the build file, installs it and
-    /// opens the installed `index.db`. Connection-level state (the attached
-    /// register, its views and the chain-progress triggers) is set up again
-    /// on the new connection. A failed install leaves the writer on the build
-    /// file, which a later finish installs.
+    /// Closes the writer's connection to the finished build file, installs
+    /// it and opens the installed `index.db`. Connection-level state (the
+    /// attached register, its views and the chain-progress triggers) is set
+    /// up again on the new connection. An install that fails leaves the
+    /// writer without an index connection and the rebuild `Ready` (or its
+    /// file whole, if it failed before the rename to `ready.db`); the next
+    /// commit event and the next start install it.
     fn install_build(&mut self) -> Result<()> {
-        self.index.flush_prepared_statement_cache();
-        let built = std::mem::replace(&mut self.index, Connection::open_in_memory()?);
-        built.close().map_err(|(_, error)| error)?;
         let synced = std::time::Instant::now();
-        let installed = crate::archive::index_build::finish(&self.location);
+        let installed = self
+            .index
+            .close(index_connection::Retry::Install)
+            .and_then(|()| crate::archive::index_build::finish(&self.location))
+            .and_then(|()| self.open_index());
         crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
-        self.index = open_index_writer(&self.location, self.location.index_build.building())?;
+        match &installed {
+            Ok(()) => {
+                self.search.ready();
+                self.commits
+                    .committed(crate::completion::Committed::CONTENT);
+            }
+            Err(error) => self.lose_index(
+                "installing the rebuilt index",
+                error,
+                index_connection::Retry::Install,
+            ),
+        }
         installed
+    }
+
+    /// Opens the index file the archive's state names: the build file while
+    /// a rebuild is written, otherwise `index.db`.
+    fn open_index(&mut self) -> Result<()> {
+        let building = self.location.index_build.building();
+        let index = open_index_writer(&self.location, building)?;
+        self.index = index_connection::IndexConnection::Open(index);
+        Ok(())
+    }
+
+    /// The writer has no index connection after `error` while `subject`:
+    /// index writes are refused with it, `status` shows an install's, and
+    /// the log has it once.
+    fn lose_index(&mut self, subject: &str, error: &StoreError, retry: index_connection::Retry) {
+        let failure = polylogue_model::Failure::new(subject, error);
+        let repeated = matches!(&self.index, index_connection::IndexConnection::Lost(lost) if lost.failure == failure);
+        if !repeated {
+            crate::log!(
+                error,
+                "writer: {subject}: {error}; tried again at the next commit"
+            );
+        }
+        if matches!(retry, index_connection::Retry::Install) {
+            self.location.index_build.install_failed(failure.clone());
+        }
+        self.index =
+            index_connection::IndexConnection::Lost(index_connection::Lost { failure, retry });
+    }
+
+    /// Tries again the step that left the writer without an index
+    /// connection.
+    fn retry_lost_index(&mut self) {
+        match self.index.retry() {
+            None => {}
+            Some(index_connection::Retry::Install) => {
+                let _ = self.install_build();
+            }
+            Some(index_connection::Retry::Restart { error }) => {
+                let error = error.clone();
+                let _ = self.restart_build(&error);
+            }
+        }
     }
 
     /// Writes a group in one transaction per database. If it fails, each
@@ -1246,7 +1337,7 @@ impl Inner {
                 has_step = true;
                 if step.delivery.is_none()
                     || crate::wire_shapes::admit_export(
-                        &self.index,
+                        self.index.get()?,
                         &batch.input.id,
                         *chain,
                         batch.length,
@@ -1268,6 +1359,7 @@ impl Inner {
         let reads = self.build_job.is_none();
         let itx = self
             .index
+            .get_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         crate::fault::check("write.replay_rows", "")?;
         let counter = bump_counter(&itx)?;
@@ -1381,7 +1473,7 @@ fn prepare_batches(location: &Archive, batches: &mut [&mut Batch]) -> Result<()>
 const FOLLOW_AFTER: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// The meta key of the archive position the index has followed to.
-const ARCHIVE_POSITION: &str = "archive_position";
+const ARCHIVE_POSITION: &str = crate::index::file::ARCHIVE_POSITION;
 
 /// Adds `other`'s figures to `report`.
 fn merge_report(report: &mut WriteReport, other: WriteReport) {

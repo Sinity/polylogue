@@ -16,19 +16,21 @@ generated page of the thing they belong to, or on the area page that owns them.
   completion cache directory.
 - **schema identity**: a short hash of an index file's version, format identity,
   tables, views and triggers.
-- **index build**: writing a new index in the private file
-  `index-build/index.db`, which is installed over `index.db` when the build
-  ends; the first build of an archive, or one replacing an index from another
-  schema. It runs in named **steps** (reading stored files, sorting texts,
+- **index rebuild**: writing a new index in the private file
+  `index-rebuild/build.db`, renamed `ready.db` when it ends and then over
+  `index.db`; the first index of an archive, or one replacing an index this
+  build cannot use. Its reason is `index-rebuild/reason.json`, written first. It runs in named **steps** (reading stored files, sorting texts,
   writing tables, indexing, assembling sessions, indexing sessions, joining
   sessions across files, finishing indexes, search index, installing), which
   status and the log list by those names. Assembling sessions writes each
   session whose readings one file states; joining sessions across files
   writes, from the index, the sessions whose readings several files state or
   that copies name.
-- **previous index**: the index a build replaces, kept as
-  `index-build/previous.db` until the new one is installed, and read
-  meanwhile when its schema identity is the build's.
+- **index files**: the pair `status` shows of the index: the installed index
+  (none, current, or unusable with why) and the rebuild (none, writing with
+  its reason, or ready).
+- **archive identity**: the random ID `archive.db` gets when it is created,
+  which every index of that archive records.
 - **embeddings store**: message and annotation vectors for semantic ranking, kept apart
   because vectors cost money or time to make.
 - **segment log**: append-only files of compressed frames holding every blob;

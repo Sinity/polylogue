@@ -36,6 +36,7 @@ pub mod fault;
 pub mod fixture;
 mod fragment;
 pub mod import_jobs;
+pub mod index;
 pub mod input_rows;
 pub mod items;
 mod kept;
@@ -183,9 +184,7 @@ pub enum StoreError {
     ReadPoolNested,
     #[error("the access scope changed while this read was in progress")]
     ScopeChanged,
-    #[error("the index was replaced; acquire a new reader")]
-    ReadIndexReplaced,
-    /// No index can be read until the build in progress ends
+    /// No index can be read until the rebuild in progress is installed
     /// ([`archive::index_build`]).
     #[error("{0}")]
     IndexBuilding(Box<archive::index_build::IndexBuild>),
@@ -351,7 +350,6 @@ impl StoreError {
             Self::ReadPoolClosed => Code::ShuttingDown,
             Self::ReadPoolNested => Code::Internal,
             Self::ScopeChanged => Code::ScopeChanged,
-            Self::ReadIndexReplaced => Code::Conflict,
             Self::IndexBuilding(_) => Code::IndexBuilding,
             Self::Conflict(_) => Code::Conflict,
             Self::Stale { .. } => Code::Stale,
@@ -399,7 +397,6 @@ impl polylogue_model::Caused for StoreError {
             Self::ReadPoolClosed => Cause::Stopping,
             Self::ReadPoolNested => Cause::Bug,
             Self::ScopeChanged => Cause::Transient,
-            Self::ReadIndexReplaced => Cause::Transient,
             Self::IndexBuilding(_) => Cause::Transient,
             Self::Conflict(_) => Cause::Request,
             Self::Stale { .. } => Cause::Request,
