@@ -263,6 +263,115 @@ fn source_time_tests_accept_a_fixture_event_instant() {
     assert_eq!(page.rows[0]["at"], "1970-01-01T00:00:01Z");
 }
 
+/// A time bound on a session or message keeps a period that reaches past
+/// the bound though it starts before it, keeps an instant after it and
+/// drops an instant before it, sub-millisecond digits included.
+#[test]
+fn a_time_bound_tests_periods_by_their_end_and_instants_by_their_time() {
+    use polylogue_model::{Precision, TimeAccuracy, TimeQuality, Timestamp};
+    let ms = |text: &str| Timestamp::parse_rfc3339(text).unwrap().unix_ms();
+    let dir = tempfile::tempdir().unwrap();
+    let mut fixture = Fixture::new(dir.path()).unwrap();
+    let mut message = |fixture: &mut Fixture, name: &str, at: &str, until: Option<&str>| {
+        let session = fixture
+            .session(SessionFacts {
+                id: &format!("test:{name}"),
+                last: Some(ms(at)),
+                ..Default::default()
+            })
+            .unwrap();
+        let pk = fixture
+            .message(
+                session,
+                MessageFacts {
+                    id: &format!("test:{name}-message"),
+                    role: "assistant",
+                    written_by: "model",
+                    at: Some(ms(at)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fixture
+            .message_time(
+                pk,
+                Some(Timestamp::parse_rfc3339(at).unwrap()),
+                TimeAccuracy {
+                    quality: TimeQuality::Intrinsic,
+                    precision: Some(if until.is_some() {
+                        Precision::Bounded
+                    } else {
+                        Precision::Instant
+                    }),
+                    until: until.map(|until| Timestamp::parse_rfc3339(until).unwrap()),
+                },
+            )
+            .unwrap();
+    };
+    message(&mut fixture, "before", "2026-10-01T00:00:00Z", None);
+    message(&mut fixture, "after", "2026-10-20T00:00:00Z", None);
+    message(
+        &mut fixture,
+        "period",
+        "2026-10-01T00:00:00Z",
+        Some("2026-10-25T00:00:00Z"),
+    );
+    // Half a millisecond short of the bound, in the bound's own millisecond.
+    message(
+        &mut fixture,
+        "just-before",
+        "2026-10-09T23:59:59.9995Z",
+        None,
+    );
+    message(
+        &mut fixture,
+        "just-after",
+        "2026-10-10T00:00:00.0005Z",
+        None,
+    );
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let mut options = options();
+    options.fields = vec!["id".into()];
+    options.page_size = Some(20);
+    let ids = |query: &str| {
+        let program = crate::query::compile(query, &options).unwrap();
+        let page = reader.query_page(&program, None).unwrap();
+        let mut ids: Vec<String> = page
+            .rows
+            .iter()
+            .map(|row| row["id"].as_str().unwrap().to_owned())
+            .collect();
+        ids.sort();
+        assert_eq!(
+            reader.query_count(&program).unwrap().map(|counts| counts.0),
+            Some(ids.len() as u64),
+            "{query}"
+        );
+        ids
+    };
+    assert_eq!(
+        ids("sessions where since:2026-10-10"),
+        ["test:after", "test:just-after", "test:period"]
+    );
+    assert_eq!(
+        ids("messages where since:2026-10-10"),
+        [
+            "test:after-message",
+            "test:just-after-message",
+            "test:period-message"
+        ]
+    );
+    assert_eq!(
+        ids("sessions where last_active < 2026-10-10"),
+        ["test:before", "test:just-before"]
+    );
+    assert_eq!(
+        ids("sessions where last_active > 2026-10-10T00:00:00Z"),
+        ["test:after", "test:just-after"]
+    );
+}
+
 #[test]
 fn source_time_without_metadata_stays_unknown() {
     let dir = tempfile::tempdir().unwrap();
