@@ -247,3 +247,33 @@ const CREATED_WITH_THE_INDEX: &[&str] = &[
     "key=Text(\"cursor_key\")",
     "key=Text(\"search_files\")",
 ];
+
+/// The tables two dumps differ in, each with the rows only one of them
+/// holds; empty when they hold the same rows.
+pub(crate) fn differences(
+    left: &BTreeMap<String, Vec<String>>,
+    right: &BTreeMap<String, Vec<String>>,
+) -> String {
+    let mut out = String::new();
+    let tables: std::collections::BTreeSet<&String> = left.keys().chain(right.keys()).collect();
+    for table in tables {
+        let (l, r) = (
+            left.get(table).cloned().unwrap_or_default(),
+            right.get(table).cloned().unwrap_or_default(),
+        );
+        if l == r {
+            continue;
+        }
+        out.push_str(&format!("table {table}\n"));
+        for row in l.iter().filter(|row| !r.contains(row)) {
+            out.push_str(&format!("  only left:  {row}\n"));
+        }
+        for row in r.iter().filter(|row| !l.contains(row)) {
+            out.push_str(&format!("  only right: {row}\n"));
+        }
+        if l.len() != r.len() {
+            out.push_str(&format!("  rows: {} left, {} right\n", l.len(), r.len()));
+        }
+    }
+    out
+}

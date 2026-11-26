@@ -1,5 +1,5 @@
 use super::*;
-use crate::tables::dump;
+use crate::tables::{differences, dump};
 use polylogue_testkit::{
     ClaudeHome, claude_assistant as assistant, claude_user as user, delete_index,
 };
@@ -103,7 +103,8 @@ fn a_rebuild_parses_only_what_no_newer_chain_repeats() {
         "SELECT count(DISTINCT chain) AS n FROM message_parse s WHERE s.message_id LIKE '%u1%'",
     );
     assert_eq!(chains, 1);
-    assert_eq!(dump(&w), updated);
+    let differ = differences(&updated, &dump(&w));
+    assert!(differ.is_empty(), "{differ}");
 }
 
 /// The trace and the first-seen time of a record name every chain that

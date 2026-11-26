@@ -5,7 +5,7 @@
 //! same tables as a rebuild of the same archive (docs/archive.md, readings;
 //! docs/architecture.md, one path).
 
-use crate::tables::dump;
+use crate::tables::{differences, dump};
 use polylogue_testkit::{
     ClaudeHome, claude_assistant as assistant, claude_user as user, delete_index,
 };
@@ -61,7 +61,7 @@ fn version() -> impl Strategy<Value = Version> {
 
 /// Writes each version in turn with a pass after each, then rebuilds the
 /// index from the archive; returns both indexes' tables.
-fn updated_and_rebuilt(versions: &[Version]) -> (ClaudeHome, String, String) {
+fn updated_and_rebuilt(versions: &[Version]) -> (ClaudeHome, String) {
     let w = ClaudeHome::new();
     let path = w.file("same.jsonl");
     {
@@ -72,15 +72,15 @@ fn updated_and_rebuilt(versions: &[Version]) -> (ClaudeHome, String, String) {
             assert!(pass.errors.is_empty(), "{:?}", pass.errors);
         }
     }
-    let updated = format!("{:#?}", dump(&w));
+    let updated = dump(&w);
     delete_index(&w.root);
     {
         let (mut engine, _lock) = w.engine(64 << 20);
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     }
-    let rebuilt = format!("{:#?}", dump(&w));
-    (w, updated, rebuilt)
+    let rebuilt = dump(&w);
+    (w, differences(&updated, &rebuilt))
 }
 
 /// The revert of the task: versions `abc`, `abX`, `abcde`. The third
@@ -105,8 +105,8 @@ fn a_revert_is_covered_through_recorded_agreement() {
             cut: false,
         },
     ];
-    let (w, updated, rebuilt) = updated_and_rebuilt(&versions);
-    assert_eq!(updated, rebuilt);
+    let (w, differ) = updated_and_rebuilt(&versions);
+    assert!(differ.is_empty(), "{differ}");
     // The first chain has no parse; the second holds only its third line.
     assert_eq!(w.count("SELECT count(*) AS n FROM parse_state"), 2);
     assert_eq!(
@@ -134,8 +134,8 @@ fn a_diverging_older_chain_reads_only_records_after_the_agreement() {
             cut: false,
         },
     ];
-    let (w, updated, rebuilt) = updated_and_rebuilt(&versions);
-    assert_eq!(updated, rebuilt);
+    let (w, differ) = updated_and_rebuilt(&versions);
+    assert!(differ.is_empty(), "{differ}");
     // Branches 1 and 2 share two base lines; the older chain keeps its
     // four lines after them.
     let ids: Vec<String> = w
@@ -177,8 +177,8 @@ fn a_rewrite_flushed_half_way_takes_the_records_it_shares() {
             cut: true,
         },
     ];
-    let (w, updated, rebuilt) = updated_and_rebuilt(&versions);
-    assert_eq!(updated, rebuilt);
+    let (w, differ) = updated_and_rebuilt(&versions);
+    assert!(differ.is_empty(), "{differ}");
     // The first two lines are the newer chain's; the older keeps the rest.
     assert_eq!(
         w.count(
@@ -202,7 +202,7 @@ proptest! {
     fn chains_stored_in_order_through_upkeep_equal_all_at_once(
         versions in prop::collection::vec(version(), 1..6),
     ) {
-        let (_, updated, rebuilt) = updated_and_rebuilt(&versions);
-        prop_assert_eq!(updated, rebuilt);
+        let (_, differ) = updated_and_rebuilt(&versions);
+        prop_assert!(differ.is_empty(), "{}", differ);
     }
 }

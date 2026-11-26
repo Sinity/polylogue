@@ -339,6 +339,10 @@ fn complete_repeated_readings_do_not_reload_historical_message_bodies() {
         ),
     );
     let mut index = crate::archive::open_write(&w.archive.index_db(), 1).unwrap();
+    // The archive beside the index, as the writer's connection has it.
+    let uri = format!("file:{}?mode=ro", w.archive.archive_db().display());
+    index.execute("ATTACH DATABASE ?1 AS a", [uri]).unwrap();
+    crate::source::views(&index).unwrap();
     // Immediate: the writer may still be applying search entries, and a
     // deferred transaction that read before its commit could not write.
     let tx = index

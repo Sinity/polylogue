@@ -158,10 +158,9 @@ row! {
     }
 }
 
-/// The chains of an input that begin like an earlier one, on any
-/// connection that reaches the archive ([`crate::source::Source::reading`]).
-const AGREEING: &str = "SELECT input, number, begins_like, agrees_to FROM @source.chain
-    WHERE begins_like IS NOT NULL";
+/// The recorded chains, on any connection that reaches the archive
+/// ([`crate::source::Source::reading`]).
+const RECORDED: &str = "SELECT input, number, begins_like, agrees_to FROM @source.chain";
 
 fn insert(chains: &mut Chains, row: ChainRow) -> Result<()> {
     let agrees_to = u64::try_from(row.agrees_to)
@@ -176,12 +175,13 @@ fn insert(chains: &mut Chains, row: ChainRow) -> Result<()> {
     Ok(())
 }
 
-/// The recorded chains of `input`. Only chains that begin like an earlier
-/// one are listed: a chain that begins like none has no path to walk.
+/// The recorded chains of `input`, every one of them: the comparison that
+/// finds a new chain's agreement visits each earlier chain.
 pub fn recorded(conn: &rusqlite::Connection, input: &str) -> Result<Chains> {
     let source = crate::source::Source::reading(conn)?;
-    let statement =
-        crate::row::Statement::<ChainRow>::built(source.sql(&format!("{AGREEING} AND input = ?1")));
+    let statement = crate::row::Statement::<ChainRow>::built(
+        source.sql(&format!("{RECORDED} WHERE input = ?1")),
+    );
     let mut chains = Chains::default();
     for row in conn.all(&statement, [input])? {
         insert(&mut chains, row)?;
@@ -189,8 +189,10 @@ pub fn recorded(conn: &rusqlite::Connection, input: &str) -> Result<Chains> {
     Ok(chains)
 }
 
-/// The recorded chains of every input that has a chain beginning like an
-/// earlier one, or of the `selected` inputs only.
+/// The recorded chains that begin like an earlier one, by input, of every
+/// input or of the `selected` inputs only. A chain that begins like none
+/// is left out: no newer chain is known to agree with it through it, and
+/// [`Chains::known`] walks no further than the chains listed.
 pub fn recorded_by_input(
     conn: &rusqlite::Connection,
     selected: Option<&[String]>,
@@ -198,10 +200,15 @@ pub fn recorded_by_input(
     let source = crate::source::Source::reading(conn)?;
     let (sql, json) = match selected {
         Some(inputs) => (
-            format!("{AGREEING} AND input IN (SELECT value FROM json_each(?1))"),
+            format!(
+                "{RECORDED} WHERE begins_like IS NOT NULL AND input IN (SELECT value FROM json_each(?1))"
+            ),
             Some(serde_json::to_string(inputs)?),
         ),
-        None => (format!("{AGREEING} AND ?1 IS NULL"), None),
+        None => (
+            format!("{RECORDED} WHERE begins_like IS NOT NULL AND ?1 IS NULL"),
+            None,
+        ),
     };
     let statement = crate::row::Statement::<ChainRow>::built(source.sql(&sql));
     let mut by_input = std::collections::HashMap::<String, Chains>::new();

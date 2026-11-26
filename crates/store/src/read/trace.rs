@@ -53,7 +53,11 @@ impl Reader<'_> {
     pub(crate) fn chains_holding(&self, input: &str, chain: i64, end: u64) -> Result<Vec<i64>> {
         let conn = self.conn()?;
         let chains = crate::archive::writer::agreement::recorded(conn, input)?;
-        if chains.0.is_empty() {
+        if chains
+            .0
+            .values()
+            .all(|agreement| agreement.begins_like.is_none())
+        {
             return Ok(Vec::new());
         }
         let numbers: Vec<i64> = conn.values(

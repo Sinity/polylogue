@@ -237,7 +237,8 @@ fn killed_and_restarted(point: &str) {
         let (mut engine, _lock) = w.engine(64 << 20);
         assert_eq!(engine.run_pass().unwrap().errors, [], "{point}");
     }
-    assert_eq!(crate::tables::dump(&w), restarted, "{point}");
+    let differ = crate::tables::differences(&restarted, &crate::tables::dump(&w));
+    assert!(differ.is_empty(), "{point}: {differ}");
     assert_eq!(totals(&w), restarted_totals, "{point}");
 }
 

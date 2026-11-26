@@ -28,7 +28,14 @@ fn send(archive: &Archive, writer: &Writer, mut b: Batch) {
     let files = if matches!(b.change, Change::Reparse { .. }) {
         Vec::new()
     } else {
-        let (blob, file) = archive.prepare_blob(&SOURCE_RECORD).unwrap();
+        // A rewrite's bytes differ from the first version's: bytes alike
+        // would read alike (docs/archive.md, readings).
+        let bytes = if matches!(b.change, Change::Rewritten) {
+            [b'w'; 100]
+        } else {
+            SOURCE_RECORD
+        };
+        let (blob, file) = archive.prepare_blob(&bytes).unwrap();
         b.new_blob = Some(blob);
         file.into_iter().collect()
     };

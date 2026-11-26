@@ -17,7 +17,7 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 9);
-    assert_eq!(INDEX_VERSION, 22);
+    assert_eq!(INDEX_VERSION, 23);
     for (create, expected) in [
         (
             ensure_archive as fn(&Connection) -> Result<()>,
@@ -39,15 +39,16 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     // An index written by an older build of another lineage.
-    set_version(&conn, 23).unwrap();
+    let other = INDEX_VERSION + 1;
+    set_version(&conn, other).unwrap();
     assert!(matches!(
         ensure_index(&conn),
         Err(StoreError::IndexVersion {
-            found: 23,
+            found,
             wanted: INDEX_VERSION
-        })
+        }) if found == other
     ));
-    assert_eq!(version(&conn).unwrap(), 23);
+    assert_eq!(version(&conn).unwrap(), other);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
             .get::<_, String>(0))

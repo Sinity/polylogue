@@ -3,6 +3,9 @@ use super::*;
 fn connection() -> Connection {
     let c = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&c).unwrap();
+    // The archive's tables beside the index, as a writer reaches them.
+    c.execute_batch(&crate::source::schema().unwrap().ddl)
+        .unwrap();
     crate::sql_functions::register(&c).unwrap();
     c.pragma_update(None, "foreign_keys", true).unwrap();
     c

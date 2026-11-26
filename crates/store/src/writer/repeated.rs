@@ -77,7 +77,11 @@ pub(super) fn follow(
     }
     // What the older chains share with it. A chain that begins like none
     // agrees with none.
-    if chains.0.contains_key(&chain) {
+    if chains
+        .0
+        .get(&chain)
+        .is_some_and(|agreement| agreement.begins_like.is_some())
+    {
         let older: Vec<i64> = tx
             .prepare_cached("SELECT chain FROM parse_state WHERE input_pk=?1 AND chain<?2")?
             .query_map(params![input_pk, chain], |row| row.get(0))?
