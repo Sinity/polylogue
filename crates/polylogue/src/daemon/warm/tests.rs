@@ -550,7 +550,10 @@ fn one_provider_call_per_query_text_in_flight() {
         listener.accept().is_err(),
         "a second provider call was made"
     );
-    assert_eq!(answers, vec![Ok(()); readers]);
+    assert_eq!(answers.len(), readers);
+    for answer in answers {
+        answer.unwrap();
+    }
 }
 
 #[test]
