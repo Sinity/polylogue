@@ -4,9 +4,9 @@
 //! its help; the schema key `argument_form = "positional"` marks the one
 //! word a verb takes after its name.
 use crate::brief::StartSource;
-use command_surface::{JsonSchema, StepDeclarations};
-use polylogue_model::read::{ReadBudget, ReadDelivery, View};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use command_surface::JsonSchema;
+use polylogue_model::read::{ReadBudget, ReadDelivery, ReadOptions};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// The shipped selection for a read invoked without explicit rows.
@@ -14,7 +14,8 @@ pub const fn usual_read_selection(follow: bool) -> &'static str {
     if follow { "running" } else { "recent" }
 }
 
-/// `read`: show the rows' content.
+/// `read`: show the rows' content. How to read them is [`ReadOptions`], the
+/// type the reading receives; the rest says how the page is delivered.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadStep {
@@ -22,18 +23,8 @@ pub struct ReadStep {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     #[schemars(extend("unlisted" = true))]
     pub displayed: bool,
-    /// The reading view
-    #[serde(default)]
-    pub view: View,
-    /// Item kinds to show, beyond the view's own
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub show: Vec<String>,
-    /// Item kinds to hide, from the same table as show
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hide: Vec<String>,
-    /// Start at this message, time within the session or absolute time; `seen` where this reader stopped
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub from: Option<String>,
+    #[serde(flatten)]
+    pub options: ReadOptions,
     /// End before this message, time or `compaction[:N]`
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub until: Option<String>,
@@ -43,15 +34,6 @@ pub struct ReadStep {
     /// The last N messages of each row
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last: Option<u64>,
-    /// N messages either side of the selected item
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub around: Option<u64>,
-    /// With the context view: a message or compaction[:N] to compare with
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub diff: Option<String>,
-    /// The alternate to read (`translation:pl`), or `none` for the originals
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alternate: Option<String>,
     /// Show the alternate beside its original
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub beside: bool,
@@ -61,21 +43,12 @@ pub struct ReadStep {
     /// The seed of a blind reading's labels
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seed: Option<u64>,
-    /// Read only the named physical session
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub physical: bool,
-    /// Label the human `user` instead of `you`, for excerpts shared with others
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub neutral_names: bool,
     /// Keep printing what the rows' sessions do; the last step of its line
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub follow: bool,
     /// With follow: stop when every selected session settles
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub until_idle: bool,
-    /// Annotations and pages as they stood at this time or position
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub at: Option<String>,
     /// How the compare view lines rows up: prompt, lineage, time or file
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub align: Option<String>,
@@ -88,7 +61,7 @@ pub struct ReadStep {
     /// Continue from a previous page's cursor
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
-    /// A page, or the stream the command line writes a directory bundle from
+    /// A page, a stream the command line writes a file from, or a bundle's stream
     #[serde(default, skip_serializing_if = "is_page")]
     #[schemars(extend("unlisted" = true))]
     pub delivery: ReadDelivery,
@@ -117,9 +90,9 @@ pub struct BriefStep {
     /// The session that will continue from the brief
     #[serde(rename = "for", default, skip_serializing_if = "Option::is_none")]
     pub for_session: Option<String>,
-    /// Tokens the brief may hold
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub budget: Option<u64>,
+    /// Tokens the brief may hold; none lifts the token cap
+    #[serde(default, skip_serializing_if = "ReadBudget::is_default")]
+    pub budget: ReadBudget,
     /// Continue from a previous page's cursor
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cursor: Option<String>,
@@ -369,33 +342,6 @@ pub struct ResumeStep {
     /// With in: interrupt the session once the new one runs
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub stop_source: bool,
-}
-
-/// Every verb's declaration, in the order of the verb table.
-pub fn declarations() -> StepDeclarations {
-    fn declare<A: DeserializeOwned + JsonSchema>(steps: &mut StepDeclarations, verb: &str) {
-        steps
-            .declare::<A>(
-                verb,
-                crate::commands::arguments::from_schema(&schemars::schema_for!(A), false),
-            )
-            .unwrap_or_else(|failure| panic!("{verb}: {}", failure.message));
-    }
-    let mut steps = StepDeclarations::default();
-    declare::<ReadStep>(&mut steps, "read");
-    declare::<PickStep>(&mut steps, "pick");
-    declare::<BriefStep>(&mut steps, "brief");
-    declare::<NoteStep>(&mut steps, "note");
-    declare::<TagStep>(&mut steps, "tag");
-    declare::<EditStep>(&mut steps, "edit");
-    declare::<WithdrawStep>(&mut steps, "withdraw");
-    declare::<JudgeStep>(&mut steps, "judge");
-    declare::<SaveStep>(&mut steps, "save");
-    declare::<SendStep>(&mut steps, "send");
-    declare::<AnswerStep>(&mut steps, "answer");
-    declare::<InterruptStep>(&mut steps, "interrupt");
-    declare::<ResumeStep>(&mut steps, "resume");
-    steps.cli_selection("selection", "references")
 }
 
 #[cfg(test)]

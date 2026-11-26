@@ -436,7 +436,7 @@ fn historical_session_positions_refuse_another_generation_and_future_counters() 
 }
 
 #[test]
-fn context_read_at_keeps_opaque_numeric_message_coordinates() {
+fn a_selected_message_with_an_opaque_numeric_id_is_its_context_anchor() {
     let mut d = test_daemon::start_with_sources_and_workers(
         "first prompt",
         &|home| {
@@ -454,24 +454,18 @@ fn context_read_at_keeps_opaque_numeric_message_coordinates() {
     );
     d.pause_signals();
     for message in ["claude-code:2:3", "claude-code:02:03"] {
-        let words = [
-            "session:claude-code:numeric",
-            "read",
-            "--view",
-            "context",
-            "--at",
-            message,
-            "--budget",
-            "100000",
-        ]
-        .map(str::to_owned);
-        let parsed = crate::cli::line::parse(
-            &words,
-            &crate::cli::line::FirstWordCatalog::default(),
-            false,
-        )
-        .unwrap();
-        let page = crate::test_answers::read(Call::new("rows", json!({"selection":"session:claude-code:numeric", "steps":parsed.steps.into_iter().map(|step|step.step).collect::<Vec<_>>()})).answer(&d.daemon));
+        // The selection names the message; a numeric ID that also reads as
+        // a position stays a message reference.
+        let page = crate::test_answers::read(
+            Call::new(
+                "rows",
+                json!({
+                    "selection": format!("message:{message}"),
+                    "steps": [{"verb": "read", "view": "context", "budget": 100000}],
+                }),
+            )
+            .answer(&d.daemon),
+        );
         assert!(
             page.document
                 .items
@@ -901,7 +895,7 @@ fn historical_context_pages_bind_the_message_and_cutoff_through_append_and_reope
             let [crate::protocol::line::Step::Read(step)] = rows.steps.as_slice() else {
                 panic!("one bound read")
             };
-            assert_eq!(step.physical, physical);
+            assert_eq!(step.options.physical, physical);
             assert!(
                 seen.insert(serde_json::to_string(&ready.request).unwrap()),
                 "the context continuation advances"
@@ -986,9 +980,9 @@ pub(super) fn context_stream(
         target: target.into(),
         options,
         delivery: ReadDelivery::Stream,
-        format: "jsonl".into(),
+        format: polylogue_model::read::Format::Jsonl,
         budget: polylogue_model::read::ReadBudget::Default,
-        with_blobs: false,
+        alternates: Vec::new(),
         cursor: None,
     };
     let actor = polylogue_model::authorship::Authorship {
@@ -1070,26 +1064,9 @@ fn historical_context_refuses_around_and_fresh_physical_message_options() {
 }
 
 #[test]
-fn session_context_keeps_the_legacy_missing_message_refusal() {
+fn current_and_historical_context_streams_share_the_page_projection() {
     let d = test_daemon::start("neutral target text");
-    let call = historical_call(
-        "session:claude-code:s1",
-        &"claude-code:missing",
-        100000,
-        View::Context,
-    );
-    let error = crate::test_answers::refusal(call.answer(&d.daemon));
-    assert_eq!(error.code.as_deref(), Some("not_found"));
-    assert_eq!(
-        error.message,
-        "message claude-code:missing is not in the reading"
-    );
-}
-
-#[test]
-fn current_legacy_and_historical_context_streams_share_the_page_projection() {
-    let d = test_daemon::start("neutral target text");
-    for at in [None, Some("claude-code:u1"), Some("2026-11-21T10:00:00Z")] {
+    for at in [None, Some("2026-11-21T10:00:00Z")] {
         let call = match at {
             Some(at) => historical_call("session:claude-code:s1", &at, 100000, View::Context),
             None => Call::new(
@@ -1111,40 +1088,6 @@ fn current_legacy_and_historical_context_streams_share_the_page_projection() {
         assert_eq!(complete.counts.sessions, 1);
         assert_eq!(complete.counts.messages, 1);
     }
-}
-
-#[test]
-fn an_explicit_context_message_keeps_the_matching_legacy_anchor_and_refuses_a_double_anchor() {
-    let d = test_daemon::start("neutral target text");
-    let page = crate::test_answers::read(
-        historical_call(
-            "message:claude-code:u1",
-            &"claude-code:u1",
-            100000,
-            View::Context,
-        )
-        .answer(&d.daemon),
-    );
-    assert!(
-        page.document
-            .items
-            .iter()
-            .any(|item| item.source.reference == "message:claude-code:u1")
-    );
-    let error = crate::test_answers::refusal(
-        historical_call(
-            "message:claude-code:u1",
-            &"claude-code:another",
-            100000,
-            View::Context,
-        )
-        .answer(&d.daemon),
-    );
-    assert_eq!(error.code.as_deref(), Some("bad_request"));
-    assert_eq!(
-        error.message,
-        "context has two different message anchors; select one message"
-    );
 }
 
 #[test]
@@ -1204,9 +1147,9 @@ fn context_stream_stops_on_scope_reset_and_cancellation_before_source_frames() {
                         ..Default::default()
                     },
                     delivery: ReadDelivery::Stream,
-                    format: "jsonl".into(),
+                    format: polylogue_model::read::Format::Jsonl,
                     budget: polylogue_model::read::ReadBudget::Default,
-                    with_blobs: false,
+                    alternates: Vec::new(),
                     cursor: None,
                 },
                 &operation,

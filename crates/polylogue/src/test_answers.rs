@@ -5,6 +5,12 @@
 use command_surface::Answer;
 use std::fmt::Debug;
 
+/// An ok answer's value as its JSON.
+#[track_caller]
+pub(crate) fn json<T: Debug + serde::Serialize>(answer: Answer<T>) -> serde_json::Value {
+    serde_json::to_value(ok(answer)).expect("a typed answer serializes")
+}
+
 #[track_caller]
 pub(crate) fn ok<T: Debug>(answer: Answer<T>) -> T {
     match answer {
