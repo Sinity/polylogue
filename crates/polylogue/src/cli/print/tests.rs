@@ -222,7 +222,7 @@ fn deadline_failure_prints_the_hint_next_line_and_notes() {
         concat!(
             "polylogue: deadline_exceeded: the read deadline was exceeded\n",
             "polylogue: hint: rerun with `--deadline none`, or narrow to one session\n",
-            "polylogue: complete without a deadline: polylogue 'session:claude-code:ID' read --deadline none\n",
+            "polylogue: complete without a deadline: polylogue --request-id test-request --deadline none -- session:claude-code:ID read\n",
             "polylogue: note: stopped during reading\n"
         )
     );
@@ -242,6 +242,34 @@ fn grammar_failure_prints_the_working_line() {
         concat!(
             "polylogue: not_a_verb: \"claude-code:ID\" is not a verb; read takes no words\n",
             "polylogue: try: polylogue claude-code:ID read\n"
+        )
+    );
+}
+
+#[test]
+fn a_failed_step_prints_its_suggestion_hint_and_candidates() {
+    let error = crate::protocol::failure(polylogue_model::Code::Ambiguous, "choose a session")
+        .with_suggestion(command_surface::Suggestion::Query(
+            "polylogue session:codex:one read".into(),
+        ))
+        .with_hint("use the full reference")
+        .with_candidates(vec!["session:codex:one".into(), "session:codex:two".into()]);
+    let reply = protocol::line::LineAnswer::Steps(protocol::line::StepsAnswer {
+        resolved: None,
+        steps: vec![protocol::line::StepReport {
+            verb: "read".into(),
+            request_id: None,
+            outcome: protocol::line::StepOutcome::Failed { error },
+        }],
+    });
+    assert_eq!(
+        line(&reply, TextStyle::Plain),
+        concat!(
+            "polylogue: ambiguous: choose a session\n",
+            "polylogue: try: polylogue session:codex:one read\n",
+            "polylogue: hint: use the full reference\n",
+            "  session:codex:one\n",
+            "  session:codex:two\n"
         )
     );
 }

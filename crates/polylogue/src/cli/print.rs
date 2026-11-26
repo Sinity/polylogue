@@ -124,12 +124,10 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
                 undo.extend(lines);
             }
             StepOutcome::Failed { error } => {
-                let _ = writeln!(
-                    out,
-                    "{} failed: {}",
-                    step.verb,
-                    polylogue_render::terminal::escape(&error.message)
-                );
+                out.push_str(&failure(
+                    &command_surface::Answer::error(error.clone()),
+                    style == TextStyle::Ansi,
+                ));
             }
             StepOutcome::NotRun => {
                 let _ = writeln!(out, "{} not run", step.verb);
@@ -137,11 +135,10 @@ pub fn line(answer: &protocol::line::LineAnswer, style: TextStyle) -> String {
             StepOutcome::WouldDo { would, refusal } => {
                 let _ = writeln!(out, "{}", polylogue_render::terminal::escape(would));
                 if let Some(refusal) = refusal {
-                    let _ = writeln!(
-                        out,
-                        "  refused: {}",
-                        polylogue_render::terminal::escape(&refusal.message)
-                    );
+                    out.push_str(&failure(
+                        &command_surface::Answer::error(refusal.clone()),
+                        style == TextStyle::Ansi,
+                    ));
                 }
             }
         }

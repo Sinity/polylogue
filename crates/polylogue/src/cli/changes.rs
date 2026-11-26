@@ -21,18 +21,6 @@ pub fn run(
     let mut request = call.clone();
     // The feed's arguments: only the last applied position.
     request.arguments = values.request.arguments.clone();
-    if request
-        .arguments
-        .str("after")
-        .is_some_and(|position| ChangePosition::parse(position).is_none())
-    {
-        return fail(
-            client.output,
-            true,
-            polylogue_model::Code::BadValue,
-            "after takes a position GENERATION:INDEX:ARCHIVE",
-        );
-    }
     match send(&archive, &request, &mut io::stdout().lock(), timeout) {
         Ok(code) => ExitCode::from(code),
         Err(e)

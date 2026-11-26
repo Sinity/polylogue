@@ -311,10 +311,18 @@ fn a_client_read_deadline_keeps_the_timeout_and_next_request() {
         false,
     )
     .unwrap();
-    for kind in [io::ErrorKind::TimedOut, io::ErrorKind::WouldBlock] {
-        let result = write_read_stream(&startup.client, &parsed, &mut Default::default(), |_| {
-            Err(kind.into())
-        });
+    for remaining in [
+        std::time::Duration::ZERO,
+        std::time::Duration::from_millis(1),
+    ] {
+        let (mut socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        let until = std::time::Instant::now() + remaining;
+        let result = write_read_stream(
+            &startup.client,
+            &parsed,
+            &mut Default::default(),
+            |callback| crate::client::receive(&mut socket, Some(until), callback),
+        );
         let Err(OutputError::Answer(answer)) = result else {
             panic!("a client deadline must return the read deadline reply");
         };

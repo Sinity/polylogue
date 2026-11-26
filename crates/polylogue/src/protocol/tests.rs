@@ -23,22 +23,33 @@ fn a_pending_write_is_degraded_with_its_note_and_http_success() {
 
 #[test]
 fn failures_follow_the_shared_table() {
-    use FailureKind as K;
     use polylogue_model::Code::*;
     // Expected transport behavior is written from the Exit codes table.
-    let rows: &[(K, u8, Option<u16>, bool, &[polylogue_model::Code])] = &[
+    let rows = [
         (
-            K::InvalidQuery,
+            FailureKind::InvalidQuery,
             2,
             Some(400),
             false,
-            &[Query, Sql, InvalidQuery],
+            &[Query, Sql, InvalidQuery][..],
         ),
-        (K::UnknownField, 2, Some(400), false, &[UnknownField]),
-        (K::BadValue, 2, Some(400), false, &[BadValue]),
-        (K::NotAQuery, 2, Some(400), false, &[NotAQuery]),
         (
-            K::BadRequest,
+            FailureKind::UnknownField,
+            2,
+            Some(400),
+            false,
+            &[UnknownField][..],
+        ),
+        (FailureKind::BadValue, 2, Some(400), false, &[BadValue][..]),
+        (
+            FailureKind::NotAQuery,
+            2,
+            Some(400),
+            false,
+            &[NotAQuery][..],
+        ),
+        (
+            FailureKind::BadRequest,
             2,
             Some(400),
             false,
@@ -60,13 +71,25 @@ fn failures_follow_the_shared_table() {
                 NotAVerb,
                 NeedsAll,
                 RowNumbersOffTerminal,
-            ],
+            ][..],
         ),
-        (K::Ambiguous, 2, Some(400), false, &[Ambiguous]),
-        (K::StaleCursor, 2, Some(400), false, &[StaleCursor]),
-        (K::NotBuilt, 2, Some(501), false, &[NotBuilt]),
         (
-            K::NotYetAvailable,
+            FailureKind::Ambiguous,
+            2,
+            Some(400),
+            false,
+            &[Ambiguous][..],
+        ),
+        (
+            FailureKind::StaleCursor,
+            2,
+            Some(400),
+            false,
+            &[StaleCursor][..],
+        ),
+        (FailureKind::NotBuilt, 2, Some(501), false, &[NotBuilt][..]),
+        (
+            FailureKind::NotYetAvailable,
             2,
             Some(501),
             true,
@@ -76,10 +99,10 @@ fn failures_follow_the_shared_table() {
                 PrimaryContextMissing,
                 PrimaryContextPending,
                 PrimaryContextStale,
-            ],
+            ][..],
         ),
         (
-            K::Refused,
+            FailureKind::Refused,
             3,
             Some(403),
             false,
@@ -91,10 +114,10 @@ fn failures_follow_the_shared_table() {
                 Confirm,
                 Rejected,
                 PrimaryContextRefused,
-            ],
+            ][..],
         ),
         (
-            K::NotFound,
+            FailureKind::NotFound,
             4,
             Some(404),
             false,
@@ -105,10 +128,10 @@ fn failures_follow_the_shared_table() {
                 AttachmentMissing,
                 AttachmentUnavailable,
                 UnknownImportJob,
-            ],
+            ][..],
         ),
         (
-            K::Conflict,
+            FailureKind::Conflict,
             4,
             Some(409),
             false,
@@ -124,11 +147,17 @@ fn failures_follow_the_shared_table() {
                 NotAwaitingApproval,
                 JobEnded,
                 BrowserActionsOff,
-            ],
+            ][..],
         ),
-        (K::StoppedEarly, 5, Some(500), false, &[StoppedEarly]),
         (
-            K::NotRunning,
+            FailureKind::StoppedEarly,
+            5,
+            Some(500),
+            false,
+            &[StoppedEarly][..],
+        ),
+        (
+            FailureKind::NotRunning,
             6,
             None,
             true,
@@ -137,13 +166,19 @@ fn failures_follow_the_shared_table() {
                 DaemonRequired,
                 ShuttingDown,
                 DaemonProtocolMismatch,
-            ],
+            ][..],
         ),
-        (K::Timeout, 7, Some(504), true, &[DeadlineExceeded, Busy]),
-        (K::Internal, 4, Some(500), false, &[Internal]),
-        (K::Cancelled, 7, None, true, &[Cancelled]),
         (
-            K::Io,
+            FailureKind::Timeout,
+            7,
+            Some(504),
+            true,
+            &[DeadlineExceeded, Busy][..],
+        ),
+        (FailureKind::Internal, 4, Some(500), false, &[Internal][..]),
+        (FailureKind::Cancelled, 7, None, true, &[Cancelled][..]),
+        (
+            FailureKind::Io,
             4,
             Some(500),
             false,
@@ -161,11 +196,11 @@ fn failures_follow_the_shared_table() {
                 SinexUnavailable,
                 PrimaryContextUnavailable,
                 PrimaryContextInvalid,
-            ],
+            ][..],
         ),
     ];
     let mut seen = std::collections::BTreeSet::new();
-    for &(kind, exit, http, retryable, codes) in rows {
+    for &(kind, exit, http, retryable, codes) in &rows {
         for &code in codes {
             assert!(seen.insert(code), "duplicate {code:?}");
             let answer = Answer::<Value>::error(failure(code, "failed"));
