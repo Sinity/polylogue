@@ -376,6 +376,9 @@ pub struct Reader<'a> {
     annotation_history_ready: std::cell::RefCell<std::collections::BTreeSet<i64>>,
     /// How many times the read was ended for a newer one ([`Self::restarts`]).
     restarts: std::cell::Cell<u64>,
+    /// The read was ended ([`Self::restart`]); the next access starts a new
+    /// one on the same connection.
+    ended: std::cell::Cell<bool>,
 }
 
 /// The path a connection was opened through and the file it named: a build
@@ -727,6 +730,7 @@ impl ReadPool {
             calendar: crate::sql_functions::CalendarContext::new(),
             annotation_history_ready: std::cell::RefCell::new(Default::default()),
             restarts: std::cell::Cell::new(0),
+            ended: std::cell::Cell::new(false),
         };
         // A replaced index is a new file, never an old inode reused. Compare
         // around the open without starting a read or delaying an unused slot.
@@ -949,6 +953,11 @@ impl Reader<'_> {
     pub(crate) fn conn(&self) -> Result<&Connection> {
         self.check()?;
         if let Some((conn, _)) = self.started.get() {
+            // A read ended by `restart` starts again on the file it had.
+            if self.ended.get() {
+                self.start_on(conn, None)?;
+                self.ended.set(false);
+            }
             return Ok(conn);
         }
         loop {
@@ -1016,6 +1025,12 @@ impl Reader<'_> {
         let (conn, identity) = opened
             .as_ref()
             .expect("an unstarted reader holds its connection");
+        self.start_on(conn, Some(identity))
+    }
+
+    /// Starts the read on `conn`; with `identity`, false when the pool's
+    /// index is no longer that file.
+    fn start_on(&self, conn: &Connection, identity: Option<&IndexIdentity>) -> Result<bool> {
         // An unused slot holds no read and no lock. Start the read on
         // both databases and check them at the first database access.
         if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
@@ -1059,7 +1074,9 @@ impl Reader<'_> {
         if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
             return Err(StoreError::ReadPoolClosed);
         }
-        if self.pool.index_identity()? != *identity {
+        if let Some(identity) = identity
+            && self.pool.index_identity()? != *identity
+        {
             return Ok(false);
         }
         // One statement starts the read on `index.db` (`main`), then on
@@ -1075,7 +1092,13 @@ impl Reader<'_> {
         // already-started read keeps its open file and snapshot.
         match started {
             Ok(()) => Ok(true),
-            Err(_) if self.pool.index_identity()? != *identity => Ok(false),
+            Err(_)
+                if identity.is_some_and(|identity| {
+                    self.pool.index_identity().ok().as_ref() != Some(identity)
+                }) =>
+            {
+                Ok(false)
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -1090,12 +1113,11 @@ impl Reader<'_> {
 
     /// Ends the read in progress; the next access starts a new one.
     pub(crate) fn restart(&self) -> Result<()> {
-        if self.state.get() == ReadState::Ready {
-            self.conn
-                .as_ref()
-                .expect("reader holds a connection until dropped")
-                .execute_batch("ROLLBACK; BEGIN")?;
-            self.state.set(ReadState::Deferred);
+        if let Some((conn, _)) = self.started.get()
+            && !self.ended.get()
+        {
+            conn.execute_batch("ROLLBACK; BEGIN")?;
+            self.ended.set(true);
             self.annotation_history_ready.borrow_mut().clear();
         }
         self.restarts.set(self.restarts.get() + 1);
