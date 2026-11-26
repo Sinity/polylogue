@@ -9,8 +9,8 @@ use polylogue_store::{
     fixture::authored::operator_request,
     read::{Lane, limit::ReadLimit},
 };
-use polylogue_testkit::morrow::{Morrow, Set};
-use std::time::{Duration, Instant};
+use polylogue_testkit::{Morrow, Set};
+use std::time::Duration;
 
 #[test]
 fn checkout_after_a_write_reads_the_alternate_search_entry() {
