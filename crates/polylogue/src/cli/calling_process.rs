@@ -1,5 +1,5 @@
-//! Options that act on the calling machine (`--to FILE`, `--out FILE`,
-//! `--exec`): the command line reads them and they never enter a request.
+//! Options that act on the calling machine (`--to FILE`, `--exec`): the
+//! command line reads them and they never enter a request.
 //! Each struct declares a row's options the way a request type declares its
 //! arguments; [`options`] reads them back typed.
 use command_surface::{JsonSchema, ParsedCommand};

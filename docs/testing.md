@@ -50,7 +50,7 @@ These properties are required for every input; named tests identify existing cov
 
 Crash tests stop the writer after each of append, sync and commit, and check that the next open resumes each state a crash can leave, losing only the uncommitted group ([architecture.md#durability](architecture.md#durability) owns the states).
 
-The store and engine have a `faults` feature that adds a fault registry. It starts empty: only a test's own call to arm a named point activates it, in that process. Points sit at write steps (between commits, inside a group, during migration and catch-up) and at readers whose deadlines a test exercises. Shipped builds never enable the feature. Tests that check durability use a real filesystem, not a memory one.
+The store and engine have a `faults` feature that adds a fault registry. Only a test's own call to arm a named point activates it, in that process. The names checked by product code are declared in `crates/store/src/fault.rs`; arming or checking an undeclared name is an error. Points sit at write steps (between commits, inside a group, during migration and catch-up) and at readers whose deadlines a test exercises. Shipped builds never enable the feature. Tests that check durability use a real filesystem, not a memory one.
 
 ## Scenarios
 
@@ -96,7 +96,7 @@ What is measured: the first build per stage; incremental updates; interactive re
 
 **Reads.** The read benchmark generates one 16 MiB session and eight small ones with the testkit builders, checks that a complete read holds every message once in order, that windows at the first, middle and last positions match it, and that repeated windows render the same bytes, then reports daemon start, the first request after each restart and later requests (median and p95), page counts and daemon memory.
 
-The hosted check runs the whole suite as four nextest shards in parallel; its stages (setup, build, run) are recorded per job in the run's summary lines. A pull request whose changes select every test took 8.8 minutes end to end on 26 November 2026, each shard 2 to 3 minutes of setup, 2 to 3.5 minutes of building and 2 to 3 minutes of running. Selected tests take less; recorded runs give the current figures (`gh run list --workflow check`).
+The suite runs in the hosted check on each pull request, as four nextest shards in parallel; locally an agent runs only the tests it writes or changes ([development](development.md)). The shards' stages (setup, build, run) are recorded per job in the run's summary lines. A pull request whose changes select every test took 8.8 minutes end to end on 26 November 2026, each shard 2 to 3 minutes of setup, 2 to 3.5 minutes of building and 2 to 3 minutes of running. Selected tests take less; recorded runs give the current figures (`gh run list --workflow check`).
 
 ## Row dictionary
 

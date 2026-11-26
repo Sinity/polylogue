@@ -117,7 +117,7 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
         "{change}"
     );
     assert_eq!(
-        archive.build_progress().unwrap().reason.as_ref(),
+        archive.build_progress().unwrap().1.reason.as_ref(),
         Some(&reason)
     );
 
@@ -126,7 +126,7 @@ fn set_aside_and_rebuild(change: &str, reason: IndexRebuildReason) {
     drop((archive, lock));
     let (archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     assert_eq!(
-        archive.build_progress().unwrap().reason.as_ref(),
+        archive.build_progress().unwrap().1.reason.as_ref(),
         Some(&reason),
         "{change}"
     );

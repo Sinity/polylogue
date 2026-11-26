@@ -1,9 +1,8 @@
 //! The verbs that write annotations: `note`, `tag`, `edit`, `withdraw` and
 //! `judge`. Notes and tags over the rows are one query annotation, which the
 //! writer checks and expands into one annotation per row.
-use super::{
-    RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use, undo_line,
-};
+use super::{RowRule, Selection, StepCall, StepDone, Verb, not_built, not_built_use, undo_line};
+use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::{EditStep, JudgeStep, NoteStep, TagStep, WithdrawStep};
@@ -19,6 +18,7 @@ impl Verb for Note {
     type Step = NoteStep;
     const NAME: &'static str = "note";
     const ROWS: RowRule = RowRule::Things;
+    const ACCESS: ToolAccess = ToolAccess::Write;
     fn run(
         step: NoteStep,
         selection: &Selection,
@@ -132,6 +132,7 @@ impl Verb for Tag {
     type Step = TagStep;
     const NAME: &'static str = "tag";
     const ROWS: RowRule = RowRule::Things;
+    const ACCESS: ToolAccess = ToolAccess::Write;
     fn run(step: TagStep, selection: &Selection, call: &StepCall<'_>) -> Result<StepDone, Failure> {
         each(tag(&step)?, selection, call)
     }
@@ -205,18 +206,15 @@ fn each(
                 "an annotation step constructed another write",
             ));
         };
-        return Ok(StepDone {
-            reply: StepAnswer::WroteEach(polylogue_model::user::AssertQueryOutcome::all_tagged(
-                resolved,
-            )),
-            undo: Vec::new(),
-            envelope: Default::default(),
-            outcome: if targets == 0 {
-                command_surface::Outcome::Empty(())
-            } else {
-                command_surface::Outcome::Ok(())
-            },
-        });
+        let reply = StepAnswer::WroteEach(polylogue_model::user::AssertQueryOutcome::all_tagged(
+            resolved,
+        ));
+        return Ok(if targets == 0 {
+            command_surface::Answer::empty(reply)
+        } else {
+            command_surface::Answer::ok(reply)
+        }
+        .into());
     }
     let mut committed = Vec::new();
     let answer = crate::daemon::service::submit_result(
@@ -246,7 +244,7 @@ fn each(
     } else {
         answer
     };
-    let mut done = delegated(answer, StepAnswer::WroteEach)?;
+    let mut done = StepDone::from(answer.map(StepAnswer::WroteEach)).checked()?;
     done.undo
         .extend(undo_line(call.call.request_id, &committed)?);
     Ok(done)
@@ -257,6 +255,7 @@ impl Verb for Edit {
     type Step = EditStep;
     const NAME: &'static str = "edit";
     const ROWS: RowRule = RowRule::Things;
+    const ACCESS: ToolAccess = ToolAccess::Write;
     fn run(
         step: EditStep,
         selection: &Selection,
@@ -353,7 +352,7 @@ fn wrote(
             receipt.outcome
         },
     );
-    let mut done = delegated(answer, StepAnswer::Wrote)?;
+    let mut done = StepDone::from(answer.map(StepAnswer::Wrote)).checked()?;
     done.undo
         .extend(undo_line(call.call.request_id, &committed)?);
     Ok(done)
@@ -364,6 +363,7 @@ impl Verb for Withdraw {
     type Step = WithdrawStep;
     const NAME: &'static str = "withdraw";
     const ROWS: RowRule = RowRule::Things;
+    const ACCESS: ToolAccess = ToolAccess::Write;
     fn run(
         step: WithdrawStep,
         selection: &Selection,
@@ -429,6 +429,7 @@ impl Verb for Judge {
     type Step = JudgeStep;
     const NAME: &'static str = "judge";
     const ROWS: RowRule = RowRule::Things;
+    const ACCESS: ToolAccess = ToolAccess::Write;
     fn run(
         step: JudgeStep,
         selection: &Selection,

@@ -41,7 +41,7 @@ fn claim_ids(d: &test_daemon::TestDaemon) -> Vec<String> {
         crate::test_daemon::Call::new("internal mail-claim", serde_json::json!({"session": s1()}))
             .authorship(invocation(d).authorship)
             .answer(&d.daemon);
-    crate::test_answers::ok(answer)["deliveries"]
+    crate::test_answers::json(answer)["deliveries"]
         .as_array()
         .unwrap()
         .iter()
@@ -85,8 +85,8 @@ fn concurrent_claims_hand_each_delivery_over_once() {
 #[test]
 fn a_message_with_no_channel_is_refused_and_recorded() {
     let send = |d: &test_daemon::TestDaemon, live: bool| {
-        crate::test_answers::ok(
-            super::send_message(
+        crate::test_answers::json(
+            super::send(
                 &d.daemon,
                 &invocation(d),
                 &polylogue_store::user_writes::new_request_id(),
@@ -122,8 +122,8 @@ fn a_message_with_no_channel_is_refused_and_recorded() {
 #[test]
 fn a_broadcast_resolves_its_recipients_when_sent() {
     let d = test_daemon::start_with_clock("broadcast", at("2026-03-02T10:00:00Z"));
-    let answer = crate::test_answers::ok(
-        super::send_message(
+    let answer = crate::test_answers::json(
+        super::send(
             &d.daemon,
             &invocation(&d),
             &polylogue_store::user_writes::new_request_id(),
@@ -207,51 +207,41 @@ fn hosted_codex(d: &test_daemon::TestDaemon) -> tempfile::TempDir {
     fixture
 }
 
-/// A hand-off starts a new hosted session in another harness, never a
-/// resume or fork of the source: its first turn opens with the pack's
-/// delivery reference, and the `pack` delivery names the source it was
-/// briefed from and the message it continues from. `--print` starts
-/// nothing, and a harness with no control protocol is refused.
+/// `resume --in` starts a new hosted session in another harness, never a
+/// resume or fork of the source: its first turn opens with the brief's
+/// delivery reference, and names the source it was briefed from and the
+/// message it continues from. Preparing the briefing starts nothing, and a
+/// harness with no control protocol is refused.
 #[test]
-fn a_hand_off_starts_a_new_session_briefed_from_the_source() {
+fn resume_in_starts_a_new_session_briefed_from_the_source() {
     let d = test_daemon::start_with_clock("hand-off source text", at("2026-03-01T10:05:00Z"));
     let fixture = hosted_codex(&d);
     let work = tempfile::tempdir().unwrap();
-    let hand_off = |to: &str, print: bool| {
-        super::hand_off(
-            &d.daemon,
-            &invocation(&d),
-            &HandOff {
-                request_id: &polylogue_store::user_writes::new_request_id(),
-                source: &s1(),
-                to,
-                cwd: Some(work.path()),
-                at: Some("message:claude-code:u1"),
-                print,
-                stop_source: false,
-            },
-        )
-        .unwrap()
+    let request_id = polylogue_store::user_writes::new_request_id();
+    let source = s1();
+    let continuation = |harness| Continuation {
+        request_id: &request_id,
+        source: &source,
+        harness,
+        cwd: Some(work.path()),
+        at: Some("message:claude-code:u1"),
+        stop_source: false,
     };
-    let printed = crate::test_answers::ok(hand_off("codex", true));
+    let printed = super::briefing(&d.daemon, &invocation(&d), &continuation("codex")).unwrap();
+    assert!(printed.text.starts_with("Hand-off from claude-code:s1"));
+    assert_eq!(printed.cwd.as_deref(), Some(work.path()));
     assert!(
-        printed["pack"]
-            .as_str()
-            .unwrap()
-            .contains("Hand-off from claude-code:s1")
+        turns(fixture.path()).is_empty(),
+        "a briefing starts nothing"
     );
-    assert_eq!(printed["channel"], "codex_app_server", "{printed}");
-    assert!(printed["refused"].is_null(), "{printed}");
-    let printed_unsupported = crate::test_answers::ok(hand_off("chatgpt", true));
-    assert!(printed_unsupported["channel"].is_null());
-    assert_eq!(
-        printed_unsupported["refused"],
-        "unsupported: chatgpt is not a harness Polylogue starts"
-    );
-    assert!(turns(fixture.path()).is_empty(), "print starts nothing");
-    let refused = serde_json::to_value(hand_off("chatgpt", false)).unwrap();
+    let refused = serde_json::to_value(
+        super::resume_in(&d.daemon, &invocation(&d), &continuation("chatgpt")).unwrap(),
+    )
+    .unwrap();
     assert_eq!(refused["error"]["kind"], "refused");
-    let answer = crate::test_answers::ok(hand_off("codex", false));
+    let answer = crate::test_answers::json(
+        super::resume_in(&d.daemon, &invocation(&d), &continuation("codex")).unwrap(),
+    );
     assert_eq!(answer["session"], "codex:t1");
     assert_eq!(answer["briefed_from"], "claude-code:s1");
     let delivery = answer["delivery"].as_str().unwrap();
@@ -293,7 +283,7 @@ fn role_addresses_and_role_starts() {
     let work = tempfile::tempdir().unwrap();
     let send = |target: &str| {
         serde_json::to_value(
-            super::send_message(
+            super::send(
                 &d.daemon,
                 &invocation(&d),
                 &polylogue_store::user_writes::new_request_id(),
@@ -343,8 +333,8 @@ fn role_addresses_and_role_starts() {
     drop(reader);
     // The instance runs on its hosted connection (no live events have
     // arrived yet), so a message reaches it rather than starting another.
-    let pinged = crate::test_answers::ok(
-        super::send_message(
+    let pinged = crate::test_answers::json(
+        super::send(
             &d.daemon,
             &invocation(&d),
             &polylogue_store::user_writes::new_request_id(),
@@ -364,8 +354,8 @@ fn role_addresses_and_role_starts() {
     d.daemon
         .acts
         .release_host(&SessionId::parse("codex:t1").unwrap());
-    let restarted = crate::test_answers::ok(
-        super::send_message(
+    let restarted = crate::test_answers::json(
+        super::send(
             &d.daemon,
             &invocation(&d),
             &polylogue_store::user_writes::new_request_id(),
@@ -416,8 +406,8 @@ fn new_instance_ping_text_says_how_to_reply() {
 fn an_authored_finding_replies_to_the_message() {
     use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
     let d = test_daemon::start_with_clock("answer through assert", at("2026-03-02T10:00:00Z"));
-    let sent = crate::test_answers::ok(
-        super::send_message(
+    let sent = crate::test_answers::json(
+        super::send(
             &d.daemon,
             &invocation(&d),
             &polylogue_store::user_writes::new_request_id(),

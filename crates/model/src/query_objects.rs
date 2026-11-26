@@ -158,7 +158,7 @@ pub struct ExecutionBinding {
 pub enum ExecutionPresentation {
     Query,
     Read {
-        options: crate::read::ReadOptions,
+        options: Box<crate::read::ReadOptions>,
         delivery: crate::read::ReadDelivery,
         format: crate::read::Format,
         /// Logical limits before reserving this response's envelope bytes.

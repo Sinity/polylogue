@@ -290,13 +290,14 @@ fn declared_line_format_round_trips_options_literals_references_and_deadline_uni
 
 #[test]
 fn read_budget_null_zero_and_absence_round_trip_the_real_line_boundary() {
-    let error = parse(
+    // `--budget N|none` on brief as on read (docs/interfaces.md, Option names).
+    let brief = parse(
         &["sessions", "brief", "--budget", "none"].map(str::to_owned),
         &FirstWordCatalog::default(),
         false,
     )
-    .unwrap_err();
-    assert!(error.message.contains("budget"), "{error:?}");
+    .unwrap();
+    assert_eq!(brief.steps[0].step["budget"], Value::Null);
     for budget in [
         None,
         Some(Value::Null),
@@ -486,7 +487,7 @@ fn every_docs_example_parses() {
     }
     assert_eq!(
         verbs,
-        crate::protocol::steps::declarations()
+        crate::daemon::verbs::declarations()
             .verbs()
             .iter()
             .map(|verb| verb.verb().to_owned())

@@ -1,15 +1,18 @@
 //! `brief`: packaged context, chosen by the selection's form. No selection
-//! is the directory brief, one session is its takeover, three or more named
-//! sessions are an index of them, search words are a recall.
-use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built_use};
+//! is the directory's brief, one session is that session's brief (to take
+//! it over), three or more named sessions are an index of them, and search
+//! words are what is already known about them.
+use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, not_built_use};
+use crate::brief::{Ask, BriefReply};
+use crate::commands::ToolAccess;
 use crate::daemon::Failure;
-use crate::daemon::handler::{Call, Operation};
-use crate::daemon::service::handlers;
-use crate::protocol::context;
+use crate::daemon::handler::Call;
+use crate::daemon::service::handlers::prepare_context;
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::BriefStep;
-use command_surface::TokenBudget;
-use polylogue_model::{Reference, SessionId};
+use command_surface::{Answer, TokenBudget};
+use polylogue_model::read::ReadBudget;
+use polylogue_model::{Reason, Reference, SessionId};
 
 #[cfg(test)]
 mod tests;
@@ -19,6 +22,7 @@ impl Verb for Brief {
     type Step = BriefStep;
     const NAME: &'static str = "brief";
     const ROWS: RowRule = RowRule::Any;
+    const ACCESS: ToolAccess = ToolAccess::Read;
     fn run(
         step: BriefStep,
         selection: &Selection,
@@ -27,59 +31,51 @@ impl Verb for Brief {
         let for_session = step
             .for_session
             .as_deref()
-            .map(|text| SessionId::parse(text).map_err(Failure::bad_value))
+            .map(|text| {
+                SessionId::parse(text).map_err(|problem| {
+                    Failure::refusal(Reason::BadReference {
+                        text: text.into(),
+                        problem: problem.to_string(),
+                    })
+                })
+            })
             .transpose()?;
-        let budget =
-            match step.budget {
-                Some(tokens) => TokenBudget::Tokens(u32::try_from(tokens).map_err(|_| {
-                    Failure::bad_value(format!("brief --budget exceeds {}", u32::MAX))
-                })?),
-                None => call.call.budget,
-            };
+        let budget = match step.budget {
+            ReadBudget::Tokens(tokens) => {
+                TokenBudget::Tokens(u32::try_from(tokens).map_err(|_| {
+                    Failure::refusal(Reason::BudgetTooLarge {
+                        most: u64::from(u32::MAX),
+                    })
+                })?)
+            }
+            ReadBudget::Unlimited => TokenBudget::Unlimited,
+            ReadBudget::Default => call.call.budget,
+        };
+        let cursor = step.cursor.clone();
         let call = Call {
-            cursor: step.cursor.as_deref(),
+            cursor: cursor.as_deref(),
             budget,
             ..call.call.copy()
         };
-        let form = match form(selection) {
-            Form::SessionWord(text) => Form::Session(one_session(&call, &text)?),
-            other => other,
-        };
-        let answer = match form {
-            Form::Directory => handlers::Brief::run(
-                context::Brief {
-                    cwd: step.cwd,
-                    session: for_session,
-                    source: step.source,
-                },
+        let answer = match form(selection) {
+            Form::Directory => directory(step, for_session, &call)?,
+            Form::Session(session) => self::session(session, for_session, &call)?,
+            Form::SessionWord(text) => {
+                self::session(one_session(&call, &text)?, for_session, &call)?
+            }
+            Form::Sessions(sessions) => prepare_context(
                 &call,
-            )?,
-            Form::Session(session) => handlers::Takeover::run(
-                context::Takeover {
-                    session,
-                    for_session,
-                },
-                &call,
-            )?,
-            Form::Sessions(sessions) => handlers::prepare_context(
-                &call,
-                crate::brief::Ask::Sessions {
+                Ask::Sessions {
                     sessions,
                     for_session,
                 },
             )?,
-            Form::SessionWord(_) => unreachable!("a session word is resolved to a session above"),
-            Form::Words(query) => handlers::Recall::run(
-                context::Recall {
-                    query,
-                    cwd: step.cwd,
-                    for_session,
-                },
-                &call,
-            )?,
+            Form::Words(text) => words(text, step.cwd, for_session, &call)?,
             Form::Other => return Err(not_built_use("brief", "over these rows")),
         };
-        delegated(answer, |prepared| StepAnswer::Brief(Box::new(prepared)))
+        Ok(answer
+            .map(|reply| StepAnswer::Brief(Box::new(reply)))
+            .into())
     }
     fn would(_: &BriefStep, selection: &Selection, _: &StepCall<'_>) -> Result<String, Failure> {
         Ok(match form(selection) {
@@ -93,6 +89,57 @@ impl Verb for Brief {
             Form::Other => return Err(not_built_use("brief", "over these rows")),
         })
     }
+}
+
+/// The brief of the caller's directory, at session start or later.
+fn directory(
+    step: BriefStep,
+    for_session: Option<SessionId>,
+    call: &Call<'_>,
+) -> Result<Answer<BriefReply>, Failure> {
+    let cwd = call.directory(step.cwd.as_deref())?;
+    prepare_context(
+        call,
+        Ask::SessionStart {
+            cwd,
+            session: for_session,
+            source: step.source,
+        },
+    )
+}
+
+/// One session's brief, for the session that takes it over.
+fn session(
+    session: SessionId,
+    for_session: Option<SessionId>,
+    call: &Call<'_>,
+) -> Result<Answer<BriefReply>, Failure> {
+    prepare_context(
+        call,
+        Ask::Session {
+            session,
+            for_session,
+        },
+    )
+}
+
+/// What is already known about search words, a page at a time.
+fn words(
+    text: String,
+    cwd: Option<std::path::PathBuf>,
+    for_session: Option<SessionId>,
+    call: &Call<'_>,
+) -> Result<Answer<BriefReply>, Failure> {
+    call.runs_query(&text);
+    prepare_context(
+        call,
+        Ask::Words {
+            text,
+            cwd: call.directory(cwd.as_deref()).ok(),
+            for_session,
+            cursor: call.cursor.map(str::to_owned),
+        },
+    )
 }
 
 /// Which brief the selection asks for.
@@ -150,9 +197,9 @@ fn one_session(call: &Call<'_>, text: &str) -> Result<SessionId, Failure> {
     let rows = crate::daemon::service::query_targets(call.daemon, &reader, text, call.invocation)?;
     match rows.as_slice() {
         [Reference::Session(session)] => Ok(session.clone()),
-        _ => Err(Failure::new(
-            polylogue_model::Code::Ambiguous,
-            format!("{text:?} names {} rows, not one session", rows.len()),
-        )),
+        _ => Err(Failure::refusal(Reason::NotOneSession {
+            text: text.into(),
+            rows: rows.len(),
+        })),
     }
 }

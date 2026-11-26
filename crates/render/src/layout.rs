@@ -227,7 +227,7 @@ pub fn visit_record(
             let by = WrittenBy::of(message);
             let author = match by {
                 WrittenBy::Human => {
-                    ValueState::known(if options.for_others { "user" } else { "you" }.into())
+                    ValueState::known(if options.neutral_names { "user" } else { "you" }.into())
                 }
                 WrittenBy::Model => ValueState::known("model".into()),
                 WrittenBy::Harness => {
@@ -292,7 +292,7 @@ pub fn visit_record(
                             .clone()
                             .map(ValueState::known)
                             .unwrap_or(ValueState::NotRecorded),
-                        annotations: if options.annotations {
+                        annotations: if options.annotations() {
                             facts.annotations.clone()
                         } else {
                             vec![]
@@ -423,7 +423,7 @@ pub fn visit_record(
                 return Ok(());
             }
         }
-        Record::Annotation(row) if options.annotations => {
+        Record::Annotation(row) if options.annotations() => {
             if !visit(ReadItem {
                 source,
                 kind: ItemKind::Other {
@@ -434,7 +434,7 @@ pub fn visit_record(
                 return Ok(());
             }
         }
-        Record::Authored(row) if options.annotations => {
+        Record::Authored(row) if options.annotations() => {
             if !visit(ReadItem {
                 source,
                 kind: ItemKind::Other {
@@ -561,7 +561,7 @@ fn block_items(
                 call.result_source = pair.result.as_ref().map(|r| r.source.clone());
                 excerpt_output(
                     &mut call,
-                    options.output_lines,
+                    options.output_lines(),
                     facts.output_calls.get(&ordinal),
                 );
                 if !visit(ReadItem {
@@ -600,7 +600,7 @@ fn block_items(
             call.orphan = matches!(block, Block::ToolResult { .. });
             excerpt_output(
                 &mut call,
-                options.output_lines,
+                options.output_lines(),
                 facts.output_calls.get(&ordinal),
             );
             if !visit(ReadItem {

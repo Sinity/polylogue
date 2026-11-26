@@ -76,7 +76,9 @@ fn build_progress_has_the_whole_total_before_planning_starts() {
     });
     let held = fault::wait_held_within(Duration::from_secs(30));
     let progress = archive.index_build();
-    let count = archive.build_progress().and_then(|build| build.current);
+    let count = archive
+        .build_progress()
+        .and_then(|(_, progress)| progress.current);
     fault::release();
     let pass = running.join().unwrap().unwrap();
     fault::clear();
