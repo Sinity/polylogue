@@ -4,36 +4,48 @@
 //! name or arguments establish no task (`polylogue_model::live`).
 //!
 //! A fold over the session's finished calls in session order: a commit's
-//! evidence is the first call in that order to report it.
+//! evidence is the first call in that order to report it. The fold keeps no
+//! state: each run finds the links of the rows it reads, and its write
+//! replaces the links found after its start (`found_at`), so a link found
+//! before keeps its earlier evidence.
 
 use super::Output;
-use super::fold::{Context, Flow, Fold, SessionRow};
+use super::fold::{Context, Flow, Fold, Key, SessionRow};
 use crate::Result;
 use polylogue_model::Block;
 use polylogue_model::command::{Stage, effective_stages};
 use rusqlite::{Connection, Transaction, params};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 pub(crate) struct Links;
 
-/// The links the session's calls made.
-#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+/// The links the calls of a run's rows made, each with the row that first
+/// reported it.
+#[derive(Debug, Default, Clone)]
 pub(crate) struct Found {
     /// Each commit hash a call reported, with the first such call's block.
-    commits: BTreeMap<String, i64>,
+    commits: BTreeMap<String, (i64, Key)>,
     /// Each pull request a call created: `(owner/repo, number, url)`.
-    pulls: BTreeSet<(String, i64, String)>,
+    pulls: BTreeMap<(String, i64, String), Key>,
+}
+
+impl Found {
+    #[cfg(test)]
+    pub(crate) fn commits(&self) -> &BTreeMap<String, (i64, Key)> {
+        &self.commits
+    }
 }
 
 impl Fold for Links {
-    type State = Found;
+    type State = ();
     const NAME: &'static str = "links";
-    const VERSION: i64 = 4;
+    const VERSION: i64 = 5;
 
-    fn step(state: &mut Found, row: &SessionRow, cx: &Context<'_>, _: &mut Output) -> Result<Flow> {
+    fn step(_: &mut (), row: &SessionRow, cx: &Context<'_>, out: &mut Output) -> Result<Flow> {
         let SessionRow::Message(m) = row else {
             return Ok(Flow::Continue);
         };
+        let state = out.links.get_or_insert_default();
         for call in &m.calls {
             let Some(command) = call.command.as_deref().filter(|_| call.outcome == "ok") else {
                 continue;
@@ -48,13 +60,16 @@ impl Fold for Links {
                 match (stage.program.as_str(), stage.subcommand()) {
                     ("git", Some("commit")) => {
                         for hash in committed(output.as_deref().unwrap_or("")) {
-                            state.commits.entry(hash).or_insert(call.block_pk);
+                            state
+                                .commits
+                                .entry(hash)
+                                .or_insert((call.block_pk, m.key.clone()));
                         }
                     }
                     ("gh", Some("pr")) if is_create(stage) => {
-                        state
-                            .pulls
-                            .extend(pull_requests(output.as_deref().unwrap_or("")));
+                        for pull in pull_requests(output.as_deref().unwrap_or("")) {
+                            state.pulls.entry(pull).or_insert_with(|| m.key.clone());
+                        }
                     }
                     _ => {}
                 }
@@ -63,8 +78,8 @@ impl Fold for Links {
         Ok(Flow::Continue)
     }
 
-    fn end(state: &Found, _: &Context<'_>, out: &mut Output) -> Result<()> {
-        out.links = Some(state.clone());
+    fn end(_: &(), _: &Context<'_>, out: &mut Output) -> Result<()> {
+        out.links.get_or_insert_default();
         Ok(())
     }
 }
@@ -144,28 +159,37 @@ fn pull_requests(output: &str) -> Vec<(String, i64, String)> {
         .collect()
 }
 
-/// Replaces the links this summary made for the session with `found`. A
-/// link another source states (a commit trailer) stays.
-pub(super) fn apply(tx: &Transaction<'_>, session_pk: i64, found: &Found) -> Result<()> {
+/// Replaces the links this summary found for the session after `after`
+/// (the row a run started after) with `found`; those found before stay,
+/// and so does a link another source states (a commit trailer).
+pub(super) fn apply(
+    tx: &Transaction<'_>,
+    session_pk: i64,
+    after: &Key,
+    found: &Found,
+) -> Result<()> {
     tx.prepare_cached(
-        "DELETE FROM commit_link WHERE session_pk = ?1 AND evidence = 'commit-output'",
+        "DELETE FROM commit_link
+         WHERE session_pk = ?1 AND evidence = 'commit-output' AND found_at > ?2",
     )?
-    .execute([session_pk])?;
-    tx.prepare_cached("DELETE FROM pr_link WHERE session_pk = ?1 AND evidence = 'gh-output'")?
-        .execute([session_pk])?;
+    .execute(params![session_pk, after.0])?;
+    tx.prepare_cached(
+        "DELETE FROM pr_link WHERE session_pk = ?1 AND evidence = 'gh-output' AND found_at > ?2",
+    )?
+    .execute(params![session_pk, after.0])?;
     let mut commit = tx.prepare_cached(
-        "INSERT INTO commit_link(session_pk, commit_hash, evidence_block_pk, evidence)
-         VALUES (?1, ?2, ?3, 'commit-output') ON CONFLICT(session_pk, commit_hash) DO NOTHING",
+        "INSERT INTO commit_link(session_pk, commit_hash, evidence_block_pk, evidence, found_at)
+         VALUES (?1, ?2, ?3, 'commit-output', ?4) ON CONFLICT(session_pk, commit_hash) DO NOTHING",
     )?;
-    for (hash, block) in &found.commits {
-        commit.execute(params![session_pk, hash, block])?;
+    for (hash, (block, at)) in &found.commits {
+        commit.execute(params![session_pk, hash, block, at.0])?;
     }
     let mut pull = tx.prepare_cached(
-        "INSERT OR IGNORE INTO pr_link(session_pk, repo, number, url, evidence)
-         VALUES (?1, ?2, ?3, ?4, 'gh-output')",
+        "INSERT OR IGNORE INTO pr_link(session_pk, repo, number, url, evidence, found_at)
+         VALUES (?1, ?2, ?3, ?4, 'gh-output', ?5)",
     )?;
-    for (repo, n, url) in &found.pulls {
-        pull.execute(params![session_pk, repo, n, url])?;
+    for ((repo, n, url), at) in &found.pulls {
+        pull.execute(params![session_pk, repo, n, url, at.0])?;
     }
     Ok(())
 }
