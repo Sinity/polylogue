@@ -33,6 +33,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
 mod after;
+#[cfg(test)]
+pub(crate) use after::declared_rows as declared_after_rows;
 pub mod agreement;
 pub(crate) mod captured;
 mod dispatch;

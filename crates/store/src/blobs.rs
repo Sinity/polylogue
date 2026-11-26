@@ -13,6 +13,8 @@ pub use hashed_blobs::BlobReader;
 pub use reader::BlobReader;
 
 mod chain;
+#[cfg(test)]
+pub(crate) use chain::declared_rows;
 pub use chain::{CHAIN_CACHE_KIB, ChainReader, ChainSource, StoredChain};
 
 mod segments;
