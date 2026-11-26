@@ -193,9 +193,9 @@ impl AllItems {
                 "begin" => {
                     assert!(!began);
                     began = true;
-                    let begin: polylogue_model::read::ReadBegin =
+                    let begin: polylogue_model::read::ReadHeader =
                         serde_json::from_str(&frame.data).unwrap();
-                    header = Some(begin.header);
+                    header = Some(begin);
                 }
                 "record" => {
                     assert!(began && !completed);

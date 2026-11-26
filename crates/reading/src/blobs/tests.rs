@@ -37,6 +37,8 @@ fn begin() -> ReadBegin {
             },
             figures: vec![],
             zone: None,
+            snapshot: None,
+            options: None,
         },
         options: ReadOptions::default(),
     }

@@ -80,6 +80,8 @@ fn header() -> ReadHeader {
         },
         figures: vec![],
         zone: None,
+        snapshot: None,
+        options: None,
     }
 }
 fn document(items: Vec<ReadItem>) -> ReadDocument {

@@ -469,7 +469,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
 
 #[test]
 fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
-    use polylogue_model::read::{ReadComplete, ReadPart, ReadRecord};
+    use polylogue_model::read::{ReadFooter, ReadPart, ReadRecord};
     let r = reader();
     let position =
         r.w.daemon
@@ -555,9 +555,9 @@ fn finite_http_context_streams_share_paged_items_and_require_read_authority() {
             }
             assert_eq!(messages, 1);
             assert_eq!(items, expected.document.items);
-            let complete: ReadComplete = serde_json::from_str(&completion.data).unwrap();
+            let complete: ReadFooter = serde_json::from_str(&completion.data).unwrap();
             assert_eq!(complete.counts.messages, messages);
-            assert_eq!(complete.footer.shown, items.len() as u64);
+            assert_eq!(complete.shown, items.len() as u64);
             let answer: command_surface::Answer<crate::protocol::line::LineAnswer> =
                 serde_json::from_str(&report.data).unwrap();
             let crate::protocol::line::LineAnswer::Steps(steps) = answer.value().unwrap() else {
@@ -638,7 +638,7 @@ fn http_get_pages_and_streams_never_acknowledge_display() {
                         .iter()
                         .find(|frame| frame.event == "complete")
                         .unwrap();
-                    let complete: polylogue_model::read::ReadComplete =
+                    let complete: polylogue_model::read::ReadFooter =
                         serde_json::from_str(&complete.data).unwrap();
                     assert_eq!(
                         complete.counts.messages, 1,
