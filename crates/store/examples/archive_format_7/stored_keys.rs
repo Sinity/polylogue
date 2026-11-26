@@ -49,7 +49,7 @@ type Error = Box<dyn std::error::Error>;
 
 /// The saved rows table and its read position column, by their format-9
 /// names.
-const SAVED_ROWS: (&str, &str) = ("kept_result", "read_at");
+const SAVED_ROWS: (&str, &str) = ("saved_rows", "read_position");
 
 /// Why the step stops before or after rewriting.
 #[derive(Debug)]

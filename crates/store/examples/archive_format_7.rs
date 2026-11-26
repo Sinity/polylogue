@@ -402,7 +402,7 @@ const STEPS: &[Step] = &[
             "client_request",
             "query",
             "query_run",
-            "kept_result",
+            "saved_rows",
             "delivery",
             "annotation",
             "signal_event",
