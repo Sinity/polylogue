@@ -451,3 +451,117 @@ fn a_new_file_is_stored_before_the_stored_backlog_is_read() {
         assert_eq!(home.texts(&format!("backlog-{i}")), [format!("stored {i}")]);
     }
 }
+
+/// A pass whose stored chains must all be read again reads a session file
+/// that grew before that backlog: a live session never waits behind it
+/// (docs/architecture.md, live inputs go before bulk work).
+#[test]
+fn a_grown_file_is_read_before_the_stored_backlog() {
+    fault::clear();
+    let home = ClaudeHome::new();
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    engine.config.workers = 1;
+    for i in 0..6 {
+        let session = format!("backlog-{i}");
+        std::fs::write(
+            home.file(&format!("{session}.jsonl")),
+            claude_user(&format!("u-{i}"), &session, &format!("stored {i}")),
+        )
+        .unwrap();
+    }
+    home.append("live.jsonl", &claude_user("l1", "live", "first record"));
+    let pass = engine.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    // Every stored chain now needs reading again, and the session grows.
+    polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
+    engine.discard_confirmed_state();
+    home.append("live.jsonl", &claude_user("l2", "live", "written since"));
+
+    fault::arm("parse", "backlog-", Action::Hold, 0, 1);
+    let archive = engine.archive.clone();
+    let observer = std::thread::spawn(move || {
+        fault::wait_held();
+        let pool = polylogue_store::ReadPool::open(&archive).unwrap();
+        let texts: Vec<String> = pool
+            .reader()
+            .unwrap()
+            .messages(
+                &polylogue_model::SessionId::parse("claude-code:live").unwrap(),
+                false,
+            )
+            .unwrap()
+            .iter()
+            .map(|message| message.text())
+            .collect();
+        fault::release();
+        texts
+    });
+    let pass = engine.run_pass();
+    let seen_during_backlog = observer.join().unwrap();
+    fault::clear();
+    let pass = pass.unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert_eq!(
+        seen_during_backlog,
+        ["first record", "written since"],
+        "the grown file was not read before the stored chains"
+    );
+    for i in 0..6 {
+        assert_eq!(home.texts(&format!("backlog-{i}")), [format!("stored {i}")]);
+    }
+}
+
+/// The catch-up of stored chains stops at the end of a page when a live
+/// session changed, so the pass ends and the next one reads that session
+/// first; the catch-up then resumes after the page it finished.
+#[test]
+fn the_stored_backlog_stops_at_a_page_for_a_changed_live_session() {
+    fault::clear();
+    let home = histories(IN_POOL_PER_WORKER + 2);
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
+    engine.config.workers = 1;
+    engine.load().unwrap();
+    let ids: Vec<_> = engine
+        .inputs
+        .values()
+        .map(|input| input.input_id.clone())
+        .collect();
+    polylogue_store::fixture::older_reading(&engine.archive, "claude-code").unwrap();
+    engine.discard_confirmed_state();
+    let live = home.file("scan-0000.jsonl");
+    fault::arm("read.chains_behind_index", "Newest:[", Action::Hold, 0, 1);
+    let pass = std::thread::scope(|scope| {
+        let running = scope.spawn(|| engine.run_pass());
+        assert!(
+            fault::wait_held_within(Duration::from_secs(60)),
+            "the catch-up planned its first page"
+        );
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&live)
+            .unwrap();
+        std::io::Write::write_all(
+            &mut file,
+            claude_user("u-live", "scan-0000", "written during the backlog").as_bytes(),
+        )
+        .unwrap();
+        fault::release();
+        running.join().unwrap()
+    });
+    fault::clear();
+    let pass = pass.unwrap();
+    assert!(pass.errors.is_empty(), "{pass:?}");
+    assert!(pass.capture_pending, "the pass ended for the live session");
+    assert!(
+        pending_current_chains(&engine, &ids) > 0,
+        "the catch-up stopped after its first page"
+    );
+    let next = engine.run_pass().unwrap();
+    assert!(next.errors.is_empty(), "{next:?}");
+    assert_eq!(
+        home.texts("scan-0000"),
+        ["first 0", "written during the backlog"]
+    );
+    assert_eq!(pending_current_chains(&engine, &ids), 0);
+    assert_eq!(home.texts("scan-0001"), ["first 1"]);
+}

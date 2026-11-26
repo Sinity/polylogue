@@ -30,34 +30,68 @@ fn read_exact_checked(reader: &mut impl Read, bytes: &mut [u8]) -> io::Result<()
     Ok(())
 }
 
-/// A source byte check uses one opened file and verifies the sampled file facts
-/// across the read. Replacing the path or changing that file defers the sample.
+/// Bytes a reader already holds of a file: `bytes` end at offset `end`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProvenTail {
+    pub end: u64,
+    pub bytes: Vec<u8>,
+}
+
+/// Reads `[start, end)` from one opened file and checks it against the file
+/// facts sampled when the read was planned. A file that only grew since
+/// then is read up to the sampled length, since bytes appended past `end`
+/// leave the range as it was. Growth is the same file (device and inode)
+/// with a larger size whose `proven` tail, and the last bytes of the range
+/// just read, are still in place afterwards; anything else (another inode,
+/// a shorter file, a write that did not grow it, a changed tail) is a
+/// changed source and the read is refused.
 pub(crate) fn read_source_range(
     path: &Path,
     start: u64,
     end: u64,
     expected: Option<polylogue_store::FileFacts>,
+    proven: Option<&ProvenTail>,
 ) -> io::Result<(Vec<u8>, polylogue_store::primary::FileSnapshot)> {
     let mut file = File::open(path)?;
     let metadata = file.metadata()?;
     let observed = crate::source_read::file_snapshot(&metadata)?;
     let before = polylogue_store::FileFacts::of(&metadata);
-    if expected.is_some_and(|facts| facts != before) {
-        return Err(io::Error::other(
-            polylogue_store::StoreError::SourceChanged("source file changed before reading"),
-        ));
+    let sampled = expected.unwrap_or(before);
+    if !same_or_grown(&sampled, &before) {
+        return Err(source_changed("source file changed before reading"));
     }
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = vec![0; (end - start) as usize];
     read_exact_checked(&mut file, &mut bytes)?;
-    if polylogue_store::FileFacts::of(&file.metadata()?) != before
-        || polylogue_store::FileFacts::of(&std::fs::metadata(path)?) != before
-    {
-        return Err(io::Error::other(
-            polylogue_store::StoreError::SourceChanged("source file changed during reading"),
-        ));
+    polylogue_store::fault::check("read.source_range", &path.to_string_lossy())
+        .map_err(io::Error::other)?;
+    let held = polylogue_store::FileFacts::of(&file.metadata()?);
+    let at_path = polylogue_store::FileFacts::of(&std::fs::metadata(path)?);
+    if !same_or_grown(&before, &held) || !same_or_grown(&held, &at_path) {
+        return Err(source_changed("source file changed during reading"));
+    }
+    if at_path != sampled {
+        // Grown: what the reader holds must still be where it was.
+        let range_tail = ProvenTail {
+            end,
+            bytes: tail_of(&bytes),
+        };
+        for tail in proven.into_iter().chain([&range_tail]) {
+            if !tail_intact(path, tail.end, &tail.bytes)? {
+                return Err(source_changed("source file changed during reading"));
+            }
+        }
     }
     Ok((bytes, observed))
+}
+
+/// The same file, unchanged or longer than when `then` was taken.
+fn same_or_grown(then: &polylogue_store::FileFacts, now: &polylogue_store::FileFacts) -> bool {
+    then == now || (then.device == now.device && then.inode == now.inode && now.size > then.size)
+}
+
+fn source_changed(reason: &'static str) -> io::Error {
+    io::Error::other(polylogue_store::StoreError::SourceChanged(reason))
 }
 
 /// Whether the bytes just before `from` still equal `tail`, the end of what

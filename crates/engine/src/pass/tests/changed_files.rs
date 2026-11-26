@@ -103,3 +103,46 @@ fn a_file_growing_after_its_append_was_planned_is_read_with_every_other_file() {
         ["first record", "second record", "written while planned"]
     );
 }
+
+/// A live transcript appended to while its planned range is being read
+/// stores and reads that range in the same pass, with no error; the bytes
+/// appended during the read are read by the next pass (docs/capture.md, one
+/// file never fails a pass).
+#[test]
+fn a_file_appended_to_while_its_range_is_read_stores_that_range() {
+    fault::clear();
+    let home = ClaudeHome::new();
+    home.append("grows.jsonl", &claude_user("g1", "grows", "first record"));
+    let (mut engine, _lock) = crate::import::tests::engine(&home, 1 << 20);
+    engine.config.workers = 1;
+    let first = engine.run_pass().unwrap();
+    assert!(first.errors.is_empty(), "{:?}", first.errors);
+    home.append("grows.jsonl", &claude_user("g2", "grows", "second record"));
+    let planned = std::fs::metadata(home.file("grows.jsonl")).unwrap().len();
+    fault::arm("read.source_range", "grows.jsonl", Action::Hold, 0, 1);
+    let pass = std::thread::scope(|scope| {
+        let running = scope.spawn(|| engine.run_pass());
+        assert!(
+            fault::wait_held_within(Duration::from_secs(60)),
+            "the pass read the appended range"
+        );
+        home.append(
+            "grows.jsonl",
+            &claude_user("g3", "grows", "written while read"),
+        );
+        fault::release();
+        running.join().unwrap()
+    });
+    fault::clear();
+    let pass = pass.unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert_eq!(home.texts("grows"), ["first record", "second record"]);
+    let path = home.file("grows.jsonl");
+    assert_eq!(engine.inputs[&path].stored, planned);
+    let next = engine.run_pass().unwrap();
+    assert!(next.errors.is_empty(), "{:?}", next.errors);
+    assert_eq!(
+        home.texts("grows"),
+        ["first record", "second record", "written while read"]
+    );
+}

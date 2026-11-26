@@ -304,6 +304,10 @@ impl Plan {
         Job {
             stopped_attempt: Some(*stopped_attempt),
             source_read: None,
+            proven_tail: self.tail.clone().map(|bytes| crate::read::ProvenTail {
+                end: self.stored_upto,
+                bytes,
+            }),
             path: self.path.clone(),
             origin: self.origin,
             input: self.input.clone(),

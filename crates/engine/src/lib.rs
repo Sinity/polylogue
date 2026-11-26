@@ -131,6 +131,21 @@ impl polylogue_model::Caused for EngineError {
     }
 }
 
+impl EngineError {
+    /// The source file changed since its read was planned in a way the read
+    /// cannot take as growth ([`read::read_source_range`]).
+    pub(crate) fn source_changed(&self) -> bool {
+        let store = match self {
+            Self::Store(error) => Some(error),
+            Self::Io(error) => error
+                .get_ref()
+                .and_then(|inner| inner.downcast_ref::<polylogue_store::StoreError>()),
+            _ => None,
+        };
+        matches!(store, Some(polylogue_store::StoreError::SourceChanged(_)))
+    }
+}
+
 impl From<polylogue_model::ChainFailure> for EngineError {
     fn from(failure: polylogue_model::ChainFailure) -> Self {
         Self::Chain(failure)
@@ -565,7 +580,7 @@ pub struct Engine {
     pass_open: bool,
     collectors_at: Option<Instant>,
     capture_checked: Option<Instant>,
-    lookups: repo_lookup::Cache,
+    lookups: repo_lookup::Background,
     /// How many bytes two stored chains share from their starts; each pair
     /// is compared once per pass.
     shared_prefixes: std::cell::RefCell<prefix_copies::SharedPrefixes>,
@@ -646,7 +661,7 @@ impl Engine {
             pass_open: false,
             collectors_at: None,
             capture_checked: None,
-            lookups: repo_lookup::Cache::default(),
+            lookups: repo_lookup::Background::default(),
             shared_prefixes: Default::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),

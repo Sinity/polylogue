@@ -65,6 +65,7 @@ fn job(
 ) -> crate::pool::Job {
     crate::pool::Job {
         source_read: None,
+        proven_tail: None,
         path: path.to_path_buf(),
         origin,
         input: polylogue_store::InputKey {
