@@ -70,7 +70,7 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
         let source_rows = r
             .query(
-                "SELECT source_start,source_end FROM message_parse WHERE source_start>0 \
+                "SELECT source_start,source_start+source_length AS source_end FROM message_parse WHERE source_start>0 \
                  ORDER BY source_start",
                 &[],
             )
