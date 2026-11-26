@@ -106,40 +106,52 @@ fn message_ids_survive_unrelated_changes() {
     w.run_pass();
 
     let after = w.view();
-    let mut wrong = Vec::new();
+    let messages = |doc: &serde_json::Value| -> Vec<serde_json::Value> {
+        doc.as_array()
+            .unwrap()
+            .iter()
+            .filter(|record| record["record"] == "message")
+            .map(|record| record["data"]["message"].clone())
+            .collect()
+    };
+    let unrelated = "claude-code:7f3a2c10-0901-4000-8000-000000000901";
+    let mut expected_sessions_with_messages: BTreeSet<_> = before
+        .iter()
+        .filter(|(_, doc)| !messages(doc).is_empty())
+        .map(|(id, _)| id.clone())
+        .collect();
+    expected_sessions_with_messages.insert(unrelated.to_owned());
+    assert_eq!(
+        after
+            .iter()
+            .filter(|(_, doc)| !messages(doc).is_empty())
+            .map(|(id, _)| id.clone())
+            .collect::<BTreeSet<_>>(),
+        expected_sessions_with_messages
+    );
+    let added = messages(&after[unrelated]);
+    assert_eq!(added.len(), 1);
+    assert_eq!(added[0]["id"], "claude-code:u901");
+    assert_eq!(added[0]["session"], unrelated);
+    assert_eq!(
+        added[0]["blocks"],
+        serde_json::json!([{"type":"text", "text":"unrelated"}])
+    );
+    let one = session(1).to_string();
+    let mut current = messages(&after[&one]);
+    let appended = current.pop().expect("session one gains a last message");
+    assert_eq!(appended["id"], "claude-code:u1-late");
+    assert_eq!(appended["session"], one);
+    assert_eq!(
+        appended["blocks"],
+        serde_json::json!([{"type":"text", "text":"one more thing"}])
+    );
+    assert_eq!(current, messages(&before[&one]));
     for (id, doc) in &before {
-        let Some(now) = after.get(id) else {
-            wrong.push(format!("{id} is gone"));
-            continue;
-        };
-        let msgs = |d: &serde_json::Value| -> BTreeMap<String, serde_json::Value> {
-            d.as_array()
-                .unwrap()
-                .iter()
-                .filter(|record| record["record"] == "message")
-                .map(|record| &record["data"]["message"])
-                .map(|m| (m["id"].as_str().unwrap().to_owned(), m.clone()))
-                .collect()
-        };
-        let (was, is) = (msgs(doc), msgs(now));
-        for (mid, m) in &was {
-            match is.get(mid) {
-                None => wrong.push(format!("{id}: message {mid} is gone")),
-                Some(n) if n != m => wrong.push(format!("{id}: message {mid} changed")),
-                _ => {}
-            }
+        if id != &one {
+            assert_eq!(messages(&after[id]), messages(doc), "{id}");
         }
     }
-    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
-    let late_arrived = after.values().any(|doc| {
-        doc.as_array().unwrap().iter().any(|record| {
-            record["record"] == "message"
-                && record["data"]["message"]["id"]
-                    .as_str()
-                    .is_some_and(|id| id.ends_with("u1-late"))
-        })
-    });
-    assert!(late_arrived, "the appended message u1-late is missing");
 }
 
 /// corruption is loud. A stored blob with one byte flipped fails
