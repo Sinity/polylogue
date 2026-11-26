@@ -2923,33 +2923,9 @@ impl Engine {
                     origin: format,
                     dry_run,
                 };
-                self.import_stored.clear();
-                let mut report = self.import_with_options(&paths, &options);
-                // A build installed while the import read the index: its
-                // readers met the replaced file. The import is read again
-                // against the installed one; what it stored stays stored,
-                // and is reported as imported by this request, not as
-                // bytes the archive already had.
-                if matches!(
-                    report,
-                    Err(EngineError::Store(
-                        polylogue_store::StoreError::ReadIndexReplaced
-                    ))
-                ) {
-                    report = self.import_with_options(&paths, &options);
-                    if let Ok(report) = &mut report {
-                        for (path, length) in std::mem::take(&mut self.import_stored) {
-                            if let Some(at) =
-                                report.already_stored.iter().position(|seen| *seen == path)
-                            {
-                                report.already_stored.remove(at);
-                                report.imported.push(path);
-                                report.pass.bytes_stored += length;
-                            }
-                        }
-                    }
-                }
-                let report = report.map_err(ImportFailure::Import);
+                let report = self
+                    .import_with_options(&paths, &options)
+                    .map_err(ImportFailure::Import);
                 busy(pending);
                 report
             });

@@ -135,10 +135,7 @@ pub(super) fn answer(
     let build = d.archive.build_progress();
     // A snapshot from before a build that serves no index is of an index
     // that can no longer be read.
-    if build
-        .as_ref()
-        .is_some_and(|(build, _)| !build.serving_previous)
-    {
+    if build.is_some() && !d.archive.index_files().is_ok_and(|files| files.serves()) {
         return unread(d, AnswersFrom::Build, build, vectors, whole_log, changes);
     }
     let snapshot = match d.status_snapshot.latest() {
@@ -214,6 +211,13 @@ pub(super) fn answer(
     if let Some(error) = &totals_error {
         missing.push(format!("archive totals: {error}"));
     }
+    let index = d.archive.index_status().ok();
+    if let Some(failure) = index
+        .as_ref()
+        .and_then(|index| index.install_failure.as_ref())
+    {
+        missing.push(format!("{}: {}", failure.subject, failure.message));
+    }
     if let Some(error) = &quota_error {
         missing.push(format!("subscription quota: {error}"));
     }
@@ -239,6 +243,7 @@ pub(super) fn answer(
         caught_up,
         store,
         index_build,
+        index,
         build_progress,
         totals_error,
         quota,
@@ -390,6 +395,7 @@ fn unread(
         caught_up: false,
         store: None,
         index_build,
+        index: d.archive.index_status().ok(),
         build_progress,
         totals_error: None,
         quota: Vec::new(),

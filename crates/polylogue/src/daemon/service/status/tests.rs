@@ -8,7 +8,7 @@ fn a_build_that_serves_no_index_is_what_status_answers_from() {
     use crate::protocol::status::AnswersFrom;
     let daemon = crate::test_daemon::start("synthetic source");
     let header = polylogue_store::archive::index_build::IndexBuild {
-        serving_previous: false,
+        reason: polylogue_store::index::file::RebuildReason::NoIndex,
         chains: 3,
         chains_read: 1,
         bytes: 900,
