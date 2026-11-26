@@ -207,6 +207,14 @@ impl ReadCompleteness {
             && self.search.current()
             && self.confirmed_stream.current()
     }
+    /// Whether work the daemon finishes by itself, without its loop, is
+    /// still to come: derived figures, search text. Parse states the loop
+    /// cannot finish (no parser, missing earlier bytes) are not such work.
+    pub fn background_work_pending(&self) -> bool {
+        self.derivation != CompletenessDimension::Complete
+            || matches!(&self.search, CompletenessDimension::Incomplete(reasons)
+                if reasons.contains(&CompletenessReason::SearchPending))
+    }
 }
 
 /// Freshness of one answer, from that answer's index snapshot and the cached

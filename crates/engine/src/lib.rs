@@ -436,6 +436,82 @@ pub struct LoopStatus {
     pub last_pass_at: Option<polylogue_model::Timestamp>,
 }
 
+/// The running loop's [`LoopStatus`] and a count of the changes to what
+/// `status` reports, so a client waits for the next change instead of
+/// polling. The loop counts its own changes; the daemon counts the others
+/// (a status snapshot read after a commit) with [`Self::changed`].
+#[derive(Debug, Default)]
+pub struct SharedLoopStatus {
+    state: Mutex<(LoopStatus, u64)>,
+    signal: std::sync::Condvar,
+}
+
+impl SharedLoopStatus {
+    pub fn new(status: LoopStatus) -> Self {
+        Self {
+            state: Mutex::new((status, 0)),
+            signal: std::sync::Condvar::new(),
+        }
+    }
+
+    pub fn get(&self) -> LoopStatus {
+        self.state.locked().0.clone()
+    }
+
+    /// Changes the loop's status and counts the change.
+    pub fn update(&self, change: impl FnOnce(&mut LoopStatus)) {
+        let mut state = self.state.locked();
+        change(&mut state.0);
+        state.1 += 1;
+        self.signal.notify_all();
+    }
+
+    /// Counts a change to something else `status` reports.
+    pub fn changed(&self) {
+        self.state.locked().1 += 1;
+        self.signal.notify_all();
+    }
+
+    /// The changes counted since the loop started.
+    pub fn changes(&self) -> u64 {
+        self.state.locked().1
+    }
+
+    /// Waits until the count of changes passes `seen` or `until` comes, and
+    /// returns the count then.
+    pub fn wait_past(&self, seen: u64, until: Instant) -> u64 {
+        let mut state = self.state.locked();
+        while state.1 <= seen {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            state = polylogue_model::unpoisoned(self.signal.wait_timeout(state, left)).0;
+        }
+        state.1
+    }
+
+    /// Waits until `ready` holds for the loop's status or `until` comes;
+    /// the status that held, or `None` when the time ran out.
+    pub fn wait_for(
+        &self,
+        until: Instant,
+        mut ready: impl FnMut(&LoopStatus) -> bool,
+    ) -> Option<LoopStatus> {
+        let mut state = self.state.locked();
+        loop {
+            if ready(&state.0) {
+                return Some(state.0.clone());
+            }
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return None;
+            }
+            state = polylogue_model::unpoisoned(self.signal.wait_timeout(state, left)).0;
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, serde::Deserialize)]
 pub struct ImportOptions {
     pub origin: Option<String>,
@@ -483,6 +559,25 @@ pub struct ImportReport {
     /// What became of each vector of a Python Polylogue vector store.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub python_import: Option<PythonImportReport>,
+    /// When what the import stored can be read.
+    #[serde(default)]
+    pub readable: Readable,
+}
+
+/// When an import's inputs can be read. An import parses and derives what
+/// it stored before it answers, so its rows are readable at once, except
+/// while an index is built: the build reads them, and they are readable
+/// once it is installed.
+#[derive(
+    Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
+#[serde(tag = "when", rename_all = "snake_case")]
+pub enum Readable {
+    #[default]
+    Now,
+    AfterBuild {
+        build: polylogue_store::archive::index_build::IndexBuild,
+    },
 }
 
 /// Historical authored records restored through the recorded import ingress.
@@ -538,6 +633,9 @@ pub struct Engine {
     requests: Option<Requests>,
     /// Imports answered by a build while it ran, for the loop's summary.
     imports_during_build: u64,
+    /// The paths an import request stored new bytes for and their sizes,
+    /// kept across its retry after a build installed under it.
+    import_stored: Vec<(PathBuf, u64)>,
     /// What is failing, logged when it starts and when it clears.
     failure_log: failure_log::FailureLog,
     /// The files the current pass planned to read.
@@ -648,6 +746,7 @@ impl Engine {
             collectors: collectors::Collectors::default(),
             requests: None,
             imports_during_build: 0,
+            import_stored: Vec::new(),
             failure_log: Default::default(),
             planned: HashSet::new(),
         })

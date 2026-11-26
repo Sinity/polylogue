@@ -63,11 +63,33 @@ pub(crate) fn query_outcome(
 /// An import is degraded, with the awaiting-confirmation note, while restored
 /// user state Sinex has not confirmed is pending or the Python Polylogue
 /// import's authored publication or source membership is unfinished.
+/// An import whose inputs are readable only after the index being built
+/// is installed says so beside its report's `readable`.
 pub(crate) fn import_answer(
     report: polylogue_engine::ImportReport,
 ) -> Answer<polylogue_engine::ImportReport> {
     let pending = report.user_state.pending > 0;
-    crate::protocol::written(report, pending)
+    let after_build = match &report.readable {
+        polylogue_engine::Readable::Now => None,
+        polylogue_engine::Readable::AfterBuild { build } => Some(format!(
+            "{build}; the imported inputs are readable once it is installed"
+        )),
+    };
+    let mut answer = crate::protocol::written(report, pending);
+    if let Some(note) = after_build {
+        answer.outcome = match answer.outcome {
+            command_surface::Outcome::Ok(value) => command_surface::Outcome::Degraded {
+                value,
+                missing: vec![note],
+            },
+            command_surface::Outcome::Degraded { value, mut missing } => {
+                missing.push(note);
+                command_surface::Outcome::Degraded { value, missing }
+            }
+            other => other,
+        };
+    }
+    answer
 }
 
 pub(crate) fn error<T>(code: polylogue_model::Code, message: impl ToString) -> Answer<T> {

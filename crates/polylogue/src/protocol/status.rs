@@ -24,6 +24,10 @@ pub struct Arguments {
     /// Redraw the view every 2 seconds until interrupted (CLI on a color terminal only)
     #[serde(default)]
     pub watch: bool,
+    /// Answer once the daemon has caught up, or when this much time has passed (30s, 10m)
+    pub wait: Option<String>,
+    /// With --wait, answer once it has caught up after this many changes (the `changes` of an earlier answer)
+    pub after: Option<u64>,
 }
 
 /// How many log records an ordinary status answer carries.
@@ -40,6 +44,13 @@ pub struct Answer {
     pub uptime_seconds: u64,
     /// The first reads that status and briefs answer from are not ready yet.
     pub warming: bool,
+    /// Changes to what status reports since the daemon started: the loop's
+    /// work, and the snapshot read after a commit.
+    pub changes: u64,
+    /// The daemon has finished the work it has: no index being built, no
+    /// pass running or due, derived figures and search text current, and
+    /// this answer read after the latest commit.
+    pub caught_up: bool,
     /// The archive totals; none when they could not be read (`totals_error`).
     pub store: Option<polylogue_store::Status>,
     /// The build of `index.db` in progress, with its progress.

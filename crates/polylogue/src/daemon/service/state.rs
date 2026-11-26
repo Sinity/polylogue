@@ -1,6 +1,6 @@
 //! Shared daemon state and its archive mode.
 use crate::daemon::Failure;
-use polylogue_engine::{LoopMsg, LoopStatus};
+use polylogue_engine::{LoopMsg, SharedLoopStatus};
 use polylogue_model::LockExt as _;
 use polylogue_store::{Archive, ReadPool, StoreError, WriterSender};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -36,7 +36,7 @@ pub struct Daemon {
     pub(crate) acts: crate::live_acts::Acts,
     pub(super) mode: ModeState,
     pub(super) loop_tx: Mutex<crossbeam_channel::Sender<LoopMsg>>,
-    pub(crate) status: Arc<Mutex<LoopStatus>>,
+    pub(crate) status: Arc<SharedLoopStatus>,
     pub(super) started: Instant,
     /// The signal rules in force and the ones refused, for `status`.
     pub(crate) signals: Mutex<serde_json::Value>,

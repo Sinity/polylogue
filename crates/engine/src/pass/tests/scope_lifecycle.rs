@@ -193,7 +193,7 @@ fn a_scope_reset_during_preparation_cannot_complete_with_stale_state_or_capture_
     let (mut engine, interrupted) = std::thread::scope(|threads| {
         let work = threads.spawn(move || {
             let (tx, rx) = crossbeam_channel::unbounded();
-            let status = Arc::new(Mutex::new(LoopStatus::default()));
+            let status = Arc::new(SharedLoopStatus::default());
             let result = engine.run(tx, rx, &status, Lifetime::UntilIdle, || {});
             (engine, result)
         });
@@ -311,7 +311,7 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
             fault::arm("parse", "request-turn.jsonl", Action::Hold, 0, 1);
             let (tx, rx) = crossbeam_channel::unbounded();
             let worker_tx = tx.clone();
-            let status = Arc::new(Mutex::new(LoopStatus::default()));
+            let status = Arc::new(SharedLoopStatus::default());
             let worker = std::thread::spawn(move || {
                 let result = engine.run(worker_tx, rx, &status, Lifetime::UntilIdle, || {});
                 (engine, result)
@@ -455,7 +455,7 @@ fn a_stop_keeps_the_bytes_in_hand_without_reading_the_whole_input() {
     let (tx, rx) = crossbeam_channel::unbounded();
     let worker_tx = tx.clone();
     let worker = std::thread::spawn(move || {
-        let status = Arc::new(Mutex::new(LoopStatus::default()));
+        let status = Arc::new(SharedLoopStatus::default());
         let result = engine.run(worker_tx, rx, &status, Lifetime::UntilStopped, || {});
         (engine, result)
     });
@@ -599,7 +599,7 @@ fn an_import_answers_before_queued_captures_start_and_the_next_turn_finishes_the
         let (tx, rx) = crossbeam_channel::unbounded();
         let worker_tx = tx.clone();
         let worker = std::thread::spawn(move || {
-            let status = Arc::new(Mutex::new(LoopStatus::default()));
+            let status = Arc::new(SharedLoopStatus::default());
             let result = engine.run(worker_tx, rx, &status, Lifetime::UntilIdle, || {});
             (engine, result)
         });

@@ -134,7 +134,7 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
         applied: 1,
         present: 2,
     };
-    let answer = import_answer(report);
+    let answer = import_answer(report.clone());
     assert_eq!(answer.exit_code(), 0);
     assert!(
         crate::protocol::notes(&answer)
@@ -142,6 +142,32 @@ fn an_import_with_pending_user_state_is_degraded_with_its_note() {
             .is_empty()
     );
     test_answers::ok(answer);
+}
+
+/// docs/capture.md, Import: "where that waits for a build, the reply says
+/// index_building with the build's progress".
+#[test]
+fn an_import_answered_during_a_build_says_the_index_is_being_built() {
+    let build = polylogue_store::archive::index_build::IndexBuild {
+        serving_previous: false,
+        chains: 3,
+        chains_read: 1,
+        bytes: 300,
+        bytes_read: 100,
+    };
+    let report = polylogue_engine::ImportReport {
+        readable: polylogue_engine::Readable::AfterBuild { build },
+        ..Default::default()
+    };
+    let answer = import_answer(report);
+    assert_eq!(answer.exit_code(), 5);
+    let (_, notes) = test_answers::degraded(answer);
+    assert_eq!(
+        notes,
+        [
+            "the index is being built: 100 of 300 bytes parsed; 1 of 3 input chains read; the imported inputs are readable once it is installed"
+        ]
+    );
 }
 
 #[test]

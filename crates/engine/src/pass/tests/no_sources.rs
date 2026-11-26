@@ -8,7 +8,7 @@ fn until_idle(engine: &mut Engine, queued: Vec<LoopMsg>) -> RunSummary {
     for message in queued {
         tx.send(message).unwrap();
     }
-    let status = Arc::new(Mutex::new(LoopStatus::default()));
+    let status = Arc::new(SharedLoopStatus::default());
     engine
         .run(tx, rx, &status, Lifetime::UntilIdle, || {})
         .unwrap()

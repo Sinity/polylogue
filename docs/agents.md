@@ -165,7 +165,7 @@ A resource read is a read like any other: the caller identity, trust rendering a
 
 ### Waiting
 
-`"wait": "30m"` in `arguments` is the line option `--wait` ([interfaces.md](interfaces.md#steps)): a listing returns when rows match or the time passes, and `import` of a provider returns when its job finishes. One MCP call waits at most 50 seconds, so it never outlives a client's tool timeout; a call that runs out of its 50 seconds replies `empty` with the same call, its `wait` less the elapsed time, as its `next`, and an agent that runs that call keeps waiting.
+`"wait": "30m"` in `arguments` is the line option `--wait` ([interfaces.md](interfaces.md#steps)): a listing returns when rows match or the time passes, `import` of a provider returns when its job finishes, and `status` returns when the daemon has caught up. One MCP call waits at most 50 seconds, so it never outlives a client's tool timeout; a call that runs out of its 50 seconds replies `empty` with the same call, its `wait` less the elapsed time, as its `next`, and an agent that runs that call keeps waiting.
 
 ```
 polylogue_read  {"arguments": {"selection": "session:codex:019d0f2a live:idle", "wait": "30m"}}

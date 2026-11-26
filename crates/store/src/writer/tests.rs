@@ -509,8 +509,10 @@ fn prose_and_tool_output_are_searchable_once_a_build_ends() {
 }
 
 /// After a first build, new text reaches the search index from the search
-/// thread, without a flush, shortly after it commits (the wait allows 10 s for
-/// a loaded host); `status` counts it as pending until then.
+/// thread, without a flush, shortly after it commits; `status` counts it as
+/// pending until then. Settling it is a commit readers are told of, so the
+/// test reads again only after each cue (a reader of the status snapshot
+/// would otherwise keep the pending count).
 #[test]
 fn the_search_thread_indexes_live_writes_without_a_flush() {
     let w = test_archive();
@@ -530,6 +532,7 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
         )
         .unwrap();
     w.writer.derive().unwrap(); // ends the first build
+    let commits = w.writer.completion_commits();
     w.writer
         .send(
             w.commit_source(
@@ -566,15 +569,15 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
             assert_eq!(r.status().unwrap().search_pending, 0);
             break;
         }
-        if std::time::Instant::now() >= deadline {
-            drop(r);
+        drop(r);
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        if commits.recv_timeout(left).is_err() {
             let report = w
                 .writer
                 .flush()
                 .expect("collect writer error after search failed to progress");
-            panic!("background search did not index the committed live write: {report:?}");
+            panic!("no commit announced the committed live write's search text: {report:?}");
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
     }
 }
 

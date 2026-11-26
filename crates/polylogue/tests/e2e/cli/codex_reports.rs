@@ -16,22 +16,16 @@ fn codex_counts_usage_and_keeps_recorded_text() {
     std::fs::write(&source, &original).unwrap();
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let _daemon = start_daemon(&env);
-    wait_status(&env, |status| status["store"]["sessions"] == 1);
-    let started = Instant::now();
-    let answer = loop {
-        let out = cli(&env, &["--json", "sessions | measure usage"]);
-        assert!(out.status.success(), "{out:?}");
-        let answer = listing(json(&out));
-        if answer["data"]["recorded_usage"]["measured_completion_observations"] == 2 {
-            break answer;
-        }
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "usage never reached 2 observations: {answer}"
-        );
-        std::thread::sleep(Duration::from_millis(20));
-    };
+    let status = wait_caught_up(&env);
+    assert_eq!(status["store"]["sessions"], 1);
+    let out = cli(&env, &["--json", "sessions | measure usage"]);
+    assert!(out.status.success(), "{out:?}");
+    let answer = listing(json(&out));
     let data = &answer["data"];
+    assert_eq!(
+        data["recorded_usage"]["measured_completion_observations"],
+        2
+    );
     assert!(data["messages"].is_null());
     assert_eq!(data["unknown_boundary_items"], 3);
     assert_eq!(data["recorded_usage"]["known_usage"]["input"], 30);

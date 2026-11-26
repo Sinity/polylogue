@@ -51,12 +51,20 @@ fn start_with_deployment(
     )?;
     // Reads answer `index_building` until the loop's first pass installs the
     // index (docs/operations.md, Replacing an index from another schema).
-    // Status then answers from the snapshot read after the install.
+    // Status then answers from the snapshot read after the install, which
+    // counts as a status change.
+    let until = std::time::Instant::now() + Duration::from_secs(60);
+    let mut seen = runtime.daemon.status.changes();
     while runtime.runs_loop()
         && (runtime.daemon.archive.index_build().is_some()
             || !runtime.daemon.status_snapshot.is_read())
     {
-        std::thread::sleep(Duration::from_millis(5));
+        if std::time::Instant::now() >= until {
+            return Err(std::io::Error::other(
+                "the test daemon's first index was not installed within a minute",
+            ));
+        }
+        seen = runtime.daemon.status.wait_past(seen, until);
     }
     Ok(runtime)
 }

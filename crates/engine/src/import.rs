@@ -81,6 +81,9 @@ impl Engine {
         } else {
             report.pass.derivation_pending = self.writer.derive_in_background()?;
         }
+        if let Some(build) = self.archive.index_build() {
+            report.readable = Readable::AfterBuild { build };
+        }
         report.pass.seconds = started.elapsed().as_secs_f64();
         Ok(report)
     }
@@ -266,6 +269,7 @@ impl Engine {
             } else {
                 report.imported.push(at.clone());
                 report.pass.bytes_stored += stored.length;
+                self.import_stored.push((at.clone(), stored.length));
             }
             let plan = self.stored_import_plan(&at, origin, input, &stored, facts);
             if plan.is_err() {

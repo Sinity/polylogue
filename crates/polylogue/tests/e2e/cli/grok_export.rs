@@ -27,9 +27,6 @@ fn grok_account_import_reads_turns_without_path_or_export_order_identity() {
     std::fs::write(&source, &original).unwrap();
     let import = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     let _ = import_report(&import);
-    // The import answers once its bytes are stored; the listing needs the
-    // parse and derivation, which an idle loop has finished.
-    wait_status(&env, |_| true);
     let query = cli(&env, &["--json", "origin:grok | sort by id"]);
     assert!(query.status.success(), "{query:?}");
     let rows = listing(json(&query))["rows"].as_array().unwrap().clone();
@@ -150,7 +147,6 @@ fn grok_native_ids_blank_content_and_unknown_shapes_are_visible() {
     std::fs::write(&source, serde_json::to_vec(&value).unwrap()).unwrap();
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     let _ = import_report(&imported);
-    wait_status(&env, |_| true);
     let messages = messages(&env, "grok:native-account");
     assert_eq!(messages.len(), 4);
     assert_eq!(messages[0]["id"], "grok:native-user");

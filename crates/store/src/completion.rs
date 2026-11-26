@@ -53,9 +53,12 @@ struct Subscriber {
 }
 
 /// Coalesced cues to read the index, each saying what kinds
-/// of record the commits changed.
+/// of record the commits changed, and the count of commits made.
 #[derive(Clone, Default)]
-pub struct CommitEvents(Arc<Mutex<Vec<Subscriber>>>);
+pub struct CommitEvents {
+    subscribers: Arc<Mutex<Vec<Subscriber>>>,
+    made: Arc<std::sync::atomic::AtomicU64>,
+}
 
 pub struct CommitSubscription {
     pending: Arc<Mutex<Committed>>,
@@ -87,7 +90,7 @@ impl CommitEvents {
     ) -> CommitSubscription {
         let (wake, receiver) = mpsc::sync_channel(1);
         let pending = Arc::default();
-        self.0.locked().push(Subscriber {
+        self.subscribers.locked().push(Subscriber {
             interests,
             pending: Arc::clone(&pending),
             wake: wake.clone(),
@@ -103,7 +106,10 @@ impl CommitEvents {
     /// Called after a successful logical index commit, including derivations,
     /// with what it changed.
     pub(crate) fn committed(&self, changed: Committed) {
-        self.0.locked().retain(|subscriber| {
+        // Counted before any subscriber wakes, so a reader opened after
+        // loading the count sees every commit it counts.
+        self.made.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.subscribers.locked().retain(|subscriber| {
             let changed = if let Some(interests) = subscriber.interests {
                 let selected = Committed {
                     content: changed.content && interests.content,
@@ -129,6 +135,14 @@ impl CommitEvents {
                 Err(mpsc::TrySendError::Disconnected(())) => false,
             }
         });
+    }
+}
+
+impl CommitEvents {
+    /// The logical index commits made since the writer started. A reader
+    /// opened after loading this count sees at least those commits.
+    pub fn made(&self) -> u64 {
+        self.made.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

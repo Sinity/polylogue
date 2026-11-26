@@ -2757,7 +2757,7 @@ impl Engine {
         &mut self,
         tx: crossbeam_channel::Sender<LoopMsg>,
         rx: crossbeam_channel::Receiver<LoopMsg>,
-        status: &Arc<Mutex<LoopStatus>>,
+        status: &Arc<SharedLoopStatus>,
         lifetime: Lifetime,
         ready: impl FnOnce(),
     ) -> Result<RunSummary, EngineError> {
@@ -2779,11 +2779,11 @@ impl Engine {
 
     fn run_passes(
         &mut self,
-        status: &Arc<Mutex<LoopStatus>>,
+        status: &Arc<SharedLoopStatus>,
         lifetime: Lifetime,
     ) -> Result<RunSummary, EngineError> {
         let busy = |busy: bool| {
-            status.locked().busy = busy;
+            status.update(|status| status.busy = busy);
         };
         let mut summary = RunSummary::default();
         let mut discover = true;
@@ -2896,8 +2896,7 @@ impl Engine {
             );
             summary.passes += 1;
             summary.work.add(finished.clone());
-            {
-                let mut s = status.locked();
+            status.update(|s| {
                 s.full_scans += finished.full_scans;
                 if finished.full_scans > 0
                     || finished.inputs_seen > 0
@@ -2913,7 +2912,7 @@ impl Engine {
                 }
                 s.passes += 1;
                 s.busy = pending;
-            }
+            });
             if lifetime == Lifetime::UntilIdle {
                 // Work queued while the pass ran (imports, changes the
                 // watcher saw) is taken now; with none, the loop is idle. A
@@ -3077,10 +3076,13 @@ impl Engine {
                     origin: format,
                     dry_run,
                 };
+                self.import_stored.clear();
                 let mut report = self.import_with_options(&paths, &options);
                 // A build installed while the import read the index: its
                 // readers met the replaced file. The import is read again
-                // against the installed one; what it stored stays stored.
+                // against the installed one; what it stored stays stored,
+                // and is reported as imported by this request, not as
+                // bytes the archive already had.
                 if matches!(
                     report,
                     Err(EngineError::Store(
@@ -3088,6 +3090,17 @@ impl Engine {
                     ))
                 ) {
                     report = self.import_with_options(&paths, &options);
+                    if let Ok(report) = &mut report {
+                        for (path, length) in std::mem::take(&mut self.import_stored) {
+                            if let Some(at) =
+                                report.already_stored.iter().position(|seen| *seen == path)
+                            {
+                                report.already_stored.remove(at);
+                                report.imported.push(path);
+                                report.pass.bytes_stored += length;
+                            }
+                        }
+                    }
                 }
                 let report = report.map_err(ImportFailure::Import);
                 busy(pending);

@@ -27,7 +27,7 @@ fn queued_import_checks_its_parent_before_committing() {
         let worker_tx = tx.clone();
         let (ready, started) = sync_channel(1);
         let (release, held) = sync_channel(1);
-        let status = Arc::new(Mutex::new(LoopStatus::default()));
+        let status = Arc::new(SharedLoopStatus::default());
         let loop_status = Arc::clone(&status);
         let worker = std::thread::spawn(move || {
             let _lock = lock;
@@ -86,9 +86,12 @@ fn queued_import_checks_its_parent_before_committing() {
         // The imports were answered during the new archive's first build:
         // their sessions are read once that build is installed and the loop
         // has derived what arrived meanwhile, as `status` shows.
-        while archive.index_build().is_some() || loop_status.lock().unwrap().busy {
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        // The install ends a pass, so the status after it shows no build.
+        loop_status
+            .wait_for(Instant::now() + Duration::from_secs(30), |status| {
+                archive.index_build().is_none() && !status.busy
+            })
+            .expect("the first build installed and the loop went idle");
         tx.send(LoopMsg::Stop).unwrap();
         worker.join().unwrap().unwrap();
         match rejected {

@@ -97,15 +97,15 @@ fn inputs_are_serviced_while_a_database_is_read() {
 /// stopped after the first turn would leave the test waiting.
 #[test]
 fn daemon_continues_capture_without_a_watcher_event() {
-    use crate::{LoopMsg, LoopStatus};
-    use std::sync::{Arc, Mutex, mpsc::channel};
-    use std::time::Duration;
+    use crate::{LoopMsg, SharedLoopStatus};
+    use std::sync::{Arc, mpsc::channel};
+    use std::time::{Duration, Instant};
     let w = ClaudeHome::new();
     let (mut engine, lock) = crate::import::tests::engine(&w, 64 << 20);
     // A first build captures whole; this one has nothing to capture.
     assert!(engine.run_pass().unwrap().errors.is_empty());
     database(&w, 4000);
-    let status = Arc::new(Mutex::new(LoopStatus::default()));
+    let status = Arc::new(SharedLoopStatus::default());
     let shared = status.clone();
     let (tx, rx) = crossbeam_channel::unbounded();
     let (ready, started) = channel();
@@ -121,15 +121,12 @@ fn daemon_continues_capture_without_a_watcher_event() {
         )
     });
     started.recv().unwrap();
-    let finished = loop {
-        let now = status.lock().unwrap().clone();
-        if now.passes > 0 && !now.busy {
-            break now;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let finished = status.wait_for(Instant::now() + Duration::from_secs(60), |now| {
+        now.passes > 0 && !now.busy
+    });
     tx.send(LoopMsg::Stop).unwrap();
     thread.join().unwrap().unwrap();
+    let finished = finished.expect("the loop finished the capture within its deadline");
     assert!(finished.passes >= 1, "{finished:?}");
     assert_eq!(finished.full_scans, 1);
     assert!(finished.last_pass.errors.is_empty(), "{finished:?}");

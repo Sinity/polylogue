@@ -223,7 +223,7 @@ fn hermes_observer_keeps_events_and_rebuilds_without_conversations() {
     std::fs::remove_file(&source).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _daemon = start_daemon(&env);
-    wait_rows(&env, "events where source:hermes | sort by id", |rows| {
+    caught_up_rows(&env, "events where source:hermes | sort by id", |rows| {
         count_kind(rows, "hermes_approval_response") == 1
     });
     let out = cli(
@@ -271,7 +271,7 @@ fn hermes_verification_restart_and_rebuild_agree() {
     let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
     let before_rebuild = {
         let daemon = start_daemon(&env);
-        let initial = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
+        let initial = caught_up_rows(&env, "events where source:hermes | sort by id", |rows| {
             count_kind(rows, "hermes_verification_event") == 1
                 && count_kind(rows, "hermes_verification_state") == 1
         });
@@ -291,27 +291,20 @@ fn hermes_verification_restart_and_rebuild_agree() {
             COMMIT;").unwrap();
         drop(db);
         let daemon = start_daemon(&env);
-        let started = Instant::now();
-        loop {
-            let out = cli(
-                &env,
-                &[
-                    "--json",
-                    "dev",
-                    "sql",
-                    "SELECT SUM(skipped) AS n FROM parse_state",
-                ],
-            );
-            assert!(out.status.success(), "{out:?}");
-            if json(&out)[0]["n"].as_u64().is_some_and(|n| n >= 2) {
-                break;
-            }
-            assert!(
-                started.elapsed() < READY_DEADLINE,
-                "future-schema row was never skipped: {out:?}"
-            );
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        let out = cli(
+            &env,
+            &[
+                "--json",
+                "dev",
+                "sql",
+                "SELECT SUM(skipped) AS n FROM parse_state",
+            ],
+        );
+        assert!(out.status.success(), "{out:?}");
+        assert!(
+            json(&out)[0]["n"].as_u64().is_some_and(|n| n >= 2),
+            "future-schema row was not skipped: {out:?}"
+        );
         assert_eq!(
             count_kind(&hermes_event_rows(&env), "hermes_verification_event"),
             1
@@ -326,7 +319,7 @@ fn hermes_verification_restart_and_rebuild_agree() {
             COMMIT;").unwrap();
         drop(db);
         let _daemon = start_daemon(&env);
-        let final_rows = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
+        let final_rows = caught_up_rows(&env, "events where source:hermes | sort by id", |rows| {
             count_kind(rows, "hermes_verification_event") == 2
                 && count_kind(rows, "hermes_verification_state") == 2
                 && count_kind(rows, "hermes_verification_row_deleted") == 1
@@ -349,7 +342,7 @@ fn hermes_verification_restart_and_rebuild_agree() {
     std::fs::remove_file(&verification_db).unwrap();
     polylogue_testkit::delete_index(&archive);
     let _daemon = start_daemon(&env);
-    let rebuilt = wait_rows(&env, "events where source:hermes | sort by id", |rows| {
+    let rebuilt = caught_up_rows(&env, "events where source:hermes | sort by id", |rows| {
         count_kind(rows, "hermes_verification_event") == 2
             && count_kind(rows, "hermes_verification_state") == 2
             && count_kind(rows, "hermes_verification_row_deleted") == 1
@@ -375,10 +368,13 @@ fn hermes_atif_documents_preserve_roles_unknown_media_and_ordered_parts() {
     let _daemon = start_daemon(&env);
     let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
     let _ = import_report(&imported);
-    // The import answers once its bytes are stored; reads need the parse.
-    let listed = wait_rows(&env, "documents where origin:hermes | sort by id", |rows| {
-        rows["count"] == 2
-    });
+    let listed = cli(
+        &env,
+        &["--json", "documents where origin:hermes | sort by id"],
+    );
+    assert!(listed.status.success(), "{listed:?}");
+    let listed = listing(json(&listed));
+    assert_eq!(listed["count"], 2);
     for row in listed["rows"].as_array().unwrap() {
         let reference = format!("document:{}", row["id"].as_str().unwrap());
         assert_eq!(row["purpose"], "transcript");
