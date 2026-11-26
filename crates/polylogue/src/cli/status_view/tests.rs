@@ -113,6 +113,7 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
     let mut status = answer();
     status.store = Some(polylogue_store::Status {
         sessions: 37_419,
+        sessions_physical: 41_208,
         messages: 11_240_000,
         documents: 288,
         tool_calls: 4_770_000,
@@ -219,7 +220,7 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
 polylogue  ⚠ parsing is behind the stored bytes
            standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
 
-ARCHIVE    37,419 sessions   11.24M messages   4.77M tool calls   288 documents
+ARCHIVE    37,419 sessions, 41,208 with subagents, forks, continuations and resumes   11.24M messages   4.77M tool calls   288 documents
            132,286 inputs (98.6 GiB decoded) · 134,089 revisions
 
 READING    #############################.  99.9%   109,793 of 109,887 files read
