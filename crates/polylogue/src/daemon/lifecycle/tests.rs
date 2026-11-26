@@ -257,8 +257,14 @@ fn the_service_manager_sees_each_phase_and_its_steps() {
         Some(0),
         "{opening:?}"
     );
+    // The status line shows the step in progress; a step that ended before
+    // the supervisor read it is not shown.
+    let steps = &opening[1..opening.len() - 2];
+    assert!(!steps.is_empty(), "{opening:?}");
     assert!(
-        opening.contains(&"STATUS=Opening: opening the archive".to_owned()),
+        steps
+            .iter()
+            .all(|message| message.starts_with("STATUS=Opening: ")),
         "{opening:?}"
     );
     assert_eq!(
