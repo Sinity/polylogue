@@ -10,7 +10,7 @@ CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
 CREATE TABLE input_ref (
   pk                INTEGER PRIMARY KEY,
   id                TEXT NOT NULL UNIQUE,   -- archive.db input.id
-  format            TEXT NOT NULL DEFAULT '', -- parser declaration used for this input
+  origin            TEXT NOT NULL DEFAULT '', -- parser declaration used for this input
   route             TEXT NOT NULL DEFAULT 'live' CHECK (route IN (@names(Route)))
 ) STRICT;
 
@@ -634,12 +634,12 @@ CREATE INDEX parse_state_failed ON parse_state(failure_kind) WHERE state = 'fail
 CREATE TABLE unused (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),  -- also the example input status shows
   chain             INTEGER NOT NULL,       -- the revision chain counted; a whole re-parse of a chain replaces its rows
-  format            TEXT NOT NULL,
-  what              TEXT NOT NULL,          -- 'skipped:<kind>: <reason>', 'unreadable:<kind>: <reason>' or
+  origin            TEXT NOT NULL,
+  item              TEXT NOT NULL,          -- 'skipped:<kind>: <reason>', 'unreadable:<kind>: <reason>' or
                                             --   'field:<kind>.<json path>'
   count             INTEGER NOT NULL,
   counted_only      INTEGER NOT NULL DEFAULT 0,  -- 1: skipped, a known kind kept only as a count by design
-  PRIMARY KEY (input_pk, chain, what)
+  PRIMARY KEY (input_pk, chain, item)
 ) STRICT, WITHOUT ROWID;
 
 

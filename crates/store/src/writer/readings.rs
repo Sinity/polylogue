@@ -1333,7 +1333,7 @@ pub(crate) fn event_readings(conn: &Connection, event_pk: i64) -> Result<Vec<Eve
     let mut reader = crate::content::Reader::default();
     for (event_id, copy) in stated {
         let mut statement = conn.prepare_cached(
-            "SELECT i.id,i.format,r.chain,r.source_start,r.source_start+r.source_length,r.imported_sources,r.hash,
+            "SELECT i.id,i.origin,r.chain,r.source_start,r.source_start+r.source_length,r.imported_sources,r.hash,
                  r.event_id,r.content_group,r.content_start,r.content_length,r.data_length
              FROM event_parse r JOIN input_ref i ON i.pk=r.input_pk
              WHERE (?1 IS NOT NULL AND r.event_id=?1) OR (?2 IS NOT NULL AND r.session_id=?2)",

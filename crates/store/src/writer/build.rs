@@ -845,7 +845,7 @@ fn move_out(
 ) -> Result<()> {
     let mut value = Vec::new();
     let (format, route): (String, String) = tx.query_row(
-        "SELECT format,route FROM input_ref WHERE id=?1",
+        "SELECT origin,route FROM input_ref WHERE id=?1",
         [input],
         |r| <(String, String)>::try_from(r),
     )?;
@@ -1939,9 +1939,9 @@ impl Inner {
                 INPUTS => {
                     let row = decode_row(value)?;
                     t.prepare_cached(
-                        "INSERT INTO input_ref(id,format,route) VALUES (?1,?2,?3)
-                         ON CONFLICT(id) DO UPDATE SET format=excluded.format,route=excluded.route
-                         WHERE format IS NOT excluded.format OR route IS NOT excluded.route",
+                        "INSERT INTO input_ref(id,origin,route) VALUES (?1,?2,?3)
+                         ON CONFLICT(id) DO UPDATE SET origin=excluded.origin,route=excluded.route
+                         WHERE origin IS NOT excluded.origin OR route IS NOT excluded.route",
                     )?
                     .execute(params![key_input(rest)?, row[0], row[1]])?;
                 }

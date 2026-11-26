@@ -15,7 +15,7 @@ fn load_prefix(
     version: &str,
 ) -> Result<Option<Reading>> {
     let previous: Option<String> = conn.scalar_optional(
-        "SELECT w.state FROM wire_parse w JOIN input_ref i ON i.pk=w.input_pk WHERE i.id=?1 AND w.chain=?2 AND w.parse_version=?3",
+        "SELECT w.state FROM wire_parse w JOIN input_ref i ON i.pk=w.input_pk WHERE i.id=?1 AND w.chain=?2 AND w.parser_version=?3",
         params![input,chain,version])?;
     previous
         .map(|json| Ok(serde_json::from_str(&json)?))

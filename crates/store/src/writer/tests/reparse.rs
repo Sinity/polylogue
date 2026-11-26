@@ -960,8 +960,8 @@ fn assert_totals_equal_a_recount(w: &TestArchive) {
         .collect();
     let unused: Vec<(String, u64)> = r
         .query(
-            "SELECT what, sum(count) AS n FROM unused GROUP BY what
-             ORDER BY n DESC, what LIMIT 20",
+            "SELECT item, sum(count) AS n FROM unused GROUP BY item
+             ORDER BY n DESC, item LIMIT 20",
             &[],
         )
         .unwrap()

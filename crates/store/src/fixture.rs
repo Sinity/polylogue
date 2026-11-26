@@ -175,7 +175,7 @@ impl Fixture {
         )?;
         let archive_conn = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
         index.execute(
-            "INSERT INTO input_ref(id,format) VALUES ('fixture','fixture')",
+            "INSERT INTO input_ref(id,origin) VALUES ('fixture','fixture')",
             [],
         )?;
         let input_pk = index.last_insert_rowid();
@@ -736,7 +736,7 @@ impl Fixture {
         counted_only: bool,
     ) -> Result<()> {
         self.index.execute(
-            "INSERT INTO unused(input_pk, chain, format, what, count, counted_only)
+            "INSERT INTO unused(input_pk, chain, origin, item, count, counted_only)
              VALUES (?1, 1, ?2, ?3, ?4, ?5)",
             params![self.input_pk, format, what, count, i64::from(counted_only)],
         )?;
@@ -1077,9 +1077,9 @@ pub fn older_reading(archive: &Archive, origin: &str) -> Result<(u64, u64)> {
     )?;
     crate::source::views(&conn)?;
     let size=conn.query_row("SELECT count(*),coalesce(sum((SELECT max(length) FROM a.revision r WHERE r.input=i.id AND r.chain=p.chain)),0)
-        FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.format=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
+        FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.origin=?1",[origin],|r|Ok((r.get::<_,i64>(0)? as u64,r.get::<_,i64>(1)? as u64)))?;
     let tx = conn.unchecked_transaction()?;
-    tx.execute("UPDATE parse_state SET parser_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE format=?1)",[origin])?;
+    tx.execute("UPDATE parse_state SET parser_version='older reading' WHERE input_pk IN (SELECT pk FROM input_ref WHERE origin=?1)",[origin])?;
     crate::archive::bump_counter(&tx)?;
     tx.commit()?;
     Ok(size)

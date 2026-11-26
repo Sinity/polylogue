@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::{Output, RecordCounts};
 fn database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT NOT NULL,format TEXT NOT NULL); CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,parser_version TEXT,state TEXT,parsed_to INTEGER,waiting INTEGER,failure_kind TEXT); INSERT INTO input_ref VALUES(1,'first','fixture'),(2,'second','fixture'),(3,'third','other');").unwrap();
+    conn.execute_batch("PRAGMA foreign_keys=ON; CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT NOT NULL,origin TEXT NOT NULL); CREATE TABLE parse_state(input_pk INTEGER,chain INTEGER,parser_version TEXT,state TEXT,parsed_to INTEGER,waiting INTEGER,failure_kind TEXT); INSERT INTO input_ref VALUES(1,'first','fixture'),(2,'second','fixture'),(3,'third','other');").unwrap();
     conn.execute_batch(SCHEMA).unwrap();
     conn
 }
@@ -959,7 +959,7 @@ fn occurrences_are_stored_once_and_read_back_whole() {
         &step("v1", 10..20, true, shapes()),
     );
     let occurrences: Vec<String> = conn
-        .prepare("SELECT occurrence FROM wire_occurrence ORDER BY number")
+        .prepare("SELECT occurrence FROM wire_occurrence ORDER BY position")
         .unwrap()
         .query_map([], |row| row.get(0))
         .unwrap()

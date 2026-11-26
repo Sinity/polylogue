@@ -262,8 +262,8 @@ row! {
         n: u64,
     }
     statements {
-        const UNUSED = "SELECT what AS name, sum(count) AS n FROM unused GROUP BY what
-            ORDER BY n DESC, what LIMIT 20";
+        const UNUSED = "SELECT item AS name, sum(count) AS n FROM unused GROUP BY item
+            ORDER BY n DESC, item LIMIT 20";
     }
 }
 
@@ -1591,7 +1591,7 @@ impl Reader<'_> {
                 .map(|count| (count.name, count.n))
                 .collect(),
             fields: c.scalar::<u64>(
-                "SELECT count(*) FROM (SELECT what FROM unused GROUP BY what HAVING sum(count) > 0)",
+                "SELECT count(*) FROM (SELECT item FROM unused GROUP BY item HAVING sum(count) > 0)",
                 [],
             )?,
         });

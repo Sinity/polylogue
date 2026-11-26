@@ -707,7 +707,7 @@ static EVENTS: UnitSpec = UnitSpec {
         ("id", T("{r}.id"), Text),
         ("session", Expr::Template("{s}.id"), Text),
         ("input", T("{r}i.id"), Text),
-        ("source", T("{r}i.format"), Text),
+        ("source", T("{r}i.origin"), Text),
         ("kind", T("{r}.kind"), Text),
         ("at", T("{r}.at"), Time),
         (

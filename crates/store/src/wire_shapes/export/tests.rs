@@ -4,7 +4,7 @@ use polylogue_model::{BlobHash, Output, RecordCounts, RecordOutcome};
 
 fn database() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
-    conn.execute_batch("CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT,format TEXT); INSERT INTO input_ref VALUES(1,'input','fixture');").unwrap();
+    conn.execute_batch("CREATE TABLE input_ref(pk INTEGER PRIMARY KEY,id TEXT,origin TEXT); INSERT INTO input_ref VALUES(1,'input','fixture');").unwrap();
     conn.execute_batch(SCHEMA).unwrap();
     conn
 }

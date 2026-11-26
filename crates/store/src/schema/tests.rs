@@ -259,7 +259,7 @@ fn an_unversioned_file_with_tables_is_refused_unchanged() {
 fn a_parse_state_row_cannot_hold_a_half_stated_failure() {
     let conn = Connection::open_in_memory().unwrap();
     ensure_index(&conn).unwrap();
-    conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'parsed','synthetic'),(2,'failed','synthetic');
+    conn.execute_batch("INSERT INTO input_ref(pk,id,origin) VALUES(1,'parsed','synthetic'),(2,'failed','synthetic');
         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,resume) VALUES
           (1,1,'parsed','v1',40,60,x'00');
         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,failure_kind,failure_detail) VALUES

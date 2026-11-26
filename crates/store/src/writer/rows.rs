@@ -41,9 +41,9 @@ pub(super) fn write_step(
         return Ok(());
     }
     tx.prepare_cached(
-        "INSERT INTO input_ref(id,format,route) VALUES (?1,?2,?3)
-         ON CONFLICT(id) DO UPDATE SET format=excluded.format,route=excluded.route
-         WHERE format IS NOT excluded.format OR route IS NOT excluded.route",
+        "INSERT INTO input_ref(id,origin,route) VALUES (?1,?2,?3)
+         ON CONFLICT(id) DO UPDATE SET origin=excluded.origin,route=excluded.route
+         WHERE origin IS NOT excluded.origin OR route IS NOT excluded.route",
     )?
     .execute(params![b.input.id, b.input.format, b.input.route.as_str()])?;
     let input_pk: i64 = tx
@@ -106,9 +106,9 @@ pub(super) fn write_step(
     for (prefix, map, counted_only) in groups {
         for (what, count) in map {
             tx.prepare_cached(
-                "INSERT INTO unused(input_pk, chain, format, what, count, counted_only)
+                "INSERT INTO unused(input_pk, chain, origin, item, count, counted_only)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(input_pk, chain, what) DO UPDATE SET count = count + excluded.count",
+                 ON CONFLICT(input_pk, chain, item) DO UPDATE SET count = count + excluded.count",
             )?
             .execute(params![
                 input_pk,

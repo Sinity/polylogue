@@ -243,14 +243,14 @@ fn occurrence_number(
     let json = serde_json::to_string(occurrence)?;
     let key = params![source.input_pk, source.chain, version, json];
     if let Some(number) = tx
-        .prepare_cached("SELECT number FROM wire_occurrence WHERE input_pk=?1 AND chain=?2 AND parse_version=?3 AND occurrence=?4")?
+        .prepare_cached("SELECT position FROM wire_occurrence WHERE input_pk=?1 AND chain=?2 AND parser_version=?3 AND occurrence=?4")?
         .query_row(key, |row| row.get(0))
         .optional()?
     {
         return Ok(number);
     }
     Ok(tx
-        .prepare_cached("INSERT INTO wire_occurrence(input_pk,chain,parse_version,number,occurrence) SELECT ?1,?2,?3,coalesce(max(number),0)+1,?4 FROM wire_occurrence WHERE input_pk=?1 AND chain=?2 AND parse_version=?3 RETURNING number")?
+        .prepare_cached("INSERT INTO wire_occurrence(input_pk,chain,parser_version,position,occurrence) SELECT ?1,?2,?3,coalesce(max(position),0)+1,?4 FROM wire_occurrence WHERE input_pk=?1 AND chain=?2 AND parser_version=?3 RETURNING position")?
         .query_row(key, |row| row.get(0))?)
 }
 
@@ -281,7 +281,7 @@ impl Reading {
 fn stored_reading(tx: &Connection, source: Source<'_>, version: &str) -> Result<Option<Reading>> {
     let state: Option<String> = tx
         .prepare_cached(
-            "SELECT state FROM wire_parse WHERE input_pk=?1 AND chain=?2 AND parse_version=?3",
+            "SELECT state FROM wire_parse WHERE input_pk=?1 AND chain=?2 AND parser_version=?3",
         )?
         .query_row(params![source.input_pk, source.chain, version], |row| {
             row.get(0)
@@ -416,7 +416,7 @@ fn apply_inner(
                 if old.status() == CoverageStatus::Complete {
                     old.complete(source, &occurrence);
                 }
-                tx.prepare_cached("UPDATE wire_parse SET state=?4 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3")?.execute(params![source.input_pk,source.chain,step.parse_version,serde_json::to_string(&old)?])?;
+                tx.prepare_cached("UPDATE wire_parse SET state=?4 WHERE input_pk=?1 AND chain=?2 AND parser_version=?3")?.execute(params![source.input_pk,source.chain,step.parse_version,serde_json::to_string(&old)?])?;
             }
         }
         return Ok(());
@@ -492,15 +492,15 @@ fn apply_inner(
         "UPDATE wire_parse SET active=0 WHERE input_pk=?1 AND chain=?2 AND active=1",
     )?
     .execute(params![source.input_pk, source.chain])?;
-    tx.prepare_cached("INSERT INTO wire_parse(input_pk,chain,parse_version,format,active,state) VALUES (?1,?2,?3,?4,1,?5) ON CONFLICT(input_pk,chain,parse_version) DO UPDATE SET format=excluded.format,active=1,state=excluded.state")?.execute(params![source.input_pk,source.chain,step.parse_version,source.format,serde_json::to_string(&reading)?])?;
+    tx.prepare_cached("INSERT INTO wire_parse(input_pk,chain,parser_version,origin,active,state) VALUES (?1,?2,?3,?4,1,?5) ON CONFLICT(input_pk,chain,parser_version) DO UPDATE SET origin=excluded.origin,active=1,state=excluded.state")?.execute(params![source.input_pk,source.chain,step.parse_version,source.format,serde_json::to_string(&reading)?])?;
     let reading_key = params![source.input_pk, source.chain, step.parse_version];
     if reset {
         // A reset replaces the counts; where each path was first and last
         // seen stays.
-        tx.prepare_cached("UPDATE wire_shape SET unknown_kinds=0,unknown_tables=0,unused=0 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3")?
+        tx.prepare_cached("UPDATE wire_shape SET unknown_kinds=0,unknown_tables=0,unused=0 WHERE input_pk=?1 AND chain=?2 AND parser_version=?3")?
             .execute(reading_key)?;
         tx.prepare_cached(
-            "UPDATE wire_type SET count=0 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3",
+            "UPDATE wire_type SET count=0 WHERE input_pk=?1 AND chain=?2 AND parser_version=?3",
         )?
         .execute(reading_key)?;
     }
@@ -518,7 +518,7 @@ fn apply_inner(
             observation,
             &table_key,
         )?;
-        tx.prepare_cached("INSERT INTO wire_shape(input_pk,chain,parse_version,record_kind,path,table_key,unknown_kinds,unknown_tables,unused,first,last) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10) ON CONFLICT(input_pk,chain,parse_version,record_kind,path,table_key) DO UPDATE SET unknown_kinds=unknown_kinds+excluded.unknown_kinds,unknown_tables=unknown_tables+excluded.unknown_tables,unused=unused+excluded.unused,last=excluded.last")?
+        tx.prepare_cached("INSERT INTO wire_shape(input_pk,chain,parser_version,record_kind,path,table_key,unknown_kinds,unknown_tables,unused,first_position,last_position) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10) ON CONFLICT(input_pk,chain,parser_version,record_kind,path,table_key) DO UPDATE SET unknown_kinds=unknown_kinds+excluded.unknown_kinds,unknown_tables=unknown_tables+excluded.unknown_tables,unused=unused+excluded.unused,last_position=excluded.last_position")?
             .execute(params![
                 source.input_pk,
                 source.chain,
@@ -535,7 +535,7 @@ fn apply_inner(
             if count == 0 {
                 continue;
             }
-            tx.prepare_cached("INSERT INTO wire_type(input_pk,chain,parse_version,record_kind,path,table_key,json_type,count,first,last) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(input_pk,chain,parse_version,record_kind,path,table_key,json_type) DO UPDATE SET count=count+excluded.count,last=excluded.last")?
+            tx.prepare_cached("INSERT INTO wire_type(input_pk,chain,parser_version,record_kind,path,table_key,json_type,count,first_position,last_position) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(input_pk,chain,parser_version,record_kind,path,table_key,json_type) DO UPDATE SET count=count+excluded.count,last_position=excluded.last_position")?
                 .execute(params![
                     source.input_pk,
                     source.chain,
@@ -564,7 +564,7 @@ fn declare(
     let expected = serde_json::to_string(&observation.expected)?;
     let known_kinds = serde_json::to_string(&observation.known_kinds)?;
     let stored: Option<(String, bool, String)> = tx
-        .prepare_cached("SELECT expected,dynamic_map,known_kinds FROM wire_declaration WHERE format=?1 AND parse_version=?2 AND record_kind=?3 AND path=?4 AND table_key=?5")?
+        .prepare_cached("SELECT expected,dynamic_map,known_kinds FROM wire_declaration WHERE origin=?1 AND parser_version=?2 AND record_kind=?3 AND path=?4 AND table_key=?5")?
         .query_row(
             params![format, version, observation.record_kind, observation.path, table_key],
             |row| <(_, _, _)>::try_from(row),
@@ -584,7 +584,7 @@ fn declare(
             observation.record_kind, observation.path
         ))),
         None => {
-            tx.prepare_cached("INSERT INTO wire_declaration(format,parse_version,record_kind,path,table_key,expected,dynamic_map,known_kinds) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?
+            tx.prepare_cached("INSERT INTO wire_declaration(origin,parser_version,record_kind,path,table_key,expected,dynamic_map,known_kinds) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)")?
                 .execute(params![
                     format,
                     version,

@@ -108,14 +108,14 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
             .map(str::to_owned)
             .collect();
         let columns = names.iter().map(|name| {
-            if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first" | "last") {
+            if matches!(table.as_str(), "wire_shape" | "wire_type") && matches!(name.as_str(), "first_position" | "last_position") {
                 // The chain the occurrence record cites, not the read range it took.
-                format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.parse_version=t.parse_version AND r.number=t.\"{name}\") AS \"{name}\"")
+                format!("(SELECT json_extract(r.occurrence,'$.chain') FROM wire_occurrence r WHERE r.input_pk=t.input_pk AND r.chain=t.chain AND r.parser_version=t.parser_version AND r.position=t.\"{name}\") AS \"{name}\"")
             } else if let Some(natural) = natural_key(&table, name) {
                 // Row keys are local to an index; what they name is compared
                 // (docs/architecture.md, the record and the index).
                 format!("{natural} AS \"{name}\"")
-            } else if table == "wire_occurrence" && name == "number" {
+            } else if table == "wire_occurrence" && name == "position" {
                 "NULL".to_owned()
             } else if table == "wire_occurrence" && name == "occurrence" {
                 "json_extract(t.occurrence,'$.chain') AS occurrence".to_owned()

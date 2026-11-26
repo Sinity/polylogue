@@ -8,12 +8,12 @@ row! {
     struct InputRefRow {
         pk: InputPk,
         id: String,
-        format: String,
+        origin: String,
         route: polylogue_model::Route,
     }
     statements {
-        const INSERT = "INSERT INTO input_ref(pk, id, format, route) VALUES (?1, ?2, ?3, ?4)";
-        const ALL = "SELECT pk, id, format, route FROM input_ref ORDER BY pk";
+        const INSERT = "INSERT INTO input_ref(pk, id, origin, route) VALUES (?1, ?2, ?3, ?4)";
+        const ALL = "SELECT pk, id, origin, route FROM input_ref ORDER BY pk";
     }
 }
 
@@ -78,7 +78,7 @@ fn a_statement_whose_columns_differ_from_its_fields_is_reported() {
 fn a_row_inserted_through_its_statement_reads_back_equal() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(
-        "CREATE TABLE input_ref (pk INTEGER PRIMARY KEY, id TEXT NOT NULL, format TEXT NOT NULL,
+        "CREATE TABLE input_ref (pk INTEGER PRIMARY KEY, id TEXT NOT NULL, origin TEXT NOT NULL,
          route TEXT NOT NULL) STRICT",
     )
     .unwrap();
@@ -86,13 +86,13 @@ fn a_row_inserted_through_its_statement_reads_back_equal() {
         InputRefRow {
             pk: InputPk(7),
             id: "input:a".into(),
-            format: "codex".into(),
+            origin: "codex".into(),
             route: polylogue_model::Route::Live,
         },
         InputRefRow {
             pk: InputPk(9),
             id: "input:b".into(),
-            format: String::new(),
+            origin: String::new(),
             route: polylogue_model::Route::Export,
         },
     ];
@@ -115,7 +115,7 @@ fn a_row_inserted_through_its_statement_reads_back_equal() {
 fn a_stored_value_the_field_cannot_hold_names_the_field() {
     let conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute_batch(
-        "CREATE TABLE input_ref (pk INTEGER, id TEXT, format TEXT, route TEXT);
+        "CREATE TABLE input_ref (pk INTEGER, id TEXT, origin TEXT, route TEXT);
          INSERT INTO input_ref VALUES (1, 'input:a', 'codex', 'sideways');",
     )
     .unwrap();
@@ -243,7 +243,7 @@ fn a_truncated_byte_form_is_refused() {
     let row = InputRefRow {
         pk: InputPk(300),
         id: "input:a".into(),
-        format: "codex".into(),
+        origin: "codex".into(),
         route: polylogue_model::Route::Live,
     };
     let mut bytes = Vec::new();
