@@ -70,16 +70,18 @@ that creates a separate compilation graph.
 On a host that names a compiler cache in `SCCACHE_DIR`, or that provides
 per-checkout targets through `sinnix-cargo-target` (the cache then lives
 beside those targets), the development shell routes compilations through
-[sccache](https://github.com/mozilla/sccache) with a 40 GB local cache
-(`SCCACHE_CACHE_SIZE` overrides it). Each checkout's shell starts its own
-server on a socket under `XDG_RUNTIME_DIR`; a server that stops with the job
-that started it costs the next compilation a cache lookup, not a failure.
-CARGO_TARGET_DIR is withheld from sccache, which hashes every `CARGO_*`
-variable. Third-party crates hit from any checkout; workspace crates hit only
-from the same checkout path, and crates that link (test harnesses, the
-`polylogue` binary, proc macros) are never cached. A run's summary says how
-many compilations the cache answered. Elsewhere, including the hosted check,
-nothing changes.
+[sccache](https://github.com/mozilla/sccache) with a 4 GB local cache (one
+full test build stores about 0.4 GB; `SCCACHE_CACHE_SIZE` overrides it).
+Each checkout has its own server socket under `XDG_RUNTIME_DIR`. A job lasts
+until its last process exits, so an xtask run starts the server, keeps it
+through the run and stops it, and a server started by any other compilation
+stops 10 s after its last one; a server that is gone costs a compilation a
+cache lookup, not a failure. `CARGO_TARGET_DIR` is withheld from sccache,
+which hashes every `CARGO_*` variable. Third-party crates hit from any
+checkout; crates that link (test harnesses, the `polylogue` binary, proc
+macros) are never cached. A run's summary line `compiler cache: H hits, M
+misses, N not cacheable` counts the run's compilations. Elsewhere, including
+the hosted check, nothing changes.
 
 The Nix package is built with the Cargo feature `sinex` (off in a plain `cargo build`), which holds Polylogue's Sinex event kinds; primary mode is not built in this version ([primary-mode.md](primary-mode.md)). `packages.polylogue-extension`
 builds the Chrome and Firefox archives with the extension's Node builder and

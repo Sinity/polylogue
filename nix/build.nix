@@ -222,7 +222,7 @@ in
         export RUSTC_WRAPPER=${sccacheRustc}
         export SCCACHE_IGNORE_SERVER_IO_ERROR=1
         export SCCACHE_IDLE_TIMEOUT=10
-        export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-40G}"
+        export SCCACHE_CACHE_SIZE="''${SCCACHE_CACHE_SIZE:-4G}"
         SCCACHE_SERVER_UDS="$XDG_RUNTIME_DIR/sccache-$(printf %s "$PWD" | sha256sum | cut -c1-16).sock"
         export SCCACHE_SERVER_UDS
       fi
