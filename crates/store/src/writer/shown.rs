@@ -484,8 +484,8 @@ impl<'c> Work<'_, 'c> {
             for row in self
                 .tx()
                 .prepare_cached(
-                    "SELECT parent_id,child_id,kind,how,branch_point,spawning_call FROM link WHERE parent_id=?1
-                     UNION SELECT parent_id,child_id,kind,how,branch_point,spawning_call FROM link WHERE child_id=?1",
+                    "SELECT parent_id,child_id,kind,how,branch_point,spawning_call FROM link_statement WHERE parent_id=?1
+                     UNION SELECT parent_id,child_id,kind,how,branch_point,spawning_call FROM link_statement WHERE child_id=?1",
                 )?
                 .query_map([session], |row| {
                     <(String, String, String, Option<String>, Option<String>, Option<String>)>::try_from(row)
@@ -496,8 +496,21 @@ impl<'c> Work<'_, 'c> {
                 shown_links.entry(statement.clone()).or_default().insert(statement);
             }
         }
+        let mut relations = BTreeSet::new();
         for (shown, stated) in shown_links {
             self.compose_link(&shown, &stated)?;
+            let (parent, child, kind, how, ..): (
+                String,
+                String,
+                String,
+                Option<String>,
+                Option<String>,
+                Option<String>,
+            ) = serde_json::from_slice(&shown)?;
+            relations.insert((parent, child, kind, how));
+        }
+        for relation in relations {
+            self.resolve_links(relation)?;
         }
         for document in documents {
             self.compose_document(&document)?;
@@ -1777,7 +1790,7 @@ impl<'c> Work<'_, 'c> {
             Option<String>,
         ) = serde_json::from_slice(shown)?;
         let stored: Option<i64> = self.tx().scalar_optional(
-            "SELECT pk FROM link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
+            "SELECT pk FROM link_statement WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4 AND branch_point IS ?5 AND spawning_call IS ?6",
             params![parent, child, kind, how, at, call],
         )?;
         let winner = compose::value(
@@ -1790,7 +1803,8 @@ impl<'c> Work<'_, 'c> {
             if let Some(pk) = stored {
                 self.context.changes.link(self.tx(), pk)?;
                 self.mark_link_sessions(&parent, &child)?;
-                self.tx().execute("DELETE FROM link WHERE pk=?1", [pk])?;
+                self.tx()
+                    .execute("DELETE FROM link_statement WHERE pk=?1", [pk])?;
                 if crate::lineage::is_lineage(&kind) {
                     crate::lineage::mark_due(self.tx(), &child)?;
                 }
@@ -1805,7 +1819,7 @@ impl<'c> Work<'_, 'c> {
         match stored {
             Some(pk) => {
                 let same = self.tx().exists(
-                    "SELECT EXISTS(SELECT 1 FROM link WHERE pk=?1 AND evidence IS ?2 AND input_pk IS ?3 AND source_chain IS ?4 AND copies_prefix IS ?5)",
+                    "SELECT EXISTS(SELECT 1 FROM link_statement WHERE pk=?1 AND evidence IS ?2 AND input_pk IS ?3 AND source_chain IS ?4 AND copies_prefix IS ?5)",
                     params![pk, link.evidence, input_pk, chain, link.copies_prefix],
                 )?;
                 if same {
@@ -1813,13 +1827,13 @@ impl<'c> Work<'_, 'c> {
                 }
                 self.context.changes.link(self.tx(), pk)?;
                 self.tx()
-                    .prepare_cached("UPDATE link SET evidence=?2,input_pk=?3,source_chain=?4,copies_prefix=?5 WHERE pk=?1")?
+                    .prepare_cached("UPDATE link_statement SET evidence=?2,input_pk=?3,source_chain=?4,copies_prefix=?5 WHERE pk=?1")?
                     .execute(params![pk, link.evidence, input_pk, chain, link.copies_prefix])?;
             }
             None => {
                 self.context.changes.link_child(self.tx(), &child)?;
                 self.tx().prepare_cached(
-                    "INSERT INTO link(parent_id,child_id,kind,how,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix)
+                    "INSERT INTO link_statement(parent_id,child_id,kind,how,evidence,input_pk,source_chain,branch_point,spawning_call,copies_prefix)
                      VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
                 )?
                 .execute(params![parent, child, kind, how, link.evidence, input_pk, chain, at, call, link.copies_prefix])?;
@@ -1827,6 +1841,82 @@ impl<'c> Work<'_, 'c> {
                     crate::lineage::mark_due(self.tx(), &child)?;
                 }
             }
+        }
+        self.mark_link_sessions(&parent, &child)
+    }
+
+    /// Writes the relations between `parent` and `child` of one kind and
+    /// how from all their statements (`session_link`), in one pass over the
+    /// statements, so a reader reads the relations as rows.
+    fn resolve_links(
+        &mut self,
+        (parent, child, kind, how): (String, String, String, Option<String>),
+    ) -> Result<()> {
+        let statements: Vec<crate::lineage::Statement> = self
+            .tx()
+            .prepare_cached(
+                "SELECT pk, branch_point, spawning_call, copies_prefix, evidence, source_chain, input_pk
+                 FROM link_statement WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4
+                 ORDER BY pk",
+            )?
+            .query_map(params![parent, child, kind, how], |r| {
+                Ok(crate::lineage::Statement {
+                    branch_point: r.get(1)?,
+                    spawning_call: r.get(2)?,
+                    copies_prefix: r.get(3)?,
+                    evidence: r.get(4)?,
+                    source_chain: r.get(5)?,
+                    input_pk: r.get(6)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        let resolved = crate::lineage::relations(&statements);
+        let stored: Vec<crate::lineage::Relation> = self
+            .tx()
+            .prepare_cached(
+                "SELECT branch_point, spawning_call, copies_prefix, evidence, source_chain, input_pk
+                 FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4
+                 ORDER BY pk",
+            )?
+            .query_map(params![parent, child, kind, how], |r| {
+                Ok(crate::lineage::Relation {
+                    branch_point: r.get(0)?,
+                    spawning_call: r.get(1)?,
+                    copies_prefix: r.get(2)?,
+                    evidence: r.get(3)?,
+                    source_chain: r.get(4)?,
+                    input_pk: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        if stored == resolved {
+            return Ok(());
+        }
+        self.context.changes.link_child(self.tx(), &child)?;
+        self.tx()
+            .prepare_cached(
+                "DELETE FROM session_link WHERE parent_id=?1 AND child_id=?2 AND kind=?3 AND how IS ?4",
+            )?
+            .execute(params![parent, child, kind, how])?;
+        for relation in &resolved {
+            self.tx()
+                .prepare_cached(
+                    "INSERT INTO session_link(parent_id,child_id,kind,how,copies_prefix,branch_point,
+                         spawning_call,evidence,source_chain,input_pk)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                )?
+                .execute(params![
+                    parent,
+                    child,
+                    kind,
+                    how,
+                    relation.copies_prefix,
+                    relation.branch_point,
+                    relation.spawning_call,
+                    relation.evidence,
+                    relation.source_chain,
+                    relation.input_pk
+                ])?;
         }
         self.mark_link_sessions(&parent, &child)
     }

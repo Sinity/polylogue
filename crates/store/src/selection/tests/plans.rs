@@ -528,8 +528,9 @@ fn pending_outcome_matches_open_live_call() {
         .unwrap();
 }
 
-/// Parents are found through the `link.child_id` index, and removing a
-/// session's links reads both link indexes rather than the whole table.
+/// Parents are found through the `session_link_child` index, and a
+/// session's links of either end read both link indexes rather than the
+/// whole table.
 #[test]
 fn parent_links_use_index() {
     let (_dir, f) = fixture();
@@ -537,28 +538,28 @@ fn parent_links_use_index() {
     let reader = pool.reader().unwrap();
     for sql in [
         "SELECT parent_id FROM session_link WHERE child_id = ?1 AND kind <> 'reference' AND (kind = 'fork' OR copies_prefix = 1)",
-        "SELECT pk FROM link WHERE parent_id = ?1 OR child_id = ?1",
+        "SELECT pk FROM session_link WHERE parent_id = ?1 OR child_id = ?1",
     ] {
         let steps = plan(&reader, sql);
         assert!(
             steps
                 .iter()
-                .any(|step| step.contains("USING INDEX link_child_id")),
+                .any(|step| step.contains("USING INDEX session_link_child")),
             "{sql}: {steps:#?}"
         );
         assert!(
-            !steps.iter().any(|step| step == "SCAN link"),
+            !steps.iter().any(|step| step == "SCAN session_link"),
             "{sql}: {steps:#?}"
         );
     }
     let steps = plan(
         &reader,
-        "SELECT pk FROM link WHERE parent_id = ?1 OR child_id = ?1",
+        "SELECT pk FROM session_link WHERE parent_id = ?1 OR child_id = ?1",
     );
     assert!(
         steps
             .iter()
-            .any(|step| step.contains("link_parent") || step.contains("link_statement")),
+            .any(|step| step.contains("session_link_parent")),
         "{steps:#?}"
     );
 }

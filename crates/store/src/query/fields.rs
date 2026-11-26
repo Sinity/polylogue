@@ -654,7 +654,7 @@ pub fn rule(id: FieldId) -> Rule {
         EventsUntil => Rule::NONE.custom(custom::until),
         SessionLinksKind => Rule::NONE.sql("{r}.kind"),
         SessionLinksHow => Rule::NONE.sql("{r}.how"),
-        SessionLinksCopiesPrefix => Rule::NONE.sql("{r}.copies_prefix"),
+        SessionLinksCopiesPrefix => Rule::NONE.sql("({r}.copies_prefix OR EXISTS(SELECT 1 FROM prefix_copy {r}x WHERE {r}x.parent_id = {r}.parent_id AND {r}x.child_id = {r}.child_id))"),
         SessionLinksParent => Rule::NONE.custom(custom::link_parent).sql("{r}.parent_id"),
         SessionLinksChild => Rule::NONE.custom(custom::link_child).sql("{r}.child_id"),
         SessionLinksPending => Rule::NONE.sql("(NOT EXISTS (SELECT 1 FROM session lp WHERE lp.id = {r}.parent_id))"),
@@ -1056,7 +1056,7 @@ pub fn hidden(s: &str) -> String {
 /// The session and every session below it through structural links.
 pub fn descendants(s: &str) -> String {
     format!(
-        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM link l \
+        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM session_link l \
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
          JOIN session lc ON lc.id = l.child_id \
          WHERE l.kind IN ({STRUCTURAL_KINDS})) SELECT pk FROM tr"

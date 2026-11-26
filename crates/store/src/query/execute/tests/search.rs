@@ -19,7 +19,7 @@ const DOWNWARD: &str = "SELECT id,rank FROM (
       WHERE b.kind='text' AND (m.written_by IN ('human','model','unknown') OR m.prompt_kind='compaction_summary')
         AND m.duplicate_of IS NULL AND coalesce(m.on_active_path,1)=1
         AND m.session_pk IN (WITH RECURSIVE tree(pk) AS (
-          SELECT s.pk UNION SELECT child.pk FROM link l
+          SELECT s.pk UNION SELECT child.pk FROM session_link l
           JOIN session parent ON parent.id=l.parent_id JOIN tree ON tree.pk=parent.pk
           JOIN session child ON child.id=l.child_id
           WHERE l.kind IN ('spawn','fork','continuation','resume')
@@ -118,7 +118,7 @@ fn archive(unrelated: usize, cycle: bool) -> (tempfile::TempDir, Fixture) {
     if cycle {
         // Search reachability is bounded even when stored source links cycle.
         // This test reads query rows, independently of transcript layout indexes.
-        conn.execute("INSERT INTO link(parent_id,child_id,kind,how,evidence,input_pk)
+        conn.execute("INSERT INTO session_link(parent_id,child_id,kind,how,evidence,input_pk)
           VALUES('test:deep','test:leaf','spawn',NULL,'fixture',(SELECT pk FROM input_ref LIMIT 1))", []).unwrap();
     }
     drop(conn);

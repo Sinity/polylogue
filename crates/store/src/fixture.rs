@@ -683,8 +683,14 @@ impl Fixture {
 
     pub fn link(&mut self, parent: &str, child: &str, kind: &str, how: Option<&str>) -> Result<()> {
         self.index.execute(
-            "INSERT INTO link(parent_id, child_id, kind, how, evidence, input_pk)
-             VALUES (?1, ?2, ?3, ?4, 'fixture', ?5)",
+            "INSERT INTO link_statement(parent_id, child_id, kind, how, copies_prefix, evidence, input_pk)
+             VALUES (?1, ?2, ?3, ?4, 0, 'fixture', ?5)",
+            params![parent, child, kind, how, self.input_pk],
+        )?;
+        // As assembly resolves a relation with one statement.
+        self.index.execute(
+            "INSERT INTO session_link(parent_id, child_id, kind, how, copies_prefix, evidence, source_chain, input_pk)
+             VALUES (?1, ?2, ?3, ?4, 0, 'fixture', 0, ?5)",
             params![parent, child, kind, how, self.input_pk],
         )?;
         // As the writer does: a lineage link marks its child and below.
@@ -701,9 +707,15 @@ impl Fixture {
     /// A link whose child repeats its parent's prefix.
     pub fn copying_link(&mut self, parent: &str, child: &str, kind: &str) -> Result<()> {
         self.index.execute(
-            "INSERT INTO link(parent_id, child_id, kind, copies_prefix, evidence, input_pk)
-             VALUES (?1, ?2, ?3, 1, 'fixture', ?4)",
-            params![parent, child, kind, self.input_pk],
+            "INSERT INTO link_statement(parent_id, child_id, kind, how, copies_prefix, evidence, input_pk)
+             VALUES (?1, ?2, ?3, ?4, 1, 'fixture', ?5)",
+            params![parent, child, kind, None::<&str>, self.input_pk],
+        )?;
+        // As assembly resolves a relation with one statement.
+        self.index.execute(
+            "INSERT INTO session_link(parent_id, child_id, kind, how, copies_prefix, evidence, source_chain, input_pk)
+             VALUES (?1, ?2, ?3, ?4, 1, 'fixture', 0, ?5)",
+            params![parent, child, kind, None::<&str>, self.input_pk],
         )?;
         if crate::lineage::is_lineage(kind) {
             crate::lineage::mark_due(&self.index, child)?;

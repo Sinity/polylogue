@@ -86,7 +86,7 @@ fn copied_parent_families_follow_child_coordinates_instead_of_link_insertion() {
     let reader = pool.reader().unwrap();
     let links = reader
         .query(
-            "SELECT parent_id FROM link WHERE child_id='claude-code:c1' ORDER BY pk",
+            "SELECT parent_id FROM session_link WHERE child_id='claude-code:c1' ORDER BY pk",
             &[],
         )
         .unwrap();
