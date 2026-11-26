@@ -264,7 +264,10 @@ earlier ones. A manual run may reuse that build but never replaces it.
 
 A pull request is ready when it is open, not a draft, not labelled `hold`,
 has no unresolved review threads, does not conflict with master and its
-required check is green on its own head. The owner's part is to make it
+required check is green on its own head. Only pull requests from this
+repository's own branches are batched: the staging run is a run of this
+repository with its secrets, which a pull request from a fork never gets,
+so one from a fork is listed and landed by hand. The owner's part is to make it
 ready: resolving a review thread, once the finding is answered, is what
 releases it. `hold`, with the reason in a comment, parks a finished pull
 request. With the queue running an owner does not land by hand.

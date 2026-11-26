@@ -3,7 +3,8 @@
 # dev/land --queue [--once] [--dry-run]
 #
 # --queue is the landing queue. Each cycle takes the ready pull requests
-# (open, not a draft, not labelled `hold`, no unresolved review threads, not
+# (open, from a branch of this repository, not a draft, not labelled `hold`,
+# no unresolved review threads, not
 # conflicting with master, required check green on their own heads, not sent
 # back at their current head), oldest first, at most eight. It builds one
 # staging commit on master's tip with each as a squash commit, without a
@@ -53,7 +54,7 @@ read -r owner name default_branch < <(gh repo view --json owner,name,defaultBran
 
 # One GraphQL call for the given pull requests, oldest first, one line each:
 # number state draft mergeable base-branch head labels unresolved-threads
-# check-runs sent-back required failing title, tab-separated, "-" for an empty field. `required`
+# check-runs from-fork sent-back required failing title, tab-separated, "-" for an empty field. `required`
 # lists the required check runs on the head as name|status|conclusion|details
 # URL, separated by semicolons; `failing` names the failed jobs, the
 # required ones only when nothing else failed. Each check counts by its latest
@@ -66,7 +67,7 @@ pr_rows() {
     for n in "$@"; do
         q+="
   p$n: pullRequest(number: $n) {
-    number state isDraft mergeable title createdAt baseRefName headRefOid
+    number state isDraft isCrossRepository mergeable title createdAt baseRefName headRefOid
     labels(first: 20) { nodes { name } }
     reviewThreads(first: 100) { nodes { isResolved } }
     comments(last: 30) { nodes { body } }
@@ -88,7 +89,7 @@ pr_rows() {
       (($failed | map(select(.isRequired | not))) as $jobs | (if $jobs == [] then $failed else $jobs end) | map(.name) | join(", ") | dash) as $fail |
       ([.labels.nodes[].name] | join(",") | dash) as $labels |
       ([.reviewThreads.nodes[] | select(.isResolved | not)] | length) as $threads |
-      ([.number, .state, .isDraft, .mergeable, .baseRefName, .headRefOid, $labels, $threads, ($runs | length),
+      ([.number, .state, .isDraft, .mergeable, .baseRefName, .headRefOid, $labels, $threads, ($runs | length), .isCrossRepository,
         ([.comments.nodes[].body | capture("land-queue sent back (?<h>[0-9a-f]{40})") | .h] | last // "-"), $req, $fail, .title] | map(tostring) | join("\t")),
       ([$required[] | select(.status == "COMPLETED" and .conclusion == "SUCCESS") | .annotations.nodes[] | select(.title == "tested base") | .message][0] // empty | "base \(.)")
     ' | awk -F'\t' '/^base / { sub(/^base /, "base " last " "); print; next } { last = $1; print }'
@@ -96,7 +97,7 @@ pr_rows() {
 
 # Reads one pr_rows line into the row variables.
 parse_row() {
-    IFS=$'\t' read -r number state draft mergeable base_branch head labels threads runs sent_back checks failing title <<<"$1"
+    IFS=$'\t' read -r number state draft mergeable base_branch head labels threads runs fork sent_back checks failing title <<<"$1"
 }
 
 # The required check on the head into `check`: none, pending, failed or
@@ -287,6 +288,7 @@ classify() {
         if [ "$base_branch" != "$default_branch" ]; then entry other "targets $base_branch"
         elif [ "$draft" = true ]; then entry draft
         elif [[ ",$labels," == *,hold,* ]]; then entry held
+        elif [ "$fork" = true ]; then entry other "from a fork: the staging run would give its code this repository's secrets; land it by hand"
         elif [ "$mergeable" = CONFLICTING ]; then
             entry conflicting "conflicts with $default_branch: needs its owner or a new worker"; problems=true
         elif [ $check = failed ]; then entry red "$failing"; problems=true
