@@ -794,11 +794,13 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
     };
     let mut lines = Vec::new();
     for coverage in &store.capture_coverage {
-        lines.push(view.dim(&format!(
-            "walked {} on {}",
-            view.time(coverage.observed_at.unix_ms()),
-            clean(&coverage.machine)
-        )));
+        // The machine is named only where the archive holds several walks.
+        let walked = format!("walked {}", view.time(coverage.observed_at.unix_ms()));
+        lines.push(view.dim(&if store.capture_coverage.len() > 1 {
+            format!("{walked} on {}", clean(&coverage.machine))
+        } else {
+            walked
+        }));
         for root in &coverage.roots {
             let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&root.path_bytes));
             let mut names: Vec<&str> = Vec::new();

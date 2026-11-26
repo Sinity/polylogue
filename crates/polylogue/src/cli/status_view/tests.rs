@@ -232,7 +232,7 @@ RUNNING    2 running · 1 waiting 7m
 
 NOTICES    2 in the last day · 14:02:00 synthetic notice
 
-SOURCES    walked 13:00:00 on host
+SOURCES    walked 13:00:00
            claude-code /home/op/.claude · present · 100 collected · 43 ignored
              ignored: 40 cache, 3 lock files
            /home/op/.codex · absent
@@ -978,7 +978,7 @@ ARCHIVE    0 sessions   0 messages   0 tool calls   0 documents
 
 READING    parsing current · session figures current · search current
 
-SOURCES    walked 14:04:00 on host
+SOURCES    walked 14:04:00
            /home/op/.claude · absent
            /home/op/.codex · absent
 "
@@ -1205,7 +1205,7 @@ fn sources_show_an_absent_root_and_unrecognized_files() {
     assert_eq!(
         sources,
         "\
-SOURCES    walked 14:04:00 on host
+SOURCES    walked 14:04:00
            codex /home/op/.codex · present · 21 collected · 3 unrecognized
            /home/op/.claude · absent
            /home/op/.gemini · incomplete, 1 path unreadable · 1 ignored
