@@ -1020,8 +1020,8 @@ fn compose_records(
         r.get(0)
     })?;
     {
-        let mut statement = tx
-            .prepare_cached("SELECT session_id,json_extract(facts,'$.kind') FROM session_record")?;
+        let mut statement =
+            tx.prepare_cached("SELECT session_id,json_extract(facts,'$.kind') FROM session_parse")?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let mut key = compose_key(&row.get::<_, String>(0)?, FACTS);
@@ -1037,7 +1037,7 @@ fn compose_records(
         let mut reader = crate::content::Reader::default();
         // In each chain's order, so that its texts are read group by group.
         let mut statement = tx.prepare_cached(
-            "SELECT r.message_id,r.session_id,r.source_start,r.source_end,r.seq,r.record_position,
+            "SELECT r.message_id,r.session_id,r.source_start,r.source_start+r.source_length,r.seq,r.record_position,
                  r.order_time,r.route,r.completion,r.id_kind='content',r.hash,
                  r.content_group,r.content_start,r.content_length,r.layout
              FROM message_parse r ORDER BY r.seq,r.record_position",
@@ -1099,7 +1099,7 @@ fn compose_records(
     {
         let mut statement = tx.prepare_cached(
             "SELECT event_id,session_id,route,hash,content_group,content_start,content_length,data_length,
-                 seq,source_start,source_end,after_message_id
+                 seq,source_start,source_start+source_length,after_message_id
              FROM event_parse WHERE session_id IS NOT NULL",
         )?;
         let mut rows = statement.query([])?;
@@ -1188,7 +1188,7 @@ impl Fallback {
         };
         Ok(Self {
             sessions: strings(
-                "SELECT session_id FROM session_record UNION SELECT session_id FROM message_parse
+                "SELECT session_id FROM session_parse UNION SELECT session_id FROM message_parse
                  UNION SELECT session_id FROM event_parse WHERE session_id IS NOT NULL
                  UNION SELECT session_id FROM session_alias UNION SELECT alias FROM session_alias
                  UNION SELECT session_id FROM call_outcome",
@@ -1219,9 +1219,6 @@ pub(super) struct ComposeState {
     step: Step,
     /// Indexes to make once the stream is composed.
     indexes: Vec<String>,
-    /// The triggers that keep `row_count`, dropped while composition writes
-    /// and made again once every table is counted.
-    counting: Vec<String>,
     /// The stream's runs (the composition records and each message
     /// reading's text keys), until composition reaches them.
     unread: Option<(Merger, Merger, Arc<GroupKeys>)>,
@@ -1259,8 +1256,6 @@ enum Step {
     Index {
         next: usize,
     },
-    /// Counts each counted table and makes its triggers again.
-    Count,
     Done,
 }
 
@@ -1282,18 +1277,6 @@ impl ComposeState {
             groups,
         } = loaded;
         let aliases = Arc::new(super::identity::Aliases::load(index)?);
-        // Composing runs no trigger per row: each counted table is counted
-        // once when composition ends.
-        let counting: Vec<(String, String)> = index
-            .prepare(
-                "SELECT name,sql FROM sqlite_schema
-                 WHERE type='trigger' AND sql LIKE '%UPDATE row_count %'",
-            )?
-            .query_map([], |r| <(String, String)>::try_from(r))?
-            .collect::<rusqlite::Result<_>>()?;
-        for (name, _) in &counting {
-            index.execute(&format!("DROP TRIGGER \"{name}\""), [])?;
-        }
         // The sessions a copy name involves are decided across sessions.
         fallback.extend(
             index
@@ -1309,7 +1292,7 @@ impl ComposeState {
         // composed from the index, which it passes over.
         let stated: u64 = index.scalar(
             "SELECT count(*) FROM (
-                 SELECT DISTINCT session_id FROM session_record
+                 SELECT DISTINCT session_id FROM session_parse
                  UNION SELECT DISTINCT session_id FROM message_parse
                  UNION SELECT DISTINCT session_id FROM event_parse WHERE session_id IS NOT NULL
                  UNION SELECT DISTINCT session_id FROM call_outcome)",
@@ -1318,7 +1301,7 @@ impl ComposeState {
         let mut passed_over = 0;
         for name in &fallback {
             if index.exists(
-                "SELECT EXISTS(SELECT 1 FROM session_record WHERE session_id=?1)
+                "SELECT EXISTS(SELECT 1 FROM session_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM message_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM event_parse WHERE session_id=?1)
                      OR EXISTS(SELECT 1 FROM call_outcome WHERE session_id=?1)",
@@ -1337,7 +1320,6 @@ impl ComposeState {
         Ok(Self {
             step: Step::Links,
             indexes,
-            counting: counting.into_iter().map(|(_, sql)| sql).collect(),
             unread: Some((merged, texts, groups)),
             composing: None,
             ahead,
@@ -1360,7 +1342,7 @@ impl ComposeState {
         match self.step {
             Step::Links | Step::Stream => ASSEMBLING_SESSIONS,
             Step::Indexes => INDEXING_SESSIONS,
-            Step::Index { .. } | Step::Count | Step::Done => JOINING_SESSIONS,
+            Step::Index { .. } | Step::Done => JOINING_SESSIONS,
         }
     }
 
@@ -2283,31 +2265,21 @@ impl Inner {
                 state.step = if end < state.fallback.len() {
                     Step::Index { next: end }
                 } else {
-                    Step::Count
-                };
-            }
-            Step::Count => {
-                let tx = self
-                    .index
-                    .get_mut()?
-                    .transaction_with_behavior(TransactionBehavior::Immediate)?;
-                let tables: Vec<String> = tx
-                    .prepare("SELECT name FROM row_count")?
-                    .query_map([], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?;
-                for table in tables {
+                    // Every session's lineage is computed once the build's
+                    // sessions and links are all written.
+                    let tx = self
+                        .index
+                        .get_mut()?
+                        .transaction_with_behavior(TransactionBehavior::Immediate)?;
                     tx.execute(
-                        &format!(
-                            "UPDATE row_count SET n=(SELECT count(*) FROM \"{table}\") WHERE name=?1"
-                        ),
-                        [&table],
+                        "INSERT INTO summary_due(session_pk,from_order,lineage)
+                         SELECT pk,X'FF',1 FROM session WHERE true
+                         ON CONFLICT(session_pk) DO UPDATE SET lineage=1,marked=marked+1",
+                        [],
                     )?;
-                }
-                for sql in std::mem::take(&mut state.counting) {
-                    tx.execute(&sql, [])?;
-                }
-                tx.commit()?;
-                state.step = Step::Done;
+                    tx.commit()?;
+                    Step::Done
+                };
             }
             Step::Done => {}
         }
