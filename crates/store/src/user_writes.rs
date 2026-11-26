@@ -114,33 +114,22 @@ impl PreparationContext {
 
 pub(crate) struct Preparation<'a> {
     pub context: Option<&'a PreparationContext>,
-    pub pending: Option<&'a dyn crate::primary::Sinex>,
     pub provisional: Option<&'a mut crate::selection::ProvisionalQueries>,
-    pub mode: Option<polylogue_model::settings::SettingMode>,
 }
 impl<'a> Preparation<'a> {
-    pub(crate) fn plain(
-        context: Option<&'a PreparationContext>,
-        pending: Option<&'a dyn crate::primary::Sinex>,
-    ) -> Self {
+    pub(crate) fn plain(context: Option<&'a PreparationContext>) -> Self {
         Self {
             context,
-            pending,
             provisional: None,
-            mode: None,
         }
     }
     pub(crate) fn preflight(
         context: Option<&'a PreparationContext>,
-        pending: Option<&'a dyn crate::primary::Sinex>,
-        mode: polylogue_model::settings::SettingMode,
         provisional: &'a mut crate::selection::ProvisionalQueries,
     ) -> Self {
         Self {
             context,
-            pending,
             provisional: Some(provisional),
-            mode: Some(mode),
         }
     }
 }
@@ -154,7 +143,7 @@ pub fn new_request_id() -> String {
 /// archive's write counter for this transaction.
 #[cfg(test)]
 pub(crate) fn apply(tx: &Transaction<'_>, r: &UserRequest, seq: i64) -> Result<UserOutcome> {
-    apply_resolving(tx, tx, r, seq, Preparation::plain(None, None)).map(|receipt| receipt.outcome)
+    apply_resolving(tx, tx, r, seq, Preparation::plain(None)).map(|receipt| receipt.outcome)
 }
 
 pub(crate) fn apply_resolving(
@@ -242,7 +231,7 @@ pub(crate) fn apply_using(
     preparation: Preparation<'_>,
 ) -> Result<WriteResult> {
     let source = crate::source::Source::of(tx)?;
-    if let Some(known) = crate::primary::authored::known_request(tx, r)? {
+    if let Some(known) = crate::authored_records::known_request(tx, r)? {
         let mut outcome = known.outcome.clone();
         outcome.repeat = true;
         return WriteResult::recorded(&known, outcome);
@@ -271,8 +260,8 @@ pub(crate) fn apply_using(
         None
     };
     if let Some(prepared) = prepare_delivery(r) {
-        crate::primary::authored::require_new_delivery(tx, &r.id)?;
-        crate::primary::authored::apply(tx, &prepared, seq)?;
+        crate::authored_records::require_new_delivery(tx, &r.id)?;
+        crate::authored_records::apply(tx, &prepared, seq)?;
         return Ok(WriteResult {
             outcome: prepared.outcome,
             save: None,
@@ -280,7 +269,7 @@ pub(crate) fn apply_using(
             already: Vec::new(),
         });
     }
-    let hash = crate::primary::authored::request_hash(r)?;
+    let hash = crate::authored_records::request_hash(r)?;
     tx.execute(
         &source.sql(
             "INSERT INTO @source.client_request(id, content_hash, created_at, request, commit_seq)
@@ -295,13 +284,7 @@ pub(crate) fn apply_using(
         ],
     )?;
     let at = r.at.unix_ms();
-    let mode = preparation.mode.unwrap_or({
-        if matches!(source, crate::source::Source::Cache) {
-            polylogue_model::settings::SettingMode::Primary
-        } else {
-            polylogue_model::settings::SettingMode::Standalone
-        }
-    });
+    let mode = polylogue_model::settings::SettingMode::Standalone;
     let hash = |reference: &polylogue_model::Reference| match reference {
         polylogue_model::Reference::Session(_)
         | polylogue_model::Reference::Message(_)
@@ -585,7 +568,7 @@ pub(crate) fn apply_using(
     {
         polylogue_model::authored::AuthoredEffect::default()
     } else {
-        crate::primary::authored::capture(tx, r, seq)?
+        crate::authored_records::capture(tx, r, seq)?
     };
     let accepted = save_outcomes.as_ref().map(|outcomes| {
         let mut accepted = r.clone();
@@ -600,9 +583,9 @@ pub(crate) fn apply_using(
             .sql("UPDATE @source.client_request SET outcome=?2,effect=?3,request=?4 WHERE id=?1"),
         params![
             r.id,
-            crate::primary::authored::pack(&outcome)?,
-            crate::primary::authored::pack(&effect)?,
-            crate::primary::authored::pack(accepted)?,
+            crate::authored_records::pack(&outcome)?,
+            crate::authored_records::pack(&effect)?,
+            crate::authored_records::pack(accepted)?,
         ],
     )?;
     Ok(WriteResult {

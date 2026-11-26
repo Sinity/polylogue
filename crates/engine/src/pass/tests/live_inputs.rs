@@ -81,7 +81,7 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
                 source_read: engine.source_read_context(
                     &db,
                     "codex-database",
-                    polylogue_store::primary::ReadRoute::NativeCapture,
+                    polylogue_store::capture_read::ReadRoute::NativeCapture,
                 ),
             }],
             engine.archive.clone(),

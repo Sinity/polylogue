@@ -193,7 +193,7 @@ fn writer_deltas_send_source_values_and_first_prompt() {
     let mut archive = WriterArchive::new();
     let subscription = archive.writer.completion_commits();
     let reads = polylogue_store::ReadPool::open(&archive.archive).unwrap();
-    let mut state = publisher::State::new(false, request_metadata());
+    let mut state = publisher::State::new(request_metadata());
     state
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -341,7 +341,7 @@ fn unavailable_kept_schema_does_not_prevent_other_vocabulary_publication() {
         .kept_result("missing-shape", "sessions", "{}")
         .unwrap();
     let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(false, request_metadata());
+    let mut publisher = publisher::State::new(request_metadata());
     publisher
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -380,20 +380,6 @@ fn saved_and_kept_names_are_runnable_source_suggestions_at_the_first_word() {
             .source,
         query.source
     );
-}
-
-#[test]
-fn primary_unknown_checkpoint_does_not_activate_an_empty_catalog() {
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("catalog");
-    let fixture =
-        polylogue_store::fixture::Fixture::new(&directory.path().join("archive")).unwrap();
-    let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(true, request_metadata());
-    publisher
-        .refresh(&reads.reader().unwrap(), &path, "synthetic")
-        .unwrap();
-    assert!(!path.exists());
 }
 
 #[test]
@@ -493,7 +479,7 @@ fn saved_output_fields_and_closed_values_publish_without_an_execution_clock() {
             .unwrap();
     fixture.saved_query("by-action", &plan).unwrap();
     let reads = fixture.reads().unwrap();
-    let mut publisher = publisher::State::new(false, request_metadata());
+    let mut publisher = publisher::State::new(request_metadata());
     publisher
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
@@ -534,7 +520,7 @@ fn published_saved_qualifiers_drive_offline_matches_fields_and_closed_values() {
             .unwrap();
     }
     let reads = fixture.reads().unwrap();
-    publisher::State::new(false, request_metadata())
+    publisher::State::new(request_metadata())
         .refresh(&reads.reader().unwrap(), &path, "synthetic")
         .unwrap();
     for name in ["qualified", "nested"] {

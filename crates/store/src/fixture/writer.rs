@@ -387,7 +387,6 @@ pub fn step(
         counts.add("record", &RecordOutcome::Used);
     }
     Batch {
-        required_outcome: None,
         input: InputKey {
             id: input.to_owned(),
             format: format.into(),
@@ -414,7 +413,6 @@ pub fn step(
         blobs: vec![],
         length,
         capture_read: None,
-        base: None,
         release: Default::default(),
         parse: vec![{
             let mut step = ParseStep::new(output, counts, start..length, true);

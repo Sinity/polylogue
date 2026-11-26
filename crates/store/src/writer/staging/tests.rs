@@ -5,7 +5,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 fn batch(id: &str, length: u64) -> Batch {
     Batch {
-        required_outcome: None,
         input: InputKey {
             id: id.into(),
             format: "export-file".into(),
@@ -29,7 +28,6 @@ fn batch(id: &str, length: u64) -> Batch {
         length,
         parse: Vec::new(),
         capture_read: None,
-        base: None,
         release: Default::default(),
     }
 }
@@ -109,46 +107,6 @@ fn an_unreferenced_private_stage_is_refused_before_any_group_installation() {
 }
 
 #[test]
-fn a_prepared_stream_hands_off_the_same_inode_after_seekable_inspection() {
-    use std::io::{Read, Seek, SeekFrom};
-    use std::os::unix::fs::MetadataExt;
-    let directory = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
-    let bytes = vec![b'x'; 2 * 1024 * 1024];
-    let (prepared, tail) = archive
-        .prepare_stream(bytes.as_slice(), |reader| {
-            reader.seek(SeekFrom::End(-7))?;
-            let mut tail = Vec::new();
-            reader.read_to_end(&mut tail)?;
-            Ok(tail)
-        })
-        .unwrap();
-    assert_eq!(tail, b"xxxxxxx");
-    let body = prepared.body().unwrap();
-    let path = body.path.as_ref().unwrap();
-    assert_eq!(
-        body.file.metadata().unwrap().ino(),
-        std::fs::metadata(path).unwrap().ino()
-    );
-    assert!(body.descriptor.stored_len < bytes.len() as u64 / 10);
-    assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 1);
-    let descriptor = body.descriptor;
-    drop(prepared);
-    assert!(!path.exists());
-    // The pinned FD remains sufficient after the producer loses the optional path.
-    let received =
-        hashed_blobs::Prepared::from_encoded(body.file, descriptor, None, Default::default())
-            .unwrap();
-    let mut restored = Vec::new();
-    received
-        .reader(None, Default::default())
-        .unwrap()
-        .read_to_end(&mut restored)
-        .unwrap();
-    assert_eq!(restored, bytes);
-}
-
-#[test]
 fn failed_stream_inspection_releases_the_encoded_preparation() {
     let directory = tempfile::tempdir().unwrap();
     let (archive, _lock) = Archive::open_or_create(directory.path()).unwrap();
@@ -166,23 +124,10 @@ fn encoded_preparation_crash_child() {
     };
     let root = std::path::PathBuf::from(root);
     let path = root.join("archive");
-    let (_lock, _prepared) = if std::env::var_os("POLYLOGUE_ENCODED_PREP_PRIMARY").is_some() {
-        let (archive, lock) = Archive::open_primary(&path, &root.join("bytes")).unwrap();
-        (
-            lock,
-            archive
-                .prepare_bytes(b"unaccepted encoded source".as_slice())
-                .unwrap(),
-        )
-    } else {
-        let (archive, lock) = Archive::open_or_create(&path).unwrap();
-        (
-            lock,
-            archive
-                .prepare_bytes(b"unaccepted encoded source".as_slice())
-                .unwrap(),
-        )
-    };
+    let (archive, _lock) = Archive::open_or_create(&path).unwrap();
+    let _prepared = archive
+        .prepare_bytes(b"unaccepted encoded source".as_slice())
+        .unwrap();
     std::fs::write(root.join("ready"), b"ready").unwrap();
     loop {
         std::thread::park();
@@ -190,8 +135,8 @@ fn encoded_preparation_crash_child() {
 }
 
 #[test]
-fn open_releases_encoded_preparations_after_process_death_in_both_modes() {
-    for primary in [false, true] {
+fn open_releases_encoded_preparations_after_process_death() {
+    {
         let directory = tempfile::tempdir().unwrap();
         let mut command = std::process::Command::new(std::env::current_exe().unwrap());
         command
@@ -203,9 +148,6 @@ fn open_releases_encoded_preparations_after_process_death_in_both_modes() {
             .env("POLYLOGUE_ENCODED_PREP_ROOT", directory.path())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());
-        if primary {
-            command.env("POLYLOGUE_ENCODED_PREP_PRIMARY", "1");
-        }
         let mut child = command.spawn().unwrap();
         let started = std::time::Instant::now();
         while !directory.path().join("ready").exists() {
@@ -222,11 +164,7 @@ fn open_releases_encoded_preparations_after_process_death_in_both_modes() {
         assert_eq!(std::fs::read_dir(path.join("staging")).unwrap().count(), 1);
         child.kill().unwrap();
         assert!(!child.wait().unwrap().success());
-        let (archive, _lock) = if primary {
-            Archive::open_primary(&path, &directory.path().join("bytes")).unwrap()
-        } else {
-            Archive::open_or_create(&path).unwrap()
-        };
+        let (archive, _lock) = Archive::open_or_create(&path).unwrap();
         assert_eq!(std::fs::read_dir(archive.staging_dir()).unwrap().count(), 0);
     }
 }
@@ -251,7 +189,7 @@ fn late_encoding_refusal_spools_no_group_and_reopen_retries() {
                 files: vec![prepared],
             });
         }
-        let late = group[1].files[0].body().unwrap().path.unwrap();
+        let late = group[1].files[0].staged_path().to_path_buf();
         std::fs::write(late, b"synthetic damaged encoding").unwrap();
         let result = writer
             .store_group(group, Arc::new(archive.blobs().unwrap()))
@@ -307,7 +245,7 @@ fn an_equal_length_change_to_a_staged_file_is_refused_at_append() {
     item.new_blob = Some(NewBlob::whole(prepared.hash(), prepared.len()));
     // One encoded byte changes and the length stays: only the append's
     // encoded digest can see it.
-    let path = prepared.body().unwrap().path.unwrap();
+    let path = prepared.staged_path().to_path_buf();
     let mut encoded = std::fs::read(&path).unwrap();
     encoded[0] ^= 1;
     std::fs::write(&path, &encoded).unwrap();
@@ -371,8 +309,6 @@ fn reading(input: &str, chain: i64, length: u64) -> PreparedBatch {
             parse: Vec::new(),
             continues: false,
             capture_read: None,
-            base: None,
-            required_outcome: None,
             release: Default::default(),
         },
         files: Vec::new(),

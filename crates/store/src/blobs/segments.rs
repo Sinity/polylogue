@@ -7,25 +7,10 @@ use rusqlite::{Connection, OpenFlags};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-#[derive(Debug, Clone, Copy)]
-pub enum BlobCatalog {
-    Archive,
-    PrimaryCache,
-}
-impl BlobCatalog {
-    fn table(self) -> &'static str {
-        match self {
-            Self::Archive => "blob",
-            Self::PrimaryCache => "source_blob",
-        }
-    }
-}
-
 /// The catalog belongs to Polylogue; the shared reader only knows extents.
 pub struct Blobs {
     root: PathBuf,
     catalog: PathBuf,
-    catalog_table: BlobCatalog,
     connection: Mutex<Option<Connection>>,
     #[cfg(feature = "fixture")]
     bytes_read: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -41,11 +26,10 @@ impl std::fmt::Debug for Blobs {
 }
 
 impl Blobs {
-    pub(crate) fn new(root: PathBuf, catalog: PathBuf, catalog_table: BlobCatalog) -> Self {
+    pub(crate) fn new(root: PathBuf, catalog: PathBuf) -> Self {
         Self {
             root,
             catalog,
-            catalog_table,
             connection: Mutex::new(None),
             #[cfg(feature = "fixture")]
             bytes_read: Default::default(),
@@ -85,10 +69,7 @@ impl Blobs {
             )?);
         }
         let bytes: Option<Vec<u8>> = slot.as_ref().expect("opened catalog").scalar_optional(
-            &format!(
-                "SELECT storage FROM {} WHERE hash=?1",
-                self.catalog_table.table()
-            ),
+            "SELECT storage FROM blob WHERE hash=?1",
             [hash.0.as_slice()],
         )?;
         bytes
@@ -116,10 +97,7 @@ impl Blobs {
     #[cfg(test)]
     pub fn scan(&self) -> Result<Vec<hashed_blobs::Mismatch>> {
         let conn = Connection::open_with_flags(&self.catalog, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-        let mut statement = conn.prepare(&format!(
-            "SELECT storage FROM {} ORDER BY hash",
-            self.catalog_table.table()
-        ))?;
+        let mut statement = conn.prepare("SELECT storage FROM blob ORDER BY hash")?;
         let mut rows = statement.query([])?;
         let reader = hashed_blobs::Reader::new(&self.root);
         let mut mismatches = Vec::new();

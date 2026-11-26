@@ -14,17 +14,14 @@ fn completed_records_wake_the_loop_and_unchanged_sources_need_no_archive_read() 
             format: "codex-database".into(),
             route: polylogue_model::Route::Live,
         },
-        source_read: crate::source_read::SourceReadContext {
-            source: polylogue_store::primary::SourceSelector {
+        source_read: crate::capture_read::SourceReadContext {
+            source: polylogue_store::capture_read::SourceSelector {
                 origin: "codex-database".into(),
                 machine: "test-machine".into(),
                 path_bytes: db.as_os_str().as_encoded_bytes().to_vec(),
             },
-            route: polylogue_store::primary::ReadRoute::NativeCapture,
-            base: None,
+            route: polylogue_store::capture_read::ReadRoute::NativeCapture,
             facts: None,
-            previous_body: None,
-            required_outcome: None,
             clock: polylogue_model::WallClock::fixed(jiff::Timestamp::from_millisecond(1).unwrap()),
         },
         observation: Observation {
@@ -109,7 +106,6 @@ fn capture_continues_the_input_at_the_observed_path() {
             .store_bytes(
                 archive.prepare_bytes(bytes.as_slice()).unwrap(),
                 Batch {
-                    required_outcome: None,
                     input: InputKey {
                         id: "stored-database".into(),
                         format: "codex-database".into(),
@@ -133,7 +129,6 @@ fn capture_continues_the_input_at_the_observed_path() {
                     length: bytes.len() as u64,
                     parse: vec![],
                     capture_read: None,
-                    base: None,
                     release: Default::default(),
                 },
             )
@@ -257,7 +252,6 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
         .store_bytes(
             engine.archive.prepare_bytes(bytes.as_slice()).unwrap(),
             Batch {
-                required_outcome: None,
                 input: InputKey {
                     id: input.clone(),
                     format: "codex-database".into(),
@@ -271,7 +265,6 @@ fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
                 length: bytes.len() as u64,
                 parse: vec![],
                 capture_read: None,
-                base: None,
                 release: Default::default(),
             },
         )

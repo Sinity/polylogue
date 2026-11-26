@@ -325,8 +325,6 @@ reasons! {
         "{path} is not one of Python Polylogue's vector stores: it has no message_embeddings tables in either layout";
     PathHasNoFileName "path_has_no_file_name" => BadRequest { path: String }
         "{path} has no file name";
-    ProducerQueueFormat "producer_queue_format" => Refused { path: String }
-        "producer queue {path} has format 1; let the earlier build send and confirm every operation, then set the empty queue aside";
     ArchiveModeMismatch "archive_mode_mismatch" => Refused { archive: String, recorded: String, requested: String }
         "archive {archive} is {recorded}, but configuration requests {requested}; select its recorded mode or another archive";
     ArchiveModeMissing "archive_mode_missing" => Refused { archive: String }
@@ -342,9 +340,6 @@ reasons! {
         "the seen mark belongs to another index generation; read the session again";
     BadCoverage "bad_coverage" => BadRequest { problem: String }
         "the capture coverage is refused: {problem}";
-    /// A write Sinex refused in primary mode.
-    SinexRefused "sinex_refused" => Refused { name: String, reason: String }
-        "Sinex refused {name}: {reason}";
     /// A context budget too small for a required part of the brief.
     BudgetTooSmall "budget_too_small" => BadRequest { part: String }
         "the context budget cannot fit {part}; increase budget_tokens";

@@ -660,9 +660,9 @@ impl BuildWorker {
     /// `memory` bytes in its content-group file's cache and its sort
     /// buffer.
     pub fn create(archive: &Archive, number: u64, memory: usize) -> Result<Self> {
-        if archive.is_primary() || !archive.index_build.building() {
+        if !archive.index_build.building() {
             return Err(StoreError::Invalid(
-                "a build worker belongs to a standalone build in progress".into(),
+                "a build worker belongs to a build in progress".into(),
             ));
         }
         let number = u32::try_from(number)
@@ -788,7 +788,6 @@ impl super::chain::ChainSink for OpenChain<'_> {
         let w = super::chain::ReadingWrite {
             register: self.register,
             counter: 1,
-            primary: false,
             changes: &self.changes,
         };
         self.steps
@@ -1649,10 +1648,8 @@ impl BuildJob {
 impl Inner {
     /// Runs the next step of `job`; true once the build file is installed.
     pub(super) fn build_step(&mut self, job: &mut BuildJob) -> Result<bool> {
-        if self.sinex.is_some() || !self.location.index_build.building() {
-            return Err(StoreError::Invalid(
-                "no standalone build is in progress".into(),
-            ));
+        if !self.location.index_build.building() {
+            return Err(StoreError::Invalid("no build is in progress".into()));
         }
         let stage = std::mem::replace(&mut job.stage, Stage::Install);
         job.stage = match stage {

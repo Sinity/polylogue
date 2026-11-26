@@ -46,10 +46,11 @@ pub use live::{
     FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveEditedFiles, LiveRoot,
     LiveSession, ProcessRow, RunningCandidates, RunningSession,
 };
+pub mod authored_records;
+pub mod capture_read;
 mod identical_chains;
 pub mod measure;
 mod ordered_blocks;
-pub mod primary;
 pub mod python_polylogue;
 pub mod query;
 pub mod query_objects;
@@ -210,15 +211,6 @@ pub enum StoreError {
     ChatAction(&'static str),
     #[error("import job refused: {0}")]
     ImportJob(&'static str),
-    /// Sinex could not be reached, or refused what was sent (primary mode).
-    #[error("capture {identity} is saved and waiting for Sinex confirmation")]
-    PrimaryPending { identity: String },
-    #[error("capture read {spooled:?} stored original bytes after a source base conflict")]
-    UnresolvedBaseConflict { spooled: primary::SpooledGroup },
-    #[error("Sinex denied confirmed read access: {0}")]
-    ConfirmedReadDenied(String),
-    #[error("Sinex: {0}")]
-    Sinex(String),
     /// A refusal still carried as text: only the writer and the index build
     /// construct it.
     #[error("{0}")]
@@ -355,10 +347,6 @@ impl StoreError {
             Self::NotFound(_) => Code::NotFound,
             Self::ChatAction(_) => Code::Conflict,
             Self::ImportJob(_) => Code::Conflict,
-            Self::PrimaryPending { .. } => Code::Degraded,
-            Self::UnresolvedBaseConflict { .. } => Code::Conflict,
-            Self::ConfirmedReadDenied(_) => Code::ScopeChanged,
-            Self::Sinex(_) => Code::SinexUnavailable,
             Self::Invalid(_) => Code::BadRequest,
             Self::Refused(reason) => reason.code(),
             Self::Internal(_) => Code::Internal,
@@ -406,11 +394,6 @@ impl polylogue_model::Caused for StoreError {
             Self::NotFound(_) => Cause::Request,
             Self::ChatAction(_) => Cause::Request,
             Self::ImportJob(_) => Cause::Request,
-            Self::PrimaryPending { .. } => Cause::Transient,
-            // The next capture of the source resolves the base with Sinex.
-            Self::UnresolvedBaseConflict { .. } => Cause::Transient,
-            Self::ConfirmedReadDenied(_) => Cause::Environment,
-            Self::Sinex(_) => Cause::Transient,
             Self::Invalid(_) => Cause::Request,
             Self::Refused(_) => Cause::Request,
             Self::Internal(_) => Cause::Bug,

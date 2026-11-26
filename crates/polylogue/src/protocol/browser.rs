@@ -109,13 +109,6 @@ pub struct SelectionNote {
     pub selected_at: String,
 }
 
-/// A blob is stored in the local primary-mode spool before a chat action exists.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct PendingCapture {
-    pub identity: String,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ChatCurrent {
@@ -124,13 +117,12 @@ pub struct ChatCurrent {
     pub action: Option<Box<ActionSummary>>,
 }
 
-/// Confirmed state, a saved write result, or files held in the spool before enqueue.
+/// The current state, or a saved write result.
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum ChatAnswer {
     Current(ChatCurrent),
     Outcome(polylogue_model::user::UserOutcome),
-    Capture(PendingCapture),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]

@@ -39,7 +39,7 @@ pub struct Job {
     pub input: InputKey,
     pub change: Change,
     pub observation: Option<Observation>,
-    pub(crate) source_read: Option<crate::source_read::SourceReadContext>,
+    pub(crate) source_read: Option<crate::capture_read::SourceReadContext>,
     /// Bytes of the file this plan already holds, ending where its stored
     /// bytes end: a file that grows while it is read must still hold them.
     pub(crate) proven_tail: Option<read::ProvenTail>,
@@ -127,12 +127,7 @@ pub struct Done {
     /// The chain's committed reading does not stand at this job's start,
     /// or its carried parser state is gone: it is read from its first byte.
     pub restart: bool,
-    /// The capture is saved and waiting for Sinex's confirmation; neither a
-    /// failure nor confirmed.
-    pub pending: Option<String>,
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
-    pub spooled_group: Option<polylogue_store::primary::SpooledGroup>,
-    pub source_read: Option<polylogue_store::primary::CaptureRead>,
 }
 
 pub(crate) enum Task {
@@ -713,17 +708,6 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
                 for (result, queued) in group.waiting.iter_mut().zip(group.queued) {
                     if queued {
                         match results.next() {
-                            Some(Err(polylogue_store::StoreError::PrimaryPending { identity })) => {
-                                result.pending = Some(identity);
-                            }
-                            Some(Err(polylogue_store::StoreError::UnresolvedBaseConflict {
-                                spooled,
-                            })) => {
-                                result.spooled_group = Some(spooled);
-                                result.stored = 0;
-                                result.checkpoint = None;
-                                result.parser_state = None;
-                            }
                             Some(Err(polylogue_store::StoreError::Stopped)) => {
                                 result.write_failed = true;
                                 result.stored = 0;
@@ -904,7 +888,6 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
                 sink,
                 PreparedBatch {
                     batch: Batch {
-                        required_outcome: None,
                         input: plan.input.clone(),
                         change: plan.change.clone(),
                         observation: None,
@@ -914,7 +897,6 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
                         length: plan.size,
                         parse: Vec::new(),
                         capture_read: None,
-                        base: None,
                         release: Default::default(),
                     },
                     files,
@@ -1073,10 +1055,7 @@ pub(crate) fn run(
         content_refused: false,
         failure_recorded: false,
         restart: false,
-        pending: None,
         checkpoint: None,
-        spooled_group: None,
-        source_read: None,
     };
     if stop.is_cancelled() {
         out.cancelled = true;
@@ -1159,7 +1138,7 @@ pub(crate) fn run(
         .as_ref()
         .zip(job.source_read.as_ref())
         .map(|(blob, context)| {
-            let range = polylogue_store::primary::RawRange {
+            let range = polylogue_store::capture_read::RawRange {
                 start: job.store_from.expect("new body has a source interval"),
                 end: job.store_from.expect("new body has a source interval") + blob.size,
             };
@@ -1169,8 +1148,8 @@ pub(crate) fn run(
                     blob.hash,
                     job.input.clone(),
                     observed.clone(),
-                    polylogue_store::primary::RawStreamRole::ProviderBytes,
-                    polylogue_store::primary::RawRange {
+                    polylogue_store::capture_read::RawStreamRole::ProviderBytes,
+                    polylogue_store::capture_read::RawRange {
                         // The earlier prefix belongs to its confirmed input;
                         // this file snapshot holds the newly read tail.
                         start: match job.change {
@@ -1185,7 +1164,6 @@ pub(crate) fn run(
             record.chunks = blob.chunks.clone();
             record
         });
-    out.source_read = source_read.clone();
     out.cancelled = stop.is_cancelled();
     let parsed = job.origin.support == polylogue_sources::Support::Parsed;
     let mut own_names;
@@ -1430,10 +1408,6 @@ pub(crate) fn run(
     }
     out.checkpoint = parse.last().and_then(|step| step.checkpoint.clone());
     let batch = Batch {
-        required_outcome: job
-            .source_read
-            .as_ref()
-            .and_then(|context| context.required_outcome),
         input: job.input,
         change: job.change,
         observation: job.observation,
@@ -1443,10 +1417,6 @@ pub(crate) fn run(
         length: job.length,
         parse,
         capture_read: source_read,
-        base: job
-            .source_read
-            .as_ref()
-            .and_then(|context| context.base.clone()),
         release: InFlight::default(),
     };
     (Some(PreparedBatch { batch, files }), out)

@@ -18,7 +18,6 @@ fn stage(
 ) -> PreparedBatch {
     let prepared = archive.prepare_bytes(body).unwrap();
     let batch = Batch {
-        required_outcome: None,
         input: InputKey {
             id: prepared.hash().to_string(),
             format: "export-file".into(),
@@ -48,7 +47,6 @@ fn stage(
         length: prepared.len(),
         parse: vec![],
         capture_read: None,
-        base: None,
         release: InFlight::default(),
     };
     PreparedBatch {

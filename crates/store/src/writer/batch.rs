@@ -89,14 +89,6 @@ pub struct ParseStep {
     pub checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
-    #[serde(default)]
-    pub(crate) source_commit: Option<crate::wire_shapes::ReadingCommit>,
-    /// Confirmed surviving events can omit source ranges despite a scratch reset.
-    #[serde(default)]
-    pub(crate) source_prefix_missing: bool,
-    /// IDs of products Sinex admitted, separate from the explicit map in a sealed callback.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) confirmed_event_ids: Option<Vec<String>>,
     /// Replaces accounting from an earlier parse of this chain.
     pub reset: bool,
     pub(crate) output: Output,
@@ -155,9 +147,6 @@ impl ParseStep {
             parse_version: String::new(),
             checkpoint: None,
             stopped_attempt: None,
-            source_commit: None,
-            source_prefix_missing: false,
-            confirmed_event_ids: None,
             reset: range.start == 0,
             repeats_whole_conversations: false,
             output,
@@ -210,13 +199,7 @@ pub struct Batch {
     pub release: InFlight,
     /// The receiver's record of the capture read that produced the body; not
     /// parsed payload data.
-    pub capture_read: Option<crate::primary::CaptureRead>,
-    /// The source state sampled before provider I/O. It cannot assign the
-    /// resulting chain or revision.
-    pub base: Option<crate::primary::SourceBase>,
-    /// Limits this new capture read to being held in the spool; it cannot
-    /// request source acceptance or accept a previously unresolved group.
-    pub required_outcome: Option<crate::primary::CaptureOutcome>,
+    pub capture_read: Option<crate::capture_read::CaptureRead>,
 }
 
 /// A callback that runs once, when the value holding it is dropped. The

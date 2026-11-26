@@ -51,10 +51,10 @@ pub(crate) fn read_source_range(
     end: u64,
     expected: Option<polylogue_store::FileFacts>,
     proven: Option<&ProvenTail>,
-) -> io::Result<(Vec<u8>, polylogue_store::primary::FileSnapshot)> {
+) -> io::Result<(Vec<u8>, polylogue_store::capture_read::FileSnapshot)> {
     let mut file = File::open(path)?;
     let metadata = file.metadata()?;
-    let observed = crate::source_read::file_snapshot(&metadata)?;
+    let observed = file_snapshot(&metadata)?;
     let before = polylogue_store::FileFacts::of(&metadata);
     let sampled = expected.unwrap_or(before);
     if !same_or_grown(&sampled, &before) {
@@ -255,6 +255,34 @@ impl Imported {
         }
         self.start = upto;
     }
+}
+
+/// The identity and times of an opened provider file, recorded with the
+/// capture read that read it.
+pub(crate) fn file_snapshot(
+    metadata: &std::fs::Metadata,
+) -> std::io::Result<polylogue_store::capture_read::FileSnapshot> {
+    use polylogue_store::capture_read::{FileSnapshot, FileTime};
+    use std::os::unix::fs::MetadataExt;
+    let time = |seconds, nanos: i64| -> std::io::Result<FileTime> {
+        let nanos = u32::try_from(nanos)
+            .ok()
+            .filter(|nanos| *nanos < 1_000_000_000)
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "provider file has invalid timestamp nanoseconds",
+                )
+            })?;
+        Ok(FileTime { seconds, nanos })
+    };
+    Ok(FileSnapshot {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.size(),
+        modified: time(metadata.mtime(), metadata.mtime_nsec())?,
+        changed: time(metadata.ctime(), metadata.ctime_nsec())?,
+    })
 }
 
 #[cfg(test)]

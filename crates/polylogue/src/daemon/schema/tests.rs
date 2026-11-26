@@ -31,8 +31,6 @@ impl Stored {
             .store_bytes(
                 self.archive.prepare_bytes(bytes).unwrap(),
                 Batch {
-                    base: None,
-                    required_outcome: None,
                     input: InputKey {
                         id: input.into(),
                         format: format.into(),
@@ -306,63 +304,6 @@ fn compressed_containers_and_decoded_revisions_use_their_stored_framing() {
     assert!(report.origins["tool-database"].tables["empty"].unobserved_columns);
     assert_eq!(report.origins["zip-member"].unreadable_inputs, 1);
     assert!(!serde_json::to_string(&report).unwrap().contains("private"));
-}
-
-#[test]
-fn primary_inference_reads_owned_sinex_extents_without_a_standalone_blob_copy() {
-    let mut stored = Stored::new();
-    stored.put(
-        "primary-input",
-        "claude-code",
-        false,
-        "/absent/provider.jsonl",
-        1,
-        b"{\"kept\":\"private bytes\"}\n",
-    );
-    drop(stored.writer.take());
-    let root = stored._dir.path().join("primary");
-    let sinex = stored._dir.path().join("sinex");
-    std::fs::create_dir_all(&root).unwrap();
-    std::fs::create_dir_all(&sinex).unwrap();
-    let cache = rusqlite::Connection::open(root.join("index.db")).unwrap();
-    polylogue_store::schema::ensure_primary_index(&cache).unwrap();
-    cache
-        .execute(
-            "ATTACH ?1 AS original",
-            [stored.archive.archive_db().to_str().unwrap()],
-        )
-        .unwrap();
-    for table in [
-        "blob",
-        "segment",
-        "input",
-        "revision",
-        "extent",
-        "observation",
-    ] {
-        cache
-            .execute_batch(&format!(
-                "INSERT INTO source_{table} SELECT * FROM original.{table}"
-            ))
-            .unwrap();
-    }
-    drop(cache);
-    std::fs::rename(stored.archive.root.join("segments"), sinex.join("segments")).unwrap();
-    let archive = Archive::on_sinex(&root, &sinex);
-    let pool = ReadPool::open(&archive).unwrap();
-    let report = observe(
-        &pool,
-        &IdleGate::default(),
-        selection(Some("claude-code"), &[], None),
-    )
-    .unwrap();
-    assert_eq!(
-        report.origins["claude-code"].fields["/kept"].types["string"],
-        1
-    );
-    assert_eq!(report.origins["claude-code"].records, 1);
-    assert!(!root.join("archive.db").exists());
-    assert!(!root.join("segments").exists());
 }
 
 #[test]

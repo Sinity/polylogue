@@ -297,36 +297,6 @@ fn entry_length(size: &[u8]) -> Option<i64> {
     None
 }
 
-/// Empties every full-text file at once, after a transaction that removed
-/// every text and queued the removal of its entries. The queue rows leave
-/// after the files commit; a crash between leaves them for upkeep, which
-/// finds nothing left to remove.
-pub(crate) fn clear_entries(conn: &Connection) -> Result<()> {
-    if !crate::search::files::attached(conn)? {
-        return Ok(());
-    }
-    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    for n in 0..crate::search::files::FILES {
-        let file = crate::search::files::schema(n);
-        for table in ["text_fts", "output_fts"] {
-            tx.execute_batch(&format!(
-                "INSERT INTO {file}.{table}({table}) VALUES ('delete-all');
-                 INSERT INTO {file}.{table}(rowid, body) VALUES (0, char(57344));
-                 UPDATE {file}.totals SET entries = 0, tokens = 0 WHERE name = '{table}';"
-            ))?;
-        }
-    }
-    tx.commit()?;
-    let tx = rusqlite::Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    tx.execute(
-        "DELETE FROM search_pending WHERE NOT EXISTS(SELECT 1 FROM text WHERE id = text_id)",
-        [],
-    )?;
-    crate::archive::bump_counter(&tx)?;
-    tx.commit()?;
-    Ok(())
-}
-
 /// Removes a text row and queues the removal of its search entries; its
 /// group leaves once nothing names it.
 pub(crate) fn remove(i: &Connection, id: i64) -> Result<()> {

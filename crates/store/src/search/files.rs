@@ -211,8 +211,7 @@ fn name_on_disk(index: &Path) -> Option<String> {
 /// Removes the directories of full-text files under `root` that no index
 /// file names: left by a crash between removing an index and its files, or
 /// by a build that failed before its schema committed. The caller holds the
-/// archive lock. Index files are `index*.db` in the root (`index.db` and a
-/// primary cache set aside) and the build directory's files; no other store
+/// archive lock. Index files are `index*.db` in the root (`index.db`) and the build directory's files; no other store
 /// is opened. Nothing is removed when an index file cannot be read.
 pub(crate) fn sweep(root: &Path) -> Result<()> {
     let mut named = std::collections::HashSet::new();

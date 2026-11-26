@@ -15,7 +15,7 @@ fn index_editor(archive: &Archive) -> Connection {
         )
         .unwrap();
     crate::source::views(&index).unwrap();
-    crate::chain_progress::install_triggers(&index, false).unwrap();
+    crate::chain_progress::install_triggers(&index).unwrap();
     index
 }
 
@@ -135,59 +135,6 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         CompletenessDimension::Incomplete(vec![CompletenessReason::KnownRawOnly])
     );
     assert!(!raw.caught_up());
-}
-
-#[test]
-fn stream_is_complete_only_at_the_latest_sinex_position() {
-    let root = tempfile::tempdir().unwrap();
-    let (archive, _lock) = Archive::open_primary_cache(root.path()).unwrap();
-    let confirmed_stream = |applied: Option<i64>, latest_position: Option<i64>| {
-        let conn = Connection::open(archive.index_db()).unwrap();
-        crate::primary::confirmed::save_replay(
-            &conn,
-            &crate::primary::ReplayState {
-                applied_position: applied,
-                scope: Some("scope".into()),
-                latest_position,
-                staged_delivery: None,
-                completed_delivery: None,
-                snapshot: None,
-                snapshot_progress: None,
-            },
-        )
-        .unwrap();
-        let pool = ReadPool::open(&archive).unwrap();
-        let completeness = pool.reader().unwrap().completeness(&[]).unwrap();
-        (
-            completeness.confirmed_stream.clone(),
-            !completeness.caught_up(),
-        )
-    };
-    assert_eq!(
-        confirmed_stream(None, Some(5)),
-        (
-            CompletenessDimension::Incomplete(vec![CompletenessReason::StreamNotApplied]),
-            true
-        )
-    );
-    assert_eq!(
-        confirmed_stream(Some(3), Some(5)),
-        (
-            CompletenessDimension::Incomplete(vec![CompletenessReason::StreamBehind]),
-            true
-        )
-    );
-    assert_eq!(
-        confirmed_stream(Some(3), None),
-        (
-            CompletenessDimension::Unknown(vec![CompletenessReason::StreamBehind]),
-            true
-        )
-    );
-    assert_eq!(
-        confirmed_stream(Some(5), Some(5)),
-        (CompletenessDimension::Complete, false)
-    );
 }
 
 #[test]
@@ -314,7 +261,6 @@ fn import(stored: &WriterArchive, body: &[u8], format: &str) -> crate::staging::
     let prepared = stored.archive.prepare_bytes(body).unwrap();
     let path = format!("/synthetic/{format}.json");
     let batch = crate::writer::Batch {
-        required_outcome: None,
         input: crate::writer::InputKey {
             id: prepared.hash().to_string(),
             format: "export-file".into(),
@@ -344,7 +290,6 @@ fn import(stored: &WriterArchive, body: &[u8], format: &str) -> crate::staging::
         length: prepared.len(),
         parse: vec![],
         capture_read: None,
-        base: None,
         release: Default::default(),
     };
     stored.writer.store_bytes(prepared, batch).unwrap()

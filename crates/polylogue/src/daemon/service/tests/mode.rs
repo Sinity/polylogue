@@ -117,7 +117,6 @@ fn malformed_primary_configuration_does_not_reclassify_a_standalone_archive() {
     let w = seeded();
     let runtime = launch(loaded(&w, "mode = [")).unwrap();
     blocked(&runtime, &path(&w));
-    assert!(!runtime.daemon.archive.is_primary());
     drop(runtime);
     assert_eq!(w.count("SELECT count(*) AS n FROM message"), 1);
     assert!(

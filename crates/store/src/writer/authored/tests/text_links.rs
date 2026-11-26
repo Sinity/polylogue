@@ -45,7 +45,7 @@ fn old_prepared_notes_restore_without_new_text_interpretation() {
         );
         assert_eq!(
             blake3::Hash::from_bytes(
-                crate::primary::authored::request_hash(&original.request).unwrap()
+                crate::authored_records::request_hash(&original.request).unwrap()
             )
             .to_hex()
             .to_string()

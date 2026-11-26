@@ -15,55 +15,26 @@ fn open_refuses_mode_mismatch_before_creating_files() {
         result.sort();
         result
     }
-    for primary in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let store = dir.path().join("sinex");
-        let root = dir.path().join("archive");
-        let (archive, lock) = if primary {
-            Archive::open_primary(&root, &store).unwrap()
-        } else {
-            Archive::open_or_create(&root).unwrap()
-        };
-        drop(lock);
-        fs::remove_file(root.join("lock")).unwrap();
-        fs::remove_dir_all(archive.staging_dir()).unwrap();
-        let before = files(&root);
-        let error = if primary {
-            Archive::open_or_create(&root).unwrap_err()
-        } else {
-            Archive::open_primary(&root, &store).unwrap_err()
-        }
-        .to_string();
-        let (recorded, requested) = if primary {
-            ("primary", "standalone")
-        } else {
-            ("standalone", "primary")
-        };
-        assert_eq!(
-            error,
-            format!(
-                "archive {} is {recorded}, but configuration requests {requested}; select its recorded mode or another archive",
-                root.display()
-            )
-        );
-        assert_eq!(files(&root), before);
-    }
-}
-
-#[test]
-fn primary_mode_identity_survives_reset_and_index_recreation() {
+    // An archive recorded as primary: this version opens it in no mode.
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("archive");
-    let store = dir.path().join("sinex");
-    let (archive, lock) = Archive::open_primary(&root, &store).unwrap();
-    let identity = fs::read(root.join("meta.json")).unwrap();
-    archive.advance_generation_for_test().unwrap();
-    assert_eq!(fs::read(root.join("meta.json")).unwrap(), identity);
-    drop(lock);
-    fs::remove_file(archive.index_db()).unwrap();
-    let (_archive, _lock) = Archive::open_primary(&root, &store).unwrap();
-    assert_eq!(Archive::recorded_mode(&root).unwrap(), Some(Mode::Primary));
-    assert_eq!(fs::read(root.join("meta.json")).unwrap(), identity);
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("meta.json"), "{\"mode\":\"primary\"}\n").unwrap();
+    fs::write(root.join("index.db"), b"synthetic primary index").unwrap();
+    let before = files(&root);
+    let expected = format!(
+        "archive {} is primary, but configuration requests standalone; select its recorded mode or another archive",
+        root.display()
+    );
+    assert_eq!(
+        Archive::open_or_create(&root).unwrap_err().to_string(),
+        expected
+    );
+    let Err(blocked) = Archive::open_blocked_with_invalidator(&root, || Ok(())) else {
+        panic!("a primary archive opened as blocked");
+    };
+    assert_eq!(blocked.to_string(), expected);
+    assert_eq!(files(&root), before);
 }
 
 #[test]

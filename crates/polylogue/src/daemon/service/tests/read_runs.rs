@@ -30,8 +30,8 @@ fn captured(d: &Daemon, selection: &str) -> (QueryRun, QueryRunOutcome) {
     };
     let reader = d.reads.reader().unwrap();
     (
-        reader.query_run(&id, None).unwrap().unwrap(),
-        reader.query_run_outcome(&id, None).unwrap().unwrap(),
+        reader.query_run(&id).unwrap().unwrap(),
+        reader.query_run_outcome(&id).unwrap().unwrap(),
     )
 }
 
@@ -104,14 +104,14 @@ fn run_card_reads_the_selected_record_and_offers_an_executable_question() {
     };
     {
         let reader = d.daemon.reads.reader().unwrap();
-        let read = reader.query_run(&read_id, None).unwrap().unwrap();
+        let read = reader.query_run(&read_id).unwrap().unwrap();
         assert_eq!(read.question, None);
         assert!(
             matches!(read.binding, RunBinding::OriginalObject {execution} if execution.reference == Reference::Run(run.id.clone()))
         );
-        assert_eq!(reader.query_run(&run.id, None).unwrap(), Some(run.clone()));
+        assert_eq!(reader.query_run(&run.id).unwrap(), Some(run.clone()));
         assert_eq!(
-            reader.query_run_outcome(&run.id, None).unwrap(),
+            reader.query_run_outcome(&run.id).unwrap(),
             Some(outcome.clone())
         );
     }
@@ -331,7 +331,7 @@ fn object_read_runs_have_no_invented_question_or_followup() {
         .reads
         .reader()
         .unwrap()
-        .query_run(&id, None)
+        .query_run(&id)
         .unwrap()
         .unwrap();
     assert_eq!(run.question, None);

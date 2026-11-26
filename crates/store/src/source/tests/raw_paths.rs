@@ -1,6 +1,6 @@
 use super::super::*;
+use crate::capture_read::{CaptureRead, RawRange, ReadRoute, SourceSelector, SourceStatus};
 use crate::input_rows::{InputRows, ObservationRow};
-use crate::primary::{CaptureRead, RawRange, ReadRoute, SourceSelector, SourceStatus};
 
 fn observation(id: &str, bytes: Option<Vec<u8>>) -> ObservationRow {
     ObservationRow {
@@ -190,7 +190,7 @@ fn source_read_keeps_body_when_extent_is_trimmed() {
 }
 
 #[test]
-fn queued_source_snapshot_and_reader_keep_the_same_observation() {
+fn source_snapshot_and_observation_keep_the_same_observation() {
     let dir = tempfile::tempdir().unwrap();
     let (archive, _lock) = crate::Archive::open_or_create(&dir.path().join("archive")).unwrap();
     let conn = Connection::open(archive.archive_db()).unwrap();
@@ -204,11 +204,13 @@ fn queued_source_snapshot_and_reader_keep_the_same_observation() {
     )
     .unwrap();
     drop(conn);
-    let writer = crate::Writer::start(&archive).unwrap();
-    let snapshot = writer.source_snapshot(selector(path)).unwrap();
-    assert_eq!(snapshot.base.status, SourceStatus::Ready);
-    assert_eq!(snapshot.base.confirmed.as_deref(), Some("native"));
-    assert_eq!(snapshot.base.pending, None);
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let snapshot = pool
+        .reader()
+        .unwrap()
+        .source_snapshot(selector(path))
+        .unwrap();
+    assert_eq!(snapshot.status, SourceStatus::Ready);
     assert_eq!(
         snapshot
             .confirmed
@@ -219,7 +221,6 @@ fn queued_source_snapshot_and_reader_keep_the_same_observation() {
             .as_deref(),
         Some(path.as_slice())
     );
-    let pool = crate::ReadPool::open(&archive).unwrap();
     let reader = pool.reader().unwrap();
     assert_eq!(
         reader.source_observation(&selector(path)).unwrap().1,
@@ -268,10 +269,5 @@ fn source_history_checks_observations_at_a_fixed_position() {
                 .id,
             "later"
         );
-        assert!(Source::observation_matches(&conn, &selector(path), "first", Some(2)).unwrap());
-        assert!(
-            !Source::observation_matches(&conn, &selector(b"other"), "first", Some(2)).unwrap()
-        );
-        assert!(!Source::observation_matches(&conn, &selector(path), "later", Some(2)).unwrap());
     }
 }

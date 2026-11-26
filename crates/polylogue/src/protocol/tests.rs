@@ -165,38 +165,6 @@ fn noncurrent_primary_reads_keep_their_data_and_say_why() {
 }
 
 #[test]
-fn pending_browser_results_keep_their_kind_on_the_wire() {
-    use crate::protocol::browser::{ChatAnswer, PendingCapture};
-    let capture = written(
-        ChatAnswer::Capture(PendingCapture {
-            identity: "capture:synthetic".into(),
-        }),
-        true,
-    );
-    let bytes = serde_json::to_vec(&capture).unwrap();
-    let decoded: command_surface::Answer<ChatAnswer> = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(decoded.exit_code(), 5);
-    assert!(
-        matches!(decoded.value(),Some(ChatAnswer::Capture(write_result)) if write_result.identity=="capture:synthetic")
-    );
-    let outcome = polylogue_model::user::UserOutcome {
-        id: "action:synthetic".into(),
-        repeat: true,
-        pending: true,
-    };
-    let authored = written(ChatAnswer::Outcome(outcome.clone()), outcome.pending);
-    let bytes = serde_json::to_vec(&authored).unwrap();
-    let decoded: command_surface::Answer<ChatAnswer> = serde_json::from_slice(&bytes).unwrap();
-    assert!(
-        matches!(decoded.value(),Some(ChatAnswer::Outcome(write_result)) if write_result==&outcome)
-    );
-    assert!(
-        serde_json::from_value::<ChatAnswer>(json!({"identity":"capture:synthetic","action":null}))
-            .is_err()
-    );
-}
-
-#[test]
 fn typed_failure_codes_keep_their_wire_names_and_classes() {
     use polylogue_model::Code;
     for (code, wire, expected) in [
@@ -468,37 +436,6 @@ fn every_store_error_variant_has_a_code_and_kind() {
             false,
         ),
         (
-            E::PrimaryPending {
-                identity: "capture-1".into(),
-            },
-            Code::Degraded,
-            FailureKind::Io,
-            true,
-        ),
-        (
-            E::UnresolvedBaseConflict {
-                spooled: polylogue_store::primary::SpooledGroup {
-                    identity: "group".into(),
-                    count: 1,
-                },
-            },
-            Code::Conflict,
-            FailureKind::Conflict,
-            true,
-        ),
-        (
-            E::ConfirmedReadDenied("revoked".into()),
-            Code::ScopeChanged,
-            FailureKind::Conflict,
-            false,
-        ),
-        (
-            E::Sinex("unreachable".into()),
-            Code::SinexUnavailable,
-            FailureKind::Io,
-            true,
-        ),
-        (
             E::Invalid("refused".into()),
             Code::BadRequest,
             FailureKind::BadRequest,
@@ -508,15 +445,6 @@ fn every_store_error_variant_has_a_code_and_kind() {
             E::Refused(polylogue_model::Reason::NoStatements {}),
             Code::BadRequest,
             FailureKind::BadRequest,
-            false,
-        ),
-        (
-            E::Refused(polylogue_model::Reason::SinexRefused {
-                name: "write".into(),
-                reason: "denied".into(),
-            }),
-            Code::Refused,
-            FailureKind::Refused,
             false,
         ),
         (

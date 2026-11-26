@@ -39,8 +39,7 @@ impl Publisher {
                 "completion worker terminated",
                 Some(Arc::clone(&completed)),
             );
-            let mut publisher =
-                State::new(daemon.archive.is_primary(), daemon.config.requests.clone());
+            let mut publisher = State::new(daemon.config.requests.clone());
             let mut last_error = None;
             loop {
                 if stopped.load(Ordering::Acquire) {
@@ -253,20 +252,15 @@ pub(super) struct State {
     position: Option<ChangePosition>,
     catalog: Catalog,
     vocabulary: Vocabulary,
-    requires_confirmed: bool,
     requests: polylogue_model::user::RequestMetadata,
 }
 impl State {
-    pub(super) fn new(
-        requires_confirmed: bool,
-        requests: polylogue_model::user::RequestMetadata,
-    ) -> Self {
+    pub(super) fn new(requests: polylogue_model::user::RequestMetadata) -> Self {
         Self {
             writer: None,
             position: None,
             catalog: super::base_catalog(),
             vocabulary: Vocabulary::default(),
-            requires_confirmed,
             requests,
         }
     }
@@ -286,9 +280,6 @@ impl State {
             self.writer = None;
             self.position = None;
             self.vocabulary = Vocabulary::default();
-        }
-        if self.requires_confirmed && reader.confirmed_checkpoint()?.is_none() {
-            return Ok(());
         }
         let position = reader.change_position()?;
         if self
@@ -496,7 +487,7 @@ impl State {
                 let object = match &value.body {
                     polylogue_query::SavedQueryBody::Available { object, .. } => object.clone(),
                     polylogue_query::SavedQueryBody::Unavailable { .. } => {
-                        match reader.query_object(&value.hash.to_string(), None) {
+                        match reader.query_object(&value.hash.to_string()) {
                             Ok(found) => found.map(std::sync::Arc::new),
                             Err(
                                 polylogue_store::StoreError::NotFound(_)

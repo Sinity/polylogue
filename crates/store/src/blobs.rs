@@ -16,7 +16,7 @@ mod chain;
 pub use chain::{CHAIN_CACHE_KIB, ChainReader, ChainSource, StoredChain};
 
 mod segments;
-pub use segments::{BlobCatalog, Blobs};
+pub use segments::Blobs;
 pub(crate) use segments::{insert_extent, load_extent, open_writer, record_committed_end};
 
 /// The read operations used by stored chains.

@@ -38,24 +38,18 @@ pub(super) fn read(root: &Path) -> Result<Option<Mode>> {
     }
 }
 
-fn requested_mode(archive: &Archive) -> Mode {
-    if archive.is_primary() {
-        Mode::Primary
-    } else {
-        Mode::Standalone
-    }
-}
+/// Every archive this build opens is standalone; primary mode is not built
+/// in this version (`docs/primary-mode.md`).
+const REQUESTED: Mode = Mode::Standalone;
 
 pub(super) fn check(archive: &Archive) -> Result<()> {
     match read(&archive.root)? {
-        Some(mode) if mode != requested_mode(archive) => {
-            Err(polylogue_model::Reason::ArchiveModeMismatch {
-                archive: archive.root.display().to_string(),
-                recorded: mode.to_string(),
-                requested: requested_mode(archive).to_string(),
-            }
-            .into())
+        Some(mode) if mode != REQUESTED => Err(polylogue_model::Reason::ArchiveModeMismatch {
+            archive: archive.root.display().to_string(),
+            recorded: mode.to_string(),
+            requested: REQUESTED.to_string(),
         }
+        .into()),
         Some(_) => Ok(()),
         // The index is derived and replaced when unreadable; only stores that
         // hold original bytes or paid vectors mark an older-format archive.
@@ -78,12 +72,7 @@ pub(super) fn create(archive: &Archive) -> Result<()> {
         return Ok(());
     }
     let mut temporary = tempfile::NamedTempFile::new_in(&archive.root)?;
-    serde_json::to_writer(
-        temporary.as_file_mut(),
-        &Metadata {
-            mode: requested_mode(archive),
-        },
-    )?;
+    serde_json::to_writer(temporary.as_file_mut(), &Metadata { mode: REQUESTED })?;
     temporary.write_all(b"\n")?;
     temporary.as_file().sync_all()?;
     temporary

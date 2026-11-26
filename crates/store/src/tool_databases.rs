@@ -99,7 +99,7 @@ pub struct DatabaseReader {
 pub struct ReadReport {
     /// Created only inside the consistent provider read. It records where the
     /// bytes came from, never a resumable database revision or data_version.
-    pub snapshot: Option<crate::primary::DatabaseSnapshotToken>,
+    pub snapshot: Option<crate::capture_read::DatabaseSnapshotToken>,
     /// Rows written as changed since the last read.
     pub changed: u64,
     pub gone: u64,
@@ -248,8 +248,7 @@ fn facts_of(value: &Value) -> Option<FileFacts> {
 
 /// The database and log facts of the last completed read of `input` at this
 /// observation's machine and path: the newest such observation the
-/// archive holds, committed with that read's rows. Primary mode holds it
-/// once Sinex confirmed it.
+/// archive holds, committed with that read's rows.
 fn recorded(
     archive: &Archive,
     input: &InputKey,
@@ -259,11 +258,9 @@ fn recorded(
         &archive.index_db(),
         crate::archive::index_build::Reads::Pipeline,
     )?;
-    if !archive.is_primary() {
-        let uri = format!("file:{}?mode=ro", archive.archive_db().display());
-        conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
-        crate::source::views(&conn)?;
-    }
+    let uri = format!("file:{}?mode=ro", archive.archive_db().display());
+    conn.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+    crate::source::views(&conn)?;
     let row = conn
         .query_row(
             "SELECT device,inode,size,mtime_ns,ctime_ns,details_json FROM source_observation
@@ -506,7 +503,7 @@ fn read_rows(
         bytes.push(b'\n');
     }
     let mut done = ReadReport {
-        snapshot: Some(crate::primary::DatabaseSnapshotToken {
+        snapshot: Some(crate::capture_read::DatabaseSnapshotToken {
             nonce: uuid::Uuid::now_v7().to_string(),
         }),
         ..Default::default()

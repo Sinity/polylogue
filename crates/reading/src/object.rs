@@ -64,7 +64,7 @@ fn execute<T>(
     let binding = ObjectExecutionBinding {
         reference: reference.clone(),
         content_hash,
-        scope_fingerprint: reader.query_scope_fingerprint()?,
+        scope_fingerprint: None,
         versions: operation.cursor_versions(),
         presentation: ExecutionPresentation::Read {
             options: options.clone(),
@@ -163,7 +163,7 @@ fn execute<T>(
                         }
                     } else {
                         if let Some(question) = record.run.question
-                            && reader.query_object(&question.to_string(), None)?.is_some()
+                            && reader.query_object(&question.to_string())?.is_some()
                         {
                             let query = Reference::Query {
                                 key: question.to_string(),

@@ -252,10 +252,6 @@ impl Engine {
             }
             let stored = match outcome {
                 Ok(stored) => stored,
-                Err(polylogue_store::StoreError::PrimaryPending { .. }) => {
-                    report.pass.capture_pending = true;
-                    continue;
-                }
                 Err(error @ polylogue_store::StoreError::ScopeChanged) => return Err(error.into()),
                 Err(error) => {
                     report
@@ -441,7 +437,6 @@ impl Engine {
             member
         });
         polylogue_store::Batch {
-            required_outcome: None,
             input: InputKey {
                 id: hash.to_string(),
                 format: origin.name.into(),
@@ -458,17 +453,16 @@ impl Engine {
                 self.source_read_context(
                     path,
                     origin.name,
-                    polylogue_store::primary::ReadRoute::ExplicitImport,
+                    polylogue_store::capture_read::ReadRoute::ExplicitImport,
                 )
                 .finish(
-                    polylogue_store::primary::RawRange {
+                    polylogue_store::capture_read::RawRange {
                         start: 0,
                         end: size,
                     },
                     hash,
                 ),
             ),
-            base: None,
             release: Default::default(),
         }
     }

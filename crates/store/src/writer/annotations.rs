@@ -43,67 +43,6 @@ impl Inner {
             repeat: false,
             pending: false,
         };
-        if let Some(sinex) = self.sinex.as_ref().map(Arc::clone) {
-            self.primary_cache_ready()?;
-            outcome.repeat = stored(&self.index, &restoration.fact)?;
-            if outcome.repeat
-                && match &restoration.import {
-                    None => true,
-                    Some(import) => crate::annotations::imports::contains(
-                        &self.index,
-                        &restoration.fact.id,
-                        import,
-                    )?,
-                }
-            {
-                return Ok(outcome);
-            }
-            let identity = format!(
-                "annotation-restore:{}",
-                blake3::hash(&serde_json::to_vec(&(
-                    &restoration.fact,
-                    restoration
-                        .import
-                        .as_ref()
-                        .map(|i| (&i.input, i.chain, &i.machine, &i.actor))
-                ))?)
-                .to_hex()
-            );
-            let mut original = None;
-            sinex.visit_named_products(
-                &crate::primary::NamedProductSelector::Exact(identity.clone()),
-                &mut |product| {
-                    let crate::primary::Product::RestoredAnnotation { fact, import } = product
-                    else {
-                        return Err(StoreError::Invalid(
-                            "annotation restoration has another product".into(),
-                        ));
-                    };
-                    let mut offered_import = restoration.import.clone();
-                    if let (Some(offered), Some(kept)) = (&mut offered_import, import) {
-                        // The first durable preparation owns its observation time.
-                        offered.at = kept.at;
-                    }
-                    if fact != &restoration.fact || import != &offered_import {
-                        return Err(StoreError::Conflict(restoration.fact.id.clone()));
-                    }
-                    if original.replace(product.clone()).is_some() {
-                        return Err(StoreError::Invalid(
-                            "annotation restoration has multiple products".into(),
-                        ));
-                    }
-                    Ok(())
-                },
-            )?;
-            let product = original.unwrap_or_else(|| crate::primary::Product::RestoredAnnotation {
-                fact: restoration.fact.clone(),
-                import: restoration.import.clone(),
-            });
-            let writes = self.product_writes(vec![product])?;
-            sinex.prepare_named_products(&identity, &writes)?;
-            outcome.pending = true;
-            return Ok(outcome);
-        }
         outcome.repeat = stored(&self.archive, &restoration.fact)?;
         if outcome.repeat
             && match &restoration.import {

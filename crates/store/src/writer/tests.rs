@@ -4,6 +4,7 @@ use polylogue_model::{
     Json, LinkKind, MessageId, MessageRow, PromptKind, RecordOutcome, Role, Route, SessionKind,
     TitleSource, Usage,
 };
+use readings::Touched;
 
 mod annotations;
 mod append_cost;
@@ -21,7 +22,6 @@ mod saved;
 mod scoped;
 mod session_order;
 mod session_summaries;
-mod sinex_lifecycle;
 mod sparse_block_selection;
 mod stopping;
 mod stored_replay;
@@ -44,11 +44,6 @@ fn write_test_rows(
     normalize_attachments_with(tx, &mut batch)?;
     let changes = crate::change_summary::ChangeSummary::start(tx)?;
     let mut touched = Touched::default();
-    // A primary cache hides the messages Sinex withdrew.
-    let primary = tx.exists(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='confirmed_event')",
-        [],
-    )?;
     rows::write_step(
         tx,
         &batch,
@@ -56,10 +51,8 @@ fn write_test_rows(
         rows::StepWrite {
             counter,
             chain,
-            source_commit: Some(&fixture_commit()),
+            source_commit: &fixture_commit(),
             replacement: false,
-            retraction: false,
-            primary,
             changes: &changes,
         },
         &mut touched,
@@ -225,7 +218,6 @@ fn counts(n: u64) -> RecordCounts {
 fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions: &[&str]) -> Batch {
     let n = rows.len() as u64;
     Batch {
-        required_outcome: None,
         input: InputKey {
             id: input.into(),
             format: "claude-code".into(),
@@ -269,7 +261,6 @@ fn batch(input: &str, route: Route, start: u64, rows: Vec<MessageRow>, sessions:
             step
         }],
         capture_read: None,
-        base: None,
         release: InFlight::default(),
     }
 }

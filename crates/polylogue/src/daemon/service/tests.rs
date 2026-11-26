@@ -350,7 +350,6 @@ fn standalone_start_does_not_read_the_sinex_configuration() {
         ArchiveMode::Standalone,
     )
     .unwrap();
-    assert!(!runtime.daemon.archive.is_primary());
     assert!(runtime.daemon.archive.archive_db().ends_with("archive.db"));
     runtime.shutdown().unwrap();
 }

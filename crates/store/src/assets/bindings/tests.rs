@@ -3,8 +3,8 @@ use crate::{
     Archive, ArchiveLock, Batch, Change, ImportMember, InputKey, Observation, ParseStep, ReadPool,
     Writer,
     assets::AssetRow,
+    capture_read::{CaptureRead, RawRange, ReadRoute, SourceSelector},
     export_items::ExportItems,
-    primary::{CaptureRead, RawRange, ReadRoute, SourceSelector},
     staging::PreparedBatch,
 };
 use polylogue_model::{
@@ -171,7 +171,6 @@ fn stage(staged: &mut ExportItems, row: &AssetRow) {
 }
 fn raw(input: &str, namespace: Option<&str>, member: &str, change: Change, length: usize) -> Batch {
     Batch {
-        required_outcome: None,
         input: InputKey {
             id: input.into(),
             format: "export-file".into(),
@@ -201,7 +200,6 @@ fn raw(input: &str, namespace: Option<&str>, member: &str, change: Change, lengt
         length: length as u64,
         parse: Vec::new(),
         capture_read: None,
-        base: None,
         release: Default::default(),
     }
 }

@@ -94,7 +94,7 @@ pub(crate) fn write(
         }
         let at = polylogue_model::Timestamp::from_unix_ms(pending.metadata.delivery.at)
             .or_stored("signal time is out of range")?;
-        crate::primary::authored::store_delivery(
+        crate::authored_records::store_delivery(
             conn,
             &DeliveryRecord {
                 id,
@@ -158,7 +158,7 @@ pub(crate) fn write(
 }
 fn store_checkpoint(conn: &Connection, value: &Checkpoint, counter: i64) -> Result<()> {
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT INTO @source.signal_state(owner,body,commit_seq) VALUES(?1,?2,?3) ON CONFLICT(owner) DO UPDATE SET body=excluded.body,commit_seq=excluded.commit_seq"),params![value.owner,crate::primary::authored::pack(value)?,counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.signal_state(owner,body,commit_seq) VALUES(?1,?2,?3) ON CONFLICT(owner) DO UPDATE SET body=excluded.body,commit_seq=excluded.commit_seq"),params![value.owner,crate::authored_records::pack(value)?,counter])?;
     Ok(())
 }
 fn ordinal(value: &EventRecord) -> Result<i64> {
@@ -182,7 +182,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
             Err(StoreError::internal("a signal event identity was reused"))
         };
     }
-    conn.execute(&source.sql("INSERT INTO @source.signal_event(request,ordinal,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,ordinal(value)?,id,position(value)?,value.at.unix_ms(),crate::primary::authored::pack(value)?,counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.signal_event(request,ordinal,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,ordinal(value)?,id,position(value)?,value.at.unix_ms(),crate::authored_records::pack(value)?,counter])?;
     Ok(())
 }
 pub(crate) fn capture(

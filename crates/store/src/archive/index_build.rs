@@ -26,8 +26,6 @@
 //! build's, serving readers keep reading it until the rename; otherwise reads
 //! answer [`StoreError::IndexBuilding`].
 
-pub(crate) mod primary;
-
 use crate::ConnExt as _;
 use crate::{Result, StoreError, archive::Archive, schema};
 use polylogue_model::LockExt;
@@ -130,7 +128,6 @@ impl std::fmt::Debug for State {
 #[derive(Default, Clone)]
 struct Inner {
     file: Option<BuildFile>,
-    primary: Option<primary::Build>,
     serving_previous: bool,
     chains: u64,
     chains_read: u64,
@@ -154,9 +151,7 @@ pub(crate) fn state(root: &Path) -> Arc<State> {
     // disk; the archive's open sets the state from what it prepares.
     let state = Arc::new(State::default());
     let paths = Paths::of(root);
-    let file = if primary::published(&paths) {
-        None
-    } else if paths.built.exists() {
+    let file = if paths.built.exists() {
         Some(BuildFile::Ready)
     } else if paths.build.exists() {
         Some(BuildFile::Writing)
@@ -179,12 +174,11 @@ impl Inner {
         })
     }
 
-    fn pipeline_index<'a>(&self, paths: &'a Paths, primary: bool) -> &'a Path {
-        match (primary, self.file) {
-            (true, _) if self.primary.is_some() => &paths.build,
-            (false, Some(BuildFile::Writing)) => &paths.build,
-            (false, Some(BuildFile::Ready)) => &paths.built,
-            _ => &paths.index,
+    fn pipeline_index<'a>(&self, paths: &'a Paths) -> &'a Path {
+        match self.file {
+            Some(BuildFile::Writing) => &paths.build,
+            Some(BuildFile::Ready) => &paths.built,
+            None => &paths.index,
         }
     }
 
@@ -225,7 +219,6 @@ impl State {
             inner.measured = Default::default();
         }
         inner.file = file;
-        inner.primary = None;
         inner.serving_previous = file.is_some() && serving_previous;
     }
 
@@ -253,14 +246,14 @@ impl State {
 impl Archive {
     /// The index file the build pipeline (the writer, its resolver and
     /// parser-context reads, the engine's planning reads, tool-database
-    /// catalog reads) opens: `index-build/index.db` while a standalone build
+    /// catalog reads) opens: `index-build/index.db` while a build
     /// writes, then `index-build/built.db` until it is installed as `index.db`
     /// ([`crate::archive::index_build`]). Client-facing readers open
     /// [`Archive::served_index`] instead.
     pub fn index_db(&self) -> PathBuf {
         self.index_build
             .inner()
-            .pipeline_index(&Paths::of(&self.root), self.is_primary())
+            .pipeline_index(&Paths::of(&self.root))
             .to_path_buf()
     }
 
@@ -279,10 +272,7 @@ impl Archive {
         let recover = {
             let paths = Paths::of(&self.root);
             let inner = self.index_build.inner();
-            reads == Reads::Pipeline
-                && inner.file.is_some()
-                && !self.is_primary()
-                && path == inner.pipeline_index(&paths, false)
+            reads == Reads::Pipeline && inner.file.is_some() && path == inner.pipeline_index(&paths)
         };
         // No build-state lock is held while SQLite waits for the writer.
         super::open_read_connection(path, recover)
@@ -297,7 +287,7 @@ impl Archive {
         let paths = Paths::of(&self.root);
         let inner = self.index_build.inner();
         let path = match reads {
-            Reads::Pipeline => inner.pipeline_index(&paths, self.is_primary()),
+            Reads::Pipeline => inner.pipeline_index(&paths),
             Reads::Serving => inner.served_index(&paths)?,
         };
         read(path)
@@ -438,7 +428,7 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
             &build,
             reason.clone(),
             previous.clone(),
-            schema::build_index_identity(false)?,
+            schema::build_index_identity()?,
         )?;
     }
     sync_directory(&paths.dir)?;
@@ -459,7 +449,7 @@ pub(crate) fn prepare(archive: &Archive) -> Result<()> {
 /// this build's (indexes may differ).
 fn servable(previous: &Path) -> Result<bool> {
     let conn = crate::archive::open_read(previous)?;
-    Ok(schema::index_identity(&conn)? == schema::build_index_identity(false)?)
+    Ok(schema::index_identity(&conn)? == schema::build_index_identity()?)
 }
 
 /// A connection to the build file for schema setup: a rollback journal on

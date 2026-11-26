@@ -346,7 +346,6 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
         engine
             .writer
             .send(polylogue_store::Batch {
-                required_outcome: None,
                 input: InputKey {
                     id: input.clone(),
                     format: state.origin.name.into(),
@@ -362,7 +361,6 @@ fn stopped_readings_keep_their_attempt_and_upgrade() {
                 length,
                 parse: vec![step],
                 capture_read: None,
-                base: None,
                 release: Default::default(),
             })
             .unwrap();

@@ -144,11 +144,7 @@ fn load_or_initial(
     let checkpoint = match previous {
         Some(value) => value,
         None => {
-            let attention = if d.archive.is_primary() {
-                None
-            } else {
-                Some(local_attention(reader, context)?)
-            };
+            let attention = Some(local_attention(reader, context)?);
             initial(d, context, attention.as_ref())?
         }
     };

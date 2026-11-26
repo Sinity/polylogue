@@ -88,7 +88,7 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
         let kept = reads
             .reader()
             .unwrap()
-            .query_object(&expected.question_id().to_string(), None)
+            .query_object(&expected.question_id().to_string())
             .unwrap()
             .unwrap();
         assert_eq!(kept, expected.query_object().unwrap());
@@ -100,7 +100,6 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
             reader.conn().unwrap(),
             "query:beta",
             &bindings(),
-            None,
             None,
             None,
         )
@@ -123,7 +122,6 @@ fn saved_acceptance_keeps_objects_and_dependencies() {
         reader.conn().unwrap(),
         "query:beta",
         &bindings(),
-        None,
         None,
         None,
     )
@@ -162,7 +160,7 @@ fn invalid_saved_batch_acks_no_objects_and_sends_no_assertions() {
     assert!(reader.user_request("invalid-batch").unwrap().is_none());
     assert!(
         reader
-            .query_object(&alpha.question_id().to_string(), None)
+            .query_object(&alpha.question_id().to_string())
             .unwrap()
             .is_none()
     );
@@ -260,7 +258,7 @@ fn saved_figure_keeps_its_denominator_as_a_separate_question() {
     for expected in [figure, population] {
         assert!(
             reader
-                .query_object(&expected.question_id().to_string(), None)
+                .query_object(&expected.question_id().to_string())
                 .unwrap()
                 .is_some()
         );
@@ -295,7 +293,6 @@ fn kept_names_follow_run_time_and_exact_opaque_ids_stay_addressable() {
             reader.conn().unwrap(),
             text,
             &bindings(),
-            None,
             None,
             None,
         )
@@ -334,7 +331,6 @@ fn kept_names_follow_run_time_and_exact_opaque_ids_stay_addressable() {
         reader.conn().unwrap(),
         "result:chronological",
         &bindings(),
-        None,
         None,
         None,
     )

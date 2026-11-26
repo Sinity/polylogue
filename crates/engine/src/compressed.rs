@@ -94,9 +94,8 @@ pub(crate) struct RolloutCapture {
     priority: pool::Priority,
     found_origin: &'static OriginSpec,
     pub(crate) facts: FileFacts,
-    context: crate::source_read::SourceReadContext,
-    original_context: Option<crate::source_read::SourceReadContext>,
-    has_pending: bool,
+    context: crate::capture_read::SourceReadContext,
+    original_context: Option<crate::capture_read::SourceReadContext>,
     observation: Observation,
     /// A build's storing turn stores the rollout and leaves its reading to
     /// the build's workers, as it does for every other found file
@@ -121,8 +120,6 @@ pub(crate) struct CapturedRollout {
 
 struct Captured {
     previous: Option<polylogue_store::read::ChainProgress>,
-    /// The capture waits in the spool for Sinex's confirmation.
-    pending: bool,
     original_added: u64,
     added: u64,
 }
@@ -142,17 +139,9 @@ impl CapturedRollout {
             }
         };
         for outcome in outcomes {
-            match outcome {
-                Ok(_) => {}
-                Err(polylogue_store::StoreError::PrimaryPending { .. }) => {
-                    if let Ok(Some(captured)) = &mut self.outcome {
-                        captured.pending = true;
-                    }
-                }
-                Err(error) => {
-                    self.outcome = Err(error.into());
-                    return;
-                }
+            if let Err(error) = outcome {
+                self.outcome = Err(error.into());
+                return;
             }
         }
     }
@@ -206,7 +195,6 @@ impl RolloutCapture {
             facts,
             context,
             original_context,
-            has_pending,
             mut observation,
             ..
         } = self;
@@ -218,7 +206,7 @@ impl RolloutCapture {
         if FileFacts::of(&source.metadata()?) != facts {
             return Ok(None);
         }
-        let observed = crate::source_read::file_snapshot(&source.metadata()?)?;
+        let observed = crate::read::file_snapshot(&source.metadata()?)?;
         // The compressed file itself, with the read context taken before it.
         let original = match original_context {
             Some(context) => Some((archive.prepare_bytes(&mut source)?, context)),
@@ -230,7 +218,7 @@ impl RolloutCapture {
             let reader = reads.reader()?;
             let previous = reader.input_progress(&id)?;
             let chain = match &previous {
-                Some(previous) if !has_pending => {
+                Some(previous) => {
                     Some(reader.stored_chain(&id, previous.chain, previous.length)?)
                 }
                 _ => None,
@@ -327,8 +315,8 @@ impl RolloutCapture {
                         route: found_origin.route.imported(),
                     },
                     observed.clone(),
-                    polylogue_store::primary::RawStreamRole::ProviderBytes,
-                    polylogue_store::primary::RawRange {
+                    polylogue_store::capture_read::RawStreamRole::ProviderBytes,
+                    polylogue_store::capture_read::RawRange {
                         start: 0,
                         end: original_length,
                     },
@@ -363,7 +351,7 @@ impl RolloutCapture {
             Change::First
         };
         let role = if compressed {
-            polylogue_store::primary::RawStreamRole::DecodedMember {
+            polylogue_store::capture_read::RawStreamRole::DecodedMember {
                 codec: "zstd".into(),
                 member_index: 0,
                 path_bytes: observation
@@ -374,7 +362,7 @@ impl RolloutCapture {
                     .clone(),
             }
         } else {
-            polylogue_store::primary::RawStreamRole::ProviderBytes
+            polylogue_store::capture_read::RawStreamRole::ProviderBytes
         };
         group.push(Engine::rollout_batch(
             change,
@@ -389,7 +377,7 @@ impl RolloutCapture {
                 },
                 observed.clone(),
                 role,
-                polylogue_store::primary::RawRange {
+                polylogue_store::capture_read::RawRange {
                     start: 0,
                     end: length,
                 },
@@ -399,7 +387,6 @@ impl RolloutCapture {
         Ok(Some((
             Captured {
                 previous,
-                pending: false,
                 original_added,
                 added,
             },
@@ -416,61 +403,29 @@ impl Engine {
         found: &collect::Found,
         facts: FileFacts,
         priority: pool::Priority,
-        pass: &mut Pass,
     ) -> Result<RolloutStep, EngineError> {
         let path = &found.path;
-        if self.archive.is_primary() {
-            self.refresh_confirmed_input(path)?;
-        }
         let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
         let compressed = is_compressed(found);
         let mut context = self.source_read_context(
             path,
             origin.name,
-            polylogue_store::primary::ReadRoute::NativeCapture,
+            polylogue_store::capture_read::ReadRoute::NativeCapture,
         );
-        // Only primary mode has a spooled capture and validates a base.
-        let snapshot = if self.archive.is_primary() {
-            Some(self.writer.source_snapshot(context.source.clone())?)
-        } else {
-            None
-        };
-        context.base = snapshot.as_ref().map(|snapshot| snapshot.base.clone());
         context.facts = Some(facts);
         let original_context = if compressed {
-            Some(self.sampling_context(path, found.origin.name)?)
+            Some(self.source_read_context(
+                path,
+                found.origin.name,
+                polylogue_store::capture_read::ReadRoute::NativeCapture,
+            ))
         } else {
             None
         };
-        let has_pending = snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.pending.head.is_some());
-        if let Some(spooled) = snapshot
-            .as_ref()
-            .and_then(|snapshot| snapshot.pending.raw.as_ref())
-            && let polylogue_store::primary::Capture::Input(input) = &spooled.captured
-            && input.rows.capture_read.as_ref().is_some_and(|source_read| {
-                source_read.route == polylogue_store::primary::ReadRoute::NativeCapture
-            })
-            && input
-                .raw_range
-                .is_some_and(|range| range.start == 0 && range.end == input.length)
-            && input.rows.observation.as_ref().is_some_and(|observation| {
-                observation.device == Some(facts.device as i64)
-                    && observation.inode == Some(facts.inode as i64)
-                    && observation.size == Some(facts.size as i64)
-                    && observation.mtime_ns == i64::try_from(facts.mtime_ns).ok()
-                    && observation.ctime_ns == i64::try_from(facts.ctime_ns).ok()
-            })
-        {
-            pass.capture_pending = true;
-            return Ok(RolloutStep::Planned(self.stored_plan(path)?.map(Box::new)));
-        }
         if self
             .inputs
             .get(path)
             .is_some_and(|s| s.facts == Some(facts))
-            && !has_pending
         {
             let id = self.inputs[path].input_id.clone();
             if let Some(progress) = self.reads.reader()?.input_progress(&id)? {
@@ -497,7 +452,6 @@ impl Engine {
             facts,
             context,
             original_context,
-            has_pending,
             observation: self.observation(path, Some(facts)),
             storing_only: false,
         })))
@@ -541,7 +495,7 @@ impl Engine {
                 path,
                 origin: found_origin,
             };
-            match self.rollout_step(&found, FileFacts::of(&meta), priority, pass)? {
+            match self.rollout_step(&found, FileFacts::of(&meta), priority)? {
                 RolloutStep::Planned(plan) => return Ok(plan.map(|plan| *plan)),
                 RolloutStep::Capture(mut capture) => {
                     capture.storing_only = storing_only;
@@ -552,10 +506,6 @@ impl Engine {
         };
         pass.bytes_read += facts.size;
         pass.bytes_stored += captured.original_added + captured.added;
-        if captured.pending {
-            pass.capture_pending = true;
-            return Ok(None);
-        }
         let progress = self.reads.reader()?.input_progress(&id)?.ok_or_else(|| {
             EngineError::internal("captured rollout input has no current revision")
         })?;
@@ -590,7 +540,7 @@ impl Engine {
         facts: FileFacts,
         pass: &mut Pass,
     ) -> Result<Option<Plan>, EngineError> {
-        match self.rollout_step(found, facts, pool::Priority::Bulk, pass)? {
+        match self.rollout_step(found, facts, pool::Priority::Bulk)? {
             RolloutStep::Planned(plan) => Ok(plan.map(|plan| *plan)),
             RolloutStep::Capture(capture) => {
                 let read_memory = self.config.reader_memory_per_connection()?;
@@ -610,15 +560,15 @@ impl Engine {
         change: Change,
         observation: Observation,
         bytes: Option<PreparedBytes>,
-        context: &crate::source_read::SourceReadContext,
-        generation: polylogue_store::primary::ObservedState,
+        context: &crate::capture_read::SourceReadContext,
+        generation: polylogue_store::capture_read::ObservedState,
     ) -> PreparedBatch {
         let input = generation.stream().input.clone();
         let length = generation.window().end;
         let body_only = matches!(change, Change::Unchanged | Change::Observed { .. });
         let source_read = bytes.as_ref().map(|bytes| {
             context.finish_observed(
-                polylogue_store::primary::RawRange {
+                polylogue_store::capture_read::RawRange {
                     start: length - bytes.len(),
                     end: length,
                 },
@@ -628,7 +578,6 @@ impl Engine {
         });
         PreparedBatch {
             batch: polylogue_store::Batch {
-                required_outcome: None,
                 input,
                 change,
                 observation: Some(observation),
@@ -646,7 +595,6 @@ impl Engine {
                     .collect(),
                 parse: Vec::new(),
                 capture_read: source_read,
-                base: context.base.clone(),
                 release: Default::default(),
             },
             files: bytes.into_iter().collect(),

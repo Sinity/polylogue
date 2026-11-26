@@ -2,8 +2,7 @@
 use super::*;
 use polylogue_model::query_objects::{QueryObject, QueryRun, QueryRunOutcome};
 
-/// Content and scope validation only; it states nothing about whether Sinex
-/// has the write.
+/// Content and scope validation of a saved query.s objects.
 pub(super) struct PreparedObjects {
     scope: crate::ReadScopeToken,
     queries: crate::selection::ProvisionalQueries,
@@ -143,46 +142,6 @@ impl Inner {
                 "query history has inconsistent execution identities".into(),
             ));
         }
-        if self.sinex.is_some() {
-            self.primary_cache_ready()?;
-            // Refuse a conflicting confirmed Begin or Outcome before adding
-            // another immutable write to the producer spool.
-            let run_known = crate::query_objects::known_run(&self.index, run)?;
-            let outcome_known = crate::query_objects::known_run_outcome(&self.index, outcome)?;
-            // Questions are shared by runs and remain directly addressable
-            // through their existing query:<hash> name.
-            self.write_query_object(object)?;
-            if run_known && outcome_known {
-                return Ok(());
-            }
-            self.sinex
-                .as_ref()
-                .expect("primary writer")
-                .prepare_named_products(
-                    &format!("query-run:{}", run.id),
-                    &[
-                        crate::primary::ProductWrite {
-                            product: crate::primary::Product::QueryRun {
-                                run: Box::new(run.clone()),
-                            },
-                            location: None,
-                            parents: Vec::new(),
-                            machine: Some(run.machine.clone()),
-                            output_index: 0,
-                        },
-                        crate::primary::ProductWrite {
-                            product: crate::primary::Product::QueryRunOutcome {
-                                outcome: Box::new(outcome.clone()),
-                            },
-                            location: None,
-                            parents: Vec::new(),
-                            machine: None,
-                            output_index: 1,
-                        },
-                    ],
-                )?;
-            return Ok(());
-        }
         crate::query_objects::validate_result_bindings(
             &self.archive,
             crate::source::Source::of(&self.archive)?,
@@ -207,69 +166,23 @@ impl Inner {
 
     pub(super) fn write_query_object(&mut self, object: &QueryObject) -> Result<()> {
         crate::query_objects::validate_object(object)?;
-        let conn = if self.sinex.is_some() {
-            self.primary_cache_ready()?;
-            &self.index
-        } else {
-            &self.archive
-        };
         crate::query_objects::validate_result_bindings(
-            conn,
-            crate::source::Source::of(conn)?,
+            &self.archive,
+            crate::source::Source::of(&self.archive)?,
             object,
         )?;
         self.persist_query_object(object, None)
     }
 
     /// Both callers have validated bodies and result schemas: the object path
-    /// against stored rows, or the sealed batch against its original plus
-    /// pending authored view.
+    /// against stored rows, or the sealed batch against its original and
+    /// authored view.
     fn persist_query_object(
         &mut self,
         object: &QueryObject,
         scope: Option<&crate::ReadScopeToken>,
     ) -> Result<()> {
         scoped::require_current(&self.location, scope)?;
-        if let Some(sinex) = &self.sinex {
-            self.primary_cache_ready()?;
-            scoped::require_current(&self.location, scope)?;
-            if crate::query_objects::known_object(&self.index, object)? {
-                return Ok(());
-            }
-            let mut queued = false;
-            sinex.visit_named_products(
-                &crate::primary::NamedProductSelector::Exact(format!("query:{}", object.id)),
-                &mut |product| {
-                    if let crate::primary::Product::Query { object: existing } = product
-                        && existing.id == object.id
-                    {
-                        if !crate::query_objects::equivalent(existing, object) {
-                            return Err(StoreError::Conflict(format!("query:{}", object.id)));
-                        }
-                        queued = true;
-                    }
-                    Ok(())
-                },
-            )?;
-            if queued {
-                return Ok(());
-            }
-            scoped::require_current(&self.location, scope)?;
-            sinex.prepare_named_products(
-                &format!("query:{}", object.id),
-                &[crate::primary::ProductWrite {
-                    product: crate::primary::Product::Query {
-                        object: Box::new(object.clone()),
-                    },
-                    location: None,
-                    parents: Vec::new(),
-                    machine: None,
-                    output_index: 0,
-                }],
-            )?;
-            scoped::require_current(&self.location, scope)?;
-            return Ok(());
-        }
         let tx = self.archive.transaction()?;
         let commit_seq = bump_counter(&tx)?;
         let before = tx.total_changes();
@@ -288,51 +201,6 @@ impl Inner {
 
     pub(super) fn write_query_run(&mut self, run: &QueryRun) -> Result<()> {
         crate::query_objects::validate_run(run)?;
-        if let Some(sinex) = &self.sinex {
-            match self.primary_cache_ready() {
-                Ok(()) => {
-                    if crate::query_objects::known_run(&self.index, run)? {
-                        return Ok(());
-                    }
-                }
-                Err(StoreError::ScopeChanged) => {}
-                Err(error) => return Err(error),
-            }
-
-            sinex.prepare_named_products(
-                &format!("query-run:{}", run.id),
-                &[crate::primary::ProductWrite {
-                    product: crate::primary::Product::QueryRun {
-                        run: Box::new(run.clone()),
-                    },
-                    location: None,
-                    parents: Vec::new(),
-                    machine: Some(run.machine.clone()),
-                    output_index: 0,
-                }],
-            )?;
-            let mut visible = false;
-            sinex.visit_named_products(
-                &crate::primary::NamedProductSelector::Exact(format!("query-run:{}", run.id)),
-                &mut |product| {
-                    if let crate::primary::Product::QueryRun { run: stored } = product
-                        && stored.id == run.id
-                    {
-                        if **stored != *run {
-                            return Err(StoreError::Conflict(format!("run:{}", run.id)));
-                        }
-                        visible = true;
-                    }
-                    Ok(())
-                },
-            )?;
-            if !visible {
-                return Err(StoreError::Sinex(
-                    "acknowledged query run is missing from the producer spool".into(),
-                ));
-            }
-            return Ok(());
-        }
         let tx = self.archive.transaction()?;
         let commit_seq = bump_counter(&tx)?;
         let before = tx.total_changes();
@@ -349,31 +217,6 @@ impl Inner {
     }
     pub(super) fn write_query_run_outcome(&mut self, outcome: &QueryRunOutcome) -> Result<()> {
         crate::query_objects::validate_run_outcome(outcome)?;
-        if let Some(sinex) = &self.sinex {
-            match self.primary_cache_ready() {
-                Ok(()) => {
-                    if crate::query_objects::known_run_outcome(&self.index, outcome)? {
-                        return Ok(());
-                    }
-                }
-                Err(StoreError::ScopeChanged) => {}
-                Err(error) => return Err(error),
-            }
-
-            sinex.prepare_named_products(
-                &format!("query-run-outcome:{}", outcome.run),
-                &[crate::primary::ProductWrite {
-                    product: crate::primary::Product::QueryRunOutcome {
-                        outcome: Box::new(outcome.clone()),
-                    },
-                    location: None,
-                    parents: Vec::new(),
-                    machine: None,
-                    output_index: 0,
-                }],
-            )?;
-            return Ok(());
-        }
         let tx = self.archive.transaction()?;
         let before = tx.total_changes();
         crate::query_objects::apply_run_outcome(&tx, outcome)?;

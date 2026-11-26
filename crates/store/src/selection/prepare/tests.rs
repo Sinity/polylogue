@@ -85,7 +85,6 @@ fn accepting_preparation_uses_original_rows() {
         &Bindings::default(),
         None,
         None,
-        None,
     )
     .unwrap();
     assert_eq!(by_hash.definitions()[0].question_id, unnamed.id);
@@ -98,29 +97,13 @@ fn accepting_preparation_uses_original_rows() {
     );
     let missing = format!("query:{}", "00".repeat(32));
     assert_eq!(
-        prepare_query_plan_on(
-            original,
-            &tx,
-            &missing,
-            &Bindings::default(),
-            None,
-            None,
-            None
-        )
-        .unwrap_err()
-        .code(),
+        prepare_query_plan_on(original, &tx, &missing, &Bindings::default(), None, None)
+            .unwrap_err()
+            .code(),
         polylogue_model::Code::NotYetAvailable
     );
-    let refused = prepare_query_plan_on(
-        original,
-        &tx,
-        &missing,
-        &Bindings::default(),
-        None,
-        None,
-        None,
-    )
-    .unwrap_err();
+    let refused = prepare_query_plan_on(original, &tx, &missing, &Bindings::default(), None, None)
+        .unwrap_err();
     let message = refused.to_string();
     let roundtrip = SelectionError::from(refused.into_store_error());
     assert_eq!(roundtrip.code(), polylogue_model::Code::NotYetAvailable);
@@ -139,15 +122,15 @@ fn accepting_preparation_uses_original_rows() {
         .add_saved("focus", &forged, "forged", "forged")
         .unwrap();
     let prepared =
-        prepare_query_plan_on(original, &tx, "query:focus", &supplied, None, None, None).unwrap();
-    let loaded = named_definitions(original, &tx, "query:focus", &[], None, None)
+        prepare_query_plan_on(original, &tx, "query:focus", &supplied, None, None).unwrap();
+    let loaded = named_definitions(original, &tx, "query:focus", &[], None)
         .unwrap()
         .saved;
     assert_eq!(loaded["focus"][0].hash, object.id);
     assert_eq!(loaded["focus"][0].denominator, Some(object.id));
     assert_eq!(prepared.definitions()[0].question_id, object.id);
     let plain =
-        prepare_query_plan_on(original, original, "sessions", &supplied, None, None, None).unwrap();
+        prepare_query_plan_on(original, original, "sessions", &supplied, None, None).unwrap();
     let mut options = super::super::tests::options();
     options.origins = supplied.origins;
     assert_eq!(
@@ -158,17 +141,9 @@ fn accepting_preparation_uses_original_rows() {
             .question_id()
     );
     assert_eq!(
-        prepare_query_plan_on(
-            original,
-            &tx,
-            "self",
-            &Bindings::default(),
-            None,
-            None,
-            None
-        )
-        .unwrap_err()
-        .code(),
+        prepare_query_plan_on(original, &tx, "self", &Bindings::default(), None, None)
+            .unwrap_err()
+            .code(),
         polylogue_model::Code::NotFound
     );
     let new_plan =
@@ -199,7 +174,6 @@ fn accepting_preparation_uses_original_rows() {
         &by_hash,
         &Bindings::default(),
         None,
-        None,
         Some(&provisional),
     )
     .unwrap();
@@ -208,17 +182,9 @@ fn accepting_preparation_uses_original_rows() {
         new_plan.question_id()
     );
     assert_eq!(
-        prepare_query_plan_on(
-            original,
-            &tx,
-            &by_hash,
-            &Bindings::default(),
-            None,
-            None,
-            None
-        )
-        .unwrap_err()
-        .code(),
+        prepare_query_plan_on(original, &tx, &by_hash, &Bindings::default(), None, None)
+            .unwrap_err()
+            .code(),
         polylogue_model::Code::NotYetAvailable
     );
     let prepared = prepare_query_plan_on(
@@ -226,7 +192,6 @@ fn accepting_preparation_uses_original_rows() {
         &tx,
         "query:new",
         &Bindings::default(),
-        None,
         None,
         Some(&provisional),
     )
@@ -237,29 +202,12 @@ fn accepting_preparation_uses_original_rows() {
     );
     assert_eq!(provisional.objects().count(), 1);
     assert_eq!(
-        prepare_query_plan_on(
-            original,
-            &tx,
-            "query:new",
-            &Bindings::default(),
-            None,
-            None,
-            None
-        )
-        .unwrap_err()
-        .code(),
+        prepare_query_plan_on(original, &tx, "query:new", &Bindings::default(), None, None)
+            .unwrap_err()
+            .code(),
         polylogue_model::Code::NotYetAvailable
     );
-    prepare_query_plan_on(
-        original,
-        &tx,
-        "sessions",
-        &Bindings::default(),
-        None,
-        None,
-        None,
-    )
-    .unwrap();
+    prepare_query_plan_on(original, &tx, "sessions", &Bindings::default(), None, None).unwrap();
 }
 
 #[test]
@@ -282,15 +230,7 @@ fn hash_prefix_resolves() {
     let original = reader.conn().unwrap();
     let full = object.id.to_string();
     let prepare = |text: &str| {
-        prepare_query_plan_on(
-            original,
-            original,
-            text,
-            &Bindings::default(),
-            None,
-            None,
-            None,
-        )
+        prepare_query_plan_on(original, original, text, &Bindings::default(), None, None)
     };
     let by_hash = prepare(&format!("query:{full}")).unwrap();
     for length in [8, 12, 20, 63] {
@@ -365,7 +305,7 @@ fn numeric_saved_revision_binds_the_original_recorded_question_and_body() {
         ("focus", "later", later.id),
     ] {
         let text = format!("query:{spelling}");
-        let loaded = named_definitions(conn, conn, &text, &[], None, None)
+        let loaded = named_definitions(conn, conn, &text, &[], None)
             .unwrap()
             .saved;
         let definition = &loaded[spelling][0];

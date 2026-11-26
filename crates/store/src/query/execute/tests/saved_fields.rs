@@ -817,7 +817,7 @@ fn recorded_unit_objects_execute_with_original_hash_and_body() {
         let pool = f.reads().unwrap();
         let reader = pool.reader().unwrap();
         let restored = reader
-            .query_object(&object.id.to_string(), None)
+            .query_object(&object.id.to_string())
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -1280,10 +1280,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
     );
     let pool = crate::ReadPool::open(&archive.archive).unwrap();
     assert_eq!(
-        pool.reader()
-            .unwrap()
-            .query_run(&expected.id, None)
-            .unwrap(),
+        pool.reader().unwrap().query_run(&expected.id).unwrap(),
         Some(expected.clone())
     );
     drop(pool);
@@ -1321,7 +1318,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
         ["claude-code:run-after"]
     );
     assert_eq!(
-        reader.query_run(&expected.id, None).unwrap(),
+        reader.query_run(&expected.id).unwrap(),
         Some(expected.clone()),
         "running the question again does not rewrite the original run"
     );
@@ -1367,10 +1364,7 @@ fn runs_lists_the_native_begin_completion_and_reopened_record() {
         .expect("an original-object read has no question");
     assert_eq!(no_question.code(), polylogue_model::Code::BadRequest);
     assert!(no_question.to_string().contains("has no query question"));
-    assert_eq!(
-        reader.query_run(&object_run.id, None).unwrap(),
-        Some(object_run)
-    );
+    assert_eq!(reader.query_run(&object_run.id).unwrap(), Some(object_run));
 }
 
 #[test]

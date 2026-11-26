@@ -451,7 +451,7 @@ fn resolved_saved_revisions_repeat_but_explicit_revisions_conflict() {
         .reader()
         .unwrap()
         .visit_authored(&mut |prepared| {
-            crate::primary::authored::restore(&tx, prepared, 1)?;
+            crate::authored_records::restore(&tx, prepared, 1)?;
             Ok(())
         })
         .unwrap();

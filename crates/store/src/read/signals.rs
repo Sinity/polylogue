@@ -18,7 +18,7 @@ impl Reader<'_> {
         let mut rows = query.query([])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
-            let pending = crate::primary::authored::pending_delivery(conn, &id)?;
+            let pending = crate::authored_records::pending_delivery(conn, &id)?;
             visit(pending)?;
         }
         Ok(())

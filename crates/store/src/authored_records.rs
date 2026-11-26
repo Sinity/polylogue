@@ -1,18 +1,17 @@
-//! Authored changes are fixed once. Writes that resolve earlier records use a private
-//! overlay; literal deliveries come directly from their committed body. Confirmed
-//! records apply recorded effects without selecting targets, families or claims again.
+//! Authored records: the stored requests with their outcomes and effects.
+//! Authored changes are fixed once. A saved query's preflight resolves earlier
+//! records in a private copy ([`with_overlay`]); literal deliveries come
+//! directly from their committed body; restored records apply recorded
+//! effects without selecting targets, families or claims again.
 mod records;
 pub(crate) use records::insert_kept;
-#[cfg(test)]
-mod tests;
 
 use crate::source::Source;
-use crate::{NewBlob, Result, StoreError};
 use crate::{OptionExt as _, ResultExt as _};
-use polylogue_model::authored::{AuthoredEffect, PendingAuthored, PreparedRequest};
+use crate::{Result, StoreError};
+use polylogue_model::authored::{AuthoredEffect, PreparedRequest};
 use polylogue_model::user::{UserOutcome, UserRequest, UserWrite};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
-use std::collections::HashMap;
 
 /// A retry is the same request when its accepting machine and authored intent
 /// match; a retry timestamp does not change the committed request. Stored requests
@@ -72,168 +71,10 @@ pub fn known_request(conn: &Connection, request: &UserRequest) -> Result<Option<
     }
 }
 
-/// The first accepted body, including requests awaiting confirmation. The
-/// request journal owns resolution as well as the immutable authored effect.
-pub fn pending_request(
-    sinex: &dyn crate::primary::Sinex,
-    request: &UserRequest,
-) -> Result<Option<UserRequest>> {
-    Ok(pending_prepared(sinex, request)?.map(|prepared| prepared.request))
-}
-
-pub(crate) fn pending_prepared(
-    sinex: &dyn crate::primary::Sinex,
-    request: &UserRequest,
-) -> Result<Option<PreparedRequest>> {
-    let mut original = None;
-    sinex.visit_pending_requests(&mut |pending| {
-        if let Some(prepared) = pending.prepared()
-            && prepared.request.id == request.id
-        {
-            if request_hash(&prepared.request)? != request_hash(request)?
-                || original.as_ref().is_some_and(|known| known != prepared)
-            {
-                return Err(StoreError::Conflict(request.id.clone()));
-            }
-            original = Some(prepared.clone());
-        }
-        Ok(())
-    })?;
-    Ok(original)
-}
-
-/// A pending receipt keeps its first accepted body and effect.
-pub(crate) fn pending_outcome(
-    sinex: &dyn crate::primary::Sinex,
-    request: &UserRequest,
-) -> Result<Option<UserOutcome>> {
-    Ok(
-        pending_prepared(sinex, request)?.map(|prepared| UserOutcome {
-            pending: true,
-            repeat: true,
-            ..prepared.outcome
-        }),
-    )
-}
-
-/// `visit_pending` includes requests Sinex acknowledged until the confirmed
-/// consumer has applied them. The spool checks blob metadata.
-pub fn prepare(
-    index: &Connection,
-    request: &UserRequest,
-    preparation: Option<&crate::user_writes::PreparationContext>,
-    pending: Option<&dyn crate::primary::Sinex>,
-    visit_pending: impl FnOnce(&mut dyn FnMut(&PendingAuthored) -> Result<()>) -> Result<()>,
-    visit_blobs: impl FnOnce(&mut dyn FnMut(&NewBlob) -> Result<()>) -> Result<()>,
-) -> Result<PreparedRequest> {
-    let _snapshot = if index.is_autocommit() {
-        Some(Transaction::new_unchecked(
-            index,
-            TransactionBehavior::Deferred,
-        )?)
-    } else {
-        None
-    };
-    if let Some(known) = known_request(index, request)? {
-        return Ok(known);
-    }
-    if let Some(prepared) = crate::user_writes::prepare_delivery(request) {
-        let mut known = None;
-        let mut delivery_exists = false;
-        visit_pending(&mut |pending| {
-            let Some(original) = pending.prepared() else {
-                return Ok(());
-            };
-            if original.request.id != request.id {
-                delivery_exists |= original
-                    .effect
-                    .deliveries
-                    .iter()
-                    .any(|change| change.delivery.id == request.id);
-                return Ok(());
-            }
-            match pending {
-                PendingAuthored::Live { .. } => validate_live(original)?,
-                PendingAuthored::Restore { .. } => validate(original)?,
-                PendingAuthored::RestoreAnnotation { .. } => unreachable!(),
-            }
-            if request_hash(&original.request)? != request_hash(request)?
-                || known.as_ref().is_some_and(|known| known != original)
-            {
-                return Err(StoreError::Conflict(request.id.clone()));
-            }
-            known = Some(original.clone());
-            Ok(())
-        })?;
-        if let Some(known) = known {
-            return Ok(known);
-        }
-        if delivery_exists {
-            return Err(StoreError::Conflict(request.id.clone()));
-        }
-        require_new_delivery(index, &request.id)?;
-        validate_live(&prepared)?;
-        return Ok(prepared);
-    }
-    let mut pending_blobs = HashMap::new();
-    visit_blobs(&mut |blob| {
-        if pending_blobs
-            .insert(blob.hash, blob.size)
-            .is_some_and(|size| size != blob.size)
-        {
-            return Err(StoreError::internal(
-                "a pending blob has conflicting lengths",
-            ));
-        }
-        Ok(())
-    })?;
-    with_overlay(index, visit_pending, |tx| {
-        if let Some(known) = known_request(tx, request)? {
-            return Ok(known);
-        }
-        let source = Source::of(index)?;
-        let available = |attachment: &polylogue_model::user::ChatAttachment| -> Result<bool> {
-            if let Some(size) = pending_blobs.get(&attachment.blob) {
-                return Ok(*size == attachment.size);
-            }
-            Ok(index
-                .prepare_cached(
-                    &source.sql("SELECT 1 FROM @source.blob WHERE hash=?1 AND size=?2"),
-                )?
-                .exists(params![
-                    &attachment.blob.0[..],
-                    crate::to_i64(attachment.size, "attachment size is out of range")?
-                ])?)
-        };
-        let receipt = crate::user_writes::apply_using(
-            tx,
-            index,
-            request,
-            1,
-            &available,
-            crate::user_writes::Preparation::plain(preparation, pending),
-        )?;
-        match known_request(tx, request)? {
-            Some(prepared) => Ok(prepared),
-            None if matches!(request.write, UserWrite::MarkSeen { .. })
-                && receipt.outcome.repeat =>
-            {
-                Ok(PreparedRequest {
-                    request: request.clone(),
-                    outcome: receipt.outcome,
-                    effect: AuthoredEffect::default(),
-                })
-            }
-            None => Err(StoreError::internal("prepared request was not recorded")),
-        }
-    })
-}
-
-/// One original snapshot plus this host's pending effects. The callback cannot
-/// hold a SQLite borrow across a later spool acknowledgment.
+/// A private copy of the original snapshot's authored records, in which a
+/// preflight resolves its request without writing the archive.
 pub(crate) fn with_overlay<T>(
     index: &Connection,
-    visit_pending: impl FnOnce(&mut dyn FnMut(&PendingAuthored) -> Result<()>) -> Result<()>,
     visit: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
     let _snapshot = if index.is_autocommit() {
@@ -255,18 +96,6 @@ pub(crate) fn with_overlay<T>(
     scratch.execute_batch(&crate::source::schema()?.ddl)?;
     let tx = scratch.transaction()?;
     records::copy(index, &tx)?;
-    visit_pending(&mut |pending| {
-        match pending {
-            PendingAuthored::Live { prepared } => apply(&tx, prepared, 0)?,
-            PendingAuthored::Restore { prepared } => {
-                restore(&tx, prepared, 0)?;
-            }
-            PendingAuthored::RestoreAnnotation { fact } => {
-                crate::annotations::apply(&tx, std::slice::from_ref(fact), 0)?;
-            }
-        }
-        Ok(())
-    })?;
     visit(&tx)
 }
 
@@ -460,8 +289,7 @@ fn validate_live(prepared: &PreparedRequest) -> Result<()> {
     Ok(())
 }
 
-// A new literal delivery used to meet the delivery primary key in the
-// preparation transaction. Keep that check before the request enters the spool.
+/// A literal delivery's ID is new: it is checked before the request applies.
 pub(crate) fn require_new_delivery(conn: &Connection, id: &str) -> Result<()> {
     let source = Source::reading(conn)?;
     if conn
@@ -474,7 +302,7 @@ pub(crate) fn require_new_delivery(conn: &Connection, id: &str) -> Result<()> {
 }
 
 /// Apply recorded effects only. No request selection or domain precondition is
-/// rerun after Sinex confirms the prepared body.
+/// run again for a prepared body.
 pub fn apply(tx: &Transaction<'_>, prepared: &PreparedRequest, counter: i64) -> Result<()> {
     if let Some(known) = known_request(tx, &prepared.request)? {
         return if known == *prepared {
@@ -538,33 +366,6 @@ pub(crate) fn capture(
     records::capture(conn, request, counter)
 }
 
-/// Authored lifecycle rebuilds use only the confirmed live authored records.
-pub fn clear(conn: &Connection) -> Result<()> {
-    let source = Source::of(conn)?;
-    for table in [
-        "revision_state",
-        "annotation_slot",
-        "annotation_link",
-        "annotation",
-        "alternate_part",
-        "alternate",
-        "signal_event",
-        "signal_state",
-        "delivery_event",
-        "chat_action_attachment",
-        "chat_action_event",
-        "import_job_event",
-        "kept_result",
-        "delivery",
-        "chat_action",
-        "import_job",
-        "client_request",
-    ] {
-        conn.execute(&source.sql(&format!("DELETE FROM @source.{table}")), [])?;
-    }
-    Ok(())
-}
-
 /// Streams stored requests in write order.
 pub fn visit(
     conn: &Connection,
@@ -593,7 +394,7 @@ impl crate::Reader<'_> {
     }
 }
 
-/// Uses the logical source views of a Reader in either storage mode.
+/// Uses the logical source views of a Reader.
 pub(crate) fn pending_delivery(
     conn: &Connection,
     id: &str,

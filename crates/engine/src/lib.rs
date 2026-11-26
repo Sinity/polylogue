@@ -38,12 +38,12 @@ use std::time::{Duration, Instant};
 
 mod build;
 mod build_log;
+mod capture_read;
 mod chain_names;
 mod collectors;
 mod databases;
 mod failure_log;
 mod import;
-mod source_read;
 pub use import::python_polylogue::{ClassCount, PythonImportReport, RefusedRow};
 mod parser_checkpoint;
 mod pass;
@@ -361,7 +361,7 @@ pub struct Pass {
     pub unreadable_roots: Vec<PathBuf>,
     /// What failed in the pass, each with what it happened to and its cause.
     pub errors: Vec<polylogue_model::Failure>,
-    /// Capture work is queued or waiting for primary-mode confirmation.
+    /// Capture work is still queued.
     pub capture_pending: bool,
 }
 
@@ -510,8 +510,6 @@ pub enum ImportFailure {
 pub enum LoopMsg {
     /// Something changed under a watched location.
     Changed,
-    /// Selected index commits are waiting in the coalesced subscription.
-    Committed,
     Import {
         paths: Vec<PathBuf>,
         /// The declared structure the paths are read as, or
@@ -534,8 +532,6 @@ struct Requests {
     pending: Option<LoopMsg>,
     yielding: Arc<std::sync::atomic::AtomicBool>,
     serving: bool,
-    commits: Option<polylogue_store::completion::CommitSubscription>,
-    commit_wake: bool,
 }
 
 pub struct Engine {
@@ -613,21 +609,6 @@ impl Engine {
         Self::with_writer(config, archive, writer, stopped_attempt)
     }
 
-    /// Starts the writer on an archive Sinex holds (primary mode), opened
-    /// with [`Archive::open_primary`].
-    pub fn on_sinex(
-        config: Config,
-        archive: Archive,
-        sinex: Arc<dyn polylogue_store::primary::Sinex>,
-        stopped_attempt: StoppedAttempt,
-    ) -> Result<Self, EngineError> {
-        let budget = config.memory_budget;
-        let config = config.with_memory_budget(budget);
-        let archive = archive.with_memory_budget(config.memory_budget);
-        let writer = Writer::start_on_sinex(&archive, sinex)?;
-        Self::with_writer(config, archive, writer, stopped_attempt)
-    }
-
     fn with_writer(
         config: Config,
         archive: Archive,
@@ -672,7 +653,7 @@ impl Engine {
         })
     }
 
-    /// Derives changed sessions. In primary mode, events are emitted with their source reading.
+    /// Derives changed sessions.
     fn derive(&self) -> Result<u64, EngineError> {
         match self.writer.derive() {
             Err(polylogue_store::StoreError::WriterGone) if self.archive.stop().is_cancelled() => {

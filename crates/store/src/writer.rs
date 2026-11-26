@@ -40,20 +40,12 @@ mod bytes;
 mod chain;
 mod compose;
 mod derive_thread;
-mod follow;
-mod primary;
-mod primary_capture;
 mod query_objects;
-mod retractions;
 pub use query_objects::HistorySlot;
-mod saved;
-mod scoped;
-mod source_snapshot;
-pub(crate) use readings::Touched;
-pub(crate) use retractions::{apply_source_retractions, check_source_retractions};
-pub(crate) use rows::finish_upkeep;
 mod hook_fields;
 pub(crate) mod identity;
+mod saved;
+mod scoped;
 pub(crate) use readings::{read_message, shown_message};
 pub(crate) mod readings;
 mod rows;
@@ -114,38 +106,6 @@ enum Msg {
     /// Record one older chain's reading from a newer chain of the same
     /// input holding the same bytes.
     CopyReading(crate::ReadingCopy, SyncSender<Result<Result<bool>>>),
-    StageConfirmed(
-        Vec<crate::primary::Confirmed>,
-        SyncSender<Result<crate::primary::confirmed::Step>>,
-    ),
-    ApplyConfirmed(
-        Box<crate::primary::confirmed::Preparation>,
-        crate::completion::Committed,
-        SyncSender<Result<crate::primary::confirmed::Step>>,
-    ),
-    DrainPrimaryCaptures(SyncSender<Result<()>>),
-    DenyPrimaryReads(SyncSender<Result<()>>),
-    /// The stream follower handled a page, or failed to read one.
-    StreamFollowed(Option<String>),
-    CaptureBody(
-        String,
-        SyncSender<Result<Vec<crate::primary::PreparedBody>>>,
-    ),
-    Capture(String, SyncSender<Result<crate::primary::Capture>>),
-    ByteCursor(
-        Box<crate::primary::ByteCursorQuery>,
-        SyncSender<Result<Option<crate::primary::ByteCursor>>>,
-    ),
-    PendingGroupHeaders(
-        String,
-        Option<u64>,
-        usize,
-        SyncSender<Result<crate::primary::PendingGroupPage>>,
-    ),
-    SourceSnapshot(
-        crate::primary::SourceSelector,
-        SyncSender<Result<crate::primary::SourceSnapshot>>,
-    ),
     RestoreAuthored(
         Box<authored::Restoration>,
         SyncSender<Result<polylogue_model::user::UserOutcome>>,
@@ -159,8 +119,6 @@ enum Msg {
     Wake,
     Batch(Box<Batch>),
     Flush(SyncSender<Result<WriteReport>>, bool),
-    /// Sent once a requested derive pass on the replacement has released its read.
-    FinishPrimaryRebuild(SyncSender<Result<()>>),
     /// Run the derive step over sessions whose derived rows are stale;
     /// answered with the number of sessions derived.
     Derive(SyncSender<Result<u64>>),
@@ -189,8 +147,6 @@ pub struct Writer {
     /// affected.
     stop: crate::cancellation::Cancellation,
     handle: Option<JoinHandle<()>>,
-    /// In primary mode, the thread that reads the confirmed stream.
-    follower: Option<follow::Follower>,
 }
 
 /// Orders new work against shutdown. Once the stop message is queued,
@@ -211,8 +167,6 @@ struct WriterQueue {
     users: Arc<user_queue::UserQueue>,
     location: Archive,
     commits: crate::completion::CommitEvents,
-    sinex: Option<Arc<dyn crate::primary::Sinex>>,
-    stop: crate::cancellation::Cancellation,
     #[cfg(any(test, feature = "fixture"))]
     dispatch: dispatch::DispatchPauses,
 }
@@ -270,8 +224,6 @@ impl WriterQueue {
         users: Arc<user_queue::UserQueue>,
         location: Archive,
         commits: crate::completion::CommitEvents,
-        sinex: Option<Arc<dyn crate::primary::Sinex>>,
-        stop: crate::cancellation::Cancellation,
         #[cfg(any(test, feature = "fixture"))] dispatch: dispatch::DispatchPauses,
     ) -> Self {
         Self {
@@ -280,8 +232,6 @@ impl WriterQueue {
             users,
             location,
             commits,
-            sinex,
-            stop,
             #[cfg(any(test, feature = "fixture"))]
             dispatch,
         }
@@ -376,7 +326,7 @@ const BYTES_PER_TRANSACTION: u64 = 128 << 20;
 pub(crate) const WRITER_THREAD: &str = "polylogue-writer";
 
 /// The writer's index connection: the private build file while a build runs,
-/// otherwise `index.db`, with a standalone archive's register attached.
+/// otherwise `index.db`, with the archive's register attached.
 fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
     let index = if building {
         crate::archive::index_build::open_writer(archive)?
@@ -386,15 +336,9 @@ fn open_index_writer(archive: &Archive, building: bool) -> Result<Connection> {
             archive.memory_budget().writer_cache_mib(),
         )?
     };
-    if archive.is_primary() {
-        // Changing temporary storage drops TEMP objects, so set it before triggers.
-        index.pragma_update(None, "temp_store", "file")?;
-        index.pragma_update(Some("temp"), "cache_size", -8192)?;
-    } else {
-        let uri = format!("file:{}?mode=ro", archive.archive_db().display());
-        index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
-        crate::source::views(&index)?;
-    }
+    let uri = format!("file:{}?mode=ro", archive.archive_db().display());
+    index.execute("ATTACH DATABASE ?1 AS a", [uri])?;
+    crate::source::views(&index)?;
     Ok(index)
 }
 
@@ -404,52 +348,15 @@ impl Writer {
     /// indexes; a stop keeps its committed rows and positions for the next
     /// start, and a crash discards it ([`crate::archive::index_build`]).
     pub fn start(archive: &Archive) -> Result<Self> {
-        Self::start_with(archive, None)
-    }
-
-    /// Starts the writer on an archive Sinex holds: every register row is
-    /// sent to `sinex` first and commits only once Sinex acknowledged it.
-    pub fn start_on_sinex(
-        archive: &Archive,
-        sinex: std::sync::Arc<dyn crate::primary::Sinex>,
-    ) -> Result<Self> {
-        Self::start_with(archive, Some(sinex))
-    }
-
-    fn start_with(
-        archive: &Archive,
-        sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
-    ) -> Result<Self> {
-        if archive.is_primary() != sinex.is_some() {
-            return Err(StoreError::Invalid(
-                "the writer mode must match its archive".into(),
-            ));
-        }
-        // A standalone build writes its private file ([`crate::archive::index_build`]).
-        let building = !archive.is_primary() && archive.index_build.building();
+        // A build writes its private file ([`crate::archive::index_build`]).
+        let building = archive.index_build.building();
         let index = open_index_writer(archive, building)?;
-        // Primary search and derivation use the same physical file as the
-        // follower, even while another generation serves readers.
-        let installed = if archive.is_primary() {
-            archive.index_db()
-        } else {
-            archive.root.join("index.db")
-        };
-        let archive_conn = if archive.is_primary() {
-            crate::archive::open_read(&archive.index_db())?
-        } else {
-            let conn = crate::archive::open_archive_writer(archive)?;
-            crate::write_lock::sync_register(archive)?;
-            crate::chain_progress::record_source_changes(&conn)?;
-            conn
-        };
-        crate::chain_progress::open(&index, !archive.is_primary())?;
-        let segment = if sinex.is_none() {
-            Some(crate::blobs::open_writer(&archive_conn, &archive.root)?)
-        } else {
-            None
-        };
-        let stream_source = sinex.clone();
+        let installed = archive.root.join("index.db");
+        let archive_conn = crate::archive::open_archive_writer(archive)?;
+        crate::write_lock::sync_register(archive)?;
+        crate::chain_progress::record_source_changes(&archive_conn)?;
+        crate::chain_progress::open(&index)?;
+        let segment = crate::blobs::open_writer(&archive_conn, &archive.root)?;
         let commits = crate::completion::CommitEvents::default();
         #[cfg(any(test, feature = "fixture"))]
         let dispatch = dispatch::DispatchPauses::default();
@@ -461,8 +368,6 @@ impl Writer {
             Arc::clone(&users),
             archive.clone(),
             commits.clone(),
-            sinex.clone(),
-            stop.clone(),
             #[cfg(any(test, feature = "fixture"))]
             dispatch.clone(),
         );
@@ -471,7 +376,7 @@ impl Writer {
             dispatch: dispatch.clone(),
             stop: stop.clone(),
             commits: commits.clone(),
-            segment,
+            segment: Some(segment),
             archive: archive_conn,
             index,
             report: WriteReport::default(),
@@ -486,39 +391,19 @@ impl Writer {
             derive: derive_thread::DeriveThread::start(
                 installed,
                 queue.clone(),
-                (archive.is_primary() && archive.index_build.building())
-                    .then(|| archive.index_build.clone()),
                 stop.child(),
                 archive.memory_budget().search_cache_mib(),
             )?,
             location: archive.clone(),
-            sinex,
-            stream_error: None,
             build_job: None,
         };
 
         let handle = polylogue_model::spawn_named(WRITER_THREAD, move || inner.run(&rx))?;
-        let follower = stream_source
-            .map(|sinex| follow::Follower::start(sinex, WriterSender(queue.clone()), archive))
-            .transpose()?;
         Ok(Self {
             sender: WriterSender(queue),
             stop,
             handle: Some(handle),
-            follower,
         })
-    }
-
-    pub fn synchronize_primary(&self) -> Result<i64> {
-        let follower = self
-            .follower
-            .as_ref()
-            .or_invalid("this writer is standalone")?;
-        follower.synchronize()?;
-        // Acknowledged material can now produce input/reading events. Wait
-        // outside the writer thread while the follower reads the next page.
-        self.sender.0.ask(Msg::DrainPrimaryCaptures)?;
-        follower.synchronize()
     }
 
     /// A cheap handle the parse pool's threads send through.
@@ -549,9 +434,6 @@ impl Writer {
             (self.handle.is_some() && self.stop.is_cancelled()).then(std::time::Instant::now);
         if started.is_some() {
             crate::log!(info, "shutdown writer drain started");
-        }
-        if let Some(mut follower) = self.follower.take() {
-            follower.stop();
         }
         self.sender.0.stop();
         if let Some(h) = self.handle.take() {
@@ -610,38 +492,7 @@ impl WriterSender {
         mut group: Vec<crate::staging::PreparedBatch>,
         store: std::sync::Arc<crate::blobs::Blobs>,
     ) -> Result<Receiver<Vec<Result<crate::staging::StoredInput>>>> {
-        if self.0.sinex.is_some() {
-            for item in &mut group {
-                if matches!(item.batch.change, Change::Reparse { .. })
-                    && !item.batch.parse.is_empty()
-                {
-                    primary_capture::validate(item, &self.0.location)?;
-                    let index = crate::archive::open_read(&self.0.location.index_db())?;
-                    primary::validate_primary_reading(&index, &item.batch)?;
-                    drop(index);
-                    let mut bodies = Vec::new();
-                    for file in &item.files {
-                        bodies.push((file.hash(), file.len()));
-                        match self
-                            .store_blob(NewBlob::whole(file.hash(), file.len()), Some(file.clone()))
-                        {
-                            Ok(_) | Err(StoreError::PrimaryPending { .. }) => {}
-                            Err(error) => return Err(error),
-                        }
-                    }
-                    self.wait_primary_blobs(&bodies)?;
-                    self.spool_primary_batch(&mut item.batch)?;
-                    item.files.clear();
-                    item.batch.blobs.clear();
-                }
-            }
-        }
-        let primary = self.0.location.is_primary();
-        let mut batches: Vec<_> = group
-            .iter_mut()
-            .filter(|item| !primary || matches!(item.batch.change, Change::Reparse { .. }))
-            .map(|item| &mut item.batch)
-            .collect();
+        let mut batches: Vec<_> = group.iter_mut().map(|item| &mut item.batch).collect();
         prepare_batches(&self.0.location, &mut batches)?;
         let (reply, wait) = sync_channel(1);
         self.0
@@ -651,12 +502,7 @@ impl WriterSender {
     }
 
     pub fn send(&self, mut batch: Batch) -> Result<()> {
-        if self.0.sinex.is_some() && matches!(batch.change, Change::Reparse { .. }) {
-            self.spool_primary_batch(&mut batch)?;
-        }
-        if !self.0.location.is_primary() || matches!(batch.change, Change::Reparse { .. }) {
-            prepare_batches(&self.0.location, &mut [&mut batch])?;
-        }
+        prepare_batches(&self.0.location, &mut [&mut batch])?;
         self.0
             .send(Msg::Batch(Box::new(batch)))
             .map_err(|_| StoreError::WriterGone)
@@ -709,9 +555,6 @@ impl WriterSender {
         mut reading: ChainParse,
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
-        if self.0.sinex.is_some() {
-            self.spool_primary_reading(&input, chain, length, &mut reading)?;
-        }
         reading.check(&input.id, chain)?;
         let (reply, wait) = sync_channel(1);
         if self
@@ -786,8 +629,8 @@ impl WriterSender {
             .ask(|reply| Msg::StoreBlob(Box::new((new_blob, file)), reply))
     }
 
-    /// Accepts one completed discovery walk. Primary visibility follows its
-    /// confirmed product; standalone visibility follows the index transaction.
+    /// Accepts one completed discovery walk; it is visible once its index
+    /// transaction commits.
     pub fn coverage(&self, coverage: polylogue_model::capture::Coverage) -> Result<()> {
         self.0.ask(|reply| Msg::Coverage(Box::new(coverage), reply))
     }
@@ -795,7 +638,7 @@ impl WriterSender {
     /// Records one older chain's complete reading from its newer chain of
     /// the same bytes. A successful copy commits all its rows and source commits
     /// before answering. The inner answer is `false` when copying would not
-    /// equal parsing (always in primary mode), or an error from the copy;
+    /// equal parsing, or an error from the copy;
     /// both leave the chain unchanged and let the caller parse it instead.
     /// Transaction, transport and stop failures are outer errors. A stop
     /// interrupts only this reconstructible copy as `Stopped`;
@@ -863,10 +706,6 @@ struct Inner {
     /// Runs derive passes, sending their values here to be applied.
     derive: derive_thread::DeriveThread,
     location: Archive,
-    /// In primary mode, where every register row goes before it commits.
-    sinex: Option<std::sync::Arc<dyn crate::primary::Sinex>>,
-    /// The last stream error recorded, so a lasting outage is recorded once.
-    stream_error: Option<String>,
     /// A build being loaded, composed and installed, advanced one step at a
     /// time between the messages the writer serves ([`build::BuildJob`]).
     build_job: Option<build::BuildJob>,
@@ -879,10 +718,10 @@ impl Drop for Inner {
 }
 
 impl Inner {
-    /// A standalone build is in progress: the build file holds no rows
-    /// until the batch build loads them ([`build`]).
+    /// A build is in progress: the build file holds no rows until the batch
+    /// build loads them ([`build`]).
     fn building(&self) -> bool {
-        self.sinex.is_none() && self.location.index_build.building()
+        self.location.index_build.building()
     }
 
     /// Writes every waiting user request, each answered once committed.
@@ -959,45 +798,9 @@ impl Inner {
         }
     }
 
-    /// The follower's page was handled: record a failed read once per
-    /// distinct error (Sinex's health also shows it in status); after a
-    /// successful one, prepare the events of captures Sinex confirmed and derive.
-    fn stream_followed(&mut self, error: Option<String>) {
-        let result = match error {
-            Some(error) => Err(polylogue_model::Failure {
-                subject: String::new(),
-                cause: polylogue_model::Cause::Transient,
-                code: polylogue_model::Code::SinexUnavailable,
-                message: error,
-            }),
-            None => crate::archive::index_build::primary::observe(&self.location, &self.index)
-                .and_then(|()| self.complete_ready_captures())
-                .map(|()| {
-                    self.request_derive(derive_thread::Waiting::Nobody);
-                })
-                .map_err(|error| polylogue_model::Failure::of(&error)),
-        };
-        match result {
-            Ok(()) => self.stream_error = None,
-            Err(mut failure) => {
-                let position = crate::primary::confirmed::checkpoint(&self.index)
-                    .map(|position| position.unwrap_or(0).to_string())
-                    .unwrap_or_else(|error| format!("unavailable ({error})"));
-                failure.subject = "confirmed stream".to_owned();
-                failure.message = format!("after position {position}: {}", failure.message);
-                let error = failure.to_string();
-                if self.stream_error.as_ref() != Some(&error) {
-                    self.report.errors.push(failure);
-                    self.stream_error = Some(error);
-                }
-            }
-        }
-    }
-
     fn run(&mut self, rx: &Receiver<Msg>) {
         let _worker = crate::timing::worker();
         let mut flushes = Vec::new();
-        let mut primary_finish = None;
         let mut derives = Vec::new();
         let mut background_derives = Vec::new();
         let mut derive_writes = Vec::new();
@@ -1008,16 +811,6 @@ impl Inner {
         let mut coverage = Vec::new();
         let mut live_clock = Vec::new();
         let mut copies = Vec::new();
-        let mut confirmations = Vec::new();
-        let mut read_denials = Vec::new();
-        let mut prepared_confirmations = Vec::new();
-        let mut capture_drains = Vec::new();
-        let mut followed = Vec::new();
-        let mut snapshots = Vec::new();
-        let mut pending_bodies = Vec::new();
-        let mut private_captures = Vec::new();
-        let mut byte_cursors = Vec::new();
-        let mut group_pages = Vec::new();
         let mut restorations = Vec::new();
         let mut annotation_restorations = Vec::new();
         let mut replacements = Vec::new();
@@ -1093,52 +886,12 @@ impl Inner {
                         builds.push((runs, composers, announce, reply));
                         false
                     }
-                    Msg::DenyPrimaryReads(reply) => {
-                        read_denials.push(reply);
-                        false
-                    }
-                    Msg::StageConfirmed(events, reply) => {
-                        confirmations.push((events, reply));
-                        false
-                    }
-                    Msg::ApplyConfirmed(prepared, kinds, reply) => {
-                        prepared_confirmations.push((prepared, kinds, reply));
-                        false
-                    }
                     Msg::RestoreAuthored(restoration, reply) => {
                         restorations.push((restoration, reply));
                         false
                     }
                     Msg::RestoreAnnotation(restoration, reply) => {
                         annotation_restorations.push((restoration, reply));
-                        false
-                    }
-                    Msg::ByteCursor(query, reply) => {
-                        byte_cursors.push((query, reply));
-                        false
-                    }
-                    Msg::PendingGroupHeaders(group, after, limit, reply) => {
-                        group_pages.push((group, after, limit, reply));
-                        false
-                    }
-                    Msg::Capture(identity, reply) => {
-                        private_captures.push((identity, reply));
-                        false
-                    }
-                    Msg::CaptureBody(identity, reply) => {
-                        pending_bodies.push((identity, reply));
-                        false
-                    }
-                    Msg::SourceSnapshot(source, reply) => {
-                        snapshots.push((source, reply));
-                        false
-                    }
-                    Msg::DrainPrimaryCaptures(reply) => {
-                        capture_drains.push(reply);
-                        false
-                    }
-                    Msg::StreamFollowed(error) => {
-                        followed.push(error);
                         false
                     }
                     Msg::Stop => {
@@ -1152,10 +905,6 @@ impl Inner {
                         *bytes += input_bytes(&b);
                         group.push(b);
                         true
-                    }
-                    Msg::FinishPrimaryRebuild(reply) => {
-                        primary_finish = Some(reply);
-                        false
                     }
                     Msg::Flush(reply, derive) => {
                         flushes.push((reply, derive));
@@ -1190,28 +939,6 @@ impl Inner {
                         Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
                     }
                 }
-            }
-            for reply in read_denials.drain(..) {
-                let old = crate::archive::index_build::primary::withdraw(
-                    &self.location,
-                    None,
-                    None,
-                    true,
-                );
-                let denied = crate::primary::scope::deny(&mut self.index, &self.location);
-                let _ = reply.send(old.and(denied));
-            }
-            for (events, reply) in confirmations.drain(..) {
-                let _ = reply.send(self.stage_confirmed(&events));
-            }
-            for (prepared, kinds, reply) in prepared_confirmations.drain(..) {
-                let _ = reply.send(self.apply_confirmed(*prepared, kinds));
-            }
-            for reply in capture_drains.drain(..) {
-                let _ = reply.send(self.drain_primary_captures());
-            }
-            for error in followed.drain(..) {
-                self.stream_followed(error);
             }
             if !group.is_empty() {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(&group));
@@ -1298,74 +1025,10 @@ impl Inner {
             for (copy, reply) in copies.drain(..) {
                 let _ = reply.send(self.write_copy_reading(&copy));
             }
-            for (query, reply) in byte_cursors.drain(..) {
-                let result = query.validate().and_then(|()| {
-                    self.sinex
-                        .as_ref()
-                        .map_or(Ok(None), |sinex| sinex.byte_cursor(&query))
-                });
-                let _ = reply.send(result);
-            }
-            for (group, after, limit, reply) in group_pages.drain(..) {
-                let result = if group.is_empty() || limit == 0 {
-                    Err(StoreError::Invalid(
-                        "group identity and positive page limit are required".into(),
-                    ))
-                } else {
-                    self.sinex.as_ref().map_or_else(
-                        || Ok(crate::primary::PendingGroupPage::default()),
-                        |sinex| sinex.pending_group_headers(&group, after, limit),
-                    )
-                };
-                let _ = reply.send(result);
-            }
-            for (identity, reply) in private_captures.drain(..) {
-                let result = self
-                    .sinex
-                    .as_ref()
-                    .ok_or_else(|| {
-                        StoreError::Invalid(
-                            "private source captures require a primary producer".into(),
-                        )
-                    })
-                    .and_then(|sinex| sinex.capture(&identity));
-                let _ = reply.send(result);
-            }
-            for (identity, reply) in pending_bodies.drain(..) {
-                let result = self
-                    .sinex
-                    .as_ref()
-                    .ok_or_else(|| {
-                        StoreError::Invalid(
-                            "pending source bodies require a primary producer".into(),
-                        )
-                    })
-                    .and_then(|sinex| sinex.capture_body(&identity));
-                let _ = reply.send(result);
-            }
-            for (source, reply) in snapshots.drain(..) {
-                let _ = reply.send(self.source_snapshot(source));
-            }
             if let Err(error) = self.refresh_chain_progress() {
                 self.report
                     .errors
                     .push(polylogue_model::Failure::new("chain progress", &error));
-            }
-            if let Some(reply) = primary_finish.take() {
-                let _ = reply.send(self.finish_primary_rebuild());
-            }
-            // A full flush checks the replacement after its derivations have committed.
-            // A row-only flush can publish if earlier passes already finished.
-            if self.location.is_primary()
-                && flushes
-                    .iter()
-                    .any(|(_, derive)| !derive || !self.location.index_build.building())
-                && let Err(error) = self.finish_primary_rebuild()
-            {
-                self.report.errors.push(polylogue_model::Failure::new(
-                    "primary cache rebuild",
-                    &error,
-                ));
             }
             for (reply, derive) in flushes.drain(..) {
                 let report = std::mem::take(&mut self.report);
@@ -1391,25 +1054,19 @@ impl Inner {
         }
         self.derive.stop();
         self.search.stop();
-        let closed = self.refresh_chain_progress().and_then(|()| {
-            if self.sinex.is_none() {
-                crate::chain_progress::mark_current(&self.index)?;
-            }
-            Ok(())
-        });
+        let closed = self
+            .refresh_chain_progress()
+            .and_then(|()| crate::chain_progress::mark_current(&self.index));
         if let Err(error) = closed {
             crate::log!(error, "writer: chain progress: {error}");
         }
     }
 
     /// Recomputes, in an index transaction of their own, the chain progress
-    /// of inputs whose source rows a standalone archive transaction changed
+    /// of inputs whose source rows an archive transaction changed
     /// with no index transaction after it (bytes stored without parsed rows,
     /// a restored older archive, a write whose index transaction failed).
     fn refresh_chain_progress(&mut self) -> Result<()> {
-        if self.sinex.is_some() {
-            return Ok(());
-        }
         let source_changed = crate::chain_progress::recorded(&self.archive)?;
         if source_changed.is_empty() {
             return Ok(());
@@ -1459,7 +1116,7 @@ impl Inner {
                 }
             }
         }
-        if self.sinex.is_none() && !self.stop.is_cancelled() {
+        if !self.stop.is_cancelled() {
             results.push(crate::archive::restart_full_log(
                 &self.archive,
                 "main",
@@ -1477,11 +1134,9 @@ impl Inner {
         }
     }
 
-    /// Gives each named session a new live change counter. In primary mode
-    /// the index follows the confirmed stream, which carries no clock
-    /// transitions, so nothing is written there.
+    /// Gives each named session a new live change counter.
     fn write_live_clock(&mut self, sessions: &[String]) -> Result<()> {
-        if self.sinex.is_some() || sessions.is_empty() {
+        if sessions.is_empty() {
             return Ok(());
         }
         let tx = self.index.transaction()?;
@@ -1498,9 +1153,6 @@ impl Inner {
     }
 
     fn write_copy_reading(&mut self, copy: &crate::ReadingCopy) -> Result<Result<bool>> {
-        if self.sinex.is_some() {
-            return Ok(Ok(false));
-        }
         self.until_stopped(|inner| inner.copy_reading_uninterrupted(copy))?
             .ok_or(StoreError::Stopped)
     }
@@ -1538,17 +1190,6 @@ impl Inner {
         coverage
             .validate()
             .map_err(|error| StoreError::Invalid(error.into()))?;
-        if let Some(sinex) = &self.sinex {
-            let machine = coverage.machine.clone();
-            sinex.prepare_products(&[crate::primary::ProductWrite {
-                product: crate::primary::Product::Coverage(coverage),
-                location: None,
-                parents: Vec::new(),
-                machine: Some(machine),
-                output_index: 0,
-            }])?;
-            return Ok(());
-        }
         let tx = self.index.transaction()?;
         bump_counter(&tx)?;
         crate::coverage::apply(&tx, &coverage)?;
@@ -1625,16 +1266,6 @@ impl Inner {
         }
     }
 
-    fn finish_primary_rebuild(&mut self) -> Result<()> {
-        if self.location.index_build.building() {
-            if crate::archive::index_build::primary::finish(&self.location, &self.index)? {
-                self.commits.committed(crate::completion::Committed::EVERY);
-            }
-            return Ok(());
-        }
-        crate::archive::index_rebuild::remove_when_built(&self.index, &self.location.index_db())
-    }
-
     /// Runs the build's next step and answers its caller once it ends.
     fn advance_build(&mut self) {
         let Some(mut job) = self.build_job.take() else {
@@ -1681,7 +1312,7 @@ impl Inner {
             .and_then(|()| crate::archive::index_build::restart(&self.location, error));
         // The writer goes on with the build file there is, made again or not.
         self.index = open_index_writer(&self.location, true)?;
-        crate::chain_progress::open(&self.index, true)?;
+        crate::chain_progress::open(&self.index)?;
         restarted
     }
 
@@ -1698,7 +1329,7 @@ impl Inner {
         let installed = crate::archive::index_build::finish(&self.location);
         crate::timing::add(crate::timing::Stage::Sync, synced.elapsed());
         self.index = open_index_writer(&self.location, self.location.index_build.building())?;
-        crate::chain_progress::install_triggers(&self.index, false)?;
+        crate::chain_progress::install_triggers(&self.index)?;
         installed
     }
 
@@ -1733,9 +1364,6 @@ impl Inner {
         new_blob: crate::NewBlob,
         file: Option<crate::staging::PreparedBytes>,
     ) -> Result<BlobHash> {
-        if self.sinex.is_some() {
-            return self.primary_blob(new_blob, file);
-        }
         if crate::blobs::load_extent(&self.archive, "", &hashed_blobs::Hash(new_blob.hash.0))?
             .is_some()
         {
@@ -1808,9 +1436,6 @@ impl Inner {
         scoped::require_current(&self.location, scope)?;
         let prepared_scope = self.preflight_saved(request, preparation, scope)?;
         let scope = scope.or(prepared_scope.as_ref());
-        if self.sinex.is_some() {
-            return self.primary_request(request, scope, preparation);
-        }
         let tx = self.archive.transaction()?;
         scoped::require_current(&self.location, scope)?;
         let known: bool = tx.exists(
@@ -1832,7 +1457,7 @@ impl Inner {
                 &source_snapshot,
                 request,
                 seq,
-                crate::user_writes::Preparation::plain(preparation, None),
+                crate::user_writes::Preparation::plain(preparation),
             )?
         };
         scoped::require_current(&self.location, scope)?;
@@ -1864,7 +1489,7 @@ impl Inner {
         batches: impl Iterator<Item = &'a Batch> + Clone,
         replay: bool,
     ) -> Result<()> {
-        if replay && self.sinex.is_none() {
+        if replay {
             self.until_stopped(|inner| inner.write_uninterrupted(batches))?
                 .ok_or(StoreError::Stopped)
         } else {
@@ -1876,12 +1501,6 @@ impl Inner {
         &mut self,
         batches: impl Iterator<Item = &'a Batch> + Clone,
     ) -> Result<()> {
-        let primary = self.sinex.is_some();
-        if primary {
-            for batch in batches.clone() {
-                self.validate_primary_reading(batch)?;
-            }
-        }
         for b in batches.clone() {
             if crate::container_members::container_of(b).is_some() {
                 return Err(StoreError::Invalid(
@@ -1902,7 +1521,7 @@ impl Inner {
                 parsed_only = false;
                 break;
             }
-            for blob in batch.blobs.iter().filter(|_| !primary) {
+            for blob in &batch.blobs {
                 let size = i64::try_from(blob.size).map_err(|_| {
                     StoreError::Invalid("decoded body exceeds the source catalog range".into())
                 })?;
@@ -1919,14 +1538,7 @@ impl Inner {
         let mut chains = Vec::new();
         if parsed_only {
             for batch in batches.clone() {
-                let Change::Reparse { chain } = batch.change else {
-                    unreachable!()
-                };
-                chains.push(Some(if primary {
-                    chain
-                } else {
-                    stored_reading_chain(&self.archive, batch)?
-                }));
+                chains.push(Some(stored_reading_chain(&self.archive, batch)?));
             }
             let mut has_step = false;
             let mut all_replayed = true;
@@ -1997,10 +1609,8 @@ impl Inner {
                         rows::StepWrite {
                             counter,
                             chain,
-                            source_commit: Some(&source_commit),
+                            source_commit: &source_commit,
                             replacement: false,
-                            retraction: false,
-                            primary,
                             changes: &changes,
                         },
                         &mut touched,
@@ -2011,18 +1621,11 @@ impl Inner {
         }
         let (messages, read) = rows::finish_upkeep(&itx, touched, &changes, counter)?;
         self.report.item_units_read += read;
-        let source_changed = if !primary {
-            let changed = crate::chain_progress::recorded(&self.archive)?;
-            crate::chain_progress::refresh(&itx, &changed)?;
-            Some(changed)
-        } else {
-            None
-        };
+        let source_changed = crate::chain_progress::recorded(&self.archive)?;
+        crate::chain_progress::refresh(&itx, &source_changed)?;
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
-        if let Some(changed) = source_changed {
-            crate::chain_progress::forget(&self.archive, &changed)?;
-        }
+        crate::chain_progress::forget(&self.archive, &source_changed)?;
         self.commits
             .committed(crate::completion::Committed::CONTENT);
         self.search.wake();

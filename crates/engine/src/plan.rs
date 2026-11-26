@@ -28,8 +28,6 @@ pub(crate) struct InputState {
     /// the file is tried again only when its bytes change or the daemon
     /// restarts. A failure the parse state records is that table's fact.
     pub(crate) unread: Option<FileFacts>,
-    /// A cache of the SDK's working state, separate from confirmed progress.
-    pub(crate) working: Option<WorkingState>,
 }
 
 impl InputState {
@@ -44,7 +42,6 @@ impl InputState {
             waiting: false,
             chain: None,
             unread: None,
-            working: None,
         }
     }
 
@@ -57,7 +54,7 @@ impl InputState {
         self.waiting = progress.waiting;
     }
 
-    /// Adopt committed logical progress. Bytes held in the spool never supply a cursor.
+    /// Adopt committed logical progress.
     pub(crate) fn adopt_confirmed(
         &mut self,
         input_id: &str,
@@ -79,14 +76,6 @@ impl InputState {
         if self.facts != facts || !same_cursor {
             self.unread = None;
         }
-        if !same_input
-            || self
-                .working
-                .as_ref()
-                .is_some_and(|working| working.facts == facts && working.stored <= stored)
-        {
-            self.working = None;
-        }
         self.input_id = input_id.into();
         self.origin = origin;
         self.facts = facts;
@@ -97,30 +86,14 @@ impl InputState {
         self.waiting = waiting;
     }
 
-    /// A new scope reconstructs confirmed events and parser state. Original
-    /// bytes stay held in the spool until Sinex acknowledges them.
+    /// A new scope reads progress again from the index.
     pub(crate) fn discard_confirmed(&mut self) {
-        let working = self.working.take();
         *self = Self::new(std::mem::take(&mut self.input_id), self.origin);
-        self.working = working;
     }
 
     pub(crate) fn needs_reading(&self) -> bool {
         (!self.waiting && self.parsed_upto < self.stored) || !self.parsed
     }
-}
-
-pub(crate) struct WorkingState {
-    pub(crate) capture: String,
-    pub(crate) group: String,
-    pub(crate) facts: Option<FileFacts>,
-    pub(crate) stored: u64,
-}
-
-/// A byte read has its own continuation and cannot update source state.
-pub(crate) struct ByteRead {
-    pub(crate) cursor: Option<polylogue_store::primary::ByteCursor>,
-    pub(crate) spooled: Option<polylogue_store::primary::SpooledGroup>,
 }
 
 /// One input's work in this pass, advanced job by job.
@@ -158,11 +131,7 @@ pub(crate) struct Plan {
     pub(crate) input_finished: bool,
     /// Where the input's bytes come from.
     pub(crate) source: pool::Bytes,
-    pub(crate) base: Option<polylogue_store::primary::SourceBase>,
-    /// The latest step is held in the spool but not yet confirmed by Sinex.
-    pub(crate) pending: Option<String>,
     pub(crate) checkpoint: Option<polylogue_model::batch::ParserCheckpoint>,
-    pub(crate) byte_read: Option<ByteRead>,
     /// Older chains of the input recorded from this chain's reading as the
     /// parse passes the end of the bytes they share with it, by stop
     /// ([`crate::prefix_copies`]). No range reads past the first stop.
@@ -197,10 +166,7 @@ impl Plan {
             _ => None,
         };
         Plan {
-            base: None,
-            pending: None,
             checkpoint: None,
-            byte_read: None,
             span: span(origin, &path, chunk),
             path,
             origin,
@@ -231,13 +197,6 @@ impl Plan {
     }
 
     pub(crate) fn finished(&self) -> bool {
-        if let Some(byte_read) = &self.byte_read {
-            // A missing cursor check stops this attempt with unknown completeness.
-            return byte_read
-                .cursor
-                .as_ref()
-                .is_none_or(|cursor| cursor.range().end >= self.size);
-        }
         self.failed
             || (self.storing_only && self.observation.is_none() && self.stored_upto >= self.size)
             || (self.observation.is_none()
@@ -247,14 +206,7 @@ impl Plan {
 
     /// The byte range the next job reads.
     pub(crate) fn next_range(&self) -> (u64, u64) {
-        let start = if let Some(byte_read) = &self.byte_read {
-            byte_read
-                .cursor
-                .as_ref()
-                .expect("a continuing byte read has a verified cursor")
-                .range()
-                .end
-        } else if self.storing_only {
+        let start = if self.storing_only {
             self.stored_upto
         } else {
             self.parse_pos
@@ -275,13 +227,9 @@ impl Plan {
         stopped_attempt: &polylogue_model::batch::StoppedAttempt,
     ) -> Job {
         let (start, end) = self.next_range();
-        let store_from = if self.byte_read.is_some() {
-            (end > start).then_some(start)
-        } else {
-            (end > self.stored_upto
-                || self.size == 0 && self.observation.is_some() && !self.storing_started)
-                .then_some(self.stored_upto)
-        };
+        let store_from = (end > self.stored_upto
+            || self.size == 0 && self.observation.is_some() && !self.storing_started)
+            .then_some(self.stored_upto);
         let (change, observation, continues, length) = match store_from {
             None if self.size == 0 && self.observation.is_some() => {
                 // An empty file still commits its revision and file facts.
@@ -332,7 +280,6 @@ impl Plan {
         if let Some(chain) = d.chain {
             self.parser_chain = Some(chain);
         }
-        self.pending = d.pending.clone();
         if d.checkpoint.is_some() {
             self.checkpoint = d.checkpoint.clone();
         }

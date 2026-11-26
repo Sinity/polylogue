@@ -1,5 +1,4 @@
-//! The write lock: an OS file lock on the register (`archive.db`). Primary
-//! mode has no register file here and takes no lock. A reader holds it shared while one statement
+//! The write lock: an OS file lock on the register (`archive.db`). A reader holds it shared while one statement
 //! starts its read, first on `index.db`, then on the register. A register
 //! commit between those two starts is the only way the reader could see a
 //! pair of states that never existed together; an index commit there is
@@ -11,7 +10,6 @@
 //! transactions take no lock, so a reader waits at most for one register
 //! commit's write into its log. The file is stable while open, so readers
 //! need no writable directory or extra lock file.
-use crate::ConnExt as _;
 use crate::{Archive, Result, StoreError};
 use rusqlite::Connection;
 use std::cell::Cell;
@@ -52,14 +50,6 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
         return Ok(WriteLock { file: None });
     };
     let path = Path::new(path);
-    if path.file_name().and_then(|name| name.to_str()) == Some("index.db")
-        && conn.scalar::<bool>(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='confirmed_event')",
-            [],
-        )?
-    {
-        return Ok(WriteLock { file: None });
-    }
     let archive_db = match path.file_name().and_then(|name| name.to_str()) {
         Some("archive.db") => path.to_path_buf(),
         // The private build file sits one directory below the archive root
@@ -72,7 +62,7 @@ pub(crate) fn hold(conn: &Connection) -> Result<WriteLock> {
         },
         _ => {
             return Err(StoreError::internal(
-                "the write lock needs a standalone archive or index connection",
+                "the write lock needs an archive or index connection",
             ));
         }
     };
@@ -166,9 +156,6 @@ pub(crate) fn wait_shared(
     archive: &Archive,
     mut wait: impl FnMut() -> Result<()>,
 ) -> Result<Option<File>> {
-    if archive.is_primary() {
-        return Ok(None);
-    }
     let file = OpenOptions::new().read(true).open(archive.archive_db())?;
     let key = identity(&file)?;
     if HELD.with(|held| held.get() == Some(key)) {

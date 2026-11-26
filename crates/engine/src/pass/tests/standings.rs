@@ -217,7 +217,6 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
     engine
         .writer
         .send(polylogue_store::Batch {
-            required_outcome: None,
             input: InputKey {
                 id: state.input_id.clone(),
                 format: state.origin.name.into(),
@@ -233,7 +232,6 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
             length: progress.length,
             parse: vec![step],
             capture_read: None,
-            base: None,
             release: Default::default(),
         })
         .unwrap();

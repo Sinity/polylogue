@@ -16,7 +16,6 @@ fn expected(
         input: input.into(),
         current,
         reading_changed: false,
-        previous_reading: false,
         stopped_attempt: None,
         stopped_at_length: false,
         source: StoredSource {

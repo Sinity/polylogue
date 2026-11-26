@@ -1,6 +1,6 @@
 //! Completeness is read from the index snapshot of the read: the chain
 //! counts the writer keeps, the derivation marks, search's pending entries
-//! and, in primary mode, the applied stream position.
+//! (the applied stream position of primary mode is not applicable here).
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -119,31 +119,12 @@ impl Reader<'_> {
         } else {
             CompletenessDimension::Incomplete(search_missing)
         };
-        let confirmed_stream = if self.pool.archive.is_primary() {
-            let state = crate::primary::confirmed::replay_state(conn)?;
-            match (state.applied_position, state.latest_position) {
-                (None, _) => {
-                    CompletenessDimension::Incomplete(vec![CompletenessReason::StreamNotApplied])
-                }
-                (Some(applied), Some(latest_position)) if applied >= latest_position => {
-                    CompletenessDimension::Complete
-                }
-                (Some(_), Some(_)) => {
-                    CompletenessDimension::Incomplete(vec![CompletenessReason::StreamBehind])
-                }
-                (Some(_), None) => {
-                    CompletenessDimension::Unknown(vec![CompletenessReason::StreamBehind])
-                }
-            }
-        } else {
-            CompletenessDimension::NotApplicable
-        };
         token.check()?;
         Ok(ReadCompleteness {
             parsing,
             derivation,
             search,
-            confirmed_stream,
+            confirmed_stream: CompletenessDimension::NotApplicable,
             kept_chains,
             raw_only_chains,
         })

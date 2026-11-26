@@ -1,8 +1,6 @@
 //! The archive rows one stored step of an input writes: its revision, the
 //! extents its new bytes fill and the observation that found them. The writer
-//! builds one [`InputRows`] per step and inserts it; in primary mode Sinex
-//! keeps it with the bytes it describes (or alone, when the step found no new
-//! bytes), and a rebuild from Sinex inserts the same rows again.
+//! builds one [`InputRows`] per step and inserts it.
 use crate::Result;
 use polylogue_model::BlobHash;
 use rusqlite::{Connection, params};
@@ -15,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub struct InputRows {
     /// Receiver-owned evidence for the acquired body, independent of overlap trimming.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub capture_read: Option<crate::primary::CaptureRead>,
+    pub capture_read: Option<crate::capture_read::CaptureRead>,
     pub input: String,
     /// The origin that parses it (`claude-code`).
     pub origin: String,
@@ -48,23 +46,6 @@ pub struct Extent {
     pub blob: BlobHash,
     /// Offset into the original captured material after an exact prefix overlap.
     pub blob_offset: i64,
-}
-
-/// Drops the first `length` bytes of contiguous `extents`: the extents they
-/// cover go, and the one they end in starts later in its blob.
-pub(crate) fn drop_front(extents: &mut Vec<Extent>, mut length: u64) {
-    extents.retain_mut(|extent| {
-        let size = extent.length as u64;
-        if length >= size && size > 0 {
-            length -= size;
-            return false;
-        }
-        extent.offset += length as i64;
-        extent.blob_offset += length as i64;
-        extent.length -= length as i64;
-        length = 0;
-        true
-    });
 }
 
 /// One look at a path that found something.
@@ -104,21 +85,6 @@ impl InputRows {
     /// one stored there, which keeps its first commit, or is refused.
     /// Inserting the rows twice changes nothing.
     pub fn insert(&self, tx: &Connection, seq: i64) -> Result<()> {
-        self.insert_rows(tx, seq, false)
-    }
-
-    /// Inserts rows confirmed by Sinex, in their commit order. A prefix
-    /// observation's chain prefix may be missing from the index for a while,
-    /// so it is not checked. An extent already present takes the incoming
-    /// length, blob and blob offset: a write that stopped before its local
-    /// commit sent the bytes at that place to Sinex again, longer. Everything
-    /// else present is left as it is, so inserting the rows twice changes
-    /// nothing.
-    pub(crate) fn insert_confirmed(&self, tx: &Connection, seq: i64) -> Result<()> {
-        self.insert_rows(tx, seq, true)
-    }
-
-    fn insert_rows(&self, tx: &Connection, seq: i64, confirmed: bool) -> Result<()> {
         self.validate_source_read()?;
         let source = crate::source::Source::of(tx)?;
         tx.prepare_cached(
@@ -135,19 +101,12 @@ impl InputRows {
                 self.input, r.number, r.produced, r.chain, r.length, seq
             ])?;
         }
-        let replace = if confirmed {
-            "ON CONFLICT(input,chain,offset) DO UPDATE SET
-                 commit_seq=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN min(commit_seq,excluded.commit_seq) ELSE excluded.commit_seq END,
-                 capture_read=CASE WHEN length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset THEN coalesce(capture_read,excluded.capture_read) ELSE excluded.capture_read END,
-                 length=excluded.length,blob=excluded.blob,blob_offset=excluded.blob_offset"
-        } else {
-            // Only the extent already stored there matches; any other
-            // changes no row, which is refused below.
-            "ON CONFLICT(input,chain,offset) DO UPDATE SET
-                 commit_seq=min(commit_seq,excluded.commit_seq),
-                 capture_read=coalesce(capture_read,excluded.capture_read)
-             WHERE length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset"
-        };
+        // Only the extent already stored there matches; any other
+        // changes no row, which is refused below.
+        let replace = "ON CONFLICT(input,chain,offset) DO UPDATE SET
+             commit_seq=min(commit_seq,excluded.commit_seq),
+             capture_read=coalesce(capture_read,excluded.capture_read)
+         WHERE length=excluded.length AND blob=excluded.blob AND blob_offset=excluded.blob_offset";
         for e in &self.extents {
             let written = tx.prepare_cached(
                 &source.sql(&format!("INSERT INTO @source.extent(input, chain, offset, length, blob, blob_offset, commit_seq, capture_read)
@@ -180,9 +139,8 @@ impl InputRows {
                     })?;
                 if o.revision.is_some()
                     || chain < 1
-                    || !confirmed
-                        && crate::source::Source::committed_through(tx, &self.input, chain, length)?
-                            .is_none()
+                    || crate::source::Source::committed_through(tx, &self.input, chain, length)?
+                        .is_none()
                 {
                     return Err(crate::StoreError::internal(
                         "a prefix observation needs a committed chain prefix and no revision number",
@@ -246,7 +204,7 @@ impl InputRows {
         let length = source_read.range.length()?;
         let inconsistent =
             || crate::StoreError::internal("the capture read does not describe these source rows");
-        if source_read.version != crate::primary::CaptureRead::VERSION
+        if source_read.version != crate::capture_read::CaptureRead::VERSION
             || source_read.source.origin != self.origin
             || source_read.source.machine.is_empty()
         {

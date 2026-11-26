@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 fn every_schema_applies_to_an_empty_database() {
     for (name, create) in [
         ("archive", ensure_archive as fn(&Connection) -> Result<()>),
-        ("primary", ensure_primary_index),
         ("index", ensure_index),
         ("embeddings", ensure_embeddings),
     ] {
@@ -19,14 +18,12 @@ fn every_schema_applies_to_an_empty_database() {
 fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 6);
     assert_eq!(INDEX_VERSION, 15);
-    assert_eq!(PRIMARY_INDEX_VERSION, 18);
     for (create, expected) in [
         (
             ensure_archive as fn(&Connection) -> Result<()>,
             ARCHIVE_VERSION,
         ),
         (ensure_index, INDEX_VERSION),
-        (ensure_primary_index, PRIMARY_INDEX_VERSION),
         (ensure_embeddings, 1),
     ] {
         let conn = Connection::open_in_memory().unwrap();
@@ -154,7 +151,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
         .unwrap();
     // Views are part of the schema; open indexes are recreated before writing.
     conn.execute_batch(OPEN_INDEXES).unwrap();
-    assert!(same_index_schema_in(&conn, false).unwrap());
+    assert!(same_index_schema_in(&conn).unwrap());
     ensure_index(&conn).unwrap();
     let base = Connection::open_in_memory().unwrap();
     base_index(&base).unwrap();
@@ -170,10 +167,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
     assert!(!open_indexes.is_empty());
     for name in open_indexes {
         conn.execute_batch(&format!("DROP INDEX {name}")).unwrap();
-        assert!(
-            same_index_schema_in(&conn, false).unwrap(),
-            "missing {name}"
-        );
+        assert!(same_index_schema_in(&conn).unwrap(), "missing {name}");
         ensure_index(&conn).unwrap();
         assert_eq!(schema_rows(&conn).unwrap(), expected);
     }
@@ -187,7 +181,7 @@ fn open_indexes_are_added_in_place_and_survive_reopen() {
     );
     conn.execute_batch("DROP INDEX event_at; CREATE INDEX event_at ON event(kind)")
         .unwrap();
-    assert!(!same_index_schema_in(&conn, false).unwrap());
+    assert!(!same_index_schema_in(&conn).unwrap());
 }
 
 #[test]
@@ -357,7 +351,7 @@ fn check_lists(conn: &Connection) -> BTreeMap<(String, String), BTreeSet<String>
     lists
 }
 
-/// Every closed set the archive, the index and the primary cache constrain
+/// Every closed set the archive and the index constrain
 /// with a `CHECK` list is exactly its enum's `NAMES`.
 #[test]
 fn schema_check_lists_come_from_names() {
@@ -368,7 +362,7 @@ fn schema_check_lists_come_from_names() {
     let archive = Connection::open_in_memory().unwrap();
     ensure_archive(&archive).unwrap();
     let index = Connection::open_in_memory().unwrap();
-    ensure_primary_index(&index).unwrap();
+    ensure_index(&index).unwrap();
     let mut found = check_lists(&archive);
     found.extend(check_lists(&index));
     // The content group's route is the message's main route, so
@@ -378,18 +372,13 @@ fn schema_check_lists_come_from_names() {
         .filter(|group| **group != FieldGroup::Content)
         .map(|group| group.as_str())
         .collect();
-    // The primary cache holds the record's tables as `source_` tables.
     let record: &[(&str, &str, &[&str])] = &[
         ("delivery_event", "what", DeliveryOutcome::NAMES),
         ("chat_action", "execution", RunsHere::NAMES),
         ("import_job", "execution", RunsHere::NAMES),
         ("query_edge", "how", QueryEdgeKind::NAMES),
     ];
-    let source: Vec<(String, &str, &[&str])> = record
-        .iter()
-        .map(|(table, column, names)| (format!("source_{table}"), *column, *names))
-        .collect();
-    let index_sets: [(&str, &str, &[&str]); 12] = [
+    let index_sets: [(&str, &str, &[&str]); 11] = [
         ("input_ref", "route", Route::NAMES),
         ("message_parse", "id_kind", IdKind::NAMES),
         ("message_parse", "route", Route::NAMES),
@@ -405,11 +394,6 @@ fn schema_check_lists_come_from_names() {
             "state",
             crate::chain_progress::State::NAMES,
         ),
-        (
-            "confirmed_event",
-            "state",
-            crate::primary::confirmed::ConfirmedState::NAMES,
-        ),
     ];
     let expected: BTreeMap<(String, String), BTreeSet<String>> = index_sets
         .into_iter()
@@ -419,7 +403,6 @@ fn schema_check_lists_come_from_names() {
                 .iter()
                 .map(|(table, column, names)| ((*table).to_owned(), *column, *names)),
         )
-        .chain(source)
         .map(|(table, column, names)| {
             (
                 (table, column.to_owned()),

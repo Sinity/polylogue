@@ -12,8 +12,6 @@ pub struct BehindChain {
     pub source: StoredSource,
     pub progress: ChainProgress,
     pub reading_changed: bool,
-    /// Rows parsed by a previous reading remain even without a local index.
-    pub previous_reading: bool,
     pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
     pub stopped_at_length: bool,
 }
@@ -290,24 +288,6 @@ impl Reader<'_> {
                 .is_some_and(|progress| progress.stopped() && progress.at_length() == Some(length));
             let input: String = row.get(0)?;
             let chain_number: i64 = row.get(1)?;
-            let previous_reading = if self.pool.archive.is_primary() {
-                versions
-                    .iter()
-                    .find(|(name, _)| name == &origin)
-                    .map(|(_, version)| {
-                        crate::primary::products::previous_reading_bound(
-                            self.conn()?,
-                            &input,
-                            chain_number,
-                            version,
-                        )
-                    })
-                    .transpose()?
-                    .flatten()
-                    .is_some()
-            } else {
-                false
-            };
             let chain = BehindChain {
                 input,
                 current: row.get(3)?,
@@ -317,7 +297,6 @@ impl Reader<'_> {
                     path_bytes: row.get(15)?,
                 },
                 reading_changed,
-                previous_reading,
                 stopped_at_length,
                 stopped_attempt: row
                     .get::<_, Option<Vec<u8>>>(14)?

@@ -2,9 +2,12 @@
 //! reading is part of every parsed event; indexed summaries are never an input.
 use crate::{Error, Result};
 use polylogue_model::user::UserWrite;
-use polylogue_store::primary::products::Product;
 use serde_json::{Value, json};
 mod ai;
+mod record;
+pub use record::{
+    Material, Product, ProductWrite, Reading, SourceLocation, SourceRecord, ToolCall, parse,
+};
 
 /// Decode a confirmed event whose kind definition is the one Polylogue declares.
 pub fn decode_source(
@@ -282,9 +285,8 @@ pub fn payload(product: &Product, occurrence: u64) -> Result<Value> {
     payload["record_key"] = key(product, occurrence)?.into();
     if let Some(reading) = product.reading() {
         payload["source"] = serde_json::to_value(reading)?;
-        payload["interpretation"] = serde_json::to_value(
-            polylogue_store::primary::SourceRecord::of(product)?.expect("source fact identity"),
-        )?;
+        payload["interpretation"] =
+            serde_json::to_value(SourceRecord::of(product)?.expect("source fact identity"))?;
     } else {
         payload["record"] = serde_json::to_value(product)?;
     }
@@ -327,10 +329,8 @@ pub fn decode(event_kind: &sinex_model::KindRef, payload: Value) -> Result<Produ
     }
     let event_type = event_kind.name.as_str();
     if source_kind(event_type) {
-        let reading: polylogue_store::primary::Reading =
-            serde_json::from_value(payload["source"].clone())?;
-        let record: polylogue_store::primary::SourceRecord =
-            serde_json::from_value(payload["interpretation"].clone())?;
+        let reading: Reading = serde_json::from_value(payload["source"].clone())?;
+        let record: SourceRecord = serde_json::from_value(payload["interpretation"].clone())?;
         if reading.chain < 1
             || reading.input.id.is_empty()
             || reading.input.format.is_empty()
@@ -753,9 +753,7 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
 }
 
 /// Build each event from its complete product and its record offset in the confirmed material.
-pub fn events(
-    writes: &[polylogue_store::primary::products::ProductWrite],
-) -> Result<Vec<sinex_protocol::ProducerEvent>> {
+pub fn events(writes: &[ProductWrite]) -> Result<Vec<sinex_protocol::ProducerEvent>> {
     use sinex_model::{Class, MaterialId, RecordLocation};
     let mut observations =
         std::collections::BTreeMap::<String, crate::attribution::SessionAttribution>::new();
@@ -808,7 +806,7 @@ pub fn events(
                     .cloned()
                     .unwrap_or_default();
                 if session_record && let Some(first) = stated.sources.first() {
-                    source = Some(polylogue_store::primary::products::SourceLocation {
+                    source = Some(SourceLocation {
                         material: first.material.to_string(),
                         anchor: first.anchor,
                     });
