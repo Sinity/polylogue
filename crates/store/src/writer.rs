@@ -360,11 +360,6 @@ impl Writer {
     /// writer after what it was sent, so the index takes in every archive
     /// commit before it stops; later calls fail with [`StoreError::WriterGone`].
     pub fn stop(&mut self) {
-        let started =
-            (self.handle.is_some() && self.stop.is_cancelled()).then(std::time::Instant::now);
-        if started.is_some() {
-            crate::log!(info, "shutdown writer drain started");
-        }
         if let Some(mut archive) = self.archive.take() {
             archive.stop();
         }
@@ -373,13 +368,6 @@ impl Writer {
             let _ = h.join();
         }
         self.sender.0.bytes.close();
-        if let Some(started) = started {
-            crate::log!(
-                info,
-                "shutdown writer drain finished in {:?}",
-                started.elapsed()
-            );
-        }
     }
 }
 

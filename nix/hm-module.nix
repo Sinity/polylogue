@@ -42,7 +42,6 @@ in
           Unit = {
             Description = "Polylogue archive ${archive.command}";
             X-Restart-Triggers = [ cfg.package ];
-            OnFailure = [ "polylogue-failed@%n.service" ];
           };
           Service = deployment.serviceConfig cfg // {
             # A profile path keeps TOML/wrapper changes out of unit identity.
@@ -53,15 +52,6 @@ in
           };
           Install.WantedBy = lib.optional cfg.autoStart "default.target";
         }
-      ) cfg.archives
-      // {
-        "polylogue-failed@" = {
-          Unit.Description = "Notify about a failed Polylogue service";
-          Service = {
-            Type = "oneshot";
-            ExecStart = "${lib.getExe pkgs.libnotify} --urgency=critical 'Polylogue stopped' 'Service %i failed; inspect its journal.'";
-          };
-        };
-      };
+      ) cfg.archives;
   };
 }

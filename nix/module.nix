@@ -24,12 +24,6 @@ let
       runtimeDir = "/run/${archive.command}";
     }
   ) cfg.archives;
-  # %U in a system unit is the manager's UID (0), not User=, so the service
-  # account's session bus path is resolved when the script runs as that user.
-  notifyFailure = pkgs.writeShellScript "polylogue-notify-failed" ''
-    export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(${pkgs.coreutils}/bin/id -u)/bus"
-    exec ${lib.getExe pkgs.libnotify} --urgency=critical 'Polylogue stopped' "Service $1 failed; inspect its journal."
-  '';
   directoryOption =
     suffix:
     lib.mkOption {
@@ -74,7 +68,6 @@ in
           wantedBy = lib.optional cfg.autoStart "multi-user.target";
           after = [ "network.target" ];
           restartTriggers = [ cfg.package ];
-          onFailure = [ "polylogue-failed@%n.service" ];
           serviceConfig = deployment.serviceConfig cfg // {
             User = cfg.user;
             WorkingDirectory = builtins.toJSON (lib.replaceStrings [ "%" ] [ "%%" ] cfg.home);
@@ -83,16 +76,6 @@ in
             ExecStart = "/run/current-system/sw/bin/${archive.command} daemon";
           };
         }
-      ) cfg.archives
-      // {
-        "polylogue-failed@" = {
-          description = "Notify about a failed Polylogue service";
-          serviceConfig = {
-            Type = "oneshot";
-            User = cfg.user;
-            ExecStart = "${notifyFailure} %i";
-          };
-        };
-      };
+      ) cfg.archives;
   };
 }
