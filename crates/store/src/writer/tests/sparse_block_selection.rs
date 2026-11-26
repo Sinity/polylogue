@@ -383,16 +383,8 @@ fn a_merge_after_the_agreement_leaves_with_the_older_chains_first_statement() {
         batch.length = bytes.len() as u64;
         batch.change = change;
         let step = &mut batch.parse[0];
-        *step = ParsePart::new(
-            Output {
-                sessions: vec![Session::new(sid("s"), SessionKind::Main)],
-                ..Output::default()
-            },
-            counts(rows.len() as u64),
-            0..bytes.len() as u64,
-            true,
-        );
-        step.parse_version = "synthetic=1".into();
+        step.counts = counts(rows.len() as u64);
+        step.parsed_upto = bytes.len() as u64;
         for (n, (row, selection)) in rows.into_iter().enumerate() {
             step.output.messages.push(row);
             step.output.block_selections.insert(n, selection);

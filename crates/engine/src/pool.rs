@@ -791,6 +791,10 @@ fn flush(
         .is_ok()
 }
 
+/// Answers once a replacement's transaction committed, with the messages
+/// it wrote.
+type Committed = Receiver<polylogue_store::Result<u64>>;
+
 /// Parses a stored chain end to end into a reading staged for one
 /// replacement transaction. Decoded bytes stay with the reading, counted
 /// against the pool's bytes in flight.
@@ -802,7 +806,7 @@ fn run_chain(
     shared: &Arc<Shared>,
     writer: &WriterSender,
     bytes_read: &mut u64,
-) -> Result<Option<(Replacement, Receiver<polylogue_store::Result<u64>>)>, EngineError> {
+) -> Result<Option<(Replacement, Committed)>, EngineError> {
     let polylogue_store::Change::Reparse { chain } = plan.change else {
         return Err(EngineError::internal("a replacement needs a stored chain"));
     };

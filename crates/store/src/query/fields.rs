@@ -972,19 +972,22 @@ pub use crate::annotations::sql::{current_annotation, withdrawn_annotation};
 
 /// When Polylogue first had the record of chain `chain` of input `input`
 /// from byte `start` to `end`: the earliest time a revision long enough to
-/// cover it was read, over that chain and every chain the archive records
-/// agree with it through `end` (docs/archive.md, readings). The walk over
-/// the recorded agreements stays within one input's chains.
+/// cover it was read, over the chains the archive records agree with that
+/// chain through `end` (docs/archive.md, readings). Those chains form one
+/// part of the input's tree of agreements, whose top is the oldest of them
+/// and had the bytes before any other was stored, so the walk climbs from
+/// the chain to that top, one key lookup a step, and reads only its
+/// revisions.
 pub fn record_first_seen(input: &str, chain: &str, start: &str, end: &str) -> String {
     format!(
-        "(SELECT min(hr.seen_at) FROM source_revision hr \
-         WHERE hr.input = {input} AND hr.length > {start} AND hr.length >= {end} \
-         AND hr.chain IN (WITH RECURSIVE held(chain) AS (SELECT {chain} \
-           UNION SELECT hc.begins_like FROM source_chain hc JOIN held ON hc.number = held.chain \
-             WHERE hc.input = {input} AND hc.begins_like IS NOT NULL AND hc.agrees_to >= {end} \
-           UNION SELECT hc.number FROM source_chain hc JOIN held ON hc.begins_like = held.chain \
-             WHERE hc.input = {input} AND hc.agrees_to >= {end}) \
-         SELECT chain FROM held))"
+        "(WITH RECURSIVE held(chain, depth) AS (SELECT {chain}, 0 \
+           UNION ALL SELECT hc.begins_like, held.depth + 1 FROM held \
+             JOIN source_chain hc ON hc.input = {input} AND hc.number = held.chain \
+             WHERE hc.begins_like IS NOT NULL AND hc.agrees_to >= {end}), \
+         top(chain) AS MATERIALIZED (SELECT chain FROM held ORDER BY depth DESC LIMIT 1) \
+         SELECT min(hr.seen_at) FROM top CROSS JOIN source_revision hr \
+         WHERE hr.input = {input} AND hr.chain = top.chain \
+           AND hr.length > {start} AND hr.length >= {end})"
     )
 }
 
