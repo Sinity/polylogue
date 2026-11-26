@@ -13,6 +13,7 @@ Tests use synthetic data only: the Morrow archive and hand-written golden cases.
 Morrow is a synthetic archive: a week of work (2026-10-01 to 10-07) on a fictional Rust library, in Claude Code, Codex, ChatGPT and claude.ai, plus a Claude-Code-only parents set, a live set, hook spools and an annotation session. It lives in `examples/morrow/`; `FACTS.md` there owns its message identities, counting rules and cost interpretation, and `expected/` holds the query examples with their expected replies. Paths inside it use the synthetic home `/home/op`.
 
 - `polylogue-testkit` lays Morrow out in a temporary home where each tool writes, runs the real engine over it and imports its exports, so tests read an archive built by the real parsers and writer: `Morrow::build(Set::Main)`, with `view()` and `stored_bytes()` giving what tests compare.
+- `parents_set_lineage_matches_morrow_facts` builds `Morrow::build(Set::Parents)` and checks the parents set's sessions, copied messages, provider links and costs against `FACTS.md`.
 - The files are edited directly; nothing regenerates them. A new behaviour that Morrow cannot show is added to Morrow, with its facts in `FACTS.md`, rather than to a one-off fixture.
 - The same archive is what `polylogue demo DIR` builds ([installing.md#demo](installing.md#demo)); the lines it prints and the examples in the [README](../README.md) are checked against it by a public CLI test.
 
