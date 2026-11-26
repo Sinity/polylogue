@@ -5,7 +5,7 @@ use crate::daemon::Failure;
 use command_surface::Answer;
 use polylogue_model::user::{Delivery, UserWrite};
 use polylogue_reading::operation::{Context, Invocation};
-use polylogue_store::{StoreError, WriterSender, user_writes};
+use polylogue_store::{StoreError, WriterSender, archive::writer::Committed, user_writes};
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -409,19 +409,17 @@ pub(crate) fn submit<T: serde::Serialize>(
     selected_scope: Option<polylogue_store::ReadScopeToken>,
     present: impl FnOnce(polylogue_model::user::UserOutcome) -> T,
 ) -> Answer<T> {
-    submit_result(d, invocation, request_id, w, selected_scope, |receipt| {
-        present(receipt.outcome)
-    })
+    submit_result(d, invocation, request_id, w, selected_scope)
+        .map(|committed| present(committed.outcome.outcome))
 }
 
-pub(crate) fn submit_result<T>(
+pub(crate) fn submit_result(
     d: &Daemon,
     invocation: &Invocation,
     request_id: String,
     w: UserWrite,
     selected_scope: Option<polylogue_store::ReadScopeToken>,
-    present: impl FnOnce(polylogue_store::user_writes::WriteResult) -> T,
-) -> Answer<T> {
+) -> Answer<Committed<user_writes::WriteResult>> {
     let accepted = || -> Result<_, Failure> {
         let writes = writer(d)?;
         invocation.check_parent_lifetime()?;
@@ -434,22 +432,18 @@ pub(crate) fn submit_result<T>(
     };
     let request = invocation.request(request_id, w);
     let preparation = authored_preparation();
-    let result = writes
-        .archive()
-        .submit(
-            polylogue_store::writer::UserSubmission {
-                request,
-                scope: selected_scope,
-                preparation: Some(preparation),
-                parent: invocation.parent_lifetime(),
-            },
-            None,
-        )
-        .map(|committed| committed.outcome);
-    match result {
-        Ok(outcome) => {
-            let pending = outcome.outcome.pending;
-            crate::protocol::written(present(outcome), pending)
+    match writes.archive().submit(
+        polylogue_store::writer::UserSubmission {
+            request,
+            scope: selected_scope,
+            preparation: Some(preparation),
+            parent: invocation.parent_lifetime(),
+        },
+        None,
+    ) {
+        Ok(committed) => {
+            let pending = committed.outcome.outcome.pending;
+            crate::protocol::written(committed, pending)
         }
         Err(error) => store_error(&error),
     }
