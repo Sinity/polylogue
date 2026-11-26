@@ -3383,7 +3383,12 @@ impl Engine {
 /// Whether the file at `path` differs from the facts its input was last
 /// read or refused at. A file that is gone is left to discovery.
 fn changed_since_read(path: &Path, st: &InputState) -> bool {
-    std::fs::metadata(path).is_ok_and(|meta| Some(FileFacts::of(&meta)) != st.unread.or(st.facts))
+    std::fs::metadata(path).is_ok_and(|meta| {
+        let now = FileFacts::of(&meta);
+        !st.unread
+            .or(st.facts)
+            .is_some_and(|read| read.unchanged_as(&now))
+    })
 }
 
 /// A stored input at a path this build's parser does not read: refused for
