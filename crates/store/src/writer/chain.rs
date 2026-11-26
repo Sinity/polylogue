@@ -99,6 +99,8 @@ fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<(
             &step.prepared.events,
             &step.prepared.texts,
             &step.prepared.content,
+            &step.prepared.heads,
+            &step.prepared.event_heads,
             step.prepared.released,
         ),
     )?;
@@ -121,8 +123,18 @@ fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>>
     let mut decoder = zstd::stream::read::Decoder::new(reader.take(size))?;
     let mut bytes = Vec::new();
     decoder.read_to_end(&mut bytes)?;
-    let StoredStep(mut step, messages, documents, fragments, events, texts, content, released) =
-        crate::encoding::read_json(&bytes)?;
+    let StoredStep(
+        mut step,
+        messages,
+        documents,
+        fragments,
+        events,
+        texts,
+        content,
+        heads,
+        event_heads,
+        released,
+    ) = crate::encoding::read_json(&bytes)?;
     step.prepared = batch::PreparedRows {
         messages,
         documents,
@@ -130,6 +142,8 @@ fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>>
         events,
         texts,
         content,
+        heads,
+        event_heads,
         released,
     };
     Ok(Some(step))
@@ -144,6 +158,8 @@ struct StoredStep(
     Vec<crate::encoding::PreparedEvent>,
     crate::text_rows::PreparedTexts,
     crate::content::Groups,
+    Vec<crate::parse::head::MessageHead>,
+    Vec<crate::parse::head::EventHead>,
     bool,
 );
 impl Inner {

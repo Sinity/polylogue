@@ -55,6 +55,7 @@ pub mod capture_read;
 pub mod follow;
 pub mod measure;
 mod ordered_blocks;
+pub mod parse;
 mod parse_state;
 pub mod python_polylogue;
 pub mod query;
