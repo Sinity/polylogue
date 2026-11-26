@@ -274,7 +274,7 @@ pub(crate) fn names_command(args: &[String]) -> bool {
     command_surface::line::classify_first(
         args.get(index).map(String::as_str),
         &SavedNames::default(),
-        &crate::protocol::steps::declarations(),
+        &crate::daemon::verbs::declarations(),
     ) == FirstWord::Command
 }
 impl ParsedLine {

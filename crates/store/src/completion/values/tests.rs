@@ -1,4 +1,3 @@
-use super::*;
 use crate::fixture::{Fixture, SessionFacts};
 
 fn origins() -> Vec<String> {
