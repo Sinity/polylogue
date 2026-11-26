@@ -440,10 +440,10 @@ fn search_text_settled_for_a_derive_is_announced_as_a_commit() {
     assert!(w.writer.flush_rows().unwrap().errors.is_empty());
     fault::wait_held();
     let pool = ReadPool::open(&w.archive).unwrap();
-    assert!(pool.reader().unwrap().status().unwrap().search_pending > 0);
+    assert!(pool.reader().unwrap().status(&[]).unwrap().search_pending > 0);
     let commits = w.writer.completion_commits();
     w.writer.derive().unwrap();
-    let pending = pool.reader().unwrap().status().unwrap().search_pending;
+    let pending = pool.reader().unwrap().status(&[]).unwrap().search_pending;
     let announced = commits.try_recv();
     fault::release();
     assert_eq!(pending, 0);
