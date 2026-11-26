@@ -1525,7 +1525,7 @@ fn a_morrow_brief_names_an_unloaded_scope_and_an_unrecorded_directory() {
     for (scope, expected) in [
         (
             SharedScopeIndex::default(),
-            "live sessions, open Beads, recent sessions: not available (scope index has not loaded); check `polylogue status`",
+            "- live sessions, open Beads, recent sessions: not available (scope index has not loaded); check `polylogue status`",
         ),
         (
             scope_of(&reader),

@@ -1117,10 +1117,17 @@ fn a_morrow_session_start_without_context_is_stored_and_counted_after_daemon_sta
         crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
             .unwrap();
     let mut server = Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
+    runtime
+        .daemon
+        .status
+        .wait_for(Instant::now() + Duration::from_secs(5), |status| {
+            status.passes > 0 && !status.busy
+        })
+        .expect("the first capture finished");
     let status = crate::protocol::into_value(crate::test_daemon::call(
         &runtime.daemon,
         "status",
-        json!({}),
+        json!({"wait":"5s"}),
     ))
     .unwrap();
     assert_eq!(
@@ -1250,10 +1257,17 @@ fn a_morrow_session_start_without_context_is_stored_and_counted_after_daemon_sta
     let mut runtime =
         crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
             .unwrap();
+    runtime
+        .daemon
+        .status
+        .wait_for(Instant::now() + Duration::from_secs(5), |status| {
+            status.passes > 0 && !status.busy
+        })
+        .expect("the first capture finished");
     let status = crate::protocol::into_value(crate::test_daemon::call(
         &runtime.daemon,
         "status",
-        json!({}),
+        json!({"wait":"5s"}),
     ))
     .unwrap();
     assert_eq!(
@@ -1284,10 +1298,17 @@ fn a_morrow_session_start_without_context_is_stored_and_counted_after_daemon_sta
     let mut runtime =
         crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
             .unwrap();
+    runtime
+        .daemon
+        .status
+        .wait_for(Instant::now() + Duration::from_secs(5), |status| {
+            status.passes > 0 && !status.busy
+        })
+        .expect("the first capture finished");
     let status = crate::protocol::into_value(crate::test_daemon::call(
         &runtime.daemon,
         "status",
-        json!({}),
+        json!({"wait":"5s"}),
     ))
     .unwrap();
     assert_eq!(
