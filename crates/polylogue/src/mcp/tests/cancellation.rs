@@ -51,8 +51,7 @@ fn cancelled_read(disconnect: bool, name: &str) {
             socket: client.try_clone().unwrap(),
             lock: Some(&lock),
         };
-        let output = server.try_clone().unwrap();
-        let service = scope.spawn(|| serve(BufReader::new(server), output, &archive));
+        let service = scope.spawn(|| super::serve_socket(server, &archive));
         writeln!(client, "{}", super::initialize()).unwrap();
         let mut line = String::new();
         input.read_line(&mut line).unwrap();
@@ -175,8 +174,7 @@ fn stdio_tool_body_preserves_the_explicit_shared_deadline() {
             socket: client.try_clone().unwrap(),
             lock: None,
         };
-        let output = server.try_clone().unwrap();
-        let service = scope.spawn(|| serve(BufReader::new(server), output, &archive));
+        let service = scope.spawn(|| super::serve_socket(server, &archive));
         let daemon = scope.spawn(|| {
             let start = std::time::Instant::now();
             let mut socket = loop {
@@ -243,8 +241,7 @@ fn context_deadline(name: &str) {
             socket: client.try_clone().unwrap(),
             lock: Some(&lock),
         };
-        let output = server.try_clone().unwrap();
-        let service = scope.spawn(|| serve(BufReader::new(server), output, &archive));
+        let service = scope.spawn(|| super::serve_socket(server, &archive));
         writeln!(client, "{}", super::initialize()).unwrap();
         let mut line = String::new();
         input.read_line(&mut line).unwrap();

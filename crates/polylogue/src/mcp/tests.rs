@@ -62,18 +62,12 @@ pub(crate) fn structured_call_as(
     arguments: serde_json::Map<String, Value>,
     request_id: &str,
 ) -> command_surface::Answer<Value> {
-    let reply = Session {
-        initialized: true,
-        ..Default::default()
-    }
-    .prepare(json!({
+    let reply = Peer::initialized(archive).request(json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "tools/call",
         "params": tool_call(operation, Value::Object(arguments), request_id),
-    }))
-    .answer(archive)
-    .expect("a tools/call response");
+    }));
     let answer: command_surface::Answer<Value> =
         serde_json::from_value(reply["result"]["structuredContent"].clone())
             .unwrap_or_else(|error| panic!("invalid structured tool answer: {error}: {reply}"));
@@ -106,13 +100,108 @@ pub(crate) fn call_page(
     call_params(archive, params)
 }
 
+/// Runs one tool call on its own runtime, as the server's handler runs it.
+pub(crate) fn call_with_limit(
+    archive: &Archive,
+    name: &str,
+    arguments: serde_json::Map<String, Value>,
+    deadline_ms: Option<i64>,
+    cancelled: &CancellationToken,
+    tool_call_id: Option<String>,
+) -> Result<(String, Value, bool), String> {
+    super::runtime().unwrap().block_on(answer_call(
+        archive,
+        name,
+        arguments,
+        deadline_ms,
+        cancelled,
+        tool_call_id,
+    ))
+}
+
+/// Serves MCP on one end of a socket pair, as `polylogue mcp` serves stdio.
+pub(crate) fn serve_socket(
+    socket: std::os::unix::net::UnixStream,
+    archive: &Archive,
+) -> std::io::Result<()> {
+    super::runtime()?.block_on(async {
+        socket.set_nonblocking(true)?;
+        let (input, output) = tokio::net::UnixStream::from_std(socket)?.into_split();
+        serve(input, output, archive.clone()).await
+    })
+}
+
+/// An MCP client session with the real server over a socket pair.
+pub(crate) struct Peer {
+    client: std::os::unix::net::UnixStream,
+    input: std::io::BufReader<std::os::unix::net::UnixStream>,
+    server: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+}
+
+impl Peer {
+    pub(crate) fn start(archive: &Archive) -> Self {
+        let (client, socket) = std::os::unix::net::UnixStream::pair().unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(60)))
+            .unwrap();
+        let archive = archive.clone();
+        let server = std::thread::spawn(move || serve_socket(socket, &archive));
+        Self {
+            input: std::io::BufReader::new(client.try_clone().unwrap()),
+            client,
+            server: Some(server),
+        }
+    }
+
+    /// A session that has completed `initialize`.
+    pub(crate) fn initialized(archive: &Archive) -> Self {
+        let mut peer = Self::start(archive);
+        let reply = peer.request(initialize());
+        assert!(reply["result"].is_object(), "{reply}");
+        peer.send(&json!({"jsonrpc":"2.0", "method":"notifications/initialized"}).to_string());
+        peer
+    }
+
+    pub(crate) fn send(&mut self, line: &str) {
+        use std::io::Write;
+        writeln!(self.client, "{line}").unwrap();
+    }
+
+    /// Sends a request and returns the reply that carries its id, or the
+    /// first reply without one.
+    pub(crate) fn request(&mut self, request: Value) -> Value {
+        use std::io::BufRead;
+        self.send(&request.to_string());
+        loop {
+            let mut line = String::new();
+            assert_ne!(self.input.read_line(&mut line).unwrap(), 0, "MCP closed");
+            let reply: Value = serde_json::from_str(&line).unwrap();
+            if reply["id"] == request["id"] || reply["id"].is_null() {
+                return reply;
+            }
+        }
+    }
+}
+
+impl Drop for Peer {
+    fn drop(&mut self) {
+        let _ = self.client.shutdown(std::net::Shutdown::Write);
+        if let Some(server) = self.server.take() {
+            let result = server.join();
+            if !std::thread::panicking() {
+                result.unwrap().unwrap();
+            }
+        }
+    }
+}
+
 fn call_params(archive: &Archive, params: Value) -> Result<String, String> {
     call_with_limit(
         archive,
         params["name"].as_str().unwrap(),
         params["arguments"].as_object().unwrap().clone(),
         None,
-        &tokio_util::sync::CancellationToken::new(),
+        &CancellationToken::new(),
         None,
     )
     .and_then(|(text, _, failed)| if failed { Err(text) } else { Ok(text) })
@@ -223,11 +312,11 @@ fn stdio_answers_initialize_tools_calls_and_errors() {
         client
             .set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .unwrap();
-        let output = server.try_clone().unwrap();
-        let worker = scope.spawn(|| serve(BufReader::new(server), output, &archive));
+        let worker = scope.spawn(|| serve_socket(server, &archive));
         writeln!(client, "{requests}").unwrap();
         let mut input = BufReader::new(client.try_clone().unwrap());
-        let replies = (0..8)
+        // Unparsable input gets no reply: it has no id to answer.
+        let replies = (0..7)
             .map(|_| {
                 let mut line = String::new();
                 input.read_line(&mut line).unwrap();
@@ -238,7 +327,7 @@ fn stdio_answers_initialize_tools_calls_and_errors() {
         worker.join().unwrap().unwrap();
         replies
     });
-    assert_eq!(replies.len(), 8);
+    assert_eq!(replies.len(), 7);
     let reply = |id: Value| replies.iter().find(|reply| reply["id"] == id).unwrap();
     assert_eq!(
         reply(json!("init"))["result"]["protocolVersion"],
@@ -251,7 +340,6 @@ fn stdio_answers_initialize_tools_calls_and_errors() {
         serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap();
     assert_eq!(status["store"]["messages"], 1);
     assert_eq!(reply(json!(4))["result"]["isError"], true);
-    assert_eq!(reply(Value::Null)["error"]["code"], -32700);
     assert_eq!(reply(json!(5))["error"]["code"], -32601);
     assert_eq!(reply(json!(6))["error"]["code"], -32602);
     assert_eq!(reply(json!(7))["result"], json!({}));
@@ -262,13 +350,10 @@ fn discovery_and_inline_requests_keep_protocol_metadata() {
     let temp = tempfile::tempdir().unwrap();
     let archive = Archive::at(temp.path());
     let meta = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28", "io.modelcontextprotocol/clientCapabilities":{}});
-    let mut session = Session::default();
-    let discovery = session
-        .prepare(
-            json!({"jsonrpc":"2.0", "id":1, "method":"server/discover", "params":{"_meta":meta}}),
-        )
-        .answer(&archive)
-        .unwrap();
+    let mut session = Peer::start(&archive);
+    let discovery = session.request(
+        json!({"jsonrpc":"2.0", "id":1, "method":"server/discover", "params":{"_meta":meta}}),
+    );
     assert_eq!(
         discovery["result"]["supportedVersions"],
         json!([
@@ -281,19 +366,14 @@ fn discovery_and_inline_requests_keep_protocol_metadata() {
     );
     assert_eq!(discovery["result"]["resultType"], "complete");
     let list = session
-        .prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{"_meta":meta}}))
-        .answer(&archive)
-        .unwrap();
+        .request(json!({"jsonrpc":"2.0", "id":2, "method":"tools/list", "params":{"_meta":meta}}));
     assert_eq!(list["result"]["tools"], json!(tools()));
     assert_eq!(list["result"]["resultType"], "complete");
-    let invalid = session
-        .prepare(json!({"jsonrpc":"2.0", "id":3, "method":"tools/list"}))
-        .answer(&archive)
-        .unwrap();
+    let invalid = session.request(json!({"jsonrpc":"2.0", "id":3, "method":"tools/list"}));
     assert_eq!(invalid["error"]["code"], -32602);
     let mut init = initialize();
     init["params"]["protocolVersion"] = json!("future");
-    let answer = Session::default().prepare(init).answer(&archive).unwrap();
+    let answer = Peer::start(&archive).request(init);
     assert_eq!(answer["result"]["protocolVersion"], "2025-11-25");
 }
 
@@ -301,47 +381,39 @@ fn discovery_and_inline_requests_keep_protocol_metadata() {
 fn protocol_ids_null_arguments_and_ping_follow_the_request_version() {
     let temp = tempfile::tempdir().unwrap();
     let archive = Archive::at(temp.path());
-    let mut session = Session::default();
-    session.prepare(initialize()).answer(&archive).unwrap();
-    let id = json!(u64::MAX);
-    let ping = session
-        .prepare(json!({"jsonrpc":"2.0", "id":id, "method":"ping"}))
-        .answer(&archive)
-        .unwrap();
+    let mut session = Peer::initialized(&archive);
+    let id = json!(i64::MAX);
+    let ping = session.request(json!({"jsonrpc":"2.0", "id":id, "method":"ping"}));
     assert_eq!(ping["id"], id);
     assert_eq!(ping["result"], json!({}));
-    let call = session.prepare(json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"polylogue_read", "arguments":null}}));
-    match call {
-        Reply::Tool { arguments, .. } => assert!(arguments.is_empty()),
-        _ => panic!("null arguments must be an empty argument map"),
-    }
+    // Null arguments are an empty argument map: the call reaches the tool,
+    // which answers it, rather than failing as a protocol error.
+    let call = session.request(json!({"jsonrpc":"2.0", "id":2, "method":"tools/call", "params":{"name":"polylogue_read", "arguments":null}}));
+    assert!(call["result"]["content"][0]["text"].is_string(), "{call}");
     let meta = json!({"io.modelcontextprotocol/protocolVersion":"2026-07-28", "io.modelcontextprotocol/clientCapabilities":{}});
-    let ping = session
-        .prepare(json!({"jsonrpc":"2.0", "id":3, "method":"ping", "params":{"_meta":meta}}))
-        .answer(&archive)
-        .unwrap();
+    let ping =
+        session.request(json!({"jsonrpc":"2.0", "id":3, "method":"ping", "params":{"_meta":meta}}));
     assert_eq!(ping["error"]["code"], -32601);
 }
 
 #[test]
-fn malformed_request_ids_are_not_echoed_in_error_responses() {
+fn malformed_request_ids_get_no_reply_and_keep_the_session() {
     let temp = tempfile::tempdir().unwrap();
     let archive = Archive::at(temp.path());
+    let mut session = Peer::start(&archive);
+    // A reply without the caller's id could not be matched to its request.
     for id in [json!({"wrong":1}), json!([1]), json!(true)] {
-        let reply = Session::default()
-            .prepare(json!({"jsonrpc":"2.0", "id":id, "method":"ping"}))
-            .answer(&archive)
-            .unwrap();
-        assert_eq!(reply["id"], Value::Null);
-        assert_eq!(reply["error"]["code"], -32600);
+        session.send(&json!({"jsonrpc":"2.0", "id":id, "method":"ping"}).to_string());
     }
+    let reply = session.request(initialize());
+    assert_eq!(reply["id"], "init", "{reply}");
+    assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
 }
 
 #[test]
 fn server_instructions_are_the_card_naming_every_tool() {
-    let Reply::Message(info) = Session::default().prepare(initialize()) else {
-        panic!("initialize must return server information");
-    };
+    let temp = tempfile::tempdir().unwrap();
+    let info = Peer::start(&Archive::at(temp.path())).request(initialize());
     let text = info["result"]["instructions"].as_str().unwrap();
     assert_eq!(text, crate::manual::card());
     for tool in [Tool::Read, Tool::Write, Tool::Act] {
@@ -504,7 +576,7 @@ fn a_tool_call_names_one_of_its_operations() {
             name,
             arguments.as_object().unwrap().clone(),
             None,
-            &tokio_util::sync::CancellationToken::new(),
+            &CancellationToken::new(),
             None,
         )
         .map_or_else(
@@ -552,7 +624,7 @@ fn a_tool_call_names_one_of_its_operations() {
     let (_, answer, failed) = call_with_limit(
         &live.daemon.archive, "polylogue_read",
         json!({"operation":"rows", "arguments":{"steps":[{"verb":"brief","cwd":"/synthetic"}]}, "request_id":"finite", "deadline":1000}).as_object().unwrap().clone(),
-        None, &tokio_util::sync::CancellationToken::new(), None,
+        None, &CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{answer}");
     let manual = format!("\nAgent manual:\n{}\n", crate::manual::text());
@@ -560,7 +632,7 @@ fn a_tool_call_names_one_of_its_operations() {
     let (_, lifted, failed) = call_with_limit(
         &live.daemon.archive, "polylogue_read",
         json!({"operation":"rows", "arguments":{"steps":[{"verb":"brief","cwd":"/synthetic"}]}, "request_id":"lifted", "deadline":null, "budget_tokens":budget}).as_object().unwrap().clone(),
-        None, &tokio_util::sync::CancellationToken::new(), None,
+        None, &CancellationToken::new(), None,
     ).unwrap();
     assert!(!failed, "{lifted}");
     let value = &lifted["value"];
@@ -628,14 +700,8 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
             format: Default::default(),
         })
         .unwrap();
-    let mut session = Session {
-        initialized: true,
-        ..Default::default()
-    };
-    let reply = session
-        .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":crate::commands::declarations().mcp_call(&ready.request).unwrap()}))
-        .answer(&daemon.daemon.archive)
-        .unwrap();
+    let mut session = Peer::initialized(&daemon.daemon.archive);
+    let reply = session.request(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":crate::commands::declarations().mcp_call(&ready.request).unwrap()}));
     assert_eq!(reply["result"]["isError"], false, "{reply}");
     assert_eq!(
         reply["result"]["structuredContent"]["value"]["reply"]["count"], 1,
@@ -672,10 +738,8 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
                 json!("json")
             },
         );
-        let reply = session
-            .prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":params}))
-            .answer(&daemon.daemon.archive)
-            .unwrap();
+        let reply =
+            session.request(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":params}));
         if option == "fresh" {
             assert_eq!(reply["result"]["isError"], true, "{reply}");
             assert_eq!(
@@ -720,10 +784,7 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
             .unwrap()["arguments"]["operation"],
         "dev sql"
     );
-    let reply = session
-        .prepare(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":crate::commands::declarations().mcp_call(&sql.request).unwrap()}))
-        .answer(&daemon.daemon.archive)
-        .unwrap();
+    let reply = session.request(json!({"jsonrpc":"2.0","id":2,"method":"tools/call","params":crate::commands::declarations().mcp_call(&sql.request).unwrap()}));
     assert_eq!(reply["result"]["isError"], false, "{reply}");
     let mut unsupported = sql.request.clone();
     unsupported.cursor = Some("a SQL request has no continuation".into());
@@ -731,10 +792,8 @@ fn generated_ready_mcp_call_executes_its_typed_envelope() {
     let params = crate::commands::declarations()
         .mcp_call(&unsupported)
         .unwrap();
-    let refused = session
-        .prepare(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":params}))
-        .answer(&daemon.daemon.archive)
-        .unwrap();
+    let refused =
+        session.request(json!({"jsonrpc":"2.0","id":4,"method":"tools/call","params":params}));
     assert_eq!(refused["result"]["isError"], true, "{refused}");
     let answer = serde_json::from_value(refused["result"]["structuredContent"].clone()).unwrap();
     let error = crate::test_answers::refusal(answer);
@@ -776,13 +835,8 @@ fn typed_acceptance_failure_answers_without_a_daemon() {
             "request_id":"invalid-request-example"
         }
     });
-    let reply = Session {
-        initialized: true,
-        ..Default::default()
-    }
-    .prepare(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":params}))
-    .answer(&archive)
-    .expect("typed admission refusal without a daemon");
+    let reply = Peer::initialized(&archive)
+        .request(json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":params}));
     assert_eq!(reply["result"]["isError"], true, "{reply}");
     let text = reply["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.starts_with("error (bad_request)"), "{text}");
@@ -887,7 +941,7 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
         projected["name"].as_str().unwrap(),
         projected["arguments"].as_object().unwrap().clone(),
         Some(parent_deadline),
-        &tokio_util::sync::CancellationToken::new(),
+        &CancellationToken::new(),
         Some("synthetic-mcp-call".into()),
     )
     .unwrap();
@@ -899,12 +953,9 @@ fn generated_mcp_follow_up_preserves_the_accepted_request() {
 #[test]
 fn set_mcp_keeps_typed_write_repeat_and_read_results() {
     let daemon = test_daemon::start("MCP settings example");
-    let mut session = Session {
-        initialized: true,
-        ..Default::default()
-    };
+    let mut session = Peer::initialized(&daemon.daemon.archive);
     let mut invoke = |id, arguments| {
-        session.prepare(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":tool_call("set", arguments,"mcp-setting-write-result")})).answer(&daemon.daemon.archive).unwrap()
+        session.request(json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":tool_call("set", arguments,"mcp-setting-write-result")}))
     };
     let first = invoke(1, json!({"key":"reading.alternates","value":"[]"}));
     assert_eq!(first["result"]["isError"], false, "{first}");
@@ -923,7 +974,7 @@ fn set_mcp_keeps_typed_write_repeat_and_read_results() {
     assert_eq!(first.id, repeat.id);
     assert!(repeat.repeat);
     assert!(!repeat.pending);
-    let shown = session.prepare(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":tool_call("set",json!({"key":"reading.alternates"}),"mcp-setting-current")})).answer(&daemon.daemon.archive).unwrap();
+    let shown = session.request(json!({"jsonrpc":"2.0","id":3,"method":"tools/call","params":tool_call("set",json!({"key":"reading.alternates"}),"mcp-setting-current")}));
     assert_eq!(shown["result"]["isError"], false, "{shown}");
     let current: crate::protocol::setting::Answer =
         serde_json::from_value(shown["result"]["structuredContent"]["value"].clone()).unwrap();

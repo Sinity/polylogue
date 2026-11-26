@@ -6,7 +6,7 @@ fn invoke(archive: &Archive, tool: Tool, call: Value) -> (String, Answer<Value>,
         tool.name(),
         args(call),
         None,
-        &tokio_util::sync::CancellationToken::new(),
+        &CancellationToken::new(),
         None,
     )
     .unwrap();

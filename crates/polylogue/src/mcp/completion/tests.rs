@@ -4,18 +4,11 @@ use super::*;
 fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
     let daemon = crate::test_daemon::start("MCP query completion");
     let archive = &daemon.daemon.archive;
-    let mut session = Session {
-        initialized: true,
-        ..Default::default()
-    };
-    let reply = session
-        .prepare(json!({
-            "jsonrpc":"2.0","id":1,"method":"completion/complete",
-            "params":{"argument":{"name":"query","value":"live: | measure count"},
-                "_meta":{"polylogue/position":5}}
-        }))
-        .answer(archive)
-        .unwrap();
+    let reply = super::super::tests::Peer::initialized(archive).request(json!({
+        "jsonrpc":"2.0","id":1,"method":"completion/complete",
+        "params":{"ref":{"type":"ref/prompt","name":"query"},"argument":{"name":"query","value":"live: | measure count"},
+            "_meta":{"polylogue/position":5}}
+    }));
     assert!(reply.get("error").is_none(), "{reply}");
     let rich: crate::protocol::complete::Answer =
         serde_json::from_value(reply["result"]["_meta"]["polylogue/completions"].clone()).unwrap();
@@ -42,18 +35,20 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
             )
         );
     }
-    let (_, direct, failed) = run(
-        archive,
-        command_surface::RunnableRequest::new(
-            "internal complete",
-            json!({"text":"live: | measure count","position":5}),
-            "complete-parity",
-        ),
-        None,
-        &tokio_util::sync::CancellationToken::new(),
-        None,
-    )
-    .unwrap();
+    let (_, direct, failed) = runtime()
+        .unwrap()
+        .block_on(run(
+            archive,
+            command_surface::RunnableRequest::new(
+                "internal complete",
+                json!({"text":"live: | measure count","position":5}),
+                "complete-parity",
+            ),
+            None,
+            &CancellationToken::new(),
+            None,
+        ))
+        .unwrap();
     assert!(!failed, "{direct}");
     // The daemon may rewrite its completion catalog between the two calls;
     // only the time the catalog was written, at the end of each value's help,
@@ -78,17 +73,10 @@ fn completion_route_uses_full_query_cursor_and_preserves_the_suffix() {
 #[test]
 fn completion_route_rejects_a_cursor_inside_a_utf8_character() {
     let daemon = crate::test_daemon::start("MCP completion boundary");
-    let mut session = Session {
-        initialized: true,
-        ..Default::default()
-    };
-    let reply = session
-        .prepare(json!({
-            "jsonrpc":"2.0","id":2,"method":"completion/complete",
-            "params":{"argument":{"name":"query","value":"é"},"_meta":{"polylogue/position":1}}
-        }))
-        .answer(&daemon.daemon.archive)
-        .unwrap();
+    let reply = super::super::tests::Peer::initialized(&daemon.daemon.archive).request(json!({
+        "jsonrpc":"2.0","id":2,"method":"completion/complete",
+        "params":{"ref":{"type":"ref/prompt","name":"query"},"argument":{"name":"query","value":"é"},"_meta":{"polylogue/position":1}}
+    }));
     assert_eq!(reply["error"]["data"]["outcome"], "error");
     assert_eq!(reply["error"]["data"]["error"]["kind"], "bad_request");
 }
@@ -97,19 +85,13 @@ fn completion_route_rejects_a_cursor_inside_a_utf8_character() {
 fn completion_without_a_position_completes_at_the_end_of_the_text() {
     let daemon = crate::test_daemon::start("MCP default completion position");
     let archive = &daemon.daemon.archive;
-    let mut session = Session {
-        initialized: true,
-        ..Default::default()
-    };
+    let mut session = super::super::tests::Peer::initialized(archive);
     let text = "live:";
     let mut complete = |meta: Value| {
-        let reply = session
-            .prepare(json!({
-                "jsonrpc":"2.0","id":1,"method":"completion/complete",
-                "params":{"argument":{"name":"query","value":text}, "_meta":meta}
-            }))
-            .answer(archive)
-            .unwrap();
+        let reply = session.request(json!({
+            "jsonrpc":"2.0","id":1,"method":"completion/complete",
+            "params":{"ref":{"type":"ref/prompt","name":"query"},"argument":{"name":"query","value":text}, "_meta":meta}
+        }));
         assert!(reply.get("error").is_none(), "{reply}");
         reply["result"].clone()
     };

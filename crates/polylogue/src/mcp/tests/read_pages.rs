@@ -456,7 +456,7 @@ pub(super) fn structured_read_without_deadline(
         Tool::Read.name(),
         envelope.as_object().unwrap().clone(),
         None,
-        &tokio_util::sync::CancellationToken::new(),
+        &CancellationToken::new(),
         None,
     )?;
     decode_page(text, structured, failed)
@@ -500,7 +500,7 @@ pub(crate) fn execute_ready(archive: &Archive, ready: &ReadyCall) -> Result<Read
         name,
         arguments,
         None,
-        &tokio_util::sync::CancellationToken::new(),
+        &CancellationToken::new(),
         None,
     )?;
     decode_page(text, structured, failed)
