@@ -427,16 +427,14 @@ fn apply_inner(
         });
     if let Some(old) = &previous
         && !export_delivery
+        && !replacement
+        && step.parsed_upto == old.last_end
+        && step.start == old.last_start
+        && hash != old.last_hash
     {
-        if !replacement
-            && step.parsed_upto == old.last_end
-            && step.start == old.last_start
-            && hash != old.last_hash
-        {
-            return Err(StoreError::internal(
-                "the same wire source range has different observations under one parse version",
-            ));
-        }
+        return Err(StoreError::internal(
+            "the same wire source range has different observations under one parse version",
+        ));
     }
     if duplicate {
         if let Some(mut old) = previous {
