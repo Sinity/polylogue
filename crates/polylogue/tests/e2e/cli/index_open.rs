@@ -1,6 +1,72 @@
 use super::*;
 
 #[test]
+fn the_daemon_reopens_the_archive_after_sigterm_and_sigkill() {
+    use rustix::process::{Pid, Signal, kill_process};
+    use serde_json::json;
+    use std::os::unix::process::ExitStatusExt;
+
+    for signal in [Signal::TERM, Signal::KILL] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home");
+        let project = home.join(".claude/projects/-restart");
+        std::fs::create_dir_all(&project).unwrap();
+        let first_file = project.join("first.jsonl");
+        std::fs::write(&first_file, line("u1", "first", "Plan the garden.")).unwrap();
+        let env = crate::Fixture::new(
+            &dir.path().join("archive"),
+            &home,
+            &dir.path().join("config"),
+        );
+
+        for (messages, expected_rows) in [
+            (1, json!([{"id": "claude-code:first"}])),
+            (
+                2,
+                json!([{"id": "claude-code:first"}, {"id": "claude-code:second"}]),
+            ),
+        ] {
+            let mut daemon = start_daemon(&env);
+            wait_status(&env, |status| status["store"]["messages"] == messages);
+
+            let rows = query_rows(&cli(
+                &env,
+                &["--json", "sessions | sort by id", "--fields", "id"],
+            ));
+            assert_eq!(rows["rows"], expected_rows, "{signal:?}: {rows}");
+
+            let out = cli(&env, &["--json", "session:claude-code:first", "read"]);
+            assert!(out.status.success(), "{signal:?}: {out:?}");
+            let page = read_page(json(&out));
+            assert!(page.document.footer.next.is_none(), "{signal:?}: {page:?}");
+            assert_eq!(
+                stored_text::texts(&page),
+                ["Plan the garden."],
+                "{signal:?}"
+            );
+
+            if messages == 1 {
+                let pid = Pid::from_raw(daemon.0.id().try_into().unwrap()).unwrap();
+                kill_process(pid, signal).unwrap();
+                let exit = daemon.0.wait().unwrap();
+                if signal == Signal::TERM {
+                    assert!(exit.success(), "{exit}");
+                } else {
+                    assert_eq!(exit.signal(), Some(libc::SIGKILL), "{exit}");
+                }
+                // The reopened daemon must read the first session from the archive.
+                std::fs::remove_file(&first_file).unwrap();
+                std::fs::write(
+                    project.join("second.jsonl"),
+                    line("u2", "second", "Plant the rosemary."),
+                )
+                .unwrap();
+            }
+        }
+    }
+}
+
+#[test]
 fn the_daemon_rebuilds_an_index_from_another_schema_and_serves() {
     for (change, reason) in [
         (
