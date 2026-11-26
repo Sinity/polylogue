@@ -351,7 +351,7 @@ impl Reader<'_> {
         let mut stmt = conn.prepare_cached(&format!(
             "SELECT d.id, d.event, d.sender, d.recipient_id, d.at, d.bytes, d.commit_seq,
                     (SELECT group_concat(e.outcome, ',') FROM
-                        (SELECT outcome FROM source_delivery_event e WHERE e.delivery = d.id ORDER BY at) e) e),
+                        (SELECT outcome FROM source_delivery_event e WHERE e.delivery = d.id ORDER BY at) e),
                     d.prepared_position
                FROM source_delivery d {filter}
               ORDER BY d.commit_seq DESC"

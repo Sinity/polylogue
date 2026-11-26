@@ -641,28 +641,28 @@ pub(crate) fn declarations(producer: &str) -> Vec<sinex_model::KindDeclaration> 
                 kind: KindRef {
                     name: (*name).into(),
                     version: if *name == "polylogue.annotation_restore" {
-                        1
-                    } else if *name == "polylogue.annotation" {
                         2
+                    } else if *name == "polylogue.annotation" {
+                        3
                     } else if matches!(*name, "polylogue.line_save" | "polylogue.line_save_restore")
                     {
-                        5
+                        6
                     } else if matches!(
                         *name,
                         "polylogue.line_resolution" | "polylogue.line_resolution_restore"
                     ) {
-                        8
+                        9
                     } else {
                         match *product {
                             "message" => 11,
-                            "request" | "restored_request" => 11,
+                            "request" | "restored_request" => 12,
                             "session" | "link" | "parse_progress" => 9,
                             "input" => 8,
                             "document" | "event" | "background" | "repository" => 8,
                             "fragment" => 6,
-                            "query_run" => 10,
+                            "query_run" => 11,
                             "tool_call" | "prefix_copy" | "prefix_member" => 4,
-                            "query" => 3,
+                            "query" => 4,
                             "query_run_outcome" => 2,
                             "attachment_binding" => 2,
                             "restored_history" => 1,
