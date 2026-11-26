@@ -45,7 +45,7 @@ fn resume_in_hands_off() {
         },
         &d.daemon.scope,
         &[],
-        &crate::brief::Ask::Takeover {
+        &crate::brief::Ask::Session {
             session: source,
             for_session: None,
         },
