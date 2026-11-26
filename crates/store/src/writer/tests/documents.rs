@@ -361,8 +361,12 @@ fn a_same_chain_document_cannot_override_a_newer_source_time() {
     let mut older = doc_batch("a", document("ordered", "older source", 1000), true);
     older.change = Change::Reparse { chain: 1 };
     older.parse[0].reset = false;
-    w.store_reading(older, None).unwrap();
-    assert!(w.writer.flush().unwrap().errors.is_empty());
+    // Planned from before the newer source was parsed: refused, and the
+    // newer document stays.
+    assert!(matches!(
+        w.store_reading(older, None),
+        Err(crate::StoreError::StalePart { .. })
+    ));
     let reads = ReadPool::open(&w.archive).unwrap();
     assert_eq!(
         reads

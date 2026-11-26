@@ -44,7 +44,9 @@ impl Snapshot {
         Self {
             read_at: read_at.into(),
             commits_read,
-            store: reader.status().map_err(|error| error.to_string()),
+            store: reader
+                .status(&polylogue_engine::reading_contracts())
+                .map_err(|error| error.to_string()),
             notices: serde_json::from_value(crate::signals::recent(reader, now))
                 .map_err(|problem| problem.to_string()),
             running: reader

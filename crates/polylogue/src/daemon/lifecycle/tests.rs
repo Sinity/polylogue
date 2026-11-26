@@ -511,7 +511,6 @@ fn isolated_signal_child() {
             startup.engine.clone(),
             startup.mode.clone(),
             polylogue_engine::Lifetime::UntilStopped,
-            startup.stopped_attempt,
             &Progress::default(),
         )
         .unwrap();

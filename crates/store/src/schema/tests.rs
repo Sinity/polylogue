@@ -17,7 +17,7 @@ fn every_schema_applies_to_an_empty_database() {
 #[test]
 fn every_database_starts_at_its_current_version() {
     assert_eq!(ARCHIVE_VERSION, 8);
-    assert_eq!(INDEX_VERSION, 20);
+    assert_eq!(INDEX_VERSION, 21);
     for (create, expected) in [
         (
             ensure_archive as fn(&Connection) -> Result<()>,
@@ -39,15 +39,15 @@ fn an_index_at_another_version_is_refused_without_removing_rows() {
     conn.execute("INSERT INTO input_ref(id) VALUES ('synthetic')", [])
         .unwrap();
     // An index written by an older build of another lineage.
-    set_version(&conn, 21).unwrap();
+    set_version(&conn, 22).unwrap();
     assert!(matches!(
         ensure_index(&conn),
         Err(StoreError::IndexVersion {
-            found: 21,
+            found: 22,
             wanted: INDEX_VERSION
         })
     ));
-    assert_eq!(version(&conn).unwrap(), 21);
+    assert_eq!(version(&conn).unwrap(), 22);
     assert_eq!(
         conn.query_row("SELECT id FROM input_ref", [], |row| row
             .get::<_, String>(0))
@@ -256,55 +256,46 @@ fn an_unversioned_file_with_tables_is_refused_unchanged() {
 }
 
 #[test]
-fn parse_standings_require_their_length_and_reason() {
+fn a_parse_state_row_cannot_hold_a_half_stated_failure() {
     let conn = Connection::open_in_memory().unwrap();
     ensure_index(&conn).unwrap();
-    conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'waiting','synthetic'),(2,'done','synthetic'),(3,'collected','synthetic');
-        INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto,at_length) VALUES
-          (1,1,'v1','waiting',40,100),(2,1,'v1','done',90,NULL),(3,1,'v1','no_parser_yet',30,NULL);").unwrap();
+    conn.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(1,'parsed','synthetic'),(2,'failed','synthetic');
+        INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,resume) VALUES
+          (1,1,'parsed','v1',40,60,x'00');
+        INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,failure_kind,failure_detail) VALUES
+          (2,1,'failed','v1',90,0,'malformed','line 3 is not JSON');").unwrap();
     assert_eq!(version(&conn).unwrap(), INDEX_VERSION);
-    let rows: Vec<(String, i64, Option<i64>)> = conn
-        .prepare("SELECT status,parsed_upto,at_length FROM parse_state ORDER BY input_pk")
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    assert_eq!(
-        rows,
-        [
-            ("waiting".to_owned(), 40, Some(100)),
-            ("done".to_owned(), 90, None),
-            ("no_parser_yet".to_owned(), 30, None),
-        ]
-    );
-    // A waiting status always names its length.
-    assert!(
-        conn.execute("UPDATE parse_state SET at_length=NULL WHERE input_pk=1", [])
-            .is_err()
-    );
-    // Every designed standing is storable, and a refusal or failure keeps its reason.
-    for (status, reason) in [
-        ("refused", "synthetic reason"),
-        ("failed", "synthetic error"),
-    ] {
+    let refused = |sql: &str| conn.execute(sql, []).is_err();
+    // A failure names its kind and its sentence, and only a failure does.
+    assert!(refused(
+        "UPDATE parse_state SET failure_detail=NULL WHERE input_pk=2"
+    ));
+    assert!(refused(
+        "UPDATE parse_state SET failure_kind=NULL WHERE input_pk=2"
+    ));
+    assert!(refused(
+        "UPDATE parse_state SET state='parsed' WHERE input_pk=2"
+    ));
+    assert!(refused(
+        "UPDATE parse_state SET failure_kind='malformed',failure_detail='x' WHERE input_pk=1"
+    ));
+    // A failed chain carries no resume state; a kind outside the model's is refused.
+    assert!(refused(
+        "UPDATE parse_state SET resume=x'00' WHERE input_pk=2"
+    ));
+    assert!(refused(
+        "UPDATE parse_state SET failure_kind='lost' WHERE input_pk=2"
+    ));
+    assert!(refused(
+        "UPDATE parse_state SET waiting=-1 WHERE input_pk=1"
+    ));
+    for kind in polylogue_model::ChainFailureKind::NAMES {
         conn.execute(
-            "UPDATE parse_state SET status=?1,reason=?2,at_length=90 WHERE input_pk=2",
-            [status, reason],
+            "UPDATE parse_state SET failure_kind=?1 WHERE input_pk=2",
+            [kind],
         )
         .unwrap();
-        assert!(
-            conn.execute("UPDATE parse_state SET reason=NULL WHERE input_pk=2", [])
-                .is_err()
-        );
     }
-    assert!(
-        conn.execute(
-            "UPDATE parse_state SET status='done',reason='stray',at_length=NULL WHERE input_pk=2",
-            []
-        )
-        .is_err()
-    );
 }
 
 mod embeddings;
@@ -357,7 +348,7 @@ fn check_lists(conn: &Connection) -> BTreeMap<(String, String), BTreeSet<String>
 fn schema_check_lists_come_from_names() {
     use polylogue_model::{
         Completion, DeliveryOutcome, FieldGroup, IdKind, Route, authored::RunsHere,
-        batch::ParseStatus, query_objects::QueryEdgeKind,
+        query_objects::QueryEdgeKind,
     };
     let archive = Connection::open_in_memory().unwrap();
     ensure_archive(&archive).unwrap();
@@ -393,13 +384,13 @@ fn schema_check_lists_come_from_names() {
         ("link_parse", "route", Route::NAMES),
         ("message_parse", "completion", Completion::NAMES),
         ("message_route", "field_group", &routed[..]),
-        ("parse_state", "status", ParseStatus::NAMES),
-        ("session_time", "party", crate::measure::time::Party::NAMES),
+        ("parse_state", "state", crate::parse_state::StateWord::NAMES),
         (
-            "chain_progress",
-            "state",
-            crate::chain_progress::State::NAMES,
+            "parse_state",
+            "failure_kind",
+            polylogue_model::ChainFailureKind::NAMES,
         ),
+        ("session_time", "party", crate::measure::time::Party::NAMES),
     ];
     let expected: BTreeMap<(String, String), BTreeSet<String>> = index_sets
         .into_iter()

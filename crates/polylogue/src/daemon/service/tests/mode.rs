@@ -45,16 +45,11 @@ fn loaded(home: &ClaudeHome, text: &str) -> crate::config::Startup {
 }
 
 fn launch(startup: crate::config::Startup) -> std::io::Result<Runtime> {
-    let attempt = startup
-        .mode
-        .needs_engine()
-        .then(polylogue_testkit::stopped_attempt);
     start(
         startup.config,
         startup.engine,
         startup.mode,
         polylogue_engine::Lifetime::UntilStopped,
-        attempt,
         &Default::default(),
     )
 }

@@ -3,6 +3,8 @@ use crate::fixture::Fixture;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// A chain due a whole parse; `parsed_to` names a parse it has under
+/// version `v`, which a whole parse replaces.
 fn expected(
     input: &str,
     chain: i64,
@@ -10,28 +12,36 @@ fn expected(
     current: bool,
     source: (&str, Option<&str>),
     imported: bool,
-    parsed_upto: Option<u64>,
+    parsed_to: Option<u64>,
 ) -> BehindChain {
     BehindChain {
         input: input.into(),
         current,
-        reading_changed: false,
-        stopped_attempt: None,
-        stopped_at_length: false,
         source: StoredSource {
             format: source.0.into(),
             path: source.1.map(str::to_owned),
             path_bytes: source.1.map(|path| path.as_bytes().to_vec()),
         },
-        progress: ChainProgress {
-            chain,
-            length,
-            parsed_upto: parsed_upto.unwrap_or(0),
-            parsed: parsed_upto.is_some(),
-            waiting: false,
-            imported,
-        },
+        chain,
+        imported,
+        stored: length,
+        state: parsed_to.map_or(ChainState::Unparsed, |parsed_to| ChainState::Parsed {
+            version: "v".into(),
+            parsed_to,
+            seen_to: parsed_to,
+            resume: None,
+            counts: Default::default(),
+        }),
+        due: Due::Whole,
     }
+}
+
+/// Every origin these tests store, read under parser version `v`.
+fn versions(origins: &[&str]) -> Vec<(String, String)> {
+    origins
+        .iter()
+        .map(|origin| ((*origin).to_owned(), "v".to_owned()))
+        .collect()
 }
 
 #[test]
@@ -62,12 +72,12 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('a');
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
-         SELECT pk,2,'parsing',12 FROM input_ref WHERE id='a';
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length)
-         SELECT pk,3,'waiting',2,30 FROM input_ref WHERE id='a';
-         INSERT INTO parse_state(input_pk,chain,status,parsed_upto)
-         SELECT pk,5,'done',50 FROM input_ref WHERE id='a';",
+         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+         SELECT pk,2,'parsed','v',12,0 FROM input_ref WHERE id='a';
+         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+         SELECT pk,3,'parsed','v',2,28 FROM input_ref WHERE id='a';
+         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+         SELECT pk,5,'parsed','v',50,0 FROM input_ref WHERE id='a';",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
@@ -75,8 +85,7 @@ fn behind_chains_preserve_revision_import_and_parser_choices() {
         pool.reader()
             .unwrap()
             .chains_behind_index(
-                &[],
-                crate::StoppedChains::Finished,
+                &versions(&["codex-rollout", "native", "fallback", "export-file"]),
                 crate::RevisionChains::All,
                 None
             )
@@ -163,8 +172,7 @@ fn history_work(revisions: usize) -> usize {
         .unwrap();
     let found = reader
         .chains_behind_index(
-            &[],
-            crate::StoppedChains::Finished,
+            &versions(&["codex-rollout"]),
             crate::RevisionChains::All,
             None,
         )
@@ -203,13 +211,14 @@ fn behind_chains_work_scales_with_revision_and_observation_history() {
 }
 
 #[test]
-fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
+fn a_chain_waiting_at_its_stored_length_is_due_once_the_length_changes() {
+    use polylogue_model::chain::ChainStatus;
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive
         .execute_batch(
-            "INSERT INTO input VALUES ('metadata','no-parser');
+            "INSERT INTO input VALUES ('metadata','metadata-origin');
         INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('metadata',1,'first',1,100,1);",
         )
         .unwrap();
@@ -217,112 +226,91 @@ fn incomplete_metadata_readings_wait_until_the_stored_length_changes() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('metadata');
-        INSERT INTO parse_state(input_pk,chain,status,parsed_upto,at_length,parse_version)
-        SELECT pk,1,'waiting',40,100,'metadata=1' FROM input_ref;",
+        INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+        SELECT pk,1,'parsed','v',40,60 FROM input_ref;",
         )
         .unwrap();
+    let versions = versions(&["metadata-origin"]);
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
+    let shown = |reader: &crate::Reader<'_>| {
+        let latest = reader.latest_chain("metadata").unwrap().unwrap();
+        polylogue_model::chain::status(
+            &latest.state,
+            &polylogue_model::chain::ChainFacts {
+                stored: latest.stored,
+                repeated_by: None,
+                own_from: 0,
+                parser: Some("v".into()),
+                finished: false,
+            },
+        )
+    };
     assert!(
         reader
-            .chains_behind_index(
-                &[],
-                crate::StoppedChains::Finished,
-                crate::RevisionChains::All,
-                None
-            )
+            .chains_behind_index(&versions, crate::RevisionChains::All, None)
             .unwrap()
             .is_empty()
     );
-    assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
+    assert_eq!(shown(&reader), ChainStatus::Waiting { length: 100 });
     archive
         .execute(
             "INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES ('metadata',2,'appended',1,140,2)",
             [],
         )
         .unwrap();
+    // A read keeps its snapshot.
     assert!(
         reader
-            .chains_behind_index(
-                &[],
-                crate::StoppedChains::Finished,
-                crate::RevisionChains::All,
-                None
-            )
+            .chains_behind_index(&versions, crate::RevisionChains::All, None)
             .unwrap()
             .is_empty()
     );
-    assert!(reader.input_progress("metadata").unwrap().unwrap().waiting);
     let fresh = pool.reader().unwrap();
     let behind = fresh
-        .chains_behind_index(
-            &[],
-            crate::StoppedChains::Finished,
-            crate::RevisionChains::All,
-            None,
-        )
+        .chains_behind_index(&versions, crate::RevisionChains::All, None)
         .unwrap();
     assert_eq!(behind.len(), 1);
     assert_eq!(
-        (
-            behind[0].progress.parsed_upto,
-            behind[0].progress.length,
-            behind[0].progress.waiting
-        ),
-        (40, 140, false)
+        (behind[0].state.parsed_to(), behind[0].stored, behind[0].due),
+        (40, 140, Due::Whole)
     );
-    assert!(!fresh.input_progress("metadata").unwrap().unwrap().waiting);
+    assert_eq!(shown(&fresh), ChainStatus::Parsing);
 }
 
 #[test]
-fn stopped_selection_uses_its_attempt_even_after_a_full_length_refusal() {
+fn failed_and_refused_chains_wait_for_new_bytes_or_a_new_parser_version() {
     let dir = tempfile::tempdir().unwrap();
     let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
     let archive = Connection::open(fixture.archive.archive_db()).unwrap();
     archive.execute_batch("INSERT INTO input VALUES('failed','claude-code'),('refused','claude-code'); INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('failed',1,'first',1,10,1),('refused',1,'first',1,10,1);").unwrap();
     let index = Connection::open(fixture.archive.index_db()).unwrap();
-    let attempt = polylogue_model::batch::StoppedAttempt {
-        executable: polylogue_model::BlobHash::of(b"first program"),
-        parser_settings: None,
-    };
-    index.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto,at_length,reason) VALUES(71,1,'reading','failed',0,10,'original failure'),(72,1,'reading','refused',10,10,'original refusal');").unwrap();
-    index
-        .execute(
-            "UPDATE parse_state SET stopped_attempt=?1 WHERE input_pk=71",
-            [crate::encoding::pack_json(&attempt).unwrap()],
-        )
-        .unwrap();
+    index.execute_batch("INSERT INTO input_ref(pk,id,format) VALUES(71,'failed','claude-code'),(72,'refused','claude-code'); INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting,failure_kind,failure_detail) VALUES(71,1,'failed','v',0,10,'malformed','original failure'),(72,1,'failed','v',10,0,'refused','original refusal');").unwrap();
     let reads = fixture.reads().unwrap();
-    let select = |attempt| {
+    let behind = |version: &str| {
         reads
             .reader()
             .unwrap()
             .chains_behind_index(
-                &[],
-                crate::StoppedChains::ForAttempt(attempt),
+                &[("claude-code".into(), version.into())],
                 crate::RevisionChains::All,
                 None,
             )
             .unwrap()
+            .into_iter()
+            .map(|chain| (chain.input, chain.due))
+            .collect::<Vec<_>>()
     };
-    let first = select(attempt);
-    assert_eq!(first.len(), 1);
-    assert_eq!(first[0].input, "refused");
-    assert!(first[0].stopped_at_length);
-    assert_eq!(first[0].progress.parsed_upto, 10);
-    assert_eq!(first[0].stopped_attempt, None);
-    index
-        .execute(
-            "UPDATE parse_state SET stopped_attempt=?1 WHERE input_pk=72",
-            [crate::encoding::pack_json(&attempt).unwrap()],
-        )
-        .unwrap();
-    assert!(select(attempt).is_empty());
-    let next = polylogue_model::batch::StoppedAttempt {
-        executable: polylogue_model::BlobHash::of(b"next program"),
-        parser_settings: None,
-    };
-    assert_eq!(select(next).len(), 2);
+    assert_eq!(behind("v"), vec![]);
+    assert_eq!(
+        behind("v2"),
+        vec![
+            ("failed".into(), Due::Whole),
+            ("refused".into(), Due::Whole)
+        ]
+    );
+    archive.execute("INSERT INTO revision(input,number,produced,chain,length,commit_seq) VALUES('failed',2,'appended',1,20,2)", []).unwrap();
+    assert_eq!(behind("v"), vec![("failed".into(), Due::Whole)]);
 }
 
 #[test]
@@ -340,24 +328,19 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     index
         .execute_batch(
             "INSERT INTO input_ref(id) VALUES ('a');
-         INSERT INTO parse_state(input_pk,chain,parse_version,status,parsed_upto)
-         SELECT pk,2,'old','done',20 FROM input_ref WHERE id='a';",
+         INSERT INTO parse_state(input_pk,chain,state,parser_version,parsed_to,waiting)
+         SELECT pk,2,'parsed','old',20,0 FROM input_ref WHERE id='a';",
         )
         .unwrap();
     let pool = fixture.reads().unwrap();
     let reader = pool.reader().unwrap();
     let versions = [("native".into(), "new".into())];
     let all = reader
-        .chains_behind_index(
-            &versions,
-            StoppedChains::Finished,
-            crate::RevisionChains::All,
-            None,
-        )
+        .chains_behind_index(&versions, crate::RevisionChains::All, None)
         .unwrap();
     assert_eq!(
         all.iter()
-            .map(|c| (&*c.input, c.progress.chain, c.current, c.reading_changed))
+            .map(|c| (&*c.input, c.chain, c.current, c.due == Due::Whole))
             .collect::<Vec<_>>(),
         vec![
             ("b", 1, true, true),
@@ -369,12 +352,7 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     let selected = vec!["c".into(), "a".into(), "a".into(), "missing".into()];
     assert_eq!(
         reader
-            .chains_behind_index(
-                &versions,
-                StoppedChains::Finished,
-                crate::RevisionChains::All,
-                Some(&selected)
-            )
+            .chains_behind_index(&versions, crate::RevisionChains::All, Some(&selected))
             .unwrap(),
         all.into_iter()
             .filter(|c| c.input != "b")
@@ -382,12 +360,7 @@ fn selected_chains_keep_order_parser_upgrades_and_empty_selection() {
     );
     assert!(
         reader
-            .chains_behind_index(
-                &versions,
-                StoppedChains::Finished,
-                crate::RevisionChains::All,
-                Some(&[])
-            )
+            .chains_behind_index(&versions, crate::RevisionChains::All, Some(&[]))
             .unwrap()
             .is_empty()
     );
@@ -438,8 +411,7 @@ fn selected_history_work(unselected: usize) -> usize {
         .unwrap();
     let found = reader
         .chains_behind_index(
-            &[],
-            StoppedChains::Finished,
+            &versions(&["native"]),
             crate::RevisionChains::All,
             Some(&["selected".into()]),
         )
@@ -499,8 +471,7 @@ fn parser_paths_keep_raw_bytes_of_one_observation() {
     ] {
         let rows = reader
             .chains_behind_index(
-                &[],
-                crate::StoppedChains::Finished,
+                &versions(&["claude-code", "claude-export"]),
                 RevisionChains::All,
                 selected.as_deref(),
             )

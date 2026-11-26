@@ -72,7 +72,10 @@ fn array_order_and_parent_sessions_survive_rebuild() {
             );
         }
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
-        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 7);
+        assert_eq!(
+            w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+            7
+        );
     }
     fs::remove_file(&path).unwrap();
     polylogue_testkit::delete_index(&w.root);
@@ -80,7 +83,10 @@ fn array_order_and_parent_sessions_survive_rebuild() {
     assert!(e.run_pass().unwrap().errors.is_empty());
     assert_eq!(texts(&w, "chatgpt:parent"), ["First", "Second"]);
     assert_eq!(texts(&w, "chatgpt:child"), ["Third"]);
-    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 7);
+    assert_eq!(
+        w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+        7
+    );
 }
 
 #[test]
@@ -99,7 +105,10 @@ fn malformed_array_suffix_commits_one_refusal_and_no_prefix_conversations() {
         assert!(report.refused.is_empty(), "{report:?}");
         assert!(report.pass.errors.is_empty(), "{report:?}");
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
-        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
+        assert_eq!(
+            w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+            1
+        );
         assert_eq!(w.count("SELECT SUM(unreadable) AS n FROM parse_state"), 1);
     }
 }
@@ -141,7 +150,7 @@ fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
 
 #[cfg(feature = "faults")]
 #[test]
-fn stopped_array_delivery_replays_stored_bytes_when_the_executable_changes() {
+fn stopped_array_delivery_replays_stored_bytes_when_the_parser_version_changes() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("conversations.json");
     let bytes = serde_json::to_vec(&vec![
@@ -162,29 +171,33 @@ fn stopped_array_delivery_replays_stored_bytes_when_the_executable_changes() {
         let report = e.import(std::slice::from_ref(&path)).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
         assert_eq!(report.pass.errors.len(), 1, "{report:?}");
-        assert_eq!(w.count("SELECT parsed_upto AS n FROM parse_state"), 0);
+        assert_eq!(w.count("SELECT parsed_to AS n FROM parse_state"), 0);
         assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 1);
-        assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
+        assert_eq!(
+            w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+            2
+        );
     }
     fs::remove_file(&path).unwrap();
     let (mut e, _lock) = engine(&w, 8);
     let unchanged = e.run_pass().unwrap();
     assert!(unchanged.errors.is_empty(), "{unchanged:?}");
     assert_eq!(unchanged.bytes_read, 0, "{unchanged:?}");
-    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 2);
+    assert_eq!(
+        w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+        2
+    );
     assert!(texts(&w, "chatgpt:new").is_empty());
-    let config = e.config.clone();
-    let archive = e.archive.clone();
-    let mut attempt = e.stopped_attempt;
-    attempt.executable = polylogue_model::BlobHash::of(b"changed export reader executable");
-    drop(e);
-    let mut e = Engine::new(config, archive, attempt).unwrap();
+    polylogue_store::fixture::older_reading(&e.archive, "chatgpt").unwrap();
     let retry = e.run_pass().unwrap();
     assert!(retry.errors.is_empty(), "{:?}", retry.errors);
     assert_eq!(retry.bytes_stored, 0, "{retry:?}");
     assert_eq!(texts(&w, "chatgpt:old"), ["old"]);
     assert_eq!(texts(&w, "chatgpt:new"), ["new"]);
-    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 4);
+    assert_eq!(
+        w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+        4
+    );
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
 }
 
