@@ -250,7 +250,7 @@ fn transforms_subject_lists_the_pipe_stages() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|entry| entry["completion"].as_str().unwrap())
+        .filter_map(|entry| entry["completion"].as_str())
         .collect();
     for stage in ["where", "sort by", "group by"] {
         assert!(completions.contains(&stage), "{completions:?}");

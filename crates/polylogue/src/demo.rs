@@ -238,8 +238,8 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     step(
         "Inspect usage",
         "Usage and cost come from the current catalog. The historical example price table is a separate illustration; unknown figures stay unknown.",
-        "measure usage",
-        json!({"query": "sessions where kind:*"}),
+        "rows",
+        json!({"selection": "sessions where kind:* | measure usage"}),
     )?;
     step(
         "Add a decision note",

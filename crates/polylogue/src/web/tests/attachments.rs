@@ -27,8 +27,8 @@ fn http_attachment_pages_preserve_credential_shaped_bytes_and_labels() {
             )
             .await;
             assert_eq!(status, StatusCode::OK, "{raw}");
-            let answer: serde_json::Value = serde_json::from_str(&raw).unwrap();
-            let page = crate::protocol::line::attachment_page(&answer["value"]);
+            // The test client hands back the one step's reply.
+            let page: crate::daemon::attachment::BytePage = serde_json::from_str(&raw).unwrap();
             assert_eq!(page.offset, bytes.len() as u64);
             if bytes.is_empty() {
                 let descriptor = serde_json::to_value(&page.descriptor).unwrap();
