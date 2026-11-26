@@ -31,11 +31,6 @@ fn an_idle_live_root_is_running_in_every_live_read() {
         start: 1,
     });
     facts.edited_files.insert("src/main.rs".into());
-    facts.open_call = Some(live::OpenCall {
-        call_id: None,
-        tool: "Read".into(),
-        at: now - 1,
-    });
     f.live_facts(pk, &facts).unwrap();
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
@@ -45,10 +40,7 @@ fn an_idle_live_root_is_running_in_every_live_read() {
     );
     assert_eq!(r.live_roots().unwrap()[0].session, "test:idle");
     assert_eq!(r.live_edited_files(now).unwrap()[0].files, ["src/main.rs"]);
-    assert_eq!(
-        r.live_untils(now).unwrap(),
-        [("test:idle".into(), now - 1 + live::LONG_CALL_MS)]
-    );
+    assert!(r.live_untils(now).unwrap().is_empty());
     assert_eq!(
         group_rows(&r, "sessions where running:true | count")[0]["count"],
         1

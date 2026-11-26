@@ -82,7 +82,7 @@ fn a_link_that_copies_nothing_is_never_the_unstored_copy_marker() {
 
 #[test]
 fn transcript_and_store_compose_the_same_copied_prefix() {
-    use polylogue_testkit::morrow::{Morrow, Set, session};
+    use polylogue_testkit::{Morrow, Set, session};
     let archive = Morrow::build(Set::Main);
     let pool = archive.reads();
     let reader = pool.reader().unwrap();
