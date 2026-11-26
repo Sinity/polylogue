@@ -29,6 +29,9 @@ Times below are local. Working directory for agent sessions:
 | 8 | `claude-ai:0b9d4e6c-0008-4000-8000-000000000008` | claude-ai | chat | 2026-10-07 18:00–18:05 | "README wording" | not recorded in the export | 4 | 2 |
 
 Top-level sessions (excluding the subagent #3): 7. All sessions: 8.
+Logical sessions (what the default `sessions` listing counts): 6. #3 folds
+into #2 through its spawn link and #6 into #5 through its fork link; #4
+copies #2's history without a marker, so it is its own root.
 A subagent's session ID is `claude-code:agent-<agentId>`. Codex item IDs
 identify messages across files: copied parent messages keep their IDs, while
 distinct messages have distinct IDs. Codex message counts are item
