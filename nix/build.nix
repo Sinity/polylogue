@@ -16,11 +16,19 @@ let
   craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
   # sccache hashes every CARGO_* variable, so a target directory chosen per
   # checkout through CARGO_TARGET_DIR would make every checkout miss the
-  # others' entries. The compiler never reads it.
+  # others' entries; the compiler never reads it. A server's start creates a
+  # socket in TMPDIR, which fails past the socket path limit, so a long TMPDIR
+  # is reached through a short link to it under the runtime directory.
   sccacheRustc = pkgs.writeShellScript "sccache-rustc" ''
     unset CARGO_TARGET_DIR
+    if [ "''${#TMPDIR}" -gt 60 ] && [ -n "''${XDG_RUNTIME_DIR:-}" ]; then
+      short="$XDG_RUNTIME_DIR/sccache-tmp-$(printf %s "$TMPDIR" | ${pkgs.coreutils}/bin/sha256sum | ${pkgs.coreutils}/bin/cut -c1-16)"
+      [ -L "$short" ] || ${pkgs.coreutils}/bin/ln -sfn "$TMPDIR" "$short" 2>/dev/null || true
+      [ ! -L "$short" ] || export TMPDIR="$short"
+    fi
     exec ${pkgs.sccache}/bin/sccache "$@"
   '';
+
   workspace = (builtins.fromTOML (builtins.readFile ../Cargo.toml)).workspace.package;
   common = {
     src = source;
