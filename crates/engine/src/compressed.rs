@@ -32,6 +32,20 @@ fn decoded(source: &std::fs::File, compressed: bool) -> std::io::Result<Box<dyn 
     }
 }
 
+/// Reads until `buffer` is full or the stream ends; how many bytes it read.
+fn read_up_to(stream: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut held = 0;
+    while held < buffer.len() {
+        match stream.read(&mut buffer[held..]) {
+            Ok(0) => break,
+            Ok(n) => held += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(held)
+}
+
 fn matching_revision(
     reader: &polylogue_store::Reader<'_>,
     blobs: &Arc<polylogue_store::blobs::Blobs>,
@@ -229,40 +243,44 @@ impl RolloutCapture {
         let mut same = false;
         let mut appended = false;
         let mut historical = None;
+        // The file ends inside the stored chain and every byte it holds is
+        // the chain's: how many bytes it holds.
+        let mut prefix = None;
         if let Some(chain) = chain {
             let mut stored = chain.reader(Arc::clone(blobs));
             let mut left = [0; 65536];
             let mut right = [0; 65536];
             let mut matches = true;
+            let mut compared = 0u64;
             loop {
                 let n = stored.read(&mut left)?;
                 if n == 0 {
                     break;
                 }
-                match stream.read_exact(&mut right[..n]) {
-                    Ok(()) if left[..n] == right[..n] => {}
-                    Ok(()) => {
-                        matches = false;
-                        break;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                        matches = false;
-                        break;
-                    }
-                    Err(error) => return Err(error.into()),
+                let held = read_up_to(&mut stream, &mut right[..n])?;
+                if left[..held] != right[..held] {
+                    matches = false;
+                    break;
+                }
+                compared += held as u64;
+                if held < n {
+                    matches = false;
+                    prefix = Some(compared);
+                    break;
                 }
             }
             if matches {
                 same = stream.fill_buf()?.is_empty();
                 appended = !same;
-            } else {
+            } else if prefix.is_none() {
                 historical = matching_revision(&reads.reader()?, blobs, &id, &source, compressed)?;
                 stream = decoded(&source, compressed)?;
             }
         }
         // Equal decoded content still has a body that was read. Keep its
         // encoding through the immutable Accepted/Unresolved outcome.
-        let prepared = Some(archive.prepare_bytes(if same || historical.is_some() {
+        let seen_before = same || historical.is_some() || prefix.is_some();
+        let prepared = Some(archive.prepare_bytes(if seen_before {
             decoded(&source, compressed)?
         } else {
             stream
@@ -274,6 +292,8 @@ impl RolloutCapture {
         }
         let length = if let Some(point) = historical {
             point.length
+        } else if let Some(length) = prefix {
+            length
         } else if same {
             previous.as_ref().expect("same stored input").length
         } else {
@@ -284,7 +304,7 @@ impl RolloutCapture {
                     0
                 }
         };
-        let added = if same || historical.is_some() {
+        let added = if seen_before {
             0
         } else {
             prepared.as_ref().expect("new bytes").len()
@@ -338,6 +358,11 @@ impl RolloutCapture {
             Change::Observed {
                 revision: point.number,
                 chain: point.chain,
+            }
+        } else if prefix.is_some() {
+            // No byte the chain lacks: seen back, whatever its length.
+            Change::ObservedPrefix {
+                chain: previous.as_ref().expect("a stored chain").chain,
             }
         } else if same {
             Change::Unchanged
@@ -565,7 +590,10 @@ impl Engine {
     ) -> PreparedBatch {
         let input = generation.stream().input.clone();
         let length = generation.window().end;
-        let body_only = matches!(change, Change::Unchanged | Change::Observed { .. });
+        let body_only = matches!(
+            change,
+            Change::Unchanged | Change::Observed { .. } | Change::ObservedPrefix { .. }
+        );
         let source_read = bytes.as_ref().map(|bytes| {
             context.finish_observed(
                 polylogue_store::capture_read::RawRange {

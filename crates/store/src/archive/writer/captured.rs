@@ -105,8 +105,11 @@ impl Inner {
             let (chain, _) = write_bytes(&tx, b, seq)?;
             let chain = chain.or_invalid("stored bytes produced no chain")?;
             crate::fault::check("import.rows", &b.input.id)?;
-            let already_stored =
-                again || matches!(b.change, Change::Unchanged | Change::Observed { .. });
+            let already_stored = again
+                || matches!(
+                    b.change,
+                    Change::Unchanged | Change::Observed { .. } | Change::ObservedPrefix { .. }
+                );
             stored.push(StoredInput {
                 input: b.input.id.clone(),
                 chain,
@@ -301,11 +304,7 @@ fn input_rows_at(
         extents: Vec::new(),
         observation: None,
     };
-    if let Change::Observed {
-        revision: number,
-        chain,
-    } = b.change
-    {
+    if let Change::Observed { chain, .. } | Change::ObservedPrefix { chain } = b.change {
         if b.continues
             || b.new_blob.is_some()
             || b.blobs.iter().any(|blob| {
@@ -323,13 +322,36 @@ fn input_rows_at(
             ));
         }
         let source = crate::source::Source::of(tx)?;
-        let stored:bool=tx.scalar(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,number,chain,b.length as i64])?;
-        if !stored {
-            return Err(StoreError::Invalid(
-                "observed revision point is not stored".into(),
-            ));
+        let length = crate::to_i64(b.length, "input exceeds archive address space")?;
+        let number = match b.change {
+            Change::Observed { revision, .. } => {
+                let stored:bool=tx.scalar(&source.sql("SELECT EXISTS(SELECT 1 FROM @source.revision WHERE input=?1 AND number=?2 AND chain=?3 AND length=?4)"),params![b.input.id,revision,chain,length])?;
+                if !stored {
+                    return Err(StoreError::Invalid(
+                        "observed revision point is not stored".into(),
+                    ));
+                }
+                Some(revision)
+            }
+            // The first revision of the chain that ends where the seen bytes
+            // do, when one does.
+            _ => tx.scalar_optional(
+                &source.sql(
+                    "SELECT number FROM @source.revision
+                     WHERE input=?1 AND chain=?2 AND length=?3 ORDER BY number LIMIT 1",
+                ),
+                params![b.input.id, chain, length],
+            )?,
+        };
+        rows.observation = observation(tx, b, "back", number, seq, staged)?;
+        if number.is_none()
+            && let Some(seen) = &mut rows.observation
+        {
+            // Bytes that end inside the chain: the row writer checks that
+            // the chain holds them before it records the observation.
+            seen.chain = Some(chain);
+            seen.length = Some(length);
         }
-        rows.observation = observation(tx, b, "back", Some(number), seq, staged)?;
         return Ok((Some(chain), rows));
     }
     let revision = |number, produced: &str, chain| Revision {
@@ -412,7 +434,9 @@ fn input_rows_at(
             Change::Rewritten => "rewritten",
             Change::Unchanged if b.input.route.is_imported() => "imported",
             Change::Unchanged => "back",
-            Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
+            Change::Reparse { .. } | Change::Observed { .. } | Change::ObservedPrefix { .. } => {
+                unreachable!()
+            }
             Change::Disappeared => "deleted",
         };
         rows.observation = observation(tx, b, class, Some(number), seq, staged)?;

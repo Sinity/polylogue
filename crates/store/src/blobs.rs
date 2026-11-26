@@ -75,6 +75,10 @@ pub enum Change {
     /// A previously recorded revision was observed at another location.
     /// Its bytes and current revision remain unchanged.
     Observed { revision: i64, chain: i64 },
+    /// Seen at another location holding only the first bytes of a stored
+    /// chain, up to the step's length: no byte the chain lacks, so nothing
+    /// is stored and the chain stays as it is.
+    ObservedPrefix { chain: i64 },
     /// Parse bytes already stored in this same chain.
     Reparse { chain: i64 },
     /// The same file grew: only the bytes from `from` on are new. The caller

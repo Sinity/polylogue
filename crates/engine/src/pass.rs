@@ -1321,7 +1321,9 @@ impl Engine {
                 Priority::Live,
             ),
             Change::Unchanged | Change::Disappeared => return self.stored_plan(path),
-            Change::Reparse { .. } | Change::Observed { .. } => unreachable!(),
+            Change::Reparse { .. } | Change::Observed { .. } | Change::ObservedPrefix { .. } => {
+                unreachable!()
+            }
         };
         // A document is parsed whole: any change parses it from its start.
         let (parse_pos, parser_state) = if whole(st.origin, path) {
