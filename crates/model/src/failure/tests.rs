@@ -44,7 +44,7 @@ fn every_reason_has_one_code_and_one_text() {
                 model: "synthetic".into(),
             },
             Code::Embed,
-            "no vectors are stored for model `synthetic`; build them with `polylogue embed`",
+            "no vectors are stored for model `synthetic`; preview their cost with `polylogue embed`",
         ),
         (
             Reason::EmbeddingProvider {

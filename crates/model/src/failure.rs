@@ -171,7 +171,7 @@ reasons! {
     EmbeddingConfiguration "embedding_configuration" => BadValue { problem: String }
         "semantic search configuration is invalid: {problem}";
     NoVectors "no_vectors" => Embed { model: String }
-        "no vectors are stored for model `{model}`; build them with `polylogue embed`";
+        "no vectors are stored for model `{model}`; preview their cost with `polylogue embed`";
     EmbeddingProvider "embedding_provider" => Embed { problem: String }
         "the embedding provider failed: {problem}";
     EmbeddingCallsOff "embedding_calls_off" => ModelCallsOff {}

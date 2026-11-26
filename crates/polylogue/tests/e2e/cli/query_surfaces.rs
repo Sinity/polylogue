@@ -546,16 +546,11 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
     };
     assert_eq!(error.kind.name(), "bad_value");
     assert_eq!(error.code.as_deref(), Some("bad_value"));
-    assert_eq!(
-        error.candidates().first().map(String::as_str),
-        Some("codex")
-    );
+    let origins = "codex, aider, grok, grok-cli, hermes, llm, pi, ai-studio, chatgpt, claude-ai, hook-spool, openai-chat, openrouter, claude-code, codex-cloud, gemini-app, gemini-cli, antigravity, export-file, otel-genai, tool-context, browser-capture, claude-design, tool-database, codex-database, claude-code-side, codex-compressed, codex-local-file, polylogue-bundle, claude-code-history, antigravity-exports, antigravity-database, polylogue-repo-lookup";
+    assert_eq!(error.candidates(), origins.split(", ").collect::<Vec<_>>());
     assert_eq!(
         error.message.lines().next().unwrap(),
-        format!(
-            "`origin` on `sessions` is one of: {}",
-            error.candidates().join(", ")
-        )
+        format!("`origin` on `sessions` is one of: {origins}")
     );
     let set = |key: &str, value: &str| {
         let output = cli(&env, &["set", key, value]);
@@ -580,7 +575,7 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
         }
     };
     check_missing(
-        "no vectors are stored for model `qwen3-embedding:0.6b`; build them with `polylogue embed`; rows are ordered by time and unranked",
+        "no vectors are stored for model `qwen3-embedding:0.6b`; preview their cost with `polylogue embed`; rows are ordered by time and unranked",
     );
     set("embed.endpoint", "https://example.invalid/v1");
     check_missing(
