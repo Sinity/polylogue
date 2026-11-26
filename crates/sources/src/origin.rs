@@ -137,6 +137,11 @@ pub struct ParserModule {
     pub version: u32,
 }
 
+/// Harness prefixes in the declarations affect message rows.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 macro_rules! modules {
     (@entry $name:expr, $module:path) => {
         ParserModule {
@@ -170,6 +175,7 @@ macro_rules! modules {
         source "content_ids" => crate::content_ids,
         source "chain_names" => crate::chain_names,
         source "export" => crate::export,
+        source "origin" => crate::origin,
         $(source concat!(stringify!($module), "::VERSION") => $module,)*
         $(external concat!(stringify!($external), "::VERSION") => $external),*
     ) };

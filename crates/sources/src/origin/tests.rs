@@ -209,6 +209,10 @@ fn parser_versions_include_referenced_modules() {
                     files.push(child_path.with_extension("rs"));
                 }
             }
+            // Other origins in the registry do not contribute to this parser.
+            if path == root.join("origin.rs") {
+                continue;
+            }
             for reference in references.split("crate::").skip(1) {
                 let names = reference.strip_prefix('{').map_or_else(
                     || vec![reference],
@@ -227,11 +231,7 @@ fn parser_versions_include_referenced_modules() {
                     {
                         continue;
                     }
-                    // The registry describes origins, rather than parsing rows.
-                    if module.is_empty()
-                        || module == "origin"
-                        || !root.join(&module).with_extension("rs").exists()
-                    {
+                    if module.is_empty() || !root.join(&module).with_extension("rs").exists() {
                         continue;
                     }
                     assert!(
