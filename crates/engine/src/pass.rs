@@ -2978,8 +2978,12 @@ impl Engine {
         };
         let mut summary = RunSummary::default();
         let mut discover = true;
-        // A failed turn whose failures all pass by themselves is tried again
-        // after `live_every`; any other waits for a change.
+        // What the last failed turn failed with. A turn whose failures all
+        // pass by themselves is tried again after `live_every`; one failing
+        // again with the same failures (by subject, cause and code, not by
+        // their sentences) waits for a change.
+        let mut failed_with: Option<Vec<(String, polylogue_model::Cause, polylogue_model::Code)>> =
+            None;
         let mut waits_for_change;
         let mut changed = std::collections::BTreeSet::new();
         let mut watch_errors = Vec::new();
@@ -3017,6 +3021,7 @@ impl Engine {
                         changed.clear();
                     }
                     discover = false;
+                    failed_with = None;
                     waits_for_change = false;
                     pass
                 }
@@ -3039,9 +3044,16 @@ impl Engine {
                         Ok(report) => errors.extend(report.errors),
                         Err(error) => errors.push(polylogue_model::Failure::of(&error)),
                     }
-                    waits_for_change = errors
+                    let keys: Vec<_> = errors
                         .iter()
-                        .any(|failure| failure.cause != polylogue_model::Cause::Transient);
+                        .filter(|failure| failure.cause != polylogue_model::Cause::Transient)
+                        .map(|failure| {
+                            let (subject, cause, code) = failure.key();
+                            (subject.to_owned(), cause, code)
+                        })
+                        .collect();
+                    waits_for_change = !keys.is_empty() && failed_with.as_ref() == Some(&keys);
+                    failed_with = Some(keys);
                     Pass {
                         full_scans: u64::from(discover && self.config.reads_sources),
                         errors,
@@ -3075,8 +3087,8 @@ impl Engine {
                 // Work queued while the pass ran (imports, changes the
                 // watcher saw) is taken now; with none, the loop is idle. A
                 // capture that continues gets `live_every` before the next pass.
-                // A turn failing for a cause that does not pass by itself
-                // ends the run with its errors reported.
+                // A turn failing as the one before it ends the run with its
+                // errors reported.
                 let mut more = pending && !waits_for_change;
                 if more {
                     match self
