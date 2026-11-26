@@ -1416,7 +1416,7 @@ fn original_kept_bodies_retain_their_recorded_units_and_reference_columns() {
             .conn()
             .unwrap()
             .query_row(
-                "SELECT rows_json FROM source_kept_result WHERE id=?1",
+                "SELECT rows_json FROM source_saved_rows WHERE id=?1",
                 [id],
                 |row| row.get(0),
             )

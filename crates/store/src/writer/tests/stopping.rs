@@ -145,7 +145,7 @@ fn stopping_stored_byte_replay_rolls_back_the_index() {
             ["committed body"]
         );
         assert_eq!(
-            r.query("SELECT records,parsed_upto,status FROM parse_state", &[])
+            r.query("SELECT used+skipped+unreadable AS records,parsed_to AS parsed_upto,CASE WHEN state='failed' AND failure_kind='refused' THEN 'refused' WHEN state='failed' THEN 'failed' WHEN waiting>0 THEN 'waiting' ELSE 'done' END AS status FROM parse_state", &[])
                 .unwrap(),
             vec![serde_json::json!({"records":1,"parsed_upto":100,"status":"done"})]
         );
@@ -194,9 +194,9 @@ fn stopping_still_commits_an_explicit_parse_failure() {
     let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
     step.reset = false;
     step.parse_version = "synthetic=1".into();
-    step.progress = polylogue_model::batch::StepProgress::Refused {
-        reason: "declared source is invalid".into(),
-    };
+    step.failure = Some(polylogue_model::ChainFailure::refused(
+        "declared source is invalid",
+    ));
     b.parse = vec![step];
     w.archive.stop().cancel();
     w.writer.send(b).unwrap();
@@ -204,7 +204,7 @@ fn stopping_still_commits_an_explicit_parse_failure() {
     let reads = ReadPool::open(&w.archive.reopened()).unwrap();
     let r = reads.reader().unwrap();
     assert_eq!(
-        r.query("SELECT status,reason,parsed_upto FROM parse_state", &[])
+        r.query("SELECT CASE WHEN state='failed' AND failure_kind='refused' THEN 'refused' WHEN state='failed' THEN 'failed' WHEN waiting>0 THEN 'waiting' ELSE 'done' END AS status,failure_detail AS reason,parsed_to AS parsed_upto FROM parse_state", &[])
             .unwrap(),
         vec![
             serde_json::json!({"status":"refused","reason":"declared source is invalid","parsed_upto":0})
@@ -241,9 +241,9 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
         let mut step = ParseStep::new(Default::default(), Default::default(), 0..0, false);
         step.reset = false;
         step.parse_version = "synthetic=1".into();
-        step.progress = polylogue_model::batch::StepProgress::Refused {
-            reason: "diagnosis survives stop".into(),
-        };
+        step.failure = Some(polylogue_model::ChainFailure::refused(
+            "diagnosis survives stop",
+        ));
         diagnosis.parse = vec![step];
         let mut normal = batch(
             "normal",
@@ -341,8 +341,8 @@ fn a_diagnosed_member_does_not_keep_other_replays_running_during_stop() {
                 .collect::<Vec<_>>(),
             ["before stop"]
         );
-        assert_eq!(r.query("SELECT p.status,p.reason,p.parsed_upto FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='diagnosis'", &[]).unwrap(), vec![serde_json::json!({"status":"refused","reason":"diagnosis survives stop","parsed_upto":0})]);
-        assert_eq!(r.query("SELECT p.records,p.parsed_upto,p.parse_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='normal'", &[]).unwrap(), vec![serde_json::json!({"records":1,"parsed_upto":100,"parse_version":"synthetic=1"})]);
+        assert_eq!(r.query("SELECT CASE WHEN p.state='failed' AND p.failure_kind='refused' THEN 'refused' WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' ELSE 'done' END AS status,p.failure_detail AS reason,p.parsed_to AS parsed_upto FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='diagnosis'", &[]).unwrap(), vec![serde_json::json!({"status":"refused","reason":"diagnosis survives stop","parsed_upto":0})]);
+        assert_eq!(r.query("SELECT p.used+p.skipped+p.unreadable AS records,p.parsed_to AS parsed_upto,p.parser_version AS parse_version FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id='normal'", &[]).unwrap(), vec![serde_json::json!({"records":1,"parsed_upto":100,"parse_version":"synthetic=1"})]);
     }
 }
 

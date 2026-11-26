@@ -560,7 +560,7 @@ pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, 
     for v in x.values() {
         let p = c.text_param(&v.to_lowercase());
         parts.push(format!(
-            "EXISTS (SELECT 1 FROM source_annotation tn JOIN source_annotation_link tt ON tt.record = tn.id AND tt.role = 'about' \
+            "EXISTS (SELECT 1 FROM source_annotation tn JOIN source_annotation_link tt ON tt.annotation = tn.id AND tt.role = 'about' \
              WHERE tn.kind = 'tag' AND tt.ref = 'session:' || {s}.id AND {} \
              AND ((tn.key IS NULL AND lower(json_extract(tn.value,'$.value')) = {p}) \
                OR lower(tn.key) || ':' || lower(json_extract(tn.value,'$.value')) = {p} \
@@ -823,7 +823,7 @@ pub(crate) fn annotation_about(
         })?;
     let p = c.text_param(&reference.to_string());
     Ok(format!(
-        "EXISTS(SELECT 1 FROM source_annotation_link nt WHERE nt.record={r}.id AND nt.role='about' AND nt.ref={p})",
+        "EXISTS(SELECT 1 FROM source_annotation_link nt WHERE nt.annotation={r}.id AND nt.role='about' AND nt.ref={p})",
         r = x.row()
     ))
 }
@@ -877,7 +877,7 @@ pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<Str
             .map_err(|error| x.bad(value.clone(), error.to_string()))?;
         let p = c.text_param(&reference.to_string());
         clauses.push(format!(
-            "EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.record={}.id AND l.role<>'about' AND {})",
+            "EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.annotation={}.id AND l.role<>'about' AND {})",
             x.row(),
             crate::session_sql::names_record("l.ref", &p)
         ));

@@ -134,7 +134,7 @@ fn gemini_cli_and_hermes_files_are_read_and_so_are_their_changes_found_during_a_
             .reader()
             .unwrap()
             .query(
-                "SELECT count(*) AS n FROM parse_state WHERE status<>'done'",
+                "SELECT count(*) AS n FROM parse_state WHERE NOT (state='parsed' AND waiting=0)",
                 &[],
             )
             .unwrap()[0]["n"]

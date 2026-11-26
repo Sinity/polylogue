@@ -83,7 +83,7 @@ fn live_refresh_keeps_each_queued_partial_first_plan_and_finishes_its_bytes() {
             .unwrap()
             .unwrap();
         assert_eq!(known.stored, expected.len() as u64);
-        assert_eq!(known.parsed_upto, known.stored);
+        assert_eq!(known.state.parsed_to(), known.stored);
         let chain = reader
             .stored_chain(&known.input_id, known.chain.unwrap(), known.stored)
             .unwrap();

@@ -26,13 +26,12 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
         .reads
         .reader()
         .unwrap()
-        .parser_checkpoint(&input, chain, &engine.inputs[&path].origin.parse_version())
+        .chain_state(&input, chain)
         .unwrap();
     assert!(
         checkpoint
-            .as_ref()
-            .and_then(|stored| stored.checkpoint.as_ref())
-            .and_then(|checkpoint| checkpoint.parser_state.as_ref())
+            .resume()
+            .and_then(|resume| resume.0.as_ref())
             .is_some(),
         "Claude continuation is committed with its cursor"
     );
@@ -50,7 +49,7 @@ fn a_completed_scope_reset_reloads_confirmed_state_without_recapturing() {
             .reads
             .reader()
             .unwrap()
-            .parser_checkpoint(&input, chain, &engine.inputs[&path].origin.parse_version())
+            .chain_state(&input, chain)
             .unwrap(),
         checkpoint
     );
@@ -348,7 +347,7 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
                 std::thread::sleep(Duration::from_millis(5));
             }
             let cursor = home.read(|reader| reader.query(
-                "SELECT COALESCE(max(p.parsed_upto),0) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
+                "SELECT COALESCE(max(p.parsed_to),0) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1",
                 &[polylogue_store::SqlValue::Text(input.clone())],
             ))[0]["n"].as_u64().unwrap();
             let captured = home.read(|reader| {
@@ -410,8 +409,8 @@ fn queued_import_yields_then_resumes_from_saved_positions() {
                 assert_eq!(home.texts("unseen-source"), ["preexisting new file"]);
             }
             let reader = engine.reads.reader().unwrap();
-            let progress = reader.input_progress(&input).unwrap().unwrap();
-            assert_eq!(progress.parsed_upto, complete.len() as u64);
+            let progress = reader.latest_chain(&input).unwrap().unwrap();
+            assert_eq!(progress.state.parsed_to(), complete.len() as u64);
             let stored = reader
                 .stored_chain(&input, progress.chain, complete.len() as u64)
                 .unwrap();
@@ -468,20 +467,20 @@ fn a_stop_keeps_the_bytes_in_hand_without_reading_the_whole_input() {
     assert!(result.unwrap().work.errors.is_empty());
     let reads = polylogue_store::ReadPool::open(&engine.archive.reopened()).unwrap();
     let reader = reads.reader().unwrap();
-    let progress = reader.input_progress(&input).unwrap().unwrap();
+    let progress = reader.latest_chain(&input).unwrap().unwrap();
     assert!(
-        progress.length > first.len() as u64,
+        progress.stored > first.len() as u64,
         "new bytes already in hand must commit"
     );
-    assert!(progress.length < complete.len() as u64);
+    assert!(progress.stored < complete.len() as u64);
     let stored = reader
-        .stored_chain(&input, progress.chain, progress.length)
+        .stored_chain(&input, progress.chain, progress.stored)
         .unwrap();
     assert_eq!(
         stored
-            .read_range(&engine.blobs, 0, progress.length)
+            .read_range(&engine.blobs, 0, progress.stored)
             .unwrap(),
-        &complete.as_bytes()[..progress.length as usize]
+        &complete.as_bytes()[..progress.stored as usize]
     );
     drop(reader);
     drop(reads);
@@ -651,7 +650,7 @@ fn an_import_answers_before_queued_captures_start_and_the_next_turn_finishes_the
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
                 )?[0]["n"].as_u64().unwrap();
                 let markers = reader.query(
-                    "SELECT count(*) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.stopped_attempt IS NOT NULL",
+                    "SELECT count(*) AS n FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk WHERE i.id=?1 AND p.state = 'failed'",
                     &[polylogue_store::SqlValue::Text(input.id.clone())],
                 )?[0]["n"].as_u64().unwrap();
                 let captured = reader.query(
@@ -716,14 +715,14 @@ fn an_import_answers_before_queued_captures_start_and_the_next_turn_finishes_the
                 ["original body", "captured body"]
             );
             let reader = engine.reads.reader().unwrap();
-            let progress = reader.input_progress(&input.id).unwrap().unwrap();
-            assert_eq!(progress.parsed_upto, input.bytes.len() as u64);
+            let progress = reader.latest_chain(&input.id).unwrap().unwrap();
+            assert_eq!(progress.state.parsed_to(), input.bytes.len() as u64);
             let stored = reader
-                .stored_chain(&input.id, progress.chain, progress.length)
+                .stored_chain(&input.id, progress.chain, progress.stored)
                 .unwrap();
             assert_eq!(
                 stored
-                    .read_range(&engine.blobs, 0, progress.length)
+                    .read_range(&engine.blobs, 0, progress.stored)
                     .unwrap(),
                 input.bytes.as_bytes()
             );

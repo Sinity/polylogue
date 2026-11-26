@@ -163,7 +163,8 @@ from each:
 | the record ahead of the index: a chain stored further than its reading, or record rows the index has not taken in | reads on from where each reading ends; a reading is a function of the bytes, so the rows are those an uninterrupted run would have written |
 | sessions marked due for their derived values, texts waiting for their search entries | computes and writes them |
 | a source cursor behind its committed bytes | re-reads and finds the bytes already stored |
-| the files of an unfinished index build | discards them and builds again from the stored bytes |
+| the files of an unfinished index rebuild, with its reason | discards them and rebuilds again from the stored bytes for the same reason |
+| a finished rebuild not yet renamed over `index.db` | installs it |
 
 A blob is stored once: a resumed write finds the bytes it was storing.
 
@@ -185,21 +186,39 @@ so no later sync in that boot, in the same process or a new one (where the machi
 they reached the disk. Recovery starts with a reboot
 ([operations.md#storage-failure](operations.md#storage-failure)).
 
-**The index file.** A build of the index writes private files in a directory
-of its own, without syncing as it goes, and installs them by rename when it
-ends; until then nothing but the build opens them. A build never changes the
-record or the stored bytes, so losing one costs the build and nothing else: a
-start that finds a build a crash or a stop left discards its files and builds
-again from the stored bytes, a build that fails in a running daemon is
-discarded the same way and the next pass builds again, and a start that finds
-a finished build not yet installed installs it. A new archive's first index
-is built the same way, from the files its first pass stores. While a
-build runs, reads are served from the installed index when this build of
-Polylogue can read it, and otherwise reply `index_building` with the build's
-progress
+**The index file.** Which index files exist and what they mean is one pair,
+derived from disk by one function that the daemon's open and any other
+process opening the archive use, and shown by `status`: the installed index
+(none; current, naming the archive it was built from and the record position
+it has taken in; or unusable, with why) and the rebuild (none; writing, with
+its reason; or ready). An index belongs to the archive it was built from: its
+meta holds `archive.db`'s identity and the record position it has taken in,
+and an index of another archive, or one past its archive's position (an
+`archive.db` put back from an older copy), is never read. The check uses
+those two values only, never a path or a file's identity, so an archive and
+its index moved or copied together stay paired.
+
+A rebuild writes private files in `index-rebuild/`: first `reason.json`, why
+it runs, before anything else changes, then `build.db`, written without syncs,
+and its sorted files in `sorted/`. When it ends `build.db` is synced, switched
+to WAL and renamed `ready.db`, and `ready.db` is renamed over `index.db`; the
+installed index stays `index.db` until that rename. A rebuild never changes
+the record or the stored bytes, so losing one costs the rebuild and nothing
+else: a start that finds a rebuild writing discards its files and rebuilds
+from the stored bytes for the reason on disk, a rebuild that fails in a
+running daemon is started again the same way, and a start that finds a ready
+rebuild installs it. An install that fails in a running daemon leaves the
+rebuild ready and the index writer without an index connection: index writes
+are refused with the install's error, `status` shows it, and the install is
+tried again when the writer next wakes for a commit or a message, and at the
+next start; nothing retries it on a timer. A new archive's first index is
+rebuilt the same way, from the files its first pass stores. While a rebuild
+runs, reads are served from the installed index when this build of Polylogue
+can read it, and otherwise reply `index_building` with the rebuild's reason
+and progress
 ([installing.md](installing.md#replacing-an-index-from-another-schema)). A
-reader opened before an install is refused as replaced before its next read
-begins; a read already started keeps the file it opened.
+read that has not started when an install renames the file starts on the
+installed index; a read already started keeps the file it opened.
 
 ## Pipeline
 
@@ -259,7 +278,11 @@ store's module documentation, not of this page.
   version, with the reason
   ([parse versions](archive.md#reading-versions)). A chain is read when
   its stored length or its parser's parse version differs from what its
-  state names, and for no other cause.
+  state names, and for no other cause. The state is one value in one row;
+  every reader judges it, with what the archive says of the chain, through
+  the same function. A part of a reading commits only where the stored
+  state ends; one planned from an earlier state is refused and changes
+  nothing, so no plan's memory of a position can disagree with the index.
 - **A chain that a newer chain of its input covers has no reading**, and a
   chain that begins like a newer one holds rows only for the records the
   newer one lacks ([covered chains](archive.md#readings)). The rows it would
@@ -419,9 +442,11 @@ record lies whole inside one transaction. A user's write waits for at most
 the archive commit being written, never for an index transaction or a build
 step: user writes have their own queue on the archive writer, served before
 its next bulk group, and the index writer follows the archive. What follows
-in the index from archive commits alone (the progress of chains stored
-without parsed rows, alternate text) is applied by the index writer from
-what each commit hands it, up to the record position it keeps.
+in the index from archive commits alone (alternate text and its search
+entries, import membership) is applied by the index writer from the rows
+committed after the record position it keeps, which it advances. Bytes
+stored without parsed rows change nothing in the index: whether their chain
+is due is judged from its state and the archive's facts.
 
 One connection writes the index: the index writer's. Derivation and full-text
 entries are computed beside it on read connections from committed rows, and

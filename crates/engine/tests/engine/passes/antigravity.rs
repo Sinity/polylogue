@@ -86,9 +86,9 @@ fn antigravity_cli_transcripts_append_repeat_and_rebuild_with_scoped_step_ids() 
                 .count(),
             1
         );
-        let inputs = reader.query("SELECT format FROM a.input", &[]).unwrap();
+        let inputs = reader.query("SELECT origin FROM a.input", &[]).unwrap();
         assert_eq!(inputs.len(), 2);
-        assert!(inputs.iter().all(|row| row["format"] == "antigravity"));
+        assert!(inputs.iter().all(|row| row["origin"] == "antigravity"));
     }
     fs::remove_file(path).unwrap();
     fs::remove_file(other).unwrap();
@@ -196,9 +196,9 @@ fn antigravity_summary_database_updates_repeats_and_rebuilds_without_the_source(
                 .as_deref(),
             Some("First title")
         );
-        let inputs = reader.query("SELECT format FROM a.input WHERE format IN ('antigravity-database','tool-database')", &[]).unwrap();
+        let inputs = reader.query("SELECT origin FROM a.input WHERE origin IN ('antigravity-database','tool-database')", &[]).unwrap();
         assert_eq!(inputs.len(), 1, "one location has one capture owner");
-        assert_eq!(inputs[0]["format"], "antigravity-database");
+        assert_eq!(inputs[0]["origin"], "antigravity-database");
     }
     {
         let conn = rusqlite::Connection::open(&path).unwrap();

@@ -79,7 +79,10 @@ fn openai_message_arrays_and_wrappers_rebuild_the_same_tool_dialogue_from_stored
                     serde_json::from_slice(&bytes.as_bytes()[start..end]).unwrap();
                 assert_eq!(raw["role"], role);
             }
-            assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 5);
+            assert_eq!(
+                w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+                5
+            );
             assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.extent"), 1);
             let view = serde_json::to_value(&shown).unwrap();
             if let Some(old) = previous {
@@ -111,10 +114,13 @@ fn malformed_openai_wrapper_suffix_commits_no_prefix_messages() {
         .unwrap();
     assert!(report.pass.errors.is_empty());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM message"), 0);
-    assert_eq!(w.count("SELECT SUM(records) AS n FROM parse_state"), 1);
+    assert_eq!(
+        w.count("SELECT SUM(used+skipped+unreadable) AS n FROM parse_state"),
+        1
+    );
     assert_eq!(
         w.count(
-            "SELECT count(*) AS n FROM parse_state WHERE status='refused' AND reason IS NOT NULL"
+            "SELECT count(*) AS n FROM parse_state WHERE failure_kind='refused' AND failure_detail IS NOT NULL"
         ),
         1
     );
