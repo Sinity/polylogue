@@ -105,9 +105,14 @@ fn entries(subject: &str, unit: Option<Unit>) -> Result<Vec<Value>, String> {
             "unit": f.unit, "name": f.name, "kind": f.kind, "values": f.values, "help": f.help,
             "construct": fields::construct(f),
         })).collect(),
+        // The measures follow the transforms: `| measure NAME` ends a query.
         "transforms" => polylogue_query::catalog::TRANSFORMS
             .iter()
             .map(|t| json!({"name": t.name, "completion": t.completion}))
+            .chain(crate::daemon::measure::MEASURES.iter().map(|m| json!({
+                "name": format!("measure {}", m.name), "help": m.help, "argument": m.argument,
+                "metrics": m.metrics, "whole_archive": m.whole_archive,
+            })))
             .collect(),
         "operators" => [polylogue_query::ast::Op::Eq, polylogue_query::ast::Op::Ne, polylogue_query::ast::Op::Lt, polylogue_query::ast::Op::Le, polylogue_query::ast::Op::Gt, polylogue_query::ast::Op::Ge, polylogue_query::ast::Op::Contains, polylogue_query::ast::Op::Prefix].into_iter().map(|op| json!({"name": op.symbol(), "operation": op})).collect(),
         "capabilities" => {

@@ -256,3 +256,16 @@ fn transforms_subject_lists_the_pipe_stages() {
         assert!(completions.contains(&stage), "{completions:?}");
     }
 }
+
+#[test]
+fn transforms_list_every_measure_with_its_help() {
+    let entries = entries("transforms", None).unwrap();
+    for m in crate::daemon::measure::MEASURES {
+        let name = format!("measure {}", m.name);
+        let entry = entries
+            .iter()
+            .find(|entry| entry["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is not listed"));
+        assert_eq!(entry["help"], m.help);
+    }
+}
