@@ -77,7 +77,7 @@ pub(crate) fn parts_while(
     mut visit: impl FnMut(AlternatePart) -> Result<bool>,
 ) -> Result<()> {
     let source = Source::reading(conn)?;
-    let mut statement=conn.prepare_cached(&source.sql("SELECT alternate,n,of,of_hash,relation,body FROM @source.alternate_part WHERE alternate=?1 ORDER BY n"))?;
+    let mut statement=conn.prepare_cached(&source.sql("SELECT alternate,position,source,source_hash,relation,body FROM @source.alternate_part WHERE alternate=?1 ORDER BY position"))?;
     let mut rows = statement.query([id])?;
     while let Some(row) = rows.next()? {
         if !visit(part(row)?)? {
@@ -89,7 +89,7 @@ pub(crate) fn parts_while(
 
 pub(super) fn get_part(conn: &Connection, id: &str, n: u64) -> Result<Option<AlternatePart>> {
     let source = Source::reading(conn)?;
-    let mut statement=conn.prepare_cached(&source.sql("SELECT alternate,n,of,of_hash,relation,body FROM @source.alternate_part WHERE alternate=?1 AND n=?2"))?;
+    let mut statement=conn.prepare_cached(&source.sql("SELECT alternate,position,source,source_hash,relation,body FROM @source.alternate_part WHERE alternate=?1 AND position=?2"))?;
     let mut rows = statement.query(params![
         id,
         crate::to_i64(n, "alternate part number is out of range")?
@@ -125,6 +125,6 @@ pub(super) fn insert_part(conn: &Connection, p: &AlternatePart) -> Result<()> {
         };
     }
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT INTO @source.alternate_part(alternate,n,of,of_hash,relation,body) VALUES(?1,?2,?3,?4,?5,?6)"),params![p.alternate,crate::to_i64(p.n, "alternate part number is out of range")?,p.of,&p.of_hash.0[..],p.relation.as_str(),crate::encoding::pack_text(&p.body)?])?;
+    conn.execute(&source.sql("INSERT INTO @source.alternate_part(alternate,position,source,source_hash,relation,body) VALUES(?1,?2,?3,?4,?5,?6)"),params![p.alternate,crate::to_i64(p.n, "alternate part number is out of range")?,p.of,&p.of_hash.0[..],p.relation.as_str(),crate::encoding::pack_text(&p.body)?])?;
     Ok(())
 }

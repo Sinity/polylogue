@@ -145,13 +145,14 @@ pub(crate) fn line_stream(
                 Some(super::line::Destination::File(_) | super::line::Destination::Dir(_))
             )
         {
-            wire["delivery"] = serde_json::json!("stream");
-            // Bundles preserve inherited prefixes unless explicitly hidden.
+            // Bundles carry the bytes of their attachments, and preserve
+            // inherited prefixes unless explicitly hidden.
             let directory = match &step.to {
                 Some(super::line::Destination::Dir(_)) => true,
                 Some(super::line::Destination::File(path)) => path.is_dir(),
                 _ => false,
             };
+            wire["delivery"] = serde_json::json!(if directory { "bundle" } else { "stream" });
             if directory {
                 let hidden = wire["hide"]
                     .as_array()

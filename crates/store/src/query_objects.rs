@@ -290,11 +290,11 @@ pub(crate) fn apply_object(conn: &Connection, object: &QueryObject, commit_seq: 
             }
             QueryEdge::Result { result } => format!("result:{result}"),
         };
-        let how = edge.kind().as_str();
+        let kind = edge.kind().as_str();
         conn.execute(
             &source
-                .sql("INSERT OR IGNORE INTO @source.query_edge(query,uses,how,edge) VALUES (?1,?2,?3,?4)"),
-            params![id, uses, how, pack(edge)?],
+                .sql("INSERT OR IGNORE INTO @source.query_edge(query,uses,kind,edge) VALUES (?1,?2,?3,?4)"),
+            params![id, uses, kind, pack(edge)?],
         )?;
     }
     first_run(conn, source, &id)
@@ -358,7 +358,7 @@ pub(crate) fn apply_run(
         _ => None,
     };
     conn.execute(
-        &source.sql("INSERT INTO @source.query_run(id,binding_hash,run_hash,query,at,read_at,author,via,commit_seq,source_order,run,object_ref) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(id) DO UPDATE SET binding_hash=excluded.binding_hash,run_hash=excluded.run_hash,query=excluded.query,object_ref=excluded.object_ref,at=excluded.at,read_at=excluded.read_at,author=excluded.author,via=excluded.via,commit_seq=excluded.commit_seq,source_order=excluded.source_order,run=excluded.run"),
+        &source.sql("INSERT INTO @source.query_run(id,binding_hash,run_hash,query,at,read_position,author,via,commit_seq,source_order,run,object_ref) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(id) DO UPDATE SET binding_hash=excluded.binding_hash,run_hash=excluded.run_hash,query=excluded.query,object_ref=excluded.object_ref,at=excluded.at,read_position=excluded.read_position,author=excluded.author,via=excluded.via,commit_seq=excluded.commit_seq,source_order=excluded.source_order,run=excluded.run"),
         params![run.id.as_str(),binding_hash,run_hash,run.question.map(|question| question.to_string()),run.at.unix_ns().to_string(),run.read_at.to_string(),serde_json::to_string(&run.authorship.author)?,run.authorship.via.as_str(),commit_seq,order,pack(run)?,object_ref],
     )?;
     if let Some(question) = run.question {

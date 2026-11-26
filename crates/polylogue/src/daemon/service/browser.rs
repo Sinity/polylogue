@@ -358,7 +358,7 @@ browser!(
     /// through the same path as `answer allow|deny`.
     HeldTurnAnswer,
     protocol::HeldTurnAnswer,
-    serde_json::Value,
+    protocol::ChatAnswer,
     print::json,
     Policy::write(ToolAccess::Write),
     |a, call| super::acts::web_chat::answer_action(call, &a.id, &a.value, a.reason)?

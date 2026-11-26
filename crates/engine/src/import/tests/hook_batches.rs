@@ -30,7 +30,7 @@ fn tar(path: &Path, members: &[(String, Vec<u8>)]) {
 
 fn membership(home: &polylogue_testkit::ClaudeHome) -> Vec<(String, i64, Vec<u8>, String)> {
     let db = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
-    db.prepare("SELECT c.container_input,c.member_index,c.path_bytes,o.input FROM observation_container c JOIN observation o ON o.id=c.observation_id ORDER BY c.member_index,o.input")
+    db.prepare("SELECT c.container_input,c.member_position,c.path_bytes,o.input FROM observation_container c JOIN observation o ON o.id=c.observation_id ORDER BY c.member_position,o.input")
         .unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
         .unwrap().collect::<rusqlite::Result<_>>().unwrap()
 }
@@ -174,11 +174,11 @@ fn older_hook_lines_and_browser_captures_import_when_named() {
         .unwrap();
     assert_eq!(captures.imported.len(), 1, "{captures:?}");
     assert_eq!(
-        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'hook-spool'"),
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE origin = 'hook-spool'"),
         2
     );
     assert_eq!(
-        w.count("SELECT COUNT(*) AS n FROM a.input WHERE format = 'browser-capture'"),
+        w.count("SELECT COUNT(*) AS n FROM a.input WHERE origin = 'browser-capture'"),
         1
     );
     assert_eq!(

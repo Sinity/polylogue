@@ -1,19 +1,31 @@
 //! Revision chains whose index lags their stored bytes: what the loop
 //! parses again from the archive, for watched and imported inputs alike.
+//! One query joins the archive's chains with their `parse_state` rows, and
+//! the model's [`due`] judges each; nothing here decides by itself whether
+//! a chain is caught up.
 use super::*;
+use polylogue_model::chain::{ChainFacts, ChainState, ChainStatusName, Due, due, status};
+use polylogue_model::freshness::CompletenessReason;
 
-/// One revision chain the index has not parsed to its stored length.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One revision chain the index has not parsed to its stored length or
+/// under its parser's version.
+#[derive(Debug, Clone, PartialEq)]
 pub struct BehindChain {
     pub input: String,
     /// The chain holds the input's latest revision.
     pub current: bool,
     /// The selected parser format and recorded path, independent of local discovery.
     pub source: StoredSource,
-    pub progress: ChainProgress,
-    pub reading_changed: bool,
-    pub stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
-    pub stopped_at_length: bool,
+    pub chain: i64,
+    /// The chain's bytes came in through `polylogue import`.
+    pub imported: bool,
+    /// The chain's stored length.
+    pub stored: u64,
+    /// Its state; a kept resume state is read as present only
+    /// ([`Reader::chain_state`] reads it whole).
+    pub state: ChainState,
+    /// What the chain needs ([`due`]); never [`Due::No`].
+    pub due: Due,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,15 +38,6 @@ pub struct StoredSource {
     pub path_bytes: Option<Vec<u8>>,
 }
 
-/// Whether chains whose refusal or failure is recorded at their stored length
-/// count as behind. A recorded attempt stays finished until its program or
-/// parser settings change; an older record without that identity stays unrecorded.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StoppedChains {
-    Finished,
-    ForAttempt(polylogue_model::batch::StoppedAttempt),
-}
-
 /// Which chains of each input participate in planning, before reading parser state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RevisionChains {
@@ -44,8 +47,49 @@ pub enum RevisionChains {
     Older,
 }
 
-fn chains_behind() -> String {
+/// Every chain of the archive by origin and by how it is shown, and the
+/// chains due with their stored bytes.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChainCensus {
+    pub chains: BTreeMap<(String, ChainStatusName), u64>,
+    /// Why the chains shown as `parsing` are due, by origin: never parsed,
+    /// parsed under another parser version, or stored further.
+    pub behind: BTreeMap<String, std::collections::BTreeSet<CompletenessReason>>,
+}
+
+impl ChainCensus {
+    /// Chains by how they are shown, over every origin.
+    pub fn by_status(&self) -> BTreeMap<String, u64> {
+        let mut counts = BTreeMap::new();
+        for ((_, name), n) in &self.chains {
+            *counts.entry(name.as_str().to_owned()).or_default() += n;
+        }
+        counts
+    }
+}
+
+/// The facts of a chain of `stored` bytes whose origin's parser version is
+/// `parser` (`None`: it has no parser).
+fn facts(stored: u64, parser: Option<&str>, imported: bool) -> ChainFacts {
+    ChainFacts {
+        stored,
+        repeated_by: None,
+        own_from: 0,
+        parser: parser.map(str::to_owned),
+        finished: imported,
+    }
+}
+
+fn parser<'a>(versions: &'a [(String, String)], origin: &str) -> Option<&'a str> {
+    versions
+        .iter()
+        .find(|(name, _)| name == origin)
+        .map(|(_, version)| version.as_str())
+}
+
+fn chain_rows() -> String {
     use crate::source::{IMPORT_FORMAT, IMPORT_FORMAT_ORDER, STATES_IMPORT_FORMAT};
+    let state = crate::parse_state::PLANNED_COLUMNS;
     format!(
         r#"first_paths AS MATERIALIZED (
                 SELECT input, min(id) AS observation
@@ -57,10 +101,9 @@ fn chains_behind() -> String {
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
-                COALESCE(f.format, i.format) AS format,
+                COALESCE(f.format, i.origin) AS format,
                 COALESCE(f.path_bytes, o.path_bytes),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.parse_version, p.status, p.at_length, p.reason, p.stopped_attempt,
-                COALESCE(f.path_bytes, o.path_bytes)
+                {state}
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN revisions l ON l.input = c.input AND l.number = s.number
@@ -69,14 +112,7 @@ fn chains_behind() -> String {
             LEFT JOIN observations o ON o.id = fp.observation
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
-            WHERE (c.length > 0
-              AND (p.input_pk IS NULL
-                OR (NOT COALESCE(p.at_length = c.length AND (p.status = 'waiting' OR NOT ?2), 0)
-                    AND p.parsed_upto < c.length)
-                OR (?2 AND p.status IN ('refused','failed') AND p.at_length=c.length)
-                OR EXISTS(SELECT 1 FROM json_each(?1) expected
-                    WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
-                      AND json_extract(expected.value, '$[1]') IS NOT p.parse_version)))
+            WHERE c.length > 0
             "#
     )
 }
@@ -88,7 +124,7 @@ fn planning_sql(selected: bool, chains: RevisionChains) -> String {
     )
 }
 
-/// The chains behind the index, in no order.
+/// The chains of the selected inputs with their parse states, in no order.
 fn behind_sql(selected: bool, chains: RevisionChains) -> String {
     // Restrict histories before aggregating them. All-input planning
     // keeps its existing source-view access.
@@ -105,7 +141,7 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
     };
     // Keep the selected chain lengths once: flattening the current-chain MAX
     // would evaluate it again for each progress predicate and result column.
-    let chain_rows = match chains {
+    let chain_lengths = match chains {
         RevisionChains::All => "SELECT input,chain,max(length) AS length FROM revisions GROUP BY input,chain",
         // Kept histories may resume an earlier chain with a shorter revision.
         // Its planned length remains the maximum, not the latest revision length.
@@ -118,15 +154,15 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
             GROUP BY r.input,r.chain",
     };
     let database = crate::source::database_original("c.input");
-    let chains_behind = chains_behind();
+    let chain_rows = chain_rows();
     format!(
-        "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?3)),
+        "WITH chosen AS MATERIALIZED (SELECT DISTINCT value AS input FROM json_each(?1)),
          revisions AS NOT MATERIALIZED ({revisions}),
          observations AS NOT MATERIALIZED ({observations}),
          inputs AS MATERIALIZED (
              SELECT input,max(number) AS number,max(produced='imported') AS imported
              FROM revisions GROUP BY input
-         ), chains AS MATERIALIZED ({chain_rows}), {chains_behind}
+         ), chains AS MATERIALIZED ({chain_lengths}), {chain_rows}
          AND NOT {database}"
     )
 }
@@ -161,7 +197,7 @@ impl Reader<'_> {
     pub fn newest_parse_bytes(&self, versions: &[(String, String)]) -> Result<(u64, u64)> {
         let token = self.scope_token();
         let database = crate::source::database_original("c.input");
-        let format = crate::source::parse_format("i.id", "i.format");
+        let format = crate::source::parse_format("i.id", "i.origin");
         let progress = self.conn()?.query_row(
             &format!(
                 "WITH latest AS (
@@ -175,8 +211,8 @@ impl Reader<'_> {
                  SELECT i.id,{format} AS format FROM source_input i
              )
              SELECT coalesce(sum(c.length),0),coalesce(sum(
-                 CASE WHEN p.parse_version=json_extract(e.value,'$[1]')
-                      THEN min(c.length,p.parsed_upto) ELSE 0 END),0)
+                 CASE WHEN p.parser_version=json_extract(e.value,'$[1]')
+                      THEN min(c.length,p.parsed_to) ELSE 0 END),0)
              FROM newest c JOIN formats f ON f.id=c.input
              JOIN json_each(?1) e ON json_extract(e.value,'$[0]')=f.format
              LEFT JOIN input_ref i ON i.id=c.input
@@ -190,63 +226,112 @@ impl Reader<'_> {
         Ok(progress)
     }
 
-    /// How many chains of the inputs up to `through` with a reading in
-    /// `versions` [`Self::chains_behind_index`] yields over all chains, and their stored
-    /// bytes, counted in one query. It counts chains whose refusal or failure
-    /// is recorded at their length for this attempt, which planning then
-    /// leaves out.
+    /// How many chains of the inputs up to `through` with a parser in
+    /// `versions` are due, and their stored bytes.
     pub fn count_chains_behind_index(
         &self,
         versions: &[(String, String)],
         through: &str,
     ) -> Result<(u64, u64)> {
-        let token = self.scope_token();
-        let counted = self.conn()?.query_row(
-            &format!(
-                "SELECT count(*),coalesce(sum(length),0) FROM ({}) behind
-                 WHERE input<=?4 AND EXISTS(SELECT 1 FROM json_each(?1) expected
-                     WHERE json_extract(expected.value,'$[0]')=behind.format)",
-                behind_sql(false, RevisionChains::All)
-            ),
-            params![
-                serde_json::to_string(versions)?,
-                true,
-                None::<String>,
-                through
-            ],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        token.check()?;
-        Ok(counted)
+        let (mut chains, mut bytes) = (0, 0);
+        self.visit_chain_rows(None, RevisionChains::All, &mut |row| {
+            if row.input.as_str() <= through
+                && parser(versions, &row.source.format).is_some()
+                && row.due(versions) != Due::No
+            {
+                chains += 1;
+                bytes += row.stored;
+            }
+            Ok(std::ops::ControlFlow::Continue(()))
+        })?;
+        Ok((chains, bytes))
     }
 
-    /// Every chain whose index is behind its stored bytes. Waiting at the
-    /// recorded source length is current for that parse version; a refusal
-    /// or failure recorded there is too, unless `stopped` asks for it again.
-    /// `selected=None` visits all inputs; an empty selection visits none.
+    /// Every chain of the selected inputs that is due. `selected=None`
+    /// visits all inputs; an empty selection visits none.
     pub fn chains_behind_index(
         &self,
         versions: &[(String, String)],
-        stopped: StoppedChains,
         chains: RevisionChains,
         selected: Option<&[String]>,
     ) -> Result<Vec<BehindChain>> {
         let mut found = Vec::new();
-        self.visit_chains_behind_index(versions, stopped, chains, selected, &mut |chain| {
-            found.push(chain);
+        self.visit_chain_rows(selected, chains, &mut |row| {
+            let due = row.due(versions);
+            if due != Due::No {
+                found.push(BehindChain {
+                    input: row.input,
+                    current: row.current,
+                    source: row.source,
+                    chain: row.chain,
+                    imported: row.imported,
+                    stored: row.stored,
+                    state: row.state,
+                    due,
+                });
+            }
             Ok(std::ops::ControlFlow::Continue(()))
         })?;
         Ok(found)
     }
 
-    /// Streams lagging chains without collecting the source backlog.
-    pub fn visit_chains_behind_index(
+    /// Every chain of the archive counted by origin and status, judged
+    /// against the origins' parser versions in `contracts`.
+    pub fn chain_census(&self, contracts: &[ReadingContract]) -> Result<ChainCensus> {
+        let token = self.scope_token();
+        let database = crate::source::database_original("c.input");
+        let format = crate::source::parse_format("c.input", "i.origin");
+        let state = crate::parse_state::PLANNED_COLUMNS;
+        let sql = format!(
+            "SELECT c.input, c.length,
+                CASE WHEN {database} THEN 'export-file' ELSE {format} END, {state}
+             FROM (SELECT input, chain, max(length) AS length FROM source_revision
+                   GROUP BY input, chain) c
+             JOIN source_input i ON i.id = c.input
+             LEFT JOIN input_ref ir ON ir.id = c.input
+             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain"
+        );
+        let conn = self.conn()?;
+        let mut statement = conn.prepare_cached(&sql)?;
+        let mut rows = statement.query([])?;
+        let mut census = ChainCensus::default();
+        while let Some(row) = rows.next()? {
+            token.check()?;
+            let stored: u64 = row.get(1)?;
+            let origin: String = row.get(2)?;
+            let state = crate::parse_state::ParseStateRow::planned(row, 3)?;
+            let parser = contracts
+                .iter()
+                .find(|c| c.origin() == origin)
+                .and_then(|contract| match contract {
+                    ReadingContract::Expected { version, .. } => Some(version.as_str()),
+                    _ => None,
+                });
+            let facts = facts(stored, parser, false);
+            let shown = status(&state, &facts);
+            if shown.name() == ChainStatusName::Parsing {
+                let why = match state.version() {
+                    None => CompletenessReason::MissingCheckpoint,
+                    Some(version) if parser != Some(version) => {
+                        CompletenessReason::ParseVersionChanged
+                    }
+                    Some(_) => CompletenessReason::ParserBehind,
+                };
+                census.behind.entry(origin.clone()).or_default().insert(why);
+            }
+            *census.chains.entry((origin, shown.name())).or_default() += 1;
+        }
+        token.check()?;
+        Ok(census)
+    }
+
+    /// Hands each chain of the selected inputs, with its parse state, to
+    /// `visit`, in planning order.
+    fn visit_chain_rows(
         &self,
-        versions: &[(String, String)],
-        stopped: StoppedChains,
-        chains: RevisionChains,
         selected: Option<&[String]>,
-        visit: &mut dyn FnMut(BehindChain) -> Result<std::ops::ControlFlow<()>>,
+        chains: RevisionChains,
+        visit: &mut dyn FnMut(ChainRow) -> Result<std::ops::ControlFlow<()>>,
     ) -> Result<()> {
         let token = self.scope_token();
         let selected_json = selected.map(serde_json::to_string).transpose()?;
@@ -261,70 +346,54 @@ impl Reader<'_> {
         let connection = self.conn()?;
         let sql = planning_sql(selected.is_some(), chains);
         let mut statement = connection.prepare(&sql)?;
-        let mut rows = statement.query(params![
-            serde_json::to_string(versions)?,
-            matches!(stopped, StoppedChains::ForAttempt(_)),
-            selected_json,
-        ])?;
+        let mut rows = statement.query(params![selected_json])?;
         while let Some(row) = rows.next()? {
             token.check()?;
-            let imported: bool = row.get(4)?;
-            let origin: String = row.get(5)?;
-            let version: Option<String> = row.get(10)?;
-            let reading_changed = versions
-                .iter()
-                .find(|(name, _)| name == &origin)
-                .is_some_and(|(_, expected)| version.as_ref() != Some(expected));
-            let length = row.get::<_, u64>(2)?;
-            let parsed_upto = row.get::<_, u64>(7)?;
-            let progress = row
-                .get::<_, Option<String>>(11)?
-                .map(|status| {
-                    crate::read::stored_parse_progress(&status, row.get(12)?, row.get(13)?)
-                })
-                .transpose()?;
-            let stopped_at_length = progress
-                .as_ref()
-                .is_some_and(|progress| progress.stopped() && progress.at_length() == Some(length));
-            let input: String = row.get(0)?;
-            let chain_number: i64 = row.get(1)?;
-            let chain = BehindChain {
-                input,
+            let path_bytes: Option<Vec<u8>> = row.get(6)?;
+            let chain = ChainRow {
+                input: row.get(0)?,
+                chain: row.get(1)?,
+                stored: row.get(2)?,
                 current: row.get(3)?,
+                imported: row.get(4)?,
                 source: StoredSource {
-                    format: origin,
-                    path: row
-                        .get::<_, Option<Vec<u8>>>(6)?
-                        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned()),
-                    path_bytes: row.get(15)?,
+                    format: row.get(5)?,
+                    path: path_bytes
+                        .as_deref()
+                        .map(|bytes| String::from_utf8_lossy(bytes).into_owned()),
+                    path_bytes,
                 },
-                reading_changed,
-                stopped_at_length,
-                stopped_attempt: row
-                    .get::<_, Option<Vec<u8>>>(14)?
-                    .as_deref()
-                    .map(crate::encoding::unpack_json)
-                    .transpose()?,
-                progress: ChainProgress {
-                    chain: chain_number,
-                    length,
-                    parsed_upto,
-                    parsed: row.get(8)?,
-                    waiting: row.get(9)?,
-                    imported,
-                },
+                state: crate::parse_state::ParseStateRow::planned(row, 7)?,
             };
-            if !chain.reading_changed
-                && chain.stopped_at_length
-                && matches!(stopped, StoppedChains::ForAttempt(attempt) if chain.stopped_attempt == Some(attempt))
-            {
-                continue;
-            }
             if visit(chain)?.is_break() {
                 break;
             }
         }
         token.check()
+    }
+}
+
+/// One chain as the planning query reads it.
+struct ChainRow {
+    input: String,
+    chain: i64,
+    stored: u64,
+    current: bool,
+    imported: bool,
+    source: StoredSource,
+    state: ChainState,
+}
+
+impl ChainRow {
+    fn due(&self, versions: &[(String, String)]) -> Due {
+        due(
+            &self.state,
+            &facts(
+                self.stored,
+                parser(versions, &self.source.format),
+                self.imported,
+            ),
+        )
     }
 }
 

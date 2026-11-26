@@ -22,6 +22,16 @@ fn visible_context(text: &str) -> String {
     out
 }
 
+fn section_text(text: &str, heading: &str) -> String {
+    let (_, body) = text
+        .split_once(&format!("\n{heading}\n"))
+        .expect("the brief has the requested section");
+    format!(
+        "{heading}\n{}",
+        visible_context(body.split("\n\n").next().unwrap())
+    )
+}
+
 #[test]
 fn a_checkout_root_joins_the_scope() {
     let dir = tempfile::tempdir().unwrap();
@@ -89,7 +99,7 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
     .unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let ask = Ask::Recall {
+    let ask = Ask::Words {
         text: "Quokka!".into(),
         cwd: None,
         for_session: None,
@@ -323,23 +333,29 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         start(command_surface::TokenBudget::Tokens(manual_tokens)),
         Err(StoreError::Refused(polylogue_model::Reason::BudgetTooSmall { part })) if part == "the required header"
     ));
-    let visible = visible_context(&p.text);
-    let t = &visible;
     assert!(!p.empty);
-    for expected in [
-        "parser work",
-        "1 commit (abc1234f)",
-        "changed 1 file: a.rs",
-        "claimed pl-1; no close or release observed",
-        "last answer: \"Finished the parser fix; one test still fails.\"",
-        "Bead claims last observed here, with no observed close or release:",
-        "pl-1: last observed claim",
-        "formatting",
-    ] {
-        assert!(t.contains(expected), "missing {expected:?} in:\n{t}");
-    }
-    // A session's own failing commands are not reported.
-    assert!(!t.contains("`cargo test`"), "{t}");
+    assert_eq!(
+        section_text(
+            &p.text,
+            "Bead claims last observed here, with no observed close or release:"
+        ),
+        concat!(
+            "Bead claims last observed here, with no observed close or release:\n",
+            "- pl-1: last observed claim by claude-code:s1; session last active 2026-10-01 12:00 +00:00; no close or release observed; current external state unverified\n",
+        )
+    );
+    assert_eq!(
+        section_text(&p.text, "Recent sessions here, and what they did:"),
+        concat!(
+            "Recent sessions here, and what they did:\n",
+            "fix the parser\n\nStored session/model record:\n",
+            "- 2026-10-01 12:00 +00:00  recorded title: parser work  (3 messages)  claude-code:s1\n",
+            "    did: 1 commit (abc1234f); changed 1 file: a.rs; claimed pl-1; no close or release observed\n",
+            "    last answer: \"Finished the parser fix; one test still fails.\"\n",
+            "- 2026-10-01 11:59 +00:00  recorded title: formatting  (1 messages)  claude-code:s2\n",
+            "    open: a tool call never finished\n",
+        )
+    );
     assert!(p.text.len() <= DEFAULT_BUDGET as usize * 4);
     assert!(p.text.contains(&crate::manual::text()));
     assert!(p.refs.contains(&"session:claude-code:s1".to_owned()));
@@ -430,7 +446,7 @@ fn recall_pages_continue_by_cursor() {
     let mut cursor = None;
     let mut first_next = None;
     loop {
-        let ask = Ask::Recall {
+        let ask = Ask::Words {
             text: "wombat".into(),
             cwd: None,
             for_session: None,
@@ -466,7 +482,7 @@ fn recall_pages_continue_by_cursor() {
     unique.dedup();
     assert_eq!(unique.len(), 45, "no hit repeats across pages");
     // A cursor belongs to its text.
-    let ask = Ask::Recall {
+    let ask = Ask::Words {
         text: "other".into(),
         cwd: None,
         for_session: None,
@@ -499,60 +515,34 @@ fn scope_of(reader: &Reader<'_>) -> SharedScopeIndex {
 }
 
 /// A brief's archive reads depend on what it reports, not on how much work
-/// happened under its directory: at `/`, under a prefix holding 30,000
-/// sessions and over a million messages, in one of its subdirectories and in
-/// a directory nobody worked in, a brief reads at most 100 pages through a
-/// reader whose page cache starts empty.
+/// happened under its directory (docs/agent-context.md, latency): at `/`,
+/// under a prefix holding every session and in a directory nobody worked
+/// in, the brief says the same over 100,000 messages as over 10,000, and
+/// reads the same pages, at most 100, through a reader whose page cache
+/// starts empty. In a subdirectory the brief reports each session there
+/// that fits, and each one it expands reads that session's summary and
+/// annotations, so its reads follow the sessions there rather than the
+/// archive; its content is checked at both sizes.
 #[test]
 fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
-    use polylogue_store::fixture::{Fixture, ManySessions};
-    const SESSIONS: usize = 30_000;
-    const MESSAGES: usize = 34;
-    let dir = tempfile::tempdir().unwrap();
-    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
-    let pks = f
-        .many_sessions(ManySessions {
-            prefix: "/work/dense",
-            sessions: SESSIONS,
-            messages: MESSAGES,
-            answered: 20,
-            last: T0 - 60_000,
-        })
-        .unwrap();
-    const { assert!(SESSIONS * MESSAGES >= 1_000_000) };
-    // Three of the newest are working there now.
-    for &pk in &pks[SESSIONS - 3..] {
-        f.live(pk, "hook_pre_tool_use", T0 - 30_000, None, None)
-            .unwrap();
+    let smaller = brief_page_reads(1_000, 10);
+    let larger = brief_page_reads(10_000, 10);
+    for ((cwd, small), (_, large)) in smaller.into_iter().zip(larger) {
+        if cwd == "/work/dense/d5" {
+            continue;
+        }
+        assert!(large <= 100, "{cwd}: {large} pages read");
+        assert_eq!(large, small, "{cwd}: page reads at 10x the sessions");
     }
-    let scope = scope_of(&f.reads().unwrap().reader().unwrap());
-    let now = Timestamp::from_unix_ms(T0).unwrap();
-    for cwd in ["/", "/work/dense", "/work/dense/d5", "/unvisited/place"] {
-        // A new pool: its connections' page caches start empty.
-        let pool = f.reads().unwrap();
-        let reader = pool.reader().unwrap();
-        reader.take_page_reads().unwrap();
-        let p = prepare(
-            crate::brief::BriefContext {
-                reader: &reader,
-                pending_deliveries: &[],
-                delivery_id: "d1",
-                context: &fixture_context(now),
-                ranking_identity: None,
-                near: None,
-            },
-            &scope,
-            &[],
-            &Ask::SessionStart {
-                cwd: cwd.into(),
-                session: None,
-                source: StartSource::Startup,
-            },
-            Default::default(),
-        )
-        .unwrap();
-        let pages = reader.take_page_reads().unwrap();
-        assert!(pages <= 100, "{cwd}: {pages} pages read\n{}", p.text);
+}
+
+/// The pages a brief reads at each directory of
+/// [`a_brief_reads_a_bounded_number_of_pages_at_any_directory`], after
+/// checking what each brief says.
+fn brief_page_reads(sessions: usize, messages: usize) -> Vec<(&'static str, u64)> {
+    let mut reads = vec![];
+    for (cwd, pages, p) in briefs_at_each_directory(sessions, messages) {
+        reads.push((cwd, pages));
         if cwd == "/unvisited/place" {
             assert!(
                 !p.empty && p.text.contains(&crate::manual::text()),
@@ -561,17 +551,17 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
             );
             continue;
         }
-        let newest = if cwd == "/work/dense/d5" {
-            // The newest session in d5 is the highest n with n % 97 == 5.
-            (0..SESSIONS).rev().find(|n| n % 97 == 5).unwrap()
-        } else {
-            SESSIONS - 1
-        };
+        // Session n works in d<n mod 97>, so d5 holds every n with
+        // n % 97 == 5; the other directories hold every session.
+        let here: Vec<usize> = (0..sessions)
+            .filter(|n| cwd != "/work/dense/d5" || n % 97 == 5)
+            .collect();
+        let newest = *here.last().unwrap();
         for expected in [
             "Recent sessions here, and what they did:".to_owned(),
             format!("test:many-{newest}"),
-            format!("{MESSAGES} messages"),
-            format!("omitted; expand: `polylogue 'cwd:\"{cwd}\"'"),
+            format!("{messages} messages"),
+            "Entry map".to_owned(),
         ] {
             assert!(
                 p.text.contains(&expected),
@@ -579,17 +569,84 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
                 p.text
             );
         }
-        assert!(p.text.contains("Entry map"), "{}", p.text);
-        assert!(
-            p.refs
-                .iter()
-                .filter(|reference| reference.starts_with("session:test:many-"))
-                .count()
-                > 5,
-            "{}",
-            p.text
-        );
+        let shown = p
+            .refs
+            .iter()
+            .filter(|reference| reference.starts_with("session:test:many-"))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        assert!(shown > 5, "{cwd}: {shown} sessions in\n{}", p.text);
+        // Sessions that did not fit are counted with the line that lists
+        // them all.
+        if shown < here.len() {
+            let pointer = format!("omitted; expand: `polylogue 'cwd:\"{cwd}\"'");
+            assert!(
+                p.text.contains(&pointer),
+                "{cwd}: missing {pointer:?} in\n{}",
+                p.text
+            );
+        } else {
+            assert_eq!(shown, here.len(), "{cwd}: {}", p.text);
+        }
     }
+    reads
+}
+
+/// A brief at `/`, under the prefix every session works in, in one of its
+/// subdirectories and in a directory nobody worked in, with the pages each
+/// read, over an archive of `sessions` sessions of `messages` messages.
+fn briefs_at_each_directory(
+    sessions: usize,
+    messages: usize,
+) -> Vec<(&'static str, u64, crate::brief::Prepared)> {
+    use polylogue_store::fixture::{Fixture, ManySessions};
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pks = f
+        .many_sessions(ManySessions {
+            prefix: "/work/dense",
+            sessions,
+            messages,
+            answered: 20,
+            last: T0 - 60_000,
+        })
+        .unwrap();
+    // Three of the newest are working there now.
+    for &pk in &pks[sessions - 3..] {
+        f.live(pk, "hook_pre_tool_use", T0 - 30_000, None, None)
+            .unwrap();
+    }
+    let scope = scope_of(&f.reads().unwrap().reader().unwrap());
+    let now = Timestamp::from_unix_ms(T0).unwrap();
+    ["/", "/work/dense", "/work/dense/d5", "/unvisited/place"]
+        .into_iter()
+        .map(|cwd| {
+            // A new pool: its connections' page caches start empty.
+            let pool = f.reads().unwrap();
+            let reader = pool.reader().unwrap();
+            reader.take_page_reads().unwrap();
+            let p = prepare(
+                crate::brief::BriefContext {
+                    reader: &reader,
+                    pending_deliveries: &[],
+                    delivery_id: "d1",
+                    context: &fixture_context(now),
+                    ranking_identity: None,
+                    near: None,
+                },
+                &scope,
+                &[],
+                &Ask::SessionStart {
+                    cwd: cwd.into(),
+                    session: None,
+                    source: StartSource::Startup,
+                },
+                Default::default(),
+            )
+            .unwrap();
+            (cwd, reader.take_page_reads().unwrap(), p)
+        })
+        .collect()
 }
 
 /// A brief that meets its deadline answers with the sections it has, names
@@ -741,7 +798,7 @@ fn takeover_prompt_times_match_records() {
         },
         &SharedScopeIndex::default(),
         &[],
-        &Ask::Takeover {
+        &Ask::Session {
             session: SessionId::parse("codex:synthetic-takeover").unwrap(),
             for_session: None,
         },
@@ -796,7 +853,7 @@ fn named_context_default_budgets_and_tight_budgets_fit() {
     };
     assert_eq!(ask.default_budget_tokens(), 4000);
     assert_eq!(
-        Ask::Takeover {
+        Ask::Session {
             session: polylogue_model::SessionId::parse("claude-code:s1").unwrap(),
             for_session: None
         }
@@ -1046,8 +1103,16 @@ fn older_observed_claims_remain_visible_without_claiming_external_state() {
         Default::default(),
     )
     .unwrap();
-    assert!(visible_context(&p.text).contains("pl-1: last observed claim"));
-    assert!(p.text.contains("current external state unverified"));
+    assert_eq!(
+        section_text(
+            &p.text,
+            "Bead claims last observed here, with no observed close or release:"
+        ),
+        concat!(
+            "Bead claims last observed here, with no observed close or release:\n",
+            "- pl-1: last observed claim by claude-code:s1; session last active 2026-10-01 12:00 +00:00; no close or release observed; current external state unverified\n",
+        )
+    );
     assert!(p.refs.contains(&"session:claude-code:s1".into()));
 }
 
@@ -1079,21 +1144,15 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
         .chain(links)
         .collect(),
     };
-    let original = fact(
-        "original",
-        "CLAIM THAT MUST NOT APPEAR UNQUALIFIED".into(),
-        vec![],
-    );
+    let original = fact("original", "The parser accepts cedar.".into(), vec![]);
     archive
         .writer
         .archive()
         .restore_annotation(original.clone(), None)
         .unwrap();
-    let correction_text =
-        "Correction: the earlier claim is false; check the current source. ".repeat(1000);
     let correction = fact(
         "correction",
-        correction_text.clone(),
+        "Correction: the parser accepts birch.".into(),
         vec![
             AnnotationLink {
                 role: LinkRole::About,
@@ -1138,12 +1197,21 @@ fn contrary_note_comes_before_the_claim_under_a_tight_budget() {
     );
     let (text, refs, _) = fit.finish("", |_| Ok(None)).unwrap();
     assert!(text.len() <= 1600);
-    let source = visible_context(&text);
-    assert!(source.contains("Correction: the earlier claim is false"));
-    assert!(!source.contains("CLAIM THAT MUST NOT APPEAR UNQUALIFIED"));
-    assert!(refs.contains(&"annotation:correction@correction-v1".into()));
-    assert!(text.contains("judgment:operator-authored"));
-    assert!(text.contains("expand: `polylogue annotation:original@original-v1 read`"));
+    assert_eq!(
+        section_text(&text, "Notes:"),
+        concat!(
+            "Notes:\n",
+            "Contrary note, author:operator via:cli; judgment operator-authored: - [note] Correction: the parser accepts birch. (annotation:original@original-v1, repo:synthetic, 2026-10-01 12:00 +00:00)  annotation:correction@correction-v1\n",
+            "- [note] The parser accepts cedar. (repo:synthetic, 2026-10-01 12:00 +00:00)  annotation:original@original-v1\n",
+        )
+    );
+    assert_eq!(
+        refs,
+        [
+            "annotation:correction@correction-v1",
+            "annotation:original@original-v1"
+        ]
+    );
 }
 
 #[test]

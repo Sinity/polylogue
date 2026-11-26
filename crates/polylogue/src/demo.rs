@@ -114,7 +114,6 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         config,
         service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilStopped,
-        startup.stopped_attempt,
         &Default::default(),
     )
     .map_err(|e| e.to_string())?;
@@ -322,7 +321,7 @@ fn line_text(answer: &crate::protocol::line::LineAnswer) -> Result<String, Strin
                 .map_err(|error| error.to_string())?;
                 text.push_str(&String::from_utf8(bytes).map_err(|error| error.to_string())?);
             }
-            StepAnswer::Brief(prepared) => text.push_str(&crate::cli::print::context(
+            StepAnswer::Brief(prepared) => text.push_str(&crate::cli::print::brief(
                 prepared,
                 command_surface::TextStyle::Plain,
             )),

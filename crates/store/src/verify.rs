@@ -198,9 +198,9 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
         blob_bytes: count(one("SELECT coalesce(sum(size), 0) FROM source_blob")?),
     };
     let mut statement = conn.prepare(
-        "SELECT i.format, count(DISTINCT i.id), count(r.number), coalesce(sum(r.length), 0)
+        "SELECT i.origin, count(DISTINCT i.id), count(r.number), coalesce(sum(r.length), 0)
          FROM source_input i LEFT JOIN source_revision r ON r.input = i.id
-         GROUP BY i.format ORDER BY i.format",
+         GROUP BY i.origin ORDER BY i.origin",
     )?;
     found.formats = statement
         .query_map([], |row| {
@@ -231,7 +231,7 @@ fn rows(pool: &ReadPool, found: &mut Verification) -> Result<()> {
 
     // The counters `status` reads instead of counting.
     let kept: Vec<(String, i64)> = conn
-        .prepare("SELECT name, n FROM source_row_count ORDER BY name")?
+        .prepare("SELECT name, count FROM source_row_count ORDER BY name")?
         .query_map([], |row| <(_, _)>::try_from(row))?
         .collect::<rusqlite::Result<_>>()?;
     for (name, n) in kept {

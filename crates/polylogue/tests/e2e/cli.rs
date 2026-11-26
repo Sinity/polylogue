@@ -799,39 +799,6 @@ mod read_bench;
 
 mod python;
 
-#[test]
-fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
-    let dir = tempfile::tempdir().unwrap();
-    let archive = dir.path().join("archive");
-    let home = dir.path().join("home");
-    let config = dir.path().join("config");
-    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
-    let daemon = start_daemon(&env);
-    wait_status(&env, |_| true);
-    let runtime = dir.path().join("runtime/polylogue");
-    // Readiness of the socket precedes the HTTP listener's access files.
-    let started = std::time::Instant::now();
-    loop {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the daemon never wrote its HTTP access files"
-        );
-        if runtime.exists()
-            && std::fs::read_dir(&runtime).unwrap().any(|entry| {
-                let path = entry.unwrap().path();
-                path.join("port").exists() && path.join("token").exists()
-            })
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    drop(daemon);
-    assert!(runtime.exists());
-    dir.close().unwrap();
-    assert!(!runtime.exists());
-}
-
 mod query_surfaces;
 
 mod surface_table;

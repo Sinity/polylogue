@@ -35,11 +35,3 @@ pub use morrow::{Morrow, Set, morrow_dir, session, short};
 pub use process::ProcessExit;
 pub use process::{die_with_parent, spawn_daemon};
 pub use sandbox::Sandbox;
-
-/// Stable synthetic executable identity for in-process archive fixtures.
-pub fn stopped_attempt() -> polylogue_model::batch::StoppedAttempt {
-    polylogue_model::batch::StoppedAttempt {
-        executable: polylogue_model::BlobHash::of(b"synthetic test executable"),
-        parser_settings: None,
-    }
-}

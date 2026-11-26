@@ -107,15 +107,21 @@ fn judge(w: &TestDaemon, reference: &RevisionReference, id: &str) {
         },
     );
 }
+/// A scope index at `reader`'s snapshot that only the test holds.
+/// Selection reads the scope index without waiting for its lock, and the
+/// daemon's scope worker takes that lock on its own thread after every
+/// commit, so selecting from the daemon's index could find it held and
+/// answer empty.
+fn scope_at(reader: &Reader<'_>) -> SharedScopeIndex {
+    let scope = SharedScopeIndex::default();
+    scope.refresh(reader).unwrap();
+    scope
+}
 pub(crate) fn selected(w: &TestDaemon, prompt: &str, cwd: &str) -> Prepared {
     let reader = w.daemon.reads.reader().unwrap();
-    // Selection reads the scope index without waiting; the daemon's scope
-    // worker brings it forward after a commit on its own thread, so the
-    // test brings it to this reader's snapshot before selecting.
-    w.daemon.scope.refresh(&reader).unwrap();
     prepare(
         &reader,
-        &w.daemon.scope,
+        &scope_at(&reader),
         prompt,
         Path::new(cwd),
         &SessionId::parse("codex:advisory-test").unwrap(),
@@ -280,7 +286,7 @@ fn pending_pair_is_suppressed_without_assuming_history_application() {
     let pending = vec![vec![reference, "file:src/parser.rs@fixture-commit".into()]];
     let prepared = prepare(
         &reader,
-        &w.daemon.scope,
+        &scope_at(&reader),
         "Inspect src/parser.rs",
         Path::new(CWD),
         &SessionId::parse("codex:advisory-test").unwrap(),
@@ -353,7 +359,7 @@ fn a_new_file_annotation_revision_requires_its_own_judgment_and_is_a_distinct_pa
     let reader = w.daemon.reads.reader().unwrap();
     let prepared = prepare(
         &reader,
-        &w.daemon.scope,
+        &scope_at(&reader),
         "Inspect src/parser.rs",
         Path::new(CWD),
         &SessionId::parse("codex:advisory-test").unwrap(),

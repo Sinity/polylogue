@@ -16,19 +16,21 @@ generated page of the thing they belong to, or on the area page that owns them.
   completion cache directory.
 - **schema identity**: a short hash of an index file's version, format identity,
   tables, views and triggers.
-- **index build**: writing a new index in the private file
-  `index-build/index.db`, which is installed over `index.db` when the build
-  ends; the first build of an archive, or one replacing an index from another
-  schema. It runs in named **steps** (reading stored files, sorting texts,
+- **index rebuild**: writing a new index in the private file
+  `index-rebuild/build.db`, renamed `ready.db` when it ends and then over
+  `index.db`; the first index of an archive, or one replacing an index this
+  build cannot use. Its reason is `index-rebuild/reason.json`, written first. It runs in named **steps** (reading stored files, sorting texts,
   writing tables, indexing, assembling sessions, indexing sessions, joining
   sessions across files, finishing indexes, search index, installing), which
   status and the log list by those names. Assembling sessions writes each
   session whose readings one file states; joining sessions across files
   writes, from the index, the sessions whose readings several files state or
   that copies name.
-- **previous index**: the index a build replaces, kept as
-  `index-build/previous.db` until the new one is installed, and read
-  meanwhile when its schema identity is the build's.
+- **index files**: the pair `status` shows of the index: the installed index
+  (none, current, or unusable with why) and the rebuild (none, writing with
+  its reason, or ready).
+- **archive identity**: the random ID `archive.db` gets when it is created,
+  which every index of that archive records.
 - **embeddings store**: message and annotation vectors for semantic ranking, kept apart
   because vectors cost money or time to make.
 - **segment log**: append-only files of compressed frames holding every blob;
@@ -146,7 +148,14 @@ generated page of the thing they belong to, or on the area page that owns them.
   is owned by its chain; the **shown rows** of a session are composed from
   the parses that state it. **Reading** is what `read` produces.
 - **covered chain**: a chain a newer chain of the same input is known to
-  begin with all of; it has no reading.
+  begin with all of; it has no reading and is shown as `repeated`.
+- **chain state**: what the index holds of one chain: no parse, parsed to a
+  length under a parse version, or failed there with its reason. With what
+  the archive says of the chain it decides whether the chain is **due** and
+  how it is shown: `parsing`, `repeated`, `no_parser`, `done`, `waiting`,
+  `refused` or `failed`.
+- **stale part**: a part of a chain's parse that does not start where the
+  chain's stored state ends; it is refused and the chain stays due.
 - **upkeep** and **build**: keeping the installed index current as the record
   grows, and making an index from nothing; they give the same index.
 - **re-parse**: reading a chain's stored bytes again with a newer reading
@@ -643,3 +652,5 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `last` (reference) | `latest` |
 | `--format` on `import` | `--origin` |
 | `--since` on the change feed | `--after` |
+| `no_parser_yet`, `partial` (parse states) | `no_parser`; a chain whose earlier bytes are missing has no state of its own |
+| stopped attempt (a failure bound to the executable) | a failed chain state, tried again only when its bytes or parse version change |

@@ -302,7 +302,7 @@ pub(crate) fn run(mut parsed: ParsedLine, client: &crate::config::Client) -> Exi
             let streamed = parsed.steps[..split].iter().any(|step| {
                 step.verb == "read"
                     && (matches!(step.to, Some(Destination::File(_) | Destination::Dir(_)))
-                        || step.step["delivery"] == "stream")
+                        || matches!(step.step["delivery"].as_str(), Some("stream" | "bundle")))
             });
             let code = if streamed {
                 super::write_out::line_stream(client, &before, &parsed, &mut output_state)
@@ -469,7 +469,7 @@ pub(crate) fn run(mut parsed: ParsedLine, client: &crate::config::Client) -> Exi
     if parsed.steps.iter().any(|step| {
         step.verb == "read"
             && (matches!(step.to, Some(Destination::File(_) | Destination::Dir(_)))
-                || step.step["delivery"] == "stream"
+                || matches!(step.step["delivery"].as_str(), Some("stream" | "bundle"))
                 || step.step["follow"] == true)
     }) && !parsed.line.dry_run
         && !parsed.line.explain
@@ -591,7 +591,7 @@ fn output(
                                 client,
                             ),
                             StepAnswer::Brief(brief) => text_output(
-                                &super::print::context(brief, super::style(client.output)),
+                                &super::print::brief(brief, super::style(client.output)),
                                 to,
                                 client,
                             ),
@@ -916,7 +916,7 @@ impl picker::Source for Source {
 
 /// Commands and verb signatures are available while the daemon is down.
 pub(crate) fn help(words: &[String]) -> bool {
-    let declarations = crate::protocol::steps::declarations();
+    let declarations = crate::daemon::verbs::declarations();
     if words.is_empty() {
         println!(
             "polylogue SELECTION [VERB [WORD] [OPTIONS]]…\nA query is one quoted argument; a single word searches it.\n"

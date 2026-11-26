@@ -16,7 +16,7 @@ use super::*;
 use crate::archive::build_progress::{CountUnit, StepCount};
 
 mod composers;
-use crate::archive::index_build::Paths;
+use crate::index::file::Paths;
 use crate::sorted_runs::{Merger, Sorter};
 use rusqlite::types::{Value, ValueRef};
 use std::collections::{BTreeSet, HashSet};
@@ -654,8 +654,8 @@ impl BuildWorker {
         let number = u32::try_from(number)
             .map_err(|_| StoreError::Invalid("too many build workers".into()))?;
         let paths = Paths::of(&archive.root);
-        std::fs::create_dir_all(&paths.runs)?;
-        let scratch = paths.runs.join(format!("scratch-{number:06}.db"));
+        std::fs::create_dir_all(&paths.sorted)?;
+        let scratch = paths.sorted.join(format!("scratch-{number:06}.db"));
         let cache = SCRATCH_CACHE.min(memory / 2).max(16 << 20);
         let archive_db = archive.archive_db();
         let (conn, tables) = open_scratch(&scratch, &archive_db, cache)?;
@@ -665,7 +665,7 @@ impl BuildWorker {
             register,
             tables,
             sorter: Sorter::new(
-                &paths.runs,
+                &paths.sorted,
                 format!("w{number:06}"),
                 memory.saturating_sub(cache).max(16 << 20),
             ),
@@ -770,7 +770,6 @@ impl super::chain::ChainSink for OpenChain<'_> {
         step.prepare();
         let w = super::chain::ReadingWrite {
             register: self.register,
-            counter: 1,
             changes: &self.changes,
         };
         self.steps
@@ -1448,10 +1447,11 @@ struct Load {
     shared_events: HashSet<String>,
 }
 
-/// The newest chain of input `i` read to its end or waiting for more, as an
-/// SQL expression.
+/// The newest parsed chain of input `i`, as an SQL expression: the chain
+/// that decides which content-named messages its input holds
+/// (`held_message_parse`).
 const NEWEST_READ_CHAIN: &str = "(SELECT max(p.chain) FROM parse_state p
-    WHERE p.input_pk=i.pk AND p.status IN ('done','waiting'))";
+    WHERE p.input_pk=i.pk AND p.state='parsed')";
 
 /// The reading text rows, joined to their texts, being loaded.
 struct TextHolders {
@@ -1570,9 +1570,9 @@ impl Inner {
                 } else {
                     SORTING_TEXTS
                 });
-                self.index.flush_prepared_statement_cache();
-                let upkept = Fallback::upkept(&self.index)?;
-                let present = load_indexes(&self.index)?;
+                self.index.get()?.flush_prepared_statement_cache();
+                let upkept = Fallback::upkept(self.index.get()?)?;
+                let present = load_indexes(self.index.get()?)?;
                 // A load drops every index but the one that makes an equal
                 // group one row (see `Load::groups`) and those it fills
                 // in key order; the build makes the declared indexes the file
@@ -1580,17 +1580,19 @@ impl Inner {
                 if !runs.is_empty() {
                     for (name, sql, _) in &present {
                         if !kept_while_loading(sql) {
-                            self.index.execute(&format!("DROP INDEX \"{name}\""), [])?;
+                            self.index
+                                .get()?
+                                .execute(&format!("DROP INDEX \"{name}\""), [])?;
                         }
                     }
                 }
-                let kept = load_indexes(&self.index)?;
+                let kept = load_indexes(self.index.get()?)?;
                 for (name, sql, table) in declared_load_indexes()? {
                     if kept.iter().any(|(held, ..)| *held == name) {
                         continue;
                     }
                     if kept_while_loading(&sql) {
-                        self.index.execute(&sql, [])?;
+                        self.index.get()?.execute(&sql, [])?;
                     } else if SHOWN_TABLES.contains(&table.as_str()) && !kept_while_composing(&sql)
                     {
                         job.after_stream.push(sql);
@@ -1608,12 +1610,12 @@ impl Inner {
                     }
                 }
                 job.search = Some(crate::text_rows::SearchFill::start(
-                    &self.index,
+                    self.index.get()?,
                     self.location.memory_budget().search_fill_memory(),
                 )?);
                 if runs.is_empty() {
                     // Nothing to load: no text is merged and no row moves.
-                    let runs_dir = Paths::of(&self.location.root).runs;
+                    let runs_dir = Paths::of(&self.location.root).sorted;
                     Stage::Indexes(
                         0,
                         Box::new(Loaded {
@@ -1643,7 +1645,7 @@ impl Inner {
                     let composing = Box::new(Loaded {
                         texts: Merger::open(
                             reading_texts.finish()?,
-                            &paths.runs,
+                            &paths.sorted,
                             self.location.memory_budget().side_merge_memory(),
                         )?,
                         merged: load.merged,
@@ -1653,7 +1655,7 @@ impl Inner {
                     });
                     let holders = Merger::open(
                         holders.finish()?,
-                        &paths.runs,
+                        &paths.sorted,
                         self.location.memory_budget().side_merge_memory(),
                     )?;
                     self.size_build_cache(
@@ -1678,7 +1680,9 @@ impl Inner {
                 if self.holders_step(job, &mut holders)? {
                     Stage::TextHolders(holders)
                 } else {
-                    self.index.pragma_update(None, "foreign_keys", true)?;
+                    self.index
+                        .get()?
+                        .pragma_update(None, "foreign_keys", true)?;
                     job.phase(INDEXING);
                     let composing = holders.composing;
                     drop(holders.merged);
@@ -1693,7 +1697,7 @@ impl Inner {
                 job.total = Some(job.indexes.len() as u64);
                 match job.indexes.get(next) {
                     Some(sql) => {
-                        self.index.execute(sql, [])?;
+                        self.index.get()?.execute(sql, [])?;
                         job.count(1);
                         Stage::Indexes(next + 1, loaded)
                     }
@@ -1718,7 +1722,7 @@ impl Inner {
                         let state = ComposeState::new(
                             *loaded,
                             indexes,
-                            &self.index,
+                            self.index.get()?,
                             composing / 3,
                             job.composers,
                         )?;
@@ -1750,6 +1754,7 @@ impl Inner {
                     // follow the shown rows as they do in an installed index.
                     let tx = self
                         .index
+                        .get_mut()?
                         .transaction_with_behavior(TransactionBehavior::Immediate)?;
                     super::shown::mark_searched_texts(&tx)?;
                     tx.execute_batch(crate::schema::SEARCH_TRIGGERS)?;
@@ -1760,9 +1765,9 @@ impl Inner {
                     job.search
                         .as_mut()
                         .ok_or_else(|| StoreError::internal("a build has no full-text fill"))?
-                        .settle(&self.index)?;
+                        .settle(self.index.get()?)?;
                     let started = std::time::Instant::now();
-                    self.index.execute(
+                    self.index.get()?.execute(
                         "INSERT INTO tool_call_trigram(tool_call_trigram) VALUES ('rebuild')",
                         [],
                     )?;
@@ -1775,7 +1780,7 @@ impl Inner {
             Stage::Deferred(mut deferred) => match deferred.pop() {
                 Some(sql) => {
                     let started = std::time::Instant::now();
-                    self.index.execute(&sql, [])?;
+                    self.index.get()?.execute(&sql, [])?;
                     crate::timing::add(crate::timing::Stage::SecondaryIndexes, started.elapsed());
                     crate::fault::check("index.deferred", &self.location.root.to_string_lossy())?;
                     Stage::Deferred(deferred)
@@ -1803,9 +1808,6 @@ impl Inner {
             Stage::Install => {
                 job.installing = true;
                 self.install_build()?;
-                self.search.ready();
-                self.commits
-                    .committed(crate::completion::Committed::CONTENT);
                 return Ok(true);
             }
         };
@@ -1838,7 +1840,7 @@ impl Inner {
     /// while it grows.
     fn size_build_cache(&self, held: impl TryInto<u64>, sorting: bool) -> Result<()> {
         let held = held.try_into().unwrap_or(u64::MAX);
-        let outside = status_bytes("VmRSS:").saturating_sub(cache_used(&self.index));
+        let outside = status_bytes("VmRSS:").saturating_sub(cache_used(self.index.get()?));
         let mut mib = self
             .location
             .memory_budget()
@@ -1847,6 +1849,7 @@ impl Inner {
             mib = (mib / 3).max(32);
         }
         self.index
+            .get()?
             .pragma_update(None, "cache_size", -(mib * 1024))?;
         Ok(())
     }
@@ -1854,42 +1857,45 @@ impl Inner {
     /// Opens the merge of every worker's runs.
     fn start_load(&mut self, runs: Vec<PathBuf>, upkept: Fallback) -> Result<Load> {
         let paths = Paths::of(&self.location.root);
-        std::fs::create_dir_all(&paths.runs)?;
+        std::fs::create_dir_all(&paths.sorted)?;
         // Texts upkeep wrote into the build file while the build ran keep
         // their rows; a run's equal text takes that row.
         let held: Vec<(Vec<u8>, i64)> = self
             .index
+            .get()?
             .prepare("SELECT hash,id FROM text ORDER BY hash")?
             .query_map([], |r| <(Vec<u8>, i64)>::try_from(r))?
             .collect::<rusqlite::Result<_>>()?;
         // A group's key is never given to another group.
-        let next_group: i64 = self.index.scalar(
+        let next_group: i64 = self.index.get()?.scalar(
             "SELECT max(coalesce((SELECT seq FROM sqlite_sequence WHERE name='content_group'),0),
                  coalesce((SELECT max(id) FROM content_group),0))+1",
             [],
         )?;
         // Text groups whose every text another worker or chain also held
         // are named by nothing once the texts are made one.
-        self.index.execute_batch(
+        self.index.get()?.execute_batch(
             "CREATE TEMP TABLE IF NOT EXISTS build_text_group(id INTEGER PRIMARY KEY);
              DELETE FROM temp.build_text_group;",
         )?;
         // References are checked by the indexes and composition after the
         // load; tables arrive in name order, not in reference order.
-        self.index.pragma_update(None, "foreign_keys", false)?;
+        self.index
+            .get()?
+            .pragma_update(None, "foreign_keys", false)?;
         let budget = self.location.memory_budget();
-        let merged = Merger::open(runs, &paths.runs, budget.run_merge_memory())?;
+        let merged = Merger::open(runs, &paths.sorted, budget.run_merge_memory())?;
         // The load's own memory: the run readers and the two sorts of text
         // holders.
         self.size_build_cache(merged.memory() + 2 * budget.side_merge_memory(), false)?;
         Ok(Load {
             merged,
-            tables: tables(&self.index)?,
+            tables: tables(self.index.get()?)?,
             held: held.into_iter().peekable(),
             next_group,
             groups: GroupKeys::default(),
             holders: Some(Sorter::new(
-                &paths.runs,
+                &paths.sorted,
                 "text-holders".into(),
                 self.location.memory_budget().side_merge_memory(),
             )),
@@ -1897,7 +1903,7 @@ impl Inner {
             current_text: None,
             stream: None,
             reading_texts: Some(Sorter::new(
-                &paths.runs,
+                &paths.sorted,
                 "reading-texts".into(),
                 self.location.memory_budget().side_merge_memory(),
             )),
@@ -1915,7 +1921,7 @@ impl Inner {
     /// are read.
     fn load_step(&mut self, job: &mut BuildJob, load: &mut Load) -> Result<bool> {
         let started = std::time::Instant::now();
-        let t = Transaction::new_unchecked(&self.index, TransactionBehavior::Immediate)?;
+        let t = Transaction::new_unchecked(self.index.get()?, TransactionBehavior::Immediate)?;
         let mut written = 0u64;
         let mut values = Vec::new();
         let more = loop {
@@ -2167,7 +2173,7 @@ impl Inner {
     /// they are all loaded.
     fn holders_step(&mut self, job: &mut BuildJob, holders: &mut TextHolders) -> Result<bool> {
         let started = std::time::Instant::now();
-        let t = Transaction::new_unchecked(&self.index, TransactionBehavior::Immediate)?;
+        let t = Transaction::new_unchecked(self.index.get()?, TransactionBehavior::Immediate)?;
         let mut written = 0u64;
         let more = loop {
             if written == ROWS_PER_TRANSACTION
@@ -2202,12 +2208,14 @@ impl Inner {
                 let mut touched = super::readings::Touched::default();
                 touched.links.extend(
                     self.index
+                        .get()?
                         .prepare("SELECT DISTINCT statement FROM link_parse")?
                         .query_map([], |r| r.get::<_, Vec<u8>>(0))?
                         .collect::<rusqlite::Result<Vec<_>>>()?,
                 );
                 touched.documents.extend(
                     self.index
+                        .get()?
                         .prepare("SELECT DISTINCT document_id FROM document_parse")?
                         .query_map([], |r| r.get::<_, String>(0))?
                         .collect::<rusqlite::Result<Vec<_>>>()?,
@@ -2229,7 +2237,7 @@ impl Inner {
             }
             Step::Indexes => {
                 if let Some(sql) = state.indexes.pop() {
-                    self.index.execute(&sql, [])?;
+                    self.index.get()?.execute(&sql, [])?;
                     state.indexes_made += 1;
                 }
                 if state.indexes.is_empty() {
@@ -2248,6 +2256,7 @@ impl Inner {
                     touched.sessions.insert(session.clone());
                     for row in self
                         .index
+                        .get()?
                         .prepare_cached(
                             "SELECT session_id,call_id FROM call_outcome WHERE session_id=?1",
                         )?
@@ -2262,6 +2271,7 @@ impl Inner {
                     // follow another session's message.
                     for row in self
                         .index
+                        .get()?
                         .prepare("SELECT event_id FROM event_parse WHERE session_id IS NULL")?
                         .query_map([], |r| r.get::<_, String>(0))?
                     {
@@ -2279,6 +2289,7 @@ impl Inner {
             Step::Count => {
                 let tx = self
                     .index
+                    .get_mut()?
                     .transaction_with_behavior(TransactionBehavior::Immediate)?;
                 let tables: Vec<String> = tx
                     .prepare("SELECT name FROM row_count")?
@@ -2307,9 +2318,13 @@ impl Inner {
     /// transaction of whole batches.
     fn compose_stream(&mut self, state: &mut ComposeState) -> Result<()> {
         // A session from the stream refers only to rows the build wrote.
-        self.index.pragma_update(None, "foreign_keys", false)?;
+        self.index
+            .get()?
+            .pragma_update(None, "foreign_keys", false)?;
         let result = self.compose_stream_transaction(state);
-        self.index.pragma_update(None, "foreign_keys", true)?;
+        self.index
+            .get()?
+            .pragma_update(None, "foreign_keys", true)?;
         result
     }
 
@@ -2323,6 +2338,7 @@ impl Inner {
             .ok_or_else(|| StoreError::internal("a build's composers did not start"))?;
         let tx = self
             .index
+            .get_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         bump_counter(&tx)?;
         // A transaction ends with a batch, once it took its share of the
@@ -2353,11 +2369,12 @@ impl Inner {
         // Every batch is composed under one write counter.
         let tx = self
             .index
+            .get_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&tx)?;
         tx.commit()?;
         let shared = composers::Shared::read(
-            &self.index,
+            self.index.get()?,
             Arc::clone(&state.aliases),
             Arc::clone(&state.shared_events),
             counter,
@@ -2372,7 +2389,7 @@ impl Inner {
             state.ahead,
             state.composers,
         );
-        let pool = composers::Pool::start(state.composers, shared, batches, &self.index)?;
+        let pool = composers::Pool::start(state.composers, shared, batches, self.index.get()?)?;
         state.composing = Some((pool, gate));
         Ok(())
     }
@@ -2382,6 +2399,7 @@ impl Inner {
     fn compose_from_index(&mut self, touched: super::readings::Touched) -> Result<()> {
         let tx = self
             .index
+            .get_mut()?
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let counter = bump_counter(&tx)?;
         let changes = crate::change_summary::ChangeSummary::start(&tx)?;

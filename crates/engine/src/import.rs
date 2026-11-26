@@ -74,7 +74,6 @@ impl Engine {
             || report.pass.inputs_changed != 0
             || report.pass.bytes_read != 0
             || report.pass.messages_written != 0
-            || report.pass.readings_copied != 0
             || report.user_state.applied != 0;
         if changed || self.archive.index_build().is_some() {
             report.pass.sessions_derived = self.derive()?;
@@ -176,7 +175,7 @@ impl Engine {
                 if executed.contains(&id) {
                     continue;
                 }
-                if self.reads.reader()?.input_progress(&id)?.is_some() {
+                if self.reads.reader()?.latest_chain(&id)?.is_some() {
                     self.restore_bundle_authored(&at, &mut bytes.reader()?, report)?;
                 }
             }
@@ -269,7 +268,6 @@ impl Engine {
             } else {
                 report.imported.push(at.clone());
                 report.pass.bytes_stored += stored.length;
-                self.import_stored.push((at.clone(), stored.length));
             }
             let plan = self.stored_import_plan(&at, origin, input, &stored, facts);
             if plan.is_err() {
@@ -296,14 +294,12 @@ impl Engine {
         if plan.origin.name != polylogue_sources::polylogue_bundle::ORIGIN {
             return Ok(());
         }
-        // A build installed while an import is answered replaces the index
-        // under this read; the bundle is read from the installed one.
-        let stored = self.reads.read_current(|reader| {
+        let stored = self.reads.reader().and_then(|reader| {
             let chain = match plan.change {
                 Change::Reparse { chain } => chain,
                 _ => {
                     reader
-                        .input_progress(&plan.input.id)?
+                        .latest_chain(&plan.input.id)?
                         .ok_or_else(|| {
                             polylogue_store::StoreError::internal(
                                 "a stored bundle has no committed source revision",
@@ -484,37 +480,33 @@ impl Engine {
             return Ok(None);
         }
         let reader = self.reads.reader()?;
-        let progress = reader
-            .input_progress(&input.id)?
-            .ok_or_else(|| EngineError::internal("a stored import has no revision"))?;
         let version = origin.parse_version();
-        let reading = reader.parser_progress(&input.id, stored.chain)?;
-        // An import does not grow, so a reading that waits on its last
-        // record is unfinished and is read again; a recorded stop at its
-        // length stays final for the same program.
-        if progress.parsed
-            && reading.as_ref().is_some_and(|reading| {
-                reading.parse_version == version
-                    && if reading.progress.stopped() {
-                        reading.progress.at_length() == Some(size)
-                            && reading.stopped_attempt == Some(self.stopped_attempt)
-                    } else {
-                        progress.parsed_upto == size
-                    }
-            })
-        {
+        let state = reader.chain_state(&input.id, stored.chain)?;
+        let due = polylogue_model::chain::due(
+            &state,
+            &polylogue_model::chain::ChainFacts {
+                stored: size,
+                repeated_by: None,
+                own_from: 0,
+                parser: Some(version),
+                finished: true,
+            },
+        );
+        if due == polylogue_model::chain::Due::No {
             return Ok(None);
         }
-        let reading = reader.parser_checkpoint(&input.id, stored.chain, &version)?;
         let parser = (origin.open)(path);
-        let interrupted_lines = matches!(parser.as_ref(), Some(polylogue_sources::Parse::Lines(_)))
-            && reading.as_ref().is_some_and(|reading| {
-                reading.parse_version == version
-                    && reading.parsed_upto == progress.parsed_upto
-                    && (1..size).contains(&reading.parsed_upto)
-                    && reading.progress == polylogue_model::batch::ParseProgress::Parsing
-                    && reading.checkpoint.is_some()
-            });
+        // A line import interrupted at a record boundary goes on from there.
+        let resume_from = match due {
+            polylogue_model::chain::Due::Extend { from }
+                if matches!(parser.as_ref(), Some(polylogue_sources::Parse::Lines(_)))
+                    && (1..size).contains(&from) =>
+            {
+                from
+            }
+            _ => 0,
+        };
+        let interrupted_lines = resume_from > 0;
         let source = if interrupted_lines {
             // The ordinary stored-input loader reopens this checkpoint and
             // starts range reads at its confirmed cursor.
@@ -541,7 +533,7 @@ impl Engine {
             Change::Unchanged,
             facts,
             size,
-            0,
+            resume_from,
             source,
             self.config.chunk,
             false,

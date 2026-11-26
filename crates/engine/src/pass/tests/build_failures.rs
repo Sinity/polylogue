@@ -8,7 +8,7 @@ fn standing(engine: &Engine) -> Vec<(String, Option<String>)> {
         .reader()
         .unwrap()
         .query(
-            "SELECT p.status,p.reason FROM parse_state p
+            "SELECT CASE WHEN p.state='failed' AND p.failure_kind='refused' THEN 'refused' WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' ELSE 'done' END AS status,p.failure_detail AS reason FROM parse_state p
              JOIN input_ref i ON i.pk=p.input_pk WHERE i.format='claude-code'",
             &[],
         )

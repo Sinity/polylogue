@@ -3,7 +3,7 @@
 //! command) and carries its arguments, which are checked against the table
 //! and sent as the same request the CLI sends. Answers are the daemon's
 //! structured answers; reads use the shared Markdown renderer, and context
-//! (briefs, takeovers, recalls) is answered with its text and
+//! (briefs of a directory, a session or search words) is answered with its text and
 //! recorded as a delivery from `mcp`. Refusals are tool errors. The rmcp
 //! crate owns the protocol: framing, versions, lifecycle and cancellation.
 

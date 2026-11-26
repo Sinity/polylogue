@@ -38,6 +38,10 @@ authored-generator.workspace = true
 proptest.workspace = true
 shared-signals.workspace = true
 
+[[example]]
+name = "archive_format_7"
+test = true
+
 [lints]
 workspace = true
 

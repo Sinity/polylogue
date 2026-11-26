@@ -19,10 +19,10 @@ inputs AS MATERIALIZED (
             )
             SELECT c.input, c.chain, c.length, l.chain = c.chain,
                 s.imported,
-                COALESCE(f.format, i.format),
+                COALESCE(f.format, i.origin),
                 COALESCE(f.path_bytes, o.path_bytes),
-                COALESCE(p.parsed_upto, 0), p.input_pk IS NOT NULL, COALESCE(p.status = 'waiting' AND p.at_length = c.length, 0), p.parse_version, p.status, p.at_length, p.reason, p.stopped_attempt,
-                COALESCE(f.path_bytes, o.path_bytes)
+                p.input_pk, p.chain, p.state, p.parser_version, p.parsed_to,
+                p.waiting, p.used, p.skipped, p.unreadable, p.resume IS NOT NULL, p.failure_kind, p.failure_detail
             FROM chains c JOIN source_input i ON i.id = c.input
             JOIN inputs s ON s.input = c.input
             JOIN revisions l ON l.input = c.input AND l.number = s.number
@@ -31,12 +31,5 @@ inputs AS MATERIALIZED (
             LEFT JOIN observations o ON o.id = fp.observation
             LEFT JOIN input_ref ir ON ir.id = c.input
             LEFT JOIN parse_state p ON p.input_pk = ir.pk AND p.chain = c.chain
-            WHERE (c.length > 0
-              AND (p.input_pk IS NULL
-                OR (NOT COALESCE(p.at_length = c.length AND (p.status = 'waiting' OR NOT ?2), 0)
-                    AND p.parsed_upto < c.length)
-                OR (?2 AND p.status IN ('refused','failed') AND p.at_length=c.length)
-                OR EXISTS(SELECT 1 FROM json_each(?1) expected
-                    WHERE json_extract(expected.value, '$[0]') = COALESCE(f.format, i.format)
-                      AND json_extract(expected.value, '$[1]') IS NOT p.parse_version)))
+            WHERE c.length > 0
             ORDER BY 5,(SELECT max(o.seen_at) FROM observations o WHERE o.input=c.input) DESC,c.input,c.chain DESC;

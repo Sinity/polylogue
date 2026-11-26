@@ -1,5 +1,5 @@
 //! Product failure codes classified once into the shared transport contract.
-pub mod act;
+pub mod acts;
 pub mod browser;
 pub mod complete {
     //! Full query completion uses the shared replacement span and candidate type.
@@ -19,7 +19,6 @@ pub mod complete {
     pub type Answer = Vec<query_language::complete::Completion>;
 }
 
-pub mod context;
 pub mod embed {
     //! Embedding builds and their previews.
     use schemars::JsonSchema;
@@ -120,25 +119,10 @@ pub mod import {
 
 pub mod line;
 pub mod query;
-pub mod read;
 pub mod resume {
     //! Resuming a session through its tool's own command.
-    use polylogue_model::SessionId;
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
-    use std::path::PathBuf;
-
-    #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-    #[serde(deny_unknown_fields)]
-    pub struct Arguments {
-        /// `origin:native_id`
-        #[schemars(extend("argument_form" = "positional"))]
-        pub session: Option<SessionId>,
-        /// The directory (default: the caller's working directory)
-        pub cwd: Option<PathBuf>,
-        /// At most this many sessions
-        pub limit: Option<u64>,
-    }
 
     /// The sessions in a directory worth resuming, or one session's plan.
     #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

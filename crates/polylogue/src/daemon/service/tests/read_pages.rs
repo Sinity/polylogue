@@ -23,13 +23,17 @@ fn request(
         target: target.into(),
         options: ReadOptions {
             view,
-            inherited,
+            show: if inherited {
+                vec!["inherited".into()]
+            } else {
+                Vec::new()
+            },
             ..Default::default()
         },
         delivery: ReadDelivery::Page,
-        format: "json".into(),
+        format: polylogue_model::read::Format::Json,
         budget: polylogue_model::read::ReadBudget::Tokens(budget as u64),
-        with_blobs: false,
+        alternates: Vec::new(),
         cursor: None,
     })
 }

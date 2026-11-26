@@ -28,8 +28,8 @@ pub fn in_conflict(row: &str) -> String {
     format!(
         "((SELECT count(*) FROM source_revision_state ac WHERE ac.root={row}.root AND ac.current=1)>1 \
          OR ({row}.kind IN ({kinds}) AND EXISTS (SELECT 1 FROM source_revision_state oh \
-           JOIN source_annotation_slot os ON os.id = oh.id \
-           JOIN source_annotation_slot ts ON ts.slot = os.slot \
+           JOIN source_annotation_unique_key os ON os.id = oh.id \
+           JOIN source_annotation_unique_key ts ON ts.key_hash = os.key_hash \
            JOIN source_annotation ta ON ta.id = ts.id AND ta.root <> {row}.root \
            JOIN source_revision_state th ON th.id = ts.id AND th.current = 1 \
            WHERE oh.root = {row}.root AND oh.current = 1)))",
