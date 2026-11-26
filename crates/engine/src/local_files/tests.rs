@@ -479,7 +479,7 @@ fn an_appended_rollout_reports_the_local_files_of_its_new_records() {
     let r = e.reads.reader().unwrap();
     let rows = r
         .query(
-            "SELECT DISTINCT o.input FROM a.observation o WHERE o.path='codex-local-references/codex:rollout:appended-images.jsonl'",
+            "SELECT DISTINCT o.input FROM a.observation o WHERE o.path_bytes=CAST('codex-local-references/codex:rollout:appended-images@test-machine.jsonl' AS BLOB)",
             &[],
         )
         .unwrap();
