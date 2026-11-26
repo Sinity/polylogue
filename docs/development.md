@@ -210,7 +210,12 @@ earlier ones. A manual run may reuse that build but never replaces it.
 
 The `package` workflow builds `.#default` for every master commit and pushes
 its runtime closure and production compiler artifacts to `sinity.cachix.org`.
-The next source-only package build reuses those compiler artifacts. Sinnix deploys a revision only
+The next source-only package build reuses those compiler artifacts.
+The release profile (`[profile.release]` in `Cargo.toml`) builds with whole-program
+optimisation, one code generation unit and stripped symbols: the binary is 73 MB
+instead of 115 MB, and a hosted release build takes about 15 to 25 minutes
+instead of 10. Panics stay unwinding because the build and the engine catch a
+failed worker. Sinnix deploys a revision only
 after fetching that package, so its switches never compile Polylogue. To
 deploy a revision master does not contain, such as a deployment branch's head,
 qualify that tree with `gh workflow run check -f rev=<full-commit-sha>`,
