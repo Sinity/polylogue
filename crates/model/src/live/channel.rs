@@ -83,10 +83,39 @@ pub struct Harness {
     pub mail_events: &'static [&'static str],
     /// The synchronous hook event that may return a permission decision.
     pub permission_hook: Option<&'static str>,
-    /// It resumes a session headlessly with a prompt.
-    pub headless_resume: bool,
+    /// The program that runs it.
+    pub program: &'static str,
+    /// The arguments that resume a session headlessly with a prompt, when it
+    /// can: `{id}` stands for the session's native ID and `{text}` for the
+    /// prompt.
+    pub headless_resume: Option<&'static [&'static str]>,
     /// The protocol its hosted sessions run on.
     pub host: Option<HostProtocol>,
+    /// The arguments that run it under a `polylogue internal host` process,
+    /// for a protocol that needs one; `{id}` stands for the session ID the
+    /// host gives it.
+    pub host_arguments: Option<&'static [&'static str]>,
+}
+
+impl Harness {
+    /// The command line of `arguments` (this harness's `headless_resume` or
+    /// `host_arguments`), with the session ID and the prompt in their
+    /// places. `None` when the arguments name an ID and there is none.
+    pub fn command(
+        &self,
+        arguments: &[&str],
+        id: Option<&str>,
+        text: Option<&str>,
+    ) -> Option<Vec<String>> {
+        std::iter::once(Some(self.program))
+            .chain(arguments.iter().map(|word| match *word {
+                "{id}" => id,
+                "{text}" => text,
+                word => Some(word),
+            }))
+            .map(|word| word.map(str::to_owned))
+            .collect()
+    }
 }
 
 /// Every harness acts can reach.
@@ -95,29 +124,50 @@ pub const HARNESSES: &[Harness] = &[
         name: "claude-code",
         mail_events: &["PostToolUse", "UserPromptSubmit"],
         permission_hook: Some("PermissionRequest"),
-        headless_resume: true,
+        program: "claude",
+        headless_resume: Some(&["--resume", "{id}", "-p", "{text}"]),
         host: Some(HostProtocol::ClaudeStreamJson),
+        // Permission prompts go to the host process.
+        host_arguments: Some(&[
+            "-p",
+            "--input-format",
+            "stream-json",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--include-hook-events",
+            "--permission-prompts",
+            "host",
+            "--session-id",
+            "{id}",
+        ]),
     },
     Harness {
         name: "codex",
         mail_events: &["PostToolUse", "UserPromptSubmit"],
         permission_hook: None,
-        headless_resume: true,
+        program: "codex",
+        headless_resume: Some(&["exec", "resume", "{id}", "{text}"]),
         host: Some(HostProtocol::CodexAppServer),
+        host_arguments: None,
     },
     Harness {
         name: "gemini-cli",
         mail_events: &["AfterTool", "BeforeAgent"],
         permission_hook: None,
-        headless_resume: false,
+        program: "gemini",
+        headless_resume: None,
         host: Some(HostProtocol::Acp),
+        host_arguments: Some(&["--acp"]),
     },
     Harness {
         name: "hermes",
         mail_events: &["pre_llm_call"],
         permission_hook: None,
-        headless_resume: false,
+        program: "hermes",
+        headless_resume: None,
         host: Some(HostProtocol::Acp),
+        host_arguments: Some(&["acp"]),
     },
 ];
 
@@ -281,7 +331,7 @@ pub fn declared_probe(harness: &Harness, hosted: bool) -> Probe {
         hosted,
         hooks: !harness.mail_events.is_empty(),
         permission_hook: harness.permission_hook.is_some(),
-        headless_resume: harness.headless_resume,
+        headless_resume: harness.headless_resume.is_some(),
     }
 }
 

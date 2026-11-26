@@ -111,33 +111,12 @@ pub(crate) fn remove(dir: &Path, key: &str) {
     let _ = std::fs::remove_file(dir.join(format!("{key}.sock")));
 }
 
-/// The command line `polylogue internal host` runs for a harness: Claude Code in
-/// stream-json mode with permission prompts sent to the host, Gemini CLI
-/// and Hermes in ACP mode.
+/// The command line `polylogue internal host` runs for a harness, from its
+/// declaration; `None` for a harness without one, or without the session ID
+/// its arguments name.
 pub fn agent_command(harness: &str, session_id: Option<&str>) -> Option<Vec<String>> {
-    let words: &[&str] = match harness {
-        "claude-code" => &[
-            "claude",
-            "-p",
-            "--input-format",
-            "stream-json",
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--include-hook-events",
-            "--permission-prompts",
-            "host",
-        ],
-        "gemini-cli" => &["gemini", "--acp"],
-        "hermes" => &["hermes", "acp"],
-        _ => return None,
-    };
-    let mut argv: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
-    if harness == "claude-code" {
-        argv.push("--session-id".into());
-        argv.push(session_id?.to_owned());
-    }
-    Some(argv)
+    let harness = polylogue_model::live::channel::harness(harness)?;
+    harness.command(harness.host_arguments?, session_id, None)
 }
 
 /// The status a hosted session's protocol traffic states, kept by the

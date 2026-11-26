@@ -80,12 +80,7 @@ impl HarnessVersion {
 /// Asks the installed harness for its version; `None` when it is not
 /// installed or prints none.
 pub fn probe_version(harness: Harness) -> Option<HarnessVersion> {
-    let program = match harness {
-        Harness::ClaudeCode => "claude",
-        Harness::Codex => "codex",
-        Harness::GeminiCli => "gemini",
-        Harness::Hermes => "hermes",
-    };
+    let program = polylogue_model::live::channel::harness(harness.origin())?.program;
     let output = std::process::Command::new(program)
         .arg("--version")
         .stdin(std::process::Stdio::null())

@@ -28,27 +28,11 @@ pub(crate) struct ResumeRun {
 }
 
 /// The harness's headless resume command line for a session, when the
-/// harness has one: Claude Code `claude --resume ID -p TEXT`, Codex
-/// `codex exec resume ID TEXT`.
+/// harness declares one.
 pub(crate) fn headless_resume(session: &SessionId, text: &str) -> Option<Vec<String>> {
+    let harness = polylogue_model::live::channel::harness(session.origin().as_str())?;
     let id = session.native().to_string();
-    match session.origin().as_str() {
-        "claude-code" => Some(vec![
-            "claude".into(),
-            "--resume".into(),
-            id,
-            "-p".into(),
-            text.into(),
-        ]),
-        "codex" => Some(vec![
-            "codex".into(),
-            "exec".into(),
-            "resume".into(),
-            id,
-            text.into(),
-        ]),
-        _ => None,
-    }
+    harness.command(harness.headless_resume?, Some(&id), Some(text))
 }
 
 /// A Codex thread Polylogue started on the shared app-server, with the
@@ -636,7 +620,7 @@ pub(crate) fn probe(acts: &Acts, session: &SessionId, facts: &LiveFacts) -> Prob
             .is_some_and(|h| h.permission_hook.is_some())
             && acts.permission_hook(),
         headless_resume: polylogue_model::live::channel::harness(&harness)
-            .is_some_and(|h| h.headless_resume),
+            .is_some_and(|h| h.headless_resume.is_some()),
         harness,
     }
 }
