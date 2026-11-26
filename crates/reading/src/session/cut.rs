@@ -6,7 +6,7 @@ use super::bind::{seen_marks, session_read};
 use super::entries::PageEntry;
 use super::{Reading, still_wanted};
 use crate::{Error, ReadRequest, ReadServices};
-use polylogue_model::{Reference, read::*};
+use polylogue_model::read::*;
 use polylogue_store::Reader;
 use std::sync::Arc;
 
@@ -22,7 +22,6 @@ pub(super) fn page(
 ) -> Result<(ReadPage, Vec<polylogue_model::user::SeenMark>), Error> {
     let (format, limits, digest) = crate::page_terms(original)?;
     let target = &original.target;
-    let options = &original.options;
     let request = &reading.request;
     let continuation = &reading.continuation;
     let composed = &reading.composed;

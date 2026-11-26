@@ -7,6 +7,7 @@ use crate::Error;
 use polylogue_model::Reason;
 use polylogue_model::{MessageId, SessionId, read::*};
 use polylogue_store::Reader;
+use polylogue_store::items::ItemVersions;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
@@ -70,7 +71,7 @@ impl Composed {
         part: usize,
         seq: usize,
     ) -> Result<ItemCounts, Error> {
-        entries::counts_before(reader, &self.indexes[part], seq)
+        super::entries::counts_before(reader, &self.indexes[part], seq)
     }
     /// The entries of a part's session in `start..end` whose class `which`
     /// accepts.
