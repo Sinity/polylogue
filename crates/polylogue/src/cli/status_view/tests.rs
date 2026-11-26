@@ -1236,21 +1236,31 @@ fn whole_log_prints_every_long_record_whole() {
         .collect();
     status.recent_log = texts
         .iter()
-        .map(|text| record(today(13, 0, 0), Priority::Warning, text))
+        .zip([Priority::Info, Priority::Warning, Priority::Error])
+        .map(|(text, priority)| record(today(13, 0, 0), priority, text))
         .collect();
-    let text = render(
-        &status,
-        &[],
-        &View {
-            style: TextStyle::Plain,
-            width: 100,
-            now_ms: NOW,
-            zone: &jiff::tz::TimeZone::UTC,
-            whole_log: true,
-        },
-    );
-    for record in texts {
-        assert_eq!(text.matches(&record).count(), 1, "{text}");
+    for building in [false, true] {
+        status.index_build = building.then_some(IndexBuild {
+            serving_previous: false,
+            chains: 0,
+            chains_read: 0,
+            bytes: 0,
+            bytes_read: 0,
+        });
+        let text = render(
+            &status,
+            &[],
+            &View {
+                style: TextStyle::Plain,
+                width: 100,
+                now_ms: NOW,
+                zone: &jiff::tz::TimeZone::UTC,
+                whole_log: true,
+            },
+        );
+        for record in &texts {
+            assert_eq!(text.matches(record.as_str()).count(), 1, "{text}");
+        }
     }
 }
 

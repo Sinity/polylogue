@@ -1016,7 +1016,7 @@ fn recent(status: &Answer, view: &View<'_>) -> Vec<String> {
     let shown: Vec<_> = status
         .recent_log
         .iter()
-        .filter(|record| !building || record.priority != Priority::Info)
+        .filter(|record| view.whole_log || !building || record.priority != Priority::Info)
         .collect();
     let skipped = if view.whole_log {
         0

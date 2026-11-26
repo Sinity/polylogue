@@ -783,7 +783,7 @@ impl Engine {
             .collect();
         for path in unseen {
             let state = &self.inputs[&path];
-            if sources && state.facts.is_some() && !path.try_exists()? {
+            if sources && state.facts.is_some() && path.try_exists().is_ok_and(|exists| !exists) {
                 let batch = polylogue_store::Batch {
                     input: InputKey {
                         id: state.input_id.clone(),

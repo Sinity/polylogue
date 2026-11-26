@@ -177,7 +177,10 @@ fn format_answer(
                 return rows_text(&line).map(|text| format!("{text}{notes}"));
             }
             let value = answer.value().expect("a non-error answer has a value");
-            Ok(polylogue_render::terminal::json(value, true))
+            Ok(polylogue_render::terminal::json(
+                value,
+                command.name != "status",
+            ))
         }
     }
 }
