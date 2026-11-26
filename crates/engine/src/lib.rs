@@ -20,6 +20,7 @@ pub mod read;
 pub mod repo_lookup;
 mod watch;
 
+use crossbeam_channel::{Receiver, RecvTimeoutError, Sender};
 use databases::Databases;
 use plan::{InputState, Plan};
 use polylogue_model::LockExt;
@@ -32,7 +33,7 @@ use pool::{Pool, Priority};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, channel};
+use std::sync::mpsc::{SyncSender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

@@ -1,12 +1,12 @@
 //! Watch source directories and the nearest existing parents of missing ones.
 //! Parents are watched nonrecursively to exclude unrelated state writes.
 use crate::{Config, LoopMsg, collect};
+use crossbeam_channel::Sender;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use polylogue_model::LockExt;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 /// What the watcher saw since the last `take`.

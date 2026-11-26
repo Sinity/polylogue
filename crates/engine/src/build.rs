@@ -13,6 +13,7 @@
 //! the installed index forward from the build's position.
 use crate::plan::Plan;
 use crate::{Engine, EngineError, LoopMsg, Pass, has_reading, pool};
+use crossbeam_channel::{Receiver, Select, Sender, TrySendError};
 use polylogue_model::{Cause, Caused as _, LockExt as _};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
 use polylogue_store::writer::ChainSink as _;
@@ -20,15 +21,10 @@ use polylogue_store::writer::build::{BuildPhase, BuildWorker, PhaseClock};
 use polylogue_store::{Change, InputKey};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TrySendError, sync_channel};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::Duration;
 
 /// Inputs whose chains are planned per page.
 const PLANNED_INPUTS: usize = 256;
-
-/// How often the loop thread looks for a request while it waits.
-const REQUEST_POLL: Duration = Duration::from_millis(5);
 
 /// The memory one input byte takes while its range is parsed: a parsed
 /// range holds about ten times its bytes.
@@ -112,7 +108,7 @@ struct Prepare {
     admission: Admission,
     /// The most input bytes one range of a chain reads.
     chunk: u64,
-    plans: Mutex<Receiver<Plan>>,
+    plans: Receiver<Plan>,
     next_run: AtomicU64,
     /// Each worker's own memory: its sort buffer and scratch cache.
     worker_memory: usize,
@@ -161,7 +157,7 @@ impl Prepare {
     fn work(&self) -> Result<(), EngineError> {
         let worked = polylogue_model::caught(|| self.work_until_done())
             .unwrap_or_else(|panic| Err(EngineError::internal(panic)));
-        while self.plans.locked().recv().is_ok() {}
+        while self.plans.recv().is_ok() {}
         worked
     }
 
@@ -195,7 +191,7 @@ impl Prepare {
     fn work_until_done(&self) -> Result<(), EngineError> {
         let mut run: Option<(u64, BuildWorker)> = None;
         loop {
-            let plan = self.plans.locked().recv();
+            let plan = self.plans.recv();
             let Ok(mut plan) = plan else { break };
             if self.abandoned() {
                 return Err(EngineError::Stopped);
@@ -280,7 +276,7 @@ impl Engine {
             crate::build_log::READING_STORED_FILES,
             format_args!("{workers} parse workers"),
         );
-        let (plans_tx, plans_rx) = sync_channel::<Plan>(workers * 2);
+        let (plans_tx, plans_rx) = crossbeam_channel::bounded::<Plan>(workers * 2);
         let prepare = Prepare {
             archive: self.archive.clone(),
             blobs: Arc::clone(&self.blobs),
@@ -292,7 +288,7 @@ impl Engine {
             },
             admission: Admission::new(self.archive.memory_budget().prepared_in_flight()),
             chunk: self.config.chunk.max(1),
-            plans: Mutex::new(plans_rx),
+            plans: plans_rx,
             next_run: AtomicU64::new(0),
             worker_memory: self.archive.memory_budget().build_worker_memory(workers),
             chains: AtomicU64::new(0),
@@ -309,17 +305,29 @@ impl Engine {
             Some(CountUnit::Files),
         );
         let prepared = std::thread::scope(|scope| {
+            // Each worker holds a sender it never sends on: the channel
+            // disconnects when the last worker ends.
+            let (running, finished) = crossbeam_channel::bounded::<()>(0);
+            let prepare = &prepare;
             let handles: Vec<_> = (0..workers)
                 .map(|n| {
+                    let running = running.clone();
                     std::thread::Builder::new()
                         .name(format!("polylogue-build-{n}"))
-                        .spawn_scoped(scope, || prepare.work())
+                        .spawn_scoped(scope, move || {
+                            let _running = running;
+                            prepare.work()
+                        })
                 })
                 .collect::<std::io::Result<_>>()?;
-            let mut result = self.plan_build(&prepare, plans_tx, through, &mut pass);
-            while result.is_ok() && !handles.iter().all(|handle| handle.is_finished()) {
-                result = self.answer_waiting(&mut pass).map(drop);
-                std::thread::sleep(REQUEST_POLL);
+            drop(running);
+            let mut result = self.plan_build(prepare, plans_tx, through, &mut pass);
+            while result.is_ok() {
+                match self.wait_answering(&finished, &mut pass) {
+                    Ok(true) => break,
+                    Ok(false) => {}
+                    Err(error) => result = Err(error),
+                }
             }
             if result.is_err() {
                 prepare.settings.yielding.store(true, Ordering::Release);
@@ -348,7 +356,7 @@ impl Engine {
             .extend(polylogue_model::unpoisoned(prepare.left_out.into_inner()));
         pass.bytes_read += prepare.parsed.load(Ordering::Relaxed);
         let mut phases = vec![clock.end(prepare.chains_read.load(Ordering::Relaxed))];
-        let (announce, announced) = std::sync::mpsc::channel();
+        let (announce, announced) = crossbeam_channel::unbounded();
         let built = self.writer.sender().start_build(
             runs.into_iter().map(|(_, path)| path).collect(),
             workers,
@@ -356,13 +364,9 @@ impl Engine {
         )?;
         // The writer drops its sender when the build ends; requests are
         // answered while it works.
-        loop {
-            match announced.recv_timeout(REQUEST_POLL) {
-                Ok(step) => self.enter_build_step(step),
-                Err(RecvTimeoutError::Timeout) => {
-                    self.answer_waiting(&mut pass)?;
-                }
-                Err(RecvTimeoutError::Disconnected) => break,
+        while !self.wait_answering(&announced, &mut pass)? {
+            while let Ok(step) = announced.try_recv() {
+                self.enter_build_step(step);
             }
         }
         let built = built
@@ -378,6 +382,40 @@ impl Engine {
         }
         pass.messages_written = self.reads.reader()?.status()?.messages;
         Ok((pass, phases))
+    }
+
+    /// Blocks until `work` has a message or has disconnected, answering
+    /// each request that arrives meanwhile. True once `work` has
+    /// disconnected with nothing left on it.
+    fn wait_answering<T>(
+        &mut self,
+        work: &Receiver<T>,
+        pass: &mut Pass,
+    ) -> Result<bool, EngineError> {
+        loop {
+            let requests = self.waiting_requests();
+            let mut select = Select::new();
+            let ready = select.recv(work);
+            if let Some(requests) = &requests {
+                select.recv(requests);
+            }
+            if select.ready() == ready {
+                return Ok(work.is_empty()
+                    && matches!(
+                        work.try_recv(),
+                        Err(crossbeam_channel::TryRecvError::Disconnected)
+                    ));
+            }
+            self.answer_waiting(pass)?;
+        }
+    }
+
+    /// The channel requests arrive on while none is being answered.
+    fn waiting_requests(&self) -> Option<Receiver<LoopMsg>> {
+        self.requests
+            .as_ref()
+            .filter(|requests| !requests.serving)
+            .map(|requests| requests.receiver().clone())
     }
 
     /// Answers the requests waiting; true when one was answered. A stop
@@ -419,7 +457,7 @@ impl Engine {
     fn plan_build(
         &mut self,
         prepare: &Prepare,
-        plans: std::sync::mpsc::SyncSender<Plan>,
+        plans: Sender<Plan>,
         through: Option<String>,
         pass: &mut Pass,
     ) -> Result<(), EngineError> {
@@ -519,15 +557,22 @@ impl Engine {
             }
             prepare.progress();
             for mut plan in page {
+                // A plan waits for room with the workers; requests are
+                // answered meanwhile.
                 loop {
+                    let requests = self.waiting_requests();
+                    let mut select = Select::new();
+                    let room = select.send(&plans);
+                    if let Some(requests) = &requests {
+                        select.recv(requests);
+                    }
+                    if select.ready() != room {
+                        self.answer_waiting(pass)?;
+                        continue;
+                    }
                     match plans.try_send(plan) {
                         Ok(()) => break,
-                        Err(TrySendError::Full(back)) => {
-                            plan = back;
-                            if !self.answer_waiting(pass)? {
-                                std::thread::sleep(REQUEST_POLL);
-                            }
-                        }
+                        Err(TrySendError::Full(back)) => plan = back,
                         Err(TrySendError::Disconnected(_)) => return Ok(()),
                     }
                 }
