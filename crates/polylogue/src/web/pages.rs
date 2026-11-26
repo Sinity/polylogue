@@ -86,9 +86,6 @@ pub fn auth() -> String {
     )
 }
 
-#[cfg(test)]
-mod tests;
-
 /// The operation's completeness, failure and next calls, shared by every view.
 pub(super) fn answer_content(answers: &[(&command_surface::Answer<Value>, &str)]) -> String {
     use command_surface::Outcome;
@@ -131,3 +128,6 @@ pub(super) fn answer_content(answers: &[(&command_surface::Answer<Value>, &str)]
     }
     .into_string()
 }
+
+#[cfg(test)]
+mod tests;

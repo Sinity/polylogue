@@ -495,11 +495,7 @@ async fn search(
         ));
     }
     answer_page(&[(&answer, &cli)], || {
-        pages::search(
-            &p.q,
-            Some(&answer.value().unwrap()["reply"]),
-            p.cursor.as_deref(),
-        )
+        pages::search(&p.q, &answer.value().unwrap()["reply"], p.cursor.as_deref())
     })
 }
 

@@ -22,13 +22,20 @@ fn a_late_reader_page_keeps_the_deadline_hint_and_next_command() {
     rt().block_on(async {
         let (status, _, body) = send(
             &r,
-            authed(get("/rows?selection=sessions&deadline=1"))
+            authed(get("/rows?selection=sessions"))
                 .header("x-polylogue-deadline-ms", "0")
                 .body(Body::empty())
                 .unwrap(),
         )
         .await;
         assert_eq!(status, StatusCode::GATEWAY_TIMEOUT, "{body}");
+        let ids = body.split("--request-id ").skip(1)
+            .filter_map(|text| text.split_once(' ').map(|(id, _)| id.to_owned()))
+            .collect::<Vec<_>>();
+        let mut body = body;
+        for id in ids {
+            body = body.replace(&format!("--request-id {id}"), "--request-id REQUEST");
+        }
         assert!(
             body.contains("<p>the read deadline was exceeded</p>"),
             "{body}"
@@ -39,12 +46,12 @@ fn a_late_reader_page_keeps_the_deadline_hint_and_next_command() {
         );
         assert!(
             body.contains(
-                "complete without a deadline: <code>polylogue sessions --deadline none</code>"
+                "complete without a deadline: <code>polylogue --request-id REQUEST --deadline none -- sessions</code>"
             ),
             "{body}"
         );
         assert!(
-            body.contains("Command: <code>polylogue sessions --deadline 1ms</code>"),
+            body.contains("Command: <code>polylogue --request-id REQUEST -- sessions</code>"),
             "{body}"
         );
     });
@@ -91,14 +98,14 @@ fn partial_pages_show_all_missing_reasons_notes_and_next_calls() {
         ),
     );
     let response = answer_page(&[(&answer, "polylogue sessions")], || {
-        pages::search("sessions", Some(&answer.value().unwrap()["reply"]), None)
+        crate::web::pages::search("sessions", &answer.value().unwrap()["reply"], None)
     });
     rt().block_on(async {
         assert_eq!(response.status(), StatusCode::OK);
         let body = String::from_utf8(to_bytes(response.into_body(), usize::MAX).await.unwrap().to_vec()).unwrap();
         assert!(body.contains("<p>Partial results</p><ul><li>The index is catching up.</li><li>Usage is unavailable.</li></ul>"), "{body}");
         assert!(body.contains("<p class=\"note\">Counts are lower bounds.</p>"));
-        assert!(body.contains("<p>Read sessions: <code>polylogue sessions</code></p>"));
+        assert!(body.contains("<p>Read sessions: <code>polylogue --request-id next -- sessions</code></p>"));
     });
 }
 
@@ -161,7 +168,7 @@ fn listings_and_read_pages_name_an_unparsed_file() {
 fn failure_pages_show_the_suggested_shorter_period() {
     let failure = crate::protocol::failure(
         polylogue_model::Code::DeadlineExceeded,
-        "the read deadline was exceeded".into(),
+        "the read deadline was exceeded",
     )
     .with_hint("restrict the query to a shorter time range or one session")
     .with_suggestion(command_surface::Suggestion::Query(

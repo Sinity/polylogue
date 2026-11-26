@@ -393,12 +393,12 @@ fn search_renders_the_cli_answer_with_session_links() {
         assert_eq!(s, StatusCode::OK, "{page}");
         assert!(page.contains("<mark>"), "{page}");
         assert_copy_command(&page, "polylogue parser");
-        // A query error shows its message instead of failing the page.
+        // A query error shows its message with the failure status.
         let req = authed(get("/search?q=repo%3A%28"))
             .body(Body::empty())
             .unwrap();
         let (s, _, page) = send(&r, req).await;
-        assert_eq!(s, StatusCode::OK);
+        assert_eq!(s, StatusCode::BAD_REQUEST);
         assert!(page.contains("role=\"alert\""), "{page}");
     });
 }
