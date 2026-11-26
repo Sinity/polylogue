@@ -282,12 +282,12 @@ fn a_reading_that_returns_is_a_new_report_in_its_place() {
     );
     assert_eq!(reports[0].1, reports[2].1);
     assert_ne!(reports[0].1, reports[1].1);
-    let ids: std::collections::BTreeSet<&Json> = step
+    let ids: std::collections::BTreeSet<&str> = step
         .output
         .events
         .iter()
         .filter(|e| e.kind == "quota_report")
-        .map(|e| &e.data["report_id"])
+        .filter_map(|e| e.data["report_id"].as_str())
         .collect();
     assert_eq!(ids.len(), 3);
 }
