@@ -239,12 +239,7 @@ impl EmissionRecorder<'_> {
                     )
                 });
             if let Err(error) = record {
-                eprintln!(
-                    "{}",
-                    polylogue_render::terminal::escape(&format!(
-                        "polylogue hook: could not record emitted context: {error}"
-                    ))
-                );
+                spool_error(&format!("emitted context for {session}"), &error);
             }
         }
         true
@@ -498,10 +493,16 @@ fn record_start_context(
         "SessionContext",
         &payload,
         &json!({}),
-        session,
+        session.clone(),
         startup,
     ) {
-        spool_error("session context", &error);
+        spool_error(
+            &format!(
+                "session context for {}",
+                session.map_or("unknown session".into(), |session| session.to_string())
+            ),
+            &error,
+        );
     }
 }
 
@@ -1071,10 +1072,17 @@ fn run_event(
         .engine
         .spool_dir(polylogue_sources::hook_spool::ORIGIN);
     let invocation = match append_to_spool(&spool, harness, event, &payload, &observed, startup) {
-        Ok(invocation) => Some(invocation),
+        Ok(invocation) => invocation,
         Err(error) => {
-            spool_error(event, &error);
-            None
+            spool_error(
+                &format!(
+                    "{event} for {}:{}",
+                    harness.origin(),
+                    payload.str("session_id").unwrap_or("unknown")
+                ),
+                &error,
+            );
+            return ExitCode::SUCCESS;
         }
     };
     let session = session_of(harness, &payload, startup);
@@ -1089,7 +1097,7 @@ fn run_event(
         dir: &spool,
         harness,
         event,
-        invocation: invocation.as_deref(),
+        invocation: Some(&invocation),
         session: session.clone(),
         observed: &observed,
         startup,

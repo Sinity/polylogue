@@ -1333,10 +1333,15 @@ fn a_session_start_names_a_wrong_archive_path() {
 
 #[test]
 fn a_failed_spool_write_leaves_the_harness_running() {
-    let dir = tempfile::tempdir().unwrap();
+    use crate::daemon::{server::Server, service::ArchiveMode};
+    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let mut runtime =
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
+    let mut server = Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
     let startup = Startup::for_test(
-        crate::test_daemon::engine_config(dir.path().join("home")),
-        &dir.path().join("archive"),
+        crate::test_daemon::engine_config(archive.dir.path().join("blocked-home")),
+        &archive.root,
     );
     let spool = startup
         .engine
@@ -1350,7 +1355,7 @@ fn a_failed_spool_write_leaves_the_harness_running() {
             json!({"session_id":"s1", "cwd":"/home/op/morrow"}),
             &startup,
             Instant::now() + CONTEXT_BUDGET,
-            |_, _, _| panic!("no context to emit")
+            |_, _, _| panic!("no context to emit after a failed spool write")
         ),
         ExitCode::SUCCESS
     );
@@ -1358,4 +1363,6 @@ fn a_failed_spool_write_leaves_the_harness_running() {
         std::fs::read_to_string(spool).unwrap(),
         "synthetic unwritable spool"
     );
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
 }
