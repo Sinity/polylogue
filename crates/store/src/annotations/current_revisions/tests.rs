@@ -489,18 +489,89 @@ fn archive() -> Connection {
     conn
 }
 
+#[test]
+fn concurrent_revisions_are_both_current_in_either_write_order() {
+    for order in [["left", "right"], ["right", "left"]] {
+        let mut world = World::new();
+        let root = world.note("root");
+        for id in order {
+            world
+                .archive
+                .writer
+                .archive()
+                .user(request(
+                    id.into(),
+                    UserWrite::ReviseAnnotations {
+                        bases: vec![RevisionReference::exact(root.clone(), root.clone())],
+                        patch: AnnotationPatch {
+                            value: Change::Set(id.into()),
+                            ..Default::default()
+                        },
+                    },
+                    Authorship {
+                        author: Author::Operator,
+                        via: Channel::Markup,
+                    },
+                ))
+                .unwrap();
+        }
+        // Neither head has a live descendant; clocks and arrival order choose neither.
+        assert_eq!(world.heads(&root), vec!["left", "right"]);
+    }
+}
+
+#[test]
+fn withdrawing_a_root_leaves_no_current_revision() {
+    let mut world = World::new();
+    let root = world.note("root");
+    let revision = world.revise(&root, &root, "revision").unwrap().id;
+    assert_eq!(world.heads(&root), vec![revision]);
+    world.withdraw(&format!("annotation:{root}"));
+    // A root withdrawal names all of its revisions.
+    assert_eq!(world.heads(&root), Vec::<String>::new());
+}
+
+#[test]
+fn a_revision_of_a_withdrawn_revision_is_current() {
+    let mut world = World::new();
+    let root = world.note("root");
+    let middle = world.revise(&root, &root, "middle").unwrap().id;
+    world.withdraw(&format!("annotation:{root}@{middle}"));
+    let newest = world
+        .write_via(
+            Channel::Markup,
+            UserWrite::ReviseAnnotations {
+                bases: vec![RevisionReference::exact(root.clone(), middle)],
+                patch: AnnotationPatch {
+                    value: Change::Set("newest".into()),
+                    ..Default::default()
+                },
+            },
+        )
+        .unwrap()
+        .id;
+    // Withdrawn revisions are transparent to the transitive descendant rule.
+    assert_eq!(world.heads(&root), vec![newest]);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(64))]
 
     #[test]
     fn the_stored_index_equals_the_rule_after_every_write(
         generated in authored_generator::history(24),
+        batch_size in 1usize..=6,
     ) {
         let conn = archive();
         let mut prefix = History::new();
-        for (counter, header) in generated.records().iter().enumerate() {
-            crate::annotations::apply(&conn, &[fact(header)], counter as i64 + 1).unwrap();
-            prefix.push(header.clone(), Vec::new());
+        for (counter, headers) in generated.records().chunks(batch_size).enumerate() {
+            let facts: Vec<_> = headers.iter().map(fact).collect();
+            let tx = conn.unchecked_transaction().unwrap();
+            crate::annotations::apply(&tx, &facts, counter as i64 + 1).unwrap();
+            tx.commit().unwrap();
+            for header in headers {
+                prefix.push(header.clone(), Vec::new());
+            }
             prop_assert_eq!(stored(&conn), expected(&mut prefix));
         }
     }
@@ -508,6 +579,7 @@ proptest! {
     #[test]
     fn stored_heads_ignore_arrival_order_and_clocks(
         generated in authored_generator::history(24),
+        batch_size in 1usize..=6,
         order in proptest::collection::vec(any::<u32>(), 24),
         clocks in proptest::collection::vec(0i64..4_000_000_000_000, 24),
     ) {
@@ -524,8 +596,11 @@ proptest! {
             .collect();
         records.sort_by_key(|(key, header)| (*key, header.rev.clone()));
         let conn = archive();
-        for (counter, (_, header)) in records.iter().enumerate() {
-            crate::annotations::apply(&conn, &[fact(header)], counter as i64 + 1).unwrap();
+        for (counter, headers) in records.chunks(batch_size).enumerate() {
+            let facts: Vec<_> = headers.iter().map(|(_, header)| fact(header)).collect();
+            let tx = conn.unchecked_transaction().unwrap();
+            crate::annotations::apply(&tx, &facts, counter as i64 + 1).unwrap();
+            tx.commit().unwrap();
         }
         prop_assert_eq!(stored(&conn), expected(&mut full));
     }
