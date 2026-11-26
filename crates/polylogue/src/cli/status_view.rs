@@ -290,7 +290,7 @@ fn parse_state_words(state: ChainStatusName) -> &'static str {
         ChainStatusName::Refused => "refused",
         ChainStatusName::Failed => "failed",
         ChainStatusName::NoParser => "without a parser",
-        ChainStatusName::Repeated => "repeated by a newer file",
+        ChainStatusName::Repeated => "repeated",
         ChainStatusName::Done => "read",
     }
 }

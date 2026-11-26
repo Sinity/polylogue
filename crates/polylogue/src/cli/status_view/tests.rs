@@ -1256,6 +1256,6 @@ fn every_chain_state_the_census_counts_has_its_words() {
         .unwrap_or_else(|| panic!("{view}"));
     assert_eq!(
         reading.trim(),
-        "1 parsing · 1 waiting to grow · 1 refused · 1 failed · 1 without a parser · 1 repeated by a newer file"
+        "1 parsing · 1 waiting to grow · 1 refused · 1 failed · 1 without a parser · 1 repeated"
     );
 }
