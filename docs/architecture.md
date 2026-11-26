@@ -163,7 +163,8 @@ from each:
 | the record ahead of the index: a chain stored further than its reading, or record rows the index has not taken in | reads on from where each reading ends; a reading is a function of the bytes, so the rows are those an uninterrupted run would have written |
 | sessions marked due for their derived values, texts waiting for their search entries | computes and writes them |
 | a source cursor behind its committed bytes | re-reads and finds the bytes already stored |
-| the files of an unfinished index build | discards them and builds again from the stored bytes |
+| the files of an unfinished index rebuild, with its reason | discards them and rebuilds again from the stored bytes for the same reason |
+| a finished rebuild not yet renamed over `index.db` | installs it |
 
 A blob is stored once: a resumed write finds the bytes it was storing.
 
@@ -185,21 +186,39 @@ so no later sync in that boot, in the same process or a new one (where the machi
 they reached the disk. Recovery starts with a reboot
 ([operations.md#storage-failure](operations.md#storage-failure)).
 
-**The index file.** A build of the index writes private files in a directory
-of its own, without syncing as it goes, and installs them by rename when it
-ends; until then nothing but the build opens them. A build never changes the
-record or the stored bytes, so losing one costs the build and nothing else: a
-start that finds a build a crash or a stop left discards its files and builds
-again from the stored bytes, a build that fails in a running daemon is
-discarded the same way and the next pass builds again, and a start that finds
-a finished build not yet installed installs it. A new archive's first index
-is built the same way, from the files its first pass stores. While a
-build runs, reads are served from the installed index when this build of
-Polylogue can read it, and otherwise reply `index_building` with the build's
-progress
+**The index file.** Which index files exist and what they mean is one pair,
+derived from disk by one function that the daemon's open and any other
+process opening the archive use, and shown by `status`: the installed index
+(none; current, naming the archive it was built from and the record position
+it has taken in; or unusable, with why) and the rebuild (none; writing, with
+its reason; or ready). An index belongs to the archive it was built from: its
+meta holds `archive.db`'s identity and the record position it has taken in,
+and an index of another archive, or one past its archive's position (an
+`archive.db` put back from an older copy), is never read. The check uses
+those two values only, never a path or a file's identity, so an archive and
+its index moved or copied together stay paired.
+
+A rebuild writes private files in `index-rebuild/`: first `reason.json`, why
+it runs, before anything else changes, then `build.db`, written without syncs,
+and its sorted files in `sorted/`. When it ends `build.db` is synced, switched
+to WAL and renamed `ready.db`, and `ready.db` is renamed over `index.db`; the
+installed index stays `index.db` until that rename. A rebuild never changes
+the record or the stored bytes, so losing one costs the rebuild and nothing
+else: a start that finds a rebuild writing discards its files and rebuilds
+from the stored bytes for the reason on disk, a rebuild that fails in a
+running daemon is started again the same way, and a start that finds a ready
+rebuild installs it. An install that fails in a running daemon leaves the
+rebuild ready and the index writer without an index connection: index writes
+are refused with the install's error, `status` shows it, and the install is
+tried again when the writer next wakes for a commit or a message, and at the
+next start; nothing retries it on a timer. A new archive's first index is
+rebuilt the same way, from the files its first pass stores. While a rebuild
+runs, reads are served from the installed index when this build of Polylogue
+can read it, and otherwise reply `index_building` with the rebuild's reason
+and progress
 ([installing.md](installing.md#replacing-an-index-from-another-schema)). A
-reader opened before an install is refused as replaced before its next read
-begins; a read already started keeps the file it opened.
+read that has not started when an install renames the file starts on the
+installed index; a read already started keeps the file it opened.
 
 ## Pipeline
 

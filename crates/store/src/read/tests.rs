@@ -114,7 +114,7 @@ fn open_and_begin_failures_release_the_slot_for_waiters() {
             let pool = &pool;
             let dir = &dir;
             let attempt = scope.spawn(move || {
-                let result = pool.acquire(Lane::Ordinary, None, |path| {
+                let result = pool.acquire_with(Lane::Ordinary, None, |path| {
                     opening.send(()).unwrap();
                     released.recv().unwrap();
                     if begin_failure {
@@ -152,7 +152,7 @@ fn close_while_connecting_refuses_the_pending_reader_and_releases_its_slot() {
         let pool = &pool;
         let attempt = scope.spawn(move || {
             assert!(matches!(
-                pool.acquire(Lane::Ordinary, None, |path| {
+                pool.acquire_with(Lane::Ordinary, None, |path| {
                     opening.send(()).unwrap();
                     released.recv().unwrap();
                     pool.connect(path)

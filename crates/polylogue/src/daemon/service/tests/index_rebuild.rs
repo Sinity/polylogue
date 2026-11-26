@@ -21,7 +21,9 @@ fn a_daemon_over_an_index_from_another_format_rebuilds_it_and_serves() {
             .unwrap();
     });
     d.wait_for(|status| {
-        status["store"]["messages"] == 1 && status["store"]["index_rebuild"]["building"] == false
+        status["store"]["messages"] == 1
+            && status["index"]["rebuilding"]["state"] == "no"
+            && status["store"]["index_rebuild"].is_object()
     });
     let rebuild = status(&d)["store"]["index_rebuild"].clone();
     assert_eq!(
