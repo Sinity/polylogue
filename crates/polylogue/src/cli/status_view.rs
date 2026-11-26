@@ -788,6 +788,7 @@ fn pending(status: &Answer, view: &View<'_>) -> Vec<String> {
 /// unrecognized.
 fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
     use polylogue_model::capture::{Accessibility, Classification};
+    use std::os::unix::ffi::OsStrExt as _;
     let Some(store) = &status.store else {
         return Vec::new();
     };
@@ -799,6 +800,7 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
             clean(&coverage.machine)
         )));
         for root in &coverage.roots {
+            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&root.path_bytes));
             let mut names: Vec<&str> = Vec::new();
             let mut collected = 0;
             let mut unrecognized = 0;
@@ -807,7 +809,7 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
                 match entry.class {
                     Classification::Collected => {
                         collected += entry.files;
-                        if let Some(name) = collected_by(&entry.pattern)
+                        if let Some(name) = collected_by(path, &entry.pattern)
                             && !names.contains(&name)
                         {
                             names.push(name);
@@ -821,11 +823,11 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
                     Classification::Unrecognized => unrecognized += entry.files,
                 }
             }
-            let path = clean(&String::from_utf8_lossy(&root.path_bytes));
+            let shown = clean(&path.display().to_string());
             let mut parts = vec![if names.is_empty() {
-                path
+                shown
             } else {
-                format!("{} {path}", names.join(", "))
+                format!("{} {shown}", names.join(", "))
             }];
             parts.push(match root.status {
                 Accessibility::Accessible => "present".to_owned(),
@@ -844,38 +846,55 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
             if collected > 0 {
                 parts.push(format!("{} collected", count(collected)));
             }
-            if !ignored.is_empty() {
-                let mut reasons: Vec<(&str, u64)> = ignored.into_iter().collect();
-                reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            let mut reasons: Vec<(&str, u64)> = ignored.into_iter().collect();
+            reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            if !reasons.is_empty() {
                 let total: u64 = reasons.iter().map(|(_, files)| files).sum();
-                let each: Vec<String> = reasons
-                    .iter()
-                    .map(|(reason, files)| format!("{} {}", count(*files), clean(reason)))
-                    .collect();
-                parts.push(format!("{} ignored ({})", count(total), each.join(", ")));
+                parts.push(format!("{} ignored", count(total)));
             }
             if unrecognized > 0 {
                 parts.push(view.warning_text(&format!("{} unrecognized", count(unrecognized))));
             }
             lines.push(parts.join(" · "));
+            // The reasons on a line of their own, so a narrow terminal does
+            // not cut the counts.
+            if !reasons.is_empty() {
+                let each: Vec<String> = reasons
+                    .iter()
+                    .map(|(reason, files)| format!("{} {}", count(*files), clean(reason)))
+                    .collect();
+                lines.push(view.dim(&format!("  ignored: {}", each.join(", "))));
+            }
         }
     }
     lines
 }
 
-/// The origin or tool whose declared location `pattern` is, which names
-/// what a root's collected files are.
-fn collected_by(pattern: &str) -> Option<&'static str> {
-    polylogue_sources::ORIGINS
+/// The origin or tool whose declared location under `root` is `pattern`,
+/// which names what the root's collected files are. A pattern several
+/// origins declare names the one whose default root `root` is, and nothing
+/// when that does not settle it (the walk records no origin per root).
+fn collected_by(root: &std::path::Path, pattern: &str) -> Option<&'static str> {
+    let mut found: Vec<(&'static str, &'static str)> = polylogue_sources::ORIGINS
         .iter()
-        .find(|origin| origin.locations.contains(&pattern))
-        .map(|origin| origin.name)
-        .or_else(|| {
+        .filter(|origin| origin.locations.contains(&pattern))
+        .map(|origin| (origin.name, origin.root.default))
+        .chain(
             polylogue_sources::locations::TOOLS
                 .iter()
-                .find(|tool| tool.locations.contains(&pattern))
-                .map(|tool| tool.name)
-        })
+                .filter(|tool| tool.locations.contains(&pattern))
+                .map(|tool| (tool.name, tool.root.default)),
+        )
+        .collect();
+    found.sort_unstable();
+    found.dedup_by_key(|(name, _)| *name);
+    if found.len() > 1 {
+        found.retain(|(_, default)| !default.is_empty() && root.ends_with(default));
+    }
+    match found.as_slice() {
+        [(name, _)] => Some(name),
+        _ => None,
+    }
 }
 
 fn unused(status: &Answer) -> Vec<String> {

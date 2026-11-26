@@ -233,7 +233,8 @@ RUNNING    2 running · 1 waiting 7m
 NOTICES    2 in the last day · 14:02:00 synthetic notice
 
 SOURCES    walked 13:00:00 on host
-           claude-code /home/op/.claude · present · 100 collected · 43 ignored (40 cache, 3 lock files)
+           claude-code /home/op/.claude · present · 100 collected · 43 ignored
+             ignored: 40 cache, 3 lock files
            /home/op/.codex · absent
 
 UNUSED     claude-code:message.usage.cache ×11.20M not yet read · 40 more, 1 of them in --json
@@ -1207,6 +1208,7 @@ fn sources_show_an_absent_root_and_unrecognized_files() {
 SOURCES    walked 14:04:00 on host
            codex /home/op/.codex · present · 21 collected · 3 unrecognized
            /home/op/.claude · absent
-           /home/op/.gemini · incomplete, 1 path unreadable · 1 ignored (1 symbolic link is not followed)"
+           /home/op/.gemini · incomplete, 1 path unreadable · 1 ignored
+             ignored: 1 symbolic link is not followed"
     );
 }
