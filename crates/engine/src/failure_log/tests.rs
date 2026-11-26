@@ -44,7 +44,9 @@ fn a_failure_is_logged_when_it_starts_and_when_it_clears_not_while_it_lasts() {
             "/home/op/a.jsonl: read: pass 0: permission denied (environment, io)".to_owned()
         )]
     );
-    // A pass that reads it without failing clears it, once.
+    // A walk that leaves it alone does not clear it; a pass that reads it
+    // without failing does, once.
+    log.pass_ended(&[], looked(&b, true));
     log.pass_ended(&[], looked(&a, false));
     log.pass_ended(&[], looked(&a, true));
     assert_eq!(

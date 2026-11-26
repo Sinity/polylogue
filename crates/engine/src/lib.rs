@@ -530,6 +530,8 @@ pub struct Engine {
     imports_during_build: u64,
     /// What is failing, logged when it starts and when it clears.
     failure_log: failure_log::FailureLog,
+    /// The files the current pass planned to read.
+    planned: HashSet<PathBuf>,
     collectors: collectors::Collectors,
     pub config: Config,
     pub archive: Archive,
@@ -652,6 +654,7 @@ impl Engine {
             requests: None,
             imports_during_build: 0,
             failure_log: Default::default(),
+            planned: HashSet::new(),
         })
     }
 

@@ -20,9 +20,12 @@ pub(crate) struct FailureLog {
 
 /// What a pass looked at, which decides what of the failing it can clear.
 pub(crate) struct Looked<'a> {
-    /// The files the pass found and read.
+    /// The files the pass planned to read: a file's failure that did not
+    /// recur among them cleared. A file left alone (unchanged since it
+    /// failed) clears nothing.
     pub files: &'a HashSet<PathBuf>,
-    /// The pass walked every source: whatever did not fail again cleared.
+    /// The pass walked every source: a failing step (a collector, the
+    /// watch, coverage) that did not fail again cleared.
     pub walked: bool,
     /// The turn completed: a whole turn's failure cleared.
     pub completed: bool,
@@ -52,8 +55,10 @@ impl FailureLog {
             }
             let cleared = if *turn {
                 looked.completed
+            } else if std::path::Path::new(&condition.0).is_absolute() {
+                files.contains(&condition.0)
             } else {
-                looked.walked || files.contains(&condition.0)
+                looked.walked
             };
             if cleared {
                 let (subject, _, code) = condition;
