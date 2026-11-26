@@ -15,15 +15,13 @@ row! {
         source_end: u64,
         route: Route,
         shown: bool,
-        parse_version: Option<String>,
-        status: Option<String>,
-        parsed_upto: Option<u64>,
+        stored: u64,
     }
     statements {
         const OF_MESSAGE = "SELECT i.id AS input, s.chain, s.source_start, s.source_end, s.route,
-            (s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown, p.parse_version, p.status, p.parsed_upto
+            (s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,
+            (SELECT max(r.length) FROM source_revision r WHERE r.input=i.id AND r.chain=s.chain) AS stored
             FROM message m JOIN shown_message_parse s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk
-            LEFT JOIN parse_state p ON p.input_pk=s.input_pk AND p.chain=s.chain
             WHERE m.id=?1 ORDER BY 6 DESC, i.id, s.chain";
     }
 }
@@ -128,11 +126,10 @@ impl Reader<'_> {
             source_end: end,
             route,
             shown,
-            parse_version: version,
-            status,
-            parsed_upto,
+            stored,
         } in sources
         {
+            let state = crate::parse_state::state_of_input(conn, &input, chain)?;
             if end < start {
                 return Err(StoreError::stored_data(
                     "record source byte end precedes its start",
@@ -162,10 +159,23 @@ impl Reader<'_> {
                     });
                 }
             }
-            if let (Some(parse_version), Some(status), Some(parsed_upto)) =
-                (version, status, parsed_upto)
-                && !parse_version.is_empty()
-            {
+            if let Some(parse_version) = state.version().map(str::to_owned) {
+                let parsed_upto = state.parsed_to();
+                // Shown under its own parser version: the trace names the
+                // version that read the record.
+                let status = polylogue_model::chain::status(
+                    &state,
+                    &polylogue_model::chain::ChainFacts {
+                        stored,
+                        repeated_by: None,
+                        own_from: 0,
+                        parser: Some(parse_version.clone()),
+                        finished: false,
+                    },
+                )
+                .name()
+                .as_str()
+                .to_owned();
                 if end > start && parsed_upto < end {
                     card.chain.push(ChainStep::Unavailable{reason:"the current reader checkpoint does not cover this record; its original reader version is unavailable".into()});
                 }

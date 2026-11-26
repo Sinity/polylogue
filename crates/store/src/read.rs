@@ -32,9 +32,8 @@ pub use completeness::ReadingContract;
 mod captured;
 mod cursor_generation;
 pub use cursor_generation::open_cursor;
+mod chain_state;
 mod hook_fields;
-mod parser_checkpoint;
-pub use parser_checkpoint::{StoredParserCheckpoint, StoredParserProgress};
 mod import_counts;
 pub use import_counts::ImportCounts;
 mod parents;
@@ -43,7 +42,7 @@ mod trace;
 pub use revisions::RevisionPoint;
 mod tool_outcomes;
 mod tool_pairs;
-pub use behind_index::{BehindChain, RevisionChains, StoppedChains, StoredSource};
+pub use behind_index::{BehindChain, ChainCensus, RevisionChains, StoredSource};
 pub use captured::{CapturedSession, StoredFile};
 mod order;
 mod record_seek;
@@ -248,7 +247,6 @@ row! {
         n: u64,
     }
     statements {
-        const PARSE_STATES = "SELECT status AS name, n FROM parse_status_count WHERE n > 0";
         const UNUSED = "SELECT what AS name, n FROM unused_count WHERE n > 0 ORDER BY n DESC, what LIMIT 20";
     }
 }
@@ -265,10 +263,10 @@ row! {
 }
 
 row! {
-    /// A path's latest observation, its input's format and latest revision.
+    /// A path's latest observation, its input's origin and latest revision.
     struct Observation {
         input: String,
-        format: String,
+        origin: String,
         class: String,
         device: Option<i64>,
         inode: Option<i64>,
@@ -282,30 +280,24 @@ row! {
 }
 
 row! {
-    /// A chain's parse standing.
-    struct ParseProgressRow {
-        parsed_upto: i64,
-        status: String,
-        at_length: Option<i64>,
-        reason: Option<String>,
+    /// An input's latest revision, and whether its bytes came in through an
+    /// import.
+    struct LatestRevisionOf {
+        length: u64,
+        produced: String,
+        chain: i64,
     }
     statements {
-        const OF_CHAIN = "SELECT p.parsed_upto, p.status, p.at_length, p.reason FROM parse_state p
-            JOIN input_ref r ON r.pk = p.input_pk WHERE r.id = ?1 AND p.chain = ?2";
+        const OF_INPUT = "SELECT length, produced, chain FROM source_revision
+            WHERE input = ?1 ORDER BY number DESC LIMIT 1";
     }
 }
 
-row! {
-    /// An input's latest revision and its chain's parse progress.
-    struct InputProgress {
-        length: i64,
-        parsed_upto: i64,
-        parsed: bool,
-        produced: String,
-        waiting: bool,
-        chain: i64,
-    }
-}
+type CensusAt = (
+    polylogue_model::ChangePosition,
+    Vec<ReadingContract>,
+    Arc<ChainCensus>,
+);
 
 /// Read-only connections to one archive, reused across requests.
 /// `max_readers` connections serve every read; one more is kept for the
@@ -320,6 +312,8 @@ pub struct ReadPool {
     max_readers: usize,
     cache_kib: i64,
     counts: Mutex<crate::query::execute::CountCache>,
+    /// The chain census of the last read position it was computed at.
+    census: Mutex<Option<CensusAt>>,
     /// Wakes waiting checkouts when the access scope changes.
     _scope_wake: Arc<scope::ResetWake>,
     /// A pipeline pool closes its idle connections before a build file is
@@ -358,13 +352,19 @@ struct PoolState {
 /// One consistent read: a read transaction on `index.db` with `archive.db`
 /// attached as `a`. Acquire, use and drop it on the same thread. Returned to
 /// the pool when dropped. Holding a reader slot takes no read lock; the first
-/// database access starts the read on both databases and checks them.
+/// database access starts the read on both databases and checks them. A
+/// reader whose read has not started when a rebuild's install replaces the
+/// index starts it on the installed index; a read that has started keeps the
+/// file it opened until it ends, and the read after a [`Reader::restart`]
+/// starts on the installed index.
 /// Current annotation revisions are stored (`revision_state`), so no read builds it.
 pub struct Reader<'a> {
     pool: &'a ReadPool,
-    conn: Option<Connection>,
-    index_identity: Option<IndexIdentity>,
-    state: std::cell::Cell<ReadState>,
+    /// The connection opened for this reader and the index file it names,
+    /// until its read starts.
+    opened: std::cell::RefCell<Option<(Connection, IndexIdentity)>>,
+    /// The connection and its index file once the read has started.
+    started: std::cell::OnceCell<Box<Started>>,
     holder: ThreadId,
     background: bool,
     limit: Option<limit::ReadLimit>,
@@ -377,14 +377,39 @@ pub struct Reader<'a> {
     annotation_history_ready: std::cell::RefCell<std::collections::BTreeSet<i64>>,
     /// How many times the read was ended for a newer one ([`Self::restarts`]).
     restarts: std::cell::Cell<u64>,
+    /// The read was ended ([`Self::restart`]); the next access starts a new
+    /// one on the same connection.
+    ended: std::cell::Cell<bool>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum ReadState {
-    Deferred,
-    Ready,
-    IndexReplaced,
+/// A connection a read started on. A read ended by [`Reader::restart`]
+/// that finds the index replaced starts on a new connection, `next`; the
+/// earlier one stays open until the reader is dropped, since what it
+/// returned may still be borrowed.
+struct Started {
+    conn: Connection,
+    identity: IndexIdentity,
+    next: std::cell::OnceCell<Box<Started>>,
 }
+
+impl Started {
+    fn new((conn, identity): (Connection, IndexIdentity)) -> Box<Self> {
+        Box::new(Self {
+            conn,
+            identity,
+            next: std::cell::OnceCell::new(),
+        })
+    }
+
+    fn latest(&self) -> &Self {
+        let mut latest = self;
+        while let Some(next) = latest.next.get() {
+            latest = next;
+        }
+        latest
+    }
+}
+
 /// The path a connection was opened through and the file it named: a build
 /// file renamed into place keeps its inode, and a connection opened through
 /// its old path must not be reused.
@@ -392,7 +417,7 @@ type IndexIdentity = (PathBuf, u64, u64);
 
 /// What the loop knows about a path from its last look, for comparing
 /// with the file now.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct KnownInput {
     pub path: String,
     /// The location's bytes; `path` shows them as text.
@@ -405,25 +430,18 @@ pub struct KnownInput {
     /// The current revision chain and how many of its bytes are stored.
     pub chain: Option<i64>,
     pub stored: u64,
-    /// Offset after the last complete record parsed in that chain, and
-    /// whether that chain was parsed at all.
-    pub parsed_upto: u64,
-    pub parsed: bool,
-    /// An incomplete suffix, refusal or failure waits at this stored length.
-    pub waiting: bool,
+    /// That chain's state in the index.
+    pub state: polylogue_model::chain::ChainState,
 }
 
-/// A revision chain's stored length and parser progress, independent of a
-/// source path. Imports use this to retry parsing without storing bytes twice.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChainProgress {
+/// An input's latest chain: how much of it is stored, whether its bytes
+/// came in through `polylogue import`, and its state in the index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LatestChain {
     pub chain: i64,
-    /// The chain's bytes came in through `polylogue import`.
     pub imported: bool,
-    pub waiting: bool,
-    pub length: u64,
-    pub parsed_upto: u64,
-    pub parsed: bool,
+    pub stored: u64,
+    pub state: polylogue_model::chain::ChainState,
 }
 
 /// Totals for `status`. Unknown is never shown as zero: a count that could
@@ -442,7 +460,9 @@ pub struct Status {
     /// Bytes of input content stored, decoded: what the inputs hold, not
     /// what the segment log takes on disk.
     pub stored_bytes: u64,
-    /// Input chains by parse status (`done`, `parsing`, `waiting` for growth).
+    /// Input chains by how they are shown (`model::chain::ChainStatusName`:
+    /// `parsing`, `repeated`, `no_parser`, `done`, `waiting`, `refused`,
+    /// `failed`).
     pub parse_states: BTreeMap<String, u64>,
     /// The 20 record kinds and fields parsers did not read most often.
     pub unused: Vec<(String, u64)>,
@@ -453,9 +473,9 @@ pub struct Status {
     pub search_pending: u64,
     /// The latest confirmed full discovery walk from each source machine.
     pub capture_coverage: Vec<polylogue_model::capture::Coverage>,
-    /// Set when this index replaced one written for another schema.
+    /// Why this index replaced the one before it, as its rebuild recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub index_rebuild: Option<crate::archive::index_rebuild::IndexRebuild>,
+    pub index_rebuild: Option<crate::index::file::IndexRebuild>,
 }
 
 impl ReadPool {
@@ -529,6 +549,7 @@ impl ReadPool {
             max_readers,
             cache_kib,
             counts: Mutex::default(),
+            census: Mutex::default(),
             _scope_wake: scope_wake,
             #[cfg(test)]
             changed: Condvar::new(),
@@ -632,31 +653,21 @@ impl ReadPool {
     /// capacity remains; waiting while this thread already holds a slot
     /// refuses to avoid deadlock.
     pub fn checkout(&self, lane: Lane, limit: &limit::ReadLimit) -> Result<Reader<'_>> {
-        self.acquire(lane, Some(limit.clone()), |path| self.connect(path))
+        self.acquire(lane, Some(limit.clone()))
     }
 
     /// A reader for work outside a request (the loop, workers): the ordinary
     /// lane, under the limit of the scope this thread runs in, if any.
     pub fn reader(&self) -> Result<Reader<'_>> {
-        self.acquire(Lane::Ordinary, limit::ReadLimit::current(), |path| {
-            self.connect(path)
-        })
+        self.acquire(Lane::Ordinary, limit::ReadLimit::current())
     }
 
-    /// Runs `read` on a new reader, and again on another when a build's
-    /// install replaced the index under the first
-    /// ([`StoreError::ReadIndexReplaced`]): the replacement is the index to
-    /// read, so the error is never the answer.
-    pub fn read_current<T>(&self, read: impl Fn(&Reader<'_>) -> Result<T>) -> Result<T> {
-        loop {
-            match self.reader().and_then(|reader| read(&reader)) {
-                Err(StoreError::ReadIndexReplaced) => continue,
-                result => return result,
-            }
-        }
+    fn acquire(&self, lane: Lane, limit: Option<limit::ReadLimit>) -> Result<Reader<'_>> {
+        self.acquire_with(lane, limit, |path| self.connect(path))
     }
 
-    fn acquire(
+    /// [`Self::acquire`] with the first connection opened by `connect`.
+    fn acquire_with(
         &self,
         lane: Lane,
         limit: Option<limit::ReadLimit>,
@@ -735,11 +746,10 @@ impl ReadPool {
         };
         // Hold the slot before the open and BEGIN, which can fail. Every
         // failure releases the slot and wakes a waiter, including a racing close.
-        let mut reader = Reader {
+        let reader = Reader {
             pool: self,
-            conn: None,
-            index_identity: None,
-            state: std::cell::Cell::new(ReadState::Deferred),
+            opened: std::cell::RefCell::new(None),
+            started: std::cell::OnceCell::new(),
             holder,
             background,
             limit,
@@ -749,6 +759,7 @@ impl ReadPool {
             calendar: crate::sql_functions::CalendarContext::new(),
             annotation_history_ready: std::cell::RefCell::new(Default::default()),
             restarts: std::cell::Cell::new(0),
+            ended: std::cell::Cell::new(false),
         };
         // A replaced index is a new file, never an old inode reused. Compare
         // around the open without starting a read or delaying an unused slot.
@@ -762,40 +773,21 @@ impl ReadPool {
                     Some(limit) => limit.scope(|| connect(&before.0)),
                     None => connect(&before.0),
                 };
-                let after = self.index_identity()?;
-                // An open that raced a build's install fails on the moved file.
-                let conn = match conn {
-                    Err(_) if before != after => return Err(StoreError::ReadIndexReplaced),
-                    conn => conn?,
-                };
-                if before != after {
-                    return Err(StoreError::ReadIndexReplaced);
+                // An open that raced an install named the replaced file:
+                // the installed one is opened instead.
+                if self.index_identity()? == before {
+                    (conn?, before)
+                } else {
+                    reader.open()?
                 }
-                (conn, after)
             }
         };
-        // Every reader observes the process's stop and the access scope; a
-        // request's reader also its own deadline and cancellation.
-        if let Some(limit) = &reader.limit {
-            limit.install(&conn)?;
-        }
-        let (scope, stop, limit) = (reader.scope.clone(), stop.clone(), reader.limit.clone());
-        crate::cancellation::interrupt_on(&conn, move || {
-            stop.check()?;
-            scope.check()?;
-            limit
-                .as_ref()
-                .map_or(Ok(()), limit::ReadLimit::count_and_check)
-        })?;
-        reader.check()?;
-        crate::sql_functions::register_calendar(&conn, &reader.calendar)?;
-        conn.execute_batch("BEGIN")?;
+        reader.prepare(&conn)?;
         let state = self.state.lock().map_err(|_| pool_poisoned())?;
         if state.closed {
             return Err(StoreError::ReadPoolClosed);
         }
-        reader.conn = Some(conn);
-        reader.index_identity = Some(identity);
+        *reader.opened.borrow_mut() = Some((conn, identity));
         drop(state);
         Ok(reader)
     }
@@ -825,17 +817,26 @@ fn pool_poisoned() -> StoreError {
 impl Drop for Reader<'_> {
     fn drop(&mut self) {
         self.vectors.get_mut().take();
-        let conn = self.conn.take().filter(|conn| {
-            if conn.progress_handler(0, None::<fn() -> bool>).is_err()
-                || conn
-                    .busy_timeout(std::time::Duration::from_secs(30))
-                    .is_err()
-            {
-                return false;
-            }
-            matches!(self.state.get(), ReadState::Deferred | ReadState::Ready)
-                && conn.execute_batch("ROLLBACK").is_ok()
-        });
+        let mut started = self.started.take();
+        let mut latest = None;
+        while let Some(link) = started {
+            let Started {
+                conn,
+                identity,
+                next,
+            } = *link;
+            started = next.into_inner();
+            latest = Some((conn, identity));
+        }
+        let conn = latest
+            .or_else(|| self.opened.get_mut().take())
+            .filter(|(conn, _)| {
+                conn.progress_handler(0, None::<fn() -> bool>).is_ok()
+                    && conn
+                        .busy_timeout(std::time::Duration::from_secs(30))
+                        .is_ok()
+                    && conn.execute_batch("ROLLBACK").is_ok()
+            });
         let mut state = self.pool.state.locked();
         if let Some(held) = state.holders.get_mut(&self.holder) {
             *held -= 1;
@@ -853,12 +854,7 @@ impl Drop for Reader<'_> {
         }
         state.in_use -= 1;
         match conn {
-            Some(conn) if !state.closed => state.idle.push((
-                conn,
-                self.index_identity
-                    .take()
-                    .expect("opened connection has an index identity"),
-            )),
+            Some(opened) if !state.closed => state.idle.push(opened),
             _ => state.live -= 1,
         }
         // A freed slot may suit only a reserved waiter, so every waiter looks.
@@ -896,19 +892,6 @@ struct MessageContent<'a> {
 
 /// A chain's parse standing from its stored status word, waiting length and
 /// reason.
-pub(crate) fn stored_parse_progress(
-    status: &str,
-    at_length: Option<i64>,
-    reason: Option<String>,
-) -> Result<polylogue_model::batch::ParseProgress> {
-    let at_length = at_length
-        .map(u64::try_from)
-        .transpose()
-        .map_err(|_| StoreError::stored(0, "a stored waiting length is negative"))?;
-    polylogue_model::batch::ParseProgress::from_stored(status, at_length, reason)
-        .map_err(|error| StoreError::stored(0, error))
-}
-
 impl Reader<'_> {
     /// Pages this reader's connection had to read from its database files
     /// (`SQLITE_DBSTATUS_CACHE_MISS`, every attached database) since the last
@@ -1007,83 +990,164 @@ impl Reader<'_> {
 
     pub(crate) fn conn(&self) -> Result<&Connection> {
         self.check()?;
-        let conn = self
-            .conn
-            .as_ref()
-            .expect("reader holds a connection until dropped");
-        match self.state.get() {
-            ReadState::Ready => {}
-            ReadState::IndexReplaced => return Err(StoreError::ReadIndexReplaced),
-            ReadState::Deferred => {
-                // An unused slot holds no read and no lock. Start the read on
-                // both databases and check them at the first database access.
-                if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
-                    return Err(StoreError::ReadPoolClosed);
+        if let Some(started) = self.started.get() {
+            loop {
+                let latest = started.latest();
+                // A read ended by `restart` is a new read: it starts on the
+                // installed index.
+                if !self.ended.get() {
+                    return Ok(&latest.conn);
                 }
-                let waiting = std::time::Instant::now();
-                let _shared = crate::write_lock::wait_shared(&self.pool.archive, || {
-                    self.pool.archive.stop().check()?;
-                    self.scope.check()?;
-                    if conn.is_interrupted() {
-                        return Err(rusqlite::Error::SqliteFailure(
-                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
-                            None,
-                        )
-                        .into());
-                    }
-                    if let Some(limit) = &self.limit {
-                        limit.check()?;
-                    }
-                    let state = self.pool.state.lock().map_err(|_| pool_poisoned())?;
-                    if state.closed {
-                        return Err(StoreError::ReadPoolClosed);
-                    }
-                    if waiting.elapsed() >= std::time::Duration::from_secs(30) {
-                        return Err(rusqlite::Error::SqliteFailure(
-                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                            None,
-                        )
-                        .into());
-                    }
-                    drop(
-                        self.pool
-                            .available
-                            .wait_timeout(state, std::time::Duration::from_millis(5))
-                            .map_err(|_| pool_poisoned())?,
-                    );
-                    Ok(())
-                })?;
-                // This closed check under the lock is the read's start. Closing
-                // before it refuses; a read that started here may finish afterward.
-                if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
-                    return Err(StoreError::ReadPoolClosed);
+                if self.start_on(&latest.conn, Some(&latest.identity))? {
+                    self.ended.set(false);
+                    return Ok(&latest.conn);
                 }
-                if Some(self.pool.index_identity()?) != self.index_identity {
-                    self.state.set(ReadState::IndexReplaced);
-                    return Err(StoreError::ReadIndexReplaced);
-                }
-                // One statement starts the read on `index.db` (`main`), then on
-                // the register (`a`). The shared lock keeps register commits
-                // out of the gap between the two, so they see a committed pair.
-                let started = conn.query_row(
-                    "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM source_meta)",
-                    [],
-                    |_| Ok(()),
-                );
-                // A build file installed between the check and this start
-                // (`crate::archive::index_build`) changes the path identity. An
-                // already-started read keeps its open file and snapshot.
-                if let Err(error) = started {
-                    if Some(self.pool.index_identity()?) != self.index_identity {
-                        self.state.set(ReadState::IndexReplaced);
-                        return Err(StoreError::ReadIndexReplaced);
-                    }
-                    return Err(error.into());
-                }
-                self.state.set(ReadState::Ready);
+                let reopened = self.open()?;
+                self.prepare(&reopened.0)?;
+                let _ = latest.next.set(Started::new(reopened));
             }
         }
-        Ok(conn)
+        loop {
+            if self.start()? {
+                let started = self
+                    .opened
+                    .borrow_mut()
+                    .take()
+                    .expect("a started reader holds its connection");
+                let started = self.started.get_or_init(|| Started::new(started));
+                return Ok(&started.conn);
+            }
+            // The index was replaced before this read started: it starts on
+            // the installed one.
+            let (conn, identity) = self.open()?;
+            self.prepare(&conn)?;
+            *self.opened.borrow_mut() = Some((conn, identity));
+        }
+    }
+
+    /// Opens a connection to the index file the pool reads now. An open that
+    /// raced an install named the replaced file and is done again.
+    fn open(&self) -> Result<(Connection, IndexIdentity)> {
+        loop {
+            let before = self.pool.index_identity()?;
+            let conn = match &self.limit {
+                Some(limit) => limit.scope(|| self.pool.connect(&before.0)),
+                None => self.pool.connect(&before.0),
+            };
+            if self.pool.index_identity()? == before {
+                return Ok((conn?, before));
+            }
+        }
+    }
+
+    /// Every reader observes the process's stop and the access scope; a
+    /// request's reader also its own deadline and cancellation. The read
+    /// transaction is begun and takes its snapshot at the first statement.
+    fn prepare(&self, conn: &Connection) -> Result<()> {
+        if let Some(limit) = &self.limit {
+            limit.install(conn)?;
+        }
+        let (scope, stop, limit) = (
+            self.scope.clone(),
+            self.pool.archive.stop().clone(),
+            self.limit.clone(),
+        );
+        crate::cancellation::interrupt_on(conn, move || {
+            stop.check()?;
+            scope.check()?;
+            limit
+                .as_ref()
+                .map_or(Ok(()), limit::ReadLimit::count_and_check)
+        })?;
+        self.check()?;
+        crate::sql_functions::register_calendar(conn, &self.calendar)?;
+        conn.execute_batch("BEGIN")?;
+        Ok(())
+    }
+
+    /// Starts the read on both databases of the opened connection; false when
+    /// the index it opened was replaced before the read started.
+    fn start(&self) -> Result<bool> {
+        let opened = self.opened.borrow();
+        let (conn, identity) = opened
+            .as_ref()
+            .expect("an unstarted reader holds its connection");
+        self.start_on(conn, Some(identity))
+    }
+
+    /// Starts the read on `conn`; with `identity`, false when the pool's
+    /// index is no longer that file.
+    fn start_on(&self, conn: &Connection, identity: Option<&IndexIdentity>) -> Result<bool> {
+        // An unused slot holds no read and no lock. Start the read on
+        // both databases and check them at the first database access.
+        if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
+            return Err(StoreError::ReadPoolClosed);
+        }
+        let waiting = std::time::Instant::now();
+        let _shared = crate::write_lock::wait_shared(&self.pool.archive, || {
+            self.pool.archive.stop().check()?;
+            self.scope.check()?;
+            if conn.is_interrupted() {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_INTERRUPT),
+                    None,
+                )
+                .into());
+            }
+            if let Some(limit) = &self.limit {
+                limit.check()?;
+            }
+            let state = self.pool.state.lock().map_err(|_| pool_poisoned())?;
+            if state.closed {
+                return Err(StoreError::ReadPoolClosed);
+            }
+            if waiting.elapsed() >= std::time::Duration::from_secs(30) {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    None,
+                )
+                .into());
+            }
+            drop(
+                self.pool
+                    .available
+                    .wait_timeout(state, std::time::Duration::from_millis(5))
+                    .map_err(|_| pool_poisoned())?,
+            );
+            Ok(())
+        })?;
+        // This closed check under the lock is the read's start. Closing
+        // before it refuses; a read that started here may finish afterward.
+        if self.pool.state.lock().map_err(|_| pool_poisoned())?.closed {
+            return Err(StoreError::ReadPoolClosed);
+        }
+        if let Some(identity) = identity
+            && self.pool.index_identity()? != *identity
+        {
+            return Ok(false);
+        }
+        // One statement starts the read on `index.db` (`main`), then on
+        // the register (`a`). The shared lock keeps register commits
+        // out of the gap between the two, so they see a committed pair.
+        let started = conn.query_row(
+            "SELECT (SELECT count(*) FROM main.meta), (SELECT count(*) FROM source_meta)",
+            [],
+            |_| Ok(()),
+        );
+        // A rebuild installed between the check and this start
+        // (`crate::archive::index_build`) changes the path identity. An
+        // already-started read keeps its open file and snapshot.
+        match started {
+            Ok(()) => Ok(true),
+            Err(_)
+                if identity.is_some_and(|identity| {
+                    self.pool.index_identity().ok().as_ref() != Some(identity)
+                }) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     /// How many times this reader ended its read so that the next access
@@ -1096,12 +1160,11 @@ impl Reader<'_> {
 
     /// Ends the read in progress; the next access starts a new one.
     pub(crate) fn restart(&self) -> Result<()> {
-        if self.state.get() == ReadState::Ready {
-            self.conn
-                .as_ref()
-                .expect("reader holds a connection until dropped")
-                .execute_batch("ROLLBACK; BEGIN")?;
-            self.state.set(ReadState::Deferred);
+        if let Some(started) = self.started.get()
+            && !self.ended.get()
+        {
+            started.latest().conn.execute_batch("ROLLBACK; BEGIN")?;
+            self.ended.set(true);
             self.annotation_history_ready.borrow_mut().clear();
         }
         self.restarts.set(self.restarts.get() + 1);
@@ -1120,10 +1183,13 @@ impl Reader<'_> {
     /// The index file this reader's read transaction started on.
     pub fn index_identity(&self) -> Result<(u64, u64)> {
         self.conn()?;
-        self.index_identity
-            .as_ref()
-            .map(|(_, device, inode)| (*device, *inode))
-            .ok_or(StoreError::ReadIndexReplaced)
+        let (_, device, inode) = &self
+            .started
+            .get()
+            .expect("a started reader")
+            .latest()
+            .identity;
+        Ok((*device, *inode))
     }
 
     /// The key read cursors are sealed with: a secret of this index
@@ -1467,15 +1533,13 @@ impl Reader<'_> {
         })
     }
 
-    pub fn status(&self) -> Result<Status> {
+    /// Totals for `status`, with every chain shown as the model judges it
+    /// against the origins' parser versions in `contracts`.
+    pub fn status(&self, contracts: &[ReadingContract]) -> Result<Status> {
         limit::ReadLimit::set_stage("status counts");
+        let parse_states = self.chain_census_at_position(contracts)?.by_status();
         let c = self.conn()?;
         let count = |sql: &str| -> Result<u64> { Ok(c.scalar::<i64>(sql, [])? as u64) };
-        let parse_states = c
-            .all(&NamedCount::PARSE_STATES, [])?
-            .into_iter()
-            .map(|count| (count.name, count.n))
-            .collect();
         let unused = c
             .all(&NamedCount::UNUSED, [])?
             .into_iter()
@@ -1486,15 +1550,15 @@ impl Reader<'_> {
             messages: count("SELECT n FROM main.row_count WHERE name = 'message'")?,
             documents: count("SELECT n FROM main.row_count WHERE name = 'document'")?,
             tool_calls: count("SELECT n FROM main.row_count WHERE name = 'tool_call'")?,
-            inputs: count("SELECT n FROM source_row_count WHERE name = 'input'")?,
-            revisions: count("SELECT n FROM source_row_count WHERE name = 'revision'")?,
-            stored_bytes: count("SELECT n FROM source_row_count WHERE name = 'stored_bytes'")?,
+            inputs: count("SELECT count FROM source_row_count WHERE name = 'input'")?,
+            revisions: count("SELECT count FROM source_row_count WHERE name = 'revision'")?,
+            stored_bytes: count("SELECT count FROM source_row_count WHERE name = 'stored_bytes'")?,
             parse_states,
             unused,
             unused_fields: count("SELECT count(*) FROM unused_count WHERE n > 0")?,
             search_pending: count("SELECT n FROM main.row_count WHERE name = 'search_pending'")?,
             capture_coverage: self.all_capture_coverage()?,
-            index_rebuild: crate::archive::index_rebuild::status(c, &self.pool.archive)?,
+            index_rebuild: crate::index::file::IndexRebuild::recorded(c)?,
         })
     }
 
@@ -1753,7 +1817,7 @@ impl Reader<'_> {
             )
         };
         let sql = format!(
-            "SELECT o.input, i.format, o.class, o.device, o.inode,
+            "SELECT o.input, i.origin, o.class, o.device, o.inode,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.length ELSE o.size END AS size,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.mtime_ns ELSE o.mtime_ns END AS mtime_ns,
                     CASE WHEN nr.commit_seq > o.commit_seq AND o.class <> 'deleted' THEN nr.ctime_ns ELSE o.ctime_ns END AS ctime_ns,
@@ -1779,7 +1843,7 @@ impl Reader<'_> {
         for o in observed {
             let f = [o.device, o.inode, o.size, o.mtime_ns, o.ctime_ns];
             let (input_id, format, chain, length, path_bytes) =
-                (o.input, o.format, o.chain, o.length, o.path_bytes);
+                (o.input, o.origin, o.chain, o.length, o.path_bytes);
             let path = String::from_utf8_lossy(&path_bytes).into_owned();
             let gone = crate::input_rows::ObservationClass::from_name(&o.class)
                 == Some(crate::input_rows::ObservationClass::Deleted);
@@ -1802,61 +1866,35 @@ impl Reader<'_> {
                 facts,
                 chain,
                 stored: length.unwrap_or(0) as u64,
-                parsed_upto: 0,
-                parsed: false,
-                waiting: false,
+                state: polylogue_model::chain::ChainState::Unparsed,
             });
         }
         for k in &mut out {
-            if let Some(chain) = k.chain
-                && let Some(state) = self
-                    .conn()?
-                    .maybe(&ParseProgressRow::OF_CHAIN, params![k.input_id, chain])?
-            {
-                k.parsed_upto = state.parsed_upto as u64;
-                k.parsed = true;
-                k.waiting = stored_parse_progress(&state.status, state.at_length, state.reason)?
-                    .at_length()
-                    == Some(k.stored);
+            if let Some(chain) = k.chain {
+                k.state = crate::parse_state::state_of_input(self.conn()?, &k.input_id, chain)?;
             }
         }
         Ok(out)
     }
 
-    /// The input's latest revision and its chain's parser progress.
-    pub fn input_progress(&self, id: &str) -> Result<Option<ChainProgress>> {
-        let database = crate::source::database_original("r.input");
-        let statement = Statement::<InputProgress>::built(format!(
-            "SELECT r.length, COALESCE(p.parsed_upto, 0) AS parsed_upto, p.input_pk IS NOT NULL AS parsed,
-                r.produced,
-                COALESCE(p.status IN ('waiting','refused','failed') AND p.at_length = r.length, 0) AS waiting,
-                r.chain
-             FROM source_revision r
-             LEFT JOIN input_ref i ON i.id = r.input
-             LEFT JOIN parse_state p ON p.input_pk = i.pk AND p.chain = r.chain AND NOT {database}
-             WHERE r.input = ?1 ORDER BY r.number DESC LIMIT 1"
-        ));
-        let Some(InputProgress {
+    /// The input's latest chain and its state.
+    pub fn latest_chain(&self, id: &str) -> Result<Option<LatestChain>> {
+        let Some(LatestRevisionOf {
             length,
-            parsed_upto,
-            parsed,
             produced,
-            waiting,
             chain,
-        }) = self.conn()?.maybe(&statement, [id])?
+        }) = self.conn()?.maybe(&LatestRevisionOf::OF_INPUT, [id])?
         else {
             return Ok(None);
         };
         let imported = crate::input_rows::Produced::from_name(&produced)
-            .ok_or_else(|| StoreError::stored(3, format!("unknown revision source: {produced}")))?
+            .ok_or_else(|| StoreError::stored(1, format!("unknown revision source: {produced}")))?
             == crate::input_rows::Produced::Imported;
-        Ok(Some(ChainProgress {
+        Ok(Some(LatestChain {
             chain,
             imported,
-            waiting,
-            length: length as u64,
-            parsed_upto: parsed_upto as u64,
-            parsed,
+            stored: length,
+            state: self.chain_state(id, chain)?,
         }))
     }
 }
@@ -1904,7 +1942,7 @@ pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
     check.row::<MessageRow>();
     check.row::<NamedCount>();
     check.row::<LatestRevision>();
-    check.row::<ParseProgressRow>();
+    check.row::<LatestRevisionOf>();
     parents::declared_rows(check);
     trace::declared_rows(check);
     revisions::declared_rows(check);
@@ -1937,7 +1975,7 @@ pub(crate) fn retitled_sessions(
     for root in crate::annotations::changed_roots(conn, after)? {
         sessions.extend(conn.values::<String>(
             "SELECT DISTINCT substr(l.ref, 9) FROM source_annotation a \
-             JOIN source_annotation_link l ON l.record = a.id AND l.role = 'about' \
+             JOIN source_annotation_link l ON l.annotation = a.id AND l.role = 'about' \
              WHERE a.root = ?1 AND a.kind = 'title' AND l.ref LIKE 'session:%'",
             [&root],
         )?);

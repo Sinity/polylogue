@@ -1,6 +1,6 @@
-//! How a build of `index.db` is advancing, for `status`: why the index is
-//! being built, the steps finished and how long each took, the step running
-//! with its count, rate and estimate, and the steps still to come.
+//! How a rebuild of `index.db` is advancing, for `status`: the steps
+//! finished and how long each took, the step running with its count, rate
+//! and estimate, and the steps still to come.
 //!
 //! The steps are named by the code that runs them: each announces itself
 //! as it starts ([`Record::step`]), and the build says at its start which
@@ -8,7 +8,6 @@
 //! running step's count are taken as the count is recorded, at least
 //! [`SAMPLE_EVERY`] apart and covering at most [`KEPT_FOR`]; a new step
 //! starts with none.
-use super::index_rebuild::IndexRebuildReason;
 use polylogue_model::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, VecDeque};
@@ -30,10 +29,6 @@ const STEADY_WITHIN: f64 = 0.2;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BuildProgress {
-    /// Why the index is being built: the index it replaces could not be
-    /// used. Absent when there was no index (a new archive).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<IndexRebuildReason>,
     /// The steps finished, in the order they ran.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub finished: Vec<FinishedStep>,
@@ -151,7 +146,6 @@ struct Sample {
 /// One build's steps, counts and samples.
 #[derive(Debug, Default, Clone)]
 pub(crate) struct Record {
-    reason: Option<IndexRebuildReason>,
     /// The steps the build said follow, in order.
     plan: Vec<String>,
     finished: Vec<(String, f64)>,
@@ -168,10 +162,6 @@ pub(crate) struct Record {
 }
 
 impl Record {
-    pub(crate) fn reason(&mut self, reason: Option<IndexRebuildReason>) {
-        self.reason = reason;
-    }
-
     pub(crate) fn plan(&mut self, steps: &[&str]) {
         self.plan = steps.iter().map(|step| (*step).to_owned()).collect();
     }
@@ -288,7 +278,6 @@ impl Record {
             .cloned()
             .collect();
         BuildProgress {
-            reason: self.reason.clone(),
             eta_seconds: current
                 .as_ref()
                 .and_then(|step| step.eta_seconds)

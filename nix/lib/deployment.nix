@@ -8,6 +8,13 @@ let
   inherit (lib) mkOption types;
   settings = import ./settings.nix { inherit lib pkgs; };
   commandName = types.strMatching "[A-Za-z0-9][A-Za-z0-9._+-]*";
+  # A system unit runs it as User=, whose session bus is resolved here.
+  failureNotice = pkgs.writeShellScript "polylogue-failure-notice" ''
+    [ "''${SERVICE_RESULT:-success}" = success ] && exit 0
+    export DBUS_SESSION_BUS_ADDRESS="''${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/user/$(${pkgs.coreutils}/bin/id -u)/bus}"
+    exec ${lib.getExe pkgs.libnotify} --urgency=critical 'Polylogue stopped' \
+      "Service $1 ended: $SERVICE_RESULT ($EXIT_CODE $EXIT_STATUS); inspect its journal."
+  '';
   archiveType = types.submodule (
     { name, ... }: {
       imports = settings.archiveType.getSubModules;
@@ -99,10 +106,18 @@ in
     Type = "notify";
     NotifyAccess = "main";
     WatchdogSec = cfg.watchdogSec;
-    Restart = "on-failure";
+    # A clean exit nobody asked for (an out-of-memory responder's SIGTERM)
+    # restarts too; a stop asked of the service manager never does.
+    Restart = "always";
+    RestartSec = "5s";
+    RestartSteps = 5;
+    RestartMaxDelaySec = "5min";
     # 78: the archive's format is refused; 74: the disk failed a sync of the
     # register, and writing stays stopped until the machine reboots.
     RestartPreventExitStatus = "74 78";
+    # Runs after every end of the daemon. OnFailure= would miss the ends the
+    # service manager restarts, which never enter the failed state.
+    ExecStopPost = "-${failureNotice} %n";
     # A stop or restart signals the daemon only: the `polylogue host`
     # processes of hosted sessions, and headless resumed runs, keep their
     # agents running, and the next daemon reattaches to them.

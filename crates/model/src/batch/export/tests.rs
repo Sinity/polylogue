@@ -206,7 +206,7 @@ fn export_cursor_extensions_refuse_replay_gaps_forks_and_overflow() {
 }
 
 #[test]
-fn export_control_round_trips_without_checkpoint() {
+fn export_control_round_trips_and_refuses_unknown_fields() {
     let delivery = ExportDelivery::new(
         0,
         ExportDeliverySource::ContainerHeader,
@@ -219,7 +219,6 @@ fn export_control_round_trips_without_checkpoint() {
         serde_json::from_value::<ExportDelivery>(value.clone()).unwrap(),
         delivery
     );
-    assert!(serde_json::from_value::<super::super::ParserCheckpoint>(value.clone()).is_err());
     let mut unknown = value;
     unknown["unexpected_field"] = serde_json::json!(true);
     assert!(serde_json::from_value::<ExportDelivery>(unknown).is_err());

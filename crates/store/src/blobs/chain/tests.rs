@@ -15,7 +15,7 @@ impl Fixture {
         conn.pragma_update(None, "journal_mode", "wal").unwrap();
         crate::schema::ensure_archive(&conn).unwrap();
         conn.execute(
-            "INSERT INTO input(id,format) VALUES ('input','synthetic')",
+            "INSERT INTO input(id,origin) VALUES ('input','synthetic')",
             [],
         )
         .unwrap();

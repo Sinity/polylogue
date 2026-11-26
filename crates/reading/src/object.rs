@@ -67,7 +67,7 @@ fn execute<T>(
         scope_fingerprint: None,
         versions: operation.cursor_versions(),
         presentation: ExecutionPresentation::Read {
-            options: options.clone(),
+            options: Box::new(options.clone()),
             delivery,
             format,
             page_budget: budget,

@@ -379,10 +379,14 @@ pub fn serve(
         engine,
         startup.mode.clone(),
         run.lifetime,
-        startup.stopped_attempt,
+        supervisor.progress(),
     )
     .map_err(Failed::Start)?;
     let idle = runtime.idle();
+    let mut steps = supervisor
+        .progress()
+        .steps(super::lifecycle::Phase::Opening);
+    steps.next("binding the socket");
     let server = Server::start(Arc::clone(&runtime.daemon)).map_err(Failed::Start)?;
     polylogue_store::log!(
         info,
@@ -395,6 +399,7 @@ pub fn serve(
             ", reading no sources"
         }
     );
+    steps.next("starting the web reader");
     let web = match crate::web::start(Arc::clone(&runtime.daemon)) {
         Ok(web) => {
             polylogue_store::log!(info, "web reader on http://127.0.0.1:{}/", web.port);
@@ -405,6 +410,7 @@ pub fn serve(
             None
         }
     };
+    steps.finish();
     supervisor.run(runtime, server, web).map_err(Failed::Run)?;
     let summary = idle.borrow().clone();
     Ok(summary)

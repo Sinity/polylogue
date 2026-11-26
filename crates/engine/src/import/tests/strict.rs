@@ -96,13 +96,13 @@ fn declared_export_signatures_reach_scanners_unshaped() {
             raw.len() as i64
         );
         assert_eq!(
-            w.count("SELECT parsed_upto AS n FROM parse_state"),
+            w.count("SELECT parsed_to AS n FROM parse_state"),
             if complete { raw.len() as i64 } else { 0 }
         );
         if !complete {
             assert_eq!(w.count("SELECT sum(unreadable) AS n FROM parse_state"), 1);
             assert_eq!(
-                w.count("SELECT count(*) AS n FROM parse_state WHERE checkpoint IS NOT NULL"),
+                w.count("SELECT count(*) AS n FROM parse_state WHERE resume IS NOT NULL"),
                 0
             );
         }
