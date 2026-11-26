@@ -806,51 +806,60 @@ pub(crate) fn specification<A: command_surface::JsonSchema>(
 pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDeclarations> {
     static DECLARATIONS: LazyLock<std::sync::Arc<command_surface::OperationDeclarations>> =
         LazyLock::new(|| {
-            let mut declarations =
-                command_surface::OperationDeclarations::builder(PRODUCT, deadlines());
-            declarations.accept(command_surface::RequestOption::Cursor);
-            declarations.accept(command_surface::RequestOption::BudgetTokens);
-            declarations.accept(command_surface::RequestOption::Format);
-            for code in polylogue_model::Code::ALL {
-                declarations
-                    .register_failure_code(code.as_str(), crate::protocol::kind(*code))
-                    .expect("failure classification is unique");
-            }
-            for command in COMMANDS.iter() {
-                match command.run {
-                    Run::Local(_, declare, _)
-                    | Run::ConfiguredLocal(_, declare, _)
-                    | Run::ClientLocal(_, declare, _) => declare(&mut declarations, command),
-                    Run::Daemon(operation) => operation.declare(&mut declarations, command),
-                }
-                if command.cli == Cli::Line {
-                    declarations
-                        .declare_steps(command.name, "steps", crate::daemon::verbs::declarations())
-                        .expect("the line's steps are declared once");
-                }
-            }
-            for tool in Tool::ALL {
-                if COMMANDS
-                    .iter()
-                    .any(|command| command.tool == Some(tool) && command.operation().is_some())
-                {
-                    let description = tool.description(&declarations);
-                    declarations
-                        .declare_tool(command_surface::ToolFamily {
-                            name: tool.family().into(),
-                            description,
-                            open_world: tool.open_world(),
-                            idempotent: tool.idempotent(),
-                        })
-                        .expect("declared tool is unique");
-                }
-            }
-            declarations
-                .set_tool_default("read", "rows")
-                .expect("rows belongs to the read tool");
-            declarations.finish()
+            // A tool's description is generated from the declared rows and
+            // steps, and a row names its tool when declared: the rows are
+            // declared once to describe the tools, then with the tools.
+            let described = build(|_| "described from the rows".into());
+            build(|tool| tool.description(&described))
         });
     &DECLARATIONS
+}
+
+/// The declarations with each tool described by `describe`.
+fn build(
+    describe: impl Fn(Tool) -> String,
+) -> std::sync::Arc<command_surface::OperationDeclarations> {
+    let mut declarations = command_surface::OperationDeclarations::builder(PRODUCT, deadlines());
+    declarations.accept(command_surface::RequestOption::Cursor);
+    declarations.accept(command_surface::RequestOption::BudgetTokens);
+    declarations.accept(command_surface::RequestOption::Format);
+    for code in polylogue_model::Code::ALL {
+        declarations
+            .register_failure_code(code.as_str(), crate::protocol::kind(*code))
+            .expect("failure classification is unique");
+    }
+    for tool in Tool::ALL {
+        if COMMANDS
+            .iter()
+            .any(|command| command.tool == Some(tool) && command.operation().is_some())
+        {
+            declarations
+                .declare_tool(command_surface::ToolFamily {
+                    name: tool.family().into(),
+                    description: describe(tool),
+                    open_world: tool.open_world(),
+                    idempotent: tool.idempotent(),
+                })
+                .expect("declared tool is unique");
+        }
+    }
+    for command in COMMANDS.iter() {
+        match command.run {
+            Run::Local(_, declare, _)
+            | Run::ConfiguredLocal(_, declare, _)
+            | Run::ClientLocal(_, declare, _) => declare(&mut declarations, command),
+            Run::Daemon(operation) => operation.declare(&mut declarations, command),
+        }
+        if command.cli == Cli::Line {
+            declarations
+                .declare_steps(command.name, "steps", crate::daemon::verbs::declarations())
+                .expect("the line's steps are declared once");
+        }
+    }
+    declarations
+        .set_tool_default("read", "rows")
+        .expect("rows belongs to the read tool");
+    declarations.finish()
 }
 
 #[cfg(test)]

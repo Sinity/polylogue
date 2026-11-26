@@ -291,6 +291,24 @@ Designed and not built yet, with the page that designs each:
     assert_eq!(answer, json!({"manual": expected}));
 }
 
+/// The messages of every `not_built` failure anywhere in an answer.
+fn collect_unbuilt(value: &Value, refusals: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            if object.get("code") == Some(&json!("not_built")) {
+                refusals.push(object["message"].as_str().unwrap_or_default().to_owned());
+            }
+            object
+                .values()
+                .for_each(|value| collect_unbuilt(value, refusals));
+        }
+        Value::Array(values) => values
+            .iter()
+            .for_each(|value| collect_unbuilt(value, refusals)),
+        _ => {}
+    }
+}
+
 /// docs/agents.md, The skill file: `help --all` names every verb with its
 /// options, and no option or verb it names answers `not_built`. Each verb
 /// runs under a dry run on the Morrow archive with one declared option at a
@@ -309,9 +327,18 @@ fn help_all_names_nothing_that_refuses_as_not_built() {
         .as_str()
         .unwrap()
         .to_owned();
+    // A declared option may meet a use that is not built yet (`send
+    // --attach` to a harness session), refused from the list; any other
+    // `not_built` would be an option help offers that its handler refuses.
+    let uses: Vec<String> = UNBUILT
+        .iter()
+        .filter(|row| !row.is_option())
+        .map(|row| row.failure().message)
+        .collect();
     let refused_as_unbuilt = |answer: &command_surface::Answer<Value>| -> Option<String> {
-        let text = serde_json::to_string(answer).unwrap();
-        text.contains("\"code\":\"not_built\"").then_some(text)
+        let mut refusals = Vec::new();
+        collect_unbuilt(&serde_json::to_value(answer).unwrap(), &mut refusals);
+        refusals.into_iter().find(|message| !uses.contains(message))
     };
     let mut ran = 0;
     let offered = crate::daemon::verbs::offered_over_mcp();
