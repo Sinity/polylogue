@@ -1,6 +1,6 @@
 use super::*;
 use crate::import::tests::engine;
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 use serde_json::json;
 use std::fs;
 
@@ -12,7 +12,7 @@ fn conversation(id: &str, time: u64, messages: &[(&str, &str)]) -> serde_json::V
     json!({"id":id,"create_time":time,"current_node":messages.last().map(|(id,_)| *id),"mapping":mapping})
 }
 
-fn texts(w: &ClaudeHome, id: &str) -> Vec<String> {
+fn texts(w: &Home, id: &str) -> Vec<String> {
     w.reads()
         .reader()
         .unwrap()
@@ -25,7 +25,7 @@ fn texts(w: &ClaudeHome, id: &str) -> Vec<String> {
 
 #[test]
 fn array_order_and_parent_sessions_survive_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     let parent = conversation("parent", 1, &[("z-first", "First"), ("a-second", "Second")]);
     let child = conversation(
@@ -86,7 +86,7 @@ fn array_order_and_parent_sessions_survive_rebuild() {
 #[test]
 fn malformed_array_suffix_commits_one_refusal_and_no_prefix_conversations() {
     for suffix in [",]", "] false", ""] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let path = w.dir.path().join("conversations.json");
         let bytes = format!(
             "[{}{}",
@@ -106,7 +106,7 @@ fn malformed_array_suffix_commits_one_refusal_and_no_prefix_conversations() {
 
 #[test]
 fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     let messages = json!([
         {"uuid":"z","sender":"human","text":"First","created_at":"2026-01-01T00:00:00Z"},
@@ -142,7 +142,7 @@ fn claude_array_keeps_message_order_separate_from_one_conversation_span() {
 #[cfg(feature = "faults")]
 #[test]
 fn stopped_array_delivery_replays_stored_bytes_when_the_executable_changes() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     let bytes = serde_json::to_vec(&vec![
         conversation("new", 2, &[("n", "new")]),
@@ -208,7 +208,7 @@ fn array_delivery_waits_for_the_previous_batchs_commit() {
             Ok(())
         }
     }
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     fs::write(&path, "[{},{},{}]").unwrap();
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -249,7 +249,7 @@ fn array_delivery_waits_for_the_previous_batchs_commit() {
 
 #[test]
 fn repeated_conversation_markers_follow_logical_order_and_repeated_facts_keep_the_latest_order() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     let marker = |time, leaf| {
         let mut value = conversation("same", time, &[("a", "A"), ("b", "B")]);
@@ -312,7 +312,7 @@ fn repeated_conversation_markers_follow_logical_order_and_repeated_facts_keep_th
 
 #[test]
 fn pending_live_input_commits_before_bulk_array_delivery() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     fs::write(
         &path,
@@ -391,7 +391,7 @@ fn a_live_append_during_bulk_array_processing_is_served_by_the_next_pass() {
             self.parser.item(value, sink, first_sessions)
         }
     }
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append(
         "live.jsonl",
         &polylogue_testkit::claude_user("u1", "live", "before"),

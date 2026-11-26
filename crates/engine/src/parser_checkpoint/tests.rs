@@ -1,7 +1,7 @@
 mod appends;
 
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 
 fn fragment(uuid: &str, text: &str) -> String {
     format!(
@@ -12,7 +12,7 @@ fn fragment(uuid: &str, text: &str) -> String {
 
 #[test]
 fn restart_resumes_response_assembly_without_rereading_provider_prefix() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "continuation.jsonl",
         &claude_user("prompt", "continuation", &"prefix ".repeat(32768)),
@@ -98,7 +98,7 @@ fn job(
 
 #[test]
 fn missing_parser_state_reads_the_chain_again_from_its_start() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "missing.jsonl",
         &claude_user("first", "missing", &"prefix ".repeat(4096)),
@@ -156,7 +156,7 @@ fn missing_parser_state_reads_the_chain_again_from_its_start() {
 
 #[test]
 fn one_call_multiple_capture_steps_only_checkpoints_its_final_cursor() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let path = home.dir.path().join("captures.json");
     let payload = include_bytes!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -188,7 +188,7 @@ fn one_call_multiple_capture_steps_only_checkpoints_its_final_cursor() {
 
 #[test]
 fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replaying_them() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let dir = home.home.join(".pi/agent/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("native.jsonl");
@@ -229,7 +229,7 @@ fn raw_only_capture_keeps_bytes_without_inventing_a_parser_checkpoint_or_replayi
 fn declared_registry_keeps_absent_raw_only_origins_valid_and_real_row_dump_versions() {
     use polylogue_model::freshness::CompletenessDimension;
     use polylogue_store::ReadingContract;
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (engine, _lock) = crate::import::tests::engine(&home, 1024);
     let contracts = crate::reading_contracts();
     let report = engine
@@ -271,7 +271,7 @@ fn keyed_fragment(uuid: &str, key: &str, text: &str) -> String {
 
 #[test]
 fn a_response_growing_across_appends_is_joined_from_the_chains_rows() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let mut length = 0;
     for (uuid, text) in [("first", "one"), ("second", "two"), ("third", "three")] {
         home.append("keyed.jsonl", &keyed_fragment(uuid, "response-a", text));
@@ -343,7 +343,7 @@ fn a_response_growing_across_appends_is_joined_from_the_chains_rows() {
 
 #[test]
 fn an_append_continues_an_earlier_response_and_resolves_its_alias() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "keyed.jsonl",
         &keyed_fragment("first", "response-a", "first"),
@@ -488,7 +488,7 @@ fn an_append_continues_an_earlier_response_and_resolves_its_alias() {
 
 #[test]
 fn lost_parser_state_reads_again_keeping_message_sessions() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "keyed.jsonl",
         &keyed_fragment("first", "response-a", "first"),
@@ -530,7 +530,7 @@ fn lost_parser_state_reads_again_keeping_message_sessions() {
 /// chain order, and an append numbers its messages after the committed ones.
 #[test]
 fn an_append_numbers_equal_content_named_messages_after_the_committed_ones() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let unnamed = |text: &str| {
         format!(
             "{}\n",
@@ -574,7 +574,7 @@ fn an_append_numbers_equal_content_named_messages_after_the_committed_ones() {
 /// and is stated for the file's own.
 #[test]
 fn an_appended_sessionless_event_follows_the_resumed_sessions_response() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("own.jsonl", &claude_user("u1", "own", "start"));
     let resumed = |uuid: &str, key: &str, text: &str| {
         format!(

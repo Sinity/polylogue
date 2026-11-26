@@ -1,6 +1,6 @@
 use super::*;
 use polylogue_model::{BlobHash, SessionId};
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 use serde_json::json;
 
 fn capture(file: serde_json::Value, at: &str) -> Vec<u8> {
@@ -27,7 +27,7 @@ fn append(path: &Path, bytes: &[u8]) {
 
 #[test]
 fn pending_files_survive_a_restart_and_known_hashes_can_be_reused() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w
         .config(64 << 20)
         .spool_dir("browser-capture")
@@ -93,7 +93,7 @@ fn pending_files_survive_a_restart_and_known_hashes_can_be_reused() {
 
 #[test]
 fn an_unknown_hash_keeps_the_conversation_and_leaves_the_file_not_fetched() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let (mut engine, _lock) = engine(&w, 64 << 20);
     let path = w.dir.path().join("capture.json");
     let file = json!({"provider_attachment_id":"file1", "message_provider_id":"m1", "blob":BlobHash::of(b"absent").to_string()});

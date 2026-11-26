@@ -1,8 +1,8 @@
 use super::*;
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 use std::io::Write;
 
-fn archive(w: &ClaudeHome) -> (PathBuf, Vec<u8>) {
+fn archive(w: &Home) -> (PathBuf, Vec<u8>) {
     let path = w.dir.path().join("export.zip");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
     zip.set_comment("synthetic original container metadata");
@@ -32,7 +32,7 @@ fn archive(w: &ClaudeHome) -> (PathBuf, Vec<u8>) {
 
 #[test]
 fn original_zip_bytes_survive_provider_removal_and_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let (path, original) = archive(&w);
     let id = blake3::hash(&original).to_hex().to_string();
     for rebuild in [false, true] {
@@ -71,7 +71,7 @@ fn original_zip_bytes_survive_provider_removal_and_rebuild() {
 #[test]
 fn unreadable_or_encrypted_zip_population_refuses_before_any_public_install() {
     for encrypted in [false, true] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let (path, mut original) = archive(&w);
         if encrypted {
             // The declared traditional-encryption flag requires a password.
@@ -116,7 +116,7 @@ fn unreadable_or_encrypted_zip_population_refuses_before_any_public_install() {
 
 #[test]
 fn raw_name_bytes_stay_apart_from_the_decoded_name() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let (path, mut original) = archive(&w);
     original[7] &= !8;
     original[30] = 0xff;
@@ -150,7 +150,7 @@ fn raw_name_bytes_stay_apart_from_the_decoded_name() {
 
 #[test]
 fn identical_and_changed_containers_keep_imports_while_sharing_member_bytes() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let (path, original) = archive(&w);
     let other = w.dir.path().join("second.zip");
     let (mut e, _lock) = engine(&w, 1024);

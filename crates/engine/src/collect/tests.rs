@@ -459,7 +459,7 @@ fn hidden_directories_need_a_named_location() {
 #[test]
 fn completed_walk_distinguishes_accessible_empty_absent_and_unavailable_roots() {
     use polylogue_model::capture::Accessibility;
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let mut config = crate::test_config();
     config.home = home.home.clone();
     config.tool_dirs.clear();
@@ -490,7 +490,7 @@ fn completed_walk_distinguishes_accessible_empty_absent_and_unavailable_roots() 
 
 #[test]
 fn unknown_directories_share_a_bounded_bucket_and_links_are_explicitly_ignored() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let mut config = crate::test_config();
     config.home = home.home.clone();
     config.tool_dirs.clear();

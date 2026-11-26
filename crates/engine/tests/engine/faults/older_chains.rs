@@ -1,12 +1,12 @@
 use super::*;
 use polylogue_engine::Engine;
-use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
+use polylogue_testkit::{Home, claude_user, delete_index};
 
 #[test]
 fn an_older_chain_parse_failure_waits_across_restart_until_the_executable_changes() {
     {
         fault::clear();
-        let w = ClaudeHome::new();
+        let w = Home::new();
         w.append(
             "history.jsonl",
             &claude_user("old", "history", "historical unique secret"),

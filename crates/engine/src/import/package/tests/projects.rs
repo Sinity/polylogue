@@ -1,5 +1,5 @@
 use polylogue_model::{DocumentAuthorship, DocumentId, DocumentPurpose};
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 
 fn project() -> Vec<u8> {
     // The project/docs layout claude.ai writes is also exercised directly by the
@@ -14,7 +14,7 @@ fn project() -> Vec<u8> {
 
 #[test]
 fn project_sidecar_declares_only_its_own_member() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let source = home.dir.path().join("project-export");
     std::fs::create_dir_all(source.join("projects")).unwrap();
     let sidecar = source.join("projects/project-a.json");
@@ -61,7 +61,7 @@ fn project_sidecar_declares_only_its_own_member() {
 
 #[test]
 fn standalone_project_documents_keep_text_identity_and_receiving_source() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let source = home.dir.path().join("project-export");
     std::fs::create_dir_all(source.join("projects")).unwrap();
     let path = source.join("projects/project-a.json");

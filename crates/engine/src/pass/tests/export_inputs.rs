@@ -76,7 +76,7 @@ fn expected_marks(n: u32) -> Vec<String> {
 
 #[test]
 fn gemini_cli_and_hermes_files_are_read_and_so_are_their_changes_found_during_a_pool_run() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
     engine.config.workers = 1;
     // The pool looks for changed live inputs on every turn, so the Gemini

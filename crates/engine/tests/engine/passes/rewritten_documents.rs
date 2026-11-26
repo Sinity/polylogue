@@ -47,7 +47,7 @@ fn chunks(bytes: &[u8]) -> Vec<(String, u64)> {
         .collect()
 }
 
-fn stored_blobs(w: &ClaudeHome) -> BTreeSet<String> {
+fn stored_blobs(w: &Home) -> BTreeSet<String> {
     w.reads()
         .reader()
         .unwrap()
@@ -60,7 +60,7 @@ fn stored_blobs(w: &ClaudeHome) -> BTreeSet<String> {
 
 #[test]
 fn a_rewritten_document_stores_only_its_changed_chunks_and_reads_back_whole() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.config(64 << 20).spool_dir("antigravity-exports");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("export.json");

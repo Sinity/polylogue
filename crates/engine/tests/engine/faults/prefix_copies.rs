@@ -1,6 +1,6 @@
 use super::identical_chains::{capture_log, dump, unnamed};
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user as user, delete_index};
+use polylogue_testkit::{Home, claude_user as user, delete_index};
 
 /// A Claude Code assistant record that is one part of response `response`;
 /// the parts of one response make one message.
@@ -93,7 +93,7 @@ fn a_rebuild_reads_older_capture_log_chains_whole_with_or_without_copies() {
         c: frames(&[&["a question", "an edited answer"]]),
         d: frames(&[&["a question", "an answer", "more", "more answer", "last"]]),
     };
-    let location = |w: &ClaudeHome| {
+    let location = |w: &Home| {
         let log = w
             .config(64 << 20)
             .spool_dir("browser-capture")
@@ -110,11 +110,11 @@ fn a_rebuild_reads_older_capture_log_chains_whole_with_or_without_copies() {
 /// same order. `message` is a message every chain holds.
 fn rebuild_history(
     history: &History,
-    location: impl Fn(&ClaudeHome) -> std::path::PathBuf,
+    location: impl Fn(&Home) -> std::path::PathBuf,
     message: &str,
 ) {
     fault::clear();
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = location(&w);
     {
         let (mut engine, _lock) = w.engine(64 << 20);

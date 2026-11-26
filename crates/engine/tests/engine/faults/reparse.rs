@@ -2,10 +2,10 @@ use super::*;
 use polylogue_engine::Engine;
 use polylogue_sources::origin::by_name;
 use polylogue_store::Archive;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 
 fn committed_continuation(
-    w: &ClaudeHome,
+    w: &Home,
 ) -> (
     Vec<polylogue_model::Json>,
     Vec<polylogue_model::Json>,
@@ -24,7 +24,7 @@ fn committed_continuation(
 fn rejected_replacement_keeps_the_committed_reading() {
     for point in ["reparse.prepare", "reparse.commit", "parse"] {
         fault::clear();
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let first = claude_user("message", "s", "stored text");
         let second = claude_user("later", "s", "second body");
         w.append("s.jsonl", &(first.clone() + &second));

@@ -648,11 +648,11 @@ fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored
             .collect()
     }
 
-    let w = polylogue_testkit::ClaudeHome::new();
+    let w = polylogue_testkit::Home::new();
     let config = w.dir.path().join("config");
     let env = crate::Fixture::new(w.root.as_path(), w.home.as_path(), config.as_path());
     // Read the child's environment, whose XDG state root differs from
-    // ClaudeHome's standalone engine fixture and its HOME fallback.
+    // the testkit home's standalone engine and its HOME fallback.
     let child = command(&env);
     let state = child
         .get_envs()

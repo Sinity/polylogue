@@ -17,7 +17,7 @@ fn records_naming(path: &Path) -> Vec<Priority> {
 /// (docs/operations.md, the log).
 #[test]
 fn an_unreadable_file_is_logged_once_and_its_recovery_once() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("other.jsonl", &claude_user("o1", "other", "readable"));
     home.append("locked.jsonl", &claude_user("l1", "locked", "kept away"));
     let locked = home.file("locked.jsonl");

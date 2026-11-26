@@ -4,9 +4,7 @@
 use polylogue_engine::{Engine, ImportOptions};
 use polylogue_model::{Message, SessionId};
 use polylogue_store::{Archive, ReadPool};
-use polylogue_testkit::{
-    ClaudeHome, claude_assistant as assistant, claude_user as user, delete_index,
-};
+use polylogue_testkit::{Home, claude_assistant as assistant, claude_user as user, delete_index};
 use std::fs;
 use std::path::Path;
 
@@ -24,7 +22,7 @@ mod started_inputs;
 
 #[test]
 fn a_build_stores_and_parses_and_a_second_pass_reads_nothing() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append(
         "s1.jsonl",
         &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi")),
@@ -41,7 +39,7 @@ fn a_build_stores_and_parses_and_a_second_pass_reads_nothing() {
 
 #[test]
 fn an_unchanged_incomplete_tail_waits_without_rereading_stored_bytes() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let partial = user("u2", "s1", "still being written");
     w.append("s1.jsonl", &(user("u1", "s1", "complete") + &partial[..20]));
     {
@@ -61,7 +59,7 @@ fn an_unchanged_incomplete_tail_waits_without_rereading_stored_bytes() {
     let grown = e.run_pass().unwrap();
     assert!(grown.errors.is_empty(), "{:?}", grown.errors);
     assert_eq!(w.texts("s1"), ["complete", "still being written"]);
-    let whole = ClaudeHome::new();
+    let whole = Home::new();
     whole.append("s1.jsonl", &(user("u1", "s1", "complete") + &partial));
     let (mut engine, _lock) = whole.engine(64 << 20);
     engine.run_pass().unwrap();
@@ -70,7 +68,7 @@ fn an_unchanged_incomplete_tail_waits_without_rereading_stored_bytes() {
 
 #[test]
 fn waiting_tail_retries_after_the_source_changes() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append("s1.jsonl", &(user("u1", "s1", "before") + "{\"type\":"));
     let (mut e, _lock) = w.engine(64 << 20);
     e.run_pass().unwrap();
@@ -82,7 +80,7 @@ fn waiting_tail_retries_after_the_source_changes() {
 
 #[test]
 fn appends_cost_only_their_bytes_and_a_partial_line_waits() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let first = user("u1", "s1", "one");
     w.append("s1.jsonl", &first);
     let (mut e, _lock) = w.engine(64 << 20);
@@ -110,7 +108,7 @@ fn appends_cost_only_their_bytes_and_a_partial_line_waits() {
 
 #[test]
 fn after_restart_only_the_changed_input_resumes() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let first = user("u1", "s1", "one");
     w.append("s1.jsonl", &first);
     w.append("s2.jsonl", &user("v1", "s2", "other"));
@@ -193,7 +191,7 @@ fn after_restart_only_the_changed_input_resumes() {
 
 #[test]
 fn a_rewritten_file_starts_a_new_chain_and_its_content_wins() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append("s1.jsonl", &user("u1", "s1", "draft"));
     let (mut e, _lock) = w.engine(64 << 20);
     e.run_pass().unwrap();
@@ -209,7 +207,7 @@ fn a_rewritten_file_starts_a_new_chain_and_its_content_wins() {
 
 #[test]
 fn large_files_go_in_chunks_and_a_record_longer_than_a_chunk_still_parses() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let mut text = String::new();
     for i in 0..40 {
         text += &user(&format!("u{i}"), "s1", &format!("message {i}"));
@@ -240,7 +238,7 @@ fn large_files_go_in_chunks_and_a_record_longer_than_a_chunk_still_parses() {
 #[test]
 fn a_session_growing_across_range_boundaries_stays_one_chain() {
     const CHUNK: u64 = 1 << 10;
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let records: Vec<String> = (0..24)
         .map(|n| {
             let text = format!("turn {n} {}", "growing session text ".repeat(n % 5 + 4));
@@ -306,7 +304,7 @@ fn a_session_growing_across_range_boundaries_stays_one_chain() {
 
 #[test]
 fn a_vanished_file_is_observed_gone_and_its_messages_stay() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append("s1.jsonl", &user("u1", "s1", "kept"));
     let (mut e, _lock) = w.engine(64 << 20);
     e.run_pass().unwrap();
@@ -321,7 +319,7 @@ fn a_vanished_file_is_observed_gone_and_its_messages_stay() {
 
 #[test]
 fn a_deleted_index_is_built_again_from_stored_bytes_even_when_the_files_are_gone() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append("s1.jsonl", &user("u1", "s1", "first"));
     {
         let (mut e, _lock) = w.engine(64 << 20);
@@ -339,7 +337,7 @@ fn a_deleted_index_is_built_again_from_stored_bytes_even_when_the_files_are_gone
 
 #[test]
 fn a_stored_input_is_parsed_from_its_stored_bytes_in_chunks() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     for i in 0..20 {
         w.append("s2.jsonl", &user(&format!("u{i}"), "s2", &format!("m{i}")));
     }
@@ -358,7 +356,7 @@ fn a_stored_input_is_parsed_from_its_stored_bytes_in_chunks() {
 
 #[test]
 fn importing_the_same_bytes_twice_stores_them_once() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let outside = w.dir.path().join("export/s9.jsonl");
     fs::create_dir_all(outside.parent().unwrap()).unwrap();
     fs::write(&outside, user("x1", "s9", "imported")).unwrap();
@@ -392,7 +390,7 @@ fn importing_the_same_bytes_twice_stores_them_once() {
 
 #[test]
 fn import_without_final_newline_reads_last_record() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let outside = w.dir.path().join("export/s8.jsonl");
     fs::create_dir_all(outside.parent().unwrap()).unwrap();
     let bytes = user("x1", "s8", "first") + &assistant("x2", "s8", "last");
@@ -419,7 +417,7 @@ fn import_without_final_newline_reads_last_record() {
 
 #[test]
 fn growing_live_file_without_newline_still_waits() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let bytes = user("u1", "s1", "first") + &assistant("a1", "s1", "last");
     w.append("s1.jsonl", bytes.trim_end_matches('\n'));
     let (mut e, _lock) = w.engine(64 << 20);
@@ -437,7 +435,7 @@ fn growing_live_file_without_newline_still_waits() {
 
 #[test]
 fn importing_a_directory_imports_every_file_under_it() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let spool = w.dir.path().join("old-spool");
     fs::create_dir_all(spool.join("nested")).unwrap();
     fs::write(spool.join("a.jsonl"), user("d1", "sa", "first")).unwrap();
@@ -488,7 +486,7 @@ fn chatgpt_conversation(id: &str, text: &str) -> serde_json::Value {
 #[test]
 fn a_zip_export_imports_its_conversations_and_keeps_its_other_files() {
     use std::io::Write as _;
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let zip_path = w.dir.path().join("chatgpt-data.zip");
     let mut zip = zip::ZipWriter::new(fs::File::create(&zip_path).unwrap());
     let opts = zip::write::SimpleFileOptions::default();
@@ -519,7 +517,7 @@ fn a_zip_export_imports_its_conversations_and_keeps_its_other_files() {
 
 #[test]
 fn array_conversations_parse_when_the_chunk_is_smaller_than_one_record() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("conversations.json");
     let convs = serde_json::json!([
         chatgpt_conversation("c1", "one"),
@@ -554,7 +552,7 @@ fn capture_file(texts: &[&str]) -> Vec<u8> {
 
 #[test]
 fn a_capture_rewritten_in_place_is_parsed_again_whole() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".local/state/polylogue/browser-capture/grok");
     fs::create_dir_all(&dir).unwrap();
     let file = dir.join("g1.json");
@@ -584,7 +582,7 @@ fn a_capture_rewritten_in_place_is_parsed_again_whole() {
 /// later range and the chain stayed short of its end.
 #[test]
 fn a_rollout_with_an_unread_record_and_an_unknown_item_is_read_to_its_end() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let rollouts = w.home.join(".codex/sessions/2026/03/02");
     fs::create_dir_all(&rollouts).unwrap();
     let thread = "019a0000-0000-7000-8000-000000000002";
@@ -638,7 +636,7 @@ fn a_rollout_with_an_unread_record_and_an_unknown_item_is_read_to_its_end() {
 
 #[test]
 fn gemini_and_codex_shell_and_file_calls_reach_failing_commands_and_files() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let chats = w.home.join(".gemini/tmp/proj/chats");
     fs::create_dir_all(&chats).unwrap();
     let call = |id: &str, name: &str, args: serde_json::Value, status: &str| {
@@ -738,7 +736,7 @@ fn gemini_and_codex_shell_and_file_calls_reach_failing_commands_and_files() {
 
 #[test]
 fn equal_timestamps_order_by_input_and_position_through_a_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append(
         "a.jsonl",
         &(user("first", "s1", "First question") + &user("shared", "s1", "Shared question")),
@@ -821,7 +819,7 @@ fn copied_tool_history_keeps_items_after_restart() {
     const PARENT: &str = "019a0000-0000-7000-8000-000000000001";
     const FIRST: &str = "019a0000-0000-7000-8000-000000000002";
     const SECOND: &str = "019a0000-0000-7000-8000-000000000003";
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let rollouts = home.home.join(".codex/sessions/2026/03/01");
     fs::create_dir_all(&rollouts).unwrap();
     let record = |n: u64, kind: &str, payload: serde_json::Value| {
@@ -1002,7 +1000,7 @@ fn copied_tool_history_keeps_items_after_restart() {
 #[test]
 fn a_repeated_rate_limit_reading_costs_the_appended_rows() {
     use std::io::Write as _;
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let rollouts = w.home.join(".codex/sessions/2026/03/03");
     fs::create_dir_all(&rollouts).unwrap();
     let thread = "019a0000-0000-7000-8000-000000000003";

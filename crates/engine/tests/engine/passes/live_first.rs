@@ -12,7 +12,7 @@ use super::*;
 #[test]
 fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     use polylogue_store::fault::{self, Action};
-    let w = ClaudeHome::new();
+    let w = Home::new();
     const BACKLOG: i64 = 200;
     const HELD_AT: u32 = 20;
     // Files already in the pool at the hold, and the commit group size.
@@ -50,9 +50,8 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
         drop(lock);
         pass
     });
-    let sessions = |w: &ClaudeHome| {
-        w.count("SELECT count(*) AS n FROM session WHERE id LIKE 'claude-code:b%'")
-    };
+    let sessions =
+        |w: &Home| w.count("SELECT count(*) AS n FROM session WHERE id LIKE 'claude-code:b%'");
     while !fault::held() {
         assert!(
             !pass.is_finished(),
@@ -69,9 +68,8 @@ fn a_spool_file_arriving_mid_pass_is_stored_before_the_backlog_ends() {
     )
     .unwrap();
     fault::release();
-    let live = |w: &ClaudeHome| {
-        w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:live1'")
-    };
+    let live =
+        |w: &Home| w.count("SELECT count(*) AS n FROM session WHERE id = 'claude-code:live1'");
     while live(&w) == 0 {
         assert!(
             !pass.is_finished(),

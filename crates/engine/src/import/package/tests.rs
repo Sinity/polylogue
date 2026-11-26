@@ -404,7 +404,7 @@ fn descriptor_window_child() {
         rlim_max: 128,
     };
     assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) }, 0);
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let source = home.dir.path().join("many.zip");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&source).unwrap());
     zip.start_file(

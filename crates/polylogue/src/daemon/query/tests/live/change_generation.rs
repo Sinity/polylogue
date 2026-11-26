@@ -1,10 +1,10 @@
 use super::*;
 use polylogue_model::user::{UserRequest, UserWrite};
-use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
+use polylogue_testkit::{Home, claude_user, delete_index};
 
 #[test]
 fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("s.jsonl", &claude_user("m1", "s", "stored exact text"));
     let (mut engine, lock) = home.engine(64 << 20);
     assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -97,7 +97,7 @@ fn a_rebuilt_index_refuses_old_change_cursors_before_query_composition() {
 
 #[test]
 fn fresh_change_cursors_keep_two_counters_and_include_late_notes() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append(
         "kept.jsonl",
         &claude_user("k1", "kept", "keep this exact text"),

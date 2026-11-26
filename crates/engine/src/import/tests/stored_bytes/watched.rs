@@ -12,7 +12,7 @@ fn prompt(text: &str) -> Vec<u8> {
 /// A refused watched export commits no extent; the blob its put recorded
 /// stays.
 fn a_refused_watched_export_commits_no_extent() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let dir = home.config(64).spool_dir("ai-studio");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("stored.json");
@@ -40,7 +40,7 @@ fn a_refused_watched_export_commits_no_extent() {
 fn an_interrupted_watched_export_replays_only_committed_original_bytes() {
     for point in ["segment.after_sync", "capture.after_commit"] {
         fault::clear();
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let dir = home.config(64).spool_dir("ai-studio");
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("stored.json");

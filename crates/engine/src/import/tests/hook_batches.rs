@@ -28,7 +28,7 @@ fn tar(path: &Path, members: &[(String, Vec<u8>)]) {
     archive.finish().unwrap();
 }
 
-fn membership(home: &polylogue_testkit::ClaudeHome) -> Vec<(String, i64, Vec<u8>, String)> {
+fn membership(home: &polylogue_testkit::Home) -> Vec<(String, i64, Vec<u8>, String)> {
     let db = rusqlite::Connection::open(home.root.join("archive.db")).unwrap();
     db.prepare("SELECT c.container_input,c.member_index,c.path_bytes,o.input FROM observation_container c JOIN observation o ON o.id=c.observation_id ORDER BY c.member_index,o.input")
         .unwrap().query_map([], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))
@@ -37,7 +37,7 @@ fn membership(home: &polylogue_testkit::ClaudeHome) -> Vec<(String, i64, Vec<u8>
 
 #[test]
 fn hook_carrier_batches_keep_bytes_duplicate_paths_members_and_repeat() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let path = home.dir.path().join("hooks.tar");
     let mut members: Vec<_> = (0..259)
         .map(|i| (format!("polylogue/hooks/{i:04}.ndjson"), hook(i)))
@@ -146,7 +146,7 @@ fn older_hook_lines_and_browser_captures_import_when_named() {
         origin: Some(format.into()),
         ..Default::default()
     };
-    let w = polylogue_testkit::ClaudeHome::new();
+    let w = polylogue_testkit::Home::new();
     let old = w.dir.path().join("old");
     spool_tree(&old);
     let (mut engine, _lock) = engine(&w, 64);

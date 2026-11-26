@@ -8,11 +8,17 @@ The commands that run all of this, and the standard every test is held to, are i
 
 Tests use synthetic data only: the Morrow archive and hand-written golden cases. Real data appears only in counts-only measurements; tests never read anyone's real archive or home, and a test daemon dies with its test.
 
+A test builds an archive one way: files go into a synthetic home where each tool writes them, and the real engine stores them. `polylogue-testkit`'s `Home` is that home with an archive beside it, and `Home::store` the one function that stores it (an engine run until nothing is due, then the home's exports imported; any error fails the test). A test that stops between steps or arms a fault takes the engine from the same `Home`. The files come from Morrow, from an activity, or from hand-written lines for the few cases an activity cannot say (malformed input):
+
+- An **activity** (`Activity`) describes what the harnesses did, in their own terms: sessions with their directories, records with their IDs and times, prompts, responses in one or several records, thinking, tool calls and their results, parent links and forks, sidechains, compactions, and resumes that begin with a copy of another session's file, exact or changed. Two functions are written from it, sharing no code with the parsers or the store: `claude_code_files`, the files Claude Code writes, and `expected`, the view [sessions.md](sessions.md) says Polylogue shows (sessions, their messages in order with role, time, parent and blocks, each call with its outcome, the history a read shows, and the links). `View::stored` reads the same view from an archive through the public reader and query text, and a test compares the two for equality.
+- A **schedule** (`Schedule`) says how the files arrive: in which order, each whole or in appends cut at any byte, with a new engine or a rebuilt index between any two steps. `Home::deliver` follows it.
+- `polylogue_testkit::generate` holds proptest strategies for activities and schedules, usable from any crate's tests.
+
 ## Morrow
 
 Morrow is a synthetic archive: a week of work (2026-10-01 to 10-07) on a fictional Rust library, in Claude Code, Codex, ChatGPT and claude.ai, plus a Claude-Code-only parents set, a live set, hook spools and an annotation session. It lives in `examples/morrow/`; `FACTS.md` there owns its message identities, counting rules and cost interpretation, and `expected/` holds the query examples with their expected replies. Paths inside it use the synthetic home `/home/op`.
 
-- `polylogue-testkit` lays Morrow out in a temporary home where each tool writes, runs the real engine over it and imports its exports, so tests read an archive built by the real parsers and writer: `Morrow::build(Set::Main)`, with `view()` and `stored_bytes()` giving what tests compare.
+- `Home::morrow(Set::Main)` lays Morrow out in a temporary home where each tool writes, and storing it runs the real engine over it and imports its exports, so tests read an archive built by the real parsers and writer: `Home::morrow(Set::Main).stored()`, with `view()` and `stored_bytes()` giving what tests compare.
 - The files are edited directly; nothing regenerates them. A new behaviour that Morrow cannot show is added to Morrow, with its facts in `FACTS.md`, rather than to a one-off fixture.
 - The same archive is what `polylogue demo DIR` builds ([installing.md#demo](installing.md#demo)); the lines it prints and the examples in the [README](../README.md) are checked against it by a public CLI test.
 
@@ -35,10 +41,10 @@ A test sits in the module of the area that owns its behaviour. The query languag
 
 These properties are required for every input; named tests identify existing coverage. A verification result states which cases ran:
 
-- Appending to an input in steps gives the same rows as reading it whole (`append_equivalence`).
-- The order in which inputs arrive does not change the result (`order_independence`, `session_facts_do_not_depend_on_arrival_order`).
+- For generated Claude Code activity, the stored view equals the view the activity's description says Polylogue shows, however its files arrive (`the_stored_view_is_the_expected_view`). Appending in steps, any arrival order, storing again, a restart and an index rebuild between steps are deliveries of it, and the search index equals that of a delivery of the files whole. The generator covers parent links, forks, sidechains, equal times and times out of file order, responses split over several records, tool results in the next record and later ones, error results, copied prefixes exact, edited and cut short, chained resumes, compactions and non-ASCII text; its schedules cover files above the engine's chunk, cuts inside a line and inside a multi-byte character, restarts and rebuilds. `the_generator_reaches_every_listed_case` checks that a fixed draw holds each of these.
+- The order in which inputs arrive does not change the result (`the_stored_view_is_the_expected_view`, `session_facts_do_not_depend_on_arrival_order`).
 - A crash after each of append, sync and commit leaves only a state the open path resumes (it truncates an uncommitted segment tail), with no repair step (`crash_leaves_only_a_tail_at_each_product_commit_boundary`).
-- Rebuilding the index from stored bytes gives the same replies (`a_deliberate_index_rebuild_keeps_authored_rows_and_vectors`; in primary mode `the_morrow_example_rebuilt_from_sinex_gives_the_same_answers`).
+- Rebuilding the index from stored bytes gives the same replies (`a_rebuild_gives_the_expected_view_and_adds_nothing`, `a_deliberate_index_rebuild_keeps_authored_rows_and_vectors`; in primary mode `the_morrow_example_rebuilt_from_sinex_gives_the_same_answers`).
 - An export imported into a fresh archive gives the same sessions, IDs and user state (`an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_state`, `read_to_bundle_import_round_trip_preserves_structured_values_and_unknown_tool_fields`).
 - The current revision of an authored record is a pure function of its revision links (`current_revisions`, `annotation_revision_state`).
 - Budgeted pages concatenate to the whole read (`fused_pages_concatenate_to_the_whole_reply`).

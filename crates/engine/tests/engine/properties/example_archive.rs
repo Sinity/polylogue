@@ -3,19 +3,19 @@
 
 use polylogue_engine::Config;
 use polylogue_store::{Archive, SqlValue};
-use polylogue_testkit::{Morrow, Set, session};
+use polylogue_testkit::{Home, Set, session};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
-fn jsonl_files(w: &Morrow) -> Vec<PathBuf> {
+fn jsonl_files(w: &Home) -> Vec<PathBuf> {
     w.provider_files()
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "jsonl" || e == "ndjson"))
         .collect()
 }
 
-fn count(w: &Morrow, sql: &str) -> i64 {
+fn count(w: &Home, sql: &str) -> i64 {
     let pool = w.reads();
     pool.reader().unwrap().query(sql, &[]).unwrap()[0]["n"]
         .as_i64()
@@ -27,7 +27,7 @@ fn count(w: &Morrow, sql: &str) -> i64 {
 /// back exactly from the store.
 #[test]
 fn original_bytes_survive_the_source() {
-    let probe = Morrow::build(Set::Main);
+    let probe = Home::morrow(Set::Main).stored();
     let home = probe.home.clone();
     // Every provider file stored as an input of its own; the rest are side
     // files read with another (a subagent's .meta.json) or databases kept
@@ -44,7 +44,7 @@ fn original_bytes_survive_the_source() {
         "provider files that were never stored: {side:?}"
     );
     for rel in inputs.iter().map(|f| f.strip_prefix(&home).unwrap()) {
-        let w = Morrow::build(Set::Main);
+        let w = Home::morrow(Set::Main).stored();
         let file = w.home.join(rel);
         let bytes = w.stored_bytes(&file).unwrap();
         if !polylogue_sources::ORIGINS
@@ -55,7 +55,7 @@ fn original_bytes_survive_the_source() {
         }
         let before = w.view();
         fs::remove_file(&file).unwrap();
-        let (pass, _) = w.run_pass();
+        let pass = w.store();
         assert!(
             pass.errors.is_empty(),
             "deleting {}: {:?}",
@@ -83,9 +83,9 @@ fn original_bytes_survive_the_source() {
 /// the appended message arrives.
 #[test]
 fn message_ids_survive_unrelated_changes() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let before = w.view();
-    let project = w.file(".claude/projects/-home-op-morrow");
+    let project = w.path(".claude/projects/-home-op-morrow");
     // An unrelated session.
     fs::write(
         project.join("7f3a2c10-0901-4000-8000-000000000901.jsonl"),
@@ -99,11 +99,11 @@ fn message_ids_survive_unrelated_changes() {
     text.push_str(r#"{"type":"user","uuid":"u1-late","parentUuid":null,"sessionId":"7f3a2c10-0001-4000-8000-000000000001","timestamp":"2026-10-08T09:00:00Z","promptSource":"typed","message":{"role":"user","content":"one more thing"}}
 "#);
     fs::write(&one, text).unwrap();
-    w.run_pass();
+    w.store();
     // #2's file moved to another name in the same project directory.
     let two = project.join("7f3a2c10-0002-4000-8000-000000000002.jsonl");
     fs::rename(&two, project.join("renamed.jsonl")).unwrap();
-    w.run_pass();
+    w.store();
 
     let after = w.view();
     let mut wrong = Vec::new();
@@ -146,9 +146,9 @@ fn message_ids_survive_unrelated_changes() {
 /// the read, naming the blob; nothing is returned silently.
 #[test]
 fn a_corrupt_blob_fails_its_read() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let file =
-        w.file(".claude/projects/-home-op-morrow/7f3a2c10-0002-4000-8000-000000000002.jsonl");
+        w.path(".claude/projects/-home-op-morrow/7f3a2c10-0002-4000-8000-000000000002.jsonl");
     let bytes = fs::read(&file).unwrap();
     assert_eq!(w.stored_bytes(&file).unwrap(), bytes);
     let archive = rusqlite::Connection::open(Archive::at(&w.root).archive_db()).unwrap();
@@ -196,14 +196,14 @@ fn a_corrupt_blob_fails_its_read() {
 /// `subagents/` folder.
 #[test]
 fn a_subagent_has_one_parent() {
-    let w = Morrow::lay_out(Set::Main);
-    let project = w.file(".claude/projects/-home-op-morrow");
+    let w = Home::morrow(Set::Main);
+    let project = w.path(".claude/projects/-home-op-morrow");
     let sub = project
         .join("7f3a2c10-0002-4000-8000-000000000002/subagents/agent-a7f3a2c1000000003.jsonl");
     let other = project.join("7f3a2c10-0001-4000-8000-000000000001/subagents");
     fs::create_dir_all(&other).unwrap();
     std::os::unix::fs::symlink(&sub, other.join("agent-a7f3a2c1000000003.jsonl")).unwrap();
-    w.run_pass();
+    w.store();
     let twice = count(
         &w,
         "SELECT count(*) AS n FROM (SELECT child_id FROM session_link WHERE kind = 'spawn'
@@ -228,7 +228,7 @@ fn a_subagent_has_one_parent() {
 /// that reaches a root inside the session's read with its parents.
 #[test]
 fn compaction_keeps_the_tree_connected() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let pool = w.reads();
     let msgs = pool.reader().unwrap().messages(&session(4), true).unwrap();
     let ids: BTreeSet<String> = msgs.iter().map(|m| m.id.to_string()).collect();
@@ -259,8 +259,8 @@ fn compaction_keeps_the_tree_connected() {
 /// back identical to the file, and the view equals storing each whole.
 #[test]
 fn appended_steps_reassemble_exactly() {
-    let whole = Morrow::build(Set::Main);
-    let mut new_blobs = Morrow::lay_out(Set::Main);
+    let whole = Home::morrow(Set::Main).stored();
+    let mut new_blobs = Home::morrow(Set::Main);
     // Source IDs include paths, so both archives read the same home.
     new_blobs.home = whole.home.clone();
     let files = jsonl_files(&new_blobs);
@@ -275,7 +275,7 @@ fn appended_steps_reassemble_exactly() {
             let upto = lines.len() * step / 3;
             fs::write(f, lines[..upto].concat()).unwrap();
         }
-        let (pass, _) = new_blobs.run_pass();
+        let pass = new_blobs.store();
         assert!(pass.errors.is_empty(), "step {step}: {:?}", pass.errors);
     }
     for (f, bytes) in files.iter().zip(&full) {
@@ -293,20 +293,20 @@ fn appended_steps_reassemble_exactly() {
 /// again, and idle passes after it change nothing.
 #[test]
 fn a_rebuild_leaves_one_index() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let before = w.view();
     let index = Archive::at(&w.root).index_db();
     fs::remove_file(&index).unwrap();
-    w.run_pass();
-    let counts = |w: &Morrow| -> Vec<i64> {
+    w.store();
+    let counts = |w: &Home| -> Vec<i64> {
         ["session", "message", "block", "tool_call", "link", "event"]
             .iter()
             .map(|t| count(w, &format!("SELECT count(*) AS n FROM {t}")))
             .collect()
     };
     let after_rebuild = counts(&w);
-    w.run_pass();
-    w.run_pass();
+    w.store();
+    w.store();
     assert_eq!(counts(&w), after_rebuild, "idle passes changed the index");
     assert_eq!(w.view(), before);
     let dbs: Vec<String> = fs::read_dir(&w.root)
@@ -321,13 +321,13 @@ fn a_rebuild_leaves_one_index() {
 /// nothing and classes every file unchanged.
 #[test]
 fn a_host_rename_restores_nothing() {
-    let w = Morrow::build(Set::Main);
+    let w = Home::morrow(Set::Main).stored();
     let revisions = count(&w, "SELECT count(*) AS n FROM a.revision");
     let blobs = count(&w, "SELECT count(*) AS n FROM a.blob");
     let config = Config {
         clock: polylogue_model::WallClock::fixed("2026-10-07T10:00:00Z".parse().unwrap()),
         host: "morrow-renamed".into(),
-        ..w.config()
+        ..w.config(polylogue_testkit::WHOLE_FILES)
     };
     let (mut engine, _lock) = w.engine_with(config);
     let pass = engine.run_pass().unwrap();

@@ -93,7 +93,7 @@ copy.
 | `crates/engine` | discovery, the overlapped ingest pipeline, tool-database capture, recognition, derivations |
 | `crates/sinex` | Polylogue's kind declarations and its event encoders and decoders for Sinex (behind the `sinex` feature); primary mode's shipper and reader of Sinex's log are written here |
 | `crates/polylogue` | daemon, CLI, MCP, web, browser host and brief builder |
-| `crates/testkit` | test archives built through the real loop: the synthetic Morrow archive (`examples/morrow/`), independent goldens |
+| `crates/testkit` | test archives built through the real loop: the synthetic home that stores them, the Morrow archive (`examples/morrow/`), activities with their expected views and generators |
 | `clients/python/` | standard-library Python client and real-daemon contract tests |
 | `extension/` | the browser extension |
 | `xtask/` | developer commands, built on `devkit` from polylogue-sinex-common |

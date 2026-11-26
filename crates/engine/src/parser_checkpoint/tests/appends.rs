@@ -39,8 +39,8 @@ fn records(many_sessions: bool) -> Vec<Vec<u8>> {
 #[test]
 fn appends_read_one_by_one_match_one_whole_parse_and_citations() {
     let pieces = records(false);
-    let full = ClaudeHome::new();
-    let resumed = ClaudeHome::new();
+    let full = Home::new();
+    let resumed = Home::new();
     for bytes in &pieces {
         full.append("keyed.jsonl", std::str::from_utf8(bytes).unwrap());
     }
@@ -55,7 +55,7 @@ fn appends_read_one_by_one_match_one_whole_parse_and_citations() {
         let pass = engine.run_pass().unwrap();
         assert!(pass.errors.is_empty(), "{pass:?}");
     }
-    let snapshot = |home: &ClaudeHome| {
+    let snapshot = |home: &Home| {
         let (engine, _lock) = crate::import::tests::engine(home, 4096);
         let reader = engine.reads.reader().unwrap();
         let id = polylogue_model::SessionId::parse("claude-code:keyed").unwrap();

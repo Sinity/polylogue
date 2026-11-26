@@ -1,11 +1,11 @@
 //! Tool timing the source reports reaches the public registry through the real loop.
 use super::super::*;
 use super::{fixture_context, run};
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 
 #[test]
 fn reported_duration_and_result_time_keep_meaning() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("timing.jsonl", concat!(
         "{\"type\":\"assistant\",\"uuid\":\"call-message\",\"sessionId\":\"timing\",\"timestamp\":\"2026-10-07T10:00:00Z\",\"message\":{\"id\":\"api-call\",\"role\":\"assistant\",\"content\":[{\"type\":\"tool_use\",\"id\":\"call-a\",\"name\":\"Bash\",\"input\":{\"command\":\"printf synthetic\"}}]}}\n",
         "{\"type\":\"user\",\"uuid\":\"result-message\",\"sessionId\":\"timing\",\"timestamp\":\"2026-10-07T10:00:02Z\",\"toolUseResult\":{\"durationMs\":1500,\"exitCode\":0},\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-a\",\"content\":\"synthetic\"}]}}\n",

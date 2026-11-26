@@ -5,7 +5,7 @@ use super::*;
 /// recorded stays.
 fn refused_watched_bytes_commit_no_source_rows() {
     for image in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let path = home.file("pool-stored.jsonl");
         let decoded = vec![b'A'; 64 << 10];
         let bytes = if image {
@@ -64,7 +64,7 @@ fn assert_blob(engine: &Engine, hash: polylogue_model::BlobHash, expected: &[u8]
 
 #[test]
 fn decoded_bytes_survive_a_failed_index_write_and_a_rebuild_without_the_provider_file() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (encoded, decoded) = image_payload('A');
     let path = home.file("decoded-stored.jsonl");
     std::fs::write(
@@ -102,7 +102,7 @@ fn failed_uncommitted_bytes_retry_the_current_file_without_preserving_a_stale_ta
     use polylogue_store::fault::{self, Action};
     for edited in [false, true] {
         fault::clear();
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let (encoded, decoded) = image_payload('A');
         let (next_encoded, next_decoded) = image_payload('B');
         let path = home.file("interrupted-pool.jsonl");

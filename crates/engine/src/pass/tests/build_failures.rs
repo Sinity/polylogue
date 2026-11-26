@@ -24,8 +24,8 @@ fn standing(engine: &Engine) -> Vec<(String, Option<String>)> {
 }
 
 /// An archive whose stored file `name` is due a reading by the next build.
-fn stored_and_unbuilt(name: &str) -> ClaudeHome {
-    let home = ClaudeHome::new();
+fn stored_and_unbuilt(name: &str) -> Home {
+    let home = Home::new();
     home.append(
         &format!("{name}.jsonl"),
         &claude_user("first", name, "first body"),

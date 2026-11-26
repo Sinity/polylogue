@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("Electrons.json");
     // Settings follow chunks on the wire. Parsing cannot assume header order.
     let bytes = serde_json::to_vec(&json!({
@@ -112,7 +112,7 @@ fn stored_ai_studio_chunks_survive_source_deletion_and_index_rebuild() {
 
 #[test]
 fn watched_ai_studio_prompt_revisions_are_stored_before_chunk_parsing() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("drive-id.json");
@@ -149,7 +149,7 @@ fn watched_ai_studio_prompt_revisions_are_stored_before_chunk_parsing() {
 
 #[test]
 fn an_appended_ai_studio_suffix_reuses_the_stored_prefix_without_duplicate_bytes() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("incomplete.json");
@@ -210,7 +210,7 @@ fn kept(engine: &Engine, input: &str, chain: i64, length: u64) -> Vec<u8> {
 #[test]
 fn checked_export_append_stores_only_the_delta() {
     use std::io::Write;
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("append-check.json");
@@ -250,7 +250,7 @@ fn checked_export_append_stores_only_the_delta() {
 #[test]
 fn early_rewrite_with_an_unchanged_tail_keeps_both_export_chains() {
     use std::io::Write;
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("prefix.json");
@@ -299,7 +299,7 @@ fn early_rewrite_with_an_unchanged_tail_keeps_both_export_chains() {
 
 #[test]
 fn missing_stored_export_prefix_captures_a_full_rewrite() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.config(8).spool_dir("ai-studio");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("missing.json");
@@ -410,7 +410,7 @@ fn drive_and_takeout_copy_give_one_session() {
     .unwrap();
     let mut shown = Vec::new();
     for drive_first in [true, false] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let spool = w.config(8).spool_dir("ai-studio");
         fs::create_dir_all(&spool).unwrap();
         let takeout = w.dir.path().join("Takeout");
@@ -490,7 +490,7 @@ fn drive_and_takeout_copy_give_one_session() {
 /// The ai-studio sessions with their messages (ID and text) and events
 /// (kind and the inputs that read them), and the tool calls with whether
 /// each found its result.
-fn ai_studio_rows(w: &ClaudeHome) -> serde_json::Value {
+fn ai_studio_rows(w: &Home) -> serde_json::Value {
     let pool = w.reads();
     let reader = pool.reader().unwrap();
     let rows = |sql: &str| serde_json::Value::Array(reader.query(sql, &[]).unwrap());
@@ -536,7 +536,7 @@ fn a_copy_whose_alias_a_second_prompt_records_is_its_own_session_in_any_order() 
         vec![vec!["a"], vec!["b"], vec!["copy"]],
         vec![vec!["copy"], vec!["a", "b"]],
     ] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let spool = w.config(8).spool_dir("ai-studio");
         fs::create_dir_all(&spool).unwrap();
         let takeout = w.dir.path().join("Takeout");
@@ -620,7 +620,7 @@ fn a_copy_s_tool_calls_take_their_ids_in_the_drive_session() {
         "executableCode":{"language":"PYTHON","code":"print(1)"},
         "codeExecutionResult":{"outcome":"OUTCOME_OK","output":"1"}}));
     for drive_first in [true, false] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let spool = w.config(8).spool_dir("ai-studio");
         fs::create_dir_all(&spool).unwrap();
         let takeout = w.dir.path().join("Takeout");

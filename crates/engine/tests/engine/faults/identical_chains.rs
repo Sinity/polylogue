@@ -1,7 +1,5 @@
 use super::*;
-use polylogue_testkit::{
-    ClaudeHome, claude_assistant as assistant, claude_user as user, delete_index,
-};
+use polylogue_testkit::{Home, claude_assistant as assistant, claude_user as user, delete_index};
 use std::collections::BTreeMap;
 
 /// A Claude Code record without a `uuid`, so its message is named by its
@@ -79,7 +77,7 @@ fn grouped_piece(
 /// Wire-shape records are compared by what it says and the chain it cites, not
 /// by the byte ranges it was read in or the revisions it took them at
 /// ([`READ_RANGES`]). A status count no chain has reads as absent.
-pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
+pub(super) fn dump(w: &Home) -> BTreeMap<String, Vec<String>> {
     let conn = rusqlite::Connection::open_with_flags(
         w.root.join("index.db"),
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -288,7 +286,7 @@ const CREATED_WITH_THE_INDEX: &[&str] = &[
 #[test]
 fn a_rebuild_reads_an_identical_older_chain_whole_with_or_without_copies() {
     fault::clear();
-    let w = ClaudeHome::new();
+    let w = Home::new();
     // Chains 1 and 3 hold `a`, chains 2 and 4 hold `b`; `a` has a message
     // named by its content that `b`, the latest chain, no longer holds.
     let a = user("u1", "same", "first prompt")
@@ -386,7 +384,7 @@ fn transcript_lines_are_the_same_whatever_order_inputs_arrive_in() {
     let transcript = user("u1", "same", "first prompt") + &assistant("a1", "same", "an answer");
     let captured = capture_log(&[&["a question", "another answer"]]);
     let read = |transcript_first: bool| {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let path = w.file("same.jsonl");
         let log = w
             .config(64 << 20)

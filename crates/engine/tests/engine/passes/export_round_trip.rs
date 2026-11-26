@@ -49,7 +49,7 @@ const USER_STATE: &[(&str, &str)] = &[
     ),
 ];
 
-fn user_state(w: &ClaudeHome) -> Vec<(String, serde_json::Value)> {
+fn user_state(w: &Home) -> Vec<(String, serde_json::Value)> {
     let pool = w.reads();
     let reader = pool.reader().unwrap();
     USER_STATE
@@ -112,7 +112,7 @@ fn note(kind: AnnotationKind, target: &str, revises: Option<String>) -> UserWrit
     }
 }
 
-fn stored_authored(w: &ClaudeHome) -> Vec<polylogue_model::authored::PreparedRequest> {
+fn stored_authored(w: &Home) -> Vec<polylogue_model::authored::PreparedRequest> {
     let mut records = Vec::new();
     w.reads()
         .reader()
@@ -125,7 +125,7 @@ fn stored_authored(w: &ClaudeHome) -> Vec<polylogue_model::authored::PreparedReq
     records
 }
 
-fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
+fn export_file(w: &Home, sessions: &[&str]) -> std::path::PathBuf {
     let pool = w.reads();
     let reader = pool.reader().unwrap();
     let mut records = Vec::new();
@@ -242,7 +242,7 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
 
 #[test]
 fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_state() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append(
         "s1.jsonl",
         &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi") + &user("u2", "s1", "more")),
@@ -393,7 +393,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     let source_authored = stored_authored(&w);
     let file = export_file(&w, &["claude-code:s1"]);
 
-    let fresh = ClaudeHome::new();
+    let fresh = Home::new();
     let (mut e2, _lock2) = fresh.engine(64 << 20);
     // An archive that receives an export is started without sources, and
     // its first pass installs the empty index (docs/operations.md).
@@ -424,7 +424,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
 
 #[test]
 fn conflicting_forks_survive_bundle_export_and_import() {
-    let original = ClaudeHome::new();
+    let original = Home::new();
     original.append(
         "parent.jsonl",
         &(user("first", "parent", "first") + &user("second", "parent", "second")),
@@ -446,7 +446,7 @@ fn conflicting_forks_survive_bundle_export_and_import() {
         LinkRecord::reference(&expected[1])
     );
     let path = export_file(&original, &["claude-code:child"]);
-    let receiving = ClaudeHome::new();
+    let receiving = Home::new();
     let (mut target, _target_lock) = receiving.engine(64 << 20);
     let report = target.import(&[path]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
@@ -463,7 +463,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
         }).collect();
         serde_json::json!({"id":id,"create_time":time,"current_node":messages.last().map(|(id,_)|*id),"mapping":mapping})
     }
-    fn inherited(home: &ClaudeHome) -> Vec<String> {
+    fn inherited(home: &Home) -> Vec<String> {
         let pool = home.reads();
         let reader = pool.reader().unwrap();
         let selection = reader
@@ -482,7 +482,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
             .unwrap();
         texts
     }
-    let original = ClaudeHome::new();
+    let original = Home::new();
     let path = original.dir.path().join("conversations.json");
     std::fs::write(
         &path,
@@ -513,7 +513,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
     assert_eq!(inherited(&original), ["first", "third", "own child"]);
     let whole = export_file(&original, &["chatgpt:parent", "chatgpt:child"]);
     let later = export_file(&original, &["chatgpt:parent"]);
-    let receiving = ClaudeHome::new();
+    let receiving = Home::new();
     let (mut target, _target_lock) = receiving.engine(64 << 20);
     for file in [whole, later] {
         let report = target.import(&[file]).unwrap();
@@ -542,7 +542,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
 
 #[test]
 fn copied_file_subset_survives_export_with_parent() {
-    let original = ClaudeHome::new();
+    let original = Home::new();
     original.append(
         "parent.jsonl",
         &(user("first", "parent", "copied first") + &user("later", "parent", "uncopied later")),
@@ -555,7 +555,7 @@ fn copied_file_subset_survives_export_with_parent() {
     let pass = source.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     let child = SessionId::parse("claude-code:child").unwrap();
-    let bodies = |home: &ClaudeHome| {
+    let bodies = |home: &Home| {
         let pool = home.reads();
         let reader = pool.reader().unwrap();
         let selected = reader.select_messages(&child, true).unwrap();
@@ -571,7 +571,7 @@ fn copied_file_subset_survives_export_with_parent() {
     };
     assert_eq!(bodies(&original), ["copied first", "own child"]);
     let file = export_file(&original, &["claude-code:parent", "claude-code:child"]);
-    let target = ClaudeHome::new();
+    let target = Home::new();
     let (mut engine, _target_lock) = target.engine(64 << 20);
     let report = engine.import(&[file]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
@@ -581,7 +581,7 @@ fn copied_file_subset_survives_export_with_parent() {
 
 #[test]
 fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bundles() {
-    fn view(home: &ClaudeHome) -> (polylogue_model::read::Parents, Vec<String>) {
+    fn view(home: &Home) -> (polylogue_model::read::Parents, Vec<String>) {
         let pool = home.reads();
         let reader = pool.reader().unwrap();
         let selected = reader
@@ -597,7 +597,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         (selected.parents().clone(), texts)
     }
     for declared in ["parent", "other"] {
-        let original = ClaudeHome::new();
+        let original = Home::new();
         original.append(
             "parent.jsonl",
             &(user("shared", "parent", "shared") + &user("uncopied", "parent", "uncopied")),
@@ -646,7 +646,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
             file.write_all(b"\n").unwrap();
         }
         drop(file);
-        let receiving = ClaudeHome::new();
+        let receiving = Home::new();
         let (mut target, _target_lock) = receiving.engine(64 << 20);
         let report = target.import(&[base]).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");
@@ -677,7 +677,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
             std::slice::from_ref(&copied_for)
         );
         let portable = export_file(&receiving, &sessions);
-        let final_home = ClaudeHome::new();
+        let final_home = Home::new();
         let (mut final_engine, _final_lock) = final_home.engine(64 << 20);
         let report = final_engine.import(&[portable]).unwrap();
         assert!(report.refused.is_empty(), "{report:?}");

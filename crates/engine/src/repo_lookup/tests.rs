@@ -463,7 +463,7 @@ fn a_failed_repository_lookup_keeps_the_previous_lookup() {
 fn a_pass_does_not_wait_for_repository_lookups() {
     use polylogue_store::fault::{self, Action};
     fault::clear();
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let repo = home.dir.path().join("project");
     repository(&repo);
     let record = |uuid: &str, text: &str| {

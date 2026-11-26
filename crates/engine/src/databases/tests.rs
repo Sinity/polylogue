@@ -237,7 +237,7 @@ fn capture_continues_the_input_at_the_observed_path() {
 
 #[test]
 fn a_database_pass_yields_when_its_waiting_parser_has_no_local_work() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let db = home.home.join(".codex/state_5.sqlite");
     std::fs::create_dir_all(db.parent().unwrap()).unwrap();
     rusqlite::Connection::open(&db)

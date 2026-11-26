@@ -2,9 +2,9 @@ use super::*;
 
 #[test]
 fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
-    use polylogue_testkit::{ClaudeHome, claude_user};
+    use polylogue_testkit::{Home, claude_user};
     for delete in [false, true] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let path = w.dir.path().join("s1.jsonl");
         let original = claude_user("u1", "s1", "captured");
         std::fs::write(&path, &original).unwrap();
@@ -37,8 +37,8 @@ fn capture_keeps_original_identity_after_the_source_is_rewritten_or_deleted() {
 
 #[test]
 fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
-    use polylogue_testkit::{ClaudeHome, claude_user};
-    let w = ClaudeHome::new();
+    use polylogue_testkit::{Home, claude_user};
+    let w = Home::new();
     let path = w.dir.path().join("s1.jsonl");
     let original = claude_user("u1", "s1", "stored before parse");
     std::fs::write(&path, &original).unwrap();
@@ -76,7 +76,7 @@ fn a_registered_import_retries_after_restart_without_storing_part_blobs() {
 
 #[test]
 fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let thread = "019a0000-0000-7000-8000-000000000001";
     let name = format!("rollout-2026-03-01T10-00-00-{thread}.jsonl");
     let record = |kind, payload| {
@@ -185,7 +185,7 @@ fn a_codex_import_retry_reads_only_after_its_committed_checkpoint() {
 
 #[test]
 fn file_of_declared_origin_without_parser_is_stored_by_import() {
-    let w = polylogue_testkit::ClaudeHome::new();
+    let w = polylogue_testkit::Home::new();
     // Pi's own layout below its root; Pi has no parser yet.
     let path = w
         .dir
@@ -245,7 +245,7 @@ fn file_of_declared_origin_without_parser_is_stored_by_import() {
 
 #[test]
 fn dry_run_classifies_members_and_stores_nothing() {
-    let w = polylogue_testkit::ClaudeHome::new();
+    let w = polylogue_testkit::Home::new();
     let path = w
         .dir
         .path()
@@ -299,7 +299,7 @@ fn capture_failure_leaves_no_catalog_input() {
             Err(std::io::Error::other("synthetic interrupted import"))
         }
     }
-    let w = polylogue_testkit::ClaudeHome::new();
+    let w = polylogue_testkit::Home::new();
     let (engine, _lock) = engine(&w, 64);
     assert!(Captured::stream(&engine.archive, Failed).is_err());
     assert_eq!(w.count("SELECT COUNT(*) AS n FROM a.input"), 0);
@@ -307,7 +307,7 @@ fn capture_failure_leaves_no_catalog_input() {
 }
 
 pub(crate) fn engine(
-    w: &polylogue_testkit::ClaudeHome,
+    w: &polylogue_testkit::Home,
     chunk: u64,
 ) -> (Engine, polylogue_store::ArchiveLock) {
     let new = !w.root.exists();
@@ -342,8 +342,8 @@ pub(crate) fn engine(
 
 #[test]
 fn line_import_keeps_a_partial_tail_without_duplicate_parts_on_retry() {
-    use polylogue_testkit::{ClaudeHome, claude_user};
-    let w = ClaudeHome::new();
+    use polylogue_testkit::{Home, claude_user};
+    let w = Home::new();
     let path = w.dir.path().join("s1.jsonl");
     let original = claude_user("u1", "s1", &"x".repeat(2048)) + "{\"type\":\"user\",\"partial\":";
     std::fs::write(&path, &original).unwrap();
@@ -375,7 +375,7 @@ fn line_import_keeps_a_partial_tail_without_duplicate_parts_on_retry() {
 #[test]
 fn container_members_keep_their_original_hash_and_duplicate_members_share_one_blob() {
     use std::io::Write;
-    let w = polylogue_testkit::ClaudeHome::new();
+    let w = polylogue_testkit::Home::new();
     let path = w.dir.path().join("export.zip");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
     let bytes = vec![0x55; 256 * 1024];
@@ -439,7 +439,7 @@ fn import_reads_bounded_frames_and_keeps_only_a_recognition_prefix() {
             Ok(n)
         }
     }
-    let w = polylogue_testkit::ClaudeHome::new();
+    let w = polylogue_testkit::Home::new();
     let (engine, _lock) = engine(&w, 1024);
     let size = 3 * hashed_blobs::DEFAULT_FRAME as u64;
     let mut generated = Generated {
@@ -455,8 +455,8 @@ fn import_reads_bounded_frames_and_keeps_only_a_recognition_prefix() {
 
 #[test]
 fn restart_replays_a_registered_import_after_the_original_is_deleted() {
-    use polylogue_testkit::{ClaudeHome, claude_user};
-    let w = ClaudeHome::new();
+    use polylogue_testkit::{Home, claude_user};
+    let w = Home::new();
     let path = w.dir.path().join("s1.jsonl");
     let original = claude_user("u1", "s1", "stored, source gone");
     std::fs::write(&path, &original).unwrap();
@@ -486,8 +486,8 @@ const SHOWN_FROM_COPY: &str = "SELECT count(*) AS n FROM message m JOIN message_
 
 #[test]
 fn replayed_import_keeps_the_captured_winner() {
-    use polylogue_testkit::{ClaudeHome, claude_user};
-    let w = ClaudeHome::new();
+    use polylogue_testkit::{Home, claude_user};
+    let w = Home::new();
     w.append("s1.jsonl", &claude_user("u1", "s1", "native winner"));
     let path = w.dir.path().join("s1.jsonl");
     let original = claude_user("u1", "s1", "imported fallback");
@@ -514,10 +514,10 @@ mod documents;
 
 #[test]
 fn batched_and_reversed_import_groups_select_the_same_overlapping_message() {
-    use polylogue_testkit::{ClaudeHome, claude_user};
+    use polylogue_testkit::{Home, claude_user};
 
-    let batched = ClaudeHome::new();
-    let serial = ClaudeHome::new();
+    let batched = Home::new();
+    let serial = Home::new();
     let origin = polylogue_sources::origin::by_name("claude-code").unwrap();
     let inputs = [
         (
@@ -581,8 +581,8 @@ mod strict;
 #[test]
 fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes() {
     use polylogue_store::fault::{self, Action};
-    use polylogue_testkit::{ClaudeHome, claude_user};
-    let home = ClaudeHome::new();
+    use polylogue_testkit::{Home, claude_user};
+    let home = Home::new();
     let path = home.dir.path().join("stopped-import.jsonl");
     let content = claude_user("one", "stopped-import", "kept original");
     std::fs::write(&path, &content).unwrap();

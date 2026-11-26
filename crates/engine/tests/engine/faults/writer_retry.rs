@@ -1,9 +1,9 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user as user};
+use polylogue_testkit::{Home, claude_user as user};
 use std::io::Read;
 use std::sync::Arc;
 
-fn exactly_stored(w: &ClaudeHome, file: &str) {
+fn exactly_stored(w: &Home, file: &str) {
     let pool = w.reads();
     let r = pool.reader().unwrap();
     let known = r
@@ -30,7 +30,7 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
         "write.index_commit",
     ] {
         fault::clear();
-        let w = ClaudeHome::new();
+        let w = Home::new();
         w.append("new.jsonl", &user("one", "new", "new stored body"));
         let (mut engine, _lock) = w.engine(256);
         // Upkeep stores and reads the new input in one write.
@@ -59,7 +59,7 @@ fn a_new_input_retries_without_a_source_change_or_restart() {
 fn append_and_rewrite_failures_keep_other_inputs_and_retry_the_rejected_one() {
     for rewrite in [false, true] {
         fault::clear();
-        let w = ClaudeHome::new();
+        let w = Home::new();
         w.append("target.jsonl", &user("old", "target", "old body"));
         let (mut engine, _lock) = w.engine(256);
         assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -118,7 +118,7 @@ fn append_and_rewrite_failures_keep_other_inputs_and_retry_the_rejected_one() {
 
 #[test]
 fn a_growing_rewrite_after_restart_replaces_the_input_with_its_new_contents() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append("rewrite.jsonl", &user("same", "target", "before"));
     {
         let (mut engine, _lock) = w.engine(256);

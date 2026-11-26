@@ -1,6 +1,6 @@
 use super::*;
 use polylogue_store::python_polylogue::fixture::{self, VectorKey};
-use polylogue_testkit::{ClaudeHome, claude_assistant, claude_user};
+use polylogue_testkit::{Home, claude_assistant, claude_user};
 use rusqlite::OpenFlags;
 
 fn options(format: &str) -> ImportOptions {
@@ -40,7 +40,7 @@ fn strings(conn: &rusqlite::Connection, sql: &str) -> Vec<Vec<String>> {
 const MODEL: &str = "voyage-4";
 const KEY: &str = "voyage/voyage-4/4/document/unit";
 
-fn indexed_texts(w: &ClaudeHome, long: &str) {
+fn indexed_texts(w: &Home, long: &str) {
     w.append(
         "s1.jsonl",
         &claude_user("u1", "s1", "the first text that was embedded"),
@@ -87,7 +87,7 @@ fn bytes(values: &[f32]) -> String {
 #[test]
 fn python_vectors_import_by_recipe_and_text_hash() {
     for prepared in [false, true] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let long = "x".repeat(polylogue_store::vectors::CHUNK_CHARS + 1);
         indexed_texts(&w, &long);
         let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
@@ -184,7 +184,7 @@ fn python_vectors_import_by_recipe_and_text_hash() {
 #[test]
 fn vector_addresses_match_all_current_raw_unicode_spellings_and_repeat() {
     for prepared in [false, true] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let nfc = "Café";
         let decomposed = "Cafe\u{301}";
         w.append("unicode.jsonl", &claude_user("composed", "unicode", nfc));
@@ -248,7 +248,7 @@ fn vector_addresses_match_all_current_raw_unicode_spellings_and_repeat() {
 
 #[test]
 fn unmatched_python_vectors_are_reported() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     indexed_texts(&w, "short");
     let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
     engine.run_pass().unwrap();
@@ -289,7 +289,7 @@ fn unmatched_python_vectors_are_reported() {
 
 #[test]
 fn repeat_vector_import_adds_nothing() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     indexed_texts(&w, "short");
     let (mut engine, _lock) = crate::import::tests::engine(&w, 64);
     engine.run_pass().unwrap();
@@ -342,7 +342,7 @@ fn repeat_vector_import_adds_nothing() {
 
 #[test]
 fn imported_vectors_survive_index_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     indexed_texts(&w, "short");
     let store = w.dir.path().join("embeddings.db");
     fixture::vector_store(
@@ -402,7 +402,7 @@ fn address_is_python_polylogue_request_hash() {
 #[test]
 fn newer_paid_vectors_win_in_both_orders_and_repeat_changes_nothing() {
     for newest_first in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         indexed_texts(&home, "short");
         let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
         assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -487,7 +487,7 @@ fn newer_paid_vectors_win_in_both_orders_and_repeat_changes_nothing() {
 
 #[test]
 fn unknown_vector_purchase_time_is_explicitly_unmatched_and_never_given_an_order() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     indexed_texts(&home, "short");
     let (mut engine, _lock) = crate::import::tests::engine(&home, 64);
     assert!(engine.run_pass().unwrap().errors.is_empty());

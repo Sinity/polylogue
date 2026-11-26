@@ -5,8 +5,8 @@ use std::os::unix::fs::PermissionsExt;
 
 /// A stored file that disappeared, with the engine's state after the pass
 /// that saw it gone, then written back as `bytes`.
-fn gone_and_back(bytes: &str) -> (ClaudeHome, Engine, polylogue_store::ArchiveLock, PathBuf) {
-    let home = ClaudeHome::new();
+fn gone_and_back(bytes: &str) -> (Home, Engine, polylogue_store::ArchiveLock, PathBuf) {
+    let home = Home::new();
     home.append("back.jsonl", &claude_user("u1", "back", "stored body"));
     let (mut engine, lock) = crate::import::tests::engine(&home, 64 << 20);
     assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -81,7 +81,7 @@ fn a_file_rejoining_another_chain_takes_that_chains_parser_position() {
 fn a_shorter_equal_file_is_observed_back_and_starts_no_chain() {
     let first = claude_user("u1", "back", "stored body");
     let second = claude_user("u2", "back", "more stored body");
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("back.jsonl", &first);
     home.append("back.jsonl", &second);
     let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 20);

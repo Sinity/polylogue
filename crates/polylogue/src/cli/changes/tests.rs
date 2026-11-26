@@ -178,9 +178,9 @@ fn the_command_socket_and_cli_receiver_deliver_one_finite_batch() {
 
 #[test]
 fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild() {
-    use polylogue_testkit::{ClaudeHome, claude_user};
+    use polylogue_testkit::{Home, claude_user};
     use std::io::Read;
-    fn prepared(home: &ClaudeHome, since: Option<&str>) -> Vec<u8> {
+    fn prepared(home: &Home, since: Option<&str>) -> Vec<u8> {
         let pool = home.reads();
         let reader = pool.reader().unwrap();
         let mut file = crate::daemon::query::feed::prepare_with(
@@ -225,7 +225,7 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
             .map(|line| line["change"]["ref"].as_str().unwrap())
             .collect()
     }
-    let home = ClaudeHome::new();
+    let home = Home::new();
     for id in ["a", "b"] {
         home.append(
             &format!("{id}.jsonl"),

@@ -587,6 +587,11 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 - **Morrow**: the synthetic example archive in `examples/morrow/`, which
   `demo` builds and the examples use.
+- **activity**: a test's description of what harnesses did (sessions,
+  records, calls, copies), written to the tools' files and, separately, to
+  the view the docs say Polylogue shows ([testing.md](testing.md#test-data)).
+- **schedule**: how a test's files arrive: their order, the appends they
+  are cut into, and restarts and rebuilds between the steps.
 - **fault point**: a named point where a test can fail, panic, stop or
   **hold** a write or a read; a held point blocks until the test releases it.
 - **scenario**: an end-to-end test against the real daemon, CLI and MCP.

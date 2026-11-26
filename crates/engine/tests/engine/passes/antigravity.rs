@@ -11,7 +11,7 @@ fn transcript_line(index: u64, source: &str, kind: &str, extra: serde_json::Valu
 
 #[test]
 fn antigravity_cli_transcripts_append_repeat_and_rebuild_with_scoped_step_ids() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let directory = w
         .home
         .join(".gemini/antigravity-cli/brain/first/.system_generated/logs");
@@ -109,7 +109,7 @@ fn antigravity_cli_transcripts_append_repeat_and_rebuild_with_scoped_step_ids() 
 #[test]
 fn antigravity_transcript_and_summary_preserve_parent_evidence_in_both_orders() {
     for summary_first in [false, true] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let summary = w
             .home
             .join(".gemini/antigravity-cli/conversation_summaries.db");
@@ -171,7 +171,7 @@ fn antigravity_transcript_and_summary_preserve_parent_evidence_in_both_orders() 
 
 #[test]
 fn antigravity_summary_database_updates_repeats_and_rebuilds_without_the_source() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w
         .home
         .join(".gemini/antigravity-cli/conversation_summaries.db");
@@ -262,7 +262,7 @@ fn antigravity_summary_database_updates_repeats_and_rebuilds_without_the_source(
 
 #[test]
 fn antigravity_exports_are_read_by_the_real_loop_and_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.config(64 << 20).spool_dir("antigravity-exports");
     fs::create_dir_all(&dir).unwrap();
     fs::write(dir.join("export.json"),serde_json::to_vec(&json!({"source":"antigravity_language_server","cascadeId":"exported", "markdown":"### User Input\nMarkdown prompt\n### Planner Response\nMarkdown answer"})).unwrap()).unwrap();
@@ -313,7 +313,7 @@ fn antigravity_exports_are_read_by_the_real_loop_and_rebuild() {
 
 #[test]
 fn opaque_conversation_files_and_conversion_events_share_a_session_and_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".gemini/antigravity/conversations");
     fs::create_dir_all(&dir).unwrap();
     let path = dir.join("not-converted.pb");

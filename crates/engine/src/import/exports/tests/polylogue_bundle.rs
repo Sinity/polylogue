@@ -25,7 +25,7 @@ fn authored_bundle() -> Vec<u8> {
 
 #[test]
 fn bundle_keeps_authorship_apart_from_import_observation() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("records.jsonl");
     fs::write(&path, authored_bundle()).unwrap();
     let (mut engine, _lock) = engine(&w, 64);
@@ -49,7 +49,7 @@ fn bundle_keeps_authorship_apart_from_import_observation() {
 /// Imports `bytes` as a fresh input and checks that exactly that file is
 /// refused and nothing is written.
 fn assert_refused_before_writes(bytes: Vec<u8>) {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("input.jsonl");
     fs::write(&path, bytes).unwrap();
     let (mut engine, _lock) = engine(&w, 64);
@@ -111,7 +111,7 @@ fn authored_crash_child() {
 
 #[cfg(feature = "faults")]
 #[allow(unsafe_code)]
-fn interrupt_authored_import(w: &ClaudeHome, point: &str) {
+fn interrupt_authored_import(w: &Home, point: &str) {
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
@@ -143,7 +143,7 @@ fn open_replays_stored_authored_state_after_real_interruption() {
         "import.before_authored_restore",
         "import.after_authored_restore",
     ] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let path = w.dir.path().join("records.jsonl");
         fs::write(&path, authored_bundle()).unwrap();
         interrupt_authored_import(&w, point);
@@ -165,7 +165,7 @@ fn open_replays_stored_authored_state_after_real_interruption() {
 #[cfg(feature = "faults")]
 #[test]
 fn explicit_receiver_after_interruption_does_not_rewrite_historical_authorship() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("records.jsonl");
     fs::write(&path, authored_bundle()).unwrap();
     interrupt_authored_import(&w, "import.after_authored_restore");

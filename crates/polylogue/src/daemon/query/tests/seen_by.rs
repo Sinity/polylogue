@@ -1,9 +1,9 @@
 //! `first_seen` and `seen_by`: what Polylogue had, and when.
 
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user};
+use polylogue_testkit::{Home, claude_user};
 
-fn query(home: &ClaudeHome, text: &str) -> Result<Value, Failure> {
+fn query(home: &Home, text: &str) -> Result<Value, Failure> {
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     let mut request = ask(text);
@@ -15,7 +15,7 @@ fn query(home: &ClaudeHome, text: &str) -> Result<Value, Failure> {
 
 #[test]
 fn seen_by_reads_the_rows_polylogue_had_then() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     home.append("a.jsonl", &claude_user("a1", "a", "first prompt"));
     let (mut engine, _lock) = home.engine(64 << 20);
     assert!(engine.run_pass().unwrap().errors.is_empty());

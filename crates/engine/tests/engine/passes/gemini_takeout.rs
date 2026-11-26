@@ -8,7 +8,7 @@ fn cell(id: &str, body: &str) -> String {
 
 #[test]
 fn takeout_cells_keep_interleaved_parents_and_events_after_a_rebuild() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w
         .dir
         .path()
@@ -132,7 +132,7 @@ fn page_capture(turns: &[(&str, &str)]) -> Vec<u8> {
 }
 
 /// The texts the session shows, sorted, and how many messages it holds.
-fn shown(w: &ClaudeHome) -> (Vec<String>, i64) {
+fn shown(w: &Home) -> (Vec<String>, i64) {
     let mut texts: Vec<String> = messages_of(&w.root, "gemini-app:chat1")
         .iter()
         .map(Message::text)
@@ -172,7 +172,7 @@ fn a_turn_in_a_takeout_and_a_page_capture_is_shown_once() {
     ]);
     let mut results = Vec::new();
     for capture_first in [false, true] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let export = w
             .dir
             .path()

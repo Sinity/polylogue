@@ -3,7 +3,7 @@ use polylogue_model::{BlobHash, MessageId};
 use polylogue_store::Batch;
 use polylogue_store::assets::{AssetMatch, AttachmentState, ObservedMember};
 use polylogue_store::capture_read::{RawRange, ReadRoute};
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 use std::io::{Read, Seek, SeekFrom, Write};
 
 const MEMBER: &str = "file-Empty.dat";
@@ -27,7 +27,7 @@ fn conversation() -> Vec<u8> {
     .unwrap()
 }
 
-fn package(home: &ClaudeHome, zipped: bool, empty: bool) -> PathBuf {
+fn package(home: &Home, zipped: bool, empty: bool) -> PathBuf {
     if zipped {
         let path = home.dir.path().join("account.zip");
         let mut zip = zip::ZipWriter::new(std::fs::File::create(&path).unwrap());
@@ -99,7 +99,7 @@ fn available(engine: &Engine) -> (AssetMatch, ObservedMember) {
 #[test]
 fn real_directory_and_zip_empty_members_survive_provider_removal_reopen_and_rebuild() {
     for zipped in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let provider = package(&home, zipped, true);
         let expected = {
             let (mut engine, _lock) = engine(&home, 1024);
@@ -130,7 +130,7 @@ fn real_directory_and_zip_empty_members_survive_provider_removal_reopen_and_rebu
 #[test]
 fn missing_or_corrupt_empty_frames_are_refused() {
     for missing in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let provider = package(&home, false, true);
         let (mut engine, _lock) = engine(&home, 1024);
         import(&mut engine, &provider);
@@ -212,7 +212,7 @@ fn no_empty_input(engine: &Engine) {
 
 #[test]
 fn unrelated_empty_blob_does_not_supply_a_missing_import_member() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let provider = package(&home, false, false);
     let (mut engine, _lock) = engine(&home, 1024);
     import(&mut engine, &provider);
@@ -222,7 +222,7 @@ fn unrelated_empty_blob_does_not_supply_a_missing_import_member() {
 
 #[test]
 fn empty_member_namespaces_must_match_the_receiving_observation() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let provider = package(&home, false, true);
     let (mut engine, _lock) = engine(&home, 1024);
     import(&mut engine, &provider);
@@ -246,7 +246,7 @@ fn empty_member_namespaces_must_match_the_receiving_observation() {
 #[test]
 fn mismatched_source_reads_cannot_borrow_an_empty_body() {
     for invalid in ["absent", "machine", "path", "range", "hash"] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let provider = package(&home, false, false);
         let (mut engine, _lock) = engine(&home, 1024);
         import(&mut engine, &provider);
@@ -321,7 +321,7 @@ fn mismatched_source_reads_cannot_borrow_an_empty_body() {
 
 #[test]
 fn saved_empty_selection_refuses_a_real_nonempty_source_rewrite() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let provider = package(&home, false, true);
     let (mut engine, _lock) = engine(&home, 1024);
     import(&mut engine, &provider);

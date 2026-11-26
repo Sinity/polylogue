@@ -1,9 +1,9 @@
 use super::*;
 use crate::import::tests::engine;
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 #[test]
 fn recorded_directory_captures_original_assets_and_reports_missing_and_unresolved_references() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let cwd = w.dir.path().join("recorded");
     std::fs::create_dir_all(&cwd).unwrap();
     let image = cwd.join("image.png");
@@ -52,7 +52,7 @@ fn recorded_directory_captures_original_assets_and_reports_missing_and_unresolve
 
 #[test]
 fn every_reference_after_four_thousand_is_still_reported() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let images = (0..4097)
@@ -91,7 +91,7 @@ fn every_reference_after_four_thousand_is_still_reported() {
 #[test]
 fn reopen_observes_local_references_after_raw_commit_before_parse() {
     for remove_source in [false, true] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         let dir = w.home.join(".codex/sessions");
         std::fs::create_dir_all(&dir).unwrap();
         let image = w.dir.path().join("kept.png");
@@ -143,7 +143,7 @@ fn reopen_observes_local_references_after_raw_commit_before_parse() {
 
 #[test]
 fn a_loop_without_sources_reads_no_referenced_file() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let image = w.dir.path().join("kept.png");
@@ -189,7 +189,7 @@ fn a_loop_without_sources_reads_no_referenced_file() {
 
 #[test]
 fn regular_local_files_keep_binary_bytes_empty_files_and_descriptor_facts() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (mut engine, _lock) = engine(&home, 64);
     for (name, bytes) in [
         ("binary", b"original\0bytes\xff".as_slice()),
@@ -233,7 +233,7 @@ fn fifo_local_reference_child() {
     let Some(path) = std::env::var_os("POLYLOGUE_LOCAL_FIFO") else {
         return;
     };
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (mut engine, _lock) = engine(&home, 64);
     let row = serde_json::json!({"local_images":[PathBuf::from(path)]});
     let mut pass = Pass::default();
@@ -281,7 +281,7 @@ fn a_local_fifo_without_a_writer_is_reported_unreadable() {
     use std::os::unix::ffi::OsStrExt;
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let fifo = home.dir.path().join("unwritten-image.pipe");
     let name = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
     assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
@@ -380,7 +380,7 @@ fn each_local_image_reference_is_visited_once() {
 
 #[test]
 fn recorded_directory_follows_turn_context_and_ignores_relative_cwd() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let first = w.dir.path().join("first");
     let second = w.dir.path().join("second");
     std::fs::create_dir_all(&first).unwrap();
@@ -447,7 +447,7 @@ fn recorded_directory_follows_turn_context_and_ignores_relative_cwd() {
 /// before are not reported again.
 #[test]
 fn an_appended_rollout_reports_the_local_files_of_its_new_records() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let cwd = w.dir.path().join("recorded");
     std::fs::create_dir_all(&cwd).unwrap();
     std::fs::write(cwd.join("early.png"), b"early image").unwrap();

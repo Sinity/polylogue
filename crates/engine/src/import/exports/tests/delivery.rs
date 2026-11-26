@@ -9,7 +9,7 @@ fn source() -> Vec<u8> {
     serde_json::to_vec(&vec![newer, older]).unwrap()
 }
 
-fn plan(home: &ClaudeHome, bytes: &[u8]) -> (Engine, polylogue_store::ArchiveLock, Plan) {
+fn plan(home: &Home, bytes: &[u8]) -> (Engine, polylogue_store::ArchiveLock, Plan) {
     let path = home.dir.path().join("conversations.json");
     fs::write(&path, bytes).unwrap();
     let (mut engine, lock) = engine(home, 16);
@@ -43,7 +43,7 @@ fn collect(engine: &Engine, plan: &Plan) -> Vec<ParseStep> {
 
 #[test]
 fn delivery_order_keeps_nonmonotone_physical_item_ranges() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let raw = source();
     let (engine, _lock, plan) = plan(&home, &raw);
     let steps = collect(&engine, &plan);
@@ -107,7 +107,7 @@ fn delivery_order_keeps_nonmonotone_physical_item_ranges() {
 
 #[test]
 fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let raw = source();
     let (engine, _lock, plan) = plan(&home, &raw);
     let mut prefix = Vec::new();
@@ -156,7 +156,7 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
 
 #[test]
 fn an_element_the_parser_cannot_read_does_not_refuse_its_siblings() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let mut readable = conversation("readable", 1, &[("kept-message", "kept body")]);
     readable["current_node"] = json!("kept-message");
     // Nested past what the JSON reader builds into a value: the scanner still
@@ -214,7 +214,7 @@ fn assert_refusal(step: &ParseStep) {
 #[test]
 fn malformed_scan_refuses_once_without_a_checkpoint() {
     for suffix in [",", ",]", "] false"] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let raw =
             format!("[{{\"id\":\"valid-prefix\",\"mapping\":{{}},\"current_node\":null}}{suffix}");
         let (mut engine, _lock, mut plan) = plan(&home, raw.as_bytes());
@@ -370,7 +370,7 @@ impl ExportParser for ShortSuccess {
 #[test]
 fn successful_short_scans_cannot_complete_even_after_a_full_rewound_pass() {
     for rewind in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let raw = source();
         let (engine, _lock, plan) = plan(&home, &raw);
         let mut steps = Vec::new();
@@ -391,7 +391,7 @@ fn successful_short_scans_cannot_complete_even_after_a_full_rewound_pass() {
 
 #[test]
 fn trailing_whitespace_is_consumed_before_complete() {
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let mut raw = source();
     raw.extend_from_slice(b" \n\t");
     let (engine, _lock, plan) = plan(&home, &raw);
@@ -404,7 +404,7 @@ fn trailing_whitespace_is_consumed_before_complete() {
 #[test]
 fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
     use polylogue_store::fault::{self, Action};
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let path = home.dir.path().join("conversations.json");
     let raw = source();
     fs::write(&path, &raw).unwrap();

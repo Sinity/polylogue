@@ -103,7 +103,7 @@ static ARCHIVE_ACCEPTANCE: Collector = Collector {
 
 #[test]
 fn collector_acceptance_requires_the_complete_archived_body() {
-    let home = polylogue_testkit::ClaudeHome::new();
+    let home = polylogue_testkit::Home::new();
     let (mut engine, _lock) = crate::import::tests::engine(&home, 64 << 10);
     let spool = engine.config.state_dir().join("drive/ai-studio");
     std::fs::create_dir_all(&spool).unwrap();

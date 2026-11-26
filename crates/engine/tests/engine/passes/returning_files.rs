@@ -2,7 +2,7 @@ use super::*;
 use polylogue_model::capture_log;
 
 /// `(class, revision chain)` of the file's observations, oldest first.
-fn observed(w: &ClaudeHome) -> Vec<(String, Option<i64>)> {
+fn observed(w: &Home) -> Vec<(String, Option<i64>)> {
     w.reads()
         .reader()
         .unwrap()
@@ -23,7 +23,7 @@ fn observed(w: &ClaudeHome) -> Vec<(String, Option<i64>)> {
         .collect()
 }
 
-fn chains(w: &ClaudeHome) -> i64 {
+fn chains(w: &Home) -> i64 {
     w.count("SELECT count(DISTINCT chain) AS n FROM a.revision")
 }
 
@@ -36,7 +36,7 @@ fn a_returning_file_continues_its_chain_while_its_stored_bytes_remain() {
     let first = user("u1", "back", "first body");
     let more = assistant("a1", "back", "appended body");
     for case in ["gone and back", "gone and grown", "new inode", "changed"] {
-        let w = ClaudeHome::new();
+        let w = Home::new();
         w.append("back.jsonl", &first);
         let (mut engine, _lock) = w.engine(64 << 20);
         assert!(engine.run_pass().unwrap().errors.is_empty());
@@ -115,7 +115,7 @@ fn capture(turns: &[&str]) -> serde_json::Value {
 /// ranges, across passes and across a restart (docs/extension.md).
 #[test]
 fn a_growing_capture_log_appends_to_one_chain() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w
         .config(256)
         .spool_dir("browser-capture")
@@ -169,7 +169,7 @@ fn a_growing_capture_log_appends_to_one_chain() {
 /// refused the later range and the chain stayed short of its end.
 #[test]
 fn capture_log_with_mixed_captures_is_read_to_its_end() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w
         .config(256)
         .spool_dir("browser-capture")
@@ -219,7 +219,7 @@ fn capture_log_with_mixed_captures_is_read_to_its_end() {
 /// (docs/archive.md, stored inputs).
 #[test]
 fn identical_chains_store_their_bytes_once() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let one = user("u1", "same", "the same body every time");
     let other = user("u1", "same", "a different body");
     let path = w.file("same.jsonl");

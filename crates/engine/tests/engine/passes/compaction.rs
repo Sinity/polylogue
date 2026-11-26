@@ -2,7 +2,7 @@
 use super::*;
 use polylogue_model::read::{EntryKind, Part, Place, context_at};
 
-fn matched(home: &ClaudeHome, text: &str) -> u64 {
+fn matched(home: &Home, text: &str) -> u64 {
     let options = polylogue_store::query::Options {
         clock: query_language::time::Clock::new(
             "2026-10-29T12:00:00Z".parse().unwrap(),
@@ -45,7 +45,7 @@ fn compaction_kept_ids_and_ranges_reach_context() {
             vec!["first"],
         ),
     ] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let boundary = serde_json::json!({"type":"system","subtype":"compact_boundary","uuid":"boundary","sessionId":"s","logicalParentUuid":"third","compactMetadata":kept});
         let summary = serde_json::json!({"type":"user","uuid":"summary","sessionId":"s","parentUuid":"boundary","isCompactSummary":true,"message":{"role":"user","content":"Kept synthetic context."}});
         home.append(
@@ -107,7 +107,7 @@ fn compaction_kept_ids_and_ranges_reach_context() {
 fn unknown_compaction_replays_keep_sessions_in_any_order() {
     for subagent in [false, true] {
         for carrier_first in [false, true] {
-            let home = ClaudeHome::new();
+            let home = Home::new();
             let directory = home.file("root/subagents");
             fs::create_dir_all(&directory).unwrap();
             let known = if subagent {

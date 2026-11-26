@@ -1,14 +1,14 @@
 use super::*;
-use polylogue_testkit::{ClaudeHome, claude_user, delete_index};
+use polylogue_testkit::{Home, claude_user, delete_index};
 
-fn message_parses(w: &ClaudeHome) -> Vec<polylogue_model::Json> {
+fn message_parses(w: &Home) -> Vec<polylogue_model::Json> {
     let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
     pool.reader().unwrap().query("SELECT m.id,r.id AS input,s.chain,s.source_start,s.source_end,hex(s.hash) AS version FROM message_parse s JOIN message m ON m.id=s.message_id JOIN input_ref r ON r.pk=s.input_pk ORDER BY m.id,r.id,s.chain,s.source_start",&[]).unwrap()
 }
 
 #[test]
 fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watchers() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("same.jsonl");
     let (mut e, lock) = engine(&w, 64);
     for (id, body) in [
@@ -74,7 +74,7 @@ fn immutable_imports_sharing_a_path_rebuild_every_source_and_never_become_watche
 
 #[test]
 fn an_import_observation_does_not_replace_mutable_source_discovery_state() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     w.append(
         "live.jsonl",
         &claude_user("one", "s", "original native text"),
@@ -116,7 +116,7 @@ fn an_import_observation_does_not_replace_mutable_source_discovery_state() {
 
 #[test]
 fn refused_import_can_be_imported_under_its_declared_structure() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let unknown = w.dir.path().join("renamed.json");
     let standard = w.dir.path().join("prod-grok-backend.json");
     let bytes = format!(
@@ -184,7 +184,7 @@ fn refused_import_can_be_imported_under_its_declared_structure() {
 
 #[test]
 fn unknown_bytes_are_refused_without_archive_rows() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("opaque.dat");
     std::fs::write(&path, b"unparsed binary\0\xff").unwrap();
     let (mut e, _lock) = engine(&w, 1024);
@@ -195,7 +195,7 @@ fn unknown_bytes_are_refused_without_archive_rows() {
 
 #[test]
 fn a_conflicting_new_parsed_origin_is_refused_without_changing_stored_rows() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("prod-grok-backend.json");
     std::fs::write(&path, br#"{"conversations":[]}"#).unwrap();
     let (mut e, _lock) = engine(&w, 1024);
@@ -256,7 +256,7 @@ fn register(root: &std::path::Path) -> Vec<String> {
 
 #[test]
 fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions() {
-    fn read(w: &ClaudeHome) -> serde_json::Value {
+    fn read(w: &Home) -> serde_json::Value {
         let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
         let reader = pool.reader().unwrap();
         let id =
@@ -268,7 +268,7 @@ fn ai_studio_chunks_read_and_rebuild_from_stored_inputs_without_empty_sessions()
             "sources": reader.query("SELECT m.id,s.source_start,s.source_end FROM message_parse s JOIN message m ON m.id=s.message_id ORDER BY m.id", &[]).unwrap(),
         })
     }
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let path = w.dir.path().join("Chat.json");
     let empty = w.dir.path().join("Empty.json");
     let bytes = serde_json::to_vec(&serde_json::json!({

@@ -1,12 +1,12 @@
 use super::*;
 
-fn database(w: &Morrow) -> std::path::PathBuf {
-    let db = w.file(".codex/state_99.sqlite");
+fn database(w: &Home) -> std::path::PathBuf {
+    let db = w.path(".codex/state_99.sqlite");
     fs::create_dir_all(db.parent().unwrap()).unwrap();
     rusqlite::Connection::open(&db).unwrap().execute_batch("CREATE TABLE kept_rows(id INTEGER PRIMARY KEY,body TEXT); WITH RECURSIVE ids(n) AS(VALUES(1) UNION ALL SELECT n+1 FROM ids WHERE n<12) INSERT INTO kept_rows SELECT n,printf('%01000000d',n) FROM ids;").unwrap();
     db
 }
-fn row_lines(w: &Morrow, db: &std::path::Path) -> Vec<serde_json::Value> {
+fn row_lines(w: &Home, db: &std::path::Path) -> Vec<serde_json::Value> {
     String::from_utf8(w.stored_bytes(db).unwrap())
         .unwrap()
         .lines()
@@ -18,11 +18,11 @@ fn row_lines(w: &Morrow, db: &std::path::Path) -> Vec<serde_json::Value> {
 fn interrupted_database_read_keeps_committed_batches_and_retries_without_duplicates() {
     for action in [Action::Fail, Action::Panic] {
         fault::clear();
-        let w = Morrow::lay_out(Set::Main);
+        let w = Home::morrow(Set::Main);
         let db = database(&w);
         fault::arm("database.after_row", "kept_rows", action, 9, 1);
         {
-            let (mut engine, _lock) = w.engine();
+            let (mut engine, _lock) = w.engine(polylogue_testkit::WHOLE_FILES);
             let first = engine.run_pass().unwrap();
             assert!(
                 first
@@ -34,7 +34,7 @@ fn interrupted_database_read_keeps_committed_batches_and_retries_without_duplica
             );
         }
         fault::clear();
-        w.run_pass();
+        w.store();
         let rows = row_lines(&w, &db);
         let keys: Vec<_> = rows
             .iter()
@@ -61,7 +61,7 @@ fn interrupted_database_read_keeps_committed_batches_and_retries_without_duplica
 #[test]
 fn a_failed_comparison_commit_recovers_stored_database_rows_on_retry() {
     fault::clear();
-    let w = Morrow::lay_out(Set::Main);
+    let w = Home::morrow(Set::Main);
     let db = database(&w);
     // Original bytes commit first. A failed parse must finish through the
     // stored-input path before another source read compares the same rows.
@@ -73,7 +73,7 @@ fn a_failed_comparison_commit_recovers_stored_database_rows_on_retry() {
         2,
     );
     {
-        let (mut engine, _lock) = w.engine();
+        let (mut engine, _lock) = w.engine(polylogue_testkit::WHOLE_FILES);
         let result = engine.run_pass().unwrap();
         assert!(
             result.errors.iter().any(|e| e
@@ -84,7 +84,7 @@ fn a_failed_comparison_commit_recovers_stored_database_rows_on_retry() {
         );
     }
     fault::clear();
-    w.run_pass();
+    w.store();
     let rows = row_lines(&w, &db);
     assert_eq!(rows.iter().filter(|r| r["t"] == "kept_rows").count(), 12);
 }
@@ -92,9 +92,9 @@ fn a_failed_comparison_commit_recovers_stored_database_rows_on_retry() {
 #[test]
 fn database_progress_does_not_reload_unrelated_sources() {
     fault::clear();
-    let w = Morrow::lay_out(Set::Main);
+    let w = Home::morrow(Set::Main);
     let db = database(&w);
-    let (mut engine, _lock) = w.engine();
+    let (mut engine, _lock) = w.engine(polylogue_testkit::WHOLE_FILES);
     assert!(engine.run_pass().unwrap().errors.is_empty());
     rusqlite::Connection::open(&db)
         .unwrap()

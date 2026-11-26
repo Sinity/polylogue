@@ -2,7 +2,7 @@
 //! and keeps its rows (docs/archive.md).
 
 use super::*;
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 use serde_json::json;
 
 /// A ChatGPT conversation with one prompt at `time` seconds.
@@ -14,7 +14,7 @@ fn conversation(id: &str, time: u64) -> Value {
             "content": {"content_type": "text", "parts": [format!("prompt in {id}")]}}}}})
 }
 
-fn ids(home: &ClaudeHome, text: &str) -> Vec<String> {
+fn ids(home: &Home, text: &str) -> Vec<String> {
     let pool = home.reads();
     let reader = pool.reader().unwrap();
     let fields = vec!["id".into()];
@@ -43,7 +43,7 @@ fn upstream_gone_kept() {
     ]);
     let newer = json!([conversation("kept", 2_000)]);
     for newer_first in [false, true] {
-        let home = ClaudeHome::new();
+        let home = Home::new();
         let mut paths = Vec::new();
         for (name, export) in [("older", &older), ("newer", &newer)] {
             let dir = home.dir.path().join(name);
@@ -110,7 +110,7 @@ fn a_prompt_deleted_in_drive_is_gone_and_keeps_its_revisions() {
     );
     drive.create("2Def", "Muons", "2026-05-17T13:00:00Z");
     drive.save("2Def", "m1", "2026-05-17T13:10:00Z", &prompt(&["muon"]));
-    let home = ClaudeHome::new();
+    let home = Home::new();
     let (mut engine, _lock) = home.engine(64 << 20);
     let token_path = home.dir.path().join("drive-token.json");
     std::fs::write(&token_path, r#"{"client_id":"c","refresh_token":"r"}"#).unwrap();

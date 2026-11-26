@@ -1,6 +1,6 @@
 use super::*;
 use crate::import::tests::engine;
-use polylogue_testkit::ClaudeHome;
+use polylogue_testkit::Home;
 use std::io::Write;
 
 pub(super) fn rollout(session_id: &str) -> String {
@@ -16,7 +16,7 @@ fn captured(e: &Engine, id: &str) -> Vec<u8> {
 
 #[test]
 fn moved_and_reencoded_rollouts_share_one_input() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let bytes = rollout("same-native");
@@ -79,7 +79,7 @@ fn moved_and_reencoded_rollouts_share_one_input() {
 
 #[test]
 fn appended_rollout_extends_chain_but_corrupt_does_not() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("rollout-native.jsonl");
@@ -110,7 +110,7 @@ fn appended_rollout_extends_chain_but_corrupt_does_not() {
 
 #[test]
 fn a_large_compressed_record_has_no_decoded_size_cap() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let header=serde_json::json!({"type":"session_meta","payload":{"id":"large-native","instructions":"x".repeat(17*1024*1024)}}).to_string()+"\n";
@@ -127,7 +127,7 @@ fn a_large_compressed_record_has_no_decoded_size_cap() {
 
 #[test]
 fn stale_alias_keeps_old_revision_and_the_input() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let sessions = w.home.join(".codex/sessions");
     let archived = w.home.join(".codex/archived_sessions");
     std::fs::create_dir_all(&sessions).unwrap();
@@ -200,7 +200,7 @@ fn stale_alias_keeps_old_revision_and_the_input() {
 
 #[test]
 fn equal_decoded_read_keeps_its_body_without_a_revision() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("rollout-body.jsonl");
@@ -255,7 +255,7 @@ fn frames(parts: &[&[u8]]) -> Vec<u8> {
 
 #[test]
 fn codex_compressing_a_plain_rollout_in_place_keeps_one_input_and_its_newer_tail() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions/2026/10/17");
     std::fs::create_dir_all(&dir).unwrap();
     let plain = dir.join("rollout-2026-10-17T07-27-03-in-place.jsonl");
@@ -299,7 +299,7 @@ fn codex_compressing_a_plain_rollout_in_place_keeps_one_input_and_its_newer_tail
 
 #[test]
 fn a_rollout_written_as_several_zstd_frames_decodes_across_every_frame() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions/2026/10/18");
     std::fs::create_dir_all(&dir).unwrap();
     let head = rollout("multi-frame-native");
@@ -322,7 +322,7 @@ fn a_rollout_written_as_several_zstd_frames_decodes_across_every_frame() {
 
 #[test]
 fn a_truncated_compressed_rollout_stores_nothing_until_the_whole_file_arrives() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions/2026/10/19");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("rollout-truncated.jsonl.zst");
@@ -345,7 +345,7 @@ fn a_truncated_compressed_rollout_stores_nothing_until_the_whole_file_arrives() 
 
 #[test]
 fn rollout_without_session_meta_grows_one_input() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("rollout-growing.jsonl");
@@ -353,7 +353,7 @@ fn rollout_without_session_meta_grows_one_input() {
     // Codex has created the file and not finished its first record.
     std::fs::write(&path, &complete.as_bytes()[..20]).unwrap();
     let (mut e, _lock) = engine(&w, 64);
-    let inputs = |w: &ClaudeHome| w.count("SELECT count(*) AS n FROM a.input");
+    let inputs = |w: &Home| w.count("SELECT count(*) AS n FROM a.input");
     let before = inputs(&w);
     let pass = e.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
@@ -447,7 +447,7 @@ fn texts(e: &Engine, session: &str) -> Vec<String> {
 /// (docs/architecture.md, the index is a function of the record).
 #[test]
 fn an_append_to_a_stored_rollout_reads_and_parses_only_its_new_bytes() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("rollout-2026-03-01T10-00-00-019a0000-0000-7000-8000-00000000000a.jsonl");
@@ -478,7 +478,7 @@ fn an_append_to_a_stored_rollout_reads_and_parses_only_its_new_bytes() {
         w.count("SELECT count(DISTINCT chain) AS n FROM a.revision WHERE input='codex:rollout:append-cost@test-machine'"),
         1
     );
-    let whole = ClaudeHome::new();
+    let whole = Home::new();
     let whole_dir = whole.home.join(".codex/sessions");
     std::fs::create_dir_all(&whole_dir).unwrap();
     std::fs::copy(&path, whole_dir.join(path.file_name().unwrap())).unwrap();
@@ -495,7 +495,7 @@ fn an_append_to_a_stored_rollout_reads_and_parses_only_its_new_bytes() {
 /// as an append: it starts a chain of its own.
 #[test]
 fn a_rollout_rewritten_in_place_and_grown_is_not_an_append() {
-    let w = ClaudeHome::new();
+    let w = Home::new();
     let dir = w.home.join(".codex/sessions");
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("rollout-2026-03-01T10-00-00-019a0000-0000-7000-8000-00000000000b.jsonl");
