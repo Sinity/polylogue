@@ -349,7 +349,7 @@ fn an_input_payload_at_an_earlier_kind_version_is_refused() {
 #[test]
 fn current_declarations_keep_every_source7_kind_version() {
     let old: sinex_model::SourceDeclaration =
-        serde_json::from_str(include_str!("../../tests/rebuild/source7.json")).unwrap();
+        serde_json::from_str(include_str!("tests/source7.json")).unwrap();
     let mut changed = Vec::new();
     for current in declarations("polylogue") {
         if let Some(previous) = old
@@ -378,10 +378,8 @@ fn current_declarations_keep_every_source7_kind_version() {
 
 #[test]
 fn markdown_link_roles_versioned_only_the_changed_authored_declarations() {
-    let old: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/rebuild/source11-kind-hashes.json"
-    ))
-    .unwrap();
+    let old: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source11-kind-hashes.json")).unwrap();
     let previous = old["kinds"].as_array().unwrap();
     let changed = [
         "polylogue.assertion",
@@ -395,10 +393,8 @@ fn markdown_link_roles_versioned_only_the_changed_authored_declarations() {
         "polylogue.line_save_restore",
         "polylogue.assertion_restore",
     ];
-    let source12: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/rebuild/source12-kind-hashes.json"
-    ))
-    .unwrap();
+    let source12: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source12-kind-hashes.json")).unwrap();
     let introduced = source12["kinds"].as_array().unwrap();
     assert_eq!(introduced.len(), previous.len());
     assert_eq!(
@@ -426,14 +422,10 @@ fn markdown_link_roles_versioned_only_the_changed_authored_declarations() {
 
 #[test]
 fn trace_view_versioned_only_its_three_reachable_declarations() {
-    let source12: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/rebuild/source12-kind-hashes.json"
-    ))
-    .unwrap();
-    let source13: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/rebuild/source13-kind-hashes.json"
-    ))
-    .unwrap();
+    let source12: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source12-kind-hashes.json")).unwrap();
+    let source13: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source13-kind-hashes.json")).unwrap();
     let changed = [
         "polylogue.line_resolution",
         "polylogue.line_resolution_restore",
@@ -512,14 +504,10 @@ fn recorded_kinds(file: &serde_json::Value) -> Vec<(String, u64, String)> {
 /// declaration whose definition changed.
 #[test]
 fn annotation_names_versioned_every_changed_declaration() {
-    let source13: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/rebuild/source13-kind-hashes.json"
-    ))
-    .unwrap();
-    let source14: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/rebuild/source14-kind-hashes.json"
-    ))
-    .unwrap();
+    let source13: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source13-kind-hashes.json")).unwrap();
+    let source14: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source14-kind-hashes.json")).unwrap();
     assert_versioned_transition(
         &source13,
         &recorded_kinds(&source14),
@@ -532,10 +520,8 @@ fn annotation_names_versioned_every_changed_declaration() {
 /// raised every declaration whose definition changed.
 #[test]
 fn field_names_version_every_changed_declaration() {
-    let previous: serde_json::Value = serde_json::from_str(include_str!(
-        "../../tests/rebuild/source14-kind-hashes.json"
-    ))
-    .unwrap();
+    let previous: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source14-kind-hashes.json")).unwrap();
     assert_eq!(
         u64::from(crate::source_reference().version),
         previous["source"]["version"].as_u64().unwrap() + 1

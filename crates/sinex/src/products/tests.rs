@@ -46,12 +46,10 @@ fn the_save_transition_versions_changed_authored_kinds_and_keeps_the_old_manifes
         effect: AuthoredEffect::default(),
     };
     let previous: sinex_model::SourceDeclaration =
-        serde_json::from_str(include_str!("../../tests/rebuild/source7.json")).unwrap();
+        serde_json::from_str(include_str!("../kinds/tests/source7.json")).unwrap();
     let current = declarations("polylogue");
-    let saved_transition: Value = serde_json::from_str(include_str!(
-        "../../tests/rebuild/source11-kind-hashes.json"
-    ))
-    .unwrap();
+    let saved_transition: Value =
+        serde_json::from_str(include_str!("../kinds/tests/source11-kind-hashes.json")).unwrap();
     assert!(
         previous
             .kinds

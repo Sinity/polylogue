@@ -12,6 +12,8 @@ pub enum Error {
     Invalid(String),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    Store(#[from] polylogue_store::StoreError),
 }
 impl Error {
     pub fn invalid(message: impl ToString) -> Self {
