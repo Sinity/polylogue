@@ -210,9 +210,12 @@ impl State {
         self.inner().progress()
     }
 
+    /// A chain read was a chain due, so the total is never below the count:
+    /// the two arrive from counters read at different moments while the
+    /// planner is still adding to one of them.
     pub(crate) fn record_progress(&self, chains: u64, chains_read: u64) {
         let mut inner = self.inner();
-        inner.chains = chains;
+        inner.chains = chains.max(chains_read);
         inner.chains_read = chains_read;
     }
 
@@ -492,6 +495,7 @@ pub(crate) fn open_writer(archive: &Archive) -> Result<Connection> {
     conn.pragma_update(None, "temp_store", "file")?;
     conn.busy_timeout(crate::archive::BUSY_TIMEOUT)?;
     crate::archive::writer_settings(&conn, archive.memory_budget().build_cache_mib())?;
+    crate::archive::enforce_references(&conn)?;
     Ok(conn)
 }
 

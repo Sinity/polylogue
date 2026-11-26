@@ -398,9 +398,25 @@ fn assert_content_named_once(w: &TestArchive) {
     );
 }
 
+/// Every row the index schema says names another names one that exists. A
+/// build loads its tables with references unenforced, so the installed file
+/// is where they are first checked.
+fn assert_references_hold(w: &TestArchive) {
+    let conn = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    let dangling: Vec<(String, Option<i64>, String)> = conn
+        .prepare("SELECT \"table\", rowid, parent FROM pragma_foreign_key_check")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .collect::<rusqlite::Result<_>>()
+        .unwrap();
+    assert_eq!(dangling, [], "rows naming a row that does not exist");
+}
+
 /// Everything the reader answers about every session, by natural keys.
 fn replies(w: &TestArchive) -> Vec<String> {
     assert_content_named_once(w);
+    assert_references_hold(w);
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let mut out = Vec::new();
@@ -816,6 +832,71 @@ fn an_absent_parent_reads_unresolved_and_its_arrival_writes_nothing_into_the_chi
         .unwrap();
     w.writer.flush().unwrap();
     assert_eq!(row(&conn), before);
+}
+
+/// A link is shown while a reading states it. The session it names leaving
+/// the index (its one reading replaced by a reading that no longer states
+/// it) takes the session's rows and leaves the link another input states,
+/// as a build from the same readings shows it.
+#[test]
+fn a_link_stays_while_a_reading_states_it_when_the_session_it_names_leaves() {
+    let input = |records| Input {
+        route: Route::Live,
+        records,
+        rewrite: None,
+    };
+    let message = |n| Row::Message {
+        n,
+        version: 1,
+        parent: None,
+    };
+    let linking = input(vec![Row::Link {
+        parent: 0,
+        child: 1,
+    }]);
+    let w = test_archive();
+    let store = Arc::new(w.archive.blobs().unwrap());
+    w.writer
+        .store_group(
+            vec![
+                stored_step(&w, 0, &linking, 0, 0, 1),
+                stored_step(&w, 1, &input(vec![message(1)]), 0, 0, 1),
+            ],
+            Arc::clone(&store),
+        )
+        .unwrap();
+    w.writer.flush().unwrap();
+    let conn = rusqlite::Connection::open(w.archive.index_db()).unwrap();
+    let rows = |sql: &str| -> Vec<String> {
+        conn.prepare(sql)
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    };
+    const LINKS: &str = "SELECT parent_id || ' > ' || child_id FROM link";
+    const SESSIONS: &str = "SELECT id FROM session ORDER BY id";
+    assert_eq!(rows(LINKS), ["claude-code:s0 > claude-code:s1"]);
+    assert_eq!(rows(SESSIONS), ["claude-code:s0", "claude-code:s1"]);
+    // The second input's chain read again, now stating a message of s2.
+    let mut batch = step(1, &input(vec![message(2)]), 0, 0, 1);
+    batch.change = Change::Reparse { chain: 1 };
+    batch.observation = None;
+    let results = w
+        .writer
+        .store_group(
+            vec![crate::staging::PreparedBatch {
+                batch,
+                files: Vec::new(),
+            }],
+            store,
+        )
+        .unwrap();
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
+    w.writer.flush().unwrap();
+    assert_eq!(rows(SESSIONS), ["claude-code:s0", "claude-code:s2"]);
+    assert_eq!(rows(LINKS), ["claude-code:s0 > claude-code:s1"]);
 }
 
 /// A text leaves the index with the last reading row that holds it, and

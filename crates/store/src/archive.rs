@@ -606,6 +606,14 @@ fn tune(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_size_limit", WAL_FILE_LIMIT)?;
     conn.pragma_update(None, "temp_store", "file")?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    enforce_references(conn)
+}
+
+/// Turns on the references and cascades the schemas declare. SQLite leaves
+/// them off unless its build says otherwise, so each connection that writes
+/// asks for them instead of relying on how the library was compiled.
+pub(crate) fn enforce_references(conn: &Connection) -> Result<()> {
+    conn.pragma_update(None, "foreign_keys", true)?;
     Ok(())
 }
 

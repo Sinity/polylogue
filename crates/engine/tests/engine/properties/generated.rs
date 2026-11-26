@@ -87,6 +87,17 @@ fn corpus(shape: &Shape) -> Corpus {
 /// Everything a reader sees for every session, in session order.
 fn view(w: &ClaudeHome) -> Vec<Vec<Record>> {
     let pool = ReadPool::open(&Archive::at(&w.root)).unwrap();
+    // Built or kept current, the index names only rows it holds.
+    assert_eq!(
+        pool.reader()
+            .unwrap()
+            .query(
+                "SELECT \"table\", rowid, parent FROM pragma_foreign_key_check",
+                &[]
+            )
+            .unwrap(),
+        Vec::<serde_json::Value>::new()
+    );
     let ids = pool
         .reader()
         .unwrap()

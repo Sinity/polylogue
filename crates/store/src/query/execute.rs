@@ -207,6 +207,15 @@ impl Reader<'_> {
     where
         E: From<SelectionError>,
     {
+        // The statement numbers its parameters: the program's, one per
+        // order key, then the limit. A position of another length would put
+        // the limit in a key's place.
+        if after.is_some_and(|after| after.len() != program.order.len()) {
+            return Err(E::from(SelectionError::invalid(
+                polylogue_model::Code::InvalidQuery,
+                "selection order position has the wrong arity",
+            )));
+        }
         let mut params = values(&program.params);
         if let Some(after) = after {
             params.extend(after.iter().map(sql_value));

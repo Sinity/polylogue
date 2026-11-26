@@ -214,12 +214,23 @@ pub(crate) fn insert_extent(conn: &Connection, extent: &hashed_blobs::Extent) ->
 const CURRENT_SEGMENT: &str = "segments/current.hb";
 
 /// Records how far the current segment is committed, in the transaction that
-/// stores the extents written up to `end`.
+/// stores the extents written up to `end`. The committed end only grows:
+/// the segment is cut back to it when a writer opens, so an earlier end
+/// recorded over a later one would cut off bytes committed rows name.
 pub(crate) fn record_committed_end(conn: &Connection, end: u64) -> Result<()> {
-    conn.execute(
-        "INSERT INTO segment(name,committed_end) VALUES (?1,?2) ON CONFLICT(name) DO UPDATE SET committed_end=excluded.committed_end",
-        rusqlite::params![CURRENT_SEGMENT, end as i64],
+    let end = crate::to_i64(end, "segment exceeds archive address space")?;
+    let kept: i64 = conn.query_row(
+        "INSERT INTO segment(name,committed_end) VALUES (?1,?2)
+         ON CONFLICT(name) DO UPDATE SET committed_end=max(committed_end,excluded.committed_end)
+         RETURNING committed_end",
+        rusqlite::params![CURRENT_SEGMENT, end],
+        |row| row.get(0),
     )?;
+    if kept != end {
+        return Err(crate::StoreError::internal(format!(
+            "the segment's committed end would move back from {kept} to {end}"
+        )));
+    }
     Ok(())
 }
 
