@@ -504,7 +504,7 @@ fn ai_studio_rows(w: &ClaudeHome) -> serde_json::Value {
         "sessions": rows("SELECT id FROM session WHERE origin='ai-studio' ORDER BY id"),
         "messages": rows(
             "SELECT s.id AS session, m.id AS message,
-                    (SELECT COUNT(*) FROM shown_message_parse v WHERE v.message_pk=m.pk) AS readings
+                    (SELECT COUNT(*) FROM assembled_message_parse v WHERE v.message_pk=m.pk) AS readings
              FROM message m JOIN session s ON s.pk=m.session_pk ORDER BY s.id, m.id"
         ),
         "events": rows(

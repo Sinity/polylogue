@@ -71,7 +71,7 @@ fn commits_and_pull_requests_come_from_the_output_of_the_commands_that_made_them
         vec![json!({"commit_hash": "1a2b3c4", "evidence": "commit-output"})]
     );
     assert_eq!(
-        w.rows("SELECT repo, number FROM pr_link"),
+        w.rows("SELECT repo, number FROM pull_request_link"),
         vec![json!({"repo": "Sinity/polylogue", "number": 6300})]
     );
     assert_eq!(w.live_task("s")["task"], json!(null));
@@ -101,7 +101,7 @@ fn deriving_again_changes_nothing() {
     let links = |w: &WriterArchive| {
         (
             w.rows("SELECT commit_hash, evidence FROM commit_link"),
-            w.rows("SELECT repo, number, url FROM pr_link"),
+            w.rows("SELECT repo, number, url FROM pull_request_link"),
         )
     };
     let before = links(&w);
@@ -225,7 +225,7 @@ fn compound_commands_keep_text_and_result_source() {
         assert_eq!(w.rows("SELECT c.commit_hash, c.evidence, c.evidence_block_pk=t.call_block_pk AS original_call FROM commit_link c JOIN tool_call t ON t.session_pk=c.session_pk"),
             vec![json!({"commit_hash":"1a2b3c4", "evidence":"commit-output", "original_call":1})]);
         assert_eq!(
-            w.rows("SELECT repo, number, evidence FROM pr_link"),
+            w.rows("SELECT repo, number, evidence FROM pull_request_link"),
             vec![json!({"repo":"Sinity/polylogue", "number":6300, "evidence":"gh-output"})]
         );
     }
@@ -237,7 +237,7 @@ fn stored_and_derived(w: &WriterArchive) -> (Vec<serde_json::Value>, Vec<serde_j
         let mut rows = Vec::new();
         for sql in [
             "SELECT json_array(session_pk, commit_hash, evidence_block_pk, evidence) FROM commit_link ORDER BY 1",
-            "SELECT json_array(session_pk, repo, number, url, evidence) FROM pr_link ORDER BY 1",
+            "SELECT json_array(session_pk, repo, number, url, evidence) FROM pull_request_link ORDER BY 1",
         ] {
             let mut statement = conn.prepare(sql).unwrap();
             for row in statement.query_map([], |r| r.get::<_, String>(0)).unwrap() {
@@ -304,7 +304,7 @@ fn links_after_append_equal_full_recompute() {
     w.write("s", vec![result]);
     check(&w, "late result");
     assert_eq!(
-        w.rows("SELECT repo, number, evidence FROM pr_link"),
+        w.rows("SELECT repo, number, evidence FROM pull_request_link"),
         vec![json!({"repo": "Sinity/polylogue", "number": 6300, "evidence": "gh-output"})]
     );
     // A rewrite: a snapshot states the commit's output again, differently.
@@ -391,7 +391,7 @@ fn links_derived_by_the_earlier_rules_are_derived_again() {
     assert_ne!(version, "2");
     let earlier = "2".to_owned();
     conn.execute(
-        "UPDATE pr_link SET url='https://github.com/Sinity/polylogue/pull/6300/files'",
+        "UPDATE pull_request_link SET url='https://github.com/Sinity/polylogue/pull/6300/files'",
         [],
     )
     .unwrap();
@@ -408,7 +408,7 @@ fn links_derived_by_the_earlier_rules_are_derived_again() {
     drop(conn);
     w.writer.derive().unwrap();
     assert_eq!(
-        w.rows("SELECT url FROM pr_link"),
+        w.rows("SELECT url FROM pull_request_link"),
         vec![json!({"url": "https://github.com/Sinity/polylogue/pull/6300"})]
     );
 }

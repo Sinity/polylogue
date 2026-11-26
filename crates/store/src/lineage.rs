@@ -78,8 +78,8 @@ row! {
         child_id: String,
     }
     statements {
-        const OF_PARENT = "SELECT DISTINCT parent_id, child_id FROM prefix_copy WHERE parent_id = ?1";
-        const OF_CHILD = "SELECT DISTINCT parent_id, child_id FROM prefix_copy WHERE child_id = ?1";
+        const OF_PARENT = "SELECT DISTINCT parent_id, child_id FROM shared_prefix WHERE parent_id = ?1";
+        const OF_CHILD = "SELECT DISTINCT parent_id, child_id FROM shared_prefix WHERE child_id = ?1";
     }
 }
 
@@ -263,7 +263,7 @@ pub(crate) fn inherited_prefixes(
     let linked: std::collections::HashSet<String> =
         prefixes.iter().map(|prefix| prefix.0.clone()).collect();
     let copied: Vec<String> = conn.values(
-        "SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id = ?1",
+        "SELECT DISTINCT parent_id FROM shared_prefix WHERE child_id = ?1",
         [child],
     )?;
     for parent in copied {

@@ -8,7 +8,7 @@ WITH readings AS (
  SELECT r.input_pk,r.chain,r.parse_version,r.format,r.active,r.state,
    pl_wire_status(r.state,CASE WHEN p.state='failed' AND p.failure_kind='refused' THEN 'refused'
      WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' WHEN p.state='parsed' THEN 'done' END) AS status
- FROM wire_reading r LEFT JOIN parse_state p ON r.active=1 AND p.input_pk=r.input_pk
+ FROM wire_parse r LEFT JOIN parse_state p ON r.active=1 AND p.input_pk=r.input_pk
    AND p.chain=r.chain AND p.parser_version=r.parse_version
  WHERE (?1 IS NULL OR r.format=?1) AND (?2 IS NULL OR r.parse_version=?2)
    AND (?3 OR r.active=1)
@@ -19,7 +19,7 @@ WITH readings AS (
      WHEN p.state='failed' THEN 'failed' WHEN p.waiting>0 THEN 'waiting' ELSE 'unknown' END
  FROM parse_state p JOIN input_ref i ON i.pk=p.input_pk
  WHERE (?1 IS NULL OR i.format=?1) AND (?2 IS NULL OR p.parser_version=?2)
-   AND NOT EXISTS(SELECT 1 FROM wire_reading r WHERE r.input_pk=p.input_pk AND r.chain=p.chain AND r.active=1)
+   AND NOT EXISTS(SELECT 1 FROM wire_parse r WHERE r.input_pk=p.input_pk AND r.chain=p.chain AND r.active=1)
 ), latest AS (
  SELECT format,parse_version,MAX(json_extract(state,'$.last.sequence')) AS occurrence
  FROM readings GROUP BY format,parse_version

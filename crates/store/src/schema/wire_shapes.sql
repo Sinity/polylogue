@@ -1,5 +1,5 @@
 -- Derived coverage and shape facts, committed with the parse rows they describe.
-CREATE TABLE wire_reading (
+CREATE TABLE wire_parse (
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
   parse_version TEXT NOT NULL,
@@ -8,7 +8,7 @@ CREATE TABLE wire_reading (
   state TEXT NOT NULL CHECK (json_valid(state)),
   PRIMARY KEY (input_pk, chain, parse_version)
 ) STRICT, WITHOUT ROWID;
-CREATE UNIQUE INDEX wire_reading_current ON wire_reading(input_pk,chain) WHERE active=1;
+CREATE UNIQUE INDEX wire_parse_current ON wire_parse(input_pk,chain) WHERE active=1;
 -- The occurrences a reading's shapes cite, each stored once and cited by number.
 CREATE TABLE wire_occurrence (
   input_pk INTEGER NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE wire_occurrence (
   occurrence TEXT NOT NULL CHECK (json_valid(occurrence)),
   PRIMARY KEY (input_pk,chain,parse_version,number),
   FOREIGN KEY (input_pk,chain,parse_version)
-    REFERENCES wire_reading(input_pk,chain,parse_version)
+    REFERENCES wire_parse(input_pk,chain,parse_version)
 ) STRICT, WITHOUT ROWID;
 -- What a parse version declares about a path: once per format.
 CREATE TABLE wire_declaration (

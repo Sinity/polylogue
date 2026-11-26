@@ -209,7 +209,7 @@ CREATE TABLE message_parse (
 ) STRICT;
 CREATE INDEX message_parse_id ON message_parse(message_id);
 CREATE INDEX message_parse_session ON message_parse(session_id);
-CREATE INDEX message_parse_place ON message_parse(input_pk, chain, session_id, seq, record_position);
+CREATE INDEX message_parse_position ON message_parse(input_pk, chain, session_id, seq, record_position);
 CREATE INDEX message_parse_start ON message_parse(input_pk, chain, source_start);
 CREATE INDEX message_parse_response ON message_parse(input_pk, chain, response_key) WHERE response_key IS NOT NULL;
 CREATE INDEX message_parse_content ON message_parse(input_pk, chain, content_name, source_start) WHERE content_name IS NOT NULL;
@@ -331,14 +331,14 @@ CREATE INDEX call_outcome_call ON call_outcome(session_id, call_id);
 -- conversation of its account, by session origin. A session of that origin
 -- the export does not hold, with no activity after that time, is gone
 -- upstream (sessions `source: gone`); its rows stay.
-CREATE TABLE export_reading (
+CREATE TABLE export_parse (
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk),
   chain             INTEGER NOT NULL,
   origin            TEXT NOT NULL,
   latest_at         INTEGER NOT NULL,
   PRIMARY KEY (input_pk, chain, origin)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX export_reading_origin ON export_reading(origin, latest_at);
+CREATE INDEX export_parse_origin ON export_parse(origin, latest_at);
 
 -- The route each field group of a shown message came from, where it is not
 -- the main route (the message's own input_pk, source_chain).
@@ -498,7 +498,7 @@ CREATE TABLE session_link (
   kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
   how               TEXT CHECK (how IN (@names(ReferenceReason))),
   copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),  -- some statement says the child's file copies
-                                            --   the parent's prefix; a recorded copy (prefix_copy) says it too
+                                            --   the parent's prefix; a recorded copy (shared_prefix) says it too
   branch_point      TEXT,
   spawning_call     TEXT,
   evidence          TEXT NOT NULL,          -- the least of its statements' evidence
@@ -509,7 +509,7 @@ CREATE INDEX session_link_parent ON session_link(parent_id, kind);   -- children
 CREATE INDEX session_link_child ON session_link(child_id, kind);     -- parents; late children
 
 -- Copied-prefix facts an input states never create a relationship on their own.
-CREATE TABLE prefix_copy (
+CREATE TABLE shared_prefix (
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
   parent_id TEXT NOT NULL,
@@ -518,12 +518,12 @@ CREATE TABLE prefix_copy (
   explicit_members INTEGER NOT NULL CHECK(explicit_members IN (0,1)),
   PRIMARY KEY(input_pk,chain,parent_id,child_id)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX prefix_copy_edge ON prefix_copy(parent_id,child_id);
-CREATE INDEX prefix_copy_child ON prefix_copy(child_id,parent_id);
+CREATE INDEX shared_prefix_pair ON shared_prefix(parent_id,child_id);
+CREATE INDEX shared_prefix_child ON shared_prefix(child_id,parent_id);
 
 -- Copied occurrences keep their original reading and order through exports.
 -- The input/chain that states them controls retraction; source coordinates say where each was seen.
-CREATE TABLE prefix_member (
+CREATE TABLE shared_prefix_message (
   input_pk INTEGER NOT NULL REFERENCES input_ref(pk),
   chain INTEGER NOT NULL,
   parent_id TEXT NOT NULL,
@@ -537,8 +537,8 @@ CREATE TABLE prefix_member (
   committed INTEGER CHECK(committed > 0),
   PRIMARY KEY(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position)
 ) STRICT, WITHOUT ROWID;
-CREATE INDEX prefix_member_child ON prefix_member(child_id,parent_id,message_id);
-CREATE INDEX prefix_member_message ON prefix_member(message_id,parent_id);
+CREATE INDEX shared_prefix_message_child ON shared_prefix_message(child_id,parent_id,message_id);
+CREATE INDEX shared_prefix_message_id ON shared_prefix_message(message_id,parent_id);
 
 
 -- Inherited history also exists in copied files with no provider
@@ -547,15 +547,15 @@ CREATE VIEW session_prefix AS
 SELECT DISTINCT l.parent_id,l.child_id,l.branch_point,1 AS copies_prefix
 FROM session_link l
 WHERE l.kind <> 'reference' AND (l.copies_prefix=1
-  OR EXISTS(SELECT 1 FROM prefix_copy p WHERE p.parent_id=l.parent_id AND p.child_id=l.child_id))
+  OR EXISTS(SELECT 1 FROM shared_prefix p WHERE p.parent_id=l.parent_id AND p.child_id=l.child_id))
 UNION
 SELECT DISTINCT l.parent_id,l.child_id,l.branch_point,0
 FROM session_link l
 WHERE l.kind IN ('fork','continuation','resume') AND l.copies_prefix=0
-  AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.parent_id=l.parent_id AND p.child_id=l.child_id)
+  AND NOT EXISTS(SELECT 1 FROM shared_prefix p WHERE p.parent_id=l.parent_id AND p.child_id=l.child_id)
 UNION
 SELECT DISTINCT p.parent_id,p.child_id,NULL,1
-FROM prefix_copy p
+FROM shared_prefix p
 WHERE NOT EXISTS (
   SELECT 1 FROM session_link l
   WHERE l.parent_id=p.parent_id AND l.child_id=p.child_id
@@ -668,7 +668,7 @@ CREATE TABLE commit_link (
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX commit_link_block ON commit_link(evidence_block_pk) WHERE evidence_block_pk IS NOT NULL;  -- the foreign-key check when blocks are deleted
 
-CREATE TABLE pr_link (
+CREATE TABLE pull_request_link (
   session_pk        INTEGER NOT NULL REFERENCES session(pk),
   repo              TEXT NOT NULL,
   number            INTEGER NOT NULL,
@@ -872,7 +872,7 @@ GROUP BY s.pk, a.alias;
 -- those of a copy its session is shown for, whose content-named messages
 -- carry the copy's ID where the shown one carries the session's
 -- (writer/identity.rs).
-CREATE VIEW shown_message_parse AS
+CREATE VIEW assembled_message_parse AS
 SELECT m.pk AS message_pk, r.* FROM message m JOIN held_message_parse r ON r.message_id = m.id
 UNION ALL
 SELECT m.pk, r.* FROM message m JOIN session s ON s.pk = m.session_pk

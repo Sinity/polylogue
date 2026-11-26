@@ -18,7 +18,7 @@ impl Reader<'_> {
         use polylogue_model::{PrefixSource, bundle::CopiedFor};
         let conn = self.conn()?;
         let mut result = Vec::new();
-        let mut explicit = conn.prepare_cached("SELECT DISTINCT child_id,source_input,source_chain,source_version,sequence,position,parent_id FROM prefix_member WHERE message_id=?1 ORDER BY child_id,source_input,source_chain,source_version,sequence,position")?;
+        let mut explicit = conn.prepare_cached("SELECT DISTINCT child_id,source_input,source_chain,source_version,sequence,position,parent_id FROM shared_prefix_message WHERE message_id=?1 ORDER BY child_id,source_input,source_chain,source_version,sequence,position")?;
         for row in explicit.query_map([id.to_string()], |r| {
             <(String, String, i64, String, String, String, String)>::try_from(r)
         })? {
@@ -49,7 +49,7 @@ impl Reader<'_> {
                  WHERE m.id=?1 AND m.duplicate_of IS NULL",
             [id.to_string()],
         )?;
-        let mut inferred = conn.prepare_cached("SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parser_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session_prefix p ON p.parent_id=?2 AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM prefix_copy x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)")?;
+        let mut inferred = conn.prepare_cached("SELECT DISTINCT p.child_id,ir.id,s.chain,ps.parser_version,s.seq,s.record_position,p.parent_id FROM message m JOIN session_prefix p ON p.parent_id=?2 AND p.copies_prefix=1 AND p.branch_point IS NULL JOIN message_parse s ON s.message_id=m.id JOIN input_ref ir ON ir.pk=s.input_pk JOIN parse_state ps ON ps.input_pk=s.input_pk AND ps.chain=s.chain WHERE m.id=?1 AND m.duplicate_of IS NULL AND EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=0) AND NOT EXISTS(SELECT 1 FROM shared_prefix x WHERE x.input_pk=s.input_pk AND x.chain=s.chain AND x.child_id=p.child_id AND x.parent_id=p.parent_id AND x.explicit_members=1)")?;
         for row in inferred.query_map(rusqlite::params![id.to_string(), session], |r| {
             <(String, String, i64, String, u64, u64, String)>::try_from(r)
         })? {
@@ -171,7 +171,7 @@ impl Reader<'_> {
         };
         let mut stmt = self.conn()?.prepare_cached(
             "SELECT kind, how, parent_id, child_id, branch_point, spawning_call, evidence,
-                 copies_prefix OR EXISTS(SELECT 1 FROM prefix_copy x WHERE x.parent_id = l.parent_id AND x.child_id = l.child_id)
+                 copies_prefix OR EXISTS(SELECT 1 FROM shared_prefix x WHERE x.parent_id = l.parent_id AND x.child_id = l.child_id)
              FROM session_link l WHERE parent_id = ?1 OR child_id = ?1
              ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call LIMIT -1 OFFSET ?2",
         )?;

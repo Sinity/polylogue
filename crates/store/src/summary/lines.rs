@@ -1301,7 +1301,7 @@ fn links_identity(conn: &Connection, session_pk: i64) -> Result<Vec<u8>> {
             digest.update(b"\0");
         }
     }
-    let mut copies = conn.prepare_cached("SELECT DISTINCT p.parent_id FROM prefix_copy p JOIN session s ON s.id=p.child_id WHERE s.pk=?1 ORDER BY p.parent_id")?;
+    let mut copies = conn.prepare_cached("SELECT DISTINCT p.parent_id FROM shared_prefix p JOIN session s ON s.id=p.child_id WHERE s.pk=?1 ORDER BY p.parent_id")?;
     let parents = copies.query_map([session_pk], |row| row.get::<_, String>(0))?;
     for parent in parents {
         digest.update(b"copied-prefix\0");

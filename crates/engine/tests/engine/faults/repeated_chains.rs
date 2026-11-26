@@ -128,7 +128,7 @@ pub(super) fn dump(w: &ClaudeHome) -> BTreeMap<String, Vec<String>> {
                 // compared.
                 "(SELECT g.body FROM content_group g WHERE g.id=t.content_group) AS content_group"
                     .to_owned()
-            } else if table == "wire_reading" && name == "state" {
+            } else if table == "wire_parse" && name == "state" {
                 format!("json_remove(t.state,{}) AS state", READ_RANGES.iter().map(|key| format!("'$.{key}'")).collect::<Vec<_>>().join(","))
             } else { format!("t.\"{name}\"") }
         }).collect::<Vec<_>>().join(",");

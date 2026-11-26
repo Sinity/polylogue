@@ -174,7 +174,7 @@ pub(super) fn apply(
     )?
     .execute(params![session_pk, after.0])?;
     tx.prepare_cached(
-        "DELETE FROM pr_link WHERE session_pk = ?1 AND evidence = 'gh-output' AND row_key > ?2",
+        "DELETE FROM pull_request_link WHERE session_pk = ?1 AND evidence = 'gh-output' AND row_key > ?2",
     )?
     .execute(params![session_pk, after.0])?;
     let mut commit = tx.prepare_cached(
@@ -185,7 +185,7 @@ pub(super) fn apply(
         commit.execute(params![session_pk, hash, block, at.0])?;
     }
     let mut pull = tx.prepare_cached(
-        "INSERT OR IGNORE INTO pr_link(session_pk, repo, number, url, evidence, row_key)
+        "INSERT OR IGNORE INTO pull_request_link(session_pk, repo, number, url, evidence, row_key)
          VALUES (?1, ?2, ?3, ?4, 'gh-output', ?5)",
     )?;
     for ((repo, n, url), at) in &found.pulls {

@@ -411,7 +411,7 @@ impl Reader<'_> {
     pub fn copied_prefixes(&self, id: &SessionId) -> Result<Vec<SessionId>> {
         let conn = self.conn()?;
         let mut parents: BTreeSet<String> = conn
-            .prepare_cached("SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id=?1")?
+            .prepare_cached("SELECT DISTINCT parent_id FROM shared_prefix WHERE child_id=?1")?
             .query_map([id.to_string()], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         parents.extend(

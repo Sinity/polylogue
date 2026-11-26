@@ -159,7 +159,7 @@ impl Reader<'_> {
             .collect::<rusqlite::Result<_>>()?;
         let pull_requests: Vec<String> = conn
             .prepare_cached(
-                "SELECT repo, number FROM pr_link WHERE session_pk = ?1 ORDER BY repo, number",
+                "SELECT repo, number FROM pull_request_link WHERE session_pk = ?1 ORDER BY repo, number",
             )?
             .query_map([pk], |r| {
                 Ok(format!(

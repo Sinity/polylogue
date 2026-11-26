@@ -21,7 +21,7 @@ row! {
         const OF_MESSAGE = "SELECT i.id AS input, s.chain, s.source_start, s.source_start + s.source_length AS source_end, s.route,
             (s.input_pk=m.input_pk AND s.chain=m.source_chain) AS shown,
             (SELECT max(r.length) FROM source_revision r WHERE r.input=i.id AND r.chain=s.chain) AS stored
-            FROM message m JOIN shown_message_parse s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk
+            FROM message m JOIN assembled_message_parse s ON s.message_pk=m.pk JOIN input_ref i ON i.pk=s.input_pk
             WHERE m.id=?1 ORDER BY 6 DESC, i.id, s.chain";
     }
 }

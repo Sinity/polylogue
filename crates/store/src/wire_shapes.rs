@@ -281,7 +281,7 @@ impl Reading {
 fn stored_reading(tx: &Connection, source: Source<'_>, version: &str) -> Result<Option<Reading>> {
     let state: Option<String> = tx
         .prepare_cached(
-            "SELECT state FROM wire_reading WHERE input_pk=?1 AND chain=?2 AND parse_version=?3",
+            "SELECT state FROM wire_parse WHERE input_pk=?1 AND chain=?2 AND parse_version=?3",
         )?
         .query_row(params![source.input_pk, source.chain, version], |row| {
             row.get(0)
@@ -416,7 +416,7 @@ fn apply_inner(
                 if old.status() == CoverageStatus::Complete {
                     old.complete(source, &occurrence);
                 }
-                tx.prepare_cached("UPDATE wire_reading SET state=?4 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3")?.execute(params![source.input_pk,source.chain,step.parse_version,serde_json::to_string(&old)?])?;
+                tx.prepare_cached("UPDATE wire_parse SET state=?4 WHERE input_pk=?1 AND chain=?2 AND parse_version=?3")?.execute(params![source.input_pk,source.chain,step.parse_version,serde_json::to_string(&old)?])?;
             }
         }
         return Ok(());
@@ -489,10 +489,10 @@ fn apply_inner(
         reading.complete(source, &occurrence);
     }
     tx.prepare_cached(
-        "UPDATE wire_reading SET active=0 WHERE input_pk=?1 AND chain=?2 AND active=1",
+        "UPDATE wire_parse SET active=0 WHERE input_pk=?1 AND chain=?2 AND active=1",
     )?
     .execute(params![source.input_pk, source.chain])?;
-    tx.prepare_cached("INSERT INTO wire_reading(input_pk,chain,parse_version,format,active,state) VALUES (?1,?2,?3,?4,1,?5) ON CONFLICT(input_pk,chain,parse_version) DO UPDATE SET format=excluded.format,active=1,state=excluded.state")?.execute(params![source.input_pk,source.chain,step.parse_version,source.format,serde_json::to_string(&reading)?])?;
+    tx.prepare_cached("INSERT INTO wire_parse(input_pk,chain,parse_version,format,active,state) VALUES (?1,?2,?3,?4,1,?5) ON CONFLICT(input_pk,chain,parse_version) DO UPDATE SET format=excluded.format,active=1,state=excluded.state")?.execute(params![source.input_pk,source.chain,step.parse_version,source.format,serde_json::to_string(&reading)?])?;
     let reading_key = params![source.input_pk, source.chain, step.parse_version];
     if reset {
         // A reset replaces the counts; where each path was first and last

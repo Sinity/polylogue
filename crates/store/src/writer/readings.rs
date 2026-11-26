@@ -116,10 +116,10 @@ const READING_TABLES: &[&str] = &[
     "document_parse",
     "call_outcome",
     "message_injection_field",
-    "prefix_member",
-    "prefix_copy",
+    "shared_prefix_message",
+    "shared_prefix",
     "unused",
-    "export_reading",
+    "export_parse",
     "repo_lookup",
 ];
 
@@ -200,12 +200,12 @@ pub(super) fn delete(
     }
     // Copied-prefix facts name both sessions; either may read differently.
     for session in strings(
-        "SELECT parent_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2
-         UNION SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2",
+        "SELECT parent_id FROM shared_prefix WHERE input_pk=?1 AND chain=?2
+         UNION SELECT child_id FROM shared_prefix WHERE input_pk=?1 AND chain=?2",
     )? {
         touched.sessions.insert(session);
     }
-    for child in strings("SELECT child_id FROM prefix_copy WHERE input_pk=?1 AND chain=?2")? {
+    for child in strings("SELECT child_id FROM shared_prefix WHERE input_pk=?1 AND chain=?2")? {
         changes.link_child(tx, &child)?;
     }
     crate::fragment::retract(tx, input_pk, chain)?;
@@ -289,7 +289,7 @@ pub(super) fn write(
                 chain: chain.chain,
                 parse_version: step.parse_version.clone(),
             });
-        tx.prepare_cached("INSERT INTO prefix_member(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,committed) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET committed=coalesce(max(prefix_member.committed,excluded.committed),prefix_member.committed,excluded.committed)")?
+        tx.prepare_cached("INSERT INTO shared_prefix_message(input_pk,chain,parent_id,child_id,message_id,source_input,source_chain,source_version,sequence,position,committed) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT DO UPDATE SET committed=coalesce(max(shared_prefix_message.committed,excluded.committed),shared_prefix_message.committed,excluded.committed)")?
             .execute(params![chain.input_pk,chain.chain,parent,child,member.message.to_string(),source.input,source.chain,source.parse_version,member.position[0].to_string(),member.position[1].to_string(),chain.committed])?;
         write_prefix_copy(tx, chain, &parent, &child, true, touched)?;
     }
@@ -309,7 +309,7 @@ pub(super) fn write(
         }
         for (origin, at) in latest {
             tx.prepare_cached(
-                "INSERT INTO export_reading(input_pk,chain,origin,latest_at) VALUES (?1,?2,?3,?4)
+                "INSERT INTO export_parse(input_pk,chain,origin,latest_at) VALUES (?1,?2,?3,?4)
                  ON CONFLICT(input_pk,chain,origin) DO UPDATE SET latest_at=max(latest_at,excluded.latest_at)",
             )?
             .execute(params![chain.input_pk, chain.chain, origin, at])?;
@@ -372,9 +372,9 @@ fn write_prefix_copy(
 ) -> Result<()> {
     chain.changes.link_child(tx, child)?;
     tx.prepare_cached(
-        "INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,committed,explicit_members) VALUES (?1,?2,?3,?4,?5,?6)
+        "INSERT INTO shared_prefix(input_pk,chain,parent_id,child_id,committed,explicit_members) VALUES (?1,?2,?3,?4,?5,?6)
          ON CONFLICT DO UPDATE SET explicit_members=max(explicit_members,excluded.explicit_members),
-         committed=coalesce(max(prefix_copy.committed,excluded.committed),prefix_copy.committed,excluded.committed)",
+         committed=coalesce(max(shared_prefix.committed,excluded.committed),shared_prefix.committed,excluded.committed)",
     )?
     .execute(params![chain.input_pk, chain.chain, parent, child, chain.committed, explicit_members])?;
     touched.sessions.insert(parent.to_owned());

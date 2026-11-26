@@ -793,7 +793,7 @@ static LINKS: UnitSpec = UnitSpec {
         (
             "copies_prefix",
             T(
-                "({r}.copies_prefix OR EXISTS(SELECT 1 FROM prefix_copy {r}x WHERE {r}x.parent_id = {r}.parent_id AND {r}x.child_id = {r}.child_id))",
+                "({r}.copies_prefix OR EXISTS(SELECT 1 FROM shared_prefix {r}x WHERE {r}x.parent_id = {r}.parent_id AND {r}x.child_id = {r}.child_id))",
             ),
             Bool,
         ),

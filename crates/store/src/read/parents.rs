@@ -57,8 +57,8 @@ row! {
             JOIN message_parse s ON s.message_id = m.id
             JOIN input_ref ir ON ir.pk=s.input_pk
             WHERE m.session_pk = ?1 AND m.duplicate_of IS NULL
-              AND EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=0)
-              AND NOT EXISTS(SELECT 1 FROM prefix_copy p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=1)
+              AND EXISTS(SELECT 1 FROM shared_prefix p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=0)
+              AND NOT EXISTS(SELECT 1 FROM shared_prefix p WHERE p.input_pk=s.input_pk AND p.chain=s.chain AND p.child_id=?2 AND p.parent_id=?3 AND p.explicit_members=1)
             ORDER BY m.session_order, m.id"
         );
     }
@@ -81,7 +81,7 @@ row! {
         const OF_COPY = concat!(
             super::order::record_ranks!(),
             "SELECT DISTINCT m.pk, m.id, c.record_order, p.source_input, p.source_chain, p.source_version, p.sequence, p.position
-            FROM prefix_member p JOIN message m ON m.id=p.message_id JOIN record_ranks c ON c.pk=m.pk
+            FROM shared_prefix_message p JOIN message m ON m.id=p.message_id JOIN record_ranks c ON c.pk=m.pk
             WHERE p.child_id=?2 AND p.parent_id=?3 AND m.session_pk=?1 AND m.duplicate_of IS NULL"
         );
     }
@@ -221,7 +221,7 @@ fn parent_frame(
         // Conflicting provider branch points do not erase separately recorded
         // byte copies. Their listed members choose no provider branch_point.
         let copies: Vec<String> = conn.values(
-            "SELECT DISTINCT parent_id FROM prefix_copy WHERE child_id=?1 AND explicit_members=1 ORDER BY parent_id",
+            "SELECT DISTINCT parent_id FROM shared_prefix WHERE child_id=?1 AND explicit_members=1 ORDER BY parent_id",
             [session.to_string()],
         )?;
         for parent in copies {
@@ -289,7 +289,7 @@ fn parent_keys(
                 frame.issues.push(ParentIssue::Cycle { session: parent });
                 continue;
             }
-            let explicit: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM prefix_copy WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
+            let explicit: bool = conn.exists("SELECT EXISTS(SELECT 1 FROM shared_prefix WHERE parent_id=?1 AND child_id=?2 AND explicit_members=1)", params![parent.to_string(),frame.session.to_string()])?;
             if explicit || link.copies_prefix && link.branch_point.is_none() {
                 let (child_text, parent_text) = (frame.session.to_string(), parent.to_string());
                 let params = params![parent_pk, child_text, parent_text];
@@ -310,7 +310,7 @@ fn parent_keys(
                         key: key(copied.pk, copied.id, copied.record_order),
                     });
                 }
-                let missing: Vec<MessageId> = conn.values("SELECT DISTINCT p.message_id FROM prefix_member p WHERE p.child_id=?1 AND p.parent_id=?2 AND NOT EXISTS(SELECT 1 FROM message m WHERE m.id=p.message_id AND m.session_pk=?3 AND m.duplicate_of IS NULL) ORDER BY p.message_id",
+                let missing: Vec<MessageId> = conn.values("SELECT DISTINCT p.message_id FROM shared_prefix_message p WHERE p.child_id=?1 AND p.parent_id=?2 AND NOT EXISTS(SELECT 1 FROM message m WHERE m.id=p.message_id AND m.session_pk=?3 AND m.duplicate_of IS NULL) ORDER BY p.message_id",
                     params![child_text, parent_text, parent_pk])?;
                 frame.issues.extend(missing.into_iter().map(|message| {
                     ParentIssue::MissingCopiedMessage {

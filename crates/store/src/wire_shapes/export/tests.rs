@@ -61,7 +61,7 @@ fn assert_rejected(result: Result<()>, reason: &str) {
     }
 }
 fn state(conn: &Connection) -> String {
-    conn.query_row("SELECT state FROM wire_reading", [], |row| row.get(0))
+    conn.query_row("SELECT state FROM wire_parse", [], |row| row.get(0))
         .unwrap()
 }
 

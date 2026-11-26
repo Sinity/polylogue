@@ -891,7 +891,7 @@ fn wire_coverage_survives_parser_status_changes() {
         }
         store(&mut conn, source(1, 1, 10, 1), &reading);
         let original: String = conn
-            .query_row("SELECT state FROM wire_reading", [], |row| row.get(0))
+            .query_row("SELECT state FROM wire_parse", [], |row| row.get(0))
             .unwrap();
         for (status, state, waiting, failure) in [
             ("waiting", "parsed", 5, None),
@@ -927,7 +927,7 @@ fn wire_coverage_survives_parser_status_changes() {
             assert_eq!(report.coverage[0].parsed_bytes, end);
             assert_eq!(report.coverage[0].known_source_bytes, 10);
             assert_eq!(
-                conn.query_row("SELECT state FROM wire_reading", [], |row| row
+                conn.query_row("SELECT state FROM wire_parse", [], |row| row
                     .get::<_, String>(0))
                     .unwrap(),
                 original

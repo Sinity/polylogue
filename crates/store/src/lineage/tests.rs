@@ -60,7 +60,7 @@ fn arrival_order_permutation_oracle() {
         }
         f.link("test:root", "test:reference", "reference", Some("mention"))
             .unwrap();
-        db(&f).execute("INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,explicit_members) SELECT pk,0,'test:root','test:copy',0 FROM input_ref LIMIT 1",[]).unwrap();
+        db(&f).execute("INSERT INTO shared_prefix(input_pk,chain,parent_id,child_id,explicit_members) SELECT pk,0,'test:root','test:copy',0 FROM input_ref LIMIT 1",[]).unwrap();
         for (id, depth) in [
             ("root", 0),
             ("spawn", 1),
@@ -467,14 +467,14 @@ fn link_statements_resolve_to_relations() {
         }
     }
     conn.execute(
-        "INSERT INTO prefix_copy(input_pk, chain, parent_id, child_id, committed, explicit_members)
+        "INSERT INTO shared_prefix(input_pk, chain, parent_id, child_id, committed, explicit_members)
          VALUES ((SELECT min(pk) FROM input_ref), 1, 'test:q', 'test:b', 1, 0)",
         [],
     )
     .unwrap();
     // A copied prefix no link records.
     conn.execute(
-        "INSERT INTO prefix_copy(input_pk, chain, parent_id, child_id, committed, explicit_members)
+        "INSERT INTO shared_prefix(input_pk, chain, parent_id, child_id, committed, explicit_members)
          VALUES ((SELECT min(pk) FROM input_ref), 1, 'test:c', 'test:a', 1, 0)",
         [],
     )

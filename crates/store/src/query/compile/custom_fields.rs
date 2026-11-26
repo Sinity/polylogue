@@ -445,11 +445,11 @@ pub(crate) fn pr(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, Q
         Some(repo) => {
             let p = c.text_param(&repo.to_lowercase());
             format!(
-                "EXISTS (SELECT 1 FROM pr_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n} AND lower(pl.repo) = {p})"
+                "EXISTS (SELECT 1 FROM pull_request_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n} AND lower(pl.repo) = {p})"
             )
         }
         None => format!(
-            "EXISTS (SELECT 1 FROM pr_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n})"
+            "EXISTS (SELECT 1 FROM pull_request_link pl WHERE pl.session_pk = {s}.pk AND pl.number = {n})"
         ),
     })
 }

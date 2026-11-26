@@ -236,7 +236,7 @@ fn malformed_scan_refuses_once_without_a_checkpoint() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.refused')=1 AND json_extract(state,'$.last.covered.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_parse WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.refused')=1 AND json_extract(state,'$.last.covered.source.kind')='container_header'"),
             1
         );
         let wire = engine
@@ -316,7 +316,7 @@ fn malformed_scan_refuses_once_without_a_checkpoint() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.refused')=1 AND json_extract(state,'$.last.covered.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_parse WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.refused')=1 AND json_extract(state,'$.last.covered.source.kind')='container_header'"),
             1
         );
     }

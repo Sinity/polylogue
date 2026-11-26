@@ -355,7 +355,7 @@ fn summaries(w: &WriterArchive) -> Json {
         ),
         (
             "pulls",
-            "SELECT s.id, l.repo, l.number, l.url, l.evidence FROM pr_link l
+            "SELECT s.id, l.repo, l.number, l.url, l.evidence FROM pull_request_link l
              JOIN session s ON s.pk = l.session_pk ORDER BY s.id, l.repo, l.number",
         ),
         (

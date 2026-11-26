@@ -17,7 +17,7 @@ CREATE INDEX IF NOT EXISTS event_period ON event(at_until - at) WHERE at_until I
 -- another's duplicate: a session with none is answered by one probe.
 CREATE INDEX IF NOT EXISTS message_marked ON message(session_pk)
   WHERE on_active_path IS NOT NULL OR duplicate_of IS NOT NULL;
-CREATE INDEX IF NOT EXISTS block_original_ordinal ON block(message_pk,coalesce(ordinal,cast(idx AS TEXT)));
+CREATE INDEX IF NOT EXISTS block_source_position ON block(message_pk,coalesce(ordinal,cast(idx AS TEXT)));
 
 -- Restored requests select all raw spellings of one NFC request text.
 CREATE INDEX IF NOT EXISTS text_normalized ON text(normalized_hash,id);
