@@ -160,10 +160,11 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
       page: tab ? await pageState(tab) : null,
       waiting: await outbox.count(),
       importJob: [
-        ...jobs.filter((job) => !JOB_ENDED.includes(job.status)),
-        ...jobs.filter((job) => JOB_ENDED.includes(job.status)).slice(-JOBS_ENDED_SHOWN),
+        // The host lists jobs newest first.
+        ...jobs.filter((job) => !JOB_ENDED.includes(job.state)),
+        ...jobs.filter((job) => JOB_ENDED.includes(job.state)).slice(0, JOBS_ENDED_SHOWN),
       ],
-      approvals: actions.filter((action) => action.status === "awaiting_approval"),
+      approvals: actions.filter((action) => action.state === "awaiting_approval"),
       problems,
       settings: await settings(),
       version: chrome.runtime.getManifest().version,

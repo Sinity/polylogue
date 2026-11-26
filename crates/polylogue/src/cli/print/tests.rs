@@ -1,5 +1,4 @@
 use super::*;
-use crate::browser::actions::{ActionSummary, ChatRequest};
 use crate::browser::import_job::JobSummary;
 use crate::resume::{Command, Plan, ResumableSession};
 use polylogue_model::SessionId;
@@ -58,32 +57,6 @@ fn terminal_printers_escape_archived_text() {
         context_assisted: hostile_command(),
     });
     escaped(&resume(&plan_answer, TextStyle::Plain));
-    let actions = protocol::browser::ChatActionList {
-        actions: vec![ActionSummary {
-            request: ChatRequest {
-                provider: HOSTILE.into(),
-                conversation: Some(HOSTILE.into()),
-                project: None,
-                text: HOSTILE.into(),
-                model: HOSTILE.into(),
-                effort: None,
-                submit: false,
-            },
-            id: HOSTILE.into(),
-            attachments: vec![],
-            status: polylogue_model::user::ChatStatus::Queued,
-            phase: HOSTILE.into(),
-            created_at: None,
-            updated_at: Some(HOSTILE.into()),
-            claimed_by: None,
-            claim_expires_at: None,
-            needs_approval: false,
-            last_error: Some(HOSTILE.into()),
-            receipt: None,
-            events: vec![],
-        }],
-    };
-    escaped(&chat_actions(&actions, TextStyle::Plain));
     let job = JobSummary {
         id: HOSTILE.into(),
         provider: HOSTILE.into(),
@@ -100,12 +73,6 @@ fn terminal_printers_escape_archived_text() {
         claimed_by: None,
         claim_expires_at: None,
     };
-    escaped(&import_jobs(
-        &protocol::browser::ImportJobs {
-            jobs: vec![job.clone()],
-        },
-        TextStyle::Plain,
-    ));
     escaped(&import_job_answer(
         &protocol::browser::ImportJobAnswer::Current(protocol::browser::ImportJobCurrent {
             job: Some(Box::new(job)),

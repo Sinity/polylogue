@@ -714,6 +714,8 @@ mod combine;
 
 mod stage_filters;
 
+mod extension_units;
+
 #[test]
 fn explicit_reference_metadata_shadows_match_sources() {
     for query in [

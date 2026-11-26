@@ -21,6 +21,8 @@ fn sessionless_units_keep_explicit_association_or_independence() {
                     | Unit::Queries
                     | Unit::Runs
                     | Unit::Results
+                    | Unit::ImportJobs
+                    | Unit::ChatActions
             )
     }) {
         assert!(spec(unit).session_scope.is_some(), "{unit:?}");

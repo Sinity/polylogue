@@ -782,7 +782,8 @@ impl Fixture {
         self.user_at(write, at)
     }
 
-    fn user_at(
+    /// [`Self::user`] at a chosen request time.
+    pub fn user_at(
         &mut self,
         write: polylogue_model::user::UserWrite,
         at: polylogue_model::Timestamp,

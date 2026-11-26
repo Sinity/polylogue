@@ -560,15 +560,6 @@ pub static COMMANDS: &[Command] = &[
         ..CLI
     },
     Command {
-        name: "chat list",
-        reason: "Show queued chat actions and their progress in the extension",
-        help: "Chat actions and what happened to each",
-        run: Run::Daemon(daemon::<browser::ChatList>()),
-        tool: Some(Tool::Read),
-        http: true,
-        ..CLI
-    },
-    Command {
         name: "chat approve",
         reason: "The operator approves a chat action waiting in the extension",
         help: "Approve a held submit into an existing conversation",
@@ -592,15 +583,6 @@ pub static COMMANDS: &[Command] = &[
         tool: Some(Tool::Act),
         http: true,
         writes: true,
-        ..CLI
-    },
-    Command {
-        name: "backfill list",
-        reason: "Show import jobs and their progress in the extension",
-        help: "Import jobs and how far each got",
-        run: Run::Daemon(daemon::<browser::ImportJobList>()),
-        tool: Some(Tool::Read),
-        http: true,
         ..CLI
     },
     Command {
@@ -647,24 +629,6 @@ pub static COMMANDS: &[Command] = &[
         run: local_command::<local::arguments::Host>(local::host),
         tool: None,
         cli: Cli::Hidden,
-        ..CLI
-    },
-    Command {
-        name: "timeline",
-        reason: "Lay recorded activity out by logical day, which needs the calendar",
-        help: "Paged recorded activity, calendar counts and usage in the configured logical day",
-        run: Run::Daemon(daemon::<H::Timeline>()),
-        tool: Some(Tool::Read),
-        http: true,
-        ..CLI
-    },
-    Command {
-        name: "cost",
-        reason: "Total usage and price of selected sessions with response details",
-        help: "Usage of selected sessions, optionally during one logical day, and paged per-response records",
-        run: Run::Daemon(daemon::<H::Cost>()),
-        tool: Some(Tool::Read),
-        http: true,
         ..CLI
     },
     Command {

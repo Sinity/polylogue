@@ -526,7 +526,7 @@ fn chat_send_answer_preserves_draft_credentials_as_data() {
 }
 
 #[test]
-fn import_jobs_start_and_list_over_http() {
+fn import_jobs_start_over_http_and_list_as_the_unit() {
     let r = reader();
     rt().block_on(async {
         let start = own_origin(authed(post("/api/v1/backfill/start")))
@@ -538,14 +538,16 @@ fn import_jobs_start_and_list_over_http() {
         assert_eq!(started["job"]["status"], "waiting");
         let (s, _, listed) = send(
             &r,
-            authed(get("/api/v1/backfill/list"))
+            authed(get("/api/v1/rows?selection=import_jobs"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{listed}");
         let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
-        assert_eq!(listed["jobs"][0]["id"], started["job"]["id"]);
+        // The test client hands back a listing's reply.
+        assert_eq!(listed["rows"][0]["id"], started["job"]["id"]);
+        assert_eq!(listed["rows"][0]["state"], "waiting");
     });
 }
 
@@ -747,6 +749,70 @@ fn session_html_and_json_read_routes_preserve_stored_titles_and_message_content(
         );
         let (status, _, body) = send(&r, authed(get(&invalid)).body(Body::empty()).unwrap()).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    });
+}
+
+/// `/day/DATE` lists the sessions the day's query and its `month_day`
+/// query return, each section with the line that reproduces it.
+#[test]
+fn day_page_equals_month_day_query() {
+    let r = reader();
+    rt().block_on(async {
+        let rows = |selection: String| {
+            let answer = crate::test_daemon::Call::new(
+                "rows",
+                serde_json::json!({ "selection": selection }),
+            )
+            .answer(&r.web.daemon);
+            crate::protocol::into_value(answer).unwrap()["reply"].clone()
+        };
+        let sessions = rows("sessions".into());
+        let id = sessions["rows"][0]["id"].as_str().unwrap().to_owned();
+        let date = sessions["rows"][0]["last_active"].as_str().unwrap()[..10].to_owned();
+        let (status, headers, html) = send(
+            &r,
+            authed(get(&format!("/day/{date}")))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert_eq!(headers[header::CACHE_CONTROL], "no-store");
+        let link = format!("/s/{}", polylogue_render::html::encode_path_segment(&id));
+        let queries = crate::web::pages::day_queries(date.parse().unwrap());
+        for query in [&queries[0], &queries[3]] {
+            let listed = rows(query.clone());
+            assert!(
+                listed["rows"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|row| row["id"] == id.as_str()),
+                "{query}: {listed}"
+            );
+            assert!(
+                html.contains(&polylogue_render::html::escape(&format!(
+                    "polylogue {}",
+                    polylogue_render::shell_quote(query)
+                ))),
+                "{html}"
+            );
+        }
+        assert!(html.matches(&link).count() >= 2, "{html}");
+        let usage = rows(queries[1].clone());
+        assert!(
+            html.contains(&polylogue_render::html::escape(
+                &polylogue_render::measures::usage(&usage["data"])
+            )),
+            "{html}"
+        );
+        assert!(html.contains(&format!("href=\"/day/{date}\"")), "{html}");
+        let (status, _, _) = send(
+            &r,
+            authed(get("/day/2023-02-29")).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
     });
 }
 
@@ -978,7 +1044,6 @@ mod pages;
 
 mod notes;
 mod search_api;
-mod timeline;
 
 mod cancellation;
 

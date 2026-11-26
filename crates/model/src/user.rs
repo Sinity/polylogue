@@ -404,19 +404,20 @@ pub struct ChatEvent {
     pub receipt: Option<serde_json::Value>,
 }
 
-/// Where a chat action stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ChatStatus {
-    AwaitingApproval,
-    Queued,
-    Claimed,
-    Drafted,
-    Submitted,
-    OutcomeUnknown,
-    Blocked,
-    Failed,
-    Cancelled,
+crate::stored_names! {
+    /// Where a chat action stands.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ChatStatus {
+        AwaitingApproval => "awaiting_approval",
+        Queued => "queued",
+        Claimed => "claimed",
+        Drafted => "drafted",
+        Submitted => "submitted",
+        OutcomeUnknown => "outcome_unknown",
+        Blocked => "blocked",
+        Failed => "failed",
+        Cancelled => "cancelled",
+    }
 }
 
 impl ChatStatus {
@@ -462,66 +463,78 @@ pub struct ChatAction {
 }
 
 impl ChatAction {
-    fn state(&self) -> ChatState<'_> {
-        let mut status = if self.needs_approval {
-            ChatStatus::AwaitingApproval
-        } else {
-            ChatStatus::Queued
-        };
-        let mut claim: Option<(&str, i64)> = None;
-        // A later display phase or claim renewal cannot undo a possible send.
-        let mut sending_by = None;
-        for e in &self.events {
-            match e.kind.as_str() {
-                "approved" => status = ChatStatus::Queued,
-                "declined" => status = ChatStatus::Cancelled,
-                "claimed"
-                    if sending_by.is_none()
-                        && matches!(status, ChatStatus::Queued | ChatStatus::Claimed) =>
-                {
-                    status = ChatStatus::Claimed;
-                    claim = e.by.as_deref().map(|by| (by, e.at + CHAT_CLAIM_MS));
-                }
-                "progress" => {
-                    if status == ChatStatus::Claimed
-                        && let Some((by, until)) = claim
-                        && e.by.as_deref() == Some(by)
-                        && e.at <= until
-                    {
-                        if e.phase == "sending" {
-                            sending_by.get_or_insert(by);
-                        }
-                        claim = Some((by, e.at + CHAT_CLAIM_MS));
-                    }
-                }
-                kind => {
-                    if let Some(Some(next)) = chat_outcome(kind) {
-                        status = next;
-                        claim = None;
-                    }
-                }
-            }
-        }
-        ChatState {
-            status,
-            claim,
-            sending_by,
-        }
-    }
-
     /// The state at `now`, and the instance holding an unexpired claim.
     pub fn status(&self, now: i64) -> (ChatStatus, Option<&str>) {
-        self.state().status(now)
+        chat_status(self.needs_approval, &self.events, now)
     }
 
     /// The instance that started sending may still confirm the outcome, without
     /// renewing its claim.
     pub fn unconfirmed_submitter(&self, now: i64) -> Option<&str> {
-        let state = self.state();
+        let state = chat_state(self.needs_approval, &self.events);
         (state.status(now).0 == ChatStatus::OutcomeUnknown)
             .then_some(state.sending_by)
             .flatten()
     }
+}
+
+/// The state a chat action's events leave, before the clock decides
+/// whether a claim has expired.
+fn chat_state(needs_approval: bool, events: &[ChatEvent]) -> ChatState<'_> {
+    let mut status = if needs_approval {
+        ChatStatus::AwaitingApproval
+    } else {
+        ChatStatus::Queued
+    };
+    let mut claim: Option<(&str, i64)> = None;
+    // A later display phase or claim renewal cannot undo a possible send.
+    let mut sending_by = None;
+    for e in events {
+        match e.kind.as_str() {
+            "approved" => status = ChatStatus::Queued,
+            "declined" => status = ChatStatus::Cancelled,
+            "claimed"
+                if sending_by.is_none()
+                    && matches!(status, ChatStatus::Queued | ChatStatus::Claimed) =>
+            {
+                status = ChatStatus::Claimed;
+                claim = e.by.as_deref().map(|by| (by, e.at + CHAT_CLAIM_MS));
+            }
+            "progress" => {
+                if status == ChatStatus::Claimed
+                    && let Some((by, until)) = claim
+                    && e.by.as_deref() == Some(by)
+                    && e.at <= until
+                {
+                    if e.phase == "sending" {
+                        sending_by.get_or_insert(by);
+                    }
+                    claim = Some((by, e.at + CHAT_CLAIM_MS));
+                }
+            }
+            kind => {
+                if let Some(Some(next)) = chat_outcome(kind) {
+                    status = next;
+                    claim = None;
+                }
+            }
+        }
+    }
+    ChatState {
+        status,
+        claim,
+        sending_by,
+    }
+}
+
+/// The state at `now` that `events` leave a chat action in, and the
+/// instance holding an unexpired claim.
+pub fn chat_status(
+    needs_approval: bool,
+    events: &[ChatEvent],
+    now: i64,
+) -> (ChatStatus, Option<&str>) {
+    chat_state(needs_approval, events).status(now)
 }
 
 struct ChatState<'a> {
@@ -560,20 +573,21 @@ pub struct ImportJobEvent {
     pub detail: Option<String>,
 }
 
-/// Where an import job stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ImportJobStatus {
-    /// Started and not held by an extension instance.
-    Waiting,
-    Running,
-    /// Stopped by the provider refusing the browser's sign-in; not claimed
-    /// until the operator starts the import again, which resumes it from
-    /// its saved position.
-    Paused,
-    Finished,
-    Failed,
-    Cancelled,
+crate::stored_names! {
+    /// Where an import job stands.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ImportJobStatus {
+        /// Started and not held by an extension instance.
+        Waiting => "waiting",
+        Running => "running",
+        /// Stopped by the provider refusing the browser's sign-in; not claimed
+        /// until the operator starts the import again, which resumes it from
+        /// its saved position.
+        Paused => "paused",
+        Finished => "finished",
+        Failed => "failed",
+        Cancelled => "cancelled",
+    }
 }
 
 impl ImportJobStatus {
@@ -608,35 +622,7 @@ pub struct ImportJob {
 impl ImportJob {
     /// The state at `now`, and the instance holding an unexpired claim.
     pub fn status(&self, now: i64) -> (ImportJobStatus, Option<&str>) {
-        let mut status = ImportJobStatus::Waiting;
-        let mut claim: Option<(&str, i64)> = None;
-        for e in &self.events {
-            match e.kind.as_str() {
-                "claimed" | "progress" => {
-                    status = ImportJobStatus::Running;
-                    claim = e.by.as_deref().map(|by| (by, e.at + IMPORT_JOB_CLAIM_MS));
-                }
-                "cancelled" => {
-                    status = ImportJobStatus::Cancelled;
-                    claim = None;
-                }
-                "resumed" => {
-                    status = ImportJobStatus::Waiting;
-                    claim = None;
-                }
-                kind => {
-                    if let Some(next) = import_job_report_status(kind) {
-                        status = next;
-                        claim = None;
-                    }
-                }
-            }
-        }
-        match (status, claim) {
-            (ImportJobStatus::Running, Some((by, until))) if until >= now => (status, Some(by)),
-            (ImportJobStatus::Running, _) => (ImportJobStatus::Waiting, None),
-            _ => (status, None),
-        }
+        import_job_status(&self.events, now)
     }
 
     /// The totals of the latest event, and the latest reported list position: a
@@ -646,6 +632,40 @@ impl ImportJob {
         let counts = self.events.last().map(|e| e.counts).unwrap_or_default();
         let position = self.events.iter().rev().find_map(|e| e.position.as_deref());
         (counts, position)
+    }
+}
+
+/// The state at `now` that `events` leave an import job in, and the
+/// instance holding an unexpired claim.
+pub fn import_job_status(events: &[ImportJobEvent], now: i64) -> (ImportJobStatus, Option<&str>) {
+    let mut status = ImportJobStatus::Waiting;
+    let mut claim: Option<(&str, i64)> = None;
+    for e in events {
+        match e.kind.as_str() {
+            "claimed" | "progress" => {
+                status = ImportJobStatus::Running;
+                claim = e.by.as_deref().map(|by| (by, e.at + IMPORT_JOB_CLAIM_MS));
+            }
+            "cancelled" => {
+                status = ImportJobStatus::Cancelled;
+                claim = None;
+            }
+            "resumed" => {
+                status = ImportJobStatus::Waiting;
+                claim = None;
+            }
+            kind => {
+                if let Some(next) = import_job_report_status(kind) {
+                    status = next;
+                    claim = None;
+                }
+            }
+        }
+    }
+    match (status, claim) {
+        (ImportJobStatus::Running, Some((by, until))) if until >= now => (status, Some(by)),
+        (ImportJobStatus::Running, _) => (ImportJobStatus::Waiting, None),
+        _ => (status, None),
     }
 }
 

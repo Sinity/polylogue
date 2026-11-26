@@ -35,11 +35,6 @@ pub struct ChatSend {
     pub files: Vec<ChatFile>,
 }
 
-/// Every queued chat action.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ChatList {}
-
 /// The operator's approval or refusal of a queued chat action.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -102,10 +97,6 @@ pub struct ImportJobStart {
     /// Only conversations changed on or after this date or time
     pub since: Option<String>,
 }
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ImportJobList {}
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -213,20 +204,6 @@ pub struct ImportJobCurrent {
 pub enum ImportJobAnswer {
     Current(ImportJobCurrent),
     Outcome(polylogue_model::user::UserOutcome),
-}
-
-/// `chat list`: every chat action and where it stands.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ChatActionList {
-    pub actions: Vec<ActionSummary>,
-}
-
-/// `backfill list`: every import job and how far it got.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ImportJobs {
-    pub jobs: Vec<JobSummary>,
 }
 
 /// `chat attachment`: an attached file's bytes.

@@ -46,7 +46,7 @@ The job lives in Polylogue: the extension claims it, pages through the
 provider's conversation list in an open tab of that provider (or a background
 tab it opens and closes), captures each conversation the archive lacks or
 holds an older copy of, and reports where it got to. A restarted extension
-continues from there. `polylogue backfill list` shows how far each job got;
+continues from there. `polylogue import_jobs` shows how far each job got;
 `polylogue backfill cancel ID` stops one.
 
 ## Chat actions
@@ -59,7 +59,7 @@ browser.actions on`); setting it to anything else stops the extension from
 taking more. A send into an existing conversation waits for approval in the
 extension's popup or with `polylogue chat approve ID`. The extension works in
 a background tab, leaves a draft open there, and captures the conversation
-after a send. MCP offers `chat_send` and `chat_list` too.
+after a send. `polylogue chat_actions` lists the actions and where each stands.
 
 ## The in-page button
 

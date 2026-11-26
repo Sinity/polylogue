@@ -314,6 +314,9 @@ impl Handler for Help {
                         "fields": verb.input_schema()["properties"],
                     })));
                 }
+                if let Some(line) = crate::explain::removed_word(topic) {
+                    return Ok(ok(serde_json::json!({ "manual": line })));
+                }
                 return Ok(error(
                     polylogue_model::Code::NotBuilt,
                     format!("help {topic} is not built yet"),
@@ -327,86 +330,6 @@ impl Handler for Help {
             call.cursor,
         )
         .map(ok)
-    }
-}
-
-/// Chronological recorded activity and a logical-day calendar.
-pub(crate) struct Timeline;
-impl Handler for Timeline {
-    type Arguments = protocol::calendar::Timeline;
-    type Answer = super::super::calendar::TimelineAnswer;
-    const PAGES: bool = true;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let reader = call.reader()?;
-        let context = call.context()?;
-        Ok(
-            match super::super::calendar::timeline(
-                &reader,
-                super::super::calendar::Timeline {
-                    date: arguments.date.as_deref().filter(|date| !date.is_empty()),
-                    across_years: arguments.across_years,
-                    undated: arguments.undated,
-                    cursor: call.cursor,
-                    page_size: arguments.limit,
-                },
-                &context,
-            ) {
-                Ok(data) => Answer::ok(data),
-                Err(f) => f.answer(),
-            },
-        )
-    }
-}
-
-/// Session-scoped usage, optionally bounded by a logical day, with
-/// response pages.
-pub(crate) struct Cost;
-impl Handler for Cost {
-    type Arguments = protocol::calendar::Cost;
-    type Answer = super::super::calendar::CostAnswer;
-    const PAGES: bool = true;
-    fn query_text(arguments: &Self::Arguments) -> Option<&str> {
-        arguments.query.as_deref()
-    }
-    fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
-        Some(arguments.query.clone().unwrap_or_else(|| "sessions".into()))
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let reader = call.reader()?;
-        let context = call.context()?;
-        let d = call.daemon;
-        let nonempty = |value: &Option<String>| value.clone().filter(|value| !value.is_empty());
-        let (month, date, model) = (
-            nonempty(&arguments.month),
-            nonempty(&arguments.date),
-            nonempty(&arguments.model),
-        );
-        let query = arguments.query.as_deref().unwrap_or("sessions");
-        Ok(super::super::query::with_ranking(
-            &reader,
-            &d.warm,
-            &d.config,
-            |embeddings, ranking_identity, near| match super::super::calendar::cost(
-                &reader,
-                super::super::calendar::Cost {
-                    embeddings,
-                    ranking_identity,
-                    near: Some(near),
-                    month: month.as_deref(),
-                    query,
-                    date: date.as_deref(),
-                    model: model.as_deref(),
-                    undated: arguments.undated,
-                    unknown_model: arguments.unknown_model,
-                    cursor: call.cursor,
-                    page_size: arguments.limit,
-                },
-                &context,
-            ) {
-                Ok(data) => Answer::ok(data),
-                Err(f) => f.answer(),
-            },
-        ))
     }
 }
 

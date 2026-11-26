@@ -25,6 +25,8 @@ fn every_unit_is_declared_once_under_its_own_name() {
         Unit::Feed,
         Unit::LiveIntervals,
         Unit::Processes,
+        Unit::ImportJobs,
+        Unit::ChatActions,
     ];
     for unit in listed {
         match unit {
@@ -45,7 +47,9 @@ fn every_unit_is_declared_once_under_its_own_name() {
             | Unit::Deliveries
             | Unit::Feed
             | Unit::LiveIntervals
-            | Unit::Processes => {}
+            | Unit::Processes
+            | Unit::ImportJobs
+            | Unit::ChatActions => {}
         }
         assert_eq!(
             UNITS.iter().filter(|s| s.unit == unit).count(),

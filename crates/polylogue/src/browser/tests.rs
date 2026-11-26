@@ -357,6 +357,12 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     let held = send(&w, "k3", chat_request(Some("conv-9"), true), vec![]).unwrap();
     assert_eq!(held["status"], "awaiting_approval");
     let held_id = held["id"].as_str().unwrap().to_owned();
+    // The popup lists what waits for the operator from the unit `chat_actions`.
+    let listed = exchange(&host, "GET", "/v1/chat-actions", b"").json();
+    assert_eq!(listed["actions"].as_array().unwrap().len(), 1, "{listed}");
+    assert_eq!(listed["actions"][0]["id"], held_id.as_str());
+    assert_eq!(listed["actions"][0]["state"], "awaiting_approval");
+    assert_eq!(listed["actions"][0]["conversation"], "conv-9");
     assert_eq!(report(&host, &b_id, "tab-b", "failed").status, 200);
     assert_eq!(claim("tab-a")["action"], Value::Null);
     let approve = exchange(
@@ -375,7 +381,7 @@ fn the_extension_claims_and_reports_actions_the_operator_queued() {
     w.set("browser.actions", "on");
     assert_eq!(claim("tab-a")["action"]["id"], held_id.as_str());
     let listed = exchange(&host, "GET", "/v1/chat-actions", b"").json();
-    assert_eq!(listed["actions"].as_array().unwrap().len(), 3);
+    assert_eq!(listed["actions"], json!([]));
 }
 
 fn import_job_report(host: &Arc<BrowserHost>, id: &str, by: &str, body: Value) -> Answer {
@@ -444,8 +450,11 @@ fn a_import_job_runs_through_the_daemon_and_survives_an_extension_restart() {
     let done = import_job_report(&host, &id, "ext-1", finished);
     assert_eq!(done.json()["job"]["status"], "finished");
     let listed = exchange(&host, "GET", "/v1/import_job", b"").json();
-    assert_eq!(listed["jobs"][0]["status"], "finished");
+    assert_eq!(listed["jobs"][0]["id"], id.as_str());
+    assert_eq!(listed["jobs"][0]["state"], "finished");
     assert_eq!(listed["jobs"][0]["listed"], 40);
+    assert_eq!(listed["jobs"][0]["position"], "3:0");
+    assert_eq!(listed["jobs"][0]["claimed_by"], Value::Null);
     // The conversation it captured is archived like any other capture.
     until(
         || conversations(&host, &["listed-1"]),
@@ -738,12 +747,12 @@ fn expired_sending_action_accepts_only_its_holders_late_confirmation() {
         assert_eq!(response.status, 200, "{}", response.json());
     }
     now.fetch_add(polylogue_model::user::CHAT_CLAIM_MS + 1, Ordering::SeqCst);
-    let listed = exchange(&host, "GET", "/v1/chat-actions", b"").json();
-    let action = &listed["actions"][0];
-    assert_eq!(action["status"], "outcome_unknown");
+    let listed = crate::test_daemon::Call::new("rows", json!({"selection": "chat_actions"}))
+        .answer(&w.daemon);
+    let action = &listed.value().expect("chat actions")["reply"]["rows"][0];
+    assert_eq!(action["state"], "outcome_unknown");
     assert_eq!(action["phase"], "claimed");
     assert_eq!(action["claimed_by"], Value::Null);
-    assert_eq!(action["claim_expires_at"], Value::Null);
     assert_eq!(
         exchange(&host, "GET", "/v1/chat-actions?by=tab-b", b"").json()["action"],
         Value::Null

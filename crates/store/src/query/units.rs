@@ -398,6 +398,8 @@ pub fn spec(unit: Unit) -> &'static UnitSpec {
         Unit::Queries => &QUERIES,
         Unit::Runs => &RUNS,
         Unit::Results => &RESULTS,
+        Unit::ImportJobs => &IMPORT_JOBS,
+        Unit::ChatActions => &CHAT_ACTIONS,
     }
 }
 
@@ -1087,6 +1089,134 @@ static RESULTS: UnitSpec = UnitSpec {
     session_pk: "",
     session_scope: None,
     search: Search::None,
+    relations: &[],
+    parents: &[],
+};
+
+/// Where an import job stands at `now`, or its holder: the model's rule
+/// over its events in order. A job always has its `started` event.
+pub(crate) fn import_job_part(a: &Aliases, now: i64, part: &str) -> String {
+    let fold = a.expand(&format!(
+        "(SELECT pl_import_job('{part}',{now},{{r}}_ev.kind,{{r}}_ev.by,{{r}}_ev.at ORDER BY {{r}}_ev.n) \
+         FROM source_import_job_event {{r}}_ev WHERE {{r}}_ev.job={{r}}.id)"
+    ));
+    if part == "state" {
+        format!("coalesce({fold},'waiting')")
+    } else {
+        fold
+    }
+}
+pub(crate) fn import_job_state(a: &Aliases, now: i64) -> String {
+    import_job_part(a, now, "state")
+}
+pub(crate) fn import_job_holder(a: &Aliases, now: i64) -> String {
+    import_job_part(a, now, "claimed_by")
+}
+/// Where a chat action stands at `now`, or its holder, by the model's rule.
+pub(crate) fn chat_action_part(a: &Aliases, now: i64, part: &str) -> String {
+    let fold = a.expand(&format!(
+        "(SELECT pl_chat_action('{part}',{now},{{r}}.needs_approval,{{r}}_ev.kind,{{r}}_ev.phase,{{r}}_ev.by,{{r}}_ev.at ORDER BY {{r}}_ev.n) \
+         FROM source_chat_action_event {{r}}_ev WHERE {{r}}_ev.action={{r}}.id)"
+    ));
+    if part == "state" {
+        a.expand(&format!(
+            "coalesce({fold},CASE WHEN {{r}}.needs_approval THEN 'awaiting_approval' ELSE 'queued' END)"
+        ))
+    } else {
+        fold
+    }
+}
+pub(crate) fn chat_action_state(a: &Aliases, now: i64) -> String {
+    chat_action_part(a, now, "state")
+}
+pub(crate) fn chat_action_holder(a: &Aliases, now: i64) -> String {
+    chat_action_part(a, now, "claimed_by")
+}
+pub(crate) const IMPORT_JOB_POSITION: &str = "(SELECT {r}_ev.position FROM source_import_job_event {r}_ev WHERE {r}_ev.job={r}.id AND {r}_ev.position IS NOT NULL ORDER BY {r}_ev.n DESC LIMIT 1)";
+pub(crate) const IMPORT_JOB_UPDATED: &str = "coalesce((SELECT max({r}_ev.at) FROM source_import_job_event {r}_ev WHERE {r}_ev.job={r}.id),{r}.created_at)";
+pub(crate) const CHAT_ACTION_UPDATED: &str = "coalesce((SELECT max({r}_ev.at) FROM source_chat_action_event {r}_ev WHERE {r}_ev.action={r}.id),{r}.created_at)";
+pub(crate) const CHAT_ACTION_PHASE: &str = "coalesce((SELECT {r}_ev.phase FROM source_chat_action_event {r}_ev WHERE {r}_ev.action={r}.id ORDER BY {r}_ev.n DESC LIMIT 1),'queued')";
+pub(crate) const CHAT_ACTION_DETAIL: &str = "(SELECT {r}_ev.detail FROM source_chat_action_event {r}_ev WHERE {r}_ev.action={r}.id ORDER BY {r}_ev.n DESC LIMIT 1)";
+pub(crate) const CHAT_ACTION_KIND: &str = "CASE WHEN {r}.stage_only THEN 'draft' ELSE 'submit' END";
+
+/// One of a job's counts as its latest event reports it.
+macro_rules! import_job_count {
+    ($column:literal) => {
+        concat!(
+            "(SELECT {r}_ev.",
+            $column,
+            " FROM source_import_job_event {r}_ev WHERE {r}_ev.job={r}.id ORDER BY {r}_ev.n DESC LIMIT 1)"
+        )
+    };
+}
+pub(crate) use import_job_count;
+
+static IMPORT_JOBS: UnitSpec = UnitSpec {
+    from: T("source_import_job {r}"),
+    key: "{r}.rowid",
+    identity: &["{r}.id"],
+    columns: &[
+        ("id", T("{r}.id"), Text),
+        ("provider", T("{r}.provider"), Text),
+        ("changed_since", T("{r}.since"), Time),
+        ("state", Expr::Clock(import_job_state), Text),
+        ("listed", T(import_job_count!("listed")), Number),
+        ("captured", T(import_job_count!("captured")), Number),
+        ("unchanged", T(import_job_count!("unchanged")), Number),
+        ("failed", T(import_job_count!("failed")), Number),
+        ("position", T(IMPORT_JOB_POSITION), Text),
+        ("detail", T(import_job_count!("detail")), Text),
+        ("created_at", T("{r}.created_at"), Time),
+        ("updated_at", T(IMPORT_JOB_UPDATED), Time),
+        ("claimed_by", Expr::Clock(import_job_holder), Text),
+    ],
+    time: "{r}.created_at",
+    newest_first: true,
+    session_order: false,
+    since: Some("{r}.created_at>={v}"),
+    until: Some("{r}.created_at<{v}"),
+    session_pk: "",
+    session_scope: None,
+    search: Search::None,
+    relations: &[],
+    parents: &[],
+};
+
+static CHAT_ACTIONS: UnitSpec = UnitSpec {
+    from: T("source_chat_action {r}"),
+    key: "{r}.rowid",
+    identity: &["{r}.id"],
+    columns: &[
+        ("id", T("{r}.id"), Text),
+        (
+            "provider",
+            T("json_extract({r}.request_json,'$.provider')"),
+            Text,
+        ),
+        (
+            "conversation",
+            T("json_extract({r}.request_json,'$.conversation')"),
+            Text,
+        ),
+        ("model", T("json_extract({r}.request_json,'$.model')"), Text),
+        ("text", T("json_extract({r}.request_json,'$.text')"), Text),
+        ("kind", T(CHAT_ACTION_KIND), Text),
+        ("state", Expr::Clock(chat_action_state), Text),
+        ("phase", T(CHAT_ACTION_PHASE), Text),
+        ("needs_approval", T("{r}.needs_approval"), Bool),
+        ("created_at", T("{r}.created_at"), Time),
+        ("updated_at", T(CHAT_ACTION_UPDATED), Time),
+        ("claimed_by", Expr::Clock(chat_action_holder), Text),
+        ("detail", T(CHAT_ACTION_DETAIL), Text),
+    ],
+    time: "{r}.created_at",
+    newest_first: true,
+    session_order: false,
+    since: Some("{r}.created_at>={v}"),
+    until: Some("{r}.created_at<{v}"),
+    session_pk: "",
+    session_scope: None,
+    search: Search::Substring("json_extract({r}.request_json,'$.text')"),
     relations: &[],
     parents: &[],
 };

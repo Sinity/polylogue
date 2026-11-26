@@ -125,7 +125,13 @@ pub fn declared(unit: Unit) -> &'static [DefaultId] {
         Unit::Alternates => &[CurrentAlternate],
         Unit::Feed => &[NotSeen],
         Unit::Deliveries => &[VisibleIfSession],
-        Unit::Documents | Unit::SessionLinks | Unit::Queries | Unit::Runs | Unit::Results => &[],
+        Unit::Documents
+        | Unit::SessionLinks
+        | Unit::Queries
+        | Unit::Runs
+        | Unit::Results
+        | Unit::ImportJobs
+        | Unit::ChatActions => &[],
     }
 }
 
