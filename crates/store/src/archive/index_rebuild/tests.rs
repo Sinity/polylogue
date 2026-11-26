@@ -25,7 +25,7 @@ fn rebuild_status(archive: &Archive) -> Option<IndexRebuild> {
         .unwrap()
         .reader()
         .unwrap()
-        .status()
+        .status(&[])
         .unwrap()
         .index_rebuild
 }

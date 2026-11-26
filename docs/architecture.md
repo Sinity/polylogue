@@ -259,7 +259,11 @@ store's module documentation, not of this page.
   version, with the reason
   ([parse versions](archive.md#reading-versions)). A chain is read when
   its stored length or its parser's parse version differs from what its
-  state names, and for no other cause.
+  state names, and for no other cause. The state is one value in one row;
+  every reader judges it, with what the archive says of the chain, through
+  the same function. A part of a reading commits only where the stored
+  state ends; one planned from an earlier state is refused and changes
+  nothing, so no plan's memory of a position can disagree with the index.
 - **A chain that a newer chain of its input covers has no reading**, and a
   chain that begins like a newer one holds rows only for the records the
   newer one lacks ([covered chains](archive.md#readings)). The rows it would
@@ -419,9 +423,11 @@ record lies whole inside one transaction. A user's write waits for at most
 the archive commit being written, never for an index transaction or a build
 step: user writes have their own queue on the archive writer, served before
 its next bulk group, and the index writer follows the archive. What follows
-in the index from archive commits alone (the progress of chains stored
-without parsed rows, alternate text) is applied by the index writer from
-what each commit hands it, up to the record position it keeps.
+in the index from archive commits alone (alternate text and its search
+entries, import membership) is applied by the index writer from the rows
+committed after the record position it keeps, which it advances. Bytes
+stored without parsed rows change nothing in the index: whether their chain
+is due is judged from its state and the archive's facts.
 
 One connection writes the index: the index writer's. Derivation and full-text
 entries are computed beside it on read connections from committed rows, and

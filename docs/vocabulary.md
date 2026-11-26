@@ -146,7 +146,14 @@ generated page of the thing they belong to, or on the area page that owns them.
   is owned by its chain; the **shown rows** of a session are composed from
   the parses that state it. **Reading** is what `read` produces.
 - **covered chain**: a chain a newer chain of the same input is known to
-  begin with all of; it has no reading.
+  begin with all of; it has no reading and is shown as `repeated`.
+- **chain state**: what the index holds of one chain: no parse, parsed to a
+  length under a parse version, or failed there with its reason. With what
+  the archive says of the chain it decides whether the chain is **due** and
+  how it is shown: `parsing`, `repeated`, `no_parser`, `done`, `waiting`,
+  `refused` or `failed`.
+- **stale part**: a part of a chain's parse that does not start where the
+  chain's stored state ends; it is refused and the chain stays due.
 - **upkeep** and **build**: keeping the installed index current as the record
   grows, and making an index from nothing; they give the same index.
 - **re-parse**: reading a chain's stored bytes again with a newer reading
@@ -643,3 +650,5 @@ another line does are in [set-aside.md](set-aside.md#words-another-line-does).
 | `last` (reference) | `latest` |
 | `--format` on `import` | `--origin` |
 | `--since` on the change feed | `--after` |
+| `no_parser_yet`, `partial` (parse states) | `no_parser`; a chain whose earlier bytes are missing has no state of its own |
+| stopped attempt (a failure bound to the executable) | a failed chain state, tried again only when its bytes or parse version change |
