@@ -511,47 +511,62 @@ pub(crate) fn missing_context(
     context: std::sync::Arc<polylogue_reading::operation::Context>,
 ) -> Result<crate::protocol::status::MissingContext, crate::daemon::Failure> {
     let mut missing = crate::protocol::status::MissingContext::default();
-    let mut cursor = None;
-    loop {
-        let rows = crate::daemon::query::run(
-            reader,
-            crate::daemon::query::Ask {
-                text: "events where event:hook_session_context | sort by at desc",
-                cursor: cursor.as_deref(),
-                page_size: Some(100),
-                why: false,
-                session: None,
-                context: std::sync::Arc::clone(&context),
-                embeddings: false,
-                ranking_identity: None,
-                near: None,
-                fields: &["data".into()],
-            },
-        )?
-        .value
-        .into_rows()?;
-        for row in rows.rows {
-            let data = &row["data"];
-            if data["outcome"] == "given" {
-                return Ok(missing);
-            }
-            if data["outcome"] == "not_given" {
-                let cause = data.str("cause").unwrap_or("unknown");
-                *missing.causes.entry(cause.into()).or_default() += 1;
-                if let Some(at) = data
+    let mut last_given: Option<polylogue_model::Timestamp> = None;
+    // Event ordering uses milliseconds. First find the latest successful
+    // start's full timestamp, then count only failures after it.
+    for counting in [false, true] {
+        let mut cursor = None;
+        'pages: loop {
+            let rows = crate::daemon::query::run(
+                reader,
+                crate::daemon::query::Ask {
+                    text: "events where kind:hook_session_context | sort by at desc",
+                    cursor: cursor.as_deref(),
+                    page_size: Some(100),
+                    why: false,
+                    session: None,
+                    context: std::sync::Arc::clone(&context),
+                    embeddings: false,
+                    ranking_identity: None,
+                    near: None,
+                    fields: &["data".into()],
+                },
+            )?
+            .value
+            .into_rows()?;
+            for row in rows.rows {
+                let data = &row["data"];
+                let at = data
                     .str("at_ns")
                     .and_then(|s| s.parse().ok())
                     .and_then(polylogue_model::Timestamp::from_unix_ns)
+                    .ok_or_else(|| {
+                        crate::daemon::Failure::internal(
+                            "stored session context outcome has no time",
+                        )
+                    })?;
+                if last_given.is_some_and(|given| at.unix_ms() < given.unix_ms()) {
+                    break 'pages;
+                }
+                if !counting && data["outcome"] == "given" {
+                    last_given = Some(last_given.map_or(at, |given| given.max(at)));
+                }
+                if counting
+                    && data["outcome"] == "not_given"
+                    && last_given.is_none_or(|given| at > given)
                 {
-                    missing.since = Some(at);
+                    let cause = data.str("cause").unwrap_or("unknown");
+                    *missing.causes.entry(cause.into()).or_default() += 1;
+                    missing.since = Some(missing.since.map_or(at, |since| since.min(at)));
                 }
             }
-        }
-        cursor = rows.next;
-        if cursor.is_none() {
-            return Ok(missing);
+            cursor = rows.next;
+            if cursor.is_none() {
+                break;
+            }
         }
     }
+    Ok(missing)
 }
 
 fn spool_error(what: &str, error: &std::io::Error) {
@@ -1078,7 +1093,11 @@ fn run_event(
         || (harness == Harness::Hermes
             && event == "pre_llm_call"
             && payload["extra"]["is_first_turn"] == true);
-    if starts && responded.as_ref().is_some_and(|(id, _)| !id.is_empty()) {
+    if starts
+        && responded
+            .as_ref()
+            .is_some_and(|(_, text)| text != TIMEOUT_NOTICE)
+    {
         record_start_context(
             startup,
             harness,

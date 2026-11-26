@@ -88,7 +88,8 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
                         .iter()
                         .map(|(cause, total)| {
                             format!(
-                                "{total} session starts without a brief: {cause}; since {}",
+                                "{total} session starts without a brief: {}; since {}",
+                                cause.replace('_', " "),
                                 missing.since.map_or("unknown".into(), |at| at.to_string())
                             )
                         })

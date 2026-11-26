@@ -1551,8 +1551,8 @@ fn a_morrow_brief_names_an_unloaded_scope_and_an_unrecorded_directory() {
             prepared.text.lines().find(|line| line.contains(expected)),
             Some(expected)
         );
-        assert_eq!(prepared.text.contains("--deadline none"), false);
-        assert_eq!(prepared.empty, false);
+        assert!(!prepared.text.contains("--deadline none"));
+        assert!(!prepared.empty);
     }
 }
 
@@ -1580,7 +1580,7 @@ fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
         &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
     )
     .unwrap();
-    assert_eq!(prepared.empty, false);
+    assert!(!prepared.empty);
     assert_eq!(
         prepared
             .left_out
@@ -1598,7 +1598,7 @@ fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
     );
     let visible = visible_context(&prepared.text);
     for prompt in prompts {
-        assert_eq!(visible.contains(&prompt.text), true, "{visible}");
+        assert!(visible.contains(&prompt.text), "{visible}");
     }
-    assert_eq!(prepared.text.contains("Its last answer:"), true);
+    assert!(prepared.text.contains("Its last answer:"));
 }

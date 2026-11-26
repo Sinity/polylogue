@@ -908,6 +908,7 @@ impl Fitter {
 /// so that no archive read happens under its lock.
 struct Here {
     repos: Vec<String>,
+    no_sessions: bool,
     /// Lightweight scope metadata after the last brief, newest first. Bodies
     /// and session annotations are read only for fitted expansions.
     recent: Vec<ScopeSession>,
@@ -923,14 +924,17 @@ impl Here {
         now: i64,
         after: Option<Timestamp>,
     ) -> Self {
-        let recent = index
-            .sessions_under(dirs, me)
+        let sessions = index.sessions_under(dirs, None);
+        let no_sessions = sessions.is_empty();
+        let recent = sessions
             .into_iter()
+            .filter(|s| me.is_none_or(|me| s.session.id.to_string() != me))
             .filter(|s| after.is_none_or(|p| s.session.last_activity.is_some_and(|t| t > p)))
             .cloned()
             .collect();
         Self {
             repos: index.repos_under(dirs),
+            no_sessions,
             recent,
             live: index
                 .live_under(dirs, me, now)
@@ -1211,7 +1215,7 @@ fn session_start(
         targets.push(Reference::Session(s.clone()));
     }
     let scope_loaded = found.is_some();
-    let no_sessions = found.as_ref().is_some_and(|h| h.recent.is_empty()) && previous.is_none();
+    let no_sessions = found.as_ref().is_some_and(|h| h.no_sessions);
     let (recent, live, beads) = match found {
         Some(h) => (h.recent, Some(h.live), Some(h.beads)),
         None => {
