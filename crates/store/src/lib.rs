@@ -102,7 +102,7 @@ pub use scope_index::{
     NearbySession, OpenBead, ScopeChanges, ScopeIndex, ScopeSession, ScopedLiveSession,
 };
 pub use writer::{
-    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep,
+    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParsePart,
     WriteReport, Writer, WriterSender,
 };
 

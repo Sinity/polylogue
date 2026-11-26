@@ -3,14 +3,14 @@ use super::*;
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 
 /// Independently compressed parser steps bound memory before one replacement transaction.
-pub struct ChainParse {
+pub struct Replacement {
     file: Option<BufWriter<std::fs::File>>,
     path: tempfile::TempPath,
     first: bool,
     pub(super) decoded: Vec<crate::staging::PreparedBatch>,
 }
 
-impl ChainParse {
+impl Replacement {
     pub fn new() -> Result<Self> {
         let (file, path) = tempfile::NamedTempFile::new()?.into_parts();
         Ok(Self {
@@ -20,7 +20,7 @@ impl ChainParse {
             decoded: Vec::new(),
         })
     }
-    pub fn push(&mut self, step: &mut ParseStep) -> Result<()> {
+    pub fn push(&mut self, step: &mut ParsePart) -> Result<()> {
         if step.prepared != Default::default() {
             return Err(StoreError::Invalid(
                 "a chain reading needs complete parsed values".into(),
@@ -56,7 +56,7 @@ impl ChainParse {
     /// Complete parse steps are read without resolving local cache keys first.
     pub(crate) fn visit_source(
         &mut self,
-        mut apply: impl FnMut(&ParseStep) -> Result<()>,
+        mut apply: impl FnMut(&ParsePart) -> Result<()>,
     ) -> Result<()> {
         self.finish()?;
         let mut input = BufReader::new(std::fs::File::open(&self.path)?);
@@ -85,7 +85,7 @@ impl ChainParse {
 }
 
 /// Writes one step record with its prepared rows.
-fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<()> {
+fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParsePart) -> Result<()> {
     let start = file.stream_position()?;
     file.write_all(&0u64.to_le_bytes())?;
     let mut encoder = zstd::stream::write::Encoder::new(&mut *file, 1)?;
@@ -112,7 +112,7 @@ fn write_step(file: &mut BufWriter<std::fs::File>, step: &ParseStep) -> Result<(
     Ok(())
 }
 
-fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>> {
+fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParsePart>> {
     let mut size = [0u8; 8];
     let read = reader.read(&mut size[..1])?;
     if read == 0 {
@@ -151,7 +151,7 @@ fn read_step(reader: &mut BufReader<std::fs::File>) -> Result<Option<ParseStep>>
 
 #[derive(serde::Deserialize)]
 struct StoredStep(
-    ParseStep,
+    ParsePart,
     Vec<PreparedMessage>,
     Vec<PreparedDocument>,
     crate::fragment::PreparedFragments,
@@ -168,7 +168,7 @@ impl Inner {
         input: InputKey,
         chain: i64,
         length: u64,
-        mut reading: ChainParse,
+        mut reading: Replacement,
     ) -> Result<u64> {
         let exists: bool = self.archive.exists(
             "SELECT EXISTS(SELECT 1 FROM revision WHERE input=?1 AND chain=?2 AND length>=?3)",
@@ -221,7 +221,7 @@ impl Inner {
         input: InputKey,
         chain: i64,
         length: u64,
-        reading: ChainParse,
+        reading: Replacement,
     ) -> Result<u64> {
         let file = std::fs::File::open(&reading.path)?;
         let mut reader = BufReader::new(file);
@@ -285,24 +285,13 @@ pub(super) struct ReadingWrite<'a> {
     pub changes: &'a crate::change_summary::ChangeSummary,
 }
 
-/// Where a chain's steps go as they are parsed, in order from its first
-/// record: a reading staged on disk for one replacement transaction
-/// ([`ChainParse`]), or a build worker's scratch index
-/// ([`super::build::OpenChain`]).
-pub trait ChainSink {
-    /// The next step of the chain.
-    fn step(&mut self, step: &mut ParseStep) -> Result<()>;
-    /// Bytes the parse decoded, given before the steps that name them.
-    fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()>;
-}
-
-impl ChainSink for ChainParse {
-    fn step(&mut self, step: &mut ParseStep) -> Result<()> {
+impl crate::parse::ParseSink for Replacement {
+    fn part(&mut self, step: &mut ParsePart) -> Result<()> {
         self.push(step)
     }
 
     fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()> {
-        ChainParse::decoded(self, batch);
+        Replacement::decoded(self, batch);
         Ok(())
     }
 }
@@ -340,7 +329,7 @@ impl ChainSteps {
 
     /// Notes the bytes `step` names before any step is written, so every
     /// step is written against the same view of the archive.
-    pub(super) fn remember(&mut self, w: &ReadingWrite<'_>, step: &ParseStep) -> Result<()> {
+    pub(super) fn remember(&mut self, w: &ReadingWrite<'_>, step: &ParsePart) -> Result<()> {
         attachments::remember(step, w.register, &HashMap::new(), &mut self.known)
     }
 
@@ -350,7 +339,7 @@ impl ChainSteps {
         &mut self,
         tx: &Transaction<'_>,
         w: &ReadingWrite<'_>,
-        step: &mut ParseStep,
+        step: &mut ParsePart,
         touched: &mut super::readings::Touched,
     ) -> Result<()> {
         if self.first && !step.reset {
@@ -409,7 +398,7 @@ pub(super) fn write_reading(
     input: &InputKey,
     chain: i64,
     length: u64,
-    reading: &ChainParse,
+    reading: &Replacement,
     touched: &mut super::readings::Touched,
 ) -> Result<()> {
     let mut steps = ChainSteps::new(input, chain, length);

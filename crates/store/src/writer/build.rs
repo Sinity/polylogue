@@ -753,8 +753,8 @@ pub struct OpenChain<'w> {
     out: Out<'w>,
 }
 
-impl super::chain::ChainSink for OpenChain<'_> {
-    fn step(&mut self, step: &mut ParseStep) -> Result<()> {
+impl crate::parse::ParseSink for OpenChain<'_> {
+    fn part(&mut self, step: &mut ParsePart) -> Result<()> {
         if step.prepared != Default::default() {
             return Err(StoreError::Invalid(
                 "a chain reading needs complete parsed values".into(),

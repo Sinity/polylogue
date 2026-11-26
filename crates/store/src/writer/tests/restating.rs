@@ -42,7 +42,7 @@ fn active(w: &TestArchive) -> Vec<Json> {
 
 // A complete reparse orders its collected observations by their source records.
 fn replace_observations(w: &TestArchive, observations: &std::collections::BTreeMap<u64, Batch>) {
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     for mut b in observations.values().cloned() {
         reading.push(&mut b.parse[0]).unwrap();
     }

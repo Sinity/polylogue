@@ -29,7 +29,7 @@ fn parser(plan: &Plan) -> Box<dyn ExportParser> {
     parser
 }
 
-fn collect(engine: &Engine, plan: &Plan) -> Vec<ParseStep> {
+fn collect(engine: &Engine, plan: &Plan) -> Vec<ParsePart> {
     let mut steps = Vec::new();
     parse_export(plan, &mut *parser(plan), &engine.blobs, |item| {
         let (mut step, cursor) = item.into_parse(plan, &engine.blobs)?;
@@ -187,7 +187,7 @@ fn an_element_the_parser_cannot_read_does_not_refuse_its_siblings() {
     ));
 }
 
-fn assert_refusal(step: &ParseStep) {
+fn assert_refusal(step: &ParsePart) {
     assert!(matches!(
         step.delivery.unwrap().source,
         ExportDeliverySource::ContainerHeader

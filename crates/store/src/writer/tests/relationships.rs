@@ -36,7 +36,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
     let before = relationship_version(&w);
     assert_ne!(before, empty);
     let mut replacement = original.clone();
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut replacement.parse[0]).unwrap();
     w.writer
         .replace_chain(replacement.input, stored.chain, replacement.length, reading)
@@ -49,7 +49,7 @@ fn chain_replacement_keeps_the_relationship_revision_but_retraction_changes_it()
     );
     let mut removed = original;
     removed.parse[0].output.links.clear();
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut removed.parse[0]).unwrap();
     w.writer
         .replace_chain(removed.input, stored.chain, removed.length, reading)
@@ -156,7 +156,7 @@ fn relations_read_in_coordinate_order_whatever_was_stored_first() {
         ["claude-code:a", "claude-code:b"]
     );
     partial.parse[0].output.links.clear();
-    let mut reading = ChainParse::new().unwrap();
+    let mut reading = Replacement::new().unwrap();
     reading.push(&mut partial.parse[0]).unwrap();
     w.writer
         .replace_chain(partial.input, stored.chain, partial.length, reading)

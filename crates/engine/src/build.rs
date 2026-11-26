@@ -16,7 +16,7 @@ use crate::{Engine, EngineError, LoopMsg, Pass, has_reading, pool};
 use crossbeam_channel::{Receiver, Select, Sender, TrySendError};
 use polylogue_model::{Cause, Caused as _, LockExt as _};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
-use polylogue_store::writer::ChainSink as _;
+use polylogue_store::parse::ParseSink as _;
 use polylogue_store::writer::build::{BuildPhase, BuildWorker, PhaseClock};
 use polylogue_store::{Change, InputKey};
 use std::path::PathBuf;

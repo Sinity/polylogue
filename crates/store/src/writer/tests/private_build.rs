@@ -102,7 +102,7 @@ pub(in crate::writer) fn runs(
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
         for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
         open.finish().unwrap();
     }
@@ -137,7 +137,7 @@ fn a_group_two_chains_bring_is_one_row_and_each_text_reads_from_it() {
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
         for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
         open.finish().unwrap();
     }
@@ -195,7 +195,7 @@ fn assembling_counts_up_to_its_total_when_a_message_names_an_unstated_session() 
             .begin(&sender, &batch.input, chain, batch.length)
             .unwrap();
         for step in &mut batch.parse {
-            crate::writer::ChainSink::step(&mut open, step).unwrap();
+            crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
         open.finish().unwrap();
     }
@@ -464,7 +464,7 @@ fn private_build_crash_child() {
         .begin(&sender, &batch.input, chains[1], batch.length)
         .unwrap();
     for step in &mut batch.parse {
-        crate::writer::ChainSink::step(&mut open, step).unwrap();
+        crate::parse::ParseSink::part(&mut open, step).unwrap();
     }
     open.finish().unwrap();
     runs.extend(second.finish().unwrap());

@@ -51,12 +51,12 @@ pub(crate) mod readings;
 mod rows;
 mod search;
 mod shown;
-pub use chain::{ChainParse, ChainSink};
+pub use chain::Replacement;
 
 use crate::archive::writer::captured::stored_reading_chain;
 use crate::encoding::{PreparedDocument, PreparedMessage, block_text, unpack_block};
 pub use batch::{
-    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParseStep,
+    Batch, DatabaseLog, ImportMember, InContainer, InFlight, InputKey, Observation, ParsePart,
     WriteReport,
 };
 use search::*;
@@ -81,7 +81,13 @@ enum Msg {
         Option<crossbeam_channel::Sender<&'static str>>,
         SyncSender<Result<Vec<build::BuildPhase>>>,
     ),
-    ReplaceChain(InputKey, i64, u64, Box<ChainParse>, SyncSender<Result<u64>>),
+    ReplaceChain(
+        InputKey,
+        i64,
+        u64,
+        Box<Replacement>,
+        SyncSender<Result<u64>>,
+    ),
     Stop,
     /// The archive committed: what follows from it in the index is applied.
     Wake,
@@ -459,7 +465,7 @@ impl WriterSender {
         input: InputKey,
         chain: i64,
         length: u64,
-        reading: ChainParse,
+        reading: Replacement,
     ) -> Result<u64> {
         self.queue_chain(input, chain, length, reading)?
             .recv()
@@ -497,7 +503,7 @@ impl WriterSender {
         input: InputKey,
         chain: i64,
         length: u64,
-        mut reading: ChainParse,
+        mut reading: Replacement,
     ) -> Result<Receiver<Result<u64>>> {
         reading.finish()?;
         reading.check(&input.id, chain)?;

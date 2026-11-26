@@ -12,7 +12,7 @@ pub(super) fn normalize(
     })
 }
 pub(super) fn normalize_known(
-    step: &mut ParseStep,
+    step: &mut ParsePart,
     known: &HashMap<BlobHash, Option<u64>>,
 ) -> Result<()> {
     normalize_using(std::slice::from_mut(step), |hash| {
@@ -22,7 +22,7 @@ pub(super) fn normalize_known(
     })
 }
 pub(super) fn remember(
-    step: &ParseStep,
+    step: &ParsePart,
     archive: &Connection,
     pending: &HashMap<BlobHash, u64>,
     known: &mut HashMap<BlobHash, Option<u64>>,
@@ -67,7 +67,7 @@ fn size(archive: &Connection, hash: BlobHash) -> Result<Option<u64>> {
 }
 
 fn normalize_using(
-    steps: &mut [ParseStep],
+    steps: &mut [ParsePart],
     mut available: impl FnMut(BlobHash) -> Result<Option<u64>>,
 ) -> Result<()> {
     for step in steps {
