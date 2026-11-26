@@ -224,11 +224,13 @@ fn similar_query_on_morrow_keeps_its_rows_after_vectors_are_extended() {
         .iter()
         .map(|row| row["id"].as_str().unwrap())
         .collect::<Vec<_>>();
-    let expected = (1..=12)
-        .rev()
+    // Messages 4 and 8 contain only tool calls, so they follow ranked prose.
+    let expected = [12, 11, 10, 9, 7, 6, 5, 3, 2, 1, 8, 4]
+        .into_iter()
         .map(|n| format!("claude-code:c1000000-0000-4000-8000-{n:012}"))
         .collect::<Vec<_>>();
     assert_eq!(ids, expected);
+    assert_eq!(before["unknown"]["similar"], 2);
     put_vector(&daemon, "local/synthetic/2/document/unit", 255, [0., 1.]);
     let after = query();
     assert_eq!(after["rows"], before["rows"]);
