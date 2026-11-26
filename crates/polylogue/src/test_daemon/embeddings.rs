@@ -139,11 +139,21 @@ impl VectorLoad {
     }
 }
 
-impl Drop for VectorLoad {
-    fn drop(&mut self) {
+impl VectorLoad {
+    pub(crate) fn finish(mut self) -> command_surface::Answer<serde_json::Value> {
         polylogue_store::fault::release();
         let answer = self.0.take().unwrap().join().unwrap();
         polylogue_store::fault::clear();
-        crate::test_answers::listing(answer);
+        answer
+    }
+}
+
+impl Drop for VectorLoad {
+    fn drop(&mut self) {
+        if let Some(thread) = self.0.take() {
+            polylogue_store::fault::release();
+            let _ = thread.join();
+            polylogue_store::fault::clear();
+        }
     }
 }

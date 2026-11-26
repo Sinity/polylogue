@@ -163,7 +163,7 @@ impl Warm {
             .and_then(|store| store.revision(key))
             .map_err(|e| e.to_string())?;
         let address = (key.to_owned(), revision);
-        let (flight, base) = {
+        let (flight, base, count_load) = {
             let mut cache = cache_lock(&self.vectors)?;
             if let Some(set) = cache.exact(key, revision) {
                 return Ok(set);
@@ -178,7 +178,8 @@ impl Warm {
                 .newest(key)
                 .filter(|set| set.revision < revision)
                 .cloned();
-            (flight, base)
+            let count_load = cache.newest(key).is_none();
+            (flight, base, count_load)
         };
         // Even an unwinding load wakes the requests sharing its result.
         struct Loading<'a> {
@@ -213,7 +214,9 @@ impl Warm {
             .and_then(|store| match base {
                 Some(base) => store.append(&base),
                 None => {
-                    self.counts.vector_loads.fetch_add(1, Ordering::Relaxed);
+                    if count_load {
+                        self.counts.vector_loads.fetch_add(1, Ordering::Relaxed);
+                    }
                     store.load(key)
                 }
             })
@@ -389,7 +392,7 @@ impl Warm {
 
 /// Waits for another request's vectors; the read's deadline bounds the
 /// wait and its cancellation wakes it.
-fn wait_for<T>(flight: &Arc<Flight<T>>) -> Result<Arc<T>, String> {
+fn wait_for<T: Send + Sync + 'static>(flight: &Arc<Flight<T>>) -> Result<Arc<T>, String> {
     polylogue_store::read::limit::ReadLimit::set_stage("vector wait");
     let limit = polylogue_store::read::limit::ReadLimit::current();
     let _wake = limit.as_ref().map(|limit| {

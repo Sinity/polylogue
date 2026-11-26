@@ -163,24 +163,82 @@ fn wait_for_vector_wait(limit: &polylogue_store::read::limit::ReadLimit) {
 fn two_requests_for_newer_vectors_load_them_once() {
     use crate::test_daemon::embeddings::{VectorLoad, vector_query};
     let daemon = crate::test_daemon::start("parser text");
+    let provider = daemon.local_embeddings();
+    let before = crate::test_answers::ok(crate::test_answers::listing(
+        vector_query().answer(&daemon.daemon),
+    ));
+    provider.join().unwrap();
+    put_vector(&daemon, "local/synthetic/2/document/unit", 255, [0., 1.]);
     let loading = VectorLoad::start(&daemon);
     let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
     let answer = std::thread::scope(|scope| {
         let reading = scope.spawn(|| vector_query().within(&limit).answer(&daemon.daemon));
         wait_for_vector_wait(&limit);
-        drop(loading);
+        crate::test_answers::ok(crate::test_answers::listing(loading.finish()));
         reading.join().unwrap()
     });
-    let rows = crate::test_answers::listing(answer);
+    let rows = crate::test_answers::ok(crate::test_answers::listing(answer));
     assert_eq!(rows["rows"][0]["id"], "claude-code:u1");
     assert_eq!(rows["count"], 1);
+    assert_eq!(rows["rows"], before["rows"]);
     let status = crate::test_answers::ok(crate::test_daemon::call(
         &daemon.daemon,
         "status",
         json!({}),
     ));
     assert_eq!(status["warm"]["vector_loads"], 1);
-    assert_eq!(status["warm"]["vectors"]["vectors"], 1);
+    assert_eq!(status["warm"]["vectors"]["vectors"], 2);
+}
+
+#[test]
+fn similar_query_on_morrow_keeps_its_rows_after_vectors_are_extended() {
+    let daemon = crate::test_daemon::start_with_sources_and_workers(
+        "parser text",
+        &|home| {
+            let name = "7f3a2c10-0001-4000-8000-000000000001.jsonl";
+            std::fs::copy(
+                polylogue_testkit::morrow_dir()
+                    .join("claude-code/projects/-home-op-morrow")
+                    .join(name),
+                home.join(".claude/projects/-p").join(name),
+            )
+            .unwrap();
+        },
+        12,
+        2,
+    );
+    let provider = daemon.local_embeddings();
+    let query = || {
+        crate::test_answers::ok(crate::test_answers::listing(crate::test_daemon::call(
+            &daemon.daemon,
+            "rows",
+            json!({"selection": "messages where session:claude-code:7f3a2c10-0001-4000-8000-000000000001 similar:parser"}),
+        )))
+    };
+    let before = query();
+    provider.join().unwrap();
+    assert_eq!(before["count"], 12);
+    let ids = before["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["id"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    let expected = (1..=12)
+        .rev()
+        .map(|n| format!("claude-code:c1000000-0000-4000-8000-{n:012}"))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, expected);
+    put_vector(&daemon, "local/synthetic/2/document/unit", 255, [0., 1.]);
+    let after = query();
+    assert_eq!(after["rows"], before["rows"]);
+    assert_eq!(after["count"], 12);
+    let status = crate::test_answers::ok(crate::test_daemon::call(
+        &daemon.daemon,
+        "status",
+        json!({}),
+    ));
+    assert_eq!(status["warm"]["vector_loads"], 1);
 }
 
 #[test]
@@ -200,7 +258,7 @@ fn cancelled_request_leaves_while_another_request_loads_vectors() {
         wait_for_vector_wait(&limit);
         cancel.cancel();
         let answer = finished.recv_timeout(Duration::from_secs(10));
-        drop(loading);
+        crate::test_answers::ok(crate::test_answers::listing(loading.finish()));
         let answer = answer.expect("cancelled request waited for the other load");
         match answer.outcome {
             command_surface::Outcome::Error(error) => {
@@ -209,8 +267,56 @@ fn cancelled_request_leaves_while_another_request_loads_vectors() {
             other => panic!("{other:?}"),
         }
     });
-    let rows = crate::test_answers::listing(vector_query().answer(&daemon.daemon));
+    let rows = crate::test_answers::ok(crate::test_answers::listing(
+        vector_query().answer(&daemon.daemon),
+    ));
     assert_eq!(rows["rows"][0]["id"], "claude-code:u1");
+}
+
+#[test]
+fn a_request_deadline_ends_its_vector_wait() {
+    use crate::test_daemon::embeddings::{VectorLoad, vector_query};
+    let daemon = crate::test_daemon::start("parser text");
+    let loading = VectorLoad::start(&daemon);
+    let limit =
+        polylogue_store::read::limit::ReadLimit::new(Duration::from_secs(1), Default::default());
+    let answer = vector_query().within(&limit).answer(&daemon.daemon);
+    crate::test_answers::ok(crate::test_answers::listing(loading.finish()));
+    match answer.outcome {
+        command_surface::Outcome::Error(error) => {
+            assert_eq!(error.code.as_deref(), Some("deadline_exceeded"))
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn stopping_the_daemon_ends_a_request_waiting_for_vectors() {
+    use crate::test_daemon::embeddings::{VectorLoad, vector_query};
+    let daemon = crate::test_daemon::start("parser text");
+    let loading = VectorLoad::start(&daemon);
+    let limit = polylogue_store::read::limit::ReadLimit::without_deadline(
+        daemon.daemon.archive.stop().child(),
+    );
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            done.send(vector_query().within(&limit).answer(&daemon.daemon))
+                .unwrap()
+        });
+        wait_for_vector_wait(&limit);
+        daemon.daemon.archive.stop().cancel();
+        let waiting = finished.recv_timeout(Duration::from_secs(10));
+        let loading = loading.finish();
+        for answer in [waiting.expect("daemon stop did not end the wait"), loading] {
+            match answer.outcome {
+                command_surface::Outcome::Error(error) => {
+                    assert_eq!(error.code.as_deref(), Some("shutting_down"))
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+    });
 }
 
 #[test]
@@ -219,7 +325,7 @@ fn clearing_during_a_load_does_not_publish_its_vectors() {
     let daemon = crate::test_daemon::start("parser text");
     let loading = VectorLoad::start(&daemon);
     daemon.daemon.warm.clear();
-    drop(loading);
+    crate::test_answers::ok(crate::test_answers::listing(loading.finish()));
     let status = crate::test_answers::ok(crate::test_daemon::call(
         &daemon.daemon,
         "status",
@@ -371,7 +477,7 @@ fn summary_does_not_wait_for_a_load() {
     ));
     assert_eq!(status["warm"]["vector_loads"], 1);
     assert_eq!(status["warm"]["vectors"], serde_json::Value::Null);
-    drop(loading);
+    crate::test_answers::ok(crate::test_answers::listing(loading.finish()));
 }
 
 #[test]
