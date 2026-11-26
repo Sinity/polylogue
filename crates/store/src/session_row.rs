@@ -5,7 +5,7 @@
 
 use crate::Result;
 use crate::encoding::Columns;
-use polylogue_model::{Session, SessionId, SessionKind, Timestamp, Title, TitleSource};
+use polylogue_model::{Session, SessionId, SessionKind, Title, TitleSource};
 use rusqlite::{Connection, Row, params};
 
 /// The columns [`read`] expects, in order, for a `SELECT`.

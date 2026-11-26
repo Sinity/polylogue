@@ -212,7 +212,7 @@ struct Call {
 
 /// A tool result block: (session order, message ID, block index) places it.
 struct CallResult {
-    place: (String, String, i64),
+    place: (Vec<u8>, String, i64),
     outcome: Option<ResultOutcome>,
     at: Option<i64>,
 }
@@ -1099,7 +1099,7 @@ impl<'c> Work<'_, 'c> {
         &mut self,
         message_pk: i64,
         session_pk: i64,
-        order: &str,
+        order: &[u8],
         value: &ReadingValue,
     ) -> Result<()> {
         let m = &value.message;

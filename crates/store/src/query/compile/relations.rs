@@ -479,6 +479,7 @@ impl<'a> Compiler<'a> {
                     order.push(OrderKey {
                         column: value,
                         descending: key.descending,
+                        ..Default::default()
                     });
                 }
                 // An explicit sort is tied by row identity, never by an earlier time order.
@@ -902,6 +903,7 @@ impl Compiler<'_> {
         let mut order = vec![OrderKey {
             column: count_slot,
             descending: true,
+            ..Default::default()
         }];
         order.extend(key_slots.iter().map(|slot| OrderKey::ascending(slot)));
         let sql = format!(
@@ -1057,6 +1059,7 @@ impl Compiler<'_> {
                 order.push(OrderKey {
                     column: count.clone(),
                     descending: true,
+                    ..Default::default()
                 });
             }
             order.extend(keys.iter().map(|key| OrderKey::ascending(key)));

@@ -63,7 +63,7 @@ impl ChangeSummary {
                 Ok(Before {
                     session: row.get(0)?,
                     parent: row.get(1)?,
-                    key: Key::message(&row.get::<_, String>(2)?, &row.get::<_, String>(3)?),
+                    key: Key::message(&row.get::<_, Vec<u8>>(2)?, &row.get::<_, String>(3)?),
                 })
             })
             .optional()?;
@@ -206,7 +206,7 @@ impl ChangeSummary {
         let mut parent_of = |session: i64, id: &str, existed: bool| -> Result<Option<Key>> {
             Ok(parent
                 .query_row(params![session, id], |row| {
-                    <(String, String, i64)>::try_from(row)
+                    <(Vec<u8>, String, i64)>::try_from(row)
                 })
                 .optional()?
                 .filter(|(_, _, replies)| existed || *replies > 1)

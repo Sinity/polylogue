@@ -74,7 +74,8 @@ impl Key {
             return "no row".into();
         }
         let order = self.order();
-        let rest = &self.0[(order.len() + 1).min(self.0.len())..];
+        let rest = &self.0[order.len()..];
+        let order = polylogue_model::hex(order);
         match rest.split_first() {
             Some((kind, id)) => format!(
                 "{} {} at {order}",

@@ -1381,7 +1381,7 @@ fn a_completed_empty_index_does_not_begin_another_build() {
     let writer = Writer::start(&archive).unwrap();
     assert!(archive.index_build().is_none());
     let index = crate::archive::open_read(&archive.index_db()).unwrap();
-    assert!(crate::schema::same_schema(&index, &*crate::&*schema::INDEX_SCHEMA).unwrap());
+    assert!(crate::schema::same_schema(&index, &*crate::schema::INDEX_SCHEMA).unwrap());
     drop(writer);
 }
 
