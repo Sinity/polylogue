@@ -1510,3 +1510,95 @@ fn unjudged_contrary_bodies_are_counted_without_hiding_the_eligible_claim() {
     assert!(refs.contains(&"annotation:unjudged-agent@unjudged-agent-v1".into()));
     assert!(text.len() <= 4000);
 }
+
+#[test]
+fn a_morrow_brief_names_an_unloaded_scope_and_an_unrecorded_directory() {
+    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let pool = archive.reads();
+    let reader = pool.reader().unwrap();
+    let context = fixture_context(Timestamp::from_unix_ms(T0).unwrap());
+    let ask = Ask::SessionStart {
+        cwd: "/an/unrecorded/dir".into(),
+        session: None,
+        source: StartSource::Startup,
+    };
+    for (scope, expected) in [
+        (
+            SharedScopeIndex::default(),
+            "live sessions, open Beads, recent sessions: not available (scope index has not loaded); check `polylogue status`",
+        ),
+        (
+            scope_of(&reader),
+            "No session is recorded for this directory: /an/unrecorded/dir.",
+        ),
+    ] {
+        let prepared = prepare(
+            BriefContext {
+                reader: &reader,
+                pending_deliveries: &[],
+                delivery_id: "d1",
+                context: &context,
+                ranking_identity: None,
+                near: None,
+            },
+            &scope,
+            &[],
+            &ask,
+            command_surface::TokenBudget::Unlimited,
+        )
+        .unwrap();
+        assert_eq!(
+            prepared.text.lines().find(|line| line.contains(expected)),
+            Some(expected)
+        );
+        assert_eq!(prepared.text.contains("--deadline none"), false);
+        assert_eq!(prepared.empty, false);
+    }
+}
+
+#[test]
+fn a_morrow_takeover_keeps_its_prompts_when_open_items_cannot_be_read() {
+    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let session = polylogue_testkit::session(1);
+    // A malformed stored JSON value makes this section's real SQLite read fail.
+    let index = polylogue_store::archive::open_write(&archive.root.join("index.db"), 1).unwrap();
+    index
+        .execute(
+            "UPDATE session SET live_facts='{' WHERE id=?1",
+            [session.to_string()],
+        )
+        .unwrap();
+    drop(index);
+    let pool = archive.reads();
+    let reader = pool.reader().unwrap();
+    let prompts = reader.prompts(&session.to_string()).unwrap();
+    let prepared = takeover(
+        &reader,
+        &session,
+        u64::MAX,
+        "d1",
+        &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
+    )
+    .unwrap();
+    assert_eq!(prepared.empty, false);
+    assert_eq!(
+        prepared
+            .left_out
+            .iter()
+            .find(|item| item.what == "open items")
+            .map(|item| item.reason.as_str()),
+        Some("not available (malformed JSON)")
+    );
+    assert_eq!(
+        prepared
+            .text
+            .lines()
+            .find(|line| line.starts_with("- open items:")),
+        Some("- open items: not available (malformed JSON)")
+    );
+    let visible = visible_context(&prepared.text);
+    for prompt in prompts {
+        assert_eq!(visible.contains(&prompt.text), true, "{visible}");
+    }
+    assert_eq!(prepared.text.contains("Its last answer:"), true);
+}

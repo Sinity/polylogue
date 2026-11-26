@@ -1075,3 +1075,146 @@ fn a_hook_that_cannot_reach_the_daemon_names_the_cause() {
     );
     answering.join().unwrap();
 }
+
+#[test]
+fn a_morrow_session_start_without_context_is_stored_and_counted_after_daemon_start() {
+    use crate::daemon::{server::Server, service::ArchiveMode};
+    let archive = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let startup = Startup::for_test(archive.config(), &archive.root);
+    let session = polylogue_testkit::session(1);
+    let payload =
+        json!({"session_id":session.native(), "cwd":"/home/op/morrow", "source":"startup"});
+    assert_eq!(
+        run_event(
+            Harness::ClaudeCode,
+            "SessionStart",
+            payload.clone(),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+            |_, _, _| panic!("no context to emit")
+        ),
+        ExitCode::SUCCESS
+    );
+    let mut runtime =
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
+    let mut server = Server::start(std::sync::Arc::clone(&runtime.daemon)).unwrap();
+    let status = crate::protocol::into_value(crate::test_daemon::call(
+        &runtime.daemon,
+        "status",
+        json!({}),
+    ))
+    .unwrap();
+    assert_eq!(
+        status["session_starts_without_context"],
+        json!({
+            "since":"2026-10-07T10:00:00Z", "causes":{"daemon_unreachable":1}
+        })
+    );
+    let rows = crate::protocol::into_value(crate::test_daemon::call(&runtime.daemon, "rows", json!({"selection":"events where event:hook_session_context", "fields":["data", "session"]}))).unwrap();
+    assert_eq!(rows["count"], 1, "{rows}");
+    assert_eq!(rows["rows"][0]["session"], session.to_string());
+    let data = &rows["rows"][0]["data"];
+    assert_eq!(data["outcome"], "not_given");
+    assert_eq!(data["cause"], "daemon_unreachable");
+    assert_eq!(data["cwd"], "/home/op/morrow");
+    assert_eq!(
+        data["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("the daemon is not running ("),
+        true
+    );
+    for (reference, expected) in [
+        (
+            "claude-code:absent",
+            "session claude-code:absent is not in the archive (yet)",
+        ),
+        (
+            "https://chatgpt.com/c/absent",
+            "session chatgpt:absent is not in the archive (yet); capture it with `polylogue import chatgpt`",
+        ),
+    ] {
+        let reply = respond(
+            Harness::ClaudeCode,
+            "UserPromptSubmit",
+            &json!({"session_id":session.native(), "prompt":reference}),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+        )
+        .unwrap();
+        assert_eq!(reply.1, expected);
+    }
+    let mut config = archive.config();
+    config.clock = polylogue_model::WallClock::fixed("2026-10-07T10:00:01Z".parse().unwrap());
+    let startup = Startup::for_test(config, &archive.root);
+    let mut text = String::new();
+    assert_eq!(
+        run_event(
+            Harness::ClaudeCode,
+            "SessionStart",
+            payload,
+            &startup,
+            Instant::now() + CONTEXT_BUDGET,
+            |_, _, context| {
+                text = context.into();
+                true
+            }
+        ),
+        ExitCode::SUCCESS
+    );
+    assert!(
+        text.contains("Polylogue brief for /home/op/morrow"),
+        "{text}"
+    );
+    server.shutdown().unwrap();
+    runtime.shutdown().unwrap();
+    let mut runtime =
+        crate::test_daemon::start_runtime(&archive.root, archive.config(), ArchiveMode::Standalone)
+            .unwrap();
+    let status = crate::protocol::into_value(crate::test_daemon::call(
+        &runtime.daemon,
+        "status",
+        json!({}),
+    ))
+    .unwrap();
+    assert_eq!(
+        status["session_starts_without_context"],
+        json!({"since":null, "causes":{}})
+    );
+    runtime.shutdown().unwrap();
+}
+
+#[test]
+fn a_session_start_names_a_wrong_archive_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let startup = Startup::for_test(
+        crate::test_daemon::engine_config(dir.path().join("home")),
+        &dir.path().join("absent"),
+    );
+    assert_eq!(
+        respond(
+            Harness::Codex,
+            "SessionStart",
+            &json!({"session_id":"s1", "cwd":"/home/op/morrow"}),
+            &startup,
+            Instant::now() + CONTEXT_BUDGET
+        ),
+        None
+    );
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    let path = spool.join(format!("{}.ndjson", std::os::unix::process::parent_id()));
+    let text = std::fs::read_to_string(path).unwrap();
+    let record: Value = serde_json::from_str(text.trim()).unwrap();
+    assert_eq!(record["event"], "SessionContext");
+    assert_eq!(record["payload"]["cause"], "archive_path");
+    assert_eq!(
+        record["payload"]["detail"],
+        format!(
+            "no archive at {}; check the archive path",
+            startup.config.archive.display()
+        )
+    );
+}

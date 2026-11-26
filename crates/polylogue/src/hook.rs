@@ -269,6 +269,7 @@ fn request_id(at: jiff::Timestamp) -> std::io::Result<String> {
 pub(crate) enum Unanswered {
     /// Nothing listens on the socket: the daemon is not running.
     NotRunning(std::io::Error),
+    ArchiveUnavailable(PathBuf),
     /// The daemon did not answer within the hook's budget.
     TimedOut(Duration),
     /// The answer arrived but is not what the operation answers.
@@ -283,6 +284,11 @@ impl std::fmt::Display for Unanswered {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NotRunning(error) => write!(f, "the daemon is not running ({error})"),
+            Self::ArchiveUnavailable(path) => write!(
+                f,
+                "no archive at {}; check the archive path",
+                path.display()
+            ),
             Self::TimedOut(budget) => write!(
                 f,
                 "the daemon did not answer within {} ms",
@@ -476,6 +482,93 @@ fn is_uuid(w: &str) -> bool {
         })
 }
 
+/// A session-start result uses the same durable input as the hook event.
+fn record_start_context(
+    startup: &Startup,
+    harness: Harness,
+    session: Option<SessionId>,
+    payload: Value,
+) {
+    let spool = startup
+        .engine
+        .spool_dir(polylogue_sources::hook_spool::ORIGIN);
+    if let Err(error) = append_record(
+        &spool,
+        harness,
+        "SessionContext",
+        &payload,
+        &json!({}),
+        session,
+        startup,
+    ) {
+        spool_error("session context", &error);
+    }
+}
+
+/// Read the stored start outcomes through the same event query callers use.
+pub(crate) fn missing_context(
+    reader: &polylogue_store::Reader<'_>,
+    context: std::sync::Arc<polylogue_reading::operation::Context>,
+) -> Result<crate::protocol::status::MissingContext, crate::daemon::Failure> {
+    let mut missing = crate::protocol::status::MissingContext::default();
+    let mut cursor = None;
+    loop {
+        let rows = crate::daemon::query::run(
+            reader,
+            crate::daemon::query::Ask {
+                text: "events where event:hook_session_context | sort by at desc",
+                cursor: cursor.as_deref(),
+                page_size: Some(100),
+                why: false,
+                session: None,
+                context: std::sync::Arc::clone(&context),
+                embeddings: false,
+                ranking_identity: None,
+                near: None,
+                fields: &["data".into()],
+            },
+        )?
+        .value
+        .into_rows()?;
+        for row in rows.rows {
+            let data = &row["data"];
+            if data["outcome"] == "given" {
+                return Ok(missing);
+            }
+            if data["outcome"] == "not_given" {
+                let cause = data.str("cause").unwrap_or("unknown");
+                *missing.causes.entry(cause.into()).or_default() += 1;
+                if let Some(at) = data
+                    .str("at_ns")
+                    .and_then(|s| s.parse().ok())
+                    .and_then(polylogue_model::Timestamp::from_unix_ns)
+                {
+                    missing.since = Some(at);
+                }
+            }
+        }
+        cursor = rows.next;
+        if cursor.is_none() {
+            return Ok(missing);
+        }
+    }
+}
+
+fn spool_error(what: &str, error: &std::io::Error) {
+    let message = format!("polylogue hook: could not record {what}: {error}");
+    eprintln!("{}", polylogue_render::terminal::escape(&message));
+    // The spool cannot record its own failed write. Send one native journal
+    // entry without waiting for the journal to answer.
+    if let Ok(socket) = std::os::unix::net::UnixDatagram::unbound()
+        && socket.set_nonblocking(true).is_ok()
+    {
+        let _ = socket.send_to(
+            format!("PRIORITY=3\nSYSLOG_IDENTIFIER=polylogue-hook\nMESSAGE={message}").as_bytes(),
+            "/run/systemd/journal/socket",
+        );
+    }
+}
+
 /// Asks for context and returns its text, recording it as delivered once
 /// it is handed to the harness by the caller. Context that cannot be had is
 /// none, and the hook says why on its standard error; a timed-out advisory
@@ -487,9 +580,36 @@ fn context(
     until: Instant,
 ) -> Option<(String, String)> {
     let advisory = matches!(&ask, Ask::Advisory { .. });
+    let start = match &ask {
+        Ask::SessionStart {
+            session,
+            cwd,
+            source,
+        } => Some((session.clone(), cwd.clone(), *source)),
+        _ => None,
+    };
+    let unavailable = |cause: &str, detail: String| {
+        if let Some((session, cwd, source)) = &start {
+            let harness = session
+                .as_ref()
+                .and_then(|s| Harness::parse(s.origin().as_str()));
+            let Some(harness) = harness else {
+                return;
+            };
+            record_start_context(
+                startup,
+                harness,
+                session.clone(),
+                json!({
+                    "outcome": "not_given", "cause": cause, "detail": detail, "cwd": cwd, "source": source,
+                }),
+            );
+        }
+    };
     let request_id = match request_id(startup.client.clock.now()) {
         Ok(id) => id,
         Err(error) => {
+            unavailable("request", error.to_string());
             report("no context", &error);
             return None;
         }
@@ -540,6 +660,7 @@ fn context(
     };
     let remaining = until.saturating_duration_since(Instant::now());
     if remaining.is_zero() {
+        unavailable("timeout", TIMEOUT_NOTICE.into());
         return (!advisory).then(|| (String::new(), TIMEOUT_NOTICE.into()));
     }
     let allowance = if advisory {
@@ -560,23 +681,28 @@ fn context(
         fresh: false,
         format: Default::default(),
     };
-    let answer = exchange(
-        &Archive::at(&startup.config.archive).socket(),
-        &request,
-        allowance,
-    )
-    .and_then(|data| {
-        if advisory {
-            serde_json::from_value::<crate::brief::BriefReply>(data)
-                .map_err(|error| Unanswered::Undecodable(error.to_string()))
-        } else {
-            brief_of(data)
-        }
-    });
+    let archive = Archive::at(&startup.config.archive);
+    let answer = exchange(&archive.socket(), &request, allowance)
+        .map_err(|cause| {
+            if matches!(cause, Unanswered::NotRunning(_)) && !archive.archive_db().is_file() {
+                Unanswered::ArchiveUnavailable(archive.root.clone())
+            } else {
+                cause
+            }
+        })
+        .and_then(|data| {
+            if advisory {
+                serde_json::from_value::<crate::brief::BriefReply>(data)
+                    .map_err(|error| Unanswered::Undecodable(error.to_string()))
+            } else {
+                brief_of(data)
+            }
+        });
     let answer = match answer {
         Ok(answer) => answer,
         Err(cause) if cause.timed_out() && advisory => return None,
         Err(cause) if cause.timed_out() => {
+            unavailable("timeout", cause.to_string());
             // No prepared bytes were emitted. Only the daemon's existing
             // queue may confirm preparation; without it, acceptance stays
             // unresolved.
@@ -604,14 +730,24 @@ fn context(
             return Some((String::new(), TIMEOUT_NOTICE.into()));
         }
         Err(cause) => {
+            let reason = match &cause {
+                Unanswered::NotRunning(_) => "daemon_unreachable",
+                Unanswered::ArchiveUnavailable(_) => "archive_path",
+                Unanswered::Failed(_) => "refusal",
+                Unanswered::Undecodable(_) => "answer",
+                _ => "exchange",
+            };
+            unavailable(reason, cause.to_string());
             report("no context", &cause);
             return None;
         }
     };
     if answer.prepared.empty {
+        unavailable("empty", "the daemon returned no context".into());
         return None;
     }
-    Some((answer.delivery?, answer.prepared.text))
+    // An unreferenced missing-session notice still belongs in hook output.
+    Some((answer.delivery.unwrap_or_default(), answer.prepared.text))
 }
 
 /// The brief a one-step `rows` line answered, or why there is none.
@@ -864,6 +1000,17 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         }
         Value::Null
     });
+    run_event(harness, event, payload, startup, until, emit)
+}
+
+fn run_event(
+    harness: Harness,
+    event: &str,
+    payload: Value,
+    startup: &Startup,
+    until: Instant,
+    output: impl FnOnce(Harness, &str, &str) -> bool,
+) -> ExitCode {
     let observed = environment::snapshot(
         event,
         &payload,
@@ -877,12 +1024,7 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
     let invocation = match append_to_spool(&spool, harness, event, &payload, &observed, startup) {
         Ok(invocation) => Some(invocation),
         Err(error) => {
-            eprintln!(
-                "{}",
-                polylogue_render::terminal::escape(&format!(
-                    "polylogue hook: could not record {event}: {error}"
-                ))
-            );
+            spool_error(event, &error);
             None
         }
     };
@@ -931,7 +1073,24 @@ pub fn run(harness: Harness, event: &str, startup: &Startup) -> ExitCode {
         ids.extend(claimed.iter().cloned());
         texts.push(text.clone());
     }
-    if !texts.is_empty() && recorder.emit(&ids, &texts.join("\n\n"), emit) {
+    let emitted = !texts.is_empty() && recorder.emit(&ids, &texts.join("\n\n"), output);
+    let starts = (event == "SessionStart" && payload["source"] != "fork")
+        || (harness == Harness::Hermes
+            && event == "pre_llm_call"
+            && payload["extra"]["is_first_turn"] == true);
+    if starts && responded.as_ref().is_some_and(|(id, _)| !id.is_empty()) {
+        record_start_context(
+            startup,
+            harness,
+            session,
+            json!({
+                "outcome": if emitted { "given" } else { "not_given" },
+                "cause": if emitted { Value::Null } else { json!("output") },
+                "invocation": invocation, "cwd": payload["cwd"],
+            }),
+        );
+    }
+    if emitted {
         for d in &ids {
             delivered(startup, d, DELIVERED_BUDGET);
         }
