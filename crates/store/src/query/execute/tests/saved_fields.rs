@@ -688,6 +688,7 @@ fn alternate_true_admits_alternate_text() {
                 },
             ))
             .unwrap();
+        archive.writer.flush_rows().unwrap();
     };
     let withdraw = |id: &str, target: &str| {
         archive
@@ -701,6 +702,7 @@ fn alternate_true_admits_alternate_text() {
                 },
             ))
             .unwrap();
+        archive.writer.flush_rows().unwrap();
     };
     assert_head(Some("translated"));
     revise("translated-next", "translated", "drugi");
