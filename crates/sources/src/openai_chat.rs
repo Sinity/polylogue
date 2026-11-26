@@ -27,7 +27,8 @@ pub const ORIGIN: &str = "openai-chat";
 
 /// An array whose first message opens with `role`, or an object whose first
 /// key is `messages`.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     let json = path.extension().is_some_and(|e| e == "json");
     json && matches!(
         (first_byte(head), first_key(head)),

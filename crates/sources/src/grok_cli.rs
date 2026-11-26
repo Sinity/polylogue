@@ -72,7 +72,8 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     Place::from_path(path).is_some() && first_key(head) == Some("type")
 }
 

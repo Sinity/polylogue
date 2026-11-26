@@ -39,7 +39,20 @@ pub const ORIGIN: &str = "chatgpt";
 /// `conversations.json` or a shard `conversations-NNN.json`, holding an
 /// array of ChatGPT conversations. claude.ai's export uses the same name;
 /// its conversations start with `uuid`, ChatGPT's never do.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+///
+/// One conversation alone, in the conversation API's shape (`mapping`,
+/// `current_node`, `conversation_id`), is recognized whatever the file is
+/// named, once the whole document is read.
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::Kind;
+    if head.shape.is_some()
+        && head.holds("mapping", Kind::Object)
+        && head.has("current_node")
+        && head.holds("conversation_id", Kind::String)
+    {
+        return true;
+    }
+    let head = head.bytes;
     if !recognize_name(path) || first_byte(head) != Some(b'[') {
         return false;
     }

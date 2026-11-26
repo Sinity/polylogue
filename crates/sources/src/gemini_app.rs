@@ -24,7 +24,8 @@ use std::path::Path;
 
 pub const ORIGIN: &str = "gemini-app";
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     let p = path.to_string_lossy();
     p.ends_with("My Activity/Gemini Apps/MyActivity.html")
         && head.trim_ascii_start().starts_with(b"<")

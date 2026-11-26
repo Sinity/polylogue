@@ -22,18 +22,17 @@ pub const ORIGIN: &str = "grok";
 
 /// Recognize the import framework's short prefix, or the account export's
 /// standard filename. Metadata before the signature can require that filename.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    if path.extension().is_none_or(|extension| extension != "json") {
-        return false;
-    }
-    first_key(head) == Some("conversations")
-        || serde_json::from_slice::<Json>(head)
-            .is_ok_and(|value| value.get("conversations").is_some())
-        || (path
-            .file_name()
-            .is_some_and(|name| name == "prod-grok-backend.json")
-            && crate::document::first_byte(head) == Some(b'{'))
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::Kind;
+    path.file_name().is_some_and(|name| name == EXPORT)
+        && match head.shape {
+            Some(_) => head.holds("conversations", Kind::Array),
+            None => head.top() == Some(Kind::Object),
+        }
 }
+
+/// The account export's one file.
+pub const EXPORT: &str = "prod-grok-backend.json";
 
 pub fn open(_: &Path) -> Option<Parse> {
     Some(Parse::Export(Box::new(Export::default())))

@@ -18,14 +18,15 @@ pub fn is_database(path: &Path) -> bool {
         .is_some_and(|name| name == "conversation_summaries.db")
 }
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     path.file_name()
         .is_some_and(|name| name == "conversation_summaries.db.jsonl")
         && crate::document::starts_object_lines(head)
 }
 
 pub fn is_row_dump(path: &Path) -> bool {
-    is_database(path) || recognize(path, b"{")
+    is_database(path) || recognize(path, &crate::document::Head::new(b"{"))
 }
 pub fn open(path: &Path) -> Option<Parse> {
     is_row_dump(path).then(|| Parse::Lines(Box::new(Summaries)))

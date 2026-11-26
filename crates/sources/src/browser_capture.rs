@@ -39,7 +39,8 @@ const KIND_KEY: &str = "polylogue_capture_kind";
 /// Recognizes capture logs and single captures, including ones that start
 /// with `schema_version`, without treating an unrelated schema-versioned
 /// JSON file as one.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     path.extension().is_some_and(|e| e == "json")
         && (head.starts_with(polylogue_model::capture_log::MAGIC)
             || (first_byte(head) == Some(b'{')

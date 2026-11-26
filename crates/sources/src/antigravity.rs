@@ -22,7 +22,8 @@ pub const VERSION: u32 = 1;
 pub const ORIGIN: &str = "antigravity";
 pub const LOCATIONS: &[&str] = &[".gemini/antigravity/conversations/**/*.pb", cli::LOCATION];
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     cli::recognize(path)
         || (path.extension().is_some_and(|e| e == "pb")
             && path.ancestors().any(|p| {

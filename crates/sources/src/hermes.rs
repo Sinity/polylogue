@@ -61,7 +61,8 @@ fn unknown_time_event(
     }
 }
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     if observer::recognize(path, head)
         || verification::recognize(path)
         || trajectory::recognize(path, head)

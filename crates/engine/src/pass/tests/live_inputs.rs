@@ -94,7 +94,9 @@ fn new_files_and_database_records_run_while_another_parser_waits() {
     std::fs::write(&path, b"{}\n").unwrap();
     let origin = Box::leak(Box::new(OriginSpec {
         name: "synthetic",
-        harness_prefixes: &[],
+        import: polylogue_sources::origin::Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         modules: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,

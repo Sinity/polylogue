@@ -27,11 +27,19 @@ use std::path::Path;
 
 pub const ORIGIN: &str = "otel-genai";
 
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::Kind;
     let ext = path.extension().and_then(|e| e.to_str());
-    matches!(ext, Some("json" | "jsonl"))
-        && first_byte(head) == Some(b'{')
-        && first_key(head) == Some("resourceSpans")
+    if !matches!(ext, Some("json" | "jsonl")) {
+        return false;
+    }
+    match head.shape {
+        Some(_) => head.top() == Some(Kind::Object) && head.holds("resourceSpans", Kind::Array),
+        // A JSONL trace is no one JSON value: its first line decides.
+        None => {
+            first_byte(head.bytes) == Some(b'{') && first_key(head.bytes) == Some("resourceSpans")
+        }
+    }
 }
 
 pub fn open(_path: &Path) -> Option<Parse> {

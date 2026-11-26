@@ -49,7 +49,18 @@ fn is_listing(path: &Path) -> bool {
 }
 
 /// A prompt document starts with one of its three top-level keys.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+///
+/// Read whole, a prompt is the object holding a `chunkedPrompt`.
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    use crate::document::Kind;
+    if head.shape.is_some()
+        && !is_listing(path)
+        && head.top() == Some(Kind::Object)
+        && head.holds("chunkedPrompt", Kind::Object)
+    {
+        return true;
+    }
+    let head = head.bytes;
     if is_listing(path) {
         return first_byte(head) == Some(b'{') && first_key(head) == Some("files");
     }

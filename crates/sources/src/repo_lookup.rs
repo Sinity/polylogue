@@ -17,7 +17,8 @@ pub const ORIGIN: &str = "polylogue-repo-lookup";
 pub const LOCATIONS: &[&str] = &["polylogue/repo-lookup/*.json"];
 
 /// The document Polylogue writes: `{"path": …, "remote": …, …}`.
-pub fn recognize(path: &Path, head: &[u8]) -> bool {
+pub fn recognize(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     path.extension().is_some_and(|e| e == "json")
         && crate::document::first_key(head) == Some("path")
 }

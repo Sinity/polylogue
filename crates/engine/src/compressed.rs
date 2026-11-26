@@ -5,19 +5,35 @@ use crate::*;
 use polylogue_store::staging::{PreparedBatch, PreparedBytes};
 use std::io::{BufRead, BufReader, Read, Seek};
 
-/// A file named by the session ID it states rather than by its place: a
-/// Codex rollout, plain or compressed. Codex's other files are locations.
+/// A file named by the ID it states rather than by its place (a Codex
+/// rollout, plain or compressed), with how it states it. The origin's
+/// other files are locations.
+pub(crate) fn provider_id(found: &collect::Found) -> Option<polylogue_sources::origin::ProviderId> {
+    match found.origin.input_identity {
+        polylogue_sources::InputIdentity::ProviderId(id)
+            if is_compressed(found) || (id.named)(&found.path) =>
+        {
+            Some(id)
+        }
+        _ => None,
+    }
+}
+
 pub(crate) fn is_rollout(found: &collect::Found) -> bool {
-    found.origin.input_identity == polylogue_sources::InputIdentity::ProviderId
-        && (is_compressed(found)
-            || matches!(
-                polylogue_sources::codex::File::from_path(&found.path),
-                Some(polylogue_sources::codex::File::Rollout { .. })
-            ))
+    provider_id(found).is_some()
 }
 
 fn is_compressed(found: &collect::Found) -> bool {
-    found.origin.name == "codex-compressed"
+    found.origin.compressed_form_of.is_some()
+}
+
+/// The origin whose parser reads a found file: its own, or for a compressed
+/// file the origin it is a compressed form of.
+fn read_as(found: &'static OriginSpec) -> &'static OriginSpec {
+    found
+        .compressed_form_of
+        .and_then(polylogue_sources::origin::by_name)
+        .unwrap_or(found)
 }
 
 fn decoded(source: &std::fs::File, compressed: bool) -> std::io::Result<Box<dyn BufRead>> {
@@ -201,8 +217,8 @@ impl RolloutCapture {
             ..
         } = self;
         let path = &path;
-        let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
-        let compressed = found_origin.name == "codex-compressed";
+        let origin = read_as(found_origin);
+        let compressed = found_origin.compressed_form_of.is_some();
         let reads = polylogue_store::ReadPool::with_budget(archive, 1, read_memory)?;
         let mut source = std::fs::File::open(path)?;
         if FileFacts::of(&source.metadata()?) != facts {
@@ -432,7 +448,7 @@ impl Engine {
         priority: pool::Priority,
     ) -> Result<RolloutStep, EngineError> {
         let path = &found.path;
-        let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
+        let origin = read_as(found.origin);
         let compressed = is_compressed(found);
         let mut context = self.source_read_context(
             path,
@@ -467,13 +483,13 @@ impl Engine {
         // states. Until that record is complete there is nothing to name the
         // input by, so nothing is stored; the file is read again when it grows.
         let source = std::fs::File::open(path)?;
-        let Some(session_id) = polylogue_sources::codex::rollout_id(decoded(&source, compressed)?)?
-        else {
+        let read_id = provider_id(found).expect("a rollout states its ID").read;
+        let Some(input) = read_id(&mut decoded(&source, compressed)?)? else {
             return Ok(RolloutStep::Planned(None));
         };
         Ok(RolloutStep::Capture(Box::new(RolloutCapture {
             path: path.clone(),
-            input: format!("codex:rollout:{session_id}"),
+            input,
             priority,
             found_origin: found.origin,
             facts,
@@ -548,8 +564,7 @@ impl Engine {
                 .saturating_add(progress.parsed_upto);
             self.archive.record_build_bytes(bytes, read);
         }
-        let origin = polylogue_sources::origin::by_name("codex").expect("declared origin");
-        let mut state = InputState::new(id, origin);
+        let mut state = InputState::new(id, read_as(found_origin));
         state.facts = Some(facts);
         state.take_progress(&progress);
         self.inputs.insert(path.clone(), state);

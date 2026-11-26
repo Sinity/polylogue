@@ -126,7 +126,7 @@ impl Side {
     }
 }
 
-pub fn recognize_side(path: &Path, _head: &[u8]) -> bool {
+pub fn recognize_side(path: &Path, _head: &crate::document::Head<'_>) -> bool {
     Side::from_path(path).is_some()
 }
 
@@ -138,7 +138,8 @@ fn is_history_file(path: &Path) -> bool {
     path.file_name().is_some_and(|n| n == "history.jsonl")
 }
 
-pub fn recognize_history(path: &Path, head: &[u8]) -> bool {
+pub fn recognize_history(path: &Path, head: &crate::document::Head<'_>) -> bool {
+    let head = head.bytes;
     is_history_file(path) && crate::document::starts_object_lines(head)
 }
 

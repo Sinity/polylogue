@@ -31,7 +31,7 @@ pub enum Arrival {
 
 /// What names an input, which decides whether a move, a recompression or a
 /// second machine continues it or starts another one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub enum InputIdentity {
     /// The machine and the path: `blake3(machine \0 path bytes)`, the first
     /// 32 hex digits. A file the tool keeps at one place.
@@ -39,9 +39,214 @@ pub enum InputIdentity {
     /// An ID the provider writes into the file (`codex:rollout:<session
     /// id>`), for a tool that moves or compresses its own files. The file is
     /// not stored until that ID is readable.
-    ProviderId,
+    ProviderId(ProviderId),
     /// The bytes: the full BLAKE3 hex of an imported file.
     Content,
+}
+
+/// How a file names itself by the ID its provider writes into it.
+#[derive(Debug, Clone, Copy)]
+pub struct ProviderId {
+    /// Whether the file at a path is one named by the ID it states; the
+    /// origin's other files are named by their location.
+    pub named: fn(&Path) -> bool,
+    /// The input ID the file states, read from its first record (decoded);
+    /// `None` until that record is complete.
+    pub read: fn(&mut dyn std::io::BufRead) -> std::io::Result<Option<String>>,
+}
+
+/// Local files an origin's records refer to (images attached by path),
+/// captured when the record is read.
+#[derive(Clone, Copy)]
+pub struct LocalReferences {
+    /// The working directory a record states for the records after it,
+    /// against which a relative reference resolves.
+    pub directory: fn(&polylogue_model::Json) -> Option<&str>,
+    /// Each local file a record refers to, as the record writes it.
+    pub each: fn(
+        &polylogue_model::Json,
+        &mut dyn FnMut(&str) -> std::io::Result<()>,
+    ) -> std::io::Result<()>,
+}
+
+/// The origin of a tool's context files no parser reads.
+pub const TOOL_CONTEXT: &str = "tool-context";
+/// The origin of a tool's databases no parser reads.
+pub const TOOL_DATABASE: &str = "tool-database";
+
+/// How `polylogue import` recognizes an origin's files (docs/capture.md,
+/// Import). One rule per origin: its `recognize`, given the whole document.
+pub struct Import {
+    /// A file on its own, or a member of a package that is no provider's
+    /// export.
+    pub alone: Alone,
+    /// The provider export this origin's files arrive in, and which of its
+    /// members are this origin's.
+    pub member: Option<Member>,
+    /// Whether a file this origin recognizes on its own makes the files
+    /// beside it members of its package, kept with it.
+    pub holds_package: fn(&Path) -> bool,
+}
+
+/// How a file on its own is recognized as an origin's.
+pub enum Alone {
+    /// Never on its own.
+    No,
+    /// Wherever it lies, by the origin's `recognize`: a declared structure,
+    /// named among the structures a refusal lists as tried.
+    Structure(&'static str),
+    /// When its path keeps one of the origin's locations and `recognize`
+    /// accepts it: a tool's file outside the tool's root.
+    Layout,
+    /// Only with `--origin NAME`: the shape has no reliable structure.
+    Named,
+}
+
+/// Which members of a provider export are an origin's.
+pub struct Member {
+    pub package: Package,
+    /// From the member's path inside the import (`export.zip!/a/b.json`),
+    /// its file name, and whether this origin recognizes it on its own.
+    pub is: fn(&str, &str, bool) -> bool,
+}
+
+/// The provider exports import knows by their structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Package {
+    ChatGpt,
+    ClaudeAi,
+    Takeout,
+    AiderPair,
+}
+
+impl Package {
+    /// The structure's name among the structures a refusal lists as tried.
+    pub fn structure(self) -> &'static str {
+        match self {
+            Package::ChatGpt => "ChatGPT export",
+            Package::ClaudeAi => "claude.ai export",
+            Package::Takeout => "Google Takeout",
+            Package::AiderPair => "Aider paired histories",
+        }
+    }
+
+    pub const ALL: [Package; 4] = [
+        Package::ChatGpt,
+        Package::ClaudeAi,
+        Package::Takeout,
+        Package::AiderPair,
+    ];
+
+    /// Whether a member named `name` makes its directory the root of a
+    /// package, whose deeper members (assets, sidecars) join it.
+    pub fn root_name(name: &str) -> bool {
+        conversations_name(name)
+            || name == crate::grok::EXPORT
+            || name == crate::codex_cloud::EXPORT
+            || name == crate::aider::HISTORY
+    }
+
+    /// The directory name that roots a Google Takeout part.
+    pub const TAKEOUT: &str = "Takeout";
+
+    /// The package the members under one root form, from each member's file
+    /// name and the origin that recognizes it on its own; an error when the
+    /// members declare two exports at once.
+    pub fn of(
+        root: &Path,
+        members: &[(&str, Option<&OriginSpec>)],
+    ) -> Result<Option<Package>, &'static str> {
+        if root.file_name().is_some_and(|name| name == Self::TAKEOUT) {
+            return Ok(Some(Package::Takeout));
+        }
+        let has = |name: &str| members.iter().any(|(member, _)| *member == name);
+        // An export's conversations, recognized as its provider's, or named
+        // beside the export's account file.
+        let conversations = |package: Package, account: &str| {
+            members.iter().any(|(name, origin)| {
+                conversations_name(name)
+                    && (origin.is_some_and(|origin| {
+                        origin
+                            .import
+                            .member
+                            .as_ref()
+                            .is_some_and(|member| member.package == package)
+                    }) || has(account))
+            })
+        };
+        let chatgpt = conversations(Package::ChatGpt, "user.json");
+        let claude = conversations(Package::ClaudeAi, "users.json");
+        match (chatgpt, claude) {
+            (true, true) => {
+                Err("export package declares conflicting ChatGPT and claude.ai structures")
+            }
+            (false, true) => Ok(Some(Package::ClaudeAi)),
+            (true, false) => Ok(Some(Package::ChatGpt)),
+            (false, false) if has(crate::aider::HISTORY) && has(crate::aider::COMPANION) => {
+                Ok(Some(Package::AiderPair))
+            }
+            (false, false) => Ok(None),
+        }
+    }
+
+    /// What becomes of a member of this package that no origin's member
+    /// rule takes.
+    pub fn others(self, path: &str) -> Others {
+        match self {
+            Package::ChatGpt | Package::ClaudeAi => Others::Kept,
+            // Other Takeout products are refused members.
+            Package::Takeout if TAKEOUT_KEPT.iter().any(|product| path.contains(product)) => {
+                Others::Kept
+            }
+            Package::Takeout => Others::Refused,
+            Package::AiderPair => Others::Alone,
+        }
+    }
+}
+
+/// The Takeout products whose files are kept: Gemini Apps activity, AI
+/// Studio prompts, Gems and NotebookLM.
+const TAKEOUT_KEPT: &[&str] = &[
+    "My Activity/Gemini Apps/",
+    "Drive/Google AI Studio/",
+    "Gemini/",
+    "NotebookLM/",
+];
+
+/// `conversations.json`, or a shard `conversations-NNN.json`.
+pub(crate) fn conversations_name(name: &str) -> bool {
+    name.starts_with("conversations") && name.ends_with(".json")
+}
+
+/// What becomes of a package member no origin's member rule takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Others {
+    /// Stored as a member of the export, with no parser.
+    Kept,
+    /// Refused: counted and not stored.
+    Refused,
+    /// Recognized as if it were on its own.
+    Alone,
+}
+
+fn always(_: &Path) -> bool {
+    true
+}
+
+impl Import {
+    /// A file import never takes on its own; no export holds it.
+    pub const NOT_IMPORTED: Import = Import {
+        alone: Alone::No,
+        member: None,
+        holds_package: always,
+    };
+
+    /// A tool's file, recognized outside its root by its layout.
+    pub const LAYOUT: Import = Import {
+        alone: Alone::Layout,
+        member: None,
+        holds_package: always,
+    };
 }
 
 /// The directory an origin's locations are relative to: the tool's own
@@ -147,8 +352,6 @@ macro_rules! modules {
 pub struct OriginSpec {
     pub modules: &'static [ParserModule],
     pub name: &'static str,
-    /// Text prefixes written by this harness in user-role messages.
-    pub harness_prefixes: &'static [&'static str],
     pub support: Support,
     pub arrival: Arrival,
     /// Which route its readings of a conversation are, for the route
@@ -165,7 +368,7 @@ pub struct OriginSpec {
     /// Whether a file is this origin's, from its path and first bytes. Runs
     /// after the location pattern matched and before the file is tracked; a
     /// suffix alone never decides it.
-    pub recognize: fn(&Path, &[u8]) -> bool,
+    pub recognize: fn(&Path, &crate::document::Head<'_>) -> bool,
     /// The parser for one input, which also says whether the input is read
     /// line by line or whole; `None` when the path is not one this origin
     /// parses.
@@ -188,6 +391,13 @@ pub struct OriginSpec {
     pub assets: Option<ExportAssets>,
     /// What fetches this origin's files into its spool.
     pub collector: Option<Collector>,
+    /// How `polylogue import` recognizes this origin's files.
+    pub import: Import,
+    /// The local files this origin's records refer to, captured beside them.
+    pub local_references: Option<LocalReferences>,
+    /// The origin whose parser reads this origin's files once decoded, when
+    /// they are its files compressed (a `.zst` Codex rollout).
+    pub compressed_form_of: Option<&'static str>,
 }
 
 /// Fetches an origin's files into its spool before the loop reads it.
@@ -319,7 +529,7 @@ impl OriginSpec {
     }
 }
 
-fn recognizes_nothing(_: &Path, _: &[u8]) -> bool {
+fn recognizes_nothing(_: &Path, _: &crate::document::Head<'_>) -> bool {
     false
 }
 
@@ -328,20 +538,10 @@ fn opens_nothing(_: &Path) -> Option<Parse> {
 }
 
 const CLAUDE_CODE: OriginSpec = OriginSpec {
+    import: Import::LAYOUT,
+    compressed_form_of: None,
+    local_references: None,
     name: "claude-code",
-    harness_prefixes: &[
-        "<local-command-stdout>",
-        "<local-command-stderr>",
-        "<local-command-caveat>",
-        "<system-reminder>",
-        "<task-notification>",
-        "[Request interrupted by user",
-        "Caveat: The messages below were generated by the user while running local commands",
-        "Caveat: The messages below are were generated by the user while running local commands",
-        "[SUGGESTION MODE: Suggest what the user might naturally type next into Claude Code.",
-        "This session is being continued from a previous session that ran out of context.",
-        "Base directory for this skill:",
-    ],
     modules: modules!(crate::claude_code::VERSION),
     support: Support::Parsed,
     arrival: Arrival::Live,
@@ -363,8 +563,10 @@ const CLAUDE_CODE: OriginSpec = OriginSpec {
 pub static ORIGINS: &[OriginSpec] = &[
     CLAUDE_CODE,
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "claude-code-side",
-        harness_prefixes: &[],
         modules: modules!(
             crate::claude_code::VERSION,
             crate::claude_code::side::VERSION
@@ -386,8 +588,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "claude-code-history",
-        harness_prefixes: &[],
         modules: modules!(
             crate::claude_code::VERSION,
             crate::claude_code::side::VERSION
@@ -409,24 +613,15 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "codex",
-        harness_prefixes: &[
-            "<environment_context>",
-            "# AGENTS.md instructions",
-            "<user_instructions>",
-            "<subagent_notification>",
-            "<recommended_plugins>",
-            "<codex_internal_context",
-            "<turn_aborted>",
-            "<skill>",
-            "<user_action>",
-            "<permissions instructions>",
-        ],
         modules: modules!(crate::codex::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
         route: Route::Live,
-        input_identity: InputIdentity::ProviderId,
+        input_identity: InputIdentity::ProviderId(crate::codex::ROLLOUT_ID),
         root: crate::codex::ROOT,
         locations: crate::codex::LOCATIONS,
         capture: Capture::Bytes,
@@ -440,8 +635,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: Some(crate::codex::LOCAL_REFERENCES),
         name: "codex-database",
-        harness_prefixes: &[],
         modules: modules!(crate::codex::VERSION, crate::codex::database::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
@@ -462,8 +659,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "gemini-cli",
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::gemini_cli::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
@@ -482,12 +681,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "antigravity",
         modules: modules!(
             crate::antigravity::VERSION,
             crate::antigravity::cli::VERSION
         ),
-        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
         route: Route::Live,
@@ -505,9 +706,11 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "antigravity-database",
         modules: modules!(crate::antigravity::database::VERSION),
-        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Live,
         route: Route::Live,
@@ -527,12 +730,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "antigravity-exports",
         modules: modules!(
             crate::antigravity::VERSION,
             crate::antigravity::cli::VERSION
         ),
-        harness_prefixes: &[],
         support: Support::Parsed,
         arrival: Arrival::Spool,
         route: Route::Capture,
@@ -550,8 +755,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: Some(crate::antigravity::server::COLLECTOR),
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("Hermes session files"),
+            member: None,
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: "hermes",
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::hermes::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
@@ -572,8 +783,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "grok-cli",
-        harness_prefixes: &[],
         modules: modules!(crate::grok_cli::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Live,
@@ -592,8 +805,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "polylogue-repo-lookup",
-        harness_prefixes: &[],
         modules: modules!(crate::repo_lookup::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
@@ -612,8 +827,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: crate::hook_spool::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(crate::hook_spool::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
@@ -632,8 +849,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: crate::browser_capture::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(
             crate::browser_capture::VERSION,
             crate::chatgpt::VERSION,
@@ -658,8 +877,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "pi",
-        harness_prefixes: &[],
         modules: &[],
         support: Support::NoParser,
         arrival: Arrival::Live,
@@ -681,8 +902,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::LAYOUT,
+        compressed_form_of: None,
+        local_references: None,
         name: "llm",
-        harness_prefixes: &[],
         modules: &[],
         support: Support::NoParser,
         arrival: Arrival::Live,
@@ -704,8 +927,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
-        name: "tool-context",
-        harness_prefixes: &[],
+        import: Import::NOT_IMPORTED,
+        compressed_form_of: None,
+        local_references: None,
+        name: TOOL_CONTEXT,
         modules: &[],
         support: Support::NoParser,
         arrival: Arrival::Live,
@@ -724,8 +949,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
-        name: "tool-database",
-        harness_prefixes: &[],
+        import: Import::NOT_IMPORTED,
+        compressed_form_of: None,
+        local_references: None,
+        name: TOOL_DATABASE,
         modules: &[],
         support: Support::NoParser,
         arrival: Arrival::Live,
@@ -744,8 +971,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::NOT_IMPORTED,
+        compressed_form_of: None,
+        local_references: None,
         name: "codex-local-file",
-        harness_prefixes: &[],
         modules: &[],
         support: Support::Kept,
         arrival: Arrival::Live,
@@ -764,13 +993,15 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::NOT_IMPORTED,
+        compressed_form_of: Some("codex"),
+        local_references: None,
         name: "codex-compressed",
-        harness_prefixes: &[],
         modules: &[],
         support: Support::Kept,
         arrival: Arrival::Live,
         route: Route::Live,
-        input_identity: InputIdentity::ProviderId,
+        input_identity: InputIdentity::ProviderId(crate::codex::ROLLOUT_ID),
         root: Root::HOME,
         locations: &[],
         capture: Capture::Bytes,
@@ -784,8 +1015,17 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("Codex Cloud tasks"),
+            member: Some(Member {
+                package: Package::ChatGpt,
+                is: |_, name, _| name == crate::codex_cloud::EXPORT,
+            }),
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: crate::codex_cloud::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::codex_cloud::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -804,8 +1044,17 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::No,
+            member: Some(Member {
+                package: Package::AiderPair,
+                is: |_, name, _| name == crate::aider::HISTORY || name == crate::aider::COMPANION,
+            }),
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: "aider",
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::aider::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -824,8 +1073,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::NOT_IMPORTED,
+        compressed_form_of: None,
+        local_references: None,
         name: "export-file",
-        harness_prefixes: &[],
         modules: &[],
         support: Support::Kept,
         arrival: Arrival::Import,
@@ -844,8 +1095,10 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import::NOT_IMPORTED,
+        compressed_form_of: None,
+        local_references: None,
         name: crate::polylogue_bundle::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(
             crate::export::VERSION,
             crate::polylogue_bundle::VERSION,
@@ -868,8 +1121,17 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("ChatGPT conversation"),
+            member: Some(Member {
+                package: Package::ChatGpt,
+                is: |_, name, _| conversations_name(name),
+            }),
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: "chatgpt",
-        harness_prefixes: &[],
         modules: modules!(crate::chatgpt::VERSION, crate::export::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -899,8 +1161,22 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("claude.ai conversation"),
+            member: Some(Member {
+                package: Package::ClaudeAi,
+                is: |path, name, _| {
+                    matches!(
+                        name,
+                        "conversations.json" | "memories.json" | "projects.json"
+                    ) || path.contains("/projects/")
+                },
+            }),
+            holds_package: |path| !crate::claude_ai::project_path(path),
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: "claude-ai",
-        harness_prefixes: &[],
         modules: modules!(crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -927,8 +1203,17 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("Claude Design chat"),
+            member: Some(Member {
+                package: Package::ClaudeAi,
+                is: |path, _, alone| alone && path.contains("/design_chats/"),
+            }),
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: "claude-design",
-        harness_prefixes: &[],
         modules: modules!(crate::claude_ai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -947,8 +1232,17 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("AI Studio prompt"),
+            member: Some(Member {
+                package: Package::Takeout,
+                is: |path, _, alone| alone && path.contains("Drive/Google AI Studio/"),
+            }),
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: crate::ai_studio::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(crate::ai_studio::VERSION, crate::export::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Spool,
@@ -978,8 +1272,19 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: Some(crate::ai_studio::drive::COLLECTOR),
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::No,
+            member: Some(Member {
+                package: Package::Takeout,
+                is: |path, name, _| {
+                    path.contains("My Activity/Gemini Apps/") && name == "MyActivity.html"
+                },
+            }),
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: crate::gemini_app::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::gemini_app::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -1009,8 +1314,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("Grok account export"),
+            member: None,
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: "grok",
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::grok::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -1037,8 +1348,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("OpenTelemetry GenAI"),
+            member: None,
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: crate::otel_genai::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::otel_genai::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -1057,8 +1374,14 @@ pub static ORIGINS: &[OriginSpec] = &[
         collector: None,
     },
     OriginSpec {
+        import: Import {
+            alone: Alone::Structure("OpenRouter room"),
+            member: None,
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: crate::openrouter::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::openrouter::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
@@ -1079,8 +1402,14 @@ pub static ORIGINS: &[OriginSpec] = &[
     // Last of the imports: its shapes are the most generic, so a specific
     // origin that recognizes the same file is tried first.
     OriginSpec {
+        import: Import {
+            alone: Alone::Named,
+            member: None,
+            holds_package: always,
+        },
+        compressed_form_of: None,
+        local_references: None,
         name: crate::openai_chat::ORIGIN,
-        harness_prefixes: &[],
         modules: modules!(crate::export::VERSION, crate::openai_chat::VERSION),
         support: Support::Parsed,
         arrival: Arrival::Import,
