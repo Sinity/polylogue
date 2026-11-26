@@ -647,12 +647,12 @@ fn read_rows(
 }
 
 #[cfg(test)]
-mod tests;
-
-#[cfg(test)]
 pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
     check.row::<DatabaseObservation>();
     check.row::<TableDefinition>();
     check.row::<TableColumn>();
     check.row::<TableRowId>();
 }
+
+#[cfg(test)]
+mod tests;

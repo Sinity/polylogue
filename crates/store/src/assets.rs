@@ -97,7 +97,7 @@ row! {
         changed: i64,
     }
     statements {
-        const OF_SESSION = "SELECT DISTINCT coalesce(c.changed,0) AS changed, im.import_id
+        const OF_SESSION = "SELECT DISTINCT im.import_id, coalesce(c.changed,0) AS changed
              FROM session s JOIN message m ON m.session_pk=s.pk
              JOIN input_ref i ON i.pk=m.input_pk
              JOIN import_member im ON im.input=i.id
