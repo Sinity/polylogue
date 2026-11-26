@@ -8,6 +8,17 @@ pub struct Replacement {
     path: tempfile::TempPath,
     first: bool,
     pub(super) decoded: Vec<crate::staging::PreparedBatch>,
+    /// The chain this replacement ends into, for [`ParseSink::end`].
+    target: Option<Target>,
+}
+
+/// Where a replacement goes when it ends, and who hears its commit.
+struct Target {
+    writer: WriterSender,
+    input: InputKey,
+    chain: i64,
+    length: u64,
+    reply: std::sync::mpsc::SyncSender<Result<u64>>,
 }
 
 impl Replacement {
@@ -18,7 +29,29 @@ impl Replacement {
             path,
             first: true,
             decoded: Vec::new(),
+            target: None,
         })
+    }
+
+    /// A replacement of chain `chain` of `input`, stored to `length`, that
+    /// its [`ParseSink::end`] queues to `writer`; the receiver answers once
+    /// its transaction committed.
+    pub fn of(
+        writer: &WriterSender,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+    ) -> Result<(Self, std::sync::mpsc::Receiver<Result<u64>>)> {
+        let (reply, wait) = std::sync::mpsc::sync_channel(1);
+        let mut replacement = Self::new()?;
+        replacement.target = Some(Target {
+            writer: writer.clone(),
+            input,
+            chain,
+            length,
+            reply,
+        });
+        Ok((replacement, wait))
     }
     pub fn push(&mut self, step: &mut ParsePart) -> Result<()> {
         if step.prepared != Default::default() {
@@ -286,8 +319,21 @@ pub(super) struct ReadingWrite<'a> {
 }
 
 impl crate::parse::ParseSink for Replacement {
-    fn part(&mut self, step: &mut ParsePart) -> Result<()> {
-        self.push(step)
+    fn part(&mut self, mut part: ParsePart) -> Result<()> {
+        self.push(&mut part)
+    }
+
+    fn end(mut self: Box<Self>) -> Result<()> {
+        let Target {
+            writer,
+            input,
+            chain,
+            length,
+            reply,
+        } = self.target.take().ok_or_else(|| {
+            StoreError::internal("a replacement made without its chain cannot end")
+        })?;
+        writer.send_chain(input, chain, length, *self, reply)
     }
 
     fn decoded(&mut self, batch: crate::staging::PreparedBatch) -> Result<()> {

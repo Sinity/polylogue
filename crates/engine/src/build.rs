@@ -235,7 +235,7 @@ impl Prepare {
                     if !complete {
                         return Err(EngineError::Stopped);
                     }
-                    open.finish()?;
+                    Box::new(open).end()?;
                     Ok(())
                 });
             drop(admitted);

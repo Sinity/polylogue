@@ -572,10 +572,10 @@ fn build_from_record(
         let mut open = runs[i % 2]
             .begin(&sender, &batch.input, stored, batch.length)
             .unwrap();
-        for step in &mut batch.parse {
+        for step in std::mem::take(&mut batch.parse) {
             crate::parse::ParseSink::part(&mut open, step).unwrap();
         }
-        open.finish().unwrap();
+        crate::parse::ParseSink::end(Box::new(open)).unwrap();
     }
     let paths = runs
         .into_iter()

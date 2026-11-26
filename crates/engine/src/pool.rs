@@ -15,6 +15,7 @@ use crate::{EngineError, plan::Plan, read};
 use polylogue_model::{Caused as _, Json, LockExt, spawn_named};
 use polylogue_sources::OriginSpec;
 use polylogue_sources::chain_names::SettleError;
+use polylogue_store::parse::ParseSink as _;
 use polylogue_store::staging::PreparedBatch;
 use polylogue_store::writer::Replacement;
 use polylogue_store::writer::WriterSender;
@@ -555,42 +556,35 @@ fn work(
                 }
                 let mut bytes_read = 0;
                 let reading = polylogue_model::caught(|| {
-                    run_chain(&mut plan, archive, store, chains, shared, &mut bytes_read)
+                    run_chain(
+                        &mut plan,
+                        archive,
+                        store,
+                        chains,
+                        shared,
+                        writer,
+                        &mut bytes_read,
+                    )
                 })
-                .unwrap_or_else(|panic| Err(polylogue_model::ChainFailure::from(panic).into()))
-                .and_then(|reading| {
-                    if chains.yielding.load(std::sync::atomic::Ordering::Acquire) {
-                        return Ok(None);
-                    }
-                    reading
-                        .map(|mut reading| {
-                            polylogue_store::timing::time(
-                                polylogue_store::timing::Stage::Store,
-                                || reading.finish(),
-                            )?;
-                            Ok(reading)
-                        })
-                        .transpose()
-                });
+                .unwrap_or_else(|panic| Err(polylogue_model::ChainFailure::from(panic).into()));
                 plan.source = Bytes::File;
                 if !plan.tracked {
                     plan.parser_state = None;
                     plan.tail = None;
                 }
+                // A replacement that is not ended is dropped: nothing of it
+                // reaches the index.
                 let reply = reading.and_then(|reading| {
                     if chains.yielding.load(std::sync::atomic::Ordering::Acquire) {
                         return Ok(None);
                     }
-                    let Some(reading) = reading else {
+                    let Some((reading, committed)) = reading else {
                         return Ok(None);
                     };
-                    let polylogue_store::Change::Reparse { chain } = plan.change else {
-                        return Err(EngineError::internal("a replacement needs a stored chain"));
-                    };
-                    writer
-                        .queue_chain(plan.input.clone(), chain, plan.size, reading)
-                        .map(Some)
-                        .map_err(EngineError::from)
+                    polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
+                        Box::new(reading).end()
+                    })?;
+                    Ok(Some(committed))
                 });
                 drop(charge);
                 let sent = acknowledge
@@ -806,9 +800,13 @@ fn run_chain(
     blobs: &Arc<polylogue_store::blobs::Blobs>,
     settings: &ChainSettings,
     shared: &Arc<Shared>,
+    writer: &WriterSender,
     bytes_read: &mut u64,
-) -> Result<Option<Replacement>, EngineError> {
-    let mut reading = Replacement::new()?;
+) -> Result<Option<(Replacement, Receiver<polylogue_store::Result<u64>>)>, EngineError> {
+    let polylogue_store::Change::Reparse { chain } = plan.change else {
+        return Err(EngineError::internal("a replacement needs a stored chain"));
+    };
+    let (mut reading, committed) = Replacement::of(writer, plan.input.clone(), chain, plan.size)?;
     let read = read_chain(
         plan,
         archive,
@@ -821,7 +819,7 @@ fn run_chain(
             Ok(())
         },
     )?;
-    Ok(read.then_some(reading))
+    Ok(read.then_some((reading, committed)))
 }
 
 /// Parses a stored chain end to end into `sink`, step by step; decoded
@@ -878,7 +876,7 @@ pub(crate) fn read_chain<S: polylogue_store::parse::ParseSink>(
                 decoded.push(new);
                 files.extend(file);
             }
-            let (mut step, cursor) = item.into_parse(plan, blobs)?;
+            let (step, cursor) = item.into_parse(plan, blobs)?;
             keep(
                 sink,
                 PreparedBatch {
@@ -898,7 +896,7 @@ pub(crate) fn read_chain<S: polylogue_store::parse::ParseSink>(
                 },
             )?;
             polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
-                sink.part(&mut step)
+                sink.part(step)
             })?;
             Ok(cursor)
         });
@@ -952,9 +950,9 @@ pub(crate) fn read_chain<S: polylogue_store::parse::ParseSink>(
             let Some(mut batch) = batch else {
                 return Err(EngineError::internal("a replacement returned no rows"));
             };
-            let mut steps = std::mem::take(&mut batch.batch.parse);
+            let steps = std::mem::take(&mut batch.batch.parse);
             keep(sink, batch)?;
-            for step in &mut steps {
+            for step in steps {
                 polylogue_store::timing::time(polylogue_store::timing::Stage::Store, || {
                     sink.part(step)
                 })?;

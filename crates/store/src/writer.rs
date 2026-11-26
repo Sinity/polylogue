@@ -503,8 +503,22 @@ impl WriterSender {
         input: InputKey,
         chain: i64,
         length: u64,
-        mut reading: Replacement,
+        reading: Replacement,
     ) -> Result<Receiver<Result<u64>>> {
+        let (reply, wait) = sync_channel(1);
+        self.send_chain(input, chain, length, reading, reply)?;
+        Ok(wait)
+    }
+
+    /// Queues a chain's replacement; `reply` answers once it committed.
+    pub(crate) fn send_chain(
+        &self,
+        input: InputKey,
+        chain: i64,
+        length: u64,
+        mut reading: Replacement,
+        reply: SyncSender<Result<u64>>,
+    ) -> Result<()> {
         reading.finish()?;
         reading.check(&input.id, chain)?;
         // Bytes the reading decoded (inline images) are stored first: the
@@ -514,7 +528,6 @@ impl WriterSender {
                 result?;
             }
         }
-        let (reply, wait) = sync_channel(1);
         if self
             .0
             .send(Msg::ReplaceChain(
@@ -528,7 +541,7 @@ impl WriterSender {
         {
             return Err(StoreError::WriterGone);
         }
-        Ok(wait)
+        Ok(())
     }
 
     /// Accepts one completed discovery walk; it is visible once its index
