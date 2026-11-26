@@ -105,23 +105,19 @@ fn behind_sql(selected: bool, chains: RevisionChains) -> String {
             "SELECT rowid,* FROM source_observation",
         )
     };
-    // Keep the selected chain lengths once: flattening an aggregated length
+    // Keep the selected chain lengths once: flattening the current-chain MAX
     // would evaluate it again for each progress predicate and result column.
     let chain_rows = match chains {
-        RevisionChains::All => {
-            "SELECT input,chain,max(length) AS length FROM revisions GROUP BY input,chain"
-        }
-        // A chain only grows, so the latest revision holds its length.
-        RevisionChains::Newest => {
-            "SELECT s.input,l.chain,l.length
-            FROM inputs s JOIN revisions l ON l.input=s.input AND l.number=s.number"
-        }
-        RevisionChains::Older => {
-            "SELECT r.input,r.chain,max(r.length) AS length
+        RevisionChains::All => "SELECT input,chain,max(length) AS length FROM revisions GROUP BY input,chain",
+        // Kept histories may resume an earlier chain with a shorter revision.
+        // Its planned length remains the maximum, not the latest revision length.
+        RevisionChains::Newest => "SELECT s.input,l.chain,
+            (SELECT max(r.length) FROM revisions r WHERE r.input=s.input AND r.chain=l.chain) AS length
+            FROM inputs s JOIN revisions l ON l.input=s.input AND l.number=s.number",
+        RevisionChains::Older => "SELECT r.input,r.chain,max(r.length) AS length
             FROM inputs s JOIN revisions l ON l.input=s.input AND l.number=s.number
             CROSS JOIN revisions r ON r.input=s.input WHERE r.chain<>l.chain
-            GROUP BY r.input,r.chain"
-        }
+            GROUP BY r.input,r.chain",
     };
     let database = crate::source::database_original("c.input");
     let chains_behind = chains_behind();
@@ -173,7 +169,9 @@ impl Reader<'_> {
                 "WITH latest AS (
                  SELECT input,max(number) AS number FROM source_revision GROUP BY input
              ), newest AS (
-                 SELECT r.input,r.chain,r.length
+                 SELECT r.input,r.chain,
+                     (SELECT max(s.length) FROM source_revision s
+                      WHERE s.input=r.input AND s.chain=r.chain) AS length
                  FROM latest l JOIN source_revision r ON r.input=l.input AND r.number=l.number
              ), formats AS (
                  SELECT i.id,{format} AS format FROM source_input i

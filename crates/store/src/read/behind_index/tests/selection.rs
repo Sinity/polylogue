@@ -60,7 +60,7 @@ fn retain(rows: &Rows, chains: RevisionChains, selected: Option<&[String]>) -> R
 }
 
 // This register includes histories the normal append writer would not create:
-// earlier chains resume after rewrites, each growing as a chain does.
+// earlier chains resume after rewrites, with a shorter last declared length.
 fn history(fixture: &Fixture, chains: usize, appends: usize) {
     let mut archive = Connection::open(fixture.archive.archive_db()).unwrap();
     let tx = archive.transaction().unwrap();
@@ -89,8 +89,8 @@ fn history(fixture: &Fixture, chains: usize, appends: usize) {
     }
     number += 1;
     tx.execute(
-        "INSERT INTO revision VALUES ('a',?1,'appended',1,?2,?1)",
-        params![number, 101 + appends],
+        "INSERT INTO revision VALUES ('a',?1,'appended',1,1,?1)",
+        [number],
     )
     .unwrap();
     tx.execute("UPDATE observation SET path_bytes=CAST(path AS BLOB)", [])
@@ -156,7 +156,7 @@ fn newest_and_older_match_the_query_for_stored_histories() {
         .chains_behind_index(&[], StoppedChains::Finished, RevisionChains::Newest, None)
         .unwrap();
     let a = newest.iter().find(|c| c.input == "a").unwrap();
-    assert_eq!((a.progress.chain, a.progress.length), (1, 108));
+    assert_eq!((a.progress.chain, a.progress.length), (1, 107));
     assert_eq!(a.source.path.as_deref(), Some("/home/op/chosen"));
     assert_eq!(
         a.source.path_bytes.as_deref(),
