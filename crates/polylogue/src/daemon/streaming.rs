@@ -30,7 +30,7 @@ pub(crate) fn start(
     let deadline = limit.deadline();
     let job = move || {
         let mut output = output;
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let result = polylogue_model::caught(|| {
             limit.scope(|| {
                 limit.check()?;
                 let context = worker.resolve_operation_context(invocation.clone())?;
@@ -41,8 +41,8 @@ pub(crate) fn start(
                     None => result,
                 }
             })
-        }))
-        .unwrap_or_else(|payload| Err(Failure::from(super::executor::Panicked::of(payload))));
+        })
+        .unwrap_or_else(|panic| Err(Failure::from(panic)));
         output.finish(result);
     };
     if daemon.executor.submit(class, deadline, job) {

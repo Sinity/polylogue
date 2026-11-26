@@ -203,12 +203,23 @@ impl Engine {
         };
         let before = file.metadata()?;
         if !before.is_file() {
-            return Err(std::io::Error::other("local reference is not a regular file").into());
+            return Err(
+                polylogue_store::StoreError::Failed(polylogue_model::Failure::stated(
+                    "",
+                    polylogue_model::Cause::Environment,
+                    polylogue_model::Code::Io,
+                    "local reference is not a regular file",
+                ))
+                .into(),
+            );
         }
         let facts = FileFacts::of(&before);
         let prepared = self.archive.prepare_bytes(&mut file)?;
         if facts != FileFacts::of(&file.metadata()?) || facts.size != prepared.len() {
-            return Err(std::io::Error::other("local file changed during capture").into());
+            return Err(polylogue_store::StoreError::SourceChanged(
+                "local file changed during capture",
+            )
+            .into());
         }
         let id = prepared.hash().to_string();
         pass.bytes_read += prepared.len();

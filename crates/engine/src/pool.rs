@@ -12,8 +12,9 @@
 //! its parser state passes from job to job.
 
 use crate::{EngineError, plan::Plan, read};
-use polylogue_model::{Json, LockExt, spawn_named};
+use polylogue_model::{Caused as _, Json, LockExt, spawn_named};
 use polylogue_sources::OriginSpec;
+use polylogue_sources::chain_names::SettleError;
 use polylogue_store::staging::PreparedBatch;
 use polylogue_store::writer::ChainParse;
 use polylogue_store::writer::WriterSender;
@@ -108,7 +109,7 @@ pub struct Done {
     pub tail: Vec<u8>,
     /// Bytes the job added to the archive, as the writer reports them.
     pub stored: u64,
-    pub error: Option<String>,
+    pub error: Option<EngineError>,
     pub cancelled: bool,
     pub write_failed: bool,
     /// The writer refused the batch's content, so the same range is refused
@@ -542,12 +543,10 @@ fn work(
                     return;
                 }
                 let mut bytes_read = 0;
-                let reading = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let reading = polylogue_model::caught(|| {
                     run_chain(&mut plan, archive, store, chains, shared, &mut bytes_read)
-                }))
-                .unwrap_or_else(|_| {
-                    Err(EngineError::Parse("the replacement parser panicked".into()))
                 })
+                .unwrap_or_else(|panic| Err(polylogue_model::ChainFailure::from(panic).into()))
                 .and_then(|reading| {
                     if chains.yielding.load(std::sync::atomic::Ordering::Acquire) {
                         return Ok(None);
@@ -575,9 +574,7 @@ fn work(
                         return Ok(None);
                     };
                     let polylogue_store::Change::Reparse { chain } = plan.change else {
-                        return Err(
-                            std::io::Error::other("a replacement needs a stored chain").into()
-                        );
+                        return Err(EngineError::internal("a replacement needs a stored chain"));
                     };
                     writer
                         .queue_chain(plan.input.clone(), chain, plan.size, reading)
@@ -713,9 +710,8 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
                                 result.stored = 0;
                             }
                             Some(Err(error)) => {
-                                result.error = Some(error.to_string());
                                 result.write_failed = true;
-                                result.content_refused = error.refuses_content();
+                                result.content_refused = error.cause().recurs();
                                 result.stored = 0;
                                 if let polylogue_store::StoreError::RowsRefused { stored, .. } =
                                     &error
@@ -723,13 +719,15 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
                                     result.chain = Some(stored.chain);
                                     result.stored = stored.bytes_written;
                                 }
+                                result.error = Some(error.into());
                             }
                             Some(Ok(stored)) => {
                                 result.chain = Some(stored.chain);
                                 result.stored = stored.bytes_written;
                             }
                             None => {
-                                result.error = Some("the writer returned no result".into());
+                                result.error =
+                                    Some(EngineError::internal("the writer returned no result"));
                                 result.write_failed = true;
                                 result.stored = 0;
                             }
@@ -739,7 +737,14 @@ fn acknowledge_groups(pending: Receiver<Pending>, done: Sender<Finished>) {
             }
             Err(error) => {
                 for result in &mut group.waiting {
-                    result.error.get_or_insert_with(|| error.to_string());
+                    if result.error.is_none() {
+                        result.error = Some(
+                            polylogue_store::StoreError::Failed(polylogue_model::Failure::of(
+                                &error,
+                            ))
+                            .into(),
+                        );
+                    }
                     result.write_failed = true;
                     result.stored = 0;
                 }
@@ -869,10 +874,7 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
             for blob in std::mem::take(&mut item.output.blobs) {
                 let (new, file) = archive.prepare_blob(&blob.bytes)?;
                 if new.hash != blob.hash || new.size != blob.size {
-                    return Err(std::io::Error::other(
-                        "decoded bytes differ from their declared hash or length",
-                    )
-                    .into());
+                    return Err(polylogue_model::ChainFailure::bytes_differ().into());
                 }
                 decoded.push(new);
                 files.extend(file);
@@ -947,15 +949,11 @@ pub(crate) fn read_chain<S: polylogue_store::writer::ChainSink>(
                 plan.apply(done, true);
                 continue;
             }
-            if let Some(error) = &done.error {
-                return Err(if error.starts_with("parse ") {
-                    EngineError::Parse(error.clone())
-                } else {
-                    std::io::Error::other(error.clone()).into()
-                });
+            if let Some(error) = done.error {
+                return Err(error);
             }
             let Some(mut batch) = batch else {
-                return Err(std::io::Error::other("a replacement returned no rows").into());
+                return Err(EngineError::internal("a replacement returned no rows"));
             };
             let mut steps = std::mem::take(&mut batch.batch.parse);
             keep(sink, batch)?;
@@ -991,6 +989,20 @@ fn keep_decoded(reading: &mut ChainParse, shared: &Arc<Shared>, mut batch: Prepa
         batch.batch.release = InFlight::new(move || release(&shared, bytes));
         reading.decoded(batch);
     }
+}
+
+/// A job whose chain's bytes cannot be read: the failure is its error, and
+/// its one step records it as the chain's parse state.
+fn failed(
+    out: &mut Done,
+    job: &Job,
+    prepare: bool,
+    failure: polylogue_model::ChainFailure,
+) -> Vec<ParseStep> {
+    let step = failed_step(job, failure.to_string(), prepare);
+    out.error = Some(failure.into());
+    out.failure_recorded = true;
+    vec![step]
 }
 
 /// The record of a parse that failed: no rows, and the chain's cursor stays
@@ -1052,20 +1064,24 @@ pub(crate) fn run(
     }
     let started = std::time::Instant::now();
     let mut file_snapshot = None;
-    let read = match &job.source {
-        Bytes::Import(source) => source.locked().read_range(job.start, job.end),
+    let read: Result<_, EngineError> = match &job.source {
+        Bytes::Import(source) => source
+            .locked()
+            .read_range(job.start, job.end)
+            .map_err(EngineError::from),
         Bytes::Stored(chain) => chain
             .read_range(store, job.start, job.end)
-            .map_err(std::io::Error::other),
+            .map_err(EngineError::from),
         Bytes::File => match &job.source_read {
             Some(context) => read::read_source_range(&job.path, job.start, job.end, context.facts)
                 .map(|(bytes, observed)| {
                     file_snapshot = Some(observed);
                     bytes
-                }),
-            None => read::read_range(&job.path, job.start, job.end),
+                })
+                .map_err(EngineError::from),
+            None => read::read_range(&job.path, job.start, job.end).map_err(EngineError::from),
         },
-        Bytes::Unloaded { .. } => Err(std::io::Error::other(
+        Bytes::Unloaded { .. } => Err(EngineError::internal(
             "stored bytes were not loaded before their job",
         )),
     };
@@ -1073,14 +1089,11 @@ pub(crate) fn run(
     let bytes = match read {
         Ok(b) => b,
         Err(e) => {
-            if e.get_ref()
-                .and_then(|e| e.downcast_ref::<polylogue_store::StoreError>())
-                .is_some_and(|e| matches!(e, polylogue_store::StoreError::Stopped))
-            {
+            if e.cause() == polylogue_model::Cause::Stopping {
                 out.cancelled = true;
                 return (None, out);
             }
-            out.error = Some(format!("read {}: {e}", job.path.display()));
+            out.error = Some(e);
             return (None, out);
         }
     };
@@ -1110,7 +1123,7 @@ pub(crate) fn run(
                 Some(p)
             }
             Err(e) => {
-                out.error = Some(format!("store {}: {e}", job.path.display()));
+                out.error = Some(e.into());
                 return (None, out);
             }
         },
@@ -1172,7 +1185,7 @@ pub(crate) fn run(
                 None
             }
             Err(error) => {
-                out.error = Some(error.to_string());
+                out.error = Some(error.into());
                 return (None, out);
             }
         },
@@ -1193,45 +1206,57 @@ pub(crate) fn run(
     });
     let mut parse = parser
         .map(|parser| {
-            if out.cancelled || stop.is_cancelled() && out.error.is_none() { out.cancelled = true; return Vec::new(); }
+            if out.cancelled || stop.is_cancelled() && out.error.is_none() {
+                out.cancelled = true;
+                return Vec::new();
+            }
             if parsed && (job.store_only || out.restart) {
                 return Vec::new();
             }
             // A parser that panics loses only its own input: the panic
             // becomes this input's failure, and every other input is parsed.
-            let step = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                polylogue_store::fault::check("parse", &job.path.to_string_lossy())
-                    .map_err(|e| e.to_string())?;
-                time(Stage::Parse, || {
+            let step = polylogue_model::caught(|| {
+                polylogue_store::fault::check("parse", &job.path.to_string_lossy())?;
+                Ok(time(Stage::Parse, || {
                     parser.steps(out.parser_state.as_ref(), &bytes, job.start, job.finished)
                 })
-                .map_err(|e| e.to_string())
-            }))
-            .unwrap_or_else(|panic| {
-                let why = panic
-                    .downcast_ref::<&str>()
-                    .map(|s| (*s).to_owned())
-                    .or_else(|| panic.downcast_ref::<String>().cloned())
-                    .unwrap_or_default();
-                Err(format!("the parser panicked: {why}"))
+                .map_err(polylogue_model::ChainFailure::from))
             });
+            let step = match step {
+                Ok(Ok(step)) => step,
+                // An injected failure stands for a step that could not
+                // complete, never for the bytes: the position stays behind
+                // and the chain is read again.
+                Ok(Err(error)) => {
+                    let error: polylogue_store::StoreError = error;
+                    out.error = Some(error.into());
+                    out.parser_state = None;
+                    return Vec::new();
+                }
+                Err(panic) => Err(panic.into()),
+            };
             match step {
                 Ok((steps, parser_state)) => {
                     out.parser_state = Some(parser_state);
                     let mut parsed = Vec::new();
                     for mut step in steps {
-                        if stop.is_cancelled() && out.error.is_none() { out.cancelled = true; return Vec::new(); }
+                        if stop.is_cancelled() && out.error.is_none() {
+                            out.cancelled = true;
+                            return Vec::new();
+                        }
                         if step.consumed == step.start && !job.at_end {
                             continue;
                         }
                         for blob in std::mem::take(&mut step.output.blobs) {
                             match time(Stage::Store, || archive.prepare_blob(&blob.bytes)) {
                                 Ok((p, file)) => {
-                                    if p.hash!=blob.hash || p.size!=blob.size {
-                                        let error = "decoded bytes differ from their declared hash or length";
-                                        out.error = Some(error.into());
-                                        out.failure_recorded = true;
-                                        return vec![failed_step(&job, error.into(), prepare)];
+                                    if p.hash != blob.hash || p.size != blob.size {
+                                        return failed(
+                                            &mut out,
+                                            &job,
+                                            prepare,
+                                            polylogue_model::ChainFailure::bytes_differ(),
+                                        );
                                     }
                                     files.extend(file);
                                     extra.push(p);
@@ -1241,7 +1266,7 @@ pub(crate) fn run(
                                     // not carry; the bytes stay unparsed, the
                                     // position stays behind, and the parser state
                                     // that read past it is dropped.
-                                    out.error = Some(format!("store inline bytes: {e}"));
+                                    out.error = Some(e.into());
                                     out.parser_state = None;
                                     return Vec::new();
                                 }
@@ -1257,12 +1282,26 @@ pub(crate) fn run(
                                 &mut step.output,
                                 &mut polylogue_sources::chain_names::NoEarlierRows,
                             )
-                            .map(|_| ()),
+                            .map(|_| ())
+                            .map_err(|error| SettleError::Content(error.problem())),
                         };
-                        if let Err(error) = settled {
-                            out.error = Some(format!("parse {}: {error}", job.path.display()));
-                            out.failure_recorded = true;
-                            return vec![failed_step(&job, error, prepare)];
+                        match settled {
+                            Ok(()) => {}
+                            Err(SettleError::Content(problem)) => {
+                                return failed(
+                                    &mut out,
+                                    &job,
+                                    prepare,
+                                    polylogue_model::ChainFailure::malformed(problem),
+                                );
+                            }
+                            // The chain's earlier rows could not be read: the
+                            // bytes stay unparsed and are read again.
+                            Err(SettleError::Lookup(error)) => {
+                                out.error = Some(error.into());
+                                out.parser_state = None;
+                                return Vec::new();
+                            }
                         }
                         let mut p = ParseStep::new(
                             step.output,
@@ -1277,46 +1316,60 @@ pub(crate) fn run(
                             };
                         }
                         p.repeats_whole_conversations = step.repeats_whole_conversations;
-                        if matches!(p.progress, polylogue_model::batch::StepProgress::Failed { .. } | polylogue_model::batch::StepProgress::Refused { .. }) {
+                        if matches!(
+                            p.progress,
+                            polylogue_model::batch::StepProgress::Failed { .. }
+                                | polylogue_model::batch::StepProgress::Refused { .. }
+                        ) {
                             p.stopped_attempt = job.stopped_attempt;
                         }
                         if job.origin.is_row_dump(&job.path) {
                             let start = step.start as usize;
                             let end = step.consumed as usize;
                             if let Err(error) = p.compare_records(&bytes[start..end]) {
-                                out.error = Some(error.to_string());
-                                out.failure_recorded = true;
-                                return vec![failed_step(&job, error.to_string(), prepare)];
+                                return failed(
+                                    &mut out,
+                                    &job,
+                                    prepare,
+                                    polylogue_model::ChainFailure::malformed(error.to_string()),
+                                );
                             }
                         }
                         // Packing for the writer is store work, not parsing.
                         let packed = std::time::Instant::now();
                         p.parse_version = job.origin.parse_version();
-                        if prepare { p.prepare(); }
+                        if prepare {
+                            p.prepare();
+                        }
                         add(Stage::Store, packed.elapsed());
                         parsed.push(p);
                     }
                     if let Some(last) = parsed.last_mut()
-                        && !matches!(last.progress, polylogue_model::batch::StepProgress::NoParserYet { .. }) {
+                        && !matches!(
+                            last.progress,
+                            polylogue_model::batch::StepProgress::NoParserYet { .. }
+                        )
+                    {
                         // A finished input never grows, so nothing continues it.
                         if !job.finished {
                             last.checkpoint = Some(polylogue_model::batch::ParserCheckpoint::new(
-                                last.parse_version.clone(), last.parsed_upto, out.parser_state.clone().filter(|state| !state.is_null())));
+                                last.parse_version.clone(),
+                                last.parsed_upto,
+                                out.parser_state.clone().filter(|state| !state.is_null()),
+                            ));
                         }
                     }
                     parsed
                 }
-                Err(e) => {
-                    out.error = Some(format!("parse {}: {e}", job.path.display()));
-                    out.failure_recorded = true;
-                    vec![failed_step(&job, e, prepare)]
-                }
+                Err(failure) => failed(&mut out, &job, prepare, failure),
             }
         })
         .unwrap_or_else(|| {
             out.parsed_upto = job.end;
             out.parser_state = None;
-            if !crate::has_reading(job.origin) || job.origin.support != polylogue_sources::Support::NoParser {
+            if !crate::has_reading(job.origin)
+                || job.origin.support != polylogue_sources::Support::NoParser
+            {
                 return Vec::new();
             }
             let mut step = ParseStep::without_parser(

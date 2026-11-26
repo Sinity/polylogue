@@ -24,15 +24,17 @@ impl Stop {
     }
 }
 
+/// Whether sending again later can succeed: Sinex was unreachable, or a
+/// local condition that passes by itself stopped it.
 fn retryable(error: &Error) -> bool {
-    match error {
-        Error::Unreachable(_) => true,
-        Error::Io(error) | Error::Blobs(hashed_blobs::Error::Io(error)) => {
-            polylogue_store::retryable_io(error)
-        }
-        Error::Store(error) => error.retryable_write(),
-        _ => false,
-    }
+    use polylogue_model::{Cause, Caused as _};
+    let cause = match error {
+        Error::Unreachable(_) => return true,
+        Error::Io(error) | Error::Blobs(hashed_blobs::Error::Io(error)) => Cause::of_io(error),
+        Error::Store(error) => error.cause(),
+        _ => return false,
+    };
+    cause == Cause::Transient
 }
 
 pub(crate) struct Sender {

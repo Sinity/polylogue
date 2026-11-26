@@ -230,7 +230,7 @@ pub enum StoreError {
     #[error("{0}; this is a Polylogue bug; report it with the request ID")]
     Internal(String),
     /// A batch's bytes were stored and its parsed rows refused for their
-    /// content ([`Self::refuses_content`]): the bytes are in `stored`'s chain,
+    /// content (a content, request or bug cause): the bytes are in `stored`'s chain,
     /// the reading of them is not.
     #[error("{reason}")]
     RowsRefused {
@@ -255,6 +255,14 @@ pub enum StoreError {
         code: polylogue_model::Code,
         message: String,
     },
+    /// A failure already classified where it happened, carried as a value
+    /// with its cause and code: what a write of a whole group lost for one
+    /// of its members, a write report's failures, a derivation's.
+    #[error("{0}")]
+    Failed(polylogue_model::Failure),
+    /// A source file changed while it was read: it is read again.
+    #[error("{0}")]
+    SourceChanged(&'static str),
 }
 
 impl StoreError {
@@ -262,59 +270,13 @@ impl StoreError {
         Self::Invalid(message.to_string())
     }
 
-    /// Whether retrying a write can get past a transient storage condition.
-    /// A content, permission or format failure needs its cause corrected first.
-    pub fn retryable_write(&self) -> bool {
-        match self {
-            Self::Io(error) | Self::Blobs(hashed_blobs::Error::Io(error)) => retryable_io(error),
-            Self::Sqlite(error) => matches!(
-                error.sqlite_error_code(),
-                Some(
-                    rusqlite::ErrorCode::DatabaseBusy
-                        | rusqlite::ErrorCode::DatabaseLocked
-                        | rusqlite::ErrorCode::SystemIoFailure
-                        | rusqlite::ErrorCode::DiskFull
-                        | rusqlite::ErrorCode::OperationInterrupted
-                )
-            ),
-            _ => false,
-        }
-    }
-
-    /// Whether the writer refused the batch's content: writing the same
-    /// rows to the same archive again is refused again. Every other write
-    /// error is a failure to commit, which a later attempt can get past.
-    pub fn refuses_content(&self) -> bool {
-        match self {
-            Self::Invalid(_)
-            | Self::Refused(_)
-            | Self::Internal(_)
-            | Self::Counts(_)
-            | Self::Conflict(_)
-            | Self::Bundle(_)
-            | Self::RowsRefused { .. } => true,
-            Self::Sqlite(error) => {
-                error.sqlite_error_code() == Some(rusqlite::ErrorCode::ConstraintViolation)
-            }
-            _ => false,
-        }
-    }
-
     /// The error of a group member that a write of the whole group lost:
-    /// the group's reason, refusing content exactly when the group's error
-    /// did.
+    /// the group's cause, code and sentence.
     pub(crate) fn for_group_member(&self) -> Self {
         match self {
-            Self::Stopped => return Self::Stopped,
-            Self::Refused(reason) => return Self::Refused(reason.clone()),
-            Self::Internal(message) => return Self::Internal(message.clone()),
-            _ => {}
-        }
-        let reason = self.to_string();
-        if self.refuses_content() {
-            Self::Invalid(reason)
-        } else {
-            Self::Io(std::io::Error::other(reason))
+            Self::Stopped => Self::Stopped,
+            Self::Refused(reason) => Self::Refused(reason.clone()),
+            error => Self::Failed(polylogue_model::Failure::of(error)),
         }
     }
 
@@ -401,57 +363,65 @@ impl StoreError {
             Self::Query(error) => error.kind(),
             Self::ReferenceUnavailable { .. } => Code::NotYetAvailable,
             Self::Selection { code, .. } => *code,
+            Self::Failed(failure) => failure.code,
+            Self::SourceChanged(_) => Code::Conflict,
+        }
+    }
+}
+
+impl polylogue_model::Caused for StoreError {
+    fn cause(&self) -> Cause {
+        match self {
+            Self::Sqlite(error) => sqlite_cause(error),
+            Self::Io(error) => Self::io_cause(error),
+            Self::Blobs(error) => Self::blob_cause(error),
+            Self::Json(_) => Cause::StoredData,
+            Self::Bundle(_) => Cause::Request,
+            Self::Locked { .. } => Cause::Transient,
+            Self::NewerSchema { .. } => Cause::StoredData,
+            Self::OtherFormat { .. } => Cause::StoredData,
+            Self::EmbeddingsSchemaDiffers { .. } => Cause::StoredData,
+            Self::OlderFormat { .. } => Cause::StoredData,
+            Self::IndexVersion { .. } => Cause::Transient,
+            Self::BlobCorrupt(_) => Cause::StoredData,
+            Self::Counts(_) => Cause::Content,
+            Self::WriterGone => Cause::Stopping,
+            Self::Stopped => Cause::Stopping,
+            Self::StorageFailed(_) => Cause::Environment,
+            Self::ReadDeadlineExceeded => Cause::Transient,
+            Self::ReadCancelled => Cause::Stopping,
+            Self::ReadPoolClosed => Cause::Stopping,
+            Self::ReadPoolNested => Cause::Bug,
+            Self::ScopeChanged => Cause::Transient,
+            Self::ReadIndexReplaced => Cause::Transient,
+            Self::IndexBuilding(_) => Cause::Transient,
+            Self::Conflict(_) => Cause::Request,
+            Self::Stale { .. } => Cause::Request,
+            Self::Ambiguous { .. } => Cause::Request,
+            Self::IncompleteParents(_) => Cause::Request,
+            Self::NotFound(_) => Cause::Request,
+            Self::ChatAction(_) => Cause::Request,
+            Self::ImportJob(_) => Cause::Request,
+            Self::PrimaryPending { .. } => Cause::Transient,
+            // The next capture of the source resolves the base with Sinex.
+            Self::UnresolvedBaseConflict { .. } => Cause::Transient,
+            Self::ConfirmedReadDenied(_) => Cause::Environment,
+            Self::Sinex(_) => Cause::Transient,
+            Self::Invalid(_) => Cause::Request,
+            Self::Refused(_) => Cause::Request,
+            Self::Internal(_) => Cause::Bug,
+            Self::RowsRefused { .. } => Cause::Content,
+            Self::StoredValue { .. } => Cause::StoredData,
+            Self::Query(_) => Cause::Request,
+            Self::ReferenceUnavailable { .. } => Cause::Transient,
+            Self::Selection { .. } => Cause::Request,
+            Self::Failed(failure) => failure.cause,
+            Self::SourceChanged(_) => Cause::Transient,
         }
     }
 
-    /// Whether the same request can succeed later without any change: the
-    /// condition that stopped it passes by itself.
-    pub fn retryable(&self) -> bool {
-        match self {
-            Self::Sqlite(error) => sqlite_busy(error),
-            Self::Io(error) => retryable_io(error),
-            Self::Blobs(hashed_blobs::Error::Io(error)) => retryable_io(error),
-            Self::Blobs(_) => false,
-            Self::Json(_) => false,
-            Self::Bundle(_) => false,
-            Self::Locked { .. } => true,
-            Self::NewerSchema { .. } => false,
-            Self::OtherFormat { .. } => false,
-            Self::EmbeddingsSchemaDiffers { .. } => false,
-            Self::OlderFormat { .. } => false,
-            Self::IndexVersion { .. } => true,
-            Self::BlobCorrupt(_) => false,
-            Self::Counts(_) => false,
-            Self::WriterGone => true,
-            Self::Stopped => true,
-            Self::StorageFailed(_) => false,
-            Self::ReadDeadlineExceeded => true,
-            Self::ReadCancelled => false,
-            Self::ReadPoolClosed => true,
-            Self::ReadPoolNested => false,
-            Self::ScopeChanged => true,
-            Self::ReadIndexReplaced => true,
-            Self::IndexBuilding(_) => true,
-            Self::Conflict(_) => false,
-            Self::Stale { .. } => false,
-            Self::Ambiguous { .. } => false,
-            Self::IncompleteParents(_) => false,
-            Self::NotFound(_) => false,
-            Self::ChatAction(_) => false,
-            Self::ImportJob(_) => false,
-            Self::PrimaryPending { .. } => true,
-            Self::UnresolvedBaseConflict { .. } => false,
-            Self::ConfirmedReadDenied(_) => false,
-            Self::Sinex(_) => true,
-            Self::Invalid(_) => false,
-            Self::Refused(_) => false,
-            Self::Internal(_) => false,
-            Self::RowsRefused { .. } => false,
-            Self::StoredValue { .. } => false,
-            Self::Query(_) => false,
-            Self::ReferenceUnavailable { .. } => true,
-            Self::Selection { .. } => false,
-        }
+    fn code(&self) -> polylogue_model::Code {
+        StoreError::code(self)
     }
 }
 
@@ -532,27 +502,64 @@ impl From<rusqlite::Error> for StoreError {
 
 pub type Result<T> = std::result::Result<T, StoreError>;
 
+use polylogue_model::Cause;
+
 pub mod chain_names;
 
 fn holder_suffix(holder: &Option<u32>) -> String {
     holder.map_or_else(String::new, |pid| format!(" (pid {pid})"))
 }
 
-/// Transient file failures may be retried with the original immutable bytes.
-pub fn retryable_io(error: &std::io::Error) -> bool {
-    use std::io::ErrorKind;
-    !matches!(
-        error.kind(),
-        ErrorKind::PermissionDenied
-            | ErrorKind::ReadOnlyFilesystem
-            | ErrorKind::InvalidInput
-            | ErrorKind::Unsupported
-            | ErrorKind::InvalidData
-            | ErrorKind::NotFound
-            | ErrorKind::IsADirectory
-            | ErrorKind::NotADirectory
-            | ErrorKind::AlreadyExists
-    )
+impl StoreError {
+    /// The cause of an I/O failure: a stop or cancelled read it carries, else
+    /// its kind.
+    pub fn io_cause(error: &std::io::Error) -> Cause {
+        // An I/O failure a cancelled read or a stop reported.
+        if let Some(inner) = error.get_ref()
+            && let Some(store) = inner.downcast_ref::<StoreError>()
+        {
+            return polylogue_model::Caused::cause(store);
+        }
+        Cause::of_io(error)
+    }
+
+    /// The cause of a segment-log failure.
+    pub fn blob_cause(error: &hashed_blobs::Error) -> Cause {
+        match error {
+            hashed_blobs::Error::Io(error) => Self::io_cause(error),
+            hashed_blobs::Error::Locked(_) => Cause::Transient,
+            hashed_blobs::Error::Unwrap(_)
+            | hashed_blobs::Error::Corrupt { .. }
+            | hashed_blobs::Error::Refused(_) => Cause::StoredData,
+        }
+    }
+}
+
+/// SQLite's result codes, by what ends them.
+pub(crate) fn sqlite_cause(error: &rusqlite::Error) -> Cause {
+    use rusqlite::ErrorCode;
+    let Some(code) = error.sqlite_error_code() else {
+        // A value that does not convert, a wrong parameter count, a
+        // statement that returned no row: the calling code is at fault.
+        return Cause::Bug;
+    };
+    match code {
+        ErrorCode::DatabaseBusy
+        | ErrorCode::DatabaseLocked
+        | ErrorCode::SystemIoFailure
+        | ErrorCode::OutOfMemory
+        | ErrorCode::SchemaChanged
+        | ErrorCode::FileLockingProtocolFailed => Cause::Transient,
+        ErrorCode::OperationInterrupted | ErrorCode::OperationAborted => Cause::Stopping,
+        ErrorCode::DiskFull
+        | ErrorCode::CannotOpen
+        | ErrorCode::ReadOnly
+        | ErrorCode::PermissionDenied
+        | ErrorCode::NoLargeFileSupport
+        | ErrorCode::AuthorizationForStatementDenied => Cause::Environment,
+        ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase => Cause::StoredData,
+        _ => Cause::Bug,
+    }
 }
 
 #[cfg(test)]

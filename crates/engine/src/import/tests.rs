@@ -596,7 +596,7 @@ fn repeated_explicit_import_keeps_a_stopped_attempt_until_its_executable_changes
         origin: Some("claude-code".into()),
         ..Default::default()
     };
-    fault::arm("parse", "stopped-import", Action::Fail, 0, u32::MAX);
+    fault::arm("parse", "stopped-import", Action::Panic, 0, u32::MAX);
     let failed = engine
         .import_with_options(std::slice::from_ref(&path), &options)
         .unwrap();

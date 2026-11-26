@@ -412,13 +412,15 @@ fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
     let old_commit = {
         let (mut engine, _lock) = engine(&home, 16);
         fault::clear();
-        fault::arm("parse", &path.to_string_lossy(), Action::Fail, 1, 1);
+        fault::arm("parse", &path.to_string_lossy(), Action::Panic, 1, 1);
         let report = engine.import(std::slice::from_ref(&path)).unwrap();
         fault::clear();
         assert!(report.refused.is_empty(), "{report:?}");
         assert_eq!(report.pass.errors.len(), 1, "{report:?}");
         assert!(
-            report.pass.errors[0].contains("injected fault at parse"),
+            report.pass.errors[0]
+                .to_string()
+                .contains("injected panic at parse"),
             "{report:?}"
         );
         assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);

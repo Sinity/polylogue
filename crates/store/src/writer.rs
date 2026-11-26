@@ -905,9 +905,10 @@ impl Inner {
                         });
                     // A queued request nobody waits for still reports its failure.
                     if let Err(std::sync::mpsc::SendError(Err(error))) = reply.send(result) {
-                        self.report
-                            .errors
-                            .push(format!("user request {}: {error}", request.id));
+                        self.report.errors.push(polylogue_model::Failure::new(
+                            format_args!("user request {}", request.id),
+                            &error,
+                        ));
                     }
                 }
                 UserMsg::QueryObject(object, parent, reply) => {
@@ -923,18 +924,20 @@ impl Inner {
                     }
                     let result = self.write_query_run(&run);
                     if let Err(error) = &result {
-                        self.report
-                            .errors
-                            .push(format!("query run {}: {error}", run.id));
+                        self.report.errors.push(polylogue_model::Failure::new(
+                            format_args!("query run {}", run.id),
+                            error,
+                        ));
                     }
                     let _ = reply.send(result);
                 }
                 UserMsg::QueryRunOutcome(outcome, reply) => {
                     let result = self.write_query_run_outcome(&outcome);
                     if let Err(error) = &result {
-                        self.report
-                            .errors
-                            .push(format!("query run outcome {}: {error}", outcome.run));
+                        self.report.errors.push(polylogue_model::Failure::new(
+                            format_args!("query run outcome {}", outcome.run),
+                            error,
+                        ));
                     }
                     let _ = reply.send(result);
                 }
@@ -943,9 +946,10 @@ impl Inner {
                         .check_user_parent(history.run.id.as_str(), None)
                         .and_then(|()| self.write_history(&history))
                     {
-                        self.report
-                            .errors
-                            .push(format!("query history {}: {error}", history.run.id));
+                        self.report.errors.push(polylogue_model::Failure::new(
+                            format_args!("query history {}", history.run.id),
+                            &error,
+                        ));
                     }
                 }
             }
@@ -957,23 +961,30 @@ impl Inner {
     /// successful one, prepare the events of captures Sinex confirmed and derive.
     fn stream_followed(&mut self, error: Option<String>) {
         let result = match error {
-            Some(error) => Err(error),
+            Some(error) => Err(polylogue_model::Failure {
+                subject: String::new(),
+                cause: polylogue_model::Cause::Transient,
+                code: polylogue_model::Code::SinexUnavailable,
+                message: error,
+            }),
             None => crate::archive::index_build::primary::observe(&self.location, &self.index)
                 .and_then(|()| self.complete_ready_captures())
                 .map(|()| {
                     self.request_derive(derive_thread::Waiting::Nobody);
                 })
-                .map_err(|error| error.to_string()),
+                .map_err(|error| polylogue_model::Failure::of(&error)),
         };
         match result {
             Ok(()) => self.stream_error = None,
-            Err(error) => {
+            Err(mut failure) => {
                 let position = crate::primary::confirmed::checkpoint(&self.index)
                     .map(|position| position.unwrap_or(0).to_string())
                     .unwrap_or_else(|error| format!("unavailable ({error})"));
-                let error = format!("confirmed stream: after position {position}: {error}");
+                failure.subject = "confirmed stream".to_owned();
+                failure.message = format!("after position {position}: {}", failure.message);
+                let error = failure.to_string();
                 if self.stream_error.as_ref() != Some(&error) {
-                    self.report.errors.push(error.clone());
+                    self.report.errors.push(failure);
                     self.stream_error = Some(error);
                 }
             }
@@ -1331,7 +1342,9 @@ impl Inner {
                 let _ = reply.send(self.source_snapshot(source));
             }
             if let Err(error) = self.refresh_chain_progress() {
-                self.report.errors.push(format!("chain progress: {error}"));
+                self.report
+                    .errors
+                    .push(polylogue_model::Failure::new("chain progress", &error));
             }
             if let Some(reply) = primary_finish.take() {
                 let _ = reply.send(self.finish_primary_rebuild());
@@ -1344,9 +1357,10 @@ impl Inner {
                     .any(|(_, derive)| !derive || !self.location.index_build.building())
                 && let Err(error) = self.finish_primary_rebuild()
             {
-                self.report
-                    .errors
-                    .push(format!("primary cache rebuild: {error}"));
+                self.report.errors.push(polylogue_model::Failure::new(
+                    "primary cache rebuild",
+                    &error,
+                ));
             }
             for (reply, derive) in flushes.drain(..) {
                 let report = std::mem::take(&mut self.report);
@@ -1561,14 +1575,20 @@ impl Inner {
                 let _ = reply.send(Err(StoreError::WriterGone));
             }
             (Err(e), derive_thread::Waiting::Derive(reply)) => {
-                let _ = reply.send(Err(StoreError::Invalid(format!("derive: {e}"))));
+                let _ = reply.send(Err(StoreError::Failed(polylogue_model::Failure::new(
+                    "derive", &e,
+                ))));
             }
             (Err(e), derive_thread::Waiting::Flush(reply, mut report)) => {
-                report.errors.push(format!("derive: {e}"));
+                report
+                    .errors
+                    .push(polylogue_model::Failure::new("derive", &e));
                 let _ = reply.send(Ok(*report));
             }
             (Err(e), derive_thread::Waiting::Nobody) => {
-                self.report.errors.push(format!("derive: {e}"));
+                self.report
+                    .errors
+                    .push(polylogue_model::Failure::new("derive", &e));
             }
         }
     }
@@ -1690,9 +1710,10 @@ impl Inner {
                 if matches!(e, StoreError::Stopped) {
                     continue;
                 }
-                self.report
-                    .errors
-                    .push(format!("input {}: {e}", b.input.id));
+                self.report.errors.push(polylogue_model::Failure::new(
+                    format_args!("input {}", b.input.id),
+                    &e,
+                ));
             }
         }
     }

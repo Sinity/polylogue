@@ -307,7 +307,7 @@ fn retired_export(reader: impl std::io::Read) -> std::io::Result<bool> {
     if let Err(error) = result
         && error.is_io()
     {
-        return Err(std::io::Error::other(error));
+        return Err(error.into());
     }
     Ok(retired)
 }

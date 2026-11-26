@@ -413,6 +413,13 @@ fn every_reason_has_one_code_and_one_text() {
             "the configuration is refused: problem-x",
         ),
         (
+            Reason::ImportOptions {
+                problem: "problem-x".into(),
+            },
+            Code::BadRequest,
+            "the import is refused: problem-x",
+        ),
+        (
             Reason::NotAFile {
                 path: "path-x".into(),
             },

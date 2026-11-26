@@ -623,7 +623,8 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
     let report = writer.flush_rows().unwrap();
     assert!(
         report.errors.iter().any(|error| {
-            error.contains("after position 1") && error.contains("stop second input")
+            error.message.contains("after position 1")
+                && error.message.contains("stop second input")
         }),
         "{report:?}"
     );
@@ -678,7 +679,14 @@ fn a_failed_later_position_reports_earlier_commits_without_inventing_progress() 
         Err(std::sync::mpsc::TryRecvError::Empty)
     ));
     let report = writer.flush_rows().unwrap();
-    assert!(report.errors.iter().any(|error| error.contains("after position 3") && error.contains("cannot be restored")), "{report:?}");
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|error| error.message.contains("after position 3")
+                && error.message.contains("cannot be restored")),
+        "{report:?}"
+    );
     assert_eq!(
         crate::primary::confirmed::checkpoint(&connection).unwrap(),
         Some(3)

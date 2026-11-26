@@ -118,7 +118,9 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
         let status = runtime.daemon.status.lock().map_err(|e| e.to_string())?;
         if status.passes > 0 && !status.busy {
             if !status.last_pass.errors.is_empty() {
-                return Err(status.last_pass.errors.join("; "));
+                return Err(polylogue_model::Failure::joined(&status.last_pass.errors)
+                    .map(|failure| failure.message)
+                    .unwrap_or_default());
             }
             break;
         }

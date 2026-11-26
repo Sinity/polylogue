@@ -29,21 +29,63 @@ use std::collections::{BTreeMap, HashMap};
 
 /// The rows a chain's reading already holds before the step being settled.
 pub trait EarlierRows {
+    /// Why the earlier rows could not be read.
+    type Error;
     /// The message an earlier row of `session` with this response key
     /// formed, with its byte range.
-    fn response(&mut self, session: &SessionId, key: &str) -> Result<Option<MessageRow>, String>;
+    fn response(
+        &mut self,
+        session: &SessionId,
+        key: &str,
+    ) -> Result<Option<MessageRow>, Self::Error>;
     /// What `name` stands for, when an earlier alias row names it:
     /// `Some(None)` stands for no message.
-    fn alias(&mut self, name: &MessageId) -> Result<Option<Option<MessageId>>, String>;
+    fn alias(&mut self, name: &MessageId) -> Result<Option<Option<MessageId>>, Self::Error>;
     /// How many earlier messages have this content name.
-    fn content_count(&mut self, name: &str) -> Result<u64, String>;
+    fn content_count(&mut self, name: &str) -> Result<u64, Self::Error>;
     /// How many earlier messages have this content name and start before
     /// `position`: the number of the message written as `name@position`.
-    fn content_before(&mut self, name: &str, position: u64) -> Result<u64, String>;
+    fn content_before(&mut self, name: &str, position: u64) -> Result<u64, Self::Error>;
     /// The message of `session` whose first record is the chain's latest.
-    fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>, String>;
+    fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>, Self::Error>;
     /// The session of a message of the chain.
-    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, String>;
+    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, Self::Error>;
+}
+
+/// Why a step's names could not be settled.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SettleError<E> {
+    /// The step's own rows cannot be named: the chain's bytes are at fault.
+    Content(&'static str),
+    /// The chain's earlier rows could not be read.
+    Lookup(E),
+}
+
+impl<E> From<&'static str> for SettleError<E> {
+    fn from(problem: &'static str) -> Self {
+        Self::Content(problem)
+    }
+}
+
+impl<E: std::fmt::Display> std::fmt::Display for SettleError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Content(problem) => f.write_str(problem),
+            Self::Lookup(error) => write!(f, "reading the chain's earlier rows: {error}"),
+        }
+    }
+}
+
+impl<E: std::fmt::Debug + std::fmt::Display> std::error::Error for SettleError<E> {}
+
+impl SettleError<std::convert::Infallible> {
+    /// The content problem of a settle that has no earlier rows to read.
+    pub fn problem(self) -> &'static str {
+        match self {
+            Self::Content(problem) => problem,
+            Self::Lookup(never) => match never {},
+        }
+    }
 }
 
 /// A step that starts a chain's reading, or restates whole conversations
@@ -51,22 +93,23 @@ pub trait EarlierRows {
 pub struct NoEarlierRows;
 
 impl EarlierRows for NoEarlierRows {
-    fn response(&mut self, _: &SessionId, _: &str) -> Result<Option<MessageRow>, String> {
+    type Error = std::convert::Infallible;
+    fn response(&mut self, _: &SessionId, _: &str) -> Result<Option<MessageRow>, Self::Error> {
         Ok(None)
     }
-    fn alias(&mut self, _: &MessageId) -> Result<Option<Option<MessageId>>, String> {
+    fn alias(&mut self, _: &MessageId) -> Result<Option<Option<MessageId>>, Self::Error> {
         Ok(None)
     }
-    fn content_count(&mut self, _: &str) -> Result<u64, String> {
+    fn content_count(&mut self, _: &str) -> Result<u64, Self::Error> {
         Ok(0)
     }
-    fn content_before(&mut self, _: &str, _: u64) -> Result<u64, String> {
+    fn content_before(&mut self, _: &str, _: u64) -> Result<u64, Self::Error> {
         Ok(0)
     }
-    fn latest_opened(&mut self, _: &SessionId) -> Result<Option<MessageId>, String> {
+    fn latest_opened(&mut self, _: &SessionId) -> Result<Option<MessageId>, Self::Error> {
         Ok(None)
     }
-    fn session_of(&mut self, _: &MessageId) -> Result<Option<SessionId>, String> {
+    fn session_of(&mut self, _: &MessageId) -> Result<Option<SessionId>, Self::Error> {
         Ok(None)
     }
 }
@@ -101,7 +144,7 @@ impl<B: EarlierRows> Formed<B> {
     }
 
     /// Settles a step and keeps what later steps of the run name it by.
-    pub fn settle(&mut self, out: &mut Output) -> Result<(), String> {
+    pub fn settle(&mut self, out: &mut Output) -> Result<(), SettleError<B::Error>> {
         let written = settle(out, self)?;
         for row in &out.messages {
             let opened = self
@@ -136,23 +179,28 @@ impl<B: EarlierRows> Formed<B> {
 }
 
 impl<B: EarlierRows> EarlierRows for Formed<B> {
-    fn response(&mut self, session: &SessionId, key: &str) -> Result<Option<MessageRow>, String> {
+    type Error = B::Error;
+    fn response(
+        &mut self,
+        session: &SessionId,
+        key: &str,
+    ) -> Result<Option<MessageRow>, Self::Error> {
         match self.responses.get(&(session.clone(), key.to_owned())) {
             Some(row) => Ok(Some(row.clone())),
             None => self.before.response(session, key),
         }
     }
-    fn alias(&mut self, name: &MessageId) -> Result<Option<Option<MessageId>>, String> {
+    fn alias(&mut self, name: &MessageId) -> Result<Option<Option<MessageId>>, Self::Error> {
         match self.aliases.get(name) {
             Some(target) => Ok(Some(target.clone())),
             None => self.before.alias(name),
         }
     }
-    fn content_count(&mut self, name: &str) -> Result<u64, String> {
+    fn content_count(&mut self, name: &str) -> Result<u64, Self::Error> {
         let here = self.content.get(name).map_or(0, Vec::len) as u64;
         Ok(self.before.content_count(name)? + here)
     }
-    fn content_before(&mut self, name: &str, position: u64) -> Result<u64, String> {
+    fn content_before(&mut self, name: &str, position: u64) -> Result<u64, Self::Error> {
         if let Some(number) = self.written.get(&(name.to_owned(), position)) {
             return Ok(*number);
         }
@@ -161,13 +209,13 @@ impl<B: EarlierRows> EarlierRows for Formed<B> {
         }) as u64;
         Ok(self.before.content_before(name, position)? + here)
     }
-    fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>, String> {
+    fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>, Self::Error> {
         match self.opened.get(session) {
             Some((_, id)) => Ok(Some(id.clone())),
             None => self.before.latest_opened(session),
         }
     }
-    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, String> {
+    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, Self::Error> {
         match self.sessions.get(message) {
             Some(session) => Ok(Some(session.clone())),
             None => self.before.session_of(message),
@@ -181,7 +229,10 @@ pub type Numbers = Vec<((String, u64), u64)>;
 /// Settles the chain-local names of one step's rows against the chain's
 /// earlier rows. Returns each content name and position as written with the
 /// number it was given.
-pub fn settle(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<Numbers, String> {
+pub fn settle<E>(
+    out: &mut Output,
+    earlier: &mut dyn EarlierRows<Error = E>,
+) -> Result<Numbers, SettleError<E>> {
     let written = number_content(out, earlier)?;
     join(out, earlier)?;
     let mut seen = std::collections::HashSet::new();
@@ -192,7 +243,10 @@ pub fn settle(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<Numbers
 
 /// Gives each content-named message its number and rewrites every
 /// reference written the same way.
-fn number_content(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<Numbers, String> {
+fn number_content<E>(
+    out: &mut Output,
+    earlier: &mut dyn EarlierRows<Error = E>,
+) -> Result<Numbers, SettleError<E>> {
     let mut next: HashMap<String, u64> = HashMap::new();
     let mut given: HashMap<MessageId, MessageId> = HashMap::new();
     let mut written = Vec::new();
@@ -204,7 +258,7 @@ fn number_content(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<Num
         let number = match next.get_mut(&name) {
             Some(number) => number,
             None => {
-                let first = earlier.content_count(&name)?;
+                let first = earlier.content_count(&name).map_err(SettleError::Lookup)?;
                 next.entry(name.clone()).or_insert(first)
             }
         };
@@ -214,7 +268,7 @@ fn number_content(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<Num
         *number += 1;
         given.insert(std::mem::replace(&mut row.message.id, id.clone()), id);
     }
-    let mut rename = |id: &mut MessageId| -> Result<(), String> {
+    let mut rename = |id: &mut MessageId| -> Result<(), SettleError<E>> {
         let Some((name, position)) = content_ids::as_written(id) else {
             return Ok(());
         };
@@ -223,7 +277,9 @@ fn number_content(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<Num
             None => content_ids::numbered(
                 id.origin().as_str(),
                 name,
-                earlier.content_before(name, position)?,
+                earlier
+                    .content_before(name, position)
+                    .map_err(SettleError::Lookup)?,
             )
             .ok_or("a content name does not form an ID")?,
         };
@@ -280,10 +336,10 @@ fn number_content(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<Num
 
 /// Message IDs inside an event's typed data (a compaction boundary's
 /// summary and kept messages) are written as strings.
-fn rename_in(
+fn rename_in<E>(
     value: &mut Json,
-    rename: &mut dyn FnMut(&mut MessageId) -> Result<(), String>,
-) -> Result<(), String> {
+    rename: &mut dyn FnMut(&mut MessageId) -> Result<(), SettleError<E>>,
+) -> Result<(), SettleError<E>> {
     match value {
         Json::String(text) if text.contains('@') => {
             if let Ok(mut id) = MessageId::parse(text)
@@ -326,7 +382,10 @@ enum Stated {
 /// history snapshot) is stated for the file's own session though the messages
 /// before it may be a resumed session's. Messages a progress record carries
 /// are another session's, so they do not move such an event.
-fn join(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<(), String> {
+fn join<E>(
+    out: &mut Output,
+    earlier: &mut dyn EarlierRows<Error = E>,
+) -> Result<(), SettleError<E>> {
     let mut stated: Vec<(u64, u8, usize, Stated)> = Vec::new();
     for (index, row) in out.messages.iter().enumerate() {
         stated.push((row.offset, 2, index, Stated::Message(index)));
@@ -363,14 +422,17 @@ fn join(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<(), String> {
                     let session = match &resolved {
                         Some(id) if resolved.as_ref() != Some(&after) => match sessions.get(id) {
                             Some(session) => Some(session.clone()),
-                            None => earlier.session_of(id)?,
+                            None => earlier.session_of(id).map_err(SettleError::Lookup)?,
                         },
                         _ => None,
                     };
                     event.after = match session {
                         Some(session) => match opened.get(&session) {
                             Some(id) => Some(id.clone()),
-                            None => earlier.latest_opened(&session)?.or(resolved),
+                            None => earlier
+                                .latest_opened(&session)
+                                .map_err(SettleError::Lookup)?
+                                .or(resolved),
                         },
                         None => resolved,
                     };
@@ -393,7 +455,10 @@ fn join(out: &mut Output, earlier: &mut dyn EarlierRows) -> Result<(), String> {
                     let alias = alias_of(&part, &out.messages[first]);
                     continue_response(&mut out.messages[first], part);
                     alias
-                } else if let Some(stated) = earlier.response(&response.0, &response.1)? {
+                } else if let Some(stated) = earlier
+                    .response(&response.0, &response.1)
+                    .map_err(SettleError::Lookup)?
+                {
                     let part = std::mem::replace(&mut out.messages[index], stated);
                     let alias = alias_of(&part, &out.messages[index]);
                     continue_response(&mut out.messages[index], part);
@@ -435,15 +500,18 @@ fn alias_of(part: &MessageRow, message: &MessageRow) -> Alias {
     }
 }
 
-fn resolve(
+fn resolve<E>(
     names: &HashMap<MessageId, Option<MessageId>>,
-    earlier: &mut dyn EarlierRows,
+    earlier: &mut dyn EarlierRows<Error = E>,
     name: MessageId,
-) -> Result<Option<MessageId>, String> {
+) -> Result<Option<MessageId>, SettleError<E>> {
     if let Some(target) = names.get(&name) {
         return Ok(target.clone());
     }
-    Ok(earlier.alias(&name)?.unwrap_or(Some(name)))
+    Ok(earlier
+        .alias(&name)
+        .map_err(SettleError::Lookup)?
+        .unwrap_or(Some(name)))
 }
 
 /// Adds a later record of a response to its message: its blocks follow,

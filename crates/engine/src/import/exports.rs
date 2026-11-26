@@ -61,7 +61,9 @@ fn prefix_matches(
     use std::io::{Read, Seek};
     if FileFacts::of(&file.metadata()?) != expected || length > expected.size {
         return Err(std::io::Error::other(
-            "source changed before export prefix comparison",
+            polylogue_store::StoreError::SourceChanged(
+                "source changed before export prefix comparison",
+            ),
         ));
     }
     file.rewind()?;
@@ -90,7 +92,9 @@ fn prefix_matches(
         || FileFacts::of(&std::fs::metadata(path)?) != expected
     {
         return Err(std::io::Error::other(
-            "source changed during export prefix comparison",
+            polylogue_store::StoreError::SourceChanged(
+                "source changed during export prefix comparison",
+            ),
         ));
     }
     matched
@@ -123,16 +127,19 @@ impl export::ItemSink for ItemWriter<'_> {
 /// The scratch store behind an export's cross-item state. A failure here is
 /// the import's own I/O, kept apart so it stops the export instead of being
 /// mistaken for one unreadable item.
+/// The parser's view of the export's scratch items. Its trait carries
+/// errors as text, so the first failed read is kept typed beside it: a
+/// failed read of the scratch file is never the export's content.
 struct StateLookup<'a> {
     items: &'a mut ExportItems,
-    failure: Option<String>,
+    failure: Option<polylogue_store::StoreError>,
 }
 impl StateLookup<'_> {
-    fn note<T>(&mut self, result: Result<T, impl std::fmt::Display>) -> Result<T, String> {
+    fn note<T>(&mut self, result: polylogue_store::Result<T>) -> Result<T, String> {
         result.map_err(|error| {
-            let error = error.to_string();
-            self.failure.get_or_insert_with(|| error.clone());
-            error
+            let text = error.to_string();
+            self.failure.get_or_insert(error);
+            text
         })
     }
 }
@@ -219,7 +226,10 @@ impl Engine {
             || before.size != plan.size
             || FileFacts::of(&std::fs::metadata(&plan.path)?) != before
         {
-            return Err(std::io::Error::other("source changed before export capture").into());
+            return Err(polylogue_store::StoreError::SourceChanged(
+                "source changed before export capture",
+            )
+            .into());
         }
         if matches!(plan.change, Change::Appended { .. }) {
             // Capture kept descriptors in a short source snapshot, then
@@ -275,7 +285,10 @@ impl Engine {
             || FileFacts::of(&std::fs::metadata(&plan.path)?) != before
             || prepared.len() != plan.size - plan.stored_upto
         {
-            return Err(std::io::Error::other("source changed during export capture").into());
+            return Err(polylogue_store::StoreError::SourceChanged(
+                "source changed during export capture",
+            )
+            .into());
         }
         let source_read = context.finish(
             polylogue_store::primary::RawRange {
@@ -306,14 +319,14 @@ impl Engine {
             },
         )?;
         let written = self.flush_writes()?;
-        if !written.errors.is_empty() {
-            return Err(std::io::Error::other(written.errors.join("; ")).into());
+        if let Some(error) = written.failed() {
+            return Err(error.into());
         }
         pass.bytes_stored += bytes;
         let r = self.reads.reader()?;
         let progress = r
             .input_progress(&plan.input.id)?
-            .ok_or_else(|| std::io::Error::other("a stored export has no revision"))?;
+            .ok_or_else(|| EngineError::internal("a stored export has no revision"))?;
         let chain = r.stored_chain(&plan.input.id, progress.chain, progress.length)?;
         if plan.tracked {
             let known = r.known_watched_input_at(
@@ -373,10 +386,7 @@ impl Engine {
         for blob in std::mem::take(&mut item.output.blobs) {
             let (new_blob, file) = self.archive.prepare_blob(&blob.bytes)?;
             if new_blob.hash != blob.hash || new_blob.size != blob.size {
-                return Err(std::io::Error::other(
-                    "decoded export bytes differ from their declared hash or length",
-                )
-                .into());
+                return Err(polylogue_model::ChainFailure::bytes_differ().into());
             }
             pending.files.extend(file);
             pending.blobs.push(new_blob);
@@ -439,8 +449,8 @@ impl Engine {
     fn export_batch_committed(&mut self, pass: &mut Pass) -> Result<(), EngineError> {
         let written = self.flush_writes()?;
         pass.messages_written += written.messages;
-        if !written.errors.is_empty() {
-            return Err(std::io::Error::other(written.errors.join("; ")).into());
+        if let Some(error) = written.failed() {
+            return Err(error.into());
         }
         Ok(())
     }
@@ -498,9 +508,9 @@ impl ExportStep {
         );
         if self.done && plan.origin.is_row_dump(&plan.path) {
             let pool::Bytes::Stored(chain) = &plan.source else {
-                return Err(
-                    std::io::Error::other("a row dump must be stored before comparison").into(),
-                );
+                return Err(EngineError::internal(
+                    "a row dump must be stored before comparison",
+                ));
             };
             step.compare_reader(std::io::BufReader::new(chain.reader(Arc::clone(blobs))))?;
         }
@@ -540,7 +550,9 @@ pub(crate) fn parse_export(
 ) -> Result<ExportRead, EngineError> {
     let mut scratch = ExportItems::new()?;
     let pool::Bytes::Stored(chain) = &plan.source else {
-        return Err(std::io::Error::other("an export must be stored before it is parsed").into());
+        return Err(EngineError::internal(
+            "an export must be stored before it is parsed",
+        ));
     };
     let mut reader = Counted::new(|| chain.reader(Arc::clone(blobs)));
     let scanned = parser.scan(&plan.input.id, &mut reader, &mut ItemWriter(&mut scratch));
@@ -600,10 +612,12 @@ pub(crate) fn parse_export(
             plan.size,
             next.as_ref().map(|record| record.bytes.as_slice()),
         )
-        .map_err(EngineError::Parse)?
+        .map_err(polylogue_model::ChainFailure::malformed)?
     {
         repeats_whole_conversations = step.repeats_whole_conversations;
-        names.settle(&mut step.output).map_err(EngineError::Parse)?;
+        names
+            .settle(&mut step.output)
+            .map_err(|error| polylogue_model::ChainFailure::malformed(error.problem()))?;
         order_from = (step.output.messages.len() as u64).max(1);
         let cursor = delivered(
             emit(ExportStep {
@@ -620,9 +634,7 @@ pub(crate) fn parse_export(
             })?,
             ordinal,
         )?;
-        ordinal = cursor
-            .next_ordinal()
-            .map_err(|error| EngineError::Parse(error.to_string()))?;
+        ordinal = cursor.next_ordinal().map_err(EngineError::internal)?;
         previous_prefix = cursor.prefix_hash;
         first = false;
     }
@@ -635,8 +647,8 @@ pub(crate) fn parse_export(
             failure: None,
         };
         let parsed = export::parse_item(parser, &bytes, range.clone(), &mut state);
-        if let Some(failure) = state.failure {
-            return Err(EngineError::Parse(failure));
+        if let Some(error) = state.failure {
+            return Err(error.into());
         }
         // One element the parser cannot read is that element's outcome; the
         // export's other elements still parse. Its bytes stay stored.
@@ -646,7 +658,7 @@ pub(crate) fn parse_export(
         } else {
             names.settle(&mut step.output)
         }
-        .map_err(EngineError::Parse)?;
+        .map_err(|error| polylogue_model::ChainFailure::malformed(error.problem()))?;
         let count = step.output.messages.len() as u64;
         let cursor = delivered(
             emit(ExportStep {
@@ -666,17 +678,15 @@ pub(crate) fn parse_export(
             })?,
             ordinal,
         )?;
-        ordinal = cursor
-            .next_ordinal()
-            .map_err(|error| EngineError::Parse(error.to_string()))?;
+        ordinal = cursor.next_ordinal().map_err(EngineError::internal)?;
         previous_prefix = cursor.prefix_hash;
         item_count = item_count
             .checked_add(1)
-            .ok_or_else(|| std::io::Error::other("export item count overflow"))?;
+            .ok_or_else(|| EngineError::internal("export item count overflow"))?;
         first = false;
         order_from = order_from
             .checked_add(count.max(1))
-            .ok_or_else(|| std::io::Error::other("export message order overflow"))?;
+            .ok_or_else(|| EngineError::internal("export message order overflow"))?;
         next = next_record(&mut scratch)?;
     }
     delivered(
@@ -708,11 +718,9 @@ fn delivered(cursor: Option<ExportCursor>, ordinal: u64) -> Result<ExportCursor,
     let cursor = cursor
         .filter(|cursor| cursor.last_ordinal == ordinal)
         .ok_or_else(|| {
-            std::io::Error::other("export callback did not seal its delivery ordinal")
+            EngineError::internal("export callback did not seal its delivery ordinal")
         })?;
-    cursor
-        .validate()
-        .map_err(|error| EngineError::Parse(error.to_string()))?;
+    cursor.validate().map_err(EngineError::internal)?;
     Ok(cursor)
 }
 

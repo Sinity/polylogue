@@ -93,7 +93,7 @@ fn conflicting_history_rolls_back_its_question_and_run() {
         report
             .errors
             .iter()
-            .any(|error| error.contains("query history")),
+            .any(|error| error.subject.starts_with("query history")),
         "{:?}",
         report.errors
     );

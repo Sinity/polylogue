@@ -139,9 +139,10 @@ fn block_rows_separate_text_and_data_and_restore_the_complete_value() {
 #[test]
 fn damaged_compression_and_json_are_distinct_failures() {
     assert!(matches!(unpack_text(b"not zstd"), Err(StoreError::Io(_))));
+    // Text that is not UTF-8 is stored data this build cannot read back.
     assert!(matches!(
         unpack_text(&pack_bytes(&[0xff]).unwrap()),
-        Err(StoreError::Io(_))
+        Err(StoreError::StoredValue { column: None, .. })
     ));
     assert!(matches!(
         unpack_json::<serde_json::Value>(&pack_text("not JSON").unwrap()),

@@ -13,6 +13,7 @@
 //! the installed index forward from the build's position.
 use crate::plan::Plan;
 use crate::{Engine, EngineError, LoopMsg, Pass, has_reading, pool};
+use polylogue_model::{Cause, Caused as _, LockExt as _};
 use polylogue_store::archive::build_progress::{CountUnit, StepCount};
 use polylogue_store::writer::ChainSink as _;
 use polylogue_store::writer::build::{BuildPhase, BuildWorker, PhaseClock};
@@ -70,16 +71,16 @@ impl Admission {
         stopped: impl Fn() -> bool,
     ) -> Result<Admitted<'_>, EngineError> {
         let bytes = bytes.clamp(1, self.limit);
-        let mut held = self.held.lock().map_err(|_| EngineError::Stopped)?;
+        let mut held = self.held.locked();
         while *held + bytes > self.limit {
             if stopped() {
                 return Err(EngineError::Stopped);
             }
-            held = self
-                .room
-                .wait_timeout(held, std::time::Duration::from_millis(100))
-                .map_err(|_| EngineError::Stopped)?
-                .0;
+            held = polylogue_model::unpoisoned(
+                self.room
+                    .wait_timeout(held, std::time::Duration::from_millis(100)),
+            )
+            .0;
         }
         *held += bytes;
         Ok(Admitted {
@@ -96,9 +97,7 @@ impl Admission {
 
 impl Drop for Admitted<'_> {
     fn drop(&mut self) {
-        if let Ok(mut held) = self.admission.held.lock() {
-            *held -= self.bytes;
-        }
+        *self.admission.held.locked() -= self.bytes;
         self.admission.room.notify_all();
     }
 }
@@ -124,7 +123,12 @@ struct Prepare {
     /// Bytes the parser read, summed over every chain.
     parsed: AtomicU64,
     runs: Mutex<Vec<(u64, PathBuf)>>,
-    failed: Mutex<Vec<(Plan, String)>>,
+    /// Chains whose bytes cannot be read under their reading version:
+    /// recorded as their failed parse state once the index is installed.
+    failed: Mutex<Vec<(Plan, polylogue_model::Failure)>>,
+    /// Chains left out for a failure that is not their bytes' (a busy
+    /// database, a bug): reported, and read again after the install.
+    left_out: Mutex<Vec<polylogue_model::Failure>>,
 }
 
 impl Prepare {
@@ -155,11 +159,35 @@ impl Prepare {
     /// One worker. A worker that fails, or a build abandoned, takes the
     /// remaining chains off the queue unread, so the planner never waits.
     fn work(&self) -> Result<(), EngineError> {
-        let worked = self.work_until_done();
-        while let Ok(plans) = self.plans.lock()
-            && plans.recv().is_ok()
-        {}
+        let worked = polylogue_model::caught(|| self.work_until_done())
+            .unwrap_or_else(|panic| Err(EngineError::internal(panic)));
+        while self.plans.locked().recv().is_ok() {}
         worked
+    }
+
+    /// Keeps a chain's failure: its bytes' own is recorded on the chain, a
+    /// failure the machine or a stop causes ends the build, and any other
+    /// leaves the chain out to be read again after the install.
+    fn chain_failed(&self, plan: Plan, error: EngineError) -> Result<(), EngineError> {
+        let subject = plan.path.display().to_string();
+        match error {
+            EngineError::Chain(failure) => {
+                let failure = polylogue_model::Failure::new(subject, &failure);
+                self.failed.locked().push((plan, failure));
+            }
+            error => match error.cause() {
+                Cause::Stopping | Cause::Environment => return Err(error),
+                Cause::Transient
+                | Cause::Bug
+                | Cause::StoredData
+                | Cause::Request
+                | Cause::Content => self
+                    .left_out
+                    .locked()
+                    .push(polylogue_model::Failure::new(subject, &error).doing("build")),
+            },
+        }
+        Ok(())
     }
 
     /// Takes chains until none is left, reading each into the worker's
@@ -167,7 +195,7 @@ impl Prepare {
     fn work_until_done(&self) -> Result<(), EngineError> {
         let mut run: Option<(u64, BuildWorker)> = None;
         loop {
-            let plan = self.plans.lock().map_err(|_| EngineError::Stopped)?.recv();
+            let plan = self.plans.locked().recv();
             let Ok(mut plan) = plan else { break };
             if self.abandoned() {
                 return Err(EngineError::Stopped);
@@ -195,7 +223,7 @@ impl Prepare {
                 .begin(&self.writer, &input, chain, length)
                 .map_err(EngineError::from)
                 .and_then(|mut open| {
-                    let complete = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let complete = polylogue_model::caught(|| {
                         pool::read_chain(
                             &mut plan,
                             &self.archive,
@@ -205,8 +233,10 @@ impl Prepare {
                             &mut open,
                             |open, batch| open.decoded(batch),
                         )
-                    }))
-                    .unwrap_or_else(|_| Err(EngineError::Parse("the parser panicked".into())))?;
+                    })
+                    .unwrap_or_else(|panic| {
+                        Err(polylogue_model::ChainFailure::from(panic).into())
+                    })?;
                     if !complete {
                         return Err(EngineError::Stopped);
                     }
@@ -218,13 +248,8 @@ impl Prepare {
             match written {
                 Ok(()) => {}
                 Err(EngineError::Stopped) => return Err(EngineError::Stopped),
-                // A chain whose reading failed is left out of the build; its
-                // failure is recorded once the index is installed.
-                Err(error) => self
-                    .failed
-                    .lock()
-                    .map_err(|_| EngineError::Stopped)?
-                    .push((plan, format!("build: {}: chain {chain}: {error}", input.id))),
+                // A chain whose reading failed is left out of the build.
+                Err(error) => self.chain_failed(plan, error)?,
             }
             self.chains_read.fetch_add(1, Ordering::Relaxed);
             self.bytes_read.fetch_add(length, Ordering::Relaxed);
@@ -233,8 +258,7 @@ impl Prepare {
         if let Some((number, run)) = run {
             let paths = run.finish()?;
             self.runs
-                .lock()
-                .map_err(|_| EngineError::Stopped)?
+                .locked()
                 .extend(paths.into_iter().map(|path| (number, path)));
         }
         Ok(())
@@ -278,6 +302,7 @@ impl Engine {
             parsed: AtomicU64::new(0),
             runs: Mutex::new(Vec::new()),
             failed: Mutex::new(Vec::new()),
+            left_out: Mutex::new(Vec::new()),
         };
         let clock = PhaseClock::start(
             crate::build_log::READING_STORED_FILES,
@@ -300,8 +325,12 @@ impl Engine {
                 prepare.settings.yielding.store(true, Ordering::Release);
             }
             for handle in handles {
-                let worked = handle.join().unwrap_or_else(|_| {
-                    Err(std::io::Error::other("a build worker panicked").into())
+                // A worker catches its own panics; a join failure is one
+                // raised while it was unwinding.
+                let worked = handle.join().unwrap_or_else(|panic| {
+                    Err(EngineError::internal(
+                        polylogue_model::cause::panic_message(panic.as_ref()),
+                    ))
                 });
                 if result.is_ok()
                     && let Err(error) = worked
@@ -312,15 +341,11 @@ impl Engine {
             result
         });
         prepared?;
-        let mut runs = prepare
-            .runs
-            .into_inner()
-            .map_err(|_| EngineError::Stopped)?;
+        let mut runs = polylogue_model::unpoisoned(prepare.runs.into_inner());
         runs.sort();
-        let failed = prepare
-            .failed
-            .into_inner()
-            .map_err(|_| EngineError::Stopped)?;
+        let failed = polylogue_model::unpoisoned(prepare.failed.into_inner());
+        pass.errors
+            .extend(polylogue_model::unpoisoned(prepare.left_out.into_inner()));
         pass.bytes_read += prepare.parsed.load(Ordering::Relaxed);
         let mut phases = vec![clock.end(prepare.chains_read.load(Ordering::Relaxed))];
         let (announce, announced) = std::sync::mpsc::channel();
@@ -348,8 +373,8 @@ impl Engine {
         // the build failed, from the build file the writer made again.
         self.discard_confirmed_state();
         phases.extend(built?);
-        for (mut plan, error) in failed {
-            self.record_failure(&mut plan, error, &mut pass);
+        for (mut plan, failure) in failed {
+            self.record_failure(&mut plan, failure, &mut pass);
         }
         pass.messages_written = self.reads.reader()?.status()?.messages;
         Ok((pass, phases))
@@ -486,12 +511,7 @@ impl Engine {
                     .restore_captured_authored(&plan, pass)
                     .and_then(|()| self.observe_local_references(&plan, pass))
                 {
-                    let error = format!("before reading {}: {error}", plan.path.display());
-                    prepare
-                        .failed
-                        .lock()
-                        .map_err(|_| EngineError::Stopped)?
-                        .push((plan, error));
+                    prepare.chain_failed(plan, error)?;
                     done();
                     continue;
                 }

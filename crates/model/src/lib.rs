@@ -7,6 +7,10 @@ pub use stored_names::StoredName;
 
 mod helpers;
 pub use helpers::{JsonExt, LockExt, hex, spawn_named, unpoisoned};
+pub mod cause;
+pub use cause::{
+    Cause, Caused, ChainFailure, ChainFailureKind, Failure, Panicked, caught, install_panic_hook,
+};
 pub mod failure;
 pub use failure::{Code, Names, Reason};
 

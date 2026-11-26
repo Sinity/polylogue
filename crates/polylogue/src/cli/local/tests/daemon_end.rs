@@ -11,7 +11,17 @@ fn failure() -> StorageFailure {
 
 fn idle(errors: &[&str]) -> polylogue_engine::RunSummary {
     let mut summary = polylogue_engine::RunSummary::default();
-    summary.work.errors = errors.iter().map(|error| (*error).to_owned()).collect();
+    summary.work.errors = errors
+        .iter()
+        .map(|error| {
+            polylogue_model::Failure::stated(
+                "",
+                polylogue_model::Cause::Environment,
+                polylogue_model::Code::Io,
+                *error,
+            )
+        })
+        .collect();
     summary
 }
 

@@ -90,12 +90,14 @@ fn a_stopped_export_resumes_after_its_last_committed_batch() {
         fault::clear();
         // Items 1-7 parse; the eighth stops the parse with the seventh
         // parsed but not yet committed.
-        fault::arm("parse", &path.to_string_lossy(), Action::Fail, 7, 1);
+        fault::arm("parse", &path.to_string_lossy(), Action::Panic, 7, 1);
         let report = e.import(std::slice::from_ref(&path)).unwrap();
         fault::clear();
         assert_eq!(report.pass.errors.len(), 1, "{report:?}");
         assert!(
-            report.pass.errors[0].contains("injected fault at parse"),
+            report.pass.errors[0]
+                .to_string()
+                .contains("injected panic at parse"),
             "{report:?}"
         );
     }

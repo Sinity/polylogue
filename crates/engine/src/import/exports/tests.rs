@@ -155,7 +155,7 @@ fn stopped_array_delivery_replays_stored_bytes_when_the_executable_changes() {
         polylogue_store::fault::arm(
             "parse",
             &path.to_string_lossy(),
-            polylogue_store::fault::Action::Fail,
+            polylogue_store::fault::Action::Panic,
             1,
             1,
         );

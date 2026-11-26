@@ -292,7 +292,15 @@ pub struct WriteReport {
     pub item_units_read: u64,
     /// Batches the writer could not store, with the reason. The rest of
     /// their transaction was retried one batch at a time.
-    pub errors: Vec<String>,
+    pub errors: Vec<polylogue_model::Failure>,
+}
+
+impl WriteReport {
+    /// The report's failures as one error, or `None` when every write
+    /// committed: the first failure's cause and code, every sentence.
+    pub fn failed(&self) -> Option<crate::StoreError> {
+        polylogue_model::Failure::joined(&self.errors).map(crate::StoreError::Failed)
+    }
 }
 
 impl InContainer {

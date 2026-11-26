@@ -43,7 +43,9 @@ pub(crate) fn read_source_range(
     let observed = crate::source_read::file_snapshot(&metadata)?;
     let before = polylogue_store::FileFacts::of(&metadata);
     if expected.is_some_and(|facts| facts != before) {
-        return Err(io::Error::other("source file changed before reading"));
+        return Err(io::Error::other(
+            polylogue_store::StoreError::SourceChanged("source file changed before reading"),
+        ));
     }
     file.seek(SeekFrom::Start(start))?;
     let mut bytes = vec![0; (end - start) as usize];
@@ -51,7 +53,9 @@ pub(crate) fn read_source_range(
     if polylogue_store::FileFacts::of(&file.metadata()?) != before
         || polylogue_store::FileFacts::of(&std::fs::metadata(path)?) != before
     {
-        return Err(io::Error::other("source file changed during reading"));
+        return Err(io::Error::other(
+            polylogue_store::StoreError::SourceChanged("source file changed during reading"),
+        ));
     }
     Ok((bytes, observed))
 }
@@ -188,9 +192,9 @@ impl Imported {
 
     pub fn read_range(&mut self, start: u64, end: u64) -> io::Result<Vec<u8>> {
         if start != self.start || end < start {
-            return Err(io::Error::other(
+            return Err(io::Error::other(polylogue_store::StoreError::internal(
                 "import ranges must advance in parser order",
-            ));
+            )));
         }
         let length = (end - start) as usize;
         if length <= self.pending.len() {

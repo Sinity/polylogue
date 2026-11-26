@@ -115,7 +115,7 @@ impl Engine {
             .archive_db()
             .parent()
             .map(|root| root.join("vector-store-copies"))
-            .ok_or_else(|| std::io::Error::other("the archive has no folder"))?;
+            .ok_or_else(|| EngineError::internal("the archive has no folder"))?;
         let mut report = PythonImportReport {
             path: path.to_path_buf(),
             format: VECTORS.to_owned(),
@@ -146,7 +146,8 @@ impl Engine {
             return Ok(());
         };
         if identities.iter().any(|identity| identity.dims != dims) {
-            return Err(std::io::Error::other(
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
                 "the vector store mixes dimensions; each must be imported by its own dimension",
             )
             .into());
@@ -155,10 +156,10 @@ impl Engine {
         for identity in &identities {
             if !keys.contains_key(&identity.model) {
                 let key = embedding_key(&identity.model, dims).ok_or_else(|| {
-                    std::io::Error::other(format!(
-                        "model {} has no known provider here",
-                        identity.model
-                    ))
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("model {} has no known provider here", identity.model),
+                    )
                 })?;
                 keys.insert(identity.model.clone(), key);
             }

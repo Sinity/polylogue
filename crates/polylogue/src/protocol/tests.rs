@@ -377,7 +377,7 @@ fn every_store_error_variant_has_a_code_and_kind() {
             E::ReadCancelled,
             Code::Cancelled,
             FailureKind::Cancelled,
-            false,
+            true,
         ),
         (
             E::ReadPoolClosed,
@@ -484,7 +484,7 @@ fn every_store_error_variant_has_a_code_and_kind() {
             },
             Code::Conflict,
             FailureKind::Conflict,
-            false,
+            true,
         ),
         (
             E::ConfirmedReadDenied("revoked".into()),
@@ -570,6 +570,28 @@ fn every_store_error_variant_has_a_code_and_kind() {
             },
             Code::StaleCursor,
             FailureKind::StaleCursor,
+            false,
+        ),
+        (
+            E::Failed(polylogue_model::Failure::of(&E::Sqlite(
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    None,
+                ),
+            ))),
+            Code::Busy,
+            FailureKind::Timeout,
+            true,
+        ),
+        // An engine invariant breach is a bug, never retryable I/O.
+        (
+            E::Failed(polylogue_model::Failure::of(
+                &polylogue_engine::EngineError::from(E::internal(
+                    "a replacement needs a stored chain",
+                )),
+            )),
+            Code::Internal,
+            FailureKind::Internal,
             false,
         ),
     ];

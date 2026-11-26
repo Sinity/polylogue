@@ -86,7 +86,7 @@ fn a_panicking_parser_loses_only_its_input() {
     assert!(
         pass.errors
             .iter()
-            .any(|e| e.contains("panicked") && e.contains(two)),
+            .any(|e| e.to_string().contains("panicked") && e.to_string().contains(two)),
         "{:?}",
         pass.errors
     );

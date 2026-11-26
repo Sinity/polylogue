@@ -34,7 +34,7 @@ fn an_older_chain_parse_failure_waits_across_restart_until_the_executable_change
         engine.config.workers = 1;
         let first = engine.run_pass().unwrap();
         assert_eq!(first.errors.len(), 1, "{:?}", first.errors);
-        assert!(first.errors[0].contains("panicked"));
+        assert!(first.errors[0].to_string().contains("panicked"));
         assert_eq!(w.texts("history"), ["current sibling"]);
         assert_eq!(w.count("SELECT count(*) AS n FROM a.revision"), 2);
         assert_eq!(

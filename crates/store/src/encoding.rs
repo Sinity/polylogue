@@ -95,7 +95,7 @@ pub(crate) fn normalized_text_hash(text: &str) -> [u8; 32] {
 }
 
 pub(crate) fn unpack_text(packed: &[u8]) -> Result<String> {
-    String::from_utf8(unpack_bytes(packed)?).map_err(|e| StoreError::Io(std::io::Error::other(e)))
+    String::from_utf8(unpack_bytes(packed)?).map_err(StoreError::stored_data)
 }
 
 /// Packs source metadata without the index row dictionary.

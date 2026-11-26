@@ -70,25 +70,6 @@ impl Class {
 
 type Job = Box<dyn FnOnce() + Send>;
 
-#[derive(Debug)]
-pub(crate) struct Panicked {
-    pub message: String,
-}
-
-impl Panicked {
-    pub(crate) fn of(payload: Box<dyn std::any::Any + Send>) -> Self {
-        let message = match payload.downcast_ref::<String>() {
-            Some(message) => message.clone(),
-            None => payload
-                .downcast_ref::<&str>()
-                .copied()
-                .unwrap_or("non-text panic payload")
-                .to_owned(),
-        };
-        Self { message }
-    }
-}
-
 enum Work {
     Job(Job),
     /// A thread back from [`outside`] waiting for a place.
@@ -216,18 +197,18 @@ impl Executor {
         true
     }
 
-    /// Runs `job` and returns its result; `None` when the executor stopped
-    /// before running it.
-    pub(crate) async fn run<T: From<Panicked> + Send + 'static>(
+    /// Runs `job` and returns its answer, a panic's as a failure; `None`
+    /// when the executor stopped before running it.
+    pub(crate) async fn run<T: Send + 'static>(
         &self,
         class: Class,
         deadline: Option<Instant>,
-        job: impl FnOnce() -> T + Send + 'static,
-    ) -> Option<T> {
+        job: impl FnOnce() -> command_surface::Answer<T> + Send + 'static,
+    ) -> Option<command_surface::Answer<T>> {
         let (sender, receiver) = tokio::sync::oneshot::channel();
         if !self.submit(class, deadline, move || {
-            let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
-                .unwrap_or_else(|payload| T::from(Panicked::of(payload)));
+            let answer = polylogue_model::caught(job)
+                .unwrap_or_else(|panic| super::Failure::from(panic).answer());
             let _ = sender.send(answer);
         }) {
             return None;
@@ -426,8 +407,8 @@ impl Shared {
                     deadline: queued.deadline,
                 })
             });
-            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).is_err() {
-                polylogue_store::log!(error, "a request panicked");
+            if let Err(panic) = polylogue_model::caught(job) {
+                polylogue_store::log!(error, "a request job {panic}");
             }
             let held = HOLDING.with(|holding| holding.borrow_mut().take());
             let mut state = self.state.locked();

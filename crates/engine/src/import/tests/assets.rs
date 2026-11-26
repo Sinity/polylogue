@@ -195,7 +195,7 @@ fn sidecar_parsing_is_scoped_to_its_declared_role_in_each_import() {
                     .pass
                     .errors
                     .iter()
-                    .any(|error| error.contains("asset sidecar"))
+                    .any(|error| error.to_string().contains("asset sidecar"))
             );
         } else {
             assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);

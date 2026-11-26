@@ -68,9 +68,10 @@ impl DeriveThread {
                 let _ = reply.send(Err(StoreError::WriterGone));
             }
             Some(Waiting::Flush(reply, mut report)) => {
-                report
-                    .errors
-                    .push(format!("derive: {}", StoreError::WriterGone));
+                report.errors.push(polylogue_model::Failure::new(
+                    "derive",
+                    &StoreError::WriterGone,
+                ));
                 let _ = reply.send(Ok(*report));
             }
             Some(Waiting::Nobody) | None => {}
@@ -114,24 +115,24 @@ struct Worker {
 /// a failure that repeats for the life of the process does not grow memory.
 #[derive(Default)]
 pub(super) struct Unreported {
-    latest: Option<String>,
+    latest: Option<polylogue_model::Failure>,
     count: u64,
 }
 
 impl Unreported {
-    pub(super) fn push(&mut self, error: String) {
+    pub(super) fn push(&mut self, error: polylogue_model::Failure) {
         self.latest = Some(error);
         self.count += 1;
     }
 
     /// Moves what was kept into `errors`, leaving nothing kept.
-    pub(super) fn drain_into(&mut self, errors: &mut Vec<String>) {
+    pub(super) fn drain_into(&mut self, errors: &mut Vec<polylogue_model::Failure>) {
         let count = std::mem::take(&mut self.count);
-        if let Some(latest) = self.latest.take() {
-            errors.push(match count {
-                1 => latest,
-                _ => format!("{latest} (and {} earlier failures)", count - 1),
-            });
+        if let Some(mut latest) = self.latest.take() {
+            if count > 1 {
+                latest.message = format!("{} (and {} earlier failures)", latest.message, count - 1);
+            }
+            errors.push(latest);
         }
     }
 }
@@ -164,19 +165,24 @@ impl Worker {
                         let _ = reply.send(match &result {
                             Ok(n) => Ok(*n),
                             Err(StoreError::WriterGone) => Err(StoreError::WriterGone),
-                            Err(e) => Err(StoreError::Invalid(format!("derive: {e}"))),
+                            Err(e) => Err(StoreError::Failed(polylogue_model::Failure::new(
+                                "derive", e,
+                            ))),
                         });
                     }
                     Waiting::Flush(reply, mut report) => {
                         self.unreported.drain_into(&mut report.errors);
                         if let Err(e) = &result {
-                            report.errors.push(format!("derive: {e}"));
+                            report
+                                .errors
+                                .push(polylogue_model::Failure::new("derive", e));
                         }
                         let _ = reply.send(Ok(*report));
                     }
                     Waiting::Nobody => {
                         if let Err(e) = &result {
-                            self.unreported.push(format!("derive: {e}"));
+                            self.unreported
+                                .push(polylogue_model::Failure::new("derive", e));
                         }
                     }
                 }

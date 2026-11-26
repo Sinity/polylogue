@@ -122,7 +122,9 @@ impl Inner {
         // The index counts the stored chains before the answer, also when
         // no parsed rows followed them; a failure is retried after the turn.
         if let Err(error) = self.refresh_chain_progress() {
-            self.report.errors.push(format!("chain progress: {error}"));
+            self.report
+                .errors
+                .push(polylogue_model::Failure::new("chain progress", &error));
         }
         results
     }
@@ -518,10 +520,12 @@ fn errors(group: &[PreparedBatch], error: StoreError) -> Vec<Result<StoredInput>
 /// lost: a refusal of the rows' content keeps where the bytes are.
 fn rows_refused(stored: Option<&StoredInput>, error: StoreError) -> Result<StoredInput> {
     match stored {
-        Some(stored) if error.refuses_content() => Err(StoreError::RowsRefused {
-            stored: stored.clone(),
-            reason: error.to_string(),
-        }),
+        Some(stored) if polylogue_model::Caused::cause(&error).recurs() => {
+            Err(StoreError::RowsRefused {
+                stored: stored.clone(),
+                reason: error.to_string(),
+            })
+        }
         _ => Err(error),
     }
 }

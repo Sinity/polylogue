@@ -29,7 +29,7 @@ fn a_parser_failure_is_the_chains_failed_parse_state_until_the_bytes_change() {
     );
     let (mut engine, _lock) = crate::import::tests::engine(&home, 4096);
     fault::clear();
-    fault::arm("parse", "broken-standing", Action::Fail, 0, u32::MAX);
+    fault::arm("parse", "broken-standing", Action::Panic, 0, u32::MAX);
     let failed = engine.run_pass().unwrap();
     fault::clear();
     assert!(!failed.errors.is_empty(), "{failed:?}");
@@ -73,11 +73,9 @@ fn a_failed_startup_read_keeps_discovery_work_for_the_next_turn() {
     let summary = result.unwrap();
     assert!(summary.passes >= 2, "{summary:?}");
     assert!(
-        summary
-            .work
-            .errors
-            .iter()
-            .any(|error| error.contains("injected fault at read.watched_inputs")),
+        summary.work.errors.iter().any(|error| error
+            .to_string()
+            .contains("injected fault at read.watched_inputs")),
         "{summary:?}"
     );
     assert!(!summary.work.capture_pending, "{summary:?}");
@@ -118,7 +116,7 @@ fn a_recorded_failure_stays_stopped_across_restart_until_the_executable_changes(
     // This stop must cover the complete append. If the spool later adds even
     // one byte, the changed stored length makes the next attempt run again.
     engine.config.chunk = second.len() as u64;
-    fault::arm("parse", "dependency-stop", Action::Fail, 0, u32::MAX);
+    fault::arm("parse", "dependency-stop", Action::Panic, 0, u32::MAX);
     let failed = engine.run_pass().unwrap();
     fault::clear();
     assert!(!failed.errors.is_empty(), "{failed:?}");
@@ -196,7 +194,7 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
         &claude_user("one", "unrecorded-stop", "stored source"),
     );
     let (mut engine, lock) = crate::import::tests::engine(&home, 4096);
-    fault::arm("parse", "unrecorded-stop", Action::Fail, 0, u32::MAX);
+    fault::arm("parse", "unrecorded-stop", Action::Panic, 0, u32::MAX);
     let failed = engine.run_pass().unwrap();
     fault::clear();
     assert!(!failed.errors.is_empty(), "{failed:?}");
@@ -247,12 +245,14 @@ fn an_unrecorded_failure_gets_one_real_attempt_then_stops_across_restart() {
     let attempt = engine.stopped_attempt;
     drop(engine);
     let mut engine = Engine::new(config.clone(), archive.clone(), attempt).unwrap();
-    fault::arm("parse", "unrecorded-stop", Action::Fail, 0, u32::MAX);
+    fault::arm("parse", "unrecorded-stop", Action::Panic, 0, u32::MAX);
     let retry = engine.run_pass().unwrap();
     fault::clear();
     assert_eq!(retry.errors.len(), 1, "{retry:?}");
     assert!(
-        retry.errors[0].contains("injected fault at parse"),
+        retry.errors[0]
+            .to_string()
+            .contains("injected panic at parse"),
         "{retry:?}"
     );
     assert!(

@@ -83,8 +83,10 @@ pub fn reading_contracts() -> Vec<polylogue_store::ReadingContract> {
 pub enum EngineError {
     #[error(transparent)]
     Store(polylogue_store::StoreError),
-    #[error("parser: {0}")]
-    Parse(String),
+    /// A chain's bytes cannot be read under its reading version: it stands
+    /// until either changes, and is the only error recorded against a chain.
+    #[error("{0}")]
+    Chain(polylogue_model::ChainFailure),
     #[error(transparent)]
     Blobs(#[from] hashed_blobs::Error),
     #[error(transparent)]
@@ -95,6 +97,56 @@ pub enum EngineError {
     /// ([`polylogue_store::Archive::stop`]).
     #[error("the loop was asked to stop")]
     Stopped,
+}
+
+impl polylogue_model::Caused for EngineError {
+    fn cause(&self) -> polylogue_model::Cause {
+        use polylogue_model::Cause;
+        match self {
+            Self::Store(error) => error.cause(),
+            Self::Chain(failure) => failure.cause(),
+            Self::Blobs(error) => polylogue_store::StoreError::blob_cause(error),
+            Self::Io(error) => polylogue_store::StoreError::io_cause(error),
+            Self::Watch(error) => match &error.kind {
+                notify::ErrorKind::Io(error) => polylogue_store::StoreError::io_cause(error),
+                notify::ErrorKind::MaxFilesWatch => Cause::Environment,
+                _ => Cause::Bug,
+            },
+            Self::Stopped => Cause::Stopping,
+        }
+    }
+
+    fn code(&self) -> polylogue_model::Code {
+        use polylogue_model::Code;
+        match self {
+            Self::Store(error) => error.code(),
+            Self::Chain(failure) => failure.code(),
+            Self::Blobs(hashed_blobs::Error::Corrupt { .. } | hashed_blobs::Error::Refused(_)) => {
+                Code::BlobCorrupt
+            }
+            Self::Blobs(_) | Self::Io(_) | Self::Watch(_) => Code::Io,
+            Self::Stopped => Code::ShuttingDown,
+        }
+    }
+}
+
+impl From<polylogue_model::ChainFailure> for EngineError {
+    fn from(failure: polylogue_model::ChainFailure) -> Self {
+        Self::Chain(failure)
+    }
+}
+
+impl From<polylogue_model::Reason> for EngineError {
+    fn from(reason: polylogue_model::Reason) -> Self {
+        Self::Store(reason.into())
+    }
+}
+
+impl EngineError {
+    /// A broken invariant in the engine: reported as a bug, never retried.
+    pub fn internal(message: impl ToString) -> Self {
+        Self::Store(polylogue_store::StoreError::internal(message))
+    }
 }
 
 impl From<polylogue_store::StoreError> for EngineError {
@@ -227,14 +279,16 @@ impl Config {
         clock: polylogue_model::WallClock,
     ) -> Result<Self, EngineError> {
         if !home.is_absolute() || tool_dirs.values().any(|path| !path.is_absolute()) {
-            return Err(EngineError::Parse(
-                "configured locations must be absolute".into(),
-            ));
+            return Err(polylogue_model::Reason::BadConfiguration {
+                problem: "configured locations must be absolute".into(),
+            }
+            .into());
         }
         if workers == 0 || machine.trim().is_empty() || host.trim().is_empty() {
-            return Err(EngineError::Parse(
-                "resource and host identity inputs must be nonempty".into(),
-            ));
+            return Err(polylogue_model::Reason::BadConfiguration {
+                problem: "resource and host identity inputs must be nonempty".into(),
+            }
+            .into());
         }
         // The working shares at most; the budget the process is given
         // (`with_memory_budget`, which the engine applies) lowers them and
@@ -289,7 +343,8 @@ pub struct Pass {
     pub derivation_pending: bool,
     pub seconds: f64,
     pub unreadable_roots: Vec<PathBuf>,
-    pub errors: Vec<String>,
+    /// What failed in the pass, each with what it happened to and its cause.
+    pub errors: Vec<polylogue_model::Failure>,
     /// Capture work is queued or waiting for primary-mode confirmation.
     pub capture_pending: bool,
 }

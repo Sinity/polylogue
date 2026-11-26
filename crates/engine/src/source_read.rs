@@ -94,7 +94,10 @@ pub(crate) fn file_snapshot(
             .ok()
             .filter(|nanos| *nanos < 1_000_000_000)
             .ok_or_else(|| {
-                std::io::Error::other("provider file has invalid timestamp nanoseconds")
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "provider file has invalid timestamp nanoseconds",
+                )
             })?;
         Ok(FileTime { seconds, nanos })
     };
@@ -227,30 +230,26 @@ impl Engine {
                     return Ok(());
                 }
             }
-            pass.errors.push(format!(
-                "bytes kept in the spool for {}; continuation check unavailable",
-                plan.input.id
-            ));
+            pass.errors
+                .push(spooled(&plan.input.id, "continuation check unavailable"));
             return Ok(());
         };
         if !cursor.is_complete_window() {
-            pass.errors.push(format!(
-                "byte coverage for {} has no verified EOF",
-                plan.input.id
+            pass.errors.push(polylogue_model::Failure::stated(
+                &plan.input.id,
+                polylogue_model::Cause::Bug,
+                polylogue_model::Code::Internal,
+                "its byte coverage has no verified end",
             ));
         }
         match cursor.outcome() {
             Some(polylogue_store::primary::CaptureOutcome::Prepared) => pass.capture_pending = true,
-            Some(polylogue_store::primary::CaptureOutcome::UnresolvedBaseConflict) => {
-                pass.errors.push(format!(
-                    "bytes kept in the spool for {}; source acceptance unresolved",
-                    plan.input.id
-                ))
-            }
-            None => pass.errors.push(format!(
-                "bytes kept in the spool for {}; capture outcome unknown",
-                plan.input.id
-            )),
+            Some(polylogue_store::primary::CaptureOutcome::UnresolvedBaseConflict) => pass
+                .errors
+                .push(spooled(&plan.input.id, "source acceptance unresolved")),
+            None => pass
+                .errors
+                .push(spooled(&plan.input.id, "capture outcome unknown")),
         }
         Ok(())
     }
@@ -409,4 +408,14 @@ impl Engine {
             required_outcome: None,
         }
     }
+}
+
+/// Bytes of `input` kept in the spool until Sinex confirms them.
+fn spooled(input: &str, why: &str) -> polylogue_model::Failure {
+    polylogue_model::Failure::stated(
+        input,
+        polylogue_model::Cause::Transient,
+        polylogue_model::Code::Degraded,
+        format!("bytes kept in the spool; {why}"),
+    )
 }

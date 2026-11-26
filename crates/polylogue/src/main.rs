@@ -61,6 +61,14 @@ pub const EXIT_SCHEMA_REFUSED: u8 = 78;
 pub const EXIT_STORAGE_FAILED: u8 = 74;
 
 fn main() -> ExitCode {
+    // A panic no `caught` takes is one error record naming its thread, with
+    // its backtrace on the journal lines after it.
+    polylogue_model::install_panic_hook(|thread, panic, backtrace| {
+        polylogue_store::log!(error, "thread {thread} {panic}");
+        for line in backtrace.lines() {
+            polylogue_store::log!(progress, "  {line}");
+        }
+    });
     let timing = std::env::var_os("POLYLOGUE_TIMING_WORKERS").is_some();
     polylogue_store::timing::set_workers_enabled(timing);
     let result = run();

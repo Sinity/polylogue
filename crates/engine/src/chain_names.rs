@@ -33,41 +33,45 @@ pub(crate) fn open(
 }
 
 impl EarlierRows for Committed {
-    fn response(&mut self, session: &SessionId, key: &str) -> Result<Option<MessageRow>, String> {
+    type Error = polylogue_store::StoreError;
+
+    fn response(
+        &mut self,
+        session: &SessionId,
+        key: &str,
+    ) -> Result<Option<MessageRow>, Self::Error> {
         match &mut self.0 {
-            Some(rows) => rows.response(session, key).map_err(|e| e.to_string()),
+            Some(rows) => rows.response(session, key),
             None => Ok(None),
         }
     }
-    fn alias(&mut self, name: &MessageId) -> Result<Option<Option<MessageId>>, String> {
+    fn alias(&mut self, name: &MessageId) -> Result<Option<Option<MessageId>>, Self::Error> {
         match &mut self.0 {
-            Some(rows) => rows.alias(name).map_err(|e| e.to_string()),
+            Some(rows) => rows.alias(name),
             None => Ok(None),
         }
     }
-    fn content_count(&mut self, name: &str) -> Result<u64, String> {
+    fn content_count(&mut self, name: &str) -> Result<u64, Self::Error> {
         match &mut self.0 {
-            Some(rows) => rows.content_count(name).map_err(|e| e.to_string()),
+            Some(rows) => rows.content_count(name),
             None => Ok(0),
         }
     }
-    fn content_before(&mut self, name: &str, position: u64) -> Result<u64, String> {
+    fn content_before(&mut self, name: &str, position: u64) -> Result<u64, Self::Error> {
         match &mut self.0 {
-            Some(rows) => rows
-                .content_before(name, position)
-                .map_err(|e| e.to_string()),
+            Some(rows) => rows.content_before(name, position),
             None => Ok(0),
         }
     }
-    fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>, String> {
+    fn latest_opened(&mut self, session: &SessionId) -> Result<Option<MessageId>, Self::Error> {
         match &mut self.0 {
-            Some(rows) => rows.latest_opened(session).map_err(|e| e.to_string()),
+            Some(rows) => rows.latest_opened(session),
             None => Ok(None),
         }
     }
-    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, String> {
+    fn session_of(&mut self, message: &MessageId) -> Result<Option<SessionId>, Self::Error> {
         match &mut self.0 {
-            Some(rows) => rows.session_of(message).map_err(|e| e.to_string()),
+            Some(rows) => rows.session_of(message),
             None => Ok(None),
         }
     }

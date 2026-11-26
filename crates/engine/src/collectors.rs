@@ -19,17 +19,29 @@ impl Collectors {
         name: &'static str,
         collector: &'static Collector,
         paths: &CollectorPaths<'_>,
-    ) -> Vec<String> {
+    ) -> Vec<polylogue_model::Failure> {
+        use polylogue_model::{Cause, Code, Failure};
+        let subject = format!("{name} collector");
         let mut errors = Vec::new();
         if let Some(task) = self.tasks.get(name) {
             if !task.is_finished() {
                 return errors;
             }
             let task = self.tasks.remove(name).expect("known collector");
-            errors.extend(
-                task.join()
-                    .unwrap_or_else(|_| vec!["collector panicked".into()]),
-            );
+            match task.join() {
+                Ok(reported) => {
+                    errors.extend(reported.into_iter().map(|error| {
+                        Failure::stated(&subject, Cause::Environment, Code::Io, error)
+                    }))
+                }
+                Err(panic) => errors.push(Failure::new(
+                    &subject,
+                    &polylogue_model::Panicked {
+                        message: polylogue_model::cause::panic_message(panic.as_ref()),
+                        location: None,
+                    },
+                )),
+            }
         }
         if collector.background {
             let home = paths.home.to_path_buf();
@@ -50,15 +62,16 @@ impl Collectors {
                 Ok(task) => {
                     self.tasks.insert(name, task);
                 }
-                Err(error) => errors.push(format!("could not start its thread: {error}")),
+                Err(error) => errors.push(Failure::new(&subject, &crate::EngineError::Io(error))),
             }
         } else {
-            errors.extend((collector.sync)(paths, &self.stop));
+            errors.extend(
+                (collector.sync)(paths, &self.stop)
+                    .into_iter()
+                    .map(|error| Failure::stated(&subject, Cause::Environment, Code::Io, error)),
+            );
         }
         errors
-            .into_iter()
-            .map(|error| format!("{name} collector: {error}"))
-            .collect()
     }
 }
 
@@ -80,15 +93,23 @@ impl crate::Engine {
         origin: &str,
         collector: &Collector,
         paths: &CollectorPaths<'_>,
-    ) -> Result<(), String> {
+    ) -> Result<(), crate::EngineError> {
         let Some(advance) = collector.advance else {
             return Ok(());
         };
-        advance(paths, &|path, hash, length| {
-            let reader = self.reads.reader().map_err(|e| e.to_string())?;
+        // The collector's callback carries errors as text: the first one is
+        // kept typed beside it.
+        let failed = std::cell::RefCell::new(None::<crate::EngineError>);
+        let keep = |error: crate::EngineError| {
+            let text = error.to_string();
+            failed.borrow_mut().get_or_insert(error);
+            text
+        };
+        let advanced = advance(paths, &|path, hash, length| {
+            let reader = self.reads.reader().map_err(|e| keep(e.into()))?;
             let known = reader
                 .known_watched_input_at(&self.config.machine, path.as_os_str().as_encoded_bytes())
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| keep(e.into()))?;
             let Some(known) = known else { return Ok(false) };
             if known.format != origin || known.stored != length || known.chain.is_none() {
                 return Ok(false);
@@ -96,7 +117,7 @@ impl crate::Engine {
             let facts = match std::fs::metadata(path) {
                 Ok(metadata) => polylogue_store::FileFacts::of(&metadata),
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-                Err(error) => return Err(error.to_string()),
+                Err(error) => return Err(keep(error.into())),
             };
             if !known
                 .facts
@@ -111,12 +132,25 @@ impl crate::Engine {
                     known.chain.expect("confirmed chain"),
                     length,
                 )
-                .map_err(|e| e.to_string())?;
+                .map_err(|e| keep(e.into()))?;
             let mut bytes = chain.reader(Arc::clone(&self.blobs));
             let mut actual = blake3::Hasher::new();
-            let read = std::io::copy(&mut bytes, &mut actual).map_err(|e| e.to_string())?;
+            let read = std::io::copy(&mut bytes, &mut actual).map_err(|e| keep(e.into()))?;
             Ok(read == length && polylogue_model::BlobHash(*actual.finalize().as_bytes()) == hash)
-        })
+        });
+        match (advanced, failed.into_inner()) {
+            (Ok(()), _) => Ok(()),
+            (Err(_), Some(error)) => Err(error),
+            (Err(error), None) => Err(polylogue_store::StoreError::Failed(
+                polylogue_model::Failure::stated(
+                    "",
+                    polylogue_model::Cause::Environment,
+                    polylogue_model::Code::Io,
+                    error,
+                ),
+            )
+            .into()),
+        }
     }
 }
 

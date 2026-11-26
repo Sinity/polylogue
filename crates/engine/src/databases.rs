@@ -15,7 +15,7 @@ pub(super) struct DatabaseInput {
 #[derive(Default)]
 pub(super) struct Completed {
     pub finished: bool,
-    pub errors: Vec<String>,
+    pub errors: Vec<polylogue_model::Failure>,
     pub changed: bool,
     pub inputs_seen: u64,
     pub bytes_stored: u64,
@@ -73,9 +73,10 @@ impl Databases {
                 if let Err(error) =
                     reader.recall(&source.path, &archive, &source.input, &source.observation)
                 {
-                    completed
-                        .errors
-                        .push(format!("read database {}: {error}", source.path.display()));
+                    completed.errors.push(
+                        polylogue_model::Failure::new(source.path.display(), &error)
+                            .doing("read database"),
+                    );
                     continue;
                 }
                 let Some(due) = reader.observe(&source.path) else {
@@ -92,13 +93,14 @@ impl Databases {
                 ) {
                     Ok(queue) => queue,
                     Err(error) => {
-                        completed
-                            .errors
-                            .push(format!("read database {}: {error}", source.path.display()));
+                        completed.errors.push(
+                            polylogue_model::Failure::new(source.path.display(), &error)
+                                .doing("read database"),
+                        );
                         continue;
                     }
                 };
-                let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let outcome = polylogue_model::caught(|| {
                     reader.read(
                         &source.path,
                         &archive,
@@ -107,32 +109,34 @@ impl Databases {
                         due,
                         |bytes, observation| queue.append(bytes, observation),
                     )
-                }));
+                });
                 match outcome {
                     Ok(Ok(report)) => {
                         completed.changed = true;
                         if let Err(error) = queue.enqueue_staged(report.snapshot) {
                             reader.forget(&source.path);
-                            completed
-                                .errors
-                                .push(format!("stage database {}: {error}", source.path.display()));
+                            completed.errors.push(
+                                polylogue_model::Failure::new(source.path.display(), &error)
+                                    .doing("stage database"),
+                            );
                             continue;
                         }
                     }
                     Ok(Err(error)) => {
                         reader.forget(&source.path);
                         completed.changed = true;
-                        completed
-                            .errors
-                            .push(format!("read database {}: {error}", source.path.display()));
+                        completed.errors.push(
+                            polylogue_model::Failure::new(source.path.display(), &error)
+                                .doing("read database"),
+                        );
                         continue;
                     }
-                    Err(_) => {
+                    Err(panic) => {
                         completed.changed = true;
-                        completed.errors.push(format!(
-                            "read database {}: worker panicked",
-                            source.path.display()
-                        ));
+                        completed.errors.push(
+                            polylogue_model::Failure::new(source.path.display(), &panic)
+                                .doing("read database"),
+                        );
                         reader = DatabaseReader::default();
                         reader.stop_when(Arc::clone(&cancelled));
                         continue;
@@ -147,9 +151,10 @@ impl Databases {
                     Err(error) => {
                         reader.forget(&source.path);
                         completed.changed = true;
-                        completed
-                            .errors
-                            .push(format!("write database {}: {error}", source.path.display()));
+                        completed.errors.push(
+                            polylogue_model::Failure::new(source.path.display(), &error)
+                                .doing("write database"),
+                        );
                     }
                 }
             }
@@ -201,7 +206,10 @@ impl Databases {
                 let _ = worker.thread.join();
                 Completed {
                     finished: true,
-                    errors: vec!["database worker stopped".into()],
+                    errors: vec![polylogue_model::Failure::bug(
+                        "tool databases",
+                        "the database worker ended before its reply",
+                    )],
                     changed: true,
                     bytes_stored,
                     ..Completed::default()

@@ -13,6 +13,8 @@ use std::io::Read;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
 #[cfg(feature = "faults")]
+mod build_failures;
+#[cfg(feature = "faults")]
 mod build_memory;
 #[cfg(feature = "faults")]
 mod changed_files;
@@ -386,7 +388,15 @@ fn failed_rewrite_then_growth(edit_tail: bool) {
         .execute_pool(vec![plan], Vec::new(), &[], &mut failed)
         .unwrap();
     assert_eq!(failed.errors.len(), 1, "{failed:?}");
-    assert!(failed.errors[0].starts_with("read "), "{failed:?}");
+    assert_eq!(
+        failed.errors[0].key(),
+        (
+            path.display().to_string().as_str(),
+            polylogue_model::Cause::Environment,
+            polylogue_model::Code::Io
+        ),
+        "{failed:?}"
+    );
     std::fs::rename(&aside, &path).unwrap();
     assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode);
     let second = if edit_tail {
@@ -753,7 +763,11 @@ fn unparseable_stored_input_refused_and_pass_continues() {
         unreadable.display()
     );
     assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
-    assert!(pass.errors[0].ends_with(&reason), "{:?}", pass.errors);
+    assert!(
+        pass.errors[0].to_string().ends_with(&reason),
+        "{:?}",
+        pass.errors
+    );
     let refused = home
         .reads()
         .reader()
@@ -810,7 +824,11 @@ fn unparsed_watched_input_is_refused_and_finishes() {
         unreadable.display()
     );
     assert_eq!(pass.errors.len(), 1, "{:?}", pass.errors);
-    assert!(pass.errors[0].ends_with(&reason), "{:?}", pass.errors);
+    assert!(
+        pass.errors[0].to_string().ends_with(&reason),
+        "{:?}",
+        pass.errors
+    );
     let refused = home
         .reads()
         .reader()

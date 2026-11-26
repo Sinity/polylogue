@@ -433,7 +433,7 @@ pub fn idle_summary(summary: &polylogue_engine::RunSummary) -> String {
         let _ = writeln!(
             out,
             "  error: {}",
-            polylogue_render::terminal::escape(error)
+            polylogue_render::terminal::escape(&error.to_string())
         );
     }
     out
