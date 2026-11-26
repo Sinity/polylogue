@@ -762,6 +762,7 @@ fn the_reason_survives_a_kill_after_it_is_written() {
 
 /// A kill at each step of an install restarts to a complete installed
 /// index or to an install of the finished rebuild, never to a half state.
+/// The fault fires in the child, which `crash_test_at` sees stopped at it.
 #[cfg(feature = "faults")]
 #[test]
 fn a_kill_at_each_step_of_the_install_ends_installed() {
@@ -808,6 +809,13 @@ fn a_failed_install_is_installed_at_the_next_commit() {
         1,
     );
     assert!(writer.build(Vec::new()).is_err());
+    assert_eq!(
+        crate::fault::recorded("index.build.before_rename"),
+        [(
+            archive.root.to_string_lossy().into_owned(),
+            crate::writer::WRITER_THREAD.to_owned()
+        )]
+    );
     crate::fault::clear();
     assert_eq!(archive.index_files().unwrap().rebuilding, Rebuilding::Ready);
     assert!(paths.ready.exists());
