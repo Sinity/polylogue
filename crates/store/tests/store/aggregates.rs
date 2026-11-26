@@ -1,7 +1,8 @@
-//! `sum_<field>` and `pending_<field>` (docs/transforms.md, `agg`): the
-//! sum counts every selected session's rows whether its summary is
-//! computed or not, and `pending_<field>` counts the sessions whose summary
-//! is not computed yet.
+//! `sum_<field>`, `unknown_<field>` and `pending_<field>`
+//! (docs/transforms.md, `agg`): the sum counts every selected session's
+//! rows whether its summary is computed or not, a message count is never
+//! unknown, and `pending_<field>` counts the sessions whose summary is not
+//! computed yet.
 
 use crate::rows;
 use polylogue_store::fault::{self, Action};
@@ -25,7 +26,7 @@ fn pending_counts_the_sessions_stored_before_their_summary_and_none_after() {
     // Sessions #1-#6 (FACTS.md): 12 + 18 + 6 + 11 + 13 + 10 own messages.
     assert_eq!(
         rows(&pool.reader().unwrap(), SUM, &[]),
-        [json!({"sum_messages": 70, "pending_messages": 0})]
+        [json!({"sum_messages": 70, "unknown_messages": 0, "pending_messages": 0})]
     );
 
     // The ChatGPT export (#7) imports; reading the claude.ai export fails
@@ -42,13 +43,13 @@ fn pending_counts_the_sessions_stored_before_their_summary_and_none_after() {
     // pending.
     assert_eq!(
         rows(&pool.reader().unwrap(), SUM, &[]),
-        [json!({"sum_messages": 76, "pending_messages": 1})]
+        [json!({"sum_messages": 76, "unknown_messages": 0, "pending_messages": 1})]
     );
 
     engine.writer().derive().unwrap();
     assert_eq!(
         rows(&pool.reader().unwrap(), SUM, &[]),
-        [json!({"sum_messages": 76, "pending_messages": 0})]
+        [json!({"sum_messages": 76, "unknown_messages": 0, "pending_messages": 0})]
     );
 }
 
@@ -60,6 +61,6 @@ fn a_summarized_archive_has_nothing_pending() {
     let pool = morrow.reads();
     assert_eq!(
         rows(&pool.reader().unwrap(), SUM, &[]),
-        [json!({"sum_messages": 80, "pending_messages": 0})]
+        [json!({"sum_messages": 80, "unknown_messages": 0, "pending_messages": 0})]
     );
 }

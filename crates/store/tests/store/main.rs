@@ -12,9 +12,14 @@ mod fields;
 mod measures;
 mod saved;
 
-use polylogue_store::Reader;
+use polylogue_model::Timestamp;
+use polylogue_model::authorship::{Authorship, Channel};
+use polylogue_model::user::{UserRequest, UserWrite};
 use polylogue_store::query::{Options, Program, execute::present};
 use polylogue_store::selection::SelectionError;
+use polylogue_store::user_writes::PreparationContext;
+use polylogue_store::writer::UserSubmission;
+use polylogue_store::{Reader, WriterSender};
 use polylogue_testkit::short;
 use serde_json::Value;
 
@@ -79,4 +84,29 @@ pub fn session_list(reader: &Reader<'_>, text: &str) -> Vec<String> {
         .iter()
         .map(|row| short(row["id"].as_str().expect("a session ID")))
         .collect()
+}
+
+/// Hands the writer `write` as the daemon hands it an operator's request
+/// from the CLI, and returns the ID the write reports.
+pub fn submit(writer: &WriterSender, id: &str, write: UserWrite) -> String {
+    writer
+        .archive()
+        .user(UserSubmission {
+            request: UserRequest {
+                authorship: Authorship {
+                    author: polylogue_model::Author::Operator,
+                    via: Channel::Cli,
+                },
+                id: id.into(),
+                machine: "test-machine".into(),
+                // 2026-10-08 09:00 UTC, after every record of Morrow's main set.
+                at: Timestamp::from_unix_ms(1_791_450_000_000).unwrap(),
+                write,
+            },
+            scope: None,
+            preparation: Some(PreparationContext::new(options().origins)),
+            parent: None,
+        })
+        .unwrap_or_else(|error| panic!("request {id}: {error}"))
+        .id
 }

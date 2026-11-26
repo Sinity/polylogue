@@ -21,8 +21,12 @@ use serde_json::{Value, json};
 /// - model claude-opus-5-5 (only #3's, counted for #2): 1 selected, 1
 ///   global: IDF ln 6, lift (1/3)/(1/6) = 2.
 /// - model claude-fable-5-1 (#1, #2, #4): as origin claude-code.
-/// - gpt-6.1-sol (#5 and #6), gpt-6 (#7) and #8's unrecorded model: 0
-///   selected, 1 global each.
+/// - gpt-6.1-sol (#5 and #6) and gpt-6 (#7): 0 selected, 1 global each.
+/// - no recorded model: #8's replies, and #3's first message, which its
+///   parent's model wrote (docs/agent-context.md: an orchestrated
+///   session's first message is written by the parent) and which counts for
+///   #2. 1 selected, 2 global: IDF ln(6/2) = ln 3 = 1.0986122886681098,
+///   lift (1/3)/(2/6) = 1.
 #[test]
 fn facets_count_selected_and_global_sessions_and_weigh_them() {
     let morrow = Morrow::build(Set::Main);
@@ -61,7 +65,8 @@ fn facets_count_selected_and_global_sessions_and_weigh_them() {
     );
     facets::weights(&mut values, &summary);
 
-    const LN_2: f64 = 0.6931471805599453;
+    use std::f64::consts::LN_2;
+    const LN_3: f64 = 1.0986122886681098;
     const LN_6: f64 = 1.791759469228055;
     let row = |family: &str, value: Value, selected: u64, global: u64, idf: f64, lift: f64| {
         json!({
@@ -95,7 +100,7 @@ fn facets_count_selected_and_global_sessions_and_weigh_them() {
             row("models", json!("claude-opus-5-5"), 1, 1, LN_6, 2.0),
             row("models", json!("gpt-6"), 0, 1, LN_6, 0.0),
             row("models", json!("gpt-6.1-sol"), 0, 1, LN_6, 0.0),
-            row("models", Value::Null, 0, 1, LN_6, 0.0),
+            row("models", Value::Null, 1, 2, LN_3, 1.0),
         ]
     );
 }

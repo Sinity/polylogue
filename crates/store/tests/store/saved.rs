@@ -2,12 +2,9 @@
 //! `query:NAME` for `a OR b`, narrowed by `c`, is `(a OR b) AND c`
 //! (docs/saved-queries.md, saved definitions; docs/query.md, grammar).
 
-use crate::rows;
-use polylogue_model::authorship::{Authorship, Channel};
-use polylogue_model::user::{Save, UserRequest, UserWrite};
-use polylogue_model::{Author, Timestamp};
-use polylogue_store::user_writes::PreparationContext;
-use polylogue_store::writer::UserSubmission;
+use crate::{rows, submit};
+use polylogue_model::user::{Save, UserWrite};
+use polylogue_store::WriterSender;
 use polylogue_testkit::ClaudeHome;
 use serde_json::{Value, json};
 
@@ -63,35 +60,21 @@ fn four_calls() -> String {
     .concat()
 }
 
-/// Saves `text` under `name` as `polylogue QUERY save --name NAME` does:
-/// the request the daemon hands the writer.
-fn save(engine_writer: &polylogue_store::WriterSender, name: &str, text: &str) {
-    engine_writer
-        .archive()
-        .user(UserSubmission {
-            request: UserRequest {
-                authorship: Authorship {
-                    author: Author::Operator,
-                    via: Channel::Cli,
-                },
-                id: format!("save-{name}"),
-                machine: "test-machine".into(),
-                at: Timestamp::from_unix_ms(1_790_845_200_000).unwrap(),
-                write: UserWrite::Save(Box::new(Save {
-                    name: Some(name.into()),
-                    query: text.into(),
-                    denominator: None,
-                    rows_json: r#"{"unit":"tool_calls","columns":[],"rows":[]}"#.into(),
-                    read_at: "{}".into(),
-                    watch: None,
-                    outcomes: None,
-                })),
-            },
-            scope: None,
-            preparation: Some(PreparationContext::new(vec!["claude-code".into()])),
-            parent: None,
-        })
-        .unwrap();
+/// Saves `text` under `name` as `polylogue QUERY save --name NAME` does.
+fn save(writer: &WriterSender, name: &str, text: &str) {
+    submit(
+        writer,
+        &format!("save-{name}"),
+        UserWrite::Save(Box::new(Save {
+            name: Some(name.into()),
+            query: text.into(),
+            denominator: None,
+            rows_json: r#"{"unit":"tool_calls","columns":[],"rows":[]}"#.into(),
+            read_at: "{}".into(),
+            watch: None,
+            outcomes: None,
+        })),
+    );
 }
 
 #[test]
@@ -103,7 +86,7 @@ fn a_saved_or_narrowed_by_a_condition_keeps_its_parentheses() {
     assert!(pass.errors.is_empty(), "{:?}", pass.errors);
     save(
         &engine.writer(),
-        "failing_or_read",
+        "failing-or-read",
         "tool_calls where outcome:error OR tool:Read",
     );
     let pool = home.reads();
@@ -116,7 +99,7 @@ fn a_saved_or_narrowed_by_a_condition_keeps_its_parentheses() {
     let call = |tool: &str, outcome: &str| json!({"tool": tool, "outcome": outcome});
 
     assert_eq!(
-        calls("tool_calls where query:failing_or_read"),
+        calls("tool_calls where query:failing-or-read"),
         [
             call("Bash", "error"),
             call("Read", "error"),
@@ -126,8 +109,8 @@ fn a_saved_or_narrowed_by_a_condition_keeps_its_parentheses() {
     // (error OR Read) AND Bash; without the parentheses, error OR (Read
     // AND Bash) would add Read's error.
     for narrowed in [
-        "tool_calls where query:failing_or_read tool:Bash",
-        "tool_calls where tool:Bash AND query:failing_or_read",
+        "tool_calls where query:failing-or-read tool:Bash",
+        "tool_calls where tool:Bash AND query:failing-or-read",
     ] {
         assert_eq!(calls(narrowed), [call("Bash", "error")], "{narrowed}");
     }
