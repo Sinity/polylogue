@@ -7,7 +7,7 @@ use std::ops::ControlFlow;
 
 #[test]
 fn parents_set_lineage_matches_morrow_facts() {
-    // FACTS.md: the second home holds #1–#4 plus L1–L8 and L1-side.
+    // FACTS.md: the second home holds #1–#4 plus L1–L8, L1-side and 0199.
     // Each row gives the session kind, own messages, messages with parents,
     // human prompts, own cost and tree cost from the corresponding table row.
     let expected = [
@@ -66,7 +66,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             Some("$0.03"),
         ),
         (
-            "claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000102",
+            "claude-code:agent-a7f3a2c1000000102",
             SessionKind::Subagent,
             6,
             6,
@@ -75,7 +75,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             Some("$0.15"),
         ),
         (
-            "claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000103",
+            "claude-code:agent-a7f3a2c1000000103",
             SessionKind::Subagent,
             4,
             4,
@@ -84,7 +84,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             Some("$0.05"),
         ),
         (
-            "claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000104",
+            "claude-code:agent-a7f3a2c1000000104",
             SessionKind::Subagent,
             4,
             8,
@@ -102,7 +102,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             Some("$0.66"),
         ),
         (
-            "claude-code:7f3a2c10-0105-4000-8000-000000000105/a7f3a2c1000000106",
+            "claude-code:agent-a7f3a2c1000000106",
             SessionKind::Subagent,
             4,
             4,
@@ -111,7 +111,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             Some("$0.03"),
         ),
         (
-            "claude-code:7f3a2c10-0105-4000-8000-000000000105/a7f3a2c1000000107",
+            "claude-code:agent-a7f3a2c1000000107",
             SessionKind::Subagent,
             5,
             5,
@@ -122,11 +122,20 @@ fn parents_set_lineage_matches_morrow_facts() {
         (
             "claude-code:7f3a2c10-0108-4000-8000-000000000108",
             SessionKind::Main,
+            3,
             6,
-            6,
+            0,
+            "$0.24",
+            Some("$0.24"),
+        ),
+        (
+            "claude-code:7f3a2c10-0199-4000-8000-000000000199",
+            SessionKind::Main,
+            3,
+            3,
             2,
-            "$0.36",
-            Some("$0.36"),
+            "$0.12",
+            Some("$0.12"),
         ),
     ];
     let w = Morrow::build(Set::Parents);
@@ -241,14 +250,14 @@ fn parents_set_lineage_matches_morrow_facts() {
     .collect();
     assert_eq!(links, expected_links, "provider links");
     // FACTS.md: a copied message is stored once; L4 and L5 have four copies,
-    // #4 has eighteen, and L8's three copies count as its own.
+    // #4 has eighteen, and L8 has three copies belonging to 0199.
     let unique: BTreeSet<_> = own_ids.iter().collect();
     assert_eq!(
         unique.len(),
         own_ids.len(),
         "messages stored once across sessions"
     );
-    for (child, parent, copies) in [(3, 1, 18), (8, 6, 4), (9, 4, 4)] {
+    for (child, parent, copies) in [(3, 1, 18), (8, 6, 4), (9, 4, 4), (12, 13, 3)] {
         assert_eq!(
             &shown_ids[expected[child].0][..copies],
             &shown_ids[expected[parent].0][..copies],
