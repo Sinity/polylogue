@@ -272,7 +272,7 @@ fn a_time_bound_tests_periods_by_their_end_and_instants_by_their_time() {
     let ms = |text: &str| Timestamp::parse_rfc3339(text).unwrap().unix_ms();
     let dir = tempfile::tempdir().unwrap();
     let mut fixture = Fixture::new(dir.path()).unwrap();
-    let mut message = |fixture: &mut Fixture, name: &str, at: &str, until: Option<&str>| {
+    let message = |fixture: &mut Fixture, name: &str, at: &str, until: Option<&str>| {
         let session = fixture
             .session(SessionFacts {
                 id: &format!("test:{name}"),
