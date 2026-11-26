@@ -32,16 +32,11 @@ const CURRENT: &str = "kept_with_database_rows";
 /// read the input as, else the input's own.
 fn chain_rows(chains: &str) -> String {
     let database = crate::source::database_original("c.input");
+    let format = crate::source::parse_format("c.input", "i.format");
     format!(
         "SELECT c.input, c.chain,
             CASE WHEN {database} THEN 'export-file' ELSE
-            COALESCE((SELECT json_extract(o.details_json, '$.import_format')
-                FROM source_observation o
-                WHERE o.input = c.input AND o.class = 'imported' AND json_valid(o.details_json)
-                  AND json_type(o.details_json, '$.import_format') = 'text'
-                ORDER BY (json_extract(o.details_json, '$.import_format') = 'export-file'),
-                         o.rowid DESC
-                LIMIT 1), i.format) END,
+            {format} END,
             COALESCE(p.parse_version, ''),
             CASE WHEN p.input_pk IS NULL THEN 'no_checkpoint'
                  WHEN p.status = 'no_parser_yet' THEN 'no_parser'

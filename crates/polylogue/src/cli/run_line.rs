@@ -494,13 +494,8 @@ pub(crate) fn run(
     output(&parsed, &line, &answer, startup, &mut output_state)
 }
 fn failed_code(answer: &Answer<Value>) -> Option<u8> {
-    match decoded(answer).ok()? {
-        LineAnswer::Steps(steps) => steps.steps.iter().find_map(|step| match &step.outcome {
-            StepOutcome::Failed { error } => Some(error.kind.exit_code()),
-            _ => None,
-        }),
-        _ => None,
-    }
+    let line = decoded(answer).ok()?;
+    Some(line.failed_step()?.kind.exit_code())
 }
 fn output(
     parsed: &ParsedLine,

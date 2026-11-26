@@ -96,6 +96,12 @@ pub(crate) fn first_byte(head: &[u8]) -> Option<u8> {
     head.iter().copied().find(|b| !b.is_ascii_whitespace())
 }
 
+/// Whether a file's first bytes can begin a stream of JSON object lines: no
+/// content yet, or an object.
+pub(crate) fn starts_object_lines(head: &[u8]) -> bool {
+    first_byte(head).is_none_or(|byte| byte == b'{')
+}
+
 /// The first key of the first object in a document's first bytes: in
 /// `[{"uuid": …` it is `uuid`, in `{"source": …` it is `source`. Exports
 /// that share a file name (`conversations.json`) are told apart by it.

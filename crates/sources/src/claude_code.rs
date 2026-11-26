@@ -51,11 +51,7 @@ pub const LOCATIONS: &[&str] = &[
 ];
 
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
-    File::from_path(path).is_some()
-        && head
-            .iter()
-            .find(|b| !b.is_ascii_whitespace())
-            .is_none_or(|&b| b == b'{')
+    File::from_path(path).is_some() && crate::document::starts_object_lines(head)
 }
 
 pub fn open(path: &Path) -> Option<Parse> {

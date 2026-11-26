@@ -21,10 +21,7 @@ pub fn is_database(path: &Path) -> bool {
 pub fn recognize(path: &Path, head: &[u8]) -> bool {
     path.file_name()
         .is_some_and(|name| name == "conversation_summaries.db.jsonl")
-        && head
-            .iter()
-            .find(|byte| !byte.is_ascii_whitespace())
-            .is_none_or(|byte| *byte == b'{')
+        && crate::document::starts_object_lines(head)
 }
 
 pub fn is_row_dump(path: &Path) -> bool {

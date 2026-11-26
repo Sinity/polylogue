@@ -34,6 +34,29 @@ pub(crate) fn database_original(input: &str) -> String {
     format!("EXISTS({links} AND member.container_input = {input})")
 }
 
+/// The format an import read its input as, on an observation aliased `o`.
+pub(crate) const IMPORT_FORMAT: &str = "json_extract(o.details_json, '$.import_format')";
+
+/// The observations aliased `o` that state an import format.
+pub(crate) const STATES_IMPORT_FORMAT: &str = "o.class = 'imported' AND json_valid(o.details_json)
+    AND json_type(o.details_json, '$.import_format') = 'text'";
+
+/// Which of an input's stated import formats its chains are parsed as: a
+/// recognized format before the kept-file one, then the newest observation.
+/// An input never has two recognized formats (`check_import_format`).
+pub(crate) const IMPORT_FORMAT_ORDER: &str =
+    "(json_extract(o.details_json, '$.import_format') = 'export-file'), o.rowid DESC";
+
+/// The format the chains of `input` are parsed as: the one an import read it
+/// as, else `own`, the input's own format (SQL expressions).
+pub(crate) fn parse_format(input: &str, own: &str) -> String {
+    format!(
+        "COALESCE((SELECT {IMPORT_FORMAT} FROM source_observation o
+            WHERE o.input = {input} AND {STATES_IMPORT_FORMAT}
+            ORDER BY {IMPORT_FORMAT_ORDER} LIMIT 1), {own})"
+    )
+}
+
 pub(crate) struct SourceSchema {
     views: String,
     pub ddl: String,

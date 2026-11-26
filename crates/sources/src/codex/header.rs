@@ -27,3 +27,15 @@ pub fn rollout_id(mut reader: impl BufRead) -> std::io::Result<Option<String>> {
         return Ok(id.filter(|id| !id.is_empty()).map(str::to_owned));
     }
 }
+
+/// The working directory a rollout record states for what follows it: a
+/// session header's or a turn context's. A mid-2025 header has no type and
+/// states it at the top level.
+pub fn recorded_directory(record: &Json) -> Option<&str> {
+    let holder = match record.str("type").filter(|t| !t.is_empty()) {
+        Some("session_meta" | "turn_context") => record.get("payload")?,
+        None if record.get("id").is_some() => record,
+        _ => return None,
+    };
+    holder.str("cwd").filter(|cwd| !cwd.is_empty())
+}

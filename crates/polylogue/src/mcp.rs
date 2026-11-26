@@ -433,10 +433,13 @@ fn run(
         ))
         .expect("failure serializes"),
     };
-    let failed = answer.as_ref().is_ok_and(|answer| command.name == "rows" && answer.value().is_some_and(|value| {
-        serde_json::from_value::<LineAnswer>(value.clone()).is_ok_and(|line| matches!(line,
-            LineAnswer::Steps(steps) if steps.steps.iter().any(|step| matches!(step.outcome, StepOutcome::Failed { .. }))))
-    })) || matches!(
+    let failed = answer.as_ref().is_ok_and(|answer| {
+        command.name == "rows"
+            && answer.value().is_some_and(|value| {
+                serde_json::from_value::<LineAnswer>(value.clone())
+                    .is_ok_and(|line| line.failed_step().is_some())
+            })
+    }) || matches!(
         answer,
         Ok(command_surface::Answer {
             outcome: command_surface::Outcome::Error(_),

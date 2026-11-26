@@ -356,15 +356,7 @@ async fn answer_as(
         .and_then(|value| {
             serde_json::from_value::<crate::protocol::line::LineAnswer>(value.clone()).ok()
         });
-    let failed_step = line.as_ref().and_then(|line| {
-        let crate::protocol::line::LineAnswer::Steps(steps) = line else {
-            return None;
-        };
-        steps.steps.iter().find_map(|step| match &step.outcome {
-            crate::protocol::line::StepOutcome::Failed { error } => Some(error.clone()),
-            _ => None,
-        })
-    });
+    let failed_step = line.as_ref().and_then(|line| line.failed_step().cloned());
     let single_read = matches!(&line, Some(crate::protocol::line::LineAnswer::Steps(steps))
         if steps.steps.len() == 1 && matches!(steps.steps[0].outcome,
             crate::protocol::line::StepOutcome::Done { reply: crate::protocol::line::StepAnswer::Read(_), .. }));
