@@ -102,7 +102,7 @@ fn repeated(conn: &Connection, session_pk: i64) -> Result<HashMap<i64, String>> 
     // would otherwise scan every input of the format.
     let has_capture: bool = conn
         .prepare_cached(
-            "SELECT EXISTS (SELECT 1 FROM session s CROSS JOIN session_record p ON p.session_id = s.id
+            "SELECT EXISTS (SELECT 1 FROM session s CROSS JOIN session_parse p ON p.session_id = s.id
                             CROSS JOIN input_ref r ON r.pk = p.input_pk
                             WHERE s.pk = ?1 AND r.format = ?2)",
         )?

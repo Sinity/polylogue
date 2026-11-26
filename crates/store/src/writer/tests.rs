@@ -575,8 +575,10 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
             )
             .unwrap()[0]["n"]
             .clone();
-        if hits == 1 {
-            assert_eq!(r.status(&[]).unwrap().search_pending, 0);
+        // The hit and the queue are two facts: the summary worker can queue
+        // search text after the search thread's write, so wait for both.
+        // Emptying the queue is a commit, so the wait sees the last change.
+        if hits == 1 && r.status(&[]).unwrap().search_pending == 0 {
             break;
         }
         drop(r);
@@ -586,7 +588,9 @@ fn the_search_thread_indexes_live_writes_without_a_flush() {
                 .writer
                 .flush()
                 .expect("collect writer error after search failed to progress");
-            panic!("no commit announced the committed live write's search text: {report:?}");
+            panic!(
+                "the live write's search text did not become searchable with an empty search queue: {report:?}"
+            );
         }
     }
 }
