@@ -220,24 +220,23 @@ impl ClaudeCode {
                     .unwrap_or(stem)
                     .to_owned();
                 if v.bool("isSidechain") == Some(true) {
-                    let earlier = v
+                    let uuid = v
                         .str("uuid")
-                        .and_then(|uuid| parser_state.sidechains.get(uuid))
+                        .filter(|uuid| !uuid.is_empty())
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| crate::content_ids::untagged_hash(v));
+                    let earlier = parser_state
+                        .sidechains
+                        .get(&uuid)
                         .or_else(|| {
                             v.str("parentUuid")
                                 .and_then(|parent| parser_state.sidechains.get(parent))
                         })
                         .filter(|session| session.starts_with(&format!("{base}~side-")));
                     RecordSession {
-                        native: earlier.cloned().unwrap_or_else(|| {
-                            format!(
-                                "{base}~side-{}",
-                                v.str("uuid")
-                                    .filter(|uuid| !uuid.is_empty())
-                                    .map(str::to_owned)
-                                    .unwrap_or_else(|| crate::content_ids::untagged_hash(v))
-                            )
-                        }),
+                        native: earlier
+                            .cloned()
+                            .unwrap_or_else(|| format!("{base}~side-{uuid}")),
                         kind: SessionKind::Sidechain,
                     }
                 } else {
