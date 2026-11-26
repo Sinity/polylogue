@@ -207,6 +207,21 @@ pub fn refusal(command: &str, word: &str) -> Failure {
 /// its type does not declare, at the top level or in a step.
 pub fn in_arguments(row: &str, arguments: &Value) -> Option<Failure> {
     let object = arguments.as_object()?;
+    // Most requests name no listed option; they are answered without
+    // building the declarations.
+    let named = |key: &String| {
+        UNBUILT.iter().any(|row| {
+            row.is_option() && row.word.trim_start_matches('-').replace('-', "_") == *key
+        })
+    };
+    let steps = object
+        .values()
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(Value::as_object);
+    if !object.keys().any(named) && !steps.flat_map(|step| step.keys()).any(named) {
+        return None;
+    }
     let declarations = crate::commands::declarations();
     let properties = declarations
         .descriptions()
