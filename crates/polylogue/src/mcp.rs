@@ -14,9 +14,9 @@ use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
 use command_surface::Answer;
 use polylogue_store::Archive;
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, CallToolResult, CompleteRequestParams, CompleteResult,
-    ContentBlock, Implementation, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-    ServerConfig,
+    CallToolRequestParams, CallToolResponse, CallToolResult, ClientRequest, CompleteRequestParams,
+    CompleteResult, ContentBlock, CustomRequest, CustomResult, ErrorCode, Implementation,
+    JsonRpcMessage, ListToolsResult, PaginatedRequestParams, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::{RequestContext, ServerInitializeError};
 use rmcp::transport::Transport;
@@ -562,14 +562,43 @@ impl ServerHandler for Server {
         let arguments = completion::arguments(request, &context)?;
         completion::answer(&self.archive, arguments, deadline_ms(&context), &context.ct).await
     }
+
+    /// rmcp reads a request whose params do not fit its method as a custom
+    /// request. This server has no custom methods, so a served method here
+    /// has invalid params and any other method is unknown.
+    async fn on_custom_request(
+        &self,
+        request: CustomRequest,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CustomResult, McpError> {
+        let fits = match request.method.as_str() {
+            "tools/call" => request.params_as::<CallToolRequestParams>().map(drop),
+            "completion/complete" => request.params_as::<CompleteRequestParams>().map(drop),
+            _ => {
+                return Err(McpError::new(
+                    ErrorCode::METHOD_NOT_FOUND,
+                    request.method,
+                    None,
+                ));
+            }
+        };
+        let message = match fits {
+            Err(error) => format!("invalid {} params: {error}", request.method),
+            Ok(()) => format!("invalid {} params", request.method),
+        };
+        Err(McpError::invalid_params(message, None))
+    }
 }
 
 /// A transport that cancels `ended` when the client closes its input, so the
 /// calls still running stop their daemon reads instead of finishing for
-/// nobody.
+/// nobody. Until a request starts the session, only requests pass: rmcp
+/// ends a session whose opening message is not a request, and a request
+/// with a malformed id reaches it as a notification.
 struct EndsWithInput<T> {
     inner: T,
     ended: CancellationToken,
+    started: bool,
 }
 
 impl<T: Transport<RoleServer>> Transport<RoleServer> for EndsWithInput<T> {
@@ -583,11 +612,24 @@ impl<T: Transport<RoleServer>> Transport<RoleServer> for EndsWithInput<T> {
     }
 
     async fn receive(&mut self) -> Option<rmcp::service::RxJsonRpcMessage<RoleServer>> {
-        let message = self.inner.receive().await;
-        if message.is_none() {
-            self.ended.cancel();
+        loop {
+            match self.inner.receive().await {
+                None => {
+                    self.ended.cancel();
+                    return None;
+                }
+                Some(JsonRpcMessage::Request(request)) => {
+                    // Ping and discovery are answered before a session starts.
+                    self.started |= !matches!(
+                        request.request,
+                        ClientRequest::PingRequest(_) | ClientRequest::DiscoverRequest(_)
+                    );
+                    return Some(JsonRpcMessage::Request(request));
+                }
+                Some(_) if !self.started => {}
+                message => return message,
+            }
         }
-        message
     }
 
     fn close(&mut self) -> impl Future<Output = Result<(), Self::Error>> + Send {
@@ -605,6 +647,7 @@ where
     let transport = EndsWithInput {
         inner: rmcp::transport::async_rw::AsyncRwTransport::new_server(input, output),
         ended: ended.clone(),
+        started: false,
     };
     let running = match (Server { archive }).serve_with_ct(transport, ended).await {
         Ok(running) => running,

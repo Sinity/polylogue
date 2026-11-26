@@ -341,8 +341,7 @@ fn stdio_answers_initialize_tools_calls_and_errors() {
     assert_eq!(status["store"]["messages"], 1);
     assert_eq!(reply(json!(4))["result"]["isError"], true);
     assert_eq!(reply(json!(5))["error"]["code"], -32601);
-    // A message that is JSON but not a valid request is refused without its id.
-    assert_eq!(reply(Value::Null)["error"]["code"], -32600);
+    assert_eq!(reply(json!(6))["error"]["code"], -32602);
     assert_eq!(reply(json!(7))["result"], json!({}));
 }
 
@@ -398,15 +397,17 @@ fn protocol_ids_null_arguments_and_ping_follow_the_request_version() {
 }
 
 #[test]
-fn malformed_request_ids_are_not_echoed_in_error_responses() {
+fn malformed_request_ids_get_no_reply_and_keep_the_session() {
     let temp = tempfile::tempdir().unwrap();
     let archive = Archive::at(temp.path());
+    let mut session = Peer::start(&archive);
+    // A reply without the caller's id could not be matched to its request.
     for id in [json!({"wrong":1}), json!([1]), json!(true)] {
-        let reply =
-            Peer::start(&archive).request(json!({"jsonrpc":"2.0", "id":id, "method":"ping"}));
-        assert_eq!(reply["id"], Value::Null);
-        assert_eq!(reply["error"]["code"], -32600);
+        session.send(&json!({"jsonrpc":"2.0", "id":id, "method":"ping"}).to_string());
     }
+    let reply = session.request(initialize());
+    assert_eq!(reply["id"], "init", "{reply}");
+    assert_eq!(reply["result"]["protocolVersion"], "2025-11-25");
 }
 
 #[test]
