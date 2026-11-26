@@ -23,22 +23,19 @@ impl Drop for Daemon {
     }
 }
 
-/// The sample's archive served from a scratch deployment. The environment is
-/// cleared, so no tool's root variable reaches the daemon and every root
-/// resolves under the scratch home: it reads no files outside the sample.
+/// The sample's archive served in a sandbox: the daemon reads no files
+/// outside the sample.
 struct Reader {
     binary: PathBuf,
     archive: PathBuf,
-    env: Vec<(&'static str, PathBuf)>,
+    sandbox: polylogue_testkit::Sandbox,
 }
 
 impl Reader {
     fn command(&self) -> Command {
         let mut command = Command::new(&self.binary);
-        command
-            .env_clear()
-            .env("PATH", env::var_os("PATH").unwrap_or_default())
-            .envs(self.env.iter().map(|(key, value)| (key, value)))
+        self.sandbox
+            .apply(&mut command)
             .arg("--archive")
             .arg(&self.archive);
         command
@@ -46,10 +43,7 @@ impl Reader {
 
     fn start(&self) -> Result<Daemon, String> {
         let mut daemon = Daemon(
-            self.command()
-                .arg("daemon")
-                .stderr(Stdio::piped())
-                .spawn()
+            polylogue_testkit::spawn_daemon(self.command().arg("daemon").stderr(Stdio::piped()))
                 .map_err(|e| e.to_string())?,
         );
         let mut line = String::new();
@@ -209,23 +203,12 @@ pub(super) fn run(
     if scratch.exists() {
         fs::remove_dir_all(&scratch).map_err(|e| e.to_string())?;
     }
-    let runtime = tempfile::tempdir().map_err(|e| e.to_string())?;
-    let mut env = vec![("XDG_RUNTIME_DIR", runtime.path().to_owned())];
-    for (key, dir) in [
-        ("HOME", "home"),
-        ("XDG_CONFIG_HOME", "config"),
-        ("XDG_DATA_HOME", "data"),
-        ("XDG_STATE_HOME", "state"),
-        ("XDG_CACHE_HOME", "cache"),
-    ] {
-        let path = scratch.join(dir);
-        fs::create_dir_all(&path).map_err(|e| e.to_string())?;
-        env.push((key, path));
-    }
+    let sandbox = polylogue_testkit::Sandbox::new(&scratch).map_err(|e| e.to_string())?;
+    sandbox.create_directories().map_err(|e| e.to_string())?;
     let reader = Reader {
         binary,
         archive,
-        env,
+        sandbox,
     };
     let load = LoadMonitor::start()?;
     let daemon = reader.start()?;

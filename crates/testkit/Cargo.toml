@@ -1,19 +1,25 @@
 [package]
 name = "polylogue-testkit"
-description = "Test archives: the Morrow example archive built through the real import path"
+description = "Test archives built through the real import path, and the sandbox every spawned daemon runs in"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
-# Only tests depend on the testkit, so it enables the test support of what it
+[features]
+default = ["archives"]
+# Test archives built through the engine and the store. xtask turns it off:
+# it starts daemons in the sandbox and builds no archive itself.
+archives = ["dep:polylogue-engine", "dep:polylogue-store"]
+
+# Tests depend on the testkit, so it enables the test support of what it
 # builds on; a test that selects one package then builds these packages as
-# the workspace's test build does.
+# the workspace's test build does, and xtask's build shares those units.
 [dependencies]
-polylogue-engine = { workspace = true, features = ["faults"] }
+polylogue-engine = { workspace = true, features = ["faults"], optional = true }
 polylogue-model = { workspace = true, features = ["fixture"] }
 polylogue-sources = { workspace = true, features = ["fixture"] }
-polylogue-store = { workspace = true, features = ["faults", "fixture"] }
+polylogue-store = { workspace = true, features = ["faults", "fixture"], optional = true }
 serde_json.workspace = true
 tempfile.workspace = true
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
