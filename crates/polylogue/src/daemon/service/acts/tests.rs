@@ -267,7 +267,8 @@ fn resume_in_starts_a_new_session_briefed_from_the_source() {
     );
     assert!(
         crate::hosting::records(&d.daemon.acts.hosts)
-            .iter()
+            .into_iter()
+            .map(Result::unwrap)
             .any(|(_, r)| r.session == "codex:t1")
     );
 }
