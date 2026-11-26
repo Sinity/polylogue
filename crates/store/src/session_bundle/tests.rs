@@ -1,7 +1,4 @@
-use crate::{
-    ReadPool,
-    fixture::{Fixture, SessionFacts},
-};
+use crate::ReadPool;
 use polylogue_model::SessionId;
 
 // The original query is the independent result and negative work control.
