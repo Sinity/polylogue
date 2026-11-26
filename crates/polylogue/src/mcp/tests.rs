@@ -987,34 +987,45 @@ fn the_tools_as_they_ship_equal_the_page() {
     let page = include_str!("../../../../docs/agents.md");
     let section = page.split_once("\n### The tools as they ship\n").unwrap().1;
     let section = &section[..section.find("\n### ").unwrap()];
-    let blocks: Vec<&str> = section
-        .split("\n```")
-        .skip(1)
-        .step_by(2)
-        .map(|block| block.split_once('\n').unwrap().1)
-        .collect();
-    assert_eq!(blocks[0].trim_end(), crate::manual::card().trim_end());
+    let blocks = |text: &str| -> Vec<String> {
+        text.split("\n```")
+            .skip(1)
+            .step_by(2)
+            .map(|block| block.split_once('\n').unwrap().1.trim_end().to_owned())
+            .collect()
+    };
+    let headings = |text: &str| -> Vec<String> {
+        text.lines()
+            .filter(|line| line.starts_with("**`polylogue_"))
+            .map(str::to_owned)
+            .collect()
+    };
+    // What the server lists, written as the page writes it.
     let listed = tools();
-    assert_eq!(blocks.len(), 1 + 2 * listed.len());
-    for (index, tool) in listed.iter().enumerate() {
-        let name = tool["name"].as_str().unwrap();
-        let heading = format!("**`{name}`** · annotations `");
-        let annotations = section.split_once(&heading).unwrap().1;
-        let annotations: Value =
-            serde_json::from_str(&annotations[..annotations.find('`').unwrap()]).unwrap();
-        assert_eq!(annotations, tool["annotations"], "{name}");
-        assert_eq!(
-            blocks[1 + 2 * index].trim_end(),
+    let mut served = format!("\n```\n{}\n```\n", crate::manual::card().trim_end());
+    for tool in &listed {
+        served.push_str(&format!(
+            "\n**`{}`** · annotations `{}`\n\n```\n{}\n```\n\n```json\n{}\n```\n",
+            tool["name"].as_str().unwrap(),
+            tool["annotations"],
             tool["description"].as_str().unwrap(),
-            "{name}"
-        );
-        let schema: Value = serde_json::from_str(blocks[2 + 2 * index]).unwrap();
-        assert_eq!(schema, tool["inputSchema"], "{name}");
+            tool["inputSchema"],
+        ));
+    }
+    println!("{served}");
+    assert_eq!(headings(section), headings(&served));
+    let (on_page, from_server) = (blocks(section), blocks(&served));
+    assert_eq!(on_page.len(), from_server.len());
+    for (page, server) in on_page.iter().zip(&from_server) {
+        match serde_json::from_str::<Value>(page) {
+            Ok(schema) => assert_eq!(schema, serde_json::from_str::<Value>(server).unwrap()),
+            Err(_) => assert_eq!(page, server),
+        }
     }
     let size = serde_json::to_string(&listed).unwrap().len();
     let card = crate::manual::card().len();
     assert!(card <= 800, "the instructions are {card} bytes");
-    println!("tool list {size} bytes, instructions {card} bytes");
+    println!("tool list {size} bytes as compact JSON, instructions {card} bytes");
 }
 
 #[test]

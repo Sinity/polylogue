@@ -225,7 +225,9 @@ fn streamed_line_with_failed_delivery_exits_nonzero() {
     assert_eq!(
         stream_line(
             root.path(),
-            &["sessions", "read", "--to", "clipboard"],
+            // An attachment's bytes are one text reply, which a directory
+            // cannot take.
+            &["sessions", "read", "--to", "out/"],
             &[("steps", steps.clone()), ("answer", steps)],
         )
         .unwrap(),

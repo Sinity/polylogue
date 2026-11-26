@@ -67,7 +67,7 @@ polylogue 'sessions where repo:morrow' save morrow-review
 polylogue session:claude-code:example send 'Please check the result.'
 polylogue session:claude-code:example answer allow
 polylogue session:claude-code:example interrupt
-polylogue session:claude-code:example resume --fork
+polylogue session:claude-code:example resume --in codex
 ```
 
 ### The first word
