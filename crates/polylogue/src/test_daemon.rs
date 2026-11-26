@@ -48,6 +48,7 @@ fn start_with_deployment(
         mode,
         polylogue_engine::Lifetime::UntilStopped,
         Some(polylogue_testkit::stopped_attempt()),
+        &Default::default(),
     )?;
     // Reads answer `index_building` until the loop's first pass installs the
     // index (docs/operations.md, Replacing an index from another schema).
@@ -249,6 +250,7 @@ impl TestDaemon {
             service::ArchiveMode::Standalone,
             polylogue_engine::Lifetime::UntilStopped,
             Some(polylogue_testkit::stopped_attempt()),
+            &Default::default(),
         )
         .unwrap();
         self.daemon = Arc::clone(&self.runtime.daemon);

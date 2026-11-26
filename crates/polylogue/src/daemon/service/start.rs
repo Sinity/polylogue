@@ -1,5 +1,6 @@
 //! Opening the archive and owning application workers.
 use super::{Daemon, ModeState, acts};
+use crate::daemon::lifecycle::{Phase, Progress};
 use polylogue_engine::{Config, Engine, Lifetime, LoopStatus, RunSummary, SharedLoopStatus};
 use polylogue_store::{Archive, ReadPool, WriterSender};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,6 +31,8 @@ pub struct Runtime {
     pub(super) worker_events: tokio::sync::watch::Sender<Option<&'static str>>,
     /// Set once by a loop run until idle, when it ends.
     idle: Arc<tokio::sync::watch::Sender<Option<RunSummary>>>,
+    /// Where opening and stopping steps are reported.
+    pub(crate) progress: Progress,
 }
 
 impl Runtime {
@@ -139,19 +142,16 @@ impl Runtime {
 
     pub fn shutdown(&mut self) -> std::io::Result<()> {
         self.stop_accepting();
+        let mut steps = self.progress.steps(Phase::Stopping);
         // Transports have stopped; queued requests are refused and running
         // ones end (the closed reader pool ends any still waiting for a read).
         // Work that ignores its cancellation is left behind after the bound,
         // so a stop never hangs on it.
-        let started = self.engine.as_ref().map(|_| Instant::now());
-        let running = self.daemon.requests.wait(STOP_WAIT);
-        if let Some(started) = started {
-            polylogue_store::log!(
-                info,
-                "shutdown request drain finished in {:?}",
-                started.elapsed()
-            );
+        // A second call (from drop, after the stop) has nothing left to report.
+        if self.lock.is_some() {
+            steps.next("waiting for running requests");
         }
+        let running = self.daemon.requests.wait(STOP_WAIT);
         if running > 0 {
             polylogue_store::log!(
                 warning,
@@ -160,22 +160,25 @@ impl Runtime {
             );
         }
         let mut failure = None;
-        if let Some(completion) = self.completion.as_mut()
-            && let Err(error) = completion.shutdown()
-        {
-            failure = Some(error);
+        if let Some(completion) = self.completion.as_mut() {
+            steps.next("completion worker");
+            if let Err(error) = completion.shutdown() {
+                failure = Some(error);
+            }
         }
         self.completion.take();
-        if let Some(scope) = self.scope.as_mut()
-            && let Err(error) = scope.shutdown()
-        {
-            failure.get_or_insert(error);
+        if let Some(scope) = self.scope.as_mut() {
+            steps.next("scope worker");
+            if let Err(error) = scope.shutdown() {
+                failure.get_or_insert(error);
+            }
         }
         self.scope.take();
         if let Some(stop) = self.live_events_stop.take() {
             let _ = stop.send(());
         }
         if let Some(worker) = self.live_events.take() {
+            steps.next("live event worker");
             let result = worker
                 .join()
                 .unwrap_or_else(|_| Err(std::io::Error::other("live event worker panicked")));
@@ -184,12 +187,14 @@ impl Runtime {
             }
         }
         if let Some(worker) = self.acts.take() {
+            steps.next("acts worker");
             self.daemon.acts.stop_reports();
             if worker.join().is_err() {
                 failure.get_or_insert_with(|| std::io::Error::other("acts worker panicked"));
             }
         }
         if let Some(signals) = self.signals.take() {
+            steps.next("signal worker");
             let result = signals
                 .join()
                 .unwrap_or_else(|_| Err(std::io::Error::other("signal worker panicked")));
@@ -198,26 +203,22 @@ impl Runtime {
             }
         }
         if let Some(engine) = self.engine.take() {
-            let started = Instant::now();
-            polylogue_store::log!(info, "shutdown engine drain started");
+            steps.next("engine drain");
             match engine.join() {
                 Ok((result, engine)) => {
                     if let Err(error) = result {
                         failure.get_or_insert(error);
                     }
                     // Engine owns the writer. Its final acknowledgments precede close.
+                    steps.next("writer drain");
                     drop(engine);
                 }
                 Err(_) => {
                     failure.get_or_insert_with(|| std::io::Error::other("loop thread panicked"));
                 }
             }
-            polylogue_store::log!(
-                info,
-                "shutdown engine drain finished in {:?}",
-                started.elapsed()
-            );
         }
+        steps.finish();
         self.daemon.reads.close();
         self.completion_scope.take();
         self.lock.take();
@@ -280,7 +281,10 @@ pub fn start(
     mode: ArchiveMode,
     lifetime: Lifetime,
     stopped_attempt: Option<polylogue_model::batch::StoppedAttempt>,
+    progress: &Progress,
 ) -> std::io::Result<Runtime> {
+    let mut steps = progress.steps(Phase::Opening);
+    steps.next("opening the archive");
     let root = deployment.archive.as_path();
     if let Some(stopped) = crate::daemon::storage_stop::this_boot(&deployment.paths, root) {
         return Err(std::io::Error::other(stopped));
@@ -311,6 +315,7 @@ pub fn start(
             let (archive, lock, scope) = Archive::open_or_create_with_invalidator(root, invalidate)
                 .map_err(std::io::Error::other)?;
             let archive = archive.with_memory_budget(settings.memory_budget);
+            steps.next("starting the writer");
             let engine = Engine::new(config, archive.clone(), attempt).map_err(|e| to_io(&e))?;
             (archive, lock, ModeState::Standalone, Some(engine), scope)
         }
@@ -333,6 +338,7 @@ pub fn start(
         ArchiveMode::Primary => return Err(primary_not_built()),
     };
     let mut engine = engine;
+    steps.next("opening the readers");
     let writes = engine.as_ref().map(Engine::writer);
     let per_reader = settings
         .reader_memory_per_connection()
@@ -397,6 +403,7 @@ pub fn start(
     };
     // Hosted sessions outlive a daemon restart: their hosts, or Codex's
     // app-server, kept them running; connect to each again.
+    steps.next("reattaching hosted sessions");
     daemon.acts.reattach();
     // Messages and notices left pending raise their running sessions' mailbox
     // flags; those to sessions no longer running are closed.
@@ -415,6 +422,7 @@ pub fn start(
         lock: Some(lock),
         worker_events: tokio::sync::watch::channel(None).0,
         idle: Arc::new(tokio::sync::watch::channel(None).0),
+        progress: progress.clone(),
     };
     // Subscribe before the initial snapshot or starting the ingest loop.
     let completion_commits = runtime
@@ -422,6 +430,7 @@ pub fn start(
         .writes
         .as_ref()
         .map(WriterSender::completion_commits);
+    steps.next("reading the first status");
     // The first status snapshot is read before any request is served, so
     // status says it is warming only while no index can be read yet.
     let commits_read = runtime
@@ -435,6 +444,7 @@ pub fn start(
             .status_snapshot
             .refresh(&runtime.daemon, &reader, commits_read);
     }
+    steps.next("starting the scope and completion workers");
     runtime.scope = Some(crate::daemon::scope::ScopeWorker::start(
         Arc::clone(&runtime.daemon),
         runtime
@@ -465,6 +475,7 @@ pub fn start(
         polylogue_store::storage_failure::wait();
         storage_events.send_replace(Some("the register failed a disk sync"));
     })?;
+    steps.next("starting the loop and watching its sources");
     let (ready, wait) = sync_channel(1);
     let worker_events = runtime.worker_events.clone();
     let idle = Arc::clone(&runtime.idle);
@@ -500,6 +511,7 @@ pub fn start(
     wait.recv()
         .map_err(|_| std::io::Error::other("loop thread exited during startup"))?
         .map_err(std::io::Error::other)?;
+    steps.next("starting the signal and live event workers");
     runtime.start_signals()?;
     let (stop, stopped) = channel();
     runtime.live_events_stop = Some(stop);
