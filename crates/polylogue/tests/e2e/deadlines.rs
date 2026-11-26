@@ -129,8 +129,8 @@ fn a_read_timeout_does_not_turn_a_write_reply_into_a_failure() {
 /// A finished synthetic read stream and the document it delivers.
 fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
     use polylogue_model::read::{
-        Format, HeaderKind, ItemKind, ReadBegin, ReadComplete, ReadDocument, ReadFooter,
-        ReadHeader, ReadItem, ReadOptions, ReadPart, ReadRecord, Source, ValueState,
+        HeaderKind, ItemKind, ReadDocument, ReadFooter, ReadHeader, ReadItem, ReadOptions,
+        ReadPart, ReadRecord, Source, ValueState,
     };
     let header = ReadHeader {
         target: "session:claude-code:s1".into(),
@@ -141,6 +141,8 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
         },
         figures: vec![],
         zone: None,
+        snapshot: None,
+        options: None,
     };
     let item = ReadItem {
         source: Source::record("message:claude-code:m1"),
@@ -153,11 +155,9 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
         count: ValueState::known(1),
         ..Default::default()
     };
-    let begin = ReadBegin {
-        format: Format::Json,
-        header: header.clone(),
-        options: ReadOptions::default(),
-        snapshot: polylogue_model::bundle::ReadSnapshot {
+    let begin = ReadHeader {
+        options: Some(Box::new(ReadOptions::default())),
+        snapshot: Some(Box::new(polylogue_model::bundle::ReadSnapshot {
             query: format!("query:{}", "a".repeat(64)),
             query_text: "sessions".into(),
             ran_at: polylogue_model::Timestamp::from_unix_ms(1).unwrap(),
@@ -174,15 +174,13 @@ fn read_stream() -> (Vec<u8>, polylogue_model::read::ReadDocument) {
             author: polylogue_model::Author::Operator,
             notes: vec![],
             incomplete: vec![],
-        },
+        })),
+        ..header.clone()
     };
     let record = ReadRecord::Presentation {
         parts: vec![ReadPart::Item(item.clone())],
     };
-    let complete = ReadComplete {
-        footer: footer.clone(),
-        counts: Default::default(),
-    };
+    let complete = footer.clone();
     let mut wire = Vec::new();
     for (name, value) in [
         ("begin", serde_json::to_value(begin).unwrap()),

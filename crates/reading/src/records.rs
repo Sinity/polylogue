@@ -180,6 +180,29 @@ pub(super) fn message(
 
 /// A physical session's original metadata, using its own stored identity and
 /// commit even when a composed reading reaches it through another session.
+/// The stored link records of a session, in stored order.
+pub(super) fn link_records(reader: &Reader<'_>, id: &SessionId) -> Result<Vec<Record>, Error> {
+    let mut links = Vec::new();
+    reader
+        .visit_links(id, 0, |link| {
+            links.push(link);
+            ControlFlow::Continue(())
+        })
+        .map_err(Error::from)?;
+    links
+        .into_iter()
+        .map(|link| {
+            let reference = LinkRecord::reference(&link);
+            let commit = required_commit(reader.link_commit(&link)?, &reference)?;
+            Ok(Record::Link(LinkRecord {
+                reference,
+                commit,
+                link,
+            }))
+        })
+        .collect()
+}
+
 pub(super) fn session_record(reader: &Reader<'_>, id: &SessionId) -> Result<Record, Error> {
     let reference = format!("session:{id}");
     let session = reader

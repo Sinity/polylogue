@@ -164,7 +164,7 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Annotation {
         match frame.event.as_str() {
             "begin" => {
                 assert!(!began);
-                let _: polylogue_model::read::ReadBegin =
+                let _: polylogue_model::read::ReadHeader =
                     serde_json::from_str(&frame.data).unwrap();
                 began = true;
             }
