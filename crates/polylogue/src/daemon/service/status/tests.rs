@@ -93,7 +93,7 @@ fn status_says_what_it_answers_from() {
     );
 
     d.status_snapshot.clear(d);
-    let installed = answer(d, None, false);
+    let installed = answer(d, None, false, false);
     assert_eq!(installed.exit_code(), 5);
     let command_surface::Outcome::Degraded { value, missing } = &installed.outcome else {
         panic!("{installed:?}");
@@ -112,7 +112,7 @@ fn status_says_what_it_answers_from() {
 
     let before = polylogue_model::Timestamp::from(d.clock.now());
     d.status_snapshot.refresh(d, &d.reads.reader().unwrap(), 0);
-    let read = answer(d, None, false);
+    let read = answer(d, None, false, false);
     let value = read.value().unwrap();
     let AnswersFrom::Snapshot { read_at } = value.answers_from else {
         panic!("{:?}", value.answers_from);
@@ -125,7 +125,7 @@ fn status_says_what_it_answers_from() {
 #[test]
 fn verification_retains_runtime_pending_and_named_problem_outcomes() {
     let daemon = crate::test_daemon::start("synthetic source");
-    let status = answer(&daemon.daemon, None, false);
+    let status = answer(&daemon.daemon, None, false, false);
     let mut status = status.map(|mut status| {
         status.pending_writes.delivery_outcomes = 2;
         status.pending_writes.last_error = Some("synthetic retry pending".into());
@@ -469,7 +469,7 @@ fn lasting_worker_failure_is_a_status_problem() {
         };
         let expected = format!("status failure test: {state}: synthetic worker failure");
         for reply in [
-            answer(&daemon.daemon, None, false),
+            answer(&daemon.daemon, None, false, false),
             unread(
                 &daemon.daemon,
                 crate::protocol::status::AnswersFrom::NotReadYet {
@@ -502,4 +502,102 @@ fn lasting_worker_failure_is_a_status_problem() {
         let _ = wake.try_send(());
         assert!(thread.join().unwrap());
     }
+}
+
+#[test]
+fn status_summarizes_twenty_roots_and_details_are_explicit() {
+    use polylogue_model::capture::{Accessibility, Classification, Coverage, Entry, RootCoverage};
+    let morrow = polylogue_testkit::Morrow::build(polylogue_testkit::Set::Main);
+    let mut store = morrow.reads().reader().unwrap().status().unwrap();
+    store.unused = vec![("synthetic:field".into(), 2)];
+    store.unused_fields = 1;
+    store.capture_coverage = vec![Coverage {
+        version: 1,
+        machine: "synthetic-host".into(),
+        observed_at: polylogue_model::Timestamp::from_unix_ms(1_700_000_000_000).unwrap(),
+        roots: (0..20)
+            .map(|n| RootCoverage {
+                path_bytes: format!("/home/op/root-{n}").into_bytes(),
+                status: Accessibility::Accessible,
+                entries: (0..100)
+                    .map(|p| Entry {
+                        class: Classification::Collected,
+                        pattern: format!("pattern-{p}/**"),
+                        reason: None,
+                        files: 1,
+                        bytes: 10,
+                        newest_mtime_ms: None,
+                    })
+                    .collect(),
+                unavailable_paths: Vec::new(),
+            })
+            .collect(),
+    }];
+    let daemon = crate::test_daemon::start("synthetic source");
+    let d = &daemon.daemon;
+    let mut snapshot = Snapshot::read(d, &d.reads.reader().unwrap(), 0);
+    snapshot.store = Ok(store);
+    *d.status_snapshot.0.locked() = Latest::Read(std::sync::Arc::new(snapshot));
+    let request = |details| {
+        crate::test_daemon::Call::new("status", serde_json::json!({"details":details})).answer(d)
+    };
+    let default = request(false);
+    let text = serde_json::to_string(&default).unwrap();
+    assert!(
+        text.chars().count() < 8000,
+        "{} characters",
+        text.chars().count()
+    );
+    let value = default.value().unwrap();
+    assert_eq!(
+        value["store"]["capture_coverage"][0]["roots"][19]["path"],
+        "/home/op/root-19"
+    );
+    assert_eq!(
+        value["store"]["capture_coverage"][0]["roots"][0]["collected"],
+        100
+    );
+    let details = request(true);
+    let value = details.value().unwrap();
+    assert_eq!(
+        value["store"]["capture_coverage"][0]["roots"][19]["entries"][99]["pattern"],
+        "pattern-99/**"
+    );
+    assert_eq!(
+        value["store"]["unused"],
+        serde_json::json!([["synthetic:field", 2]])
+    );
+}
+
+#[test]
+fn status_names_update_errors_and_failed_snapshot_parts() {
+    let daemon = crate::test_daemon::start("synthetic source");
+    let d = &daemon.daemon;
+    let mut snapshot = Snapshot::read(d, &d.reads.reader().unwrap(), 0);
+    snapshot.notices = Err("synthetic notices read failed".into());
+    *d.status_snapshot.0.locked() = Latest::Read(std::sync::Arc::new(snapshot));
+    d.status.update(|s| {
+        s.last_pass.errors = vec![polylogue_model::Failure::stated(
+            "/home/op/root",
+            polylogue_model::Cause::Environment,
+            polylogue_model::Code::Io,
+            "permission denied",
+        )]
+    });
+    let answer = answer(d, None, false, false);
+    assert_eq!(answer.exit_code(), 5);
+    let command_surface::Outcome::Degraded { value, missing } = answer.outcome else {
+        panic!("expected degraded status");
+    };
+    assert_eq!(
+        missing,
+        [
+            "/home/op/root: permission denied",
+            "notices: synthetic notices read failed"
+        ]
+    );
+    assert!(value.store.is_some());
+    assert!(
+        matches!(value.notices, Some(crate::protocol::status::Notices::Unavailable { error }) if error == "synthetic notices read failed")
+    );
 }

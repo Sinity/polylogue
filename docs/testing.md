@@ -27,7 +27,7 @@ A golden is the expected parse of an input, written by hand from knowledge of th
 - Examples with unit tests set `test = true` in their Cargo manifest. Test commands select runnable test targets by default; examples without tests are compiled by Clippy.
 - Helpers that need a crate's private items stay in that crate behind its test feature. CLI and MCP behaviour is tested through the public commands.
 
-**Waiting, never timing.** No test asserts elapsed time. A test of a deadline makes the peer stay silent until the client gives up, so only the deadline can end the wait; other tests wait for an event (a reply, a file, a closed connection). An import's reply means its rows are readable. A test that reads what the daemon found itself (at its start, or in a file the test wrote) first waits with `status --wait` until the daemon has caught up, and with `--after` for a change it has not seen yet; no test polls. nextest's slow timeout ends a hung test.
+**Waiting, never timing.** No test asserts elapsed time. A test of a deadline makes the peer stay silent until the client gives up, so only the deadline can end the wait; other tests wait for an event (a reply, a file, a closed connection). An import's reply means its rows are readable. A test that reads what the daemon found itself (at its start, or in a file the test wrote) first waits with `status --wait` until the daemon has caught up, and with `--after-changes` for a change it has not seen yet; no test polls. nextest's slow timeout ends a hung test.
 
 ## Properties
 

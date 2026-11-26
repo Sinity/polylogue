@@ -29,6 +29,65 @@ use std::time::{Duration, Instant};
 /// A statement running at least this long is logged when it ends.
 pub const SLOW_STATEMENT: Duration = Duration::from_secs(1);
 
+/// Completed slow statements, grouped by connection and SQL text.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SlowStatement {
+    pub connection: String,
+    pub sql: String,
+    pub count: u64,
+    pub seconds: f64,
+    pub longest_seconds: f64,
+    pub thread: String,
+    pub operation: Option<String>,
+}
+
+static SLOW: Mutex<std::collections::VecDeque<SlowStatement>> =
+    Mutex::new(std::collections::VecDeque::new());
+
+/// The latest hundred distinct slow statements, oldest first.
+pub fn slow_statements() -> Vec<SlowStatement> {
+    SLOW.locked().iter().cloned().collect()
+}
+
+fn finished_slow_statement(connection: &str, sql: &str, measured: Duration) {
+    let operation = RECORD
+        .try_with(|record| {
+            record
+                .state
+                .locked()
+                .doing
+                .last()
+                .map(|work| work.what.to_string())
+        })
+        .ok()
+        .flatten();
+    let mut statements = SLOW.locked();
+    let previous = statements
+        .iter()
+        .position(|statement| statement.connection == connection && statement.sql == sql)
+        .and_then(|at| statements.remove(at));
+    let seconds = measured.as_secs_f64();
+    let count = previous.as_ref().map_or(1, |statement| statement.count + 1);
+    let longest_seconds = previous
+        .as_ref()
+        .map_or(seconds, |statement| statement.longest_seconds.max(seconds));
+    if statements.len() == 100 {
+        statements.pop_front();
+    }
+    statements.push_back(SlowStatement {
+        connection: connection.to_owned(),
+        sql: sql.to_owned(),
+        count,
+        seconds,
+        longest_seconds,
+        thread: std::thread::current()
+            .name()
+            .unwrap_or("unnamed")
+            .to_owned(),
+        operation,
+    });
+}
+
 /// One thread's activity as `status` shows it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -357,8 +416,13 @@ fn traced<const CONNECTION: usize>(event: TraceEvent<'_>) {
             // clock again.
             if measured >= SLOW_STATEMENT {
                 use rusqlite::StatementStatus as Counter;
+                finished_slow_statement(
+                    Connection::NAMES[CONNECTION],
+                    &single_spaced(&sql),
+                    measured,
+                );
                 crate::log!(
-                    info,
+                    progress,
                     "slow statement on a {} connection: {:.1} s, {} full-scan steps, {} sorts, \
                      {} automatic-index rows, {} virtual machine steps: {}",
                     Connection::NAMES[CONNECTION],

@@ -212,7 +212,7 @@ pub(super) fn wait_status(
         // instead of turning it into a timeout.
         let mut args = vec!["--deadline", "none", "--json", "status", "--wait", &wait];
         if let Some(after) = &after {
-            args.extend(["--after", after]);
+            args.extend(["--after-changes", after]);
         }
         let out = cli(env, &args);
         let answer: command_surface::Answer<serde_json::Value> =

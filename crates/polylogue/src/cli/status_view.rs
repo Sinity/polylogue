@@ -53,7 +53,7 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         out.push_str(&view.cut_to(line, view.width.saturating_sub(LABEL)));
         out.push('\n');
     }
-    let sections: [(&str, Vec<String>); 14] = [
+    let sections: [(&str, Vec<String>); 15] = [
         ("ARCHIVE", archive(status, view)),
         (
             "READING",
@@ -82,6 +82,24 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
         ("THREADS", threads(status, view)),
         ("RECENT", recent(status, view)),
         (
+            "SLOW SQL",
+            status
+                .slow_statements
+                .iter()
+                .map(|statement| {
+                    format!(
+                        "{} times · {:.1}s latest · {:.1}s longest · {} · {} · {}",
+                        statement.count,
+                        statement.seconds,
+                        statement.longest_seconds,
+                        statement.connection,
+                        statement.operation.as_deref().unwrap_or(&statement.thread),
+                        clean(&statement.sql)
+                    )
+                })
+                .collect(),
+        ),
+        (
             "NOTES",
             notes.iter().map(|note| view.warning(note)).collect(),
         ),
@@ -96,9 +114,8 @@ pub(crate) fn render(status: &Answer, problems: &[String], view: &View<'_>) -> S
                 out.push('\n');
                 continue;
             }
-            let label = if n == 0 { label } else { "" };
-            let padded = format!("{label:<LABEL$}");
-            let value = if label == "RECENT" && view.whole_log {
+            let padded = format!("{:<LABEL$}", if n == 0 { label } else { "" });
+            let value = if (label == "RECENT" || label == "SLOW SQL") && view.whole_log {
                 line.clone()
             } else {
                 view.cut_to(line, view.width.saturating_sub(LABEL))
@@ -795,7 +812,6 @@ fn pending(status: &Answer, view: &View<'_>) -> Vec<String> {
 /// unrecognized.
 fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
     use polylogue_model::capture::{Accessibility, Classification};
-    use std::os::unix::ffi::OsStrExt as _;
     let Some(store) = &status.store else {
         return Vec::new();
     };
@@ -809,15 +825,14 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
             walked
         }));
         for root in &coverage.roots {
-            let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&root.path_bytes));
+            let path = std::path::Path::new(&root.path);
             let mut names: Vec<&str> = Vec::new();
-            let mut collected = 0;
-            let mut unrecognized = 0;
+            let collected = root.collected;
+            let unrecognized = root.unrecognized;
             let mut ignored = std::collections::BTreeMap::<&str, u64>::new();
             for entry in &root.entries {
                 match entry.class {
                     Classification::Collected => {
-                        collected += entry.files;
                         if let Some(name) = collected_by(path, &entry.pattern)
                             && !names.contains(&name)
                         {
@@ -829,10 +844,10 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
                             .entry(entry.reason.as_deref().unwrap_or("ignored"))
                             .or_default() += entry.files;
                     }
-                    Classification::Unrecognized => unrecognized += entry.files,
+                    Classification::Unrecognized => {}
                 }
             }
-            let shown = clean(&path.display().to_string());
+            let shown = clean(&root.path);
             let mut parts = vec![if names.is_empty() {
                 shown
             } else {
@@ -844,22 +859,24 @@ fn sources(status: &Answer, view: &View<'_>) -> Vec<String> {
                 Accessibility::Unavailable => view.warning_text("unavailable"),
                 Accessibility::Incomplete => view.warning_text(&format!(
                     "incomplete, {} {} unreadable",
-                    count(root.unavailable_paths.len() as u64),
-                    if root.unavailable_paths.len() == 1 {
+                    count(root.unreadable as u64),
+                    if root.unreadable == 1 {
                         "path"
                     } else {
                         "paths"
                     }
                 )),
             });
+            if let Some(error) = &root.error {
+                parts.push(view.error(error));
+            }
             if collected > 0 {
                 parts.push(format!("{} collected", count(collected)));
             }
             let mut reasons: Vec<(&str, u64)> = ignored.into_iter().collect();
             reasons.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-            if !reasons.is_empty() {
-                let total: u64 = reasons.iter().map(|(_, files)| files).sum();
-                parts.push(format!("{} ignored", count(total)));
+            if root.ignored > 0 {
+                parts.push(format!("{} ignored", count(root.ignored)));
             }
             if unrecognized > 0 {
                 parts.push(view.warning_text(&format!("{} unrecognized", count(unrecognized))));

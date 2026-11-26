@@ -613,6 +613,7 @@ impl Engine {
             }) {
                 errors.push(polylogue_model::Failure::new("capture coverage", &error));
             }
+            errors.extend(scan.errors);
             (scan.found, scan.unreadable)
         } else {
             collect::scan_paths(&self.config, paths)
@@ -2743,6 +2744,7 @@ impl Engine {
             );
             summary.passes += 1;
             summary.work.add(finished.clone());
+            finished.errors = self.failure_log.errors();
             status.update(|s| {
                 s.full_scans += finished.full_scans;
                 if finished.full_scans > 0
@@ -2751,6 +2753,7 @@ impl Engine {
                     || s.last_pass.capture_pending
                     || finished.capture_pending
                     || !finished.errors.is_empty()
+                    || !s.last_pass.errors.is_empty()
                     || s.passes == 0
                 {
                     s.last_pass = finished;

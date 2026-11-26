@@ -62,7 +62,17 @@ pub(crate) struct Recent {
 impl Recent {
     pub(crate) fn push(&mut self, record: Record) {
         if self.records.len() == KEPT {
-            self.records.pop_front();
+            if let Some(at) = self
+                .records
+                .iter()
+                .position(|record| record.priority == Priority::Info)
+            {
+                self.records.remove(at);
+            } else if record.priority == Priority::Info {
+                return;
+            } else {
+                self.records.pop_front();
+            }
         }
         self.records.push_back(record);
     }

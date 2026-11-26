@@ -122,8 +122,8 @@ impl Operation for Status {
                 "--wait cannot be combined with --watch or --verify",
             ));
         }
-        if arguments.after.is_some() && arguments.wait.is_none() {
-            return Err(Failure::bad_request("--after needs --wait"));
+        if arguments.after_changes.is_some() && arguments.wait.is_none() {
+            return Err(Failure::bad_request("--after-changes needs --wait"));
         }
         if arguments.watch && (arguments.line || arguments.verify) {
             return Err(Failure::bad_request(
@@ -181,11 +181,16 @@ impl Operation for Status {
         let mut status = match &arguments.wait {
             Some(wait) => {
                 let wait = super::line::listing_wait(wait, call.caller.channel())?;
-                status::wait(call, wait, arguments.after, || {
-                    status::answer(call.daemon, vectors.clone(), arguments.log)
+                status::wait(call, wait, arguments.after_changes, || {
+                    status::answer(
+                        call.daemon,
+                        vectors.clone(),
+                        arguments.log,
+                        arguments.details,
+                    )
                 })?
             }
-            None => status::answer(call.daemon, vectors, arguments.log),
+            None => status::answer(call.daemon, vectors, arguments.log, arguments.details),
         };
         if arguments.verify
             && status
