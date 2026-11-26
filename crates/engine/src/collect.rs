@@ -105,10 +105,10 @@ pub fn scan_paths(
                     {
                         continue;
                     }
+                    // A path an origin also matched keeps that origin: the
+                    // sort below is stable and the first of equal paths stays.
                     let origin = context_origin(tool, &path);
-                    if !found.iter().any(|f| f.path == path) {
-                        found.push(Found { path, origin });
-                    }
+                    found.push(Found { path, origin });
                 }
             }
         }
