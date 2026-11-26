@@ -123,7 +123,7 @@ fn missing_parent_arrival_stub_resolution_and_retraction_invalidate_descendants(
     conn.execute("UPDATE session SET stub=0 WHERE pk=?1", [parent])
         .unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:parent", 2));
-    conn.execute("DELETE FROM link WHERE parent_id='test:parent'", [])
+    conn.execute("DELETE FROM session_link WHERE parent_id='test:parent'", [])
         .unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:child", 1));
     f.derive().unwrap();
@@ -170,7 +170,7 @@ fn conflicting_parents_choose_neither_and_keep_one_structural_parent() {
         [],
     )
     .unwrap();
-    conn.execute("INSERT INTO link(parent_id,child_id,kind,evidence,input_pk,branch_point) SELECT parent_id,child_id,kind,evidence,input_pk,'test:two' FROM link WHERE child_id='test:child'",[]).unwrap();
+    conn.execute("INSERT INTO session_link(parent_id,child_id,kind,evidence,input_pk,branch_point) SELECT parent_id,child_id,kind,evidence,input_pk,'test:two' FROM session_link WHERE child_id='test:child'",[]).unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:a", 2));
     assert_eq!(
         conn.query_row(
@@ -196,7 +196,7 @@ fn conflicting_parents_choose_neither_and_keep_one_structural_parent() {
             ]
         })
     );
-    conn.execute("DELETE FROM link WHERE parent_id='test:b'", [])
+    conn.execute("DELETE FROM session_link WHERE parent_id='test:b'", [])
         .unwrap();
     assert_eq!(read(&f, "test:leaf"), rooted("test:a", 2));
 }
@@ -210,7 +210,7 @@ fn lineage_has_no_silent_depth_limit_and_unrelated_components_are_not_dirtied() 
     conn.execute_batch("BEGIN;
       WITH RECURSIVE n(value) AS (SELECT 0 UNION ALL SELECT value+1 FROM n WHERE value<1005)
       INSERT INTO session(id,origin,native_id,kind,changed) SELECT 'test:'||value,'test',cast(value AS TEXT),'main',1 FROM n;
-      INSERT INTO link(parent_id,child_id,kind,evidence,input_pk)
+      INSERT INTO session_link(parent_id,child_id,kind,evidence,input_pk)
       SELECT 'test:'||(cast(native_id AS INTEGER)-1),id,'continuation','fixture',(SELECT pk FROM input_ref LIMIT 1)
       FROM session WHERE origin='test' AND native_id<>'unrelated' AND cast(native_id AS INTEGER)>0;
       COMMIT;").unwrap();
@@ -218,7 +218,7 @@ fn lineage_has_no_silent_depth_limit_and_unrelated_components_are_not_dirtied() 
     let conn = db(&f);
     conn.execute("DELETE FROM summary_due WHERE session_pk=?1", [unrelated])
         .unwrap();
-    conn.execute("DELETE FROM link WHERE child_id='test:1'", [])
+    conn.execute("DELETE FROM session_link WHERE child_id='test:1'", [])
         .unwrap();
     assert_eq!(
         conn.query_row(
@@ -281,22 +281,38 @@ fn family_entries_keep_known_parents_and_cycles_without_a_root() {
     );
 }
 
-/// A session's links read through the reader are the rows of the
-/// `session_link_identity` view, in its order: statements whose coordinates
-/// agree are one link, a coordinate recorded with several values gives a
-/// link for each, and a partial statement another completes is not a link.
+/// The statements of one relation resolve to its relations
+/// (docs/sessions.md, session links): statements whose coordinates agree
+/// are one link, a coordinate recorded with several values gives a link for
+/// each, and a partial statement another completes is not a link. The
+/// reader reads them back as rows, with their inherited prefixes.
 #[test]
-fn links_read_for_a_session_are_the_identity_views_rows() {
+fn link_statements_resolve_to_relations() {
     let dir = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(dir.path()).unwrap();
     for id in ["test:p", "test:q", "test:a", "test:b", "test:c", "test:d"] {
         session(&mut f, id);
     }
-    type Statement = (Option<&'static str>, Option<&'static str>, bool);
-    // A parent, a child, a kind and how, with the statements of that relation.
-    type Relation<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, &'a [Statement]);
-    let relations: &[Relation<'_>] = &[
-        ("test:p", "test:a", "spawn", None, &[(None, None, false)]),
+    type Coordinates = (Option<&'static str>, Option<&'static str>);
+    // A parent, a child, a kind and how; the statements of that relation
+    // with whether each copies the prefix; the relations they give.
+    type Case<'a> = (
+        &'a str,
+        &'a str,
+        &'a str,
+        Option<&'a str>,
+        &'a [(Option<&'a str>, Option<&'a str>, bool)],
+        &'a [Coordinates],
+    );
+    let cases: &[Case<'_>] = &[
+        (
+            "test:p",
+            "test:a",
+            "spawn",
+            None,
+            &[(None, None, false)],
+            &[(None, None)],
+        ),
         (
             "test:p",
             "test:a",
@@ -307,6 +323,7 @@ fn links_read_for_a_session_are_the_identity_views_rows() {
                 (None, Some("c1"), true),
                 (None, None, false),
             ],
+            &[(Some("m1"), Some("c1"))],
         ),
         (
             "test:p",
@@ -318,14 +335,19 @@ fn links_read_for_a_session_are_the_identity_views_rows() {
                 (Some("m2"), None, false),
                 (None, Some("c1"), false),
             ],
+            &[(Some("m1"), Some("c1")), (Some("m2"), Some("c1"))],
         ),
         (
             "test:p",
             "test:c",
             "spawn",
             None,
-            &[(None, Some("c2")), (None, Some("c1")), (Some("m1"), None)]
-                .map(|(point, call)| (point, call, false)),
+            &[
+                (None, Some("c2"), false),
+                (None, Some("c1"), false),
+                (Some("m1"), None, false),
+            ],
+            &[(Some("m1"), Some("c1")), (Some("m1"), Some("c2"))],
         ),
         (
             "test:p",
@@ -333,15 +355,20 @@ fn links_read_for_a_session_are_the_identity_views_rows() {
             "spawn",
             None,
             &[
+                (Some("m1"), Some("c1"), false),
+                (Some("m2"), Some("c2"), false),
+                (Some("m1"), None, false),
+                (None, Some("c2"), false),
+                (None, None, false),
+                (Some("m3"), None, false),
+                (None, Some("c3"), false),
+            ],
+            &[
+                (None, Some("c3")),
                 (Some("m1"), Some("c1")),
                 (Some("m2"), Some("c2")),
-                (Some("m1"), None),
-                (None, Some("c2")),
-                (None, None),
                 (Some("m3"), None),
-                (None, Some("c3")),
-            ]
-            .map(|(point, call)| (point, call, false)),
+            ],
         ),
         (
             "test:p",
@@ -349,6 +376,7 @@ fn links_read_for_a_session_are_the_identity_views_rows() {
             "reference",
             Some("mention"),
             &[(None, None, false)],
+            &[(None, None)],
         ),
         (
             "test:p",
@@ -356,26 +384,76 @@ fn links_read_for_a_session_are_the_identity_views_rows() {
             "reference",
             Some("briefing"),
             &[(None, Some("c9"), false)],
+            &[(None, Some("c9"))],
         ),
-        ("test:q", "test:d", "resume", None, &[(None, None, false)]),
+        (
+            "test:q",
+            "test:d",
+            "resume",
+            None,
+            &[(None, None, false)],
+            &[(None, None)],
+        ),
         (
             "test:q",
             "test:b",
             "continuation",
             None,
             &[(None, None, false)],
+            &[(None, None)],
         ),
     ];
     let conn = db(&f);
-    for (parent, child, kind, how, statements) in relations {
-        for (point, call, copies) in *statements {
+    let mut expected_links: Vec<SessionLink> = Vec::new();
+    for (parent, child, kind, how, statements, expected) in cases {
+        let stated: Vec<Statement> = statements
+            .iter()
+            .enumerate()
+            .map(|(n, (point, call, copies))| Statement {
+                branch_point: point.map(str::to_owned),
+                spawning_call: call.map(str::to_owned),
+                copies_prefix: *copies,
+                evidence: format!("field.{n}"),
+                source_chain: n as i64,
+                input_pk: 1,
+            })
+            .collect();
+        let resolved = relations(&stated);
+        let coordinates: Vec<Coordinates> = resolved
+            .iter()
+            .map(|r| (r.branch_point.as_deref(), r.spawning_call.as_deref()))
+            .collect();
+        assert_eq!(coordinates, *expected, "{parent} {child} {kind} {how:?}");
+        let copies = statements.iter().any(|(_, _, copies)| *copies);
+        for relation in &resolved {
+            assert_eq!(relation.evidence, "field.0");
+            assert_eq!(relation.copies_prefix, copies);
             conn.execute(
-                "INSERT INTO link(parent_id, child_id, kind, how, copies_prefix, branch_point,
-                     spawning_call, evidence, input_pk)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'fixture', (SELECT min(pk) FROM input_ref))",
-                params![parent, child, kind, how, copies, point, call],
+                "INSERT INTO session_link(parent_id, child_id, kind, how, copies_prefix, branch_point,
+                     spawning_call, evidence, source_chain, input_pk)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, (SELECT min(pk) FROM input_ref))",
+                params![
+                    parent,
+                    child,
+                    kind,
+                    how,
+                    relation.copies_prefix,
+                    relation.branch_point,
+                    relation.spawning_call,
+                    relation.evidence,
+                    relation.source_chain
+                ],
             )
             .unwrap();
+            expected_links.push(SessionLink {
+                parent: (*parent).into(),
+                child: (*child).into(),
+                kind: (*kind).into(),
+                how: how.map(str::to_owned),
+                copies_prefix: copies || (*parent, *child) == ("test:q", "test:b"),
+                branch_point: relation.branch_point.clone(),
+                spawning_call: relation.spawning_call.clone(),
+            });
         }
     }
     conn.execute(
@@ -393,61 +471,78 @@ fn links_read_for_a_session_are_the_identity_views_rows() {
     .unwrap();
     let pool = f.reads().unwrap();
     let reader = pool.reader().unwrap();
-    let stated_prefixes = |id: &str| -> Vec<(String, Option<String>, bool)> {
-        conn.prepare(
-            "SELECT parent_id, branch_point, copies_prefix FROM session_prefix
-             WHERE child_id = ?1 ORDER BY parent_id, branch_point, copies_prefix",
-        )
-        .unwrap()
-        .query_map([id], |row| <(_, _, _)>::try_from(row))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
+    let sorted = |mut links: Vec<SessionLink>| {
+        links.sort_by(|a, b| {
+            (
+                &a.parent,
+                &a.child,
+                &a.kind,
+                &a.how,
+                &a.branch_point,
+                &a.spawning_call,
+            )
+                .cmp(&(
+                    &b.parent,
+                    &b.child,
+                    &b.kind,
+                    &b.how,
+                    &b.branch_point,
+                    &b.spawning_call,
+                ))
+        });
+        links
     };
-    let stated = |column: &str, id: &str| -> Vec<SessionLink> {
-        conn.prepare(&format!(
-            "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
-             FROM session_link_identity WHERE {column} = ?1
-             ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call"
-        ))
-        .unwrap()
-        .query_map([id], |row| {
-            Ok(SessionLink {
-                parent: row.get(0)?,
-                child: row.get(1)?,
-                kind: row.get(2)?,
-                how: row.get(3)?,
-                branch_point: row.get(4)?,
-                spawning_call: row.get(5)?,
-                copies_prefix: row.get(6)?,
-            })
-        })
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap()
-    };
-    let mut links = 0;
-    let mut prefixes = 0;
-    for id in ["test:p", "test:q", "test:a", "test:b", "test:c", "test:d"] {
+    let some = |text: &str| Some(text.to_owned());
+    let expected_prefixes: &[(&str, Vec<(String, Option<String>, bool)>)] = &[
+        ("test:p", vec![]),
+        ("test:q", vec![]),
+        (
+            "test:a",
+            vec![
+                ("test:c".into(), None, true),
+                ("test:p".into(), some("m1"), true),
+            ],
+        ),
+        (
+            "test:b",
+            vec![
+                ("test:p".into(), some("m1"), false),
+                ("test:p".into(), some("m2"), false),
+                ("test:q".into(), None, true),
+            ],
+        ),
+        ("test:c", vec![]),
+        ("test:d", vec![("test:q".into(), None, false)]),
+    ];
+    for (id, prefixes) in expected_prefixes {
         let session = SessionId::parse(id).unwrap();
-        let children = reader.child_links(&session).unwrap();
-        assert_eq!(children, stated("parent_id", id), "children of {id}");
+        let of = |keep: &dyn Fn(&SessionLink) -> bool| {
+            sorted(expected_links.iter().filter(|l| keep(l)).cloned().collect())
+        };
         assert_eq!(
-            reader.parent_links(&session).unwrap(),
-            stated("child_id", id),
+            sorted(reader.child_links(&session).unwrap()),
+            of(&|l| l.parent == *id),
+            "children of {id}"
+        );
+        assert_eq!(
+            sorted(reader.parent_links(&session).unwrap()),
+            of(&|l| l.child == *id),
             "parents of {id}"
         );
-        links += children.len();
         assert_eq!(
-            inherited_prefixes(&conn, id).unwrap(),
-            stated_prefixes(id),
+            &inherited_prefixes(&conn, id).unwrap(),
+            prefixes,
             "prefixes of {id}"
         );
-        prefixes += stated_prefixes(id).len();
+        let mut viewed: Vec<(String, Option<String>, bool)> = conn
+            .prepare("SELECT parent_id, branch_point, copies_prefix FROM session_prefix WHERE child_id = ?1")
+            .unwrap()
+            .query_map([id], |row| <(_, _, _)>::try_from(row))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        viewed.sort();
+        assert_eq!(&viewed, prefixes, "prefix view of {id}");
     }
-    // test:a forks from test:p and copies test:c; test:b forks from test:p
-    // at two points and continues test:q; test:d resumes test:q.
-    assert_eq!(prefixes, 6);
-    // 1 + 1 + 2 + 2 + 4 + 1 + 1 of test:p, 2 of test:q.
-    assert_eq!(links, 14);
+    assert_eq!(expected_links.len(), 14);
 }

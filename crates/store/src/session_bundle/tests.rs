@@ -250,12 +250,12 @@ fn copied_messages_skip_unrelated_prefix_edges() {
     };
     let (expected, before, old_before) = measure();
     index.execute("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000)
-        INSERT INTO link(parent_id,child_id,kind,copies_prefix,evidence,input_pk)
+        INSERT INTO session_link(parent_id,child_id,kind,copies_prefix,evidence,input_pk)
         SELECT 'claude-code:other-parent-'||x,'claude-code:other-child-'||x,'fork',1,'synthetic',(SELECT min(pk) FROM input_ref) FROM n",[]).unwrap();
     index
         .execute(
             "INSERT INTO prefix_copy(input_pk,chain,parent_id,child_id,explicit_members)
-        SELECT input_pk,0,parent_id,child_id,0 FROM link WHERE evidence='synthetic'",
+        SELECT input_pk,0,parent_id,child_id,0 FROM session_link WHERE evidence='synthetic'",
             [],
         )
         .unwrap();

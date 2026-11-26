@@ -487,12 +487,12 @@ CREATE TABLE session_link (
   child_id          TEXT NOT NULL,
   kind              TEXT NOT NULL CHECK (kind IN (@names(LinkKind))),
   how               TEXT CHECK (how IN (@names(ReferenceReason))),
-  copies_prefix     INTEGER NOT NULL CHECK(copies_prefix IN (0,1)),  -- some statement says the child's file copies
+  copies_prefix     INTEGER NOT NULL DEFAULT 0 CHECK(copies_prefix IN (0,1)),  -- some statement says the child's file copies
                                             --   the parent's prefix; a recorded copy (prefix_copy) says it too
   branch_point      TEXT,
   spawning_call     TEXT,
   evidence          TEXT NOT NULL,          -- the least of its statements' evidence
-  source_chain      INTEGER NOT NULL,       -- the first statement's input and chain
+  source_chain      INTEGER NOT NULL DEFAULT 0,  -- the first statement's input and chain
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)
 ) STRICT;
 CREATE INDEX session_link_parent ON session_link(parent_id, kind);   -- children; late parents

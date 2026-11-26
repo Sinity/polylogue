@@ -47,7 +47,7 @@ fn array_order_and_parent_sessions_survive_rebuild() {
         assert_eq!(texts(&w, "chatgpt:parent"), ["First", "Second"]);
         assert_eq!(texts(&w, "chatgpt:child"), ["Third"]);
         assert_eq!(
-            w.count("SELECT COUNT(*) AS n FROM link WHERE kind='fork'"),
+            w.count("SELECT COUNT(*) AS n FROM session_link WHERE kind='fork'"),
             1
         );
         let reads = w.reads();
