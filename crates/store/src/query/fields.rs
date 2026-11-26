@@ -482,7 +482,7 @@ pub fn rule(id: FieldId) -> Rule {
         // session's last activity and does not hold the session; or the newest
         // chain of an input that states the session states it gone (the Drive
         // collector's listing of a removed prompt).
-        SessionsSource => Rule::NONE.sql("CASE WHEN {s}.stub = 1 THEN 'missing' WHEN EXISTS(SELECT 1 FROM session_record {s}_g WHERE {s}_g.session_id={s}.id AND json_extract({s}_g.facts,'$.gone')=1 AND {s}_g.chain=(SELECT max({s}_n.chain) FROM session_record {s}_n WHERE {s}_n.input_pk={s}_g.input_pk AND {s}_n.session_id={s}_g.session_id)) THEN 'gone' WHEN EXISTS(SELECT 1 FROM export_reading {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_activity_at AND NOT EXISTS(SELECT 1 FROM session_record {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_id={s}.id AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
+        SessionsSource => Rule::NONE.sql("CASE WHEN {s}.stub = 1 THEN 'missing' WHEN EXISTS(SELECT 1 FROM session_parse {s}_g WHERE {s}_g.session_id={s}.id AND json_extract({s}_g.facts,'$.gone')=1 AND {s}_g.chain=(SELECT max({s}_n.chain) FROM session_parse {s}_n WHERE {s}_n.input_pk={s}_g.input_pk AND {s}_n.session_id={s}_g.session_id)) THEN 'gone' WHEN EXISTS(SELECT 1 FROM export_reading {s}_e JOIN input_ref {s}_ei ON {s}_ei.pk={s}_e.input_pk WHERE {s}_e.origin={s}.origin AND {s}_e.latest_at>{s}.last_activity_at AND NOT EXISTS(SELECT 1 FROM session_parse {s}_p JOIN input_ref {s}_pi ON {s}_pi.pk={s}_p.input_pk WHERE {s}_p.session_id={s}.id AND ({s}_pi.pk={s}_e.input_pk OR {s}_pi.id IN (SELECT {s}_m.input FROM import_member {s}_m JOIN import_member {s}_x ON {s}_x.import_id={s}_m.import_id WHERE {s}_x.input={s}_ei.id)))) THEN 'gone' ELSE 'present' END"),
         SessionsLive => Rule::NONE.custom(custom::live).sql_clock(sessions_live),
         SessionsWaiting => Rule::NONE.custom(custom::waiting).sql_clock(sessions_waiting),
         SessionsRunning => Rule::NONE.custom(custom::running).sql_clock(sessions_running),
@@ -977,7 +977,7 @@ pub fn first_seen_of(m: &str) -> String {
     format!(
         "(SELECT min(fr.seen_at) FROM shown_message_parse fs JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
-         AND fr.length > fs.source_start AND fr.length >= fs.source_end \
+         AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
          WHERE fs.message_pk = {m}.pk)"
     )
 }
@@ -1004,7 +1004,7 @@ fn session_first_seen(a: &Aliases) -> String {
         "(SELECT min(fr.seen_at) FROM message fm JOIN shown_message_parse fs ON fs.message_pk = fm.pk \
          JOIN input_ref fi ON fi.pk = fs.input_pk \
          JOIN source_revision fr ON fr.input = fi.id AND fr.chain = fs.chain \
-         AND fr.length > fs.source_start AND fr.length >= fs.source_end \
+         AND fr.length > fs.source_start AND fr.length >= fs.source_start + fs.source_length \
          WHERE fm.session_pk = {}.pk)",
         a.s
     )
