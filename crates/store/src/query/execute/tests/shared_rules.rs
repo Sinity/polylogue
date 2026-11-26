@@ -80,42 +80,78 @@ fn a_one_turn_session_costs_what_its_turn_costs() {
         .unwrap()
         .execute("UPDATE message SET input_tokens=3,output_tokens=5", [])
         .unwrap();
+    {
+        let pool = f.reads().unwrap();
+        let r = pool.reader().unwrap();
+        let mut opts = options();
+        opts.origins.push("codex".into());
+        opts.fields = ["cost", "cost_complete", "input_tokens", "output_tokens"]
+            .map(str::to_owned)
+            .to_vec();
+        let rows = |text| {
+            r.query_page(&crate::query::compile(text, &opts).unwrap(), None)
+                .unwrap()
+                .rows
+        };
+        let session = rows("sessions");
+        let turn = rows("turns");
+        assert_eq!(turn[0]["cost"], 18);
+        assert_eq!(turn[0]["cost_complete"], 0);
+        assert_eq!(turn[0]["cost"], session[0]["cost"]);
+        assert_eq!(turn[0]["cost_complete"], session[0]["cost_complete"]);
+        let mut turn_options = opts.clone();
+        turn_options.fields = vec!["answer".into()];
+        let answers = r
+            .query_page(
+                &crate::query::compile("turns", &turn_options).unwrap(),
+                None,
+            )
+            .unwrap();
+        assert_eq!(answers.rows[0]["answer"], "codex:unpriced");
+        assert_eq!(
+            group_rows(&r, "turns | agg sum(cost)")[0]["partial_cost"],
+            1
+        );
+
+        for (column, expected) in [("input_tokens", 9), ("output_tokens", 15)] {
+            assert_eq!(turn[0][column], expected);
+            assert_eq!(turn[0][column], session[0][column]);
+        }
+    }
+    for (id, role, by, cost) in [
+        ("codex:prompt-two", "user", "human", None),
+        ("codex:priced-two", "assistant", "model", Some(13)),
+    ] {
+        f.message(
+            pk,
+            MessageFacts {
+                id,
+                role,
+                written_by: by,
+                cost_nusd: cost,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    }
     let pool = f.reads().unwrap();
     let r = pool.reader().unwrap();
     let mut opts = options();
     opts.origins.push("codex".into());
-    opts.fields = ["cost", "cost_complete", "input_tokens", "output_tokens"]
-        .map(str::to_owned)
-        .to_vec();
-    let rows = |text| {
-        r.query_page(&crate::query::compile(text, &opts).unwrap(), None)
-            .unwrap()
-            .rows
-    };
-    let session = rows("sessions");
-    let turn = rows("turns");
-    assert_eq!(turn[0]["cost"], 18);
-    assert_eq!(turn[0]["cost_complete"], 0);
-    assert_eq!(turn[0]["cost"], session[0]["cost"]);
-    assert_eq!(turn[0]["cost_complete"], session[0]["cost_complete"]);
-    let mut turn_options = opts.clone();
-    turn_options.fields = vec!["answer".into()];
-    let answers = r
+    opts.page_size = Some(20);
+    opts.fields = vec!["cost".into(), "cost_complete".into()];
+    let rows = r
         .query_page(
-            &crate::query::compile("turns", &turn_options).unwrap(),
+            &crate::query::compile("turns | sort by id", &opts).unwrap(),
             None,
         )
-        .unwrap();
-    assert_eq!(answers.rows[0]["answer"], "codex:unpriced");
-    assert_eq!(
-        group_rows(&r, "turns | agg sum(cost)")[0]["partial_cost"],
-        1
-    );
-
-    for (column, expected) in [("input_tokens", 9), ("output_tokens", 15)] {
-        assert_eq!(turn[0][column], expected);
-        assert_eq!(turn[0][column], session[0][column]);
-    }
+        .unwrap()
+        .rows;
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0]["cost"], 18);
+    assert_eq!(rows[0]["cost_complete"], 0);
+    assert_eq!(rows[1]["cost"], 13);
+    assert_eq!(rows[1]["cost_complete"], 1);
 }
 
 #[test]

@@ -1227,6 +1227,7 @@ static CHAT_ACTIONS: UnitSpec = UnitSpec {
 /// order when it is unknown), a turn starts at a human prompt that does not
 /// follow another prompt, or at a typed command, and runs until the next
 /// such start; a session with no prompt is one turn. Duplicates are left out.
+/// Usage has both row-value bounds so SQLite can seek each turn in `message_session`.
 /// Every turn of every session, as a subquery: the `turns` unit's rows.
 pub fn turns() -> String {
     format!(
@@ -1269,7 +1270,8 @@ pub fn turns() -> String {
            sum({input_tokens}) AS input_tokens,sum({output_tokens}) AS output_tokens,
            sum({cost}) AS cost_nusd,sum({unpriced}) AS unpriced_responses,NOT max({unknown_cost}) AS cost_complete
          FROM bounds g JOIN message m ON m.session_pk=g.session_pk AND m.duplicate_of IS NULL
-           AND (g.first_turn OR (m.session_order,m.id)>=(g.first_order,g.first_id))
+           AND (m.session_order,m.id)>=(CASE WHEN g.first_turn THEN {lowest_order} ELSE g.first_order END,CASE WHEN g.first_turn THEN '' ELSE g.first_id END)
+           AND (m.session_order,m.id)<=(coalesce(g.next_order,{highest_order}),coalesce(g.next_id,(SELECT max(last_message.id) FROM message last_message WHERE last_message.session_pk=g.session_pk)))
            AND (g.next_order IS NULL OR (m.session_order,m.id)<(g.next_order,g.next_id))
          GROUP BY g.session_pk,g.turn)",
         own_messages = fields::own_messages("m", None),
@@ -1278,6 +1280,8 @@ pub fn turns() -> String {
         output_tokens = crate::session_sql::response_value("output_tokens"),
         cost = crate::session_sql::response_value("cost_nusd"),
         unknown_cost = crate::session_sql::response_cost_unknown(),
+        lowest_order = i64::MIN,
+        highest_order = i64::MAX,
     )
 }
 
