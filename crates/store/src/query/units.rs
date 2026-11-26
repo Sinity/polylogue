@@ -384,6 +384,13 @@ impl UnitSpec {
     pub(crate) fn reads_a_table(&self) -> bool {
         matches!(self.from, Expr::Template(t) if !t.starts_with('('))
     }
+
+    /// The unit's rows are the archive's (authored records, deliveries,
+    /// jobs), whose indexes the archive format owns.
+    #[cfg(test)]
+    pub(crate) fn reads_the_archive(&self) -> bool {
+        matches!(self.from, Expr::Template(t) if t.starts_with("source_"))
+    }
 }
 
 pub fn spec(unit: Unit) -> &'static UnitSpec {
