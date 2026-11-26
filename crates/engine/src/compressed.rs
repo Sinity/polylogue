@@ -32,6 +32,20 @@ fn decoded(source: &std::fs::File, compressed: bool) -> std::io::Result<Box<dyn 
     }
 }
 
+/// Reads until `buffer` is full or the stream ends; how many bytes it read.
+fn read_up_to(stream: &mut impl Read, buffer: &mut [u8]) -> std::io::Result<usize> {
+    let mut held = 0;
+    while held < buffer.len() {
+        match stream.read(&mut buffer[held..]) {
+            Ok(0) => break,
+            Ok(n) => held += n,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(held)
+}
+
 fn matching_revision(
     reader: &polylogue_store::Reader<'_>,
     blobs: &Arc<polylogue_store::blobs::Blobs>,
@@ -231,6 +245,9 @@ impl RolloutCapture {
         let mut same = false;
         let mut appended = false;
         let mut historical = None;
+        // The copy ends inside the stored chain and every byte it holds is
+        // the chain's byte at its place: how many bytes it holds.
+        let mut shorter = None;
         // What was read of the file and of the stored chain to decide.
         let mut file_read = facts.size;
         // A plain rollout that grew is proven an append by the stored bytes
@@ -260,45 +277,58 @@ impl RolloutCapture {
             let mut left = [0; 65536];
             let mut right = [0; 65536];
             let mut matches = true;
+            let mut compared = 0u64;
             loop {
                 let n = stored.read(&mut left)?;
                 if n == 0 {
                     break;
                 }
-                match stream.read_exact(&mut right[..n]) {
-                    Ok(()) if left[..n] == right[..n] => {}
-                    Ok(()) => {
-                        matches = false;
-                        break;
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
-                        matches = false;
-                        break;
-                    }
-                    Err(error) => return Err(error.into()),
+                let held = read_up_to(&mut stream, &mut right[..n])?;
+                if left[..held] != right[..held] {
+                    matches = false;
+                    break;
+                }
+                compared += held as u64;
+                if held < n {
+                    // The copy ended inside the chain, equal so far.
+                    matches = false;
+                    shorter = (compared > 0).then_some(compared);
+                    break;
                 }
             }
             if matches {
                 same = stream.fill_buf()?.is_empty();
                 appended = !same;
             } else {
+                // A copy ending where a stored revision ends is that
+                // revision seen again; one ending between revisions is the
+                // chain seen back holding a prefix.
                 historical = matching_revision(&reads.reader()?, blobs, &id, &source, compressed)?;
+                if historical.is_some() {
+                    shorter = None;
+                }
                 stream = decoded(&source, compressed)?;
             }
         }
         // Equal decoded content still has a body that was read. Keep its
         // encoding through the immutable Accepted/Unresolved outcome.
-        let prepared = Some(archive.prepare_bytes(if same || historical.is_some() {
-            decoded(&source, compressed)?
-        } else {
-            stream
-        })?);
+        // A shorter copy stores no bytes: the chain holds them already.
+        let prepared = match shorter {
+            Some(_) => None,
+            None => Some(archive.prepare_bytes(if same || historical.is_some() {
+                decoded(&source, compressed)?
+            } else {
+                stream
+            })?),
+        };
         if FileFacts::of(&source.metadata()?) != facts
             || std::fs::metadata(path).map(|m| FileFacts::of(&m))? != facts
         {
             return Ok(None);
         }
-        let length = if let Some(point) = historical {
+        let length = if let Some(held) = shorter {
+            held
+        } else if let Some(point) = historical {
             point.length
         } else if same {
             previous.as_ref().expect("same stored input").length
@@ -310,7 +340,7 @@ impl RolloutCapture {
                     0
                 }
         };
-        let added = if same || historical.is_some() {
+        let added = if same || historical.is_some() || shorter.is_some() {
             0
         } else {
             prepared.as_ref().expect("new bytes").len()
@@ -360,7 +390,13 @@ impl RolloutCapture {
                     .to_vec(),
             });
         }
-        let change = if let Some(point) = historical {
+        let change = if shorter.is_some() {
+            // Every byte the copy holds is the stored chain's byte at its
+            // place: the chain seen back, as a shorter plain file is.
+            Change::Shorter {
+                chain: previous.as_ref().expect("a stored chain").chain,
+            }
+        } else if let Some(point) = historical {
             Change::Observed {
                 revision: point.number,
                 chain: point.chain,
