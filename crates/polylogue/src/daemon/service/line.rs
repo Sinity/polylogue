@@ -729,8 +729,7 @@ impl Stream<'_> {
                 return Err(verbs::not_built("read", "until-idle"));
             }
             let target = verbs::read::target(selection)?;
-            let marks =
-                super::follow::run(call.call.daemon, self.context, &target, None, self.output)?;
+            let marks = super::follow::run(&call.call, self.context, &target, None, self.output)?;
             return Ok(Answer::ok(StepAnswer::Followed(Box::new(marks))).into());
         }
         let answer = verbs::read::stream(
@@ -832,7 +831,10 @@ fn execute_steps(
             request_id: Some(request_id),
             outcome: reported,
         });
-        if let Some(stream) = &mut stream {
+        if !failed
+            && limit.is_none_or(|limit| limit.check().is_ok())
+            && let Some(stream) = &mut stream
+        {
             stream.reports(selection, &mut reports, &mut envelope)?;
         }
     }

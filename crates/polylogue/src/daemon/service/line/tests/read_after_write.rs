@@ -94,51 +94,81 @@ fn read_after_a_write_times_out_and_the_line_keeps_the_write_result() {
     let index = rusqlite::Connection::open(daemon.archive.index_db()).unwrap();
     index.execute_batch("BEGIN IMMEDIATE").unwrap();
 
-    let limit = ReadLimit::new(Duration::from_secs(3), Default::default());
-    let answer = Call::new(
-        "rows",
-        json!({
-            "selection": "session:claude-code:7f3a2c10-0001-4000-8000-000000000001",
-            "steps": [
-                {"verb": "note", "text": "Check date parsing."},
-                {"verb": "read"},
-            ],
-        }),
-    )
-    .id("note-before-read")
-    .within(&limit)
-    .answer(daemon);
+    for follow in [false, true] {
+        let id = if follow {
+            "note-before-follow"
+        } else {
+            "note-before-read"
+        };
+        let limit = ReadLimit::new(Duration::from_secs(3), Default::default());
+        let (events, answer) = Call::new(
+            "rows",
+            json!({
+                "selection": "session:claude-code:7f3a2c10-0001-4000-8000-000000000001",
+                "steps": [
+                    {"verb": "note", "text": "Check date parsing."},
+                    {"verb": "read", "follow": follow},
+                ],
+            }),
+        )
+        .id(id)
+        .within(&limit)
+        .answer_with_events(daemon);
 
-    let LineAnswer::Steps(result) = serde_json::from_value(
-        answer
-            .value()
-            .unwrap_or_else(|| panic!("{answer:?}"))
-            .clone(),
-    )
-    .unwrap() else {
-        panic!("expected steps");
-    };
-    let [write, read] = result.steps.as_slice() else {
-        panic!("expected a write and a read: {:?}", result.steps);
-    };
-    let StepOutcome::Done {
-        reply: StepAnswer::WroteEach(write),
-        undo,
-    } = &write.outcome
-    else {
-        panic!("expected the completed write: {:?}", write.outcome);
-    };
-    assert_eq!(write.id.as_deref(), Some("note-before-read-1"));
-    assert_eq!(undo.len(), 1);
-    let StepOutcome::Failed { error } = &read.outcome else {
-        panic!("expected the read timeout: {:?}", read.outcome);
-    };
-    assert_eq!(error.code.as_deref(), Some(Code::DeadlineExceeded.as_str()));
-    let reader = daemon.reads.reader().unwrap();
-    let saved = reader.user_request("note-before-read-1").unwrap().unwrap();
-    let UserWrite::AssertQuery { annotation, .. } = saved.write else {
-        panic!("expected a committed note");
-    };
-    assert_eq!(annotation.value, Some(json!("Check date parsing.")));
+        let LineAnswer::Steps(result) = serde_json::from_value(
+            answer
+                .value()
+                .unwrap_or_else(|| panic!("{answer:?}"))
+                .clone(),
+        )
+        .unwrap() else {
+            panic!("expected steps");
+        };
+        let mut steps = Vec::new();
+        if follow {
+            let frame = std::str::from_utf8(&events).unwrap();
+            let kind: Vec<_> = frame
+                .lines()
+                .filter_map(|line| line.strip_prefix("event:").map(str::trim))
+                .collect();
+            assert_eq!(kind, ["steps"]);
+            let data = frame
+                .lines()
+                .find_map(|line| line.strip_prefix("data:"))
+                .unwrap();
+            let reply: command_surface::Answer<LineAnswer> = serde_json::from_str(data).unwrap();
+            let command_surface::Outcome::Ok(LineAnswer::Steps(written)) = reply.outcome else {
+                panic!("expected completed steps");
+            };
+            steps.extend(written.steps);
+        } else {
+            assert!(events.is_empty());
+        }
+        steps.extend(result.steps);
+        let [write, read] = steps.as_slice() else {
+            panic!("expected a write and a read: {steps:?}");
+        };
+        let StepOutcome::Done {
+            reply: StepAnswer::WroteEach(write),
+            undo,
+        } = &write.outcome
+        else {
+            panic!("expected the completed write: {:?}", write.outcome);
+        };
+        let write_id = format!("{id}-1");
+        assert_eq!(write.id.as_deref(), Some(write_id.as_str()));
+        assert_eq!(write.written, 1);
+        assert_eq!(undo.len(), 1);
+        let StepOutcome::Failed { error } = &read.outcome else {
+            panic!("expected the read timeout: {:?}", read.outcome);
+        };
+        assert_eq!(error.code.as_deref(), Some(Code::DeadlineExceeded.as_str()));
+        let reader = daemon.reads.reader().unwrap();
+        let saved = reader.user_request(&write_id).unwrap().unwrap();
+        let UserWrite::AssertQuery { annotation, .. } = saved.write else {
+            panic!("expected a committed note");
+        };
+        assert_eq!(annotation.value, Some(json!("Check date parsing.")));
+    }
     drop(index);
 }
