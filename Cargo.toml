@@ -77,6 +77,10 @@ unimplemented = "deny"
 # checks rebuild much of it: on the hosted runner, level 1 cut the four test
 # shards' running time from 548 s to 477 s but raised each shard's test build
 # from 129-163 s to 695-852 s.
+# The hosted check also splits debug info into separate files and links with
+# mold (see docs/development.md); neither is set here, because the local
+# compiler cache does not store split files and a cache hit would lose line
+# tables.
 # Line tables keep backtraces readable. Full debug info made each worktree's
 # target directory 12-19 GB and every test link a heavy disk write.
 [profile.dev]

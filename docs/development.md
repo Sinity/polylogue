@@ -243,7 +243,14 @@ no base and run everything. The `check` job is the one required status and
 fails unless every other job succeeded. Each Rust job takes the toolchain
 from `rust-toolchain.toml` through rustup, and nextest, cargo-hakari, zsh,
 fish, zip and Node from the flake's `check-tools` package, the development
-shell's versions. A test job lists its failed tests and the tests that took
+shell's versions. The development shell and the hosted check link with
+mold and compressed debug sections, one definition in `nix/rustflags.nix`
+that the flake exports as `lib.rustflags` and the job setup reads. The hosted
+jobs also build with `CARGO_PROFILE_DEV_SPLIT_DEBUGINFO=unpacked` (the test
+profile inherits it): debug info goes into separate files, which makes the
+test build faster and the executables smaller and keeps file and line in
+backtraces. The local profile leaves it off because sccache stores no split
+files, so a local cache hit would lose line tables. A test job lists its failed tests and the tests that took
 10 s or longer in the job summary, and uploads nextest's JUnit report
 (`--junit PATH`) as the artifact `junit-<k>`, so a test that fails now and
 then on master can be traced through recorded runs.
