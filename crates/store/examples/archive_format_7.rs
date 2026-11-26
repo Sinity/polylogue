@@ -544,13 +544,13 @@ fn other_tables(tx: &Connection, _: &Context<'_>) -> Result<(), Error> {
         let earlier = earlier_table(table);
         let columns: Vec<String> = tx
             .prepare(&format!(
-                "SELECT name FROM main.pragma_table_info('{table}') ORDER BY cid"
+                "SELECT name FROM pragma_table_info('{table}', 'main') ORDER BY cid"
             ))?
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
         let old_columns: Vec<String> = tx
             .prepare(&format!(
-                "SELECT name FROM old.pragma_table_info('{earlier}') ORDER BY cid"
+                "SELECT name FROM pragma_table_info('{earlier}', 'old') ORDER BY cid"
             ))?
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<_>>()?;
