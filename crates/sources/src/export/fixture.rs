@@ -15,7 +15,8 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
         polylogue_sources::chain_names::settle(
             &mut step.output,
             &mut polylogue_sources::chain_names::NoEarlierRows,
-        )?;
+        )
+        .map_err(|error| error.problem().to_owned())?;
         return Ok(step);
     };
     let mut sink = Items::default();
@@ -56,9 +57,12 @@ pub fn parse_input(parser: &mut Parse, input: &str, bytes: &[u8]) -> Result<Step
             polylogue_sources::chain_names::settle(
                 &mut step.output,
                 &mut polylogue_sources::chain_names::NoEarlierRows,
-            )?;
+            )
+            .map_err(|error| error.problem().to_owned())?;
         } else {
-            names.settle(&mut step.output)?;
+            names
+                .settle(&mut step.output)
+                .map_err(|error| error.problem().to_owned())?;
         }
         counts.merge(&step.counts);
         append_output(&mut output, step.output);

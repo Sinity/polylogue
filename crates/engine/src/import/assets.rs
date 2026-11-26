@@ -40,9 +40,9 @@ impl Engine {
             let Some(progress) = reader.input_progress(&input)? else {
                 continue;
             };
-            let source = reader
-                .asset_source(&input)?
-                .ok_or_else(|| std::io::Error::other("a stored sidecar has no current revision"))?;
+            let source = reader.asset_source(&input)?.ok_or_else(|| {
+                crate::EngineError::internal("a stored sidecar has no current revision")
+            })?;
             // Bytes still being written are read in a later pass.
             let chain = reader.stored_chain(&input, progress.chain, progress.length)?;
             let mut staged = ExportItems::new()?;
@@ -87,8 +87,14 @@ impl Engine {
                 }
                 Err(error) => {
                     staged.rollback_scan()?;
-                    let error = format!("asset sidecar {input} ({member}): {error}");
-                    pass.errors.push(error.clone());
+                    let failure = polylogue_model::Failure::stated(
+                        format_args!("asset sidecar {input} ({member})"),
+                        polylogue_model::Cause::Content,
+                        polylogue_model::Code::Import,
+                        error.to_string(),
+                    );
+                    let error = failure.to_string();
+                    pass.errors.push(failure);
                     Some(error)
                 }
             };

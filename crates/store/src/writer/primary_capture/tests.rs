@@ -888,8 +888,11 @@ fn an_idle_primary_writer_records_a_failed_stream_read() {
         std::thread::sleep(std::time::Duration::from_secs(3));
         let report = writer.flush().unwrap();
         if let Some(error) = report.errors.first() {
-            assert!(error.starts_with("confirmed stream:"), "{error}");
-            assert!(error.contains("synthetic offline transport"), "{error}");
+            assert_eq!(error.subject, "confirmed stream", "{error}");
+            assert!(
+                error.message.contains("synthetic offline transport"),
+                "{error}"
+            );
             return;
         }
     }
@@ -1453,8 +1456,8 @@ fn a_failed_scope_reset_reports_its_original_error_before_reply_without_a_commit
         report
             .errors
             .iter()
-            .any(|error| error.starts_with("confirmed stream:")
-                && error.contains("original scope reset failure")),
+            .any(|error| error.subject == "confirmed stream"
+                && error.message.contains("original scope reset failure")),
         "{report:?}"
     );
     assert!(matches!(

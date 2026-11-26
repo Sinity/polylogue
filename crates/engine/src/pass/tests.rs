@@ -13,6 +13,8 @@ use std::io::Read;
 use std::os::unix::fs::{FileExt, MetadataExt};
 
 #[cfg(feature = "faults")]
+mod build_failures;
+#[cfg(feature = "faults")]
 mod build_memory;
 #[cfg(feature = "faults")]
 mod changed_files;

@@ -167,10 +167,13 @@ fn expand(
                 .prepare_bytes((&mut member).take(expected.saturating_add(1)))
                 .map_err(std::io::Error::other)?;
             if decoded.len() != expected {
-                return Err(std::io::Error::other(format!(
-                    "member {display} of {} decodes to a length different from its declared {expected}",
-                    path.display()
-                )));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "member {display} of {} decodes to a length different from its declared {expected}",
+                        path.display()
+                    ),
+                ));
             }
             children.push((name, i as u64, decoded, Some(display)));
         }
@@ -344,7 +347,8 @@ fn classify(members: &mut [Member], origin: Option<&str>) -> std::io::Result<()>
         package.chatgpt |= package.conversations && package.chatgpt_account_file;
         package.claude |= package.conversations && package.claude_accounts_file;
         if package.chatgpt && package.claude {
-            return Err(std::io::Error::other(
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
                 "export package declares conflicting ChatGPT and claude.ai structures",
             ));
         }

@@ -433,7 +433,7 @@ pub fn store_failure(error: &polylogue_store::StoreError) -> Failure {
         polylogue_store::StoreError::Query(error) => query_failure(error),
         error => {
             let mut failure = failure(error.code(), error.to_string());
-            failure.retryable = error.retryable();
+            failure.retryable = polylogue_model::Caused::cause(error).retryable();
             match error {
                 polylogue_store::StoreError::Ambiguous { candidates, .. } => {
                     failure.with_candidates(candidates.clone())

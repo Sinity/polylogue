@@ -32,17 +32,21 @@ impl Engine {
         let mut report = ImportReport::default();
         if options.origin.as_deref() == Some(python_polylogue::VECTORS) {
             let [path] = paths else {
-                return Err(std::io::Error::other(format!(
-                    "--format {} names one Python Polylogue vector store",
-                    python_polylogue::VECTORS
-                ))
+                return Err(polylogue_model::Reason::ImportOptions {
+                    problem: format!(
+                        "--format {} names one Python Polylogue vector store",
+                        python_polylogue::VECTORS
+                    ),
+                }
                 .into());
             };
             if options.explain || options.dry_run {
-                return Err(std::io::Error::other(format!(
-                    "--explain and --dry-run do not apply to {}",
-                    python_polylogue::VECTORS
-                ))
+                return Err(polylogue_model::Reason::ImportOptions {
+                    problem: format!(
+                        "--explain and --dry-run do not apply to {}",
+                        python_polylogue::VECTORS
+                    ),
+                }
                 .into());
             }
             report.python_import = Some(self.import_python_vectors(path)?);
@@ -260,7 +264,7 @@ impl Engine {
                     report
                         .pass
                         .errors
-                        .push(format!("{}: {error}", at.display()));
+                        .push(polylogue_model::Failure::new(at.display(), &error));
                     continue;
                 }
             };
@@ -314,10 +318,15 @@ impl Engine {
             reader.stored_chain(&plan.input.id, chain, plan.size)
         })?;
         polylogue_store::fault::check("import.before_authored_restore", &plan.input.id)?;
-        authored::replay(stored.reader(Arc::clone(&self.blobs)), |entry| {
-            let outcome = entry
-                .restore(&self.writer)
-                .map_err(|error| error.to_string())?;
+        // The replay carries errors as text: a failed write is kept typed
+        // beside it, so only the bundle's own bytes count against its chain.
+        let mut restore_failed = None;
+        let replayed = authored::replay(stored.reader(Arc::clone(&self.blobs)), |entry| {
+            let outcome = entry.restore(&self.writer).map_err(|error| {
+                let text = error.to_string();
+                restore_failed = Some(error);
+                text
+            })?;
             if outcome.pending {
                 pass.authored.pending += 1;
             } else if outcome.repeat {
@@ -326,8 +335,11 @@ impl Engine {
                 pass.authored.applied += 1;
             }
             Ok(())
-        })
-        .map_err(EngineError::Parse)?;
+        });
+        if let Some(error) = restore_failed {
+            return Err(error.into());
+        }
+        replayed.map_err(polylogue_model::ChainFailure::malformed)?;
         polylogue_store::fault::check("import.after_authored_restore", &plan.input.id)?;
         Ok(())
     }
@@ -338,10 +350,13 @@ impl Engine {
         file: &mut impl std::io::Read,
         report: &mut ImportReport,
     ) -> Result<(), EngineError> {
+        let mut restore_failed = None;
         let result = authored::replay(file, |entry| {
-            let outcome = entry
-                .restore(&self.writer)
-                .map_err(|error| error.to_string())?;
+            let outcome = entry.restore(&self.writer).map_err(|error| {
+                let text = error.to_string();
+                restore_failed = Some(error);
+                text
+            })?;
             if outcome.pending {
                 report.user_state.pending += 1;
             } else if outcome.repeat {
@@ -351,11 +366,19 @@ impl Engine {
             }
             Ok(())
         });
-        if let Err(error) = result {
+        let subject = format_args!("{}: authored restoration", path.display());
+        if let Some(error) = restore_failed {
             report
                 .pass
                 .errors
-                .push(format!("{}: authored restoration: {error}", path.display()));
+                .push(polylogue_model::Failure::new(subject, &error));
+        } else if let Err(error) = result {
+            report.pass.errors.push(polylogue_model::Failure::stated(
+                subject,
+                polylogue_model::Cause::Content,
+                polylogue_model::Code::Import,
+                error,
+            ));
         }
         Ok(())
     }
@@ -392,7 +415,10 @@ impl Engine {
         let stored = match self.writer.store_bytes(captured.prepared, batch) {
             Ok(stored) => stored,
             Err(error) => {
-                report.pass.errors.push(error.to_string());
+                report
+                    .pass
+                    .errors
+                    .push(polylogue_model::Failure::new(path.display(), &error));
                 return Ok(None);
             }
         };
@@ -467,7 +493,7 @@ impl Engine {
         let reader = self.reads.reader()?;
         let progress = reader
             .input_progress(&input.id)?
-            .ok_or_else(|| std::io::Error::other("a stored import has no revision"))?;
+            .ok_or_else(|| EngineError::internal("a stored import has no revision"))?;
         let version = origin.parse_version();
         let reading = reader.parser_progress(&input.id, stored.chain)?;
         // An import does not grow, so a reading that waits on its last
@@ -634,7 +660,9 @@ fn import_identity<'a>(
 /// File facts and length must still describe the descriptor that was captured.
 fn unchanged(file: &std::fs::File, before: FileFacts, length: u64) -> std::io::Result<()> {
     if FileFacts::of(&file.metadata()?) != before || length != before.size {
-        return Err(std::io::Error::other("source changed during import"));
+        return Err(std::io::Error::other(
+            polylogue_store::StoreError::SourceChanged("source changed during import"),
+        ));
     }
     Ok(())
 }

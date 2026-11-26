@@ -1,39 +1,64 @@
 use super::*;
 
 #[test]
-fn write_retry_distinguishes_transient_storage_from_refused_or_invalid_state() {
-    for (code, retry) in [
-        (rusqlite::ffi::SQLITE_BUSY, true),
-        (rusqlite::ffi::SQLITE_LOCKED, true),
-        (rusqlite::ffi::SQLITE_IOERR, true),
-        (rusqlite::ffi::SQLITE_FULL, true),
-        (rusqlite::ffi::SQLITE_READONLY, false),
-        (rusqlite::ffi::SQLITE_PERM, false),
-        (rusqlite::ffi::SQLITE_CORRUPT, false),
-        (rusqlite::ffi::SQLITE_SCHEMA, false),
-        (rusqlite::ffi::SQLITE_CONSTRAINT, false),
+fn sqlite_and_io_failures_are_classified_by_what_ends_them() {
+    use polylogue_model::{Cause, Caused as _};
+    for (code, cause) in [
+        (rusqlite::ffi::SQLITE_BUSY, Cause::Transient),
+        (rusqlite::ffi::SQLITE_LOCKED, Cause::Transient),
+        (rusqlite::ffi::SQLITE_IOERR, Cause::Environment),
+        (rusqlite::ffi::SQLITE_FULL, Cause::Environment),
+        (rusqlite::ffi::SQLITE_READONLY, Cause::Environment),
+        (rusqlite::ffi::SQLITE_PERM, Cause::Environment),
+        (rusqlite::ffi::SQLITE_CORRUPT, Cause::StoredData),
+        (rusqlite::ffi::SQLITE_INTERRUPT, Cause::Stopping),
+        (rusqlite::ffi::SQLITE_CONSTRAINT, Cause::Bug),
     ] {
         let error = StoreError::Sqlite(rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(code),
             None,
         ));
-        assert_eq!(error.retryable_write(), retry, "{error}");
+        assert_eq!(error.cause(), cause, "{error}");
     }
-    for kind in [
-        std::io::ErrorKind::PermissionDenied,
-        std::io::ErrorKind::ReadOnlyFilesystem,
-        std::io::ErrorKind::InvalidInput,
-        std::io::ErrorKind::Unsupported,
+    for (kind, cause) in [
+        (std::io::ErrorKind::PermissionDenied, Cause::Environment),
+        (std::io::ErrorKind::ReadOnlyFilesystem, Cause::Environment),
+        (std::io::ErrorKind::InvalidInput, Cause::Bug),
+        (std::io::ErrorKind::Interrupted, Cause::Transient),
+        (std::io::ErrorKind::TimedOut, Cause::Transient),
     ] {
-        assert!(!StoreError::Io(kind.into()).retryable_write());
+        assert_eq!(StoreError::Io(kind.into()).cause(), cause, "{kind:?}");
     }
-    for kind in [
-        std::io::ErrorKind::Interrupted,
-        std::io::ErrorKind::WouldBlock,
-        std::io::ErrorKind::TimedOut,
-        std::io::ErrorKind::Other,
-    ] {
-        assert!(StoreError::Io(kind.into()).retryable_write());
-    }
-    assert!(!StoreError::Invalid("refused content".into()).retryable_write());
+    // A stop carried through an I/O error is still a stop.
+    assert_eq!(
+        StoreError::Io(std::io::Error::other(StoreError::Stopped)).cause(),
+        Cause::Stopping
+    );
+    assert_eq!(
+        StoreError::Invalid("refused content".into()).cause(),
+        Cause::Request
+    );
+    assert_eq!(StoreError::internal("broken").cause(), Cause::Bug);
+}
+
+#[test]
+fn a_group_member_keeps_the_group_failure_cause_and_code() {
+    use polylogue_model::{Cause, Caused as _, Code};
+    let busy = StoreError::Sqlite(rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+        None,
+    ));
+    let member = busy.for_group_member();
+    assert_eq!(
+        (member.cause(), member.code()),
+        (Cause::Transient, Code::Busy)
+    );
+    assert!(!member.cause().recurs());
+    let bug = StoreError::internal("broken").for_group_member();
+    assert_eq!((bug.cause(), bug.code()), (Cause::Bug, Code::Internal));
+    assert!(bug.cause().recurs());
+    assert!(matches!(
+        StoreError::Stopped.for_group_member(),
+        StoreError::Stopped
+    ));
 }

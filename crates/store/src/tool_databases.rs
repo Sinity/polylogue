@@ -34,6 +34,30 @@ pub enum DatabaseError {
     Stopped,
 }
 
+impl polylogue_model::Caused for DatabaseError {
+    fn cause(&self) -> polylogue_model::Cause {
+        match self {
+            Self::Io(error) => crate::StoreError::io_cause(error),
+            Self::Store(error) => error.cause(),
+            Self::Sqlite(_, error) => crate::sqlite_cause(error),
+            Self::Stopped => polylogue_model::Cause::Stopping,
+        }
+    }
+
+    fn code(&self) -> polylogue_model::Code {
+        use polylogue_model::Code;
+        match self {
+            Self::Io(_) => Code::Io,
+            Self::Store(error) => error.code(),
+            Self::Sqlite(..) => match self.cause() {
+                polylogue_model::Cause::Transient => Code::Busy,
+                _ => Code::Store,
+            },
+            Self::Stopped => Code::ShuttingDown,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DbFacts {
     db: Option<FileFacts>,

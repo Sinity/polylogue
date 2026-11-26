@@ -316,6 +316,9 @@ reasons! {
     /// A configured value the daemon cannot run with.
     BadConfiguration "bad_configuration" => BadValue { problem: String }
         "the configuration is refused: {problem}";
+    /// Import options that cannot be used together or with what they name.
+    ImportOptions "import_options" => BadRequest { problem: String }
+        "the import is refused: {problem}";
     NotAFile "not_a_file" => BadRequest { path: String }
         "{path} is not a file: name one of Python Polylogue's vector stores";
     NotAVectorStore "not_a_vector_store" => BadRequest { path: String }

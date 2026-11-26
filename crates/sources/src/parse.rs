@@ -68,6 +68,15 @@ pub enum ParseError {
     ParserState(serde_json::Error),
 }
 
+impl From<ParseError> for polylogue_model::ChainFailure {
+    fn from(error: ParseError) -> Self {
+        match error {
+            ParseError::Counts(mismatch) => mismatch.into(),
+            error => Self::malformed(error.to_string()),
+        }
+    }
+}
+
 /// Parses the complete records in `bytes`, which start at `base` in an input
 /// that may still grow, continuing from `parser_state`.
 pub fn run<P: Parser>(

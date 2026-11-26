@@ -17,7 +17,7 @@ pub(super) struct Changes {
     /// A full scan of every source is needed.
     pub full: bool,
     /// Watcher errors, which the pass forwards into its report.
-    pub errors: Vec<String>,
+    pub errors: Vec<polylogue_model::Failure>,
 }
 
 impl Changes {
@@ -34,7 +34,10 @@ impl Changes {
             Ok(_) => {}
             Err(error) => {
                 self.full = true;
-                self.errors.push(error.to_string());
+                self.errors.push(polylogue_model::Failure::new(
+                    "source watch",
+                    &crate::EngineError::from(error),
+                ));
             }
         }
     }

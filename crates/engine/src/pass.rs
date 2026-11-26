@@ -142,14 +142,43 @@ impl Engine {
     /// Fails `plan` with `error` and records the failure as its chain's parse
     /// state, at the position the chain was parsed to. Recording needs stored
     /// bytes; when it cannot be made, the failure stays the loop's own.
-    pub(crate) fn record_failure(&mut self, plan: &mut Plan, error: String, pass: &mut Pass) {
-        pass.errors.push(error.clone());
+    pub(crate) fn record_failure(
+        &mut self,
+        plan: &mut Plan,
+        failure: polylogue_model::Failure,
+        pass: &mut Pass,
+    ) {
+        let error = failure.message.clone();
+        pass.errors.push(failure);
         plan.failed = true;
         self.record_stop(
             plan,
             polylogue_model::batch::StepProgress::Failed { error },
             pass,
         );
+    }
+
+    /// Fails `plan` with `error`. Only a failure of the chain's own bytes is
+    /// recorded as its parse state, standing until they change; any other
+    /// leaves the chain due, to be read again.
+    pub(crate) fn chain_failed(
+        &mut self,
+        plan: &mut Plan,
+        subject: String,
+        error: EngineError,
+        pass: &mut Pass,
+    ) {
+        match error {
+            EngineError::Chain(failure) => {
+                let failure = polylogue_model::Failure::new(subject, &failure);
+                self.record_failure(plan, failure, pass);
+            }
+            error => {
+                pass.errors
+                    .push(polylogue_model::Failure::new(subject, &error));
+                plan.failed = true;
+            }
+        }
     }
 
     /// Record stopped progress at the plan's existing source cursor.
@@ -194,20 +223,16 @@ impl Engine {
         let recorded = self
             .writer
             .send(batch)
-            .map_err(|error| error.to_string())
-            .and_then(|()| {
-                let written = self.flush_writes().map_err(|error| error.to_string())?;
-                if written.errors.is_empty() {
-                    Ok(())
-                } else {
-                    Err(written.errors.join("; "))
-                }
+            .map_err(EngineError::from)
+            .and_then(|()| match self.flush_writes()?.failed() {
+                None => Ok(()),
+                Some(error) => Err(error.into()),
             });
         match recorded {
             Ok(()) => plan.failure_recorded = true,
-            Err(recording) => pass.errors.push(format!(
-                "record the failure of {}: {recording}",
-                plan.path.display()
+            Err(error) => pass.errors.push(polylogue_model::Failure::new(
+                format_args!("record the failure of {}", plan.path.display()),
+                &error,
             )),
         }
     }
@@ -215,7 +240,7 @@ impl Engine {
     /// Writes the repository lookups for the working directories the index
     /// holds, at most once a minute. The files it writes are collected in
     /// this same pass.
-    fn refresh_lookups(&mut self) -> Result<(), String> {
+    fn refresh_lookups(&mut self) -> Result<(), polylogue_model::Failure> {
         if self
             .lookups_at
             .is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60))
@@ -232,7 +257,7 @@ impl Engine {
                     &[],
                 )
             })
-            .map_err(|e| format!("repository lookups: {e}"))?;
+            .map_err(|e| polylogue_model::Failure::new("repository lookups", &e))?;
         let dir = self
             .config
             .spool_dir(polylogue_sources::repo_lookup::ORIGIN);
@@ -247,11 +272,16 @@ impl Engine {
             &read_at,
         )
         .map(|_| ())
-        .map_err(|e| format!("repository lookups in {}: {e}", dir.display()))
+        .map_err(|e| {
+            polylogue_model::Failure::new(
+                format_args!("repository lookups in {}", dir.display()),
+                &EngineError::from(e),
+            )
+        })
     }
 
     /// Runs each origin's collector, honoring its declared setting.
-    fn run_collectors(&mut self) -> Vec<String> {
+    fn run_collectors(&mut self) -> Vec<polylogue_model::Failure> {
         let mut errors = Vec::new();
         for origin in ORIGINS {
             let Some(collector) = &origin.collector else {
@@ -266,14 +296,19 @@ impl Engine {
                     Ok(Some(polylogue_model::settings::Value::Boolean(true))) => {}
                     Ok(Some(polylogue_model::settings::Value::Boolean(false))) => continue,
                     Ok(_) => {
-                        errors.push(format!(
-                            "{} collector: {setting} has no typed boolean value",
-                            origin.name
+                        errors.push(polylogue_model::Failure::stated(
+                            format_args!("{} collector", origin.name),
+                            polylogue_model::Cause::StoredData,
+                            polylogue_model::Code::Store,
+                            format!("{setting} has no typed boolean value"),
                         ));
                         continue;
                     }
                     Err(e) => {
-                        errors.push(format!("{} collector: {e}", origin.name));
+                        errors.push(polylogue_model::Failure::new(
+                            format_args!("{} collector", origin.name),
+                            &e,
+                        ));
                         continue;
                     }
                 }
@@ -289,7 +324,10 @@ impl Engine {
                 spool: &spool,
             };
             if let Err(error) = self.advance_collector(origin.name, collector, &paths) {
-                errors.push(format!("{} collector: {error}", origin.name));
+                errors.push(polylogue_model::Failure::new(
+                    format_args!("{} collector", origin.name),
+                    &error,
+                ));
                 continue;
             }
             errors.extend(self.collectors.run(origin.name, collector, &paths));
@@ -484,10 +522,8 @@ impl Engine {
             // A completed reset can race the last SQL read. Its cached progress
             // cannot establish completion in the new scope.
             if let Err(error) = scope.check() {
-                if !result.0.errors.is_empty() {
-                    return Err(
-                        polylogue_store::StoreError::invalid(result.0.errors.join("; ")).into(),
-                    );
+                if let Some(failure) = polylogue_model::Failure::joined(&result.0.errors) {
+                    return Err(polylogue_store::StoreError::Failed(failure).into());
                 }
                 return Err(error.into());
             }
@@ -516,9 +552,7 @@ impl Engine {
             // A failed reset may leave reads blocked. Its original queued
             // writer error must remain observable instead of an endless wait.
             match self.flush_writes() {
-                Ok(report) if !report.errors.is_empty() => {
-                    return polylogue_store::StoreError::invalid(report.errors.join("; ")).into();
-                }
+                Ok(report) if let Some(error) = report.failed() => return error.into(),
                 Err(error) => return error,
                 _ => {}
             }
@@ -568,7 +602,7 @@ impl Engine {
             let observed_at =
                 polylogue_model::Timestamp::from_unix_ms(self.config.clock.now().as_millisecond())
                     .ok_or_else(|| {
-                        std::io::Error::other("capture observation time is out of range")
+                        EngineError::internal("capture observation time is out of range")
                     })?;
             if let Err(error) = self.writer.coverage(polylogue_model::capture::Coverage {
                 version: 1,
@@ -576,7 +610,7 @@ impl Engine {
                 observed_at,
                 roots: scan.roots,
             }) {
-                errors.push(format!("capture coverage: {error}"));
+                errors.push(polylogue_model::Failure::new("capture coverage", &error));
             }
             (scan.found, scan.unreadable)
         } else {
@@ -972,9 +1006,10 @@ impl Engine {
                     Ok(compressed::RolloutStep::Capture(capture)) => {
                         self.rollout_captures.push_back(*capture);
                     }
-                    Err(error) => pass
-                        .errors
-                        .push(format!("capture {}: {error}", f.path.display())),
+                    Err(error) => pass.errors.push(polylogue_model::Failure::new(
+                        format_args!("capture {}", f.path.display()),
+                        &error,
+                    )),
                 }
                 continue;
             }
@@ -1037,7 +1072,10 @@ impl Engine {
         let mut changes = watch::Changes::default();
         if let Some(watcher) = &mut self.watcher {
             if let Err(error) = watcher.refresh(&self.config) {
-                pass.errors.push(format!("source watch: {error}"));
+                pass.errors.push(polylogue_model::Failure::new(
+                    "source watch",
+                    &EngineError::from(error),
+                ));
                 changes.full = true;
             }
             let latest = watcher.take();
@@ -1108,9 +1146,10 @@ impl Engine {
                         }
                     }
                     Ok(compressed::RolloutStep::Planned(None)) => {}
-                    Err(error) => pass
-                        .errors
-                        .push(format!("capture {}: {error}", f.path.display())),
+                    Err(error) => pass.errors.push(polylogue_model::Failure::new(
+                        format_args!("capture {}", f.path.display()),
+                        &error,
+                    )),
                 }
                 continue;
             }
@@ -1215,9 +1254,11 @@ impl Engine {
         pass: &mut Pass,
     ) -> Result<Option<Plan>, EngineError> {
         match self.plan(path, now) {
-            Err(EngineError::Io(error)) => {
-                pass.errors
-                    .push(format!("plan {}: {error}", path.display()));
+            Err(error @ EngineError::Io(_)) => {
+                pass.errors.push(polylogue_model::Failure::new(
+                    format_args!("plan {}", path.display()),
+                    &error,
+                ));
                 Ok(None)
             }
             planned => planned,
@@ -1623,8 +1664,7 @@ impl Engine {
                             None,
                             false,
                         )?;
-                        pass.errors
-                            .push(format!("refuse stored input {}: {reason}", c.input));
+                        pass.errors.push(refused_input(&c.input, &reason));
                         self.record_stop(
                             &mut plan,
                             polylogue_model::batch::StepProgress::Refused { reason },
@@ -2003,8 +2043,7 @@ impl Engine {
             // Stored bytes at a path this build's parser does not read
             // (an earlier build captured it): refused with the reason,
             // never read range by range with nothing to record.
-            pass.errors
-                .push(format!("refuse stored input {}: {reason}", plan.input.id));
+            pass.errors.push(refused_input(&plan.input.id, &reason));
             plan.failed = true;
             self.record_stop(
                 &mut plan,
@@ -2015,14 +2054,14 @@ impl Engine {
             return Ok(None);
         }
         if let Err(error) = self.restore_captured_authored(&plan, pass) {
-            let error = format!("authored restoration {}: {error}", plan.path.display());
-            self.record_failure(&mut plan, error, pass);
+            let subject = format!("authored restoration {}", plan.path.display());
+            self.chain_failed(&mut plan, subject, error, pass);
             self.finish_plan(plan);
             return Ok(None);
         }
         if let Err(error) = self.observe_local_references(&plan, pass) {
-            let error = format!("local references {}: {error}", plan.path.display());
-            self.record_failure(&mut plan, error, pass);
+            let subject = format!("local references {}", plan.path.display());
+            self.chain_failed(&mut plan, subject, error, pass);
             self.finish_plan(plan);
             return Ok(None);
         }
@@ -2044,8 +2083,10 @@ impl Engine {
             match self.prepare_byte_read(&mut plan)? {
                 PlannedFile::Ready => return Ok(Some(plan)),
                 PlannedFile::Unreadable(error) => {
-                    pass.errors
-                        .push(format!("read {}: {error}", plan.path.display()));
+                    pass.errors.push(polylogue_model::Failure::new(
+                        format_args!("read {}", plan.path.display()),
+                        &EngineError::Io(error),
+                    ));
                     plan.failed = true;
                     self.finish_plan(plan);
                     return Ok(None);
@@ -2138,9 +2179,12 @@ impl Engine {
                     return Ok(());
                 }
                 if let Err(error) = self.store_plan(&mut plan, pass) {
+                    pass.errors.push(polylogue_model::Failure::new(
+                        format_args!("store {} before re-parse", plan.path.display()),
+                        &error,
+                    ));
                     plan.failed = true;
                     self.finish_plan(plan);
-                    pass.errors.push(format!("store before re-parse: {error}"));
                     continue;
                 }
             }
@@ -2177,20 +2221,15 @@ impl Engine {
         if !self.load_stored(&mut plan)? {
             return Ok(());
         }
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.execute_export(&mut plan, &mut *parser, pass)
-        }));
-        let failure = match result {
-            Ok(Ok(())) => None,
+        let result = polylogue_model::caught(|| self.execute_export(&mut plan, &mut *parser, pass))
+            .unwrap_or_else(|panic| Err(polylogue_model::ChainFailure::from(panic).into()));
+        let subject = format!("parse {}", plan.path.display());
+        match result {
+            Ok(()) => {}
             // A stop is no failure of the export: its committed
             // deliveries stay and the next parse continues after them.
-            Ok(Err(EngineError::Stopped)) => return Err(EngineError::Stopped),
-            Ok(Err(error)) => Some(error.to_string()),
-            Err(_) => Some("the array parser panicked".to_owned()),
-        };
-        if let Some(error) = failure {
-            let error = format!("parse {}: {error}", plan.path.display());
-            self.record_failure(&mut plan, error, pass);
+            Err(EngineError::Stopped) => return Err(EngineError::Stopped),
+            Err(error) => self.chain_failed(&mut plan, subject, error, pass),
         }
         self.finish_plan(plan);
         Ok(())
@@ -2214,7 +2253,7 @@ impl Engine {
             .iter()
             .any(|plan| !matches!(plan.change, Change::Reparse { .. }))
         {
-            return Err(std::io::Error::other("a replacement needs a stored chain").into());
+            return Err(EngineError::internal("a replacement needs a stored chain"));
         }
         let mut active_chains = HashMap::<u64, PathBuf>::new();
         let result = (|| {
@@ -2252,7 +2291,7 @@ impl Engine {
             let mut started: HashSet<PathBuf> = HashSet::new();
             // Plans whose range the writer refused for its content; their
             // failures are recorded once the pool's writes are flushed.
-            let mut refused: Vec<(Plan, String)> = Vec::new();
+            let mut refused: Vec<(Plan, polylogue_model::Failure)> = Vec::new();
             let mut outstanding = 0usize;
             let mut checked = Instant::now();
             let room = self.config.workers.max(1) * IN_POOL_PER_WORKER;
@@ -2326,7 +2365,9 @@ impl Engine {
                                 }
                             }
                         }
-                        Err(e) => pass.errors.push(format!("live inputs: {e}")),
+                        Err(e) => pass
+                            .errors
+                            .push(polylogue_model::Failure::new("live inputs", &e)),
                     }
                 }
                 while !stopping && !yielding && outstanding < room && capturing.len() < capture_room
@@ -2487,8 +2528,10 @@ impl Engine {
                             Ok(Some(plan)) if !stopping && !yielding => plan,
                             Ok(_) => continue,
                             Err(error) => {
-                                pass.errors
-                                    .push(format!("capture {}: {error}", path.display()));
+                                pass.errors.push(polylogue_model::Failure::new(
+                                    format_args!("capture {}", path.display()),
+                                    &error,
+                                ));
                                 continue;
                             }
                         };
@@ -2511,7 +2554,10 @@ impl Engine {
                 };
                 if d.cancelled {
                     pass.bytes_stored += d.stored;
-                    pass.errors.extend(d.error);
+                    if let Some(error) = &d.error {
+                        pass.errors
+                            .push(polylogue_model::Failure::new(d.path.display(), error));
+                    }
                     continue;
                 }
                 if d.spooled_group.is_some()
@@ -2522,7 +2568,8 @@ impl Engine {
                         && matches!(plan.source, pool::Bytes::File)
                 {
                     if let Some(error) = &d.error {
-                        pass.errors.push(error.clone());
+                        pass.errors
+                            .push(polylogue_model::Failure::new(d.path.display(), error));
                     }
                     self.apply_byte_read_result(&mut plan, &d)?;
                     if plan.finished() {
@@ -2544,12 +2591,23 @@ impl Engine {
                             plan.storing_started = true;
                         }
                     }
-                    refused.push((plan, d.error.unwrap_or_default()));
+                    let failure = match &d.error {
+                        Some(error) => polylogue_model::Failure::new(
+                            format_args!("the writer refused {}", plan.path.display()),
+                            error,
+                        ),
+                        None => polylogue_model::Failure::bug(
+                            plan.path.display(),
+                            "the writer refused a batch without a reason",
+                        ),
+                    };
+                    refused.push((plan, failure));
                     continue;
                 }
                 if d.write_failed {
-                    if let Some(error) = d.error {
-                        pass.errors.push(error);
+                    if let Some(error) = &d.error {
+                        pass.errors
+                            .push(polylogue_model::Failure::new(d.path.display(), error));
                     }
                     if plan.tracked {
                         self.refresh_confirmed_input(&plan.path)?;
@@ -2558,7 +2616,8 @@ impl Engine {
                 }
                 pass.bytes_stored += d.stored;
                 if let Some(e) = &d.error {
-                    pass.errors.push(e.clone());
+                    pass.errors
+                        .push(polylogue_model::Failure::new(d.path.display(), e));
                 }
                 let parsed = has_reading(plan.origin);
                 if parsed {
@@ -2598,9 +2657,8 @@ impl Engine {
             pass.blobs_appended += report.blobs_appended;
             pass.blobs_deduplicated += report.blobs_deduplicated;
             pass.errors.extend(report.errors);
-            for (mut plan, error) in refused {
-                let error = format!("the writer refused {}: {error}", plan.path.display());
-                self.record_failure(&mut plan, error, pass);
+            for (mut plan, failure) in refused {
+                self.record_failure(&mut plan, failure, pass);
                 self.finish_plan(plan);
             }
             for (plan, parser) in exports {
@@ -2723,11 +2781,17 @@ impl Engine {
                             if plan.tracked
                                 && let Err(error) = self.refresh_confirmed_input(&plan.path)
                             {
-                                pass.errors.push(format!("confirmed reading: {error}"));
+                                pass.errors.push(polylogue_model::Failure::new(
+                                    format_args!("confirmed reading of {}", plan.path.display()),
+                                    &error,
+                                ));
                             }
                         }
                         Ok(false) => pass.capture_pending = true,
-                        Err(error) => pass.errors.push(format!("confirmed reading: {error}")),
+                        Err(error) => pass.errors.push(polylogue_model::Failure::new(
+                            format_args!("confirmed reading of {}", plan.path.display()),
+                            &error,
+                        )),
                     }
                 } else {
                     pass.messages_written += written;
@@ -2739,12 +2803,17 @@ impl Engine {
                 pass.capture_pending = true;
             }
             Err(error) => {
-                pass.errors
-                    .push(format!("re-parse {}: {error}", plan.path.display()));
-                if matches!(error, EngineError::Parse(_))
+                pass.errors.push(polylogue_model::Failure::new(
+                    format_args!("re-parse {}", plan.path.display()),
+                    &error,
+                ));
+                if matches!(error, EngineError::Chain(_))
                     && let Err(error) = self.record_retried_stop(&mut plan, pass)
                 {
-                    pass.errors.push(format!("record retried stop: {error}"));
+                    pass.errors.push(polylogue_model::Failure::new(
+                        format_args!("record retried stop of {}", plan.path.display()),
+                        &error,
+                    ));
                 }
             }
         }
@@ -2909,10 +2978,9 @@ impl Engine {
         };
         let mut summary = RunSummary::default();
         let mut discover = true;
-        // The errors of the last failed turn. A turn that fails with the same
-        // errors again waits for a change instead of being retried at once.
-        let mut failed_with: Option<Vec<String>> = None;
-        let mut repeated_failure;
+        // A failed turn whose failures all pass by themselves is tried again
+        // after `live_every`; any other waits for a change.
+        let mut waits_for_change;
         let mut changed = std::collections::BTreeSet::new();
         let mut watch_errors = Vec::new();
         loop {
@@ -2926,7 +2994,10 @@ impl Engine {
                 Err(EngineError::Stopped) => {
                     // Writes the pass queued before stopping are committed.
                     if let Err(error) = self.flush_writes() {
-                        summary.work.errors.push(error.to_string());
+                        summary
+                            .work
+                            .errors
+                            .push(polylogue_model::Failure::of(&error));
                     }
                     return Ok(self.stopped(summary));
                 }
@@ -2946,8 +3017,7 @@ impl Engine {
                         changed.clear();
                     }
                     discover = false;
-                    failed_with = None;
-                    repeated_failure = false;
+                    waits_for_change = false;
                     pass
                 }
                 Err(e) => {
@@ -2963,14 +3033,15 @@ impl Engine {
                     ) {
                         Vec::new()
                     } else {
-                        vec![e.to_string()]
+                        vec![polylogue_model::Failure::of(&e)]
                     };
                     match self.flush_writes() {
                         Ok(report) => errors.extend(report.errors),
-                        Err(error) => errors.push(error.to_string()),
+                        Err(error) => errors.push(polylogue_model::Failure::of(&error)),
                     }
-                    repeated_failure = failed_with.as_ref() == Some(&errors);
-                    failed_with = Some(errors.clone());
+                    waits_for_change = errors
+                        .iter()
+                        .any(|failure| failure.cause != polylogue_model::Cause::Transient);
                     Pass {
                         full_scans: u64::from(discover && self.config.reads_sources),
                         errors,
@@ -3004,9 +3075,9 @@ impl Engine {
                 // Work queued while the pass ran (imports, changes the
                 // watcher saw) is taken now; with none, the loop is idle. A
                 // capture that continues gets `live_every` before the next pass.
-                // A turn failing as the one before it ends the run with its
-                // errors reported.
-                let mut more = pending && !repeated_failure;
+                // A turn failing for a cause that does not pass by itself
+                // ends the run with its errors reported.
+                let mut more = pending && !waits_for_change;
                 if more {
                     match self
                         .requests
@@ -3036,14 +3107,14 @@ impl Engine {
                     }
                 }
                 more |= self.take_watched(&mut changed, &mut watch_errors);
-                more |= !repeated_failure && !changed.is_empty();
+                more |= !waits_for_change && !changed.is_empty();
                 if !more {
                     return Ok(self.stopped(summary));
                 }
                 continue;
             }
             let requests = self.requests.as_mut().expect("running inbox");
-            let mut msg = if (!self.config.reads_sources && !pending) || repeated_failure {
+            let mut msg = if (!self.config.reads_sources && !pending) || waits_for_change {
                 requests.recv()
             } else {
                 requests.recv_timeout(self.config.live_every)
@@ -3099,14 +3170,17 @@ impl Engine {
     fn take_watched(
         &mut self,
         changed: &mut std::collections::BTreeSet<PathBuf>,
-        errors: &mut Vec<String>,
+        errors: &mut Vec<polylogue_model::Failure>,
     ) -> bool {
         let Some(watcher) = self.watcher.as_mut() else {
             return false;
         };
         let mut full = false;
         if let Err(error) = watcher.refresh(&self.config) {
-            errors.push(format!("source watch: {error}"));
+            errors.push(polylogue_model::Failure::new(
+                "source watch",
+                &EngineError::from(error),
+            ));
             full = true;
         }
         let changes = watcher.take();
@@ -3183,9 +3257,10 @@ impl Engine {
         summary.imports += 1;
         match &report {
             Ok(report) => summary.work.add(report.pass.clone()),
-            Err(ImportFailure::Import(error)) => {
-                summary.work.errors.push(format!("import: {error}"))
-            }
+            Err(ImportFailure::Import(error)) => summary
+                .work
+                .errors
+                .push(polylogue_model::Failure::new("import", error)),
             Err(ImportFailure::Parent(_)) => {}
         }
         let _ = reply.send(report);
@@ -3201,6 +3276,17 @@ impl Engine {
         self.stored_planning = None;
         summary
     }
+}
+
+/// A stored input at a path this build's parser does not read: refused for
+/// its bytes, with the reason.
+fn refused_input(input: &str, reason: &str) -> polylogue_model::Failure {
+    polylogue_model::Failure::stated(
+        format_args!("refuse stored input {input}"),
+        polylogue_model::Cause::Content,
+        polylogue_model::Code::Import,
+        reason,
+    )
 }
 
 #[cfg(test)]

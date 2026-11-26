@@ -290,7 +290,12 @@ fn building(build: IndexBuild, progress: BuildProgress) -> Answer {
     status.loop_status.busy = true;
     status.loop_status.passes = 1;
     status.loop_status.last_pass_at = Some(at(today(2, 32, 32)));
-    status.loop_status.last_pass.errors = vec!["the file changed after it was listed".into()];
+    status.loop_status.last_pass.errors = vec![polylogue_model::Failure::stated(
+        "",
+        polylogue_model::Cause::Transient,
+        polylogue_model::Code::Conflict,
+        "the file changed after it was listed",
+    )];
     let unread = build.to_string();
     status.index_build = Some(build);
     status.build_progress = Some(progress);

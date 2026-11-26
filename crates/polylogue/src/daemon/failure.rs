@@ -151,20 +151,17 @@ impl<T> From<Failure> for command_surface::Answer<T> {
     }
 }
 
-impl From<super::executor::Panicked> for Failure {
-    fn from(panic: super::executor::Panicked) -> Self {
+impl From<polylogue_model::Panicked> for Failure {
+    fn from(panic: polylogue_model::Panicked) -> Self {
         Self::new(
             polylogue_model::Code::Internal,
-            format!(
-                "a Polylogue bug stopped this request: {}; report it with the request ID",
-                panic.message
-            ),
+            format!("a Polylogue bug stopped this request: {panic}; report it with the request ID"),
         )
     }
 }
 
-impl<T> From<super::executor::Panicked> for command_surface::Answer<T> {
-    fn from(panic: super::executor::Panicked) -> Self {
+impl<T> From<polylogue_model::Panicked> for command_surface::Answer<T> {
+    fn from(panic: polylogue_model::Panicked) -> Self {
         Failure::from(panic).answer()
     }
 }

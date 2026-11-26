@@ -524,7 +524,11 @@ impl Engine {
         // A storage condition that passes (the index file held by a long
         // write) and a file that changed are both captured again.
         let outcome = match outcome {
-            Err(EngineError::Store(error)) if error.retryable_write() => Ok(None),
+            Err(EngineError::Store(error))
+                if polylogue_model::Caused::cause(&error) == polylogue_model::Cause::Transient =>
+            {
+                Ok(None)
+            }
             outcome => outcome,
         };
         let Some(captured) = outcome? else {
@@ -553,7 +557,7 @@ impl Engine {
             return Ok(None);
         }
         let progress = self.reads.reader()?.input_progress(&id)?.ok_or_else(|| {
-            std::io::Error::other("captured rollout input has no current revision")
+            EngineError::internal("captured rollout input has no current revision")
         })?;
         let previous = captured.previous;
         if let Some(build) = self.archive.index_build() {
