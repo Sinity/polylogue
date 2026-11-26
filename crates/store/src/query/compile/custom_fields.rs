@@ -628,10 +628,10 @@ pub(crate) fn link(_: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String,
         let column = if LINK_KIND_NAMES.contains(&v.as_str()) {
             "kind"
         } else if LINK_HOW_NAMES.contains(&v.as_str()) {
-            "how"
+            "reason"
         } else {
             let message = format!(
-                "link is one of {}, or how it was made: {}; not {v:?}",
+                "link is one of {}, or the reason it was made: {}; not {v:?}",
                 LINK_KIND_NAMES.join(", "),
                 LINK_HOW_NAMES.join(", ")
             );

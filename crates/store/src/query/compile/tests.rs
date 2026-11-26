@@ -250,7 +250,7 @@ fn every_stored_value_can_be_queried() {
         ("messages where prompt_kind:", PromptKind::NAMES),
         ("blocks where kind:", BlockKind::NAMES),
         ("session_links where kind:", LINK_KIND_NAMES),
-        ("session_links where how:", LINK_HOW_NAMES),
+        ("session_links where reason:", LINK_HOW_NAMES),
     ];
     for (query, names) in closed {
         for name in *names {

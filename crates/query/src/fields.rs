@@ -1106,7 +1106,7 @@ fields! {
         LINK_KIND_NAMES,
         "the recorded session relationship",
     ),
-    SessionLinksHow = v(SessionLinks, "how", LINK_HOW_NAMES, "why the sessions reference each other"),
+    SessionLinksHow = v(SessionLinks, "reason", LINK_HOW_NAMES, "why the sessions reference each other"),
     SessionLinksCopiesPrefix = f(SessionLinks, "copies_prefix", Bool, "the child holds a copy of the parent's prefix"),
     SessionLinksParent = sp(SessionLinks, "parent", "the parent session").reference(Sessions),
     SessionLinksChild = sp(SessionLinks, "child", "the child session").reference(Sessions),

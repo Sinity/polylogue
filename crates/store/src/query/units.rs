@@ -789,7 +789,7 @@ static LINKS: UnitSpec = UnitSpec {
         ("parent", Expr::Template("{r}.parent_id"), Text),
         ("child", Expr::Template("{r}.child_id"), Text),
         ("kind", T("{r}.kind"), Text),
-        ("how", T("{r}.reason"), Text),
+        ("reason", T("{r}.reason"), Text),
         (
             "copies_prefix",
             T(
