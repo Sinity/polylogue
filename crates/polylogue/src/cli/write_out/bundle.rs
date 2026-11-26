@@ -82,7 +82,7 @@ impl Bundle {
             check_destination(destination)?;
             let internal = staging.join("_staging");
             fs::create_dir(&internal).map_err(string)?;
-            let mut opened = File::create(internal.join("header.json")).map_err(string)?;
+            let mut opened = File::create(internal.join("begin.json")).map_err(string)?;
             serde_json::to_writer(&mut opened, &header).map_err(string)?;
             opened.sync_all().map_err(string)?;
             let items = ExportItems::in_directory(&internal).map_err(|e| e.to_string())?;

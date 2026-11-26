@@ -372,15 +372,14 @@ fn items(reader: &Reader<'_>, seed: &SessionId, step: &Step) -> Result<Vec<ReadI
     Ok(out)
 }
 
-/// The items of each step of the walk from its place in `direction`, with
-/// whether the step is a node and the walk's place after it, while `each`
-/// takes them. True when the walk reached its end.
+/// Each step of the walk from its place in `direction`, with its items and
+/// the walk's place after it, while `each` takes them. True when the walk reached its end.
 fn walk_items(
     reader: &Reader<'_>,
     seed: &SessionId,
     walk: &mut Walk<'_, '_>,
     direction: ReadDirection,
-    mut each: impl FnMut(Vec<ReadItem>, bool, LinksPlace) -> Result<bool, Error>,
+    mut each: impl FnMut(&Step, Vec<ReadItem>, LinksPlace) -> Result<bool, Error>,
 ) -> Result<bool, Error> {
     loop {
         let step = match direction {
@@ -390,8 +389,7 @@ fn walk_items(
         let Some(step) = step else {
             return Ok(true);
         };
-        let node = matches!(step, Step::Node { .. });
-        if !each(items(reader, seed, &step)?, node, walk.place())? {
+        if !each(&step, items(reader, seed, &step)?, walk.place())? {
             return Ok(false);
         }
     }
@@ -574,12 +572,31 @@ pub(super) fn stream(
         Ok(())
     };
     let mut stream = super::output::Stream::begin(output, &check, &header)?;
+    // Each stored node's session record and its link records go out once,
+    // before the node's items.
+    let mut sent = HashSet::new();
     walk_items(
         reader,
         seed,
         &mut walk,
         ReadDirection::After,
-        |items, _, _| {
+        |step, items, _| {
+            if let Step::Node { session, .. } = step
+                && let Ok(id) = SessionId::parse(session)
+                && reader.session(&id)?.is_some()
+            {
+                let mut originals = vec![super::records::session_record(reader, &id)?];
+                originals.extend(super::records::link_records(reader, &id)?);
+                for record in originals {
+                    let reference = record.reference().unwrap_or_default().to_owned();
+                    if sent.insert(reference) {
+                        stream.record(&ReadRecord::Original {
+                            record: Box::new(record),
+                            parts: vec![],
+                        })?;
+                    }
+                }
+            }
             for item in items {
                 stream.record(&ReadRecord::Presentation {
                     parts: vec![ReadPart::Item(item)],

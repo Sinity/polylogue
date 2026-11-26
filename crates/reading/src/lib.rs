@@ -703,6 +703,14 @@ fn route(reader: &Reader<'_>, request: &ReadRequest) -> Result<Route, Error> {
     if let Some(reference) = object::target(request) {
         return Ok(Route::Object(reference?));
     }
+    // A line's fixed population of several rows is read as those rows.
+    if request
+        .references
+        .as_ref()
+        .is_some_and(|references| references.len() != 1)
+    {
+        return Ok(Route::Rows);
+    }
     let Some(scope) = session::scope(reader, &request.target)? else {
         return Ok(Route::Rows);
     };

@@ -2833,8 +2833,9 @@ fn before_footer_trim_evicts_earliest_output_and_moves_lower_bound() {
     }
     assert_eq!(page.first_position().unwrap().item, 0);
     assert_eq!(page.upper_position(), Some(&upper));
+    // A backward page numbers its rows from its end: an earlier row is one more.
     let earlier_row = SelectionLocator {
-        row: selection().row - 1,
+        row: selection().row + 1,
         ..selection()
     };
     assert_eq!(
@@ -2935,7 +2936,7 @@ fn before_footer_trim_advances_only_the_left_fragment_edge() {
 }
 
 #[test]
-fn before_input_must_descend_across_rows_families_and_record_ordinals() {
+fn before_input_must_go_back_across_rows_families_and_record_ordinals() {
     let start_item = text("anchor");
     let start_selection = SelectionLocator {
         row: 2,
@@ -2950,10 +2951,12 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
         character: 0,
         item_hash: item_hash(&start_item),
     };
+    // Rows of a backward page count up from its end, so row 1 is after the
+    // starting row 2 and row 3 before it.
     for (selection, ordinal) in [
         (
             SelectionLocator {
-                row: 3,
+                row: 1,
                 ..start_selection
             },
             0,
@@ -3010,7 +3013,7 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
             },
         },
         SelectionLocator {
-            row: 1,
+            row: 3,
             record: ReadRecordLocator {
                 kind: ReadRecordKind::Link,
                 ordinal: 100,
@@ -3022,9 +3025,9 @@ fn before_input_must_descend_across_rows_families_and_record_ordinals() {
             pager::Push::Accepted
         );
     }
-    assert_eq!(page.first_position().unwrap().selection.row, 1);
+    assert_eq!(page.first_position().unwrap().selection.row, 3);
     let later_family = SelectionLocator {
-        row: 1,
+        row: 3,
         record: ReadRecordLocator {
             kind: ReadRecordKind::Document,
             ordinal: 0,
