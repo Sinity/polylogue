@@ -501,3 +501,85 @@ fn undelivered_brief_does_not_move_the_changes_since_point() {
         "{text}"
     );
 }
+
+#[test]
+fn a_delivery_sent_while_the_writer_is_busy_is_committed_and_read_by_the_next_brief() {
+    use polylogue_store::writer::Queued;
+    let mut d = daemon_with_a_project();
+    lesson(&d, "the otter release needs a signed tag");
+    let (pause, held) = hold_writer(&d, "busy-delivery-writer");
+    let writes = d.daemon.writes.as_ref().unwrap();
+    let invocation =
+        d.daemon
+            .invocation(&polylogue_reading::operation::Context::worker_authorship(
+                "delivery-test",
+            ));
+    let repeated = invocation.request(
+        "busy-delivery-fill".into(),
+        UserWrite::SetSetting {
+            key: "browser.actions".into(),
+            value: "on".into(),
+            machine: None,
+        },
+    );
+    while matches!(
+        writes.archive().try_submit(repeated.clone()).unwrap(),
+        Queued::Committing(_)
+    ) {}
+    let startup = brief(&d, "busy-delivery-start", StartSource::Startup);
+    assert!(
+        startup["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("the otter release needs a signed tag")
+    );
+    let delivery = startup["delivery"].as_str().unwrap();
+    delivered(&d, delivery);
+    let status = crate::test_answers::ok(
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&d.daemon),
+    );
+    assert_eq!(status["pending_writes"]["delivery_outcomes"], 1);
+    let compact = brief(&d, "busy-delivery-compact", StartSource::Compact);
+    assert!(
+        compact["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing changed.")
+    );
+    assert_eq!(compact["prepared"]["refs"], serde_json::json!([]));
+    assert_eq!(compact["prepared"]["left_out"], serde_json::json!([]));
+    // Release the writer only once shutdown has cancelled normal reads.
+    let stop = d.daemon.archive.stop().clone();
+    let pause = std::sync::Mutex::new(Some(pause));
+    let release = stop.on_cancel(move || {
+        if let Some(pause) = pause.lock().unwrap().take() {
+            pause.release();
+        }
+    });
+    d.restart_after_stop(|| {});
+    drop(release);
+    held.join().unwrap();
+    let (row, body) = d
+        .daemon
+        .reads
+        .reader()
+        .unwrap()
+        .delivery(delivery)
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.events, ["delivered"]);
+    assert_eq!(body, startup["prepared"]["text"].as_str().unwrap());
+    let resume = brief(&d, "busy-delivery-resume", StartSource::Resume);
+    assert_eq!(resume["prepared"]["refs"], serde_json::json!([]));
+    assert_eq!(resume["prepared"]["left_out"], serde_json::json!([]));
+    assert!(
+        resume["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("Nothing changed.")
+    );
+    let status = crate::test_answers::ok(
+        crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&d.daemon),
+    );
+    assert_eq!(status["pending_writes"]["delivery_outcomes"], 0);
+}

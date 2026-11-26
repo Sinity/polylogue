@@ -157,14 +157,27 @@ pub(super) fn author(
     let writes = writer(d)?;
     invocation.check_parent_lifetime()?;
     let request = invocation.request(request_id, write);
-    Ok(writes
-        .archive()
-        .user(polylogue_store::writer::UserSubmission {
-            request,
-            scope: None,
-            preparation: Some(authored_preparation()),
-            parent: None,
-        })?)
+    if matches!(
+        &request.write,
+        UserWrite::Deliver(_) | UserWrite::DeliveredAdvice(_) | UserWrite::DeliveryEvent { .. }
+    ) {
+        Ok(writes
+            .archive()
+            .accept_delivery(request)?
+            .recv()
+            .map_err(|_| polylogue_store::StoreError::WriterGone)??
+            .outcome
+            .outcome)
+    } else {
+        Ok(writes
+            .archive()
+            .user(polylogue_store::writer::UserSubmission {
+                request,
+                scope: None,
+                preparation: Some(authored_preparation()),
+                parent: None,
+            })?)
+    }
 }
 
 fn outcome_event(
@@ -182,8 +195,10 @@ fn outcome_event(
             detail: Some(detail),
         },
     );
-    d.queued_deliveries
-        .submit(writer(d)?, request, None, None)
+    writer(d)?
+        .archive()
+        .accept_delivery(request)
+        .map(|_| ())
         .map_err(Failure::from)
 }
 
@@ -1385,13 +1400,13 @@ fn hand_off(
     let prepared = crate::brief::prepare(
         crate::brief::BriefContext {
             reader: &reader,
+            pending_deliveries: &[],
             delivery_id: h.request_id,
             context: &operation,
             ranking_identity: None,
             near: None,
         },
         &d.scope,
-        None,
         &[],
         &crate::brief::Ask::Takeover {
             session: h.source.clone(),

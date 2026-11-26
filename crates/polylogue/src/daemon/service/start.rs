@@ -205,15 +205,6 @@ impl Runtime {
                     if let Err(error) = result {
                         failure.get_or_insert(error);
                     }
-                    if let Some(writes) = &self.daemon.writes
-                        && let Err(error) = self.daemon.queued_deliveries.drain(writes)
-                    {
-                        let error = format!("delivery outcome drain: {error}");
-                        failure = Some(std::io::Error::other(match failure.take() {
-                            Some(previous) => format!("{previous}; {error}"),
-                            None => error,
-                        }));
-                    }
                     // Engine owns the writer. Its final acknowledgments precede close.
                     drop(engine);
                 }
@@ -374,7 +365,6 @@ pub fn start(
         warm,
         scope: crate::daemon::scope::SharedScopeIndex::default(),
         status_snapshot: Default::default(),
-        queued_deliveries: crate::daemon::queued_deliveries::QueuedDeliveries::default(),
         live_spool: Default::default(),
         advisories: crate::advisory::Cooldowns::default(),
         acts: crate::live_acts::Acts::new(

@@ -25,7 +25,6 @@ pub struct Daemon {
     /// What `status` reads from the index, kept current by the same worker.
     pub(crate) status_snapshot: super::status::StatusSnapshot,
     /// Briefs answered whose delivery records are still queued.
-    pub(crate) queued_deliveries: crate::daemon::queued_deliveries::QueuedDeliveries,
     pub(crate) live_spool: crate::live_events::SharedStatus,
     pub(crate) advisories: crate::advisory::Cooldowns,
     /// User writes (notes, deliveries, settings) through the one writer.

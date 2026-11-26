@@ -66,7 +66,6 @@ fn positive(w: &TestDaemon, id: &str, session: &str) -> Value {
             .scope
             .read(limit.deadline(), |_| ())
             .expect("fixture scope is loaded");
-        let _ = w.daemon.queued_deliveries.latest(session);
         limit
             .check()
             .expect("positive advisory fixture budget expired");

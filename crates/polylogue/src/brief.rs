@@ -255,6 +255,7 @@ impl LastBrief {
 
 pub struct BriefContext<'a, 'reader> {
     pub reader: &'a Reader<'reader>,
+    pub pending_deliveries: &'a [polylogue_model::user::UserRequest],
     pub delivery_id: &'a str,
     pub context: &'a std::sync::Arc<polylogue_reading::operation::Context>,
     pub ranking_identity: Option<&'a str>,
@@ -263,13 +264,10 @@ pub struct BriefContext<'a, 'reader> {
 
 /// Prepares the context `ask` wants. `delivery_id` goes in the text, so a
 /// reader of the transcript can find the delivery record. `scope` is the
-/// daemon's scope index; `queued` is the latest delivered brief to the
-/// ask's recipient whose delivery record the writer has not committed yet. `near`
-/// ranks a recall by similarity when vectors exist.
+/// daemon's scope index. `near` ranks a recall by similarity when vectors exist.
 pub fn prepare(
     brief: BriefContext<'_, '_>,
     scope: &SharedScopeIndex,
-    queued: Option<LastBrief>,
     pending_advice: &[Vec<String>],
     ask: &Ask,
     budget_tokens: command_surface::TokenBudget,
@@ -288,15 +286,7 @@ pub fn prepare(
             cwd,
             session,
             source,
-        } => session_start(
-            &brief,
-            scope,
-            queued,
-            cwd,
-            session.as_ref(),
-            *source,
-            budget,
-        ),
+        } => session_start(&brief, scope, cwd, session.as_ref(), *source, budget),
         Ask::Advisory {
             prompt,
             cwd,
@@ -1111,7 +1101,6 @@ fn session_item(
 fn session_start(
     brief: &BriefContext<'_, '_>,
     scope: &SharedScopeIndex,
-    queued: Option<LastBrief>,
     cwd: &Path,
     session: Option<&SessionId>,
     source: StartSource,
@@ -1131,22 +1120,48 @@ fn session_start(
     // On resume and after compaction, only what changed since this
     // session's last delivered brief, committed or still queued.
     let previous = match (source, &me) {
-        (StartSource::Resume | StartSource::Compact, Some(s)) => LastBrief::newest(
-            reader
-                .deliveries_to(s)?
-                .into_iter()
-                .find(|d| {
-                    BRIEF_EVENTS.contains(&d.event)
-                        && d.events.iter().any(|what| {
-                            what == polylogue_model::DeliveryOutcome::Delivered.as_str()
-                        })
+        (StartSource::Resume | StartSource::Compact, Some(recipient)) => {
+            use polylogue_model::user::UserWrite;
+            let pending = brief.pending_deliveries;
+            let delivered = |id: &str| {
+                pending.iter().any(|request| {
+                    matches!(&request.write, UserWrite::DeliveryEvent {
+                        delivery, what: polylogue_model::DeliveryOutcome::Delivered, ..
+                    } if delivery == id)
                 })
-                .map(|d| LastBrief {
-                    at: d.at,
-                    seq: d.seq,
-                }),
-            queued,
-        ),
+            };
+            let stored = reader.deliveries_to(recipient)?;
+            let committed = stored
+                .iter()
+                .find(|delivery| {
+                    BRIEF_EVENTS.contains(&delivery.event)
+                        && (delivery.events.iter().any(|what| what == "delivered")
+                            || delivered(&delivery.id))
+                })
+                .map(|delivery| LastBrief {
+                    at: delivery.at,
+                    seq: delivery.seq,
+                });
+            let mut previous = committed;
+            for request in pending {
+                if let UserWrite::Deliver(delivery) = &request.write
+                    && delivery.recipient_id.as_deref() == Some(recipient.as_str())
+                    && BRIEF_EVENTS.contains(&delivery.event)
+                    && delivered(&request.id)
+                    && !stored.iter().any(|delivery| delivery.id == request.id)
+                {
+                    // No later write can commit before this pending delivery.
+                    previous = LastBrief::newest(
+                        previous,
+                        Some(LastBrief {
+                            at: request.at,
+                            seq: reader.change_position()?.archive,
+                        }),
+                    );
+                }
+            }
+            previous
+        }
         _ => None,
     };
     let mut deadline = Deadline::default();
