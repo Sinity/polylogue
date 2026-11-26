@@ -48,7 +48,7 @@
     "3c18cef36ae3a1a6771c81f25aac746115b8bddcc624a57e937cf92e767eb8ba"
   ],
   "codex": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::codex::VERSION=13,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::codex::fields::VERSION=1,polylogue_sources::codex::index::VERSION=1,polylogue_sources::codex::items::VERSION=1,polylogue_sources::codex::usage::VERSION=1,polylogue_sources::codex::header::VERSION=1",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::codex::VERSION=14,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::codex::fields::VERSION=1,polylogue_sources::codex::index::VERSION=1,polylogue_sources::codex::items::VERSION=1,polylogue_sources::codex::usage::VERSION=1,polylogue_sources::codex::header::VERSION=1",
     "92a11154a8954855172dd9981eea6567ce8346b36938192770d4b1a0b6572445"
   ],
   "codex-cloud": [
@@ -56,7 +56,7 @@
     "767cb3a07f133a813a21bff568ccf4bb6b0c6d2d4ca0be0dffe8e5ad85c016fd"
   ],
   "codex-database": [
-    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::codex::VERSION=13,crate::codex::database::VERSION=4,crate::row_dump::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::codex::fields::VERSION=1,polylogue_sources::codex::index::VERSION=1,polylogue_sources::codex::items::VERSION=1,polylogue_sources::codex::usage::VERSION=1,polylogue_sources::codex::header::VERSION=1",
+    "parse=3,lines=1,records=1,fields=3,document=1,time=2,command=2,content_ids=1,chain_names=1,export=2,origin=1,crate::codex::VERSION=14,crate::codex::database::VERSION=4,crate::row_dump::VERSION=3,polylogue_sources::export::objects::VERSION=1,polylogue_sources::export::state::VERSION=1,polylogue_sources::export::path::VERSION=1,polylogue_sources::export::keyed::VERSION=1,polylogue_sources::export::nested::VERSION=1,polylogue_sources::codex::fields::VERSION=1,polylogue_sources::codex::index::VERSION=1,polylogue_sources::codex::items::VERSION=1,polylogue_sources::codex::usage::VERSION=1,polylogue_sources::codex::header::VERSION=1",
     "5636ad10cd8637bf626e6bd07bb7548074e44e9fdc28d4549e08a1a27d8ab8e5"
   ],
   "gemini-app": [

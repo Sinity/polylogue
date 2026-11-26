@@ -33,7 +33,7 @@ fn fork(f: &mut Fixture, parent: &str, child: &str, branch_point: Option<&str>) 
     crate::archive::open_write(&f.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
         .execute(
-            "UPDATE link SET branch_point=?3 WHERE parent_id=?1 AND child_id=?2",
+            "UPDATE session_link SET branch_point=?3 WHERE parent_id=?1 AND child_id=?2",
             params![parent, child, branch_point],
         )
         .unwrap();
@@ -417,7 +417,7 @@ fn continuation_and_resume_use_the_recorded_branch_point() {
             crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
                 .unwrap();
         conn.execute(
-            "UPDATE link SET branch_point='claude-code:p-1' WHERE child_id='claude-code:c'",
+            "UPDATE session_link SET branch_point='claude-code:p-1' WHERE child_id='claude-code:c'",
             [],
         )
         .unwrap();
@@ -431,7 +431,7 @@ fn continuation_and_resume_use_the_recorded_branch_point() {
             assert_eq!(texts(&selected), ["first", "branch_point", "own"]);
         }
         conn.execute(
-            "UPDATE link SET branch_point=NULL WHERE child_id='claude-code:c'",
+            "UPDATE session_link SET branch_point=NULL WHERE child_id='claude-code:c'",
             [],
         )
         .unwrap();

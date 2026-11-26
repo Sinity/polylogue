@@ -556,9 +556,7 @@ fn parent_links_use_index() {
         "SELECT pk FROM session_link WHERE parent_id = ?1 OR child_id = ?1",
     );
     assert!(
-        steps
-            .iter()
-            .any(|step| step.contains("session_link_parent")),
+        steps.iter().any(|step| step.contains("session_link_key")),
         "{steps:#?}"
     );
 }

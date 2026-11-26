@@ -1855,7 +1855,7 @@ impl<'c> Work<'_, 'c> {
         &mut self,
         (parent, child, kind, how): (String, String, String, Option<String>),
     ) -> Result<()> {
-        let statements: Vec<crate::lineage::Statement> = self
+        let statements: Vec<crate::lineage::LinkStatement> = self
             .tx()
             .prepare_cached(
                 "SELECT pk, branch_point, spawning_call, copies_prefix, evidence, source_chain, input_pk
@@ -1863,7 +1863,7 @@ impl<'c> Work<'_, 'c> {
                  ORDER BY pk",
             )?
             .query_map(params![parent, child, kind, how], |r| {
-                Ok(crate::lineage::Statement {
+                Ok(crate::lineage::LinkStatement {
                     branch_point: r.get(1)?,
                     spawning_call: r.get(2)?,
                     copies_prefix: r.get(3)?,

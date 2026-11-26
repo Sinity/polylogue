@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 13;
+pub const VERSION: u32 = 14;
 
 parser_modules! {
     mod fields;
@@ -1013,19 +1013,18 @@ impl Rollout {
                     item.str("agent_thread_id")
                         .filter(|s| !s.is_empty())
                         .and_then(session_id),
-                ) {
-                    if parser_state.spawned.insert(child.to_string()) {
-                        let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
-                        link(
-                            out,
-                            LinkKind::Spawn,
-                            parent,
-                            child,
-                            None,
-                            call,
-                            "SubAgentActivity",
-                        );
-                    }
+                ) && parser_state.spawned.insert(child.to_string())
+                {
+                    let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
+                    link(
+                        out,
+                        LinkKind::Spawn,
+                        parent,
+                        child,
+                        None,
+                        call,
+                        "SubAgentActivity",
+                    );
                 }
                 self.event(parser_state, p, "subagent_activity", at, out)
             }

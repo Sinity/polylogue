@@ -505,7 +505,8 @@ CREATE TABLE session_link (
   source_chain      INTEGER NOT NULL DEFAULT 0,  -- the first statement's input and chain
   input_pk          INTEGER NOT NULL REFERENCES input_ref(pk)
 ) STRICT;
-CREATE INDEX session_link_parent ON session_link(parent_id, kind);   -- children; late parents
+CREATE INDEX session_link_key ON session_link(parent_id, child_id, kind, how, branch_point, spawning_call);
+                                            -- children; late parents; the default order
 CREATE INDEX session_link_child ON session_link(child_id, kind);     -- parents; late children
 
 -- Copied-prefix facts an input states never create a relationship on their own.

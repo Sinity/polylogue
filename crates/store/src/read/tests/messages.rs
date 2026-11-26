@@ -106,7 +106,7 @@ fn message_visits_include_the_same_logical_history() {
         .unwrap();
     crate::archive::open_write(&fixture.archive.index_db(), crate::archive::cache::SETUP)
         .unwrap()
-        .execute("UPDATE link SET branch_point='claude-code:p1'", [])
+        .execute("UPDATE session_link SET branch_point='claude-code:p1'", [])
         .unwrap();
     let pool = fixture.reads().unwrap();
     let id = SessionId::parse("claude-code:child").unwrap();

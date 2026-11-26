@@ -131,12 +131,11 @@ impl<'a> Compiler<'a> {
                 let partial = match field {
                     "cost" => Some(unpriced(&format!("SELECT {s}.pk"))),
                     "tree_cost" => {
-                        let tree = fields::descendants(s);
+                        let tree = fields::spawn_tree(s);
                         Some(format!(
                             "({} OR EXISTS (SELECT 1 FROM session_link xl JOIN session xs ON xs.id = xl.parent_id \
-                         WHERE xl.kind IN ({}) AND NOT EXISTS (SELECT 1 FROM session xc WHERE xc.id = xl.child_id) AND xs.pk IN ({tree})))",
-                            unpriced(&tree),
-                            fields::STRUCTURAL_KINDS
+                         WHERE xl.kind = 'spawn' AND NOT EXISTS (SELECT 1 FROM session xc WHERE xc.id = xl.child_id) AND xs.pk IN ({tree})))",
+                            unpriced(&tree)
                         ))
                     }
                     _ => None,

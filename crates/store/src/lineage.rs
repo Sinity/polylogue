@@ -96,7 +96,7 @@ row! {
     }
     statements {
         const OF_PARENT = "SELECT parent_id, child_id, kind, reason, branch_point, spawning_call, copies_prefix
-            FROM session_link INDEXED BY session_link_parent WHERE parent_id = ?1 ORDER BY pk";
+            FROM session_link INDEXED BY session_link_key WHERE parent_id = ?1 ORDER BY pk";
         const OF_CHILD = "SELECT parent_id, child_id, kind, reason, branch_point, spawning_call, copies_prefix
             FROM session_link INDEXED BY session_link_child WHERE child_id = ?1 ORDER BY pk";
     }
@@ -140,7 +140,7 @@ fn links_where(conn: &Connection, end: End, session: &str) -> Result<Vec<Session
 }
 
 /// One shown statement of a link, as assembly resolves it.
-pub(crate) struct Statement {
+pub(crate) struct LinkStatement {
     pub branch_point: Option<String>,
     pub spawning_call: Option<String>,
     pub copies_prefix: bool,
@@ -167,13 +167,13 @@ pub(crate) struct Relation {
 /// statement completes. Each relation takes its input from the first
 /// statement it agrees with, its evidence from the least of them all, and
 /// copies the prefix when any statement says so.
-pub(crate) fn relations(statements: &[Statement]) -> Vec<Relation> {
+pub(crate) fn relations(statements: &[LinkStatement]) -> Vec<Relation> {
     use std::collections::{BTreeSet, HashSet};
     let Some(evidence) = statements.iter().map(|s| s.evidence.as_str()).min() else {
         return Vec::new();
     };
     let copies_prefix = statements.iter().any(|s| s.copies_prefix);
-    let known = |of: fn(&Statement) -> &Option<String>| {
+    let known = |of: fn(&LinkStatement) -> &Option<String>| {
         statements
             .iter()
             .filter_map(|statement| of(statement).clone())
@@ -481,7 +481,7 @@ impl crate::read::Reader<'_> {
 #[cfg(test)]
 pub(crate) fn declared_rows(check: &mut crate::row::Check<'_>) {
     check.row::<CopiedPair>();
-    check.row::<LinkStatement>();
+    check.row::<LinkRow>();
     check.row::<StoredLineage>();
 }
 
