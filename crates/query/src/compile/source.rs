@@ -23,31 +23,6 @@ pub(crate) fn catalog(options: &Bindings) -> std::sync::Arc<Catalog> {
     shared
 }
 
-/// Captured row domains enter only post-parse binding, so they cannot
-/// reinterpret a live search word as an earlier unit spelling.
-pub(crate) fn bound_catalog(options: &Bindings) -> Result<std::sync::Arc<Catalog>, QueryError> {
-    let mut catalog = catalog(options);
-    crate::plan::recorded_units_for_bindings(&mut catalog, options)?;
-    Ok(catalog)
-}
-pub(crate) fn preserve_live_units(query: &mut Query, catalog: &Catalog) -> Result<(), QueryError> {
-    if !catalog.units.iter().any(|u| {
-        crate::units::Unit::from_name(&u.name).is_none()
-            && crate::units::Unit::from_bound_name(&u.name).is_some()
-    }) {
-        return Ok(());
-    }
-    crate::plan::walk(
-        query,
-        &mut |query| {
-            if let Source::Unit { implicit, .. } = &mut query.source {
-                *implicit = false;
-            }
-            Ok(())
-        },
-        &mut |_| Ok(()),
-    )
-}
 pub(crate) fn expand(
     text: &str,
     options: &Bindings,

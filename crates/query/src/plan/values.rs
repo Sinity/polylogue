@@ -178,7 +178,7 @@ fn comparison_value(
         };
         if normalize {
             if let Origin::Catalog { unit, field } = &typed.result.origin
-                && let Some(unit) = Unit::from_bound_name(unit)
+                && let Some(unit) = Unit::from_name(unit)
                 && let Some(field) = crate::fields::lookup(unit, field)
                 && field.declaration().reference_argument
             {

@@ -9,7 +9,6 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 mod objects;
 mod values;
-pub(crate) use objects::recorded_units_for_bindings;
 pub use objects::{
     catalog_fingerprint, question_id_from_reference, referenced_kept_results,
     referenced_question_ids, referenced_saved_names, replay, replay_binding, saved_query_bindings,
@@ -207,8 +206,6 @@ fn prepare_inner(
             },
             &mut |_| Ok(()),
         )?;
-        catalog = crate::compile::source::bound_catalog(options)?;
-        crate::compile::source::preserve_live_units(&mut query, &catalog)?;
         let mut definitions = Vec::new();
         let mut saved_definitions: Vec<polylogue_model::query_objects::SavedQueryDefinition> =
             Vec::new();

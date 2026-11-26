@@ -78,7 +78,7 @@ impl Compiler<'_> {
                 position: 0,
             });
         }
-        let unit = Unit::from_bound_name(&kept.unit).ok_or_else(|| QueryError::Unavailable {
+        let unit = Unit::from_name(&kept.unit).ok_or_else(|| QueryError::Unavailable {
             reason: format!("kept result {id:?} has unknown unit {:?}", kept.unit),
         })?;
         let named_unit = Some(unit);

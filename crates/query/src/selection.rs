@@ -140,7 +140,7 @@ impl Selection {
         else {
             return Ok(None);
         };
-        let Some(unit) = Unit::from_bound_name(unit.strip_prefix("pl.").unwrap_or(unit)) else {
+        let Some(unit) = Unit::from_name(unit.strip_prefix("pl.").unwrap_or(unit)) else {
             return Err(QueryError::NotBuilt {
                 what: format!("unit {unit}"),
             });

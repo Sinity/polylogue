@@ -5,7 +5,7 @@ fn unit_schema(unit: &str, catalog: &Catalog) -> Result<OutputSchema, QueryError
     let unit = catalog
         .unit(unit)
         .ok_or_else(|| QueryError::invalid(format!("unknown output unit {unit:?}")))?;
-    let product = crate::units::Unit::from_bound_name(&unit.name).ok_or_else(|| {
+    let product = crate::units::Unit::from_name(&unit.name).ok_or_else(|| {
         if crate::units::DesignedUnit::named(&unit.name).is_some() {
             not_built(&format!("unit {}", unit.name))
         } else {
@@ -176,7 +176,7 @@ pub(crate) fn bound_output_metadata(
                 let [unit] = units else {
                     return Err(QueryError::invalid("matches has no unique step unit"));
                 };
-                let step_unit = crate::units::Unit::from_bound_name(unit)
+                let step_unit = crate::units::Unit::from_name(unit)
                     .ok_or_else(|| QueryError::invalid("unknown matched unit"))?;
                 let names = ["parent", "match", "position", "step", "step.position"]
                     .into_iter()
