@@ -37,7 +37,6 @@ fn a_refused_import_commits_no_blob_extent_or_source_rows() {
                     std::slice::from_ref(&path),
                     &ImportOptions {
                         origin: Some("claude-code".into()),
-                        explain: false,
                         ..Default::default()
                     },
                 )
@@ -71,7 +70,6 @@ fn a_refused_import_commits_no_blob_extent_or_source_rows() {
                 std::slice::from_ref(&path),
                 &ImportOptions {
                     origin: Some("claude-code".into()),
-                    explain: false,
                     ..Default::default()
                 },
             )
@@ -99,7 +97,6 @@ fn equal_small_bytes_share_one_segment_extent_across_inputs() {
             &[path],
             &ImportOptions {
                 origin: Some("claude-code".into()),
-                explain: false,
                 ..Default::default()
             },
         )

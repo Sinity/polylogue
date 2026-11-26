@@ -153,7 +153,7 @@ pub(crate) fn hidden_sessions(reader: &Reader<'_>, selection: &Selection) -> Res
            SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about'
            WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || s.id
              AND {} )",
-        crate::annotations::sql::live_annotation("hn")
+        crate::annotations::sql::current_annotation("hn")
     );
     let n: i64 = reader
         .conn()?

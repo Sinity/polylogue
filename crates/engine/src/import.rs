@@ -40,12 +40,9 @@ impl Engine {
                 }
                 .into());
             };
-            if options.explain || options.dry_run {
+            if options.dry_run {
                 return Err(polylogue_model::Reason::ImportOptions {
-                    problem: format!(
-                        "--explain and --dry-run do not apply to {}",
-                        python_polylogue::VECTORS
-                    ),
+                    problem: format!("--dry-run does not apply to {}", python_polylogue::VECTORS),
                 }
                 .into());
             }
@@ -63,7 +60,7 @@ impl Engine {
             };
             self.import_members(path, members, options, &mut report)?;
         }
-        if options.explain || options.dry_run {
+        if options.dry_run {
             report.pass.seconds = started.elapsed().as_secs_f64();
             return Ok(report);
         }
@@ -103,7 +100,7 @@ impl Engine {
         let mut authored_records = Vec::new();
         let mut items = Vec::new();
         let mut hashes = std::collections::BTreeMap::new();
-        let classify_only = options.explain || options.dry_run;
+        let classify_only = options.dry_run;
         let import_id = import_identity(
             &self.config.machine,
             path,

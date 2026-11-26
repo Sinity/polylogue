@@ -3279,7 +3279,6 @@ impl Engine {
                     authorship: Some(authorship),
                     origin: format,
                     dry_run,
-                    ..Default::default()
                 };
                 let mut report = self.import_with_options(&paths, &options);
                 // A build installed while the import read the index: its

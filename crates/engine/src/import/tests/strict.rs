@@ -2,7 +2,7 @@ use super::*;
 use polylogue_testkit::ClaudeHome;
 
 #[test]
-fn unknown_import_refuses_and_explain_stores_nothing() {
+fn unknown_import_refuses_and_a_dry_run_stores_nothing() {
     let w = ClaudeHome::new();
     let path = w.dir.path().join("unrelated.jsonl");
     std::fs::write(&path, b"{\"type\":\"arbitrary\"}\n").unwrap();
@@ -22,7 +22,7 @@ fn unknown_import_refuses_and_explain_stores_nothing() {
             std::slice::from_ref(&path),
             &ImportOptions {
                 origin: None,
-                explain: true,
+                dry_run: true,
                 ..Default::default()
             },
         )

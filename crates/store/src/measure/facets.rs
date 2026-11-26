@@ -18,7 +18,7 @@ pub const DEEP: &[&str] = &["roles", "written_by", "block_kinds", "actions", "fl
 pub(super) fn tags_sql() -> String {
     format!("SELECT DISTINCT s.pk,lower(CASE WHEN json_extract(n.value,'$.value') IS NULL THEN n.key ELSE n.key||':'||json_extract(n.value,'$.value') END) AS value
         FROM session s JOIN source_annotation_link nt ON nt.ref='session:'||s.id AND nt.role='about' JOIN source_annotation n ON n.id=nt.record
-        WHERE n.kind='tag' AND {}",crate::annotations::sql::live_annotation("n"))
+        WHERE n.kind='tag' AND {}",crate::annotations::sql::current_annotation("n"))
 }
 
 pub fn families(options: &str) -> Result<Vec<&'static str>> {

@@ -28,7 +28,7 @@ fn project_sidecar_declares_only_its_own_member() {
         .import_with_options(
             &[source],
             &crate::ImportOptions {
-                explain: true,
+                dry_run: true,
                 ..Default::default()
             },
         )

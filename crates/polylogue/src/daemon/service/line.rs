@@ -216,7 +216,7 @@ fn given(rows: &Rows) -> Result<Given, Failure> {
         if text.is_empty() {
             return Err(Failure::bad_request("selection must not be empty"));
         }
-        if matches!(text, "@all" | "@last")
+        if text == "@all"
             || text
                 .strip_prefix('@')
                 .is_some_and(|tail| tail.starts_with(|c: char| c.is_ascii_digit()))

@@ -424,7 +424,6 @@ pub struct LoopStatus {
 #[derive(Debug, Default, Clone, Serialize, serde::Deserialize)]
 pub struct ImportOptions {
     pub origin: Option<String>,
-    pub explain: bool,
     /// Recognize and classify every member, storing nothing.
     pub dry_run: bool,
     /// Computed by the accepting channel; imported bytes never supply it.

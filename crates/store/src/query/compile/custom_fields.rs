@@ -565,7 +565,7 @@ pub(crate) fn tag(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, 
              AND ((tn.key IS NULL AND lower(json_extract(tn.value,'$.value')) = {p}) \
                OR lower(tn.key) || ':' || lower(json_extract(tn.value,'$.value')) = {p} \
                OR (json_extract(tn.value,'$.value') IS NULL AND lower(tn.key) = {p})))",
-            fields::live_annotation("tn")
+            fields::current_annotation("tn")
         ));
     }
     any_of(x, parts)

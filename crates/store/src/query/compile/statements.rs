@@ -194,27 +194,6 @@ impl Statements {
             derived.rows
         ))
     }
-
-    /// `columns` of every selected row, in key order.
-    pub fn member_columns(&self, columns: &[String]) -> String {
-        let select_list = columns
-            .iter()
-            .map(|c| format!("q.\"{c}\""))
-            .collect::<Vec<_>>()
-            .join(",");
-        match self {
-            Statements::Keyed(keyed) => format!(
-                "SELECT {select_list} FROM ({}) q WHERE q._pk IN (SELECT _pk FROM ({})) ORDER BY q._pk",
-                keyed.rows, keyed.keys
-            ),
-            Statements::Derived(derived) => {
-                format!(
-                    "SELECT {select_list} FROM ({}) q ORDER BY q._pk",
-                    derived.rows
-                )
-            }
-        }
-    }
 }
 
 /// One page of `source` in `order`, `reverse`d or not. With `after`, it
