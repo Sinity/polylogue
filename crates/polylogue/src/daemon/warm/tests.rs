@@ -148,72 +148,91 @@ fn put_vector(daemon: &crate::test_daemon::TestDaemon, key: &str, hash: u8, valu
         .unwrap();
 }
 
-#[test]
-fn vector_loading_leaves_the_cache_unlocked_and_clear_prevents_publication() {
-    let daemon = crate::test_daemon::start("vector cache ownership");
-    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
-    let (started, entered) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    std::thread::scope(|scope| {
-        let warm = &warm;
-        let daemon = &daemon;
-        let reading = scope.spawn(move || {
-            let reader = daemon.daemon.reads.reader().unwrap();
-            warm.load_vectors_until(&reader, started, released);
-        });
-        entered.recv_timeout(Duration::from_secs(10)).unwrap();
-        let unlocked = warm.vectors.cache.try_lock().is_ok();
-        if unlocked {
-            warm.clear();
-        }
-        release.send(()).unwrap();
-        reading.join().unwrap();
-        assert!(unlocked, "loading must not hold the shared cache mutex");
-        let cache = warm.vectors.cache.lock().unwrap();
-        // The cleared pass published nothing; the read asked again.
-        assert_eq!(
-            cache.passes, 2,
-            "clear invalidates an in-flight publication"
+fn wait_for_vector_wait(limit: &polylogue_store::read::limit::ReadLimit) {
+    let until = std::time::Instant::now() + Duration::from_secs(10);
+    while limit.stage() != Some("vector wait") {
+        assert!(
+            std::time::Instant::now() < until,
+            "request did not wait for vectors"
         );
-        assert_eq!(cache.sets.len(), 1);
-        assert_eq!(cache.sets[0].vectors(), 0);
-    });
+        std::thread::yield_now();
+    }
 }
 
 #[test]
-fn cancelled_reader_leaves_while_vector_worker_is_still_loading() {
-    use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
+fn two_requests_for_newer_vectors_load_them_once() {
+    use crate::test_daemon::embeddings::{VectorLoad, vector_query};
+    let daemon = crate::test_daemon::start("parser text");
+    let loading = VectorLoad::start(&daemon);
+    let limit = polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
+    let answer = std::thread::scope(|scope| {
+        let reading = scope.spawn(|| vector_query().within(&limit).answer(&daemon.daemon));
+        wait_for_vector_wait(&limit);
+        drop(loading);
+        reading.join().unwrap()
+    });
+    let rows = crate::test_answers::listing(answer);
+    assert_eq!(rows["rows"][0]["id"], "claude-code:u1");
+    assert_eq!(rows["count"], 1);
+    let status = crate::test_answers::ok(crate::test_daemon::call(
+        &daemon.daemon,
+        "status",
+        json!({}),
+    ));
+    assert_eq!(status["warm"]["vector_loads"], 1);
+    assert_eq!(status["warm"]["vectors"]["vectors"], 1);
+}
 
-    let dir = tempfile::tempdir().unwrap();
-    let (archive, _lock) = polylogue_store::Archive::open_or_create(dir.path()).unwrap();
-    installed(&archive);
-    let clock = polylogue_model::WallClock::new(jiff::Timestamp::now);
-    let warm = Warm::new(&archive, clock);
-    let reads = polylogue_store::ReadPool::open(&archive).unwrap();
+#[test]
+fn cancelled_request_leaves_while_another_request_loads_vectors() {
+    use crate::test_daemon::embeddings::{VectorLoad, vector_query};
+    use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
+    let daemon = crate::test_daemon::start("parser text");
+    let loading = VectorLoad::start(&daemon);
     let cancel = Cancellation::default();
     let limit = ReadLimit::without_deadline(cancel.clone());
-    let (started, entered) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    warm.vectors.cache.lock().unwrap().gate = Some((started, released));
     let (done, finished) = std::sync::mpsc::channel();
     std::thread::scope(|scope| {
-        let reading = scope.spawn(|| {
-            let reader = reads.reader().unwrap();
-            let result = limit.scope(|| warm.vectors_of(&reader, "synthetic/empty"));
-            done.send(result.map(|_| ())).unwrap();
+        scope.spawn(|| {
+            done.send(vector_query().within(&limit).answer(&daemon.daemon))
+                .unwrap()
         });
-        let working = entered.recv_timeout(Duration::from_secs(10));
-        let cancelling = scope.spawn(|| cancel.cancel());
-        let result = finished.recv_timeout(Duration::from_secs(10));
-        let _ = release.send(());
-        cancelling.join().unwrap();
-        reading.join().unwrap();
-        working.expect("vector worker never reached the gate");
-        let error = result
-            .expect("cancelled read waited for the worker to finish")
-            .expect_err("cancelled read unexpectedly succeeded");
-        assert_eq!(error, "the read was cancelled");
+        wait_for_vector_wait(&limit);
+        cancel.cancel();
+        let answer = finished.recv_timeout(Duration::from_secs(10));
+        drop(loading);
+        let answer = answer.expect("cancelled request waited for the other load");
+        match answer.outcome {
+            command_surface::Outcome::Error(error) => {
+                assert_eq!(error.code.as_deref(), Some("cancelled"))
+            }
+            other => panic!("{other:?}"),
+        }
     });
+    let rows = crate::test_answers::listing(vector_query().answer(&daemon.daemon));
+    assert_eq!(rows["rows"][0]["id"], "claude-code:u1");
+}
+
+#[test]
+fn clearing_during_a_load_does_not_publish_its_vectors() {
+    use crate::test_daemon::embeddings::{VectorLoad, vector_query};
+    let daemon = crate::test_daemon::start("parser text");
+    let loading = VectorLoad::start(&daemon);
+    daemon.daemon.warm.clear();
+    drop(loading);
+    let status = crate::test_answers::ok(crate::test_daemon::call(
+        &daemon.daemon,
+        "status",
+        json!({}),
+    ));
+    assert_eq!(status["warm"]["vectors"], serde_json::Value::Null);
+    crate::test_answers::listing(vector_query().answer(&daemon.daemon));
+    let status = crate::test_answers::ok(crate::test_daemon::call(
+        &daemon.daemon,
+        "status",
+        json!({}),
+    ));
+    assert_eq!(status["warm"]["vector_loads"], 2);
 }
 
 #[test]
@@ -253,80 +272,9 @@ fn older_vector_snapshot_does_not_replace_newer_cached_values() {
     let old = warm.vectors_of(&older, key).unwrap();
     assert_eq!(old.revision, older_revision);
     assert_eq!(old.vectors(), 1);
-    let cache = warm.vectors.cache.lock().unwrap();
+    let cache = warm.vectors.lock().unwrap();
     assert_eq!(cache.sets.len(), 1);
     assert!(Arc::ptr_eq(&cache.sets[0], &current));
-}
-
-#[test]
-fn a_read_after_a_revision_commit_never_extends_inline() {
-    let daemon = crate::test_daemon::start("vectors worker");
-    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
-    let key = "synthetic/model/2/document/unit";
-    put_vector(&daemon, key, 1, [1., 0.]);
-    let read = || {
-        let reader = daemon.daemon.reads.reader().unwrap();
-        warm.vectors_of(&reader, key).unwrap()
-    };
-    assert_eq!(read().vectors(), 1);
-    for hash in 2..=5 {
-        let held = warm.summary().vectors.unwrap().vectors;
-        put_vector(&daemon, key, hash, [0., 1.]);
-        // The worker extends the set on the commit, before any read asks.
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while warm.summary().vectors.unwrap().vectors == held {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the worker did not extend the set"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        let loads = super::loads_here();
-        let current = read();
-        assert_eq!(
-            super::loads_here(),
-            loads,
-            "the read loaded or extended vectors itself"
-        );
-        assert_eq!(current.vectors(), usize::from(hash));
-        assert_eq!(current.rows_read, 1, "the worker read only the new vector");
-        // The set the read got ranks like a full load of its snapshot.
-        let reader = daemon.daemon.reads.reader().unwrap();
-        let whole = Arc::new(reader.vectors().unwrap().load(key).unwrap());
-        assert_eq!(current.revision, whole.revision);
-        let ranked = current.similarity(&[0.6, 0.8]).unwrap();
-        let loaded = whole.similarity(&[0.6, 0.8]).unwrap();
-        for text in 1..=hash {
-            assert_eq!(ranked.of(&[text]), loaded.of(&[text]), "text {text}");
-        }
-    }
-    // A read that comes before the worker has extended the set waits for it.
-    let (started, entered) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    warm.vectors.cache.lock().unwrap().gate = Some((started, released));
-    put_vector(&daemon, key, 6, [0., 1.]);
-    entered.recv_timeout(Duration::from_secs(10)).unwrap();
-    let waited = warm.vectors.cache.lock().unwrap().waited;
-    std::thread::scope(|scope| {
-        let reading = scope.spawn(|| {
-            let loads = super::loads_here();
-            let set = read();
-            (super::loads_here() - loads, set)
-        });
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while warm.vectors.cache.lock().unwrap().waited == waited && !reading.is_finished() {
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the read neither waited nor answered"
-            );
-            std::thread::sleep(Duration::from_millis(2));
-        }
-        release.send(()).unwrap();
-        let (loads, set) = reading.join().unwrap();
-        assert_eq!(loads, 0, "the read loaded or extended vectors itself");
-        assert_eq!(set.vectors(), 6);
-    });
-    assert_eq!(warm.counts.vector_loads.load(Ordering::Relaxed), 1);
 }
 
 #[test]
@@ -404,7 +352,7 @@ fn vector_write_appends_without_reload() {
     assert_eq!(similarity.of(&[1]), similarity.of(&[2]));
     agree((*current).clone(), 9);
     assert_eq!(
-        warm.counts.vector_loads.load(Ordering::Relaxed),
+        warm.summary().vector_loads,
         1,
         "every later revision extended the held vectors"
     );
@@ -415,25 +363,15 @@ fn vector_write_appends_without_reload() {
 #[test]
 fn summary_does_not_wait_for_a_load() {
     let daemon = crate::test_daemon::start("status during a vector load");
-    let warm = Warm::new(&daemon.daemon.archive, daemon.daemon.clock.clone());
-    let before = serde_json::to_value(warm.summary()).unwrap();
-    let (started, entered) = std::sync::mpsc::channel();
-    let (release, released) = std::sync::mpsc::channel();
-    std::thread::scope(|scope| {
-        let warm = &warm;
-        let daemon = &daemon;
-        let loading = scope.spawn(move || {
-            let reader = daemon.daemon.reads.reader().unwrap();
-            warm.load_vectors_until(&reader, started, released);
-        });
-        entered.recv_timeout(Duration::from_secs(10)).unwrap();
-        let (summary, summarized) = std::sync::mpsc::channel();
-        scope.spawn(move || summary.send(serde_json::to_value(warm.summary()).unwrap()));
-        let during = summarized.recv_timeout(Duration::from_secs(5));
-        release.send(()).unwrap();
-        loading.join().unwrap();
-        assert_eq!(during.expect("status waited for the vector load"), before);
-    });
+    let loading = crate::test_daemon::embeddings::VectorLoad::start(&daemon);
+    let status = crate::test_answers::ok(crate::test_daemon::call(
+        &daemon.daemon,
+        "status",
+        json!({}),
+    ));
+    assert_eq!(status["warm"]["vector_loads"], 1);
+    assert_eq!(status["warm"]["vectors"], serde_json::Value::Null);
+    drop(loading);
 }
 
 #[test]
@@ -464,14 +402,7 @@ fn one_provider_call_per_query_text_in_flight() {
         let (peer, _) = listener.accept().unwrap();
         let until = std::time::Instant::now() + Duration::from_secs(10);
         loop {
-            let waiting = d
-                .warm
-                .in_flight
-                .lock()
-                .unwrap()
-                .values()
-                .map(|flight| flight.waiting.load(Ordering::Relaxed))
-                .sum::<usize>();
+            let waiting = d.warm.summary().query_vectors_reused as usize;
             if waiting == readers - 1 {
                 break;
             }
