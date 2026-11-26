@@ -151,6 +151,10 @@ in
       export XDG_DATA_HOME=${lib.escapeShellArg dataHome}
       export XDG_STATE_HOME=${lib.escapeShellArg stateHome}
       export XDG_CACHE_HOME=${lib.escapeShellArg cacheHome}
+      # Repository identity and commit capture run git. The caller's git
+      # comes first; a service's minimal PATH or a shell without git falls
+      # back to this one.
+      export PATH="''${PATH:+$PATH:}${lib.getBin pkgs.gitMinimal}/bin"
       ${
         if runtimeDir == null then
           ''

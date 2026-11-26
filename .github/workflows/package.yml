@@ -48,3 +48,4 @@ jobs:
         run: |
           dependencies=$(nix build --no-link --print-out-paths "github:${GITHUB_REPOSITORY}/${REV}#polylogue-dependencies")
           cachix push sinity "$out" "$dependencies"
+          nix path-info --closure-size --human-readable "$out"

@@ -39,44 +39,31 @@ let
     buildInputs = [ pkgs.zstd ];
     strictDeps = true;
   };
-  cleanSource = craneLib.cleanCargoSource source;
-  # Build identity belongs to the application, not the dependency cache.
-  cargoArtifacts = craneLib.buildDepsOnly (
-    common
-    // {
-      src = cleanSource;
-      cargoExtraArgs = "--locked --workspace --all-features";
-    }
-  );
-  # The production graph has no workspace test dependencies or fault
-  # features. Resolve exactly the graph the package consumes, so changing
-  # source does not recompile dependencies under another feature set.
+  # The dependency build compiles exactly the graph the package consumes
+  # (its package, features and profile, no test targets), so a change to
+  # Polylogue's own source recompiles only workspace crates.
   packageArgs = "--locked -p polylogue --features polylogue/sinex";
   packageArtifacts = craneLib.buildDepsOnly (
     common
     // {
-      src = cleanSource;
+      src = craneLib.cleanCargoSource source;
       cargoExtraArgs = packageArgs;
       # The package consumes codegen artifacts, not cargo-check metadata.
       buildPhaseCargoCommand = "cargoWithProfile build ${packageArgs}";
       doCheck = false;
     }
   );
-  application = common // {
-    inherit cargoArtifacts;
-    POLYLOGUE_REVISION = revision;
-    doInstallCargoArtifacts = false;
-  };
+  # The binary runs the git it finds on PATH; the deployment modules add a
+  # fallback after the user's PATH (lib/settings.nix).
   polylogue = craneLib.buildPackage (
-    application
+    common
     // {
+      # Build identity belongs to the application, not the dependency cache.
+      POLYLOGUE_REVISION = revision;
       cargoArtifacts = packageArtifacts;
       cargoExtraArgs = packageArgs;
       doCheck = false;
-      nativeBuildInputs = common.nativeBuildInputs ++ [ pkgs.makeBinaryWrapper ];
-      postInstall = ''
-        wrapProgram "$out/bin/polylogue" --inherit-argv0 --prefix PATH : ${lib.makeBinPath [ pkgs.git ]}
-      '';
+      doInstallCargoArtifacts = false;
       meta.mainProgram = "polylogue";
     }
   );
@@ -105,45 +92,6 @@ let
       inherit (common) src pname version;
       cargoExtraArgs = "--all";
     };
-    clippy = craneLib.cargoClippy (
-      application
-      // {
-        cargoExtraArgs = "--locked --workspace --features polylogue/sinex";
-        cargoClippyExtraArgs = "--all-targets -- -D warnings";
-      }
-    );
-    clippy-standalone = craneLib.cargoClippy (
-      application
-      // {
-        cargoExtraArgs = "--locked -p polylogue";
-        cargoClippyExtraArgs = "--all-targets -- -D warnings";
-      }
-    );
-    nextest = craneLib.cargoNextest (
-      application
-      // {
-        cargoExtraArgs = "--locked --workspace --exclude polylogue-sinex --features polylogue-model/fixture,polylogue-query/fixture,polylogue-store/fixture,polylogue-engine/faults,polylogue-store/faults";
-        # Shell completion stays offline; the remaining real-process tests need
-        # an OS identity. Checks outside Nix keep every e2e; the VM covers transports.
-        cargoNextestExtraArgs = "-E 'not (package(polylogue) and binary(e2e) and not test(/^completion::/))'";
-        nativeBuildInputs = common.nativeBuildInputs ++ [
-          pkgs.git
-          pkgs.python3
-          pkgs.dbus
-          pkgs.nodejs_22
-          pkgs.sqlite
-          pkgs.zsh
-          pkgs.fish
-          (lib.getBin pkgs.util-linux)
-        ];
-        SHELL = pkgs.runtimeShell;
-        TZDIR = "${pkgs.tzdata}/share/zoneinfo";
-        preCheck = ''
-          export XDG_STATE_HOME="$TMPDIR/state"
-        '';
-      }
-    );
-
     inherit extension;
     nix-fmt =
       pkgs.runCommand "polylogue-nix-format"

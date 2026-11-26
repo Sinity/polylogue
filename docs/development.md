@@ -22,7 +22,7 @@ input. Change the compiler version in common and both products together.
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
 | `cargo hakari generate` | rewrite the workspace-hack crate after a dependency or feature change |
 | `cargo fmt --all` | format |
-| `nix flake check` | locked package, source, module and VM checks |
+| `nix flake check` | the package, extension, formatting, settings, module and VM checks |
 | `nix build` | the package |
 
 A diff confined to `nix/`, `flake.nix` and `flake.lock` runs the Nix checks
@@ -94,24 +94,31 @@ Extension packaging reads the committed registration in `extension/manifest.json
 
 To change the source release version, run `npm --prefix extension version VERSION --no-git-tag-version`, update the committed manifest version to its browser version, then review the package, lock and manifest together. `npm --prefix extension run check` runs lint, manifest validation and the JS suite, including real zip/Python archive generation, the released members and source-byte preservation. The required hosted check runs it too. The declared AgentCTL `extension` operation runs these npm commands without a Rust test build. `nix build .#polylogue-extension` checks packaging from read-only Nix source and provides the unpacked Chrome files. The declared `extension_package` operation builds that output and the Nix-format check only.
 
-The package uses a Crane dependency build with the package's own feature
-and package selection and without test compilation. Clippy and nextest share
-a separate workspace dependency build. The `polylogue-dependencies` package
-exposes the production compiler artifacts for the package cache.
-Clippy checks the primary and standalone configurations separately. The
-nextest check runs the standalone workspace with the same engine and store
-fault features as `cargo xtask test`, without the real-process
-`polylogue::e2e` cases that need the operating system's machine identity. Its
-offline shell-completion cases remain included. The behavior VM
-runs the packaged daemon, CLI status, MCP initialization and a native-messaging
-exchange in a guest with private XDG and archive paths. Formatting, extension packaging, deployment-file rendering and Nix formatting
-are flake checks too. The `modules` check evaluates both deployment modules,
-and the `services` VM starts the Home Manager user service and reaches its
-daemon through every installed alias and MCP. Its regular account home lets
-Home Manager activate; literal spaces, dollar signs and percent signs in the
-archive and XDG data, state and cache paths are checked against the running
-daemon's arguments and environment. Module evaluation separately checks those
-characters in the Home Manager profile command path.
+The package builds on a Crane dependency build made with the package's own
+package, feature and profile arguments and no test targets, so a change to
+Polylogue's own source recompiles only workspace crates. The
+`polylogue-dependencies` package exposes those compiler artifacts for the
+package cache. The binary runs the `git` it finds on its PATH for repository
+identity and commit capture, and the package carries no git: without one, a
+session start records `git identity: git could not be started` in place of the
+identity. The deployment modules' commands supply a fallback
+([below](#deployment-modules)).
+
+The flake checks are the package (`polylogue`), extension packaging
+(`extension`), Rust formatting (`fmt`), Nix formatting (`nix-fmt`),
+deployment-file rendering (`settings`), module evaluation (`modules`) and two
+VMs. Clippy and the Rust tests run only through `cargo xtask`. The `behavior`
+VM runs the packaged daemon, CLI status, MCP initialization and a
+native-messaging exchange in a guest with private XDG and archive paths. The
+`modules` check evaluates both deployment modules. The `services` VM starts the
+Home Manager user service and reaches its daemon through every installed alias
+and MCP. Its regular account home lets Home Manager activate; literal spaces,
+dollar signs and percent signs in the archive and XDG data, state and cache
+paths are checked against the running daemon's arguments and environment.
+Module evaluation separately checks those characters in the Home Manager
+profile command path. The guest has no git, and the installed session-start
+hook, run in a repository, still records its root commit, branch and remote
+through the fallback git.
 
 The development shell installs the check tools and points Git at `.githooks`
 when no other hooks path is configured; it builds no VM. It carries coverage and
@@ -203,7 +210,8 @@ deploy a revision master does not contain, such as a deployment branch's head,
 qualify that tree with `gh workflow run check -f rev=<full-commit-sha>`,
 then publish it with `gh workflow run package -f rev=<full-commit-sha>`. The manual
 check records and asserts its checked commit and runs the full check. The package
-log records the fetched flake source path, revision and NAR hash before building.
+log records the fetched flake source path, revision and NAR hash before building,
+and the published runtime closure's size after.
 
 ## Deployment modules
 
@@ -223,7 +231,10 @@ services.polylogue = {
 Every archive has its own `polylogue-NAME` command and service. With several
 archives, `defaultArchive` names the one also installed as `polylogue`, `plg`
 and `plog`. The command, the daemon and its clients share explicit archive and
-XDG paths. The NixOS module also needs `user`, an existing account, and its
+XDG paths. Each command appends a minimal git after the caller's PATH, so a
+service, whose PATH holds no git, and a shell without one still read
+repository identity and commits; a git on the caller's PATH comes first.
+The NixOS module also needs `user`, an existing account, and its
 client commands take that account's home and XDG directories (which can be set)
 whoever runs them.
 
