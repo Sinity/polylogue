@@ -707,9 +707,7 @@ pub fn replay(object: &QueryObject, expected_catalog: &str) -> Result<Plan, Quer
     let bindings = replay_bindings(object, &catalog)?;
     let expanded = expand(original.query(), &catalog, &bindings)?;
 
-    let expanded = query_language::bind::bind(&expanded, &catalog).map_err(language)?;
-    let expanded_text =
-        query_language::format::format_query(expanded.query(), &catalog).map_err(language)?;
+    let (expanded, expanded_text) = bind_spelled(&expanded, &catalog).map_err(language)?;
     let text =
         query_language::format::format_query(original.query(), &catalog).map_err(language)?;
     Ok(Plan {

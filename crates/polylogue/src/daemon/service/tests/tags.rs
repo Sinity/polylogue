@@ -289,14 +289,21 @@ fn annotation_refusals_carry_their_documented_reason() {
         "session:claude-code:s1".into(),
         "session:claude-code:s2".into(),
     ];
-    let bulk = crate::test_answers::refusal(
-        command(
-            "refused-bulk",
-            &both,
-            json!({"verb":"note","as":"title","text":"one title"}),
-        )
-        .answer(&d.daemon),
+    let bulk = command(
+        "refused-bulk",
+        &both,
+        json!({"verb":"note","as":"title","text":"one title"}),
+    )
+    .answer(&d.daemon);
+    // The answer as `--json` prints it and the socket, HTTP and MCP carry
+    // it: the line answers, and its one step failed with the typed reason.
+    let wire = serde_json::to_value(&bulk).unwrap();
+    assert_eq!(
+        wire["value"]["reply"]["steps"][0]["outcome"]["error"]["reason"],
+        json!({"name": "single_valued_bulk", "fields": {"kind": "title", "rows": 2}}),
+        "{wire}"
     );
+    let bulk = crate::test_answers::refusal(bulk);
     let reason = Reason::SingleValuedBulk {
         kind: "title".into(),
         rows: 2,
