@@ -82,9 +82,52 @@ pub fn auth() -> String {
         "Sign in",
         "",
         "polylogue web",
-        "<div class=\"auth\" id=\"auth\"><p>Opening the reader… If this page stays, run <code>polylogue web</code> again.</p></div><script type=\"module\" src=\"/assets/auth.js\"></script>",
+        "<div class=\"auth\" id=\"auth\"><p>Sign-in is needed. The daemon may have restarted. Run <code>polylogue web</code> again to sign in and return to your page.</p></div><script type=\"module\" src=\"/assets/auth.js\"></script>",
     )
 }
 
 #[cfg(test)]
 mod tests;
+
+/// The operation's completeness, failure and next calls, shared by every view.
+pub(super) fn answer_content(answers: &[(&command_surface::Answer<Value>, &str)]) -> String {
+    use command_surface::Outcome;
+    let table = crate::commands::declarations();
+    maud::html! {
+        section class="answer-details" aria-label="Answer details" {
+            @for (answer, cli) in answers {
+                @match &answer.outcome {
+                    Outcome::Degraded { missing, .. } => {
+                        div class="view-state" role="status" {
+                            p { "Partial results" }
+                            ul { @for reason in missing { li { (reason) } } }
+                        }
+                    },
+                    Outcome::Error(failure) => {
+                        div class="error" role="alert" {
+                            h1 { "Read failed" }
+                            p { (&failure.message) }
+                            @if let Some(hint) = &failure.hint { p { (hint) } }
+                            @if let Some(suggestion) = crate::protocol::suggestion_text(failure) {
+                                p { "Try "
+                                    @if matches!(failure.suggestion(), Some(command_surface::Suggestion::Query(_))) {
+                                        a href=(format!("/search?q={}", encode_id(&suggestion))) { code { (suggestion) } }
+                                    } @else { code { (suggestion) } }
+                                }
+                            }
+                            @if !cli.is_empty() { p { "Command: " code { (cli) } } }
+                        }
+                    },
+                    _ => {},
+                }
+                @for note in &answer.envelope.notes { p class="note" { (note) } }
+                @for next in &answer.envelope.next {
+                    p { (&next.label) ": "
+                        @if let Ok(cli) = table.cli_command(&next.request) { code { (cli) } }
+                    }
+                }
+            }
+        }
+    }
+    .into_string()
+}

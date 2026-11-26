@@ -62,55 +62,52 @@ async fn render(
     });
     cancel.disarm();
     let declarations = crate::commands::declarations();
-    let page = match &answer.outcome {
-        command_surface::Outcome::Error(failure) => return failed_with(failure),
-        command_surface::Outcome::Ok(LineAnswer::Steps(steps))
-        | command_surface::Outcome::Empty(LineAnswer::Steps(steps))
-        | command_surface::Outcome::Degraded {
-            value: LineAnswer::Steps(steps),
-            ..
-        } if steps.steps.len() == 1 => match &steps.steps[0].outcome {
-            StepOutcome::Failed { error } => return failed_with(error),
-            StepOutcome::Done {
-                reply: StepAnswer::Read(page),
-                ..
-            } => Some(page.clone()),
-            _ => None,
-        },
-        _ => None,
-    };
-    if let Some(page) = page {
-        return match polylogue_render::web::read(&page, declarations, &request) {
-            Ok(html) => Html(html).into_response(),
-            Err(failure) => failed_with(&failure),
-        };
-    }
-    let answer = browser_response(
+    let mut answer = browser_response(
         answer.map(|line| serde_json::to_value(line).unwrap_or_default()),
         &web.daemon.archive.root,
     );
-    let rendered = declarations
-        .render_text(row.name, &answer, command_surface::TextStyle::Plain)
-        .and_then(|text| declarations.cli_command(&request).map(|cli| (text, cli)));
-    let (mut text, cli) = match rendered {
-        Ok(rendered) => rendered,
+    // A single failed step is the failure of this view, with the line's details.
+    if let Some(value) = answer.value() {
+        let line: LineAnswer =
+            serde_json::from_value(value.clone()).expect("line reply deserializes");
+        if let LineAnswer::Steps(steps) = line
+            && steps.steps.len() == 1
+            && let StepOutcome::Failed { error } = &steps.steps[0].outcome
+        {
+            answer.outcome = command_surface::Outcome::Error(error.clone());
+        }
+    }
+    let cli = match declarations.cli_command(&request) {
+        Ok(cli) => cli,
         Err(failure) => return failed_with(&failure),
     };
-    text.push_str(&declarations.render_footer(command_surface::Via::Web, &answer));
-    let status = answer
-        .http_status()
-        .and_then(|status| StatusCode::from_u16(status).ok())
-        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-    (
-        status,
-        Html(pages::layout(
-            "Polylogue",
-            "",
-            &cli,
-            &format!("<pre>{}</pre>", polylogue_render::html::escape(&text)),
-        )),
-    )
-        .into_response()
+    let rendered = answer.value().map(|value| {
+        let line: LineAnswer =
+            serde_json::from_value(value.clone()).expect("line reply deserializes");
+        if let LineAnswer::Steps(steps) = &line
+            && steps.steps.len() == 1
+            && let StepOutcome::Done {
+                reply: StepAnswer::Read(page),
+                ..
+            } = &steps.steps[0].outcome
+        {
+            return polylogue_render::web::read(page, declarations, &request);
+        }
+        declarations
+            .render_text(row.name, &answer, command_surface::TextStyle::Plain)
+            .map(|text| {
+                pages::layout(
+                    "Polylogue",
+                    "",
+                    &cli,
+                    &format!("<pre>{}</pre>", polylogue_render::html::escape(&text)),
+                )
+            })
+    });
+    match rendered {
+        Some(Err(failure)) => failed_with(&failure),
+        rendered => answer_page(&[(&answer, &cli)], || rendered.unwrap().unwrap()),
+    }
 }
 
 /// The reader for one object: its reference as the selection, read with

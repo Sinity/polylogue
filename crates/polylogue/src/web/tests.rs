@@ -181,7 +181,7 @@ fn access_rules() {
         // No token: a page sends the browser to sign in, the API refuses.
         let (s, h, _) = send(&r, get("/").body(Body::empty()).unwrap()).await;
         assert_eq!(s, StatusCode::SEE_OTHER);
-        assert_eq!(h[header::LOCATION], "/auth");
+        assert_eq!(h[header::LOCATION], "/auth?next=%2F");
         let req = get("/api/v1/status").body(Body::empty()).unwrap();
         assert_eq!(send(&r, req).await.0, StatusCode::UNAUTHORIZED);
         let req = get("/api/v1/status")
@@ -1253,3 +1253,5 @@ fn status_vector_details_use_the_http_route_but_verification_is_cli_only() {
         }
     });
 }
+
+mod failure_pages;
