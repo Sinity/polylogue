@@ -285,14 +285,14 @@ impl std::error::Error for ChainFailure {}
 impl Caused for ChainFailure {
     fn cause(&self) -> Cause {
         match self.kind {
-            ChainFailureKind::Malformed => Cause::Content,
+            ChainFailureKind::Malformed | ChainFailureKind::Refused => Cause::Content,
             ChainFailureKind::BytesDiffer => Cause::StoredData,
             ChainFailureKind::CountsDiffer | ChainFailureKind::ParserPanicked => Cause::Bug,
         }
     }
     fn code(&self) -> Code {
         match self.kind {
-            ChainFailureKind::Malformed => Code::Import,
+            ChainFailureKind::Malformed | ChainFailureKind::Refused => Code::Import,
             ChainFailureKind::BytesDiffer
             | ChainFailureKind::CountsDiffer
             | ChainFailureKind::ParserPanicked => Code::Internal,
