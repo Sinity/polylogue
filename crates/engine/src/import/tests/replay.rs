@@ -143,10 +143,10 @@ fn refused_import_can_be_imported_under_its_declared_structure() {
             .reader()
             .unwrap()
             .query(
-                "SELECT format FROM a.input WHERE id=?1",
+                "SELECT origin FROM a.input WHERE id=?1",
                 &[polylogue_store::SqlValue::Text(id.clone())]
             )
-            .unwrap()[0]["format"],
+            .unwrap()[0]["origin"],
         "grok"
     );
     let after = register(&w.root);
@@ -174,10 +174,10 @@ fn refused_import_can_be_imported_under_its_declared_structure() {
             .reader()
             .unwrap()
             .query(
-                "SELECT format FROM a.input WHERE id=?1",
+                "SELECT origin FROM a.input WHERE id=?1",
                 &[polylogue_store::SqlValue::Text(id)]
             )
-            .unwrap()[0]["format"],
+            .unwrap()[0]["origin"],
         "grok"
     );
 }

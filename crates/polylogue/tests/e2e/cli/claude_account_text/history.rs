@@ -73,7 +73,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
             "--json",
             "dev",
             "sql",
-            "SELECT count(*) AS n FROM a.input WHERE format='claude-ai'",
+            "SELECT count(*) AS n FROM a.input WHERE origin='claude-ai'",
         ],
     );
     assert!(inputs.status.success(), "{inputs:?}");
@@ -90,7 +90,7 @@ fn separate_immutable_exports_keep_older_text_when_new_collections_are_null_or_e
     assert!(sources.status.success(), "{sources:?}");
     let sources = json(&sources);
     assert_eq!(sources.as_array().unwrap().len(), 4);
-    let ids_sql = "SELECT id FROM a.input WHERE format='claude-ai' ORDER BY id";
+    let ids_sql = "SELECT id FROM a.input WHERE origin='claude-ai' ORDER BY id";
     let ids = cli(&env, &["--json", "dev", "sql", ids_sql]);
     assert!(ids.status.success(), "{ids:?}");
     let ids = json(&ids);

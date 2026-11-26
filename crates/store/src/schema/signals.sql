@@ -9,13 +9,13 @@ CREATE TABLE signal_state (
 
 CREATE TABLE signal_event (
   request TEXT NOT NULL,
-  ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+  request_position INTEGER NOT NULL CHECK(request_position >= 0),
   delivery TEXT NOT NULL REFERENCES delivery(id),
   position INTEGER NOT NULL CHECK(position > 0),
   at INTEGER NOT NULL,
   body BLOB NOT NULL,
   commit_seq INTEGER NOT NULL,
   PRIMARY KEY (delivery, position),
-  UNIQUE (request, ordinal)
+  UNIQUE (request, request_position)
 ) STRICT, WITHOUT ROWID;
 CREATE INDEX signal_event_commit_seq ON signal_event(commit_seq);
