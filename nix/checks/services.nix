@@ -45,6 +45,8 @@ in
 pkgs.testers.runNixOSTest {
   name = "polylogue-user-service";
   nodes.machine = {
+    # The daemon takes the logical day's zone from the host's named zone.
+    time.timeZone = "UTC";
     imports = [ homeManager.nixosModules.home-manager ];
     users.users.alice = {
       isNormalUser = true;
