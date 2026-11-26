@@ -291,7 +291,13 @@ fn send(
                    "steps": [{"verb": "send", "text": action.text, "attach": attach}]}),
         ),
     };
-    let data = match request.id(key).answer(&w.daemon) {
+    // The operator queues these, as on the command line; only an operator's
+    // submit of a new conversation goes out without an answer.
+    let operator = polylogue_model::authorship::Authorship {
+        author: polylogue_model::authorship::Author::Operator,
+        via: polylogue_model::authorship::Channel::Cli,
+    };
+    let data = match request.id(key).authorship(operator).answer(&w.daemon) {
         command_surface::Answer {
             outcome: command_surface::Outcome::Ok(data),
             ..

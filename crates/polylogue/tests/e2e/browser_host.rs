@@ -230,6 +230,8 @@ fn web_chat_acts_run_through_the_command_line_and_the_popup() {
             .contains(&format!("\"{key}\":\"{wanted}\""))
     };
 
+    // Settings are written once the first index build has finished.
+    crate::cli::wait_status(&environment, |_| true);
     cli(&["set", "browser.actions", "on"]);
     let held = json_of(&[
         "session:chatgpt:conv-1",

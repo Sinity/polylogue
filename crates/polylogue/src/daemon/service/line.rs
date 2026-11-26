@@ -189,9 +189,14 @@ fn query_selection(rows: &Rows) -> Option<&str> {
 }
 
 /// A reference that names rows one by one: a session, message, block,
-/// annotation, alternate, attachment, page, role, tool call or kept result. Any other
-/// text, a saved query's name included, is a query.
+/// annotation, alternate, attachment, page, role, tool call or kept result,
+/// or a provider conversation URL, which names its web-chat session whether
+/// or not the archive holds it yet. Any other text, a saved query's name
+/// included, is a query.
 fn named(text: &str) -> Option<Reference> {
+    if let Some(session) = polylogue_sources::origin::conversation_session(text) {
+        return Some(Reference::Session(session));
+    }
     Reference::parse(text.trim()).ok().filter(|reference| {
         polylogue_query::catalog::reference_unit(reference).is_some()
             || matches!(

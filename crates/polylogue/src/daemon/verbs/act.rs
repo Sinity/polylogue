@@ -187,9 +187,7 @@ impl Verb for Send {
     }
 }
 
-/// Sessions or one role, preserving its send-time resolution. A pasted
-/// conversation URL the archive does not hold yet names its web-chat
-/// session.
+/// Sessions or one role, preserving its send-time resolution.
 fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Failure> {
     for (given, option) in [
         (step.page.is_some(), "page"),
@@ -200,12 +198,6 @@ fn recipients(step: &SendStep, selection: &Selection) -> Result<Vec<String>, Fai
         }
     }
     let references = selection.references()?;
-    if references.is_empty()
-        && let super::Given::Query(text) = &selection.given
-        && let Some(session) = polylogue_sources::origin::conversation_session(text)
-    {
-        return Ok(vec![session.to_string()]);
-    }
     references
         .iter()
         .map(|reference| match reference {

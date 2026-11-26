@@ -42,15 +42,19 @@ fn import_provider_cancel_stops_job() {
 fn import_dot_slash_name_reads_file() {
     let d = test_daemon::start("import a file named like a provider");
     let dir = tempfile::tempdir().unwrap();
+    // A ChatGPT conversation export in a file that happens to be called
+    // `chatgpt`.
+    let conversation = json!([{"id": "s9", "title": "A file named chatgpt", "mapping": {"node": {
+        "id": "node", "parent": null, "children": [], "message": {"id": "m9",
+        "author": {"role": "user"}, "create_time": 1700000000,
+        "content": {"content_type": "text", "parts": ["a file named chatgpt"]}, "metadata": {}}}},
+        "current_node": "node"}]);
     std::fs::write(
         dir.path().join("chatgpt"),
-        polylogue_testkit::claude_user("u9", "s9", "a file named chatgpt"),
+        serde_json::to_vec(&conversation).unwrap(),
     )
     .unwrap();
-    let mut call = Call::new(
-        "import",
-        json!({"paths": ["./chatgpt"], "origin": "claude-code"}),
-    );
+    let mut call = Call::new("import", json!({"paths": ["./chatgpt"]}));
     call.cwd = Some(dir.path().to_owned());
     let report = crate::test_answers::ok(call.answer(&d.daemon));
     assert!(report.get("job").is_none(), "{report}");
