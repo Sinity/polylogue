@@ -586,7 +586,7 @@ fn a_query_id_that_does_not_hash_from_its_normal_form_is_refused() {
     let (_dir, conn) = archive();
     let (_, mut object) = query_object();
     let hash = query_hash(&object);
-    object["definitions"][0]["question"] = json!([7; 32]);
+    object["definitions"][0]["question"] = json!(vec![7u8; 32]);
     query_row(&conn, &object);
     assert!(matches!(
         prove_query_ids(&conn).unwrap_err().downcast_ref::<Refusal>(),
