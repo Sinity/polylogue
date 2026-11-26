@@ -159,7 +159,7 @@ fn a_changed_selection_intersects_the_named_packages() {
             "--features",
             STORE_FEATURES,
             "--tests",
-            "--changed-base=HEAD^1"
+            "--base=HEAD^1"
         ])
     );
     let nothing = std::collections::BTreeSet::new();
@@ -198,7 +198,7 @@ fn filtersets_partition_and_pass_through_arguments_reach_nextest() {
             "-E",
             "(test(a)) | (test(b))",
             "--tests",
-            "--changed-base=origin/master",
+            "--base=origin/master",
             "--partition",
             "hash:2/4",
             "--no-capture",
