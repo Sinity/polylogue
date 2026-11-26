@@ -369,7 +369,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
         // A first page records its run after answering. Finish the previous
         // reading before comparing the next reading's exact snapshot position.
         wait_for_runs(1);
-        let api_read_at = {
+        let api_read_position = {
             r.w.daemon
                 .reads
                 .reader()
@@ -378,9 +378,9 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
                 .unwrap()
         };
         let api = read_page(&r, "session:claude-code:s1", &[]).await;
-        assert_eq!(api.snapshot.read_at, api_read_at);
+        assert_eq!(api.snapshot.read_position, api_read_position);
         wait_for_runs(2);
-        let socket_read_at = {
+        let socket_read_position = {
             r.w.daemon
                 .reads
                 .reader()
@@ -392,7 +392,7 @@ fn the_session_page_escapes_archive_text_and_matches_the_socket() {
             serde_json::json!({"selection":"session:claude-code:s1","steps":[{"verb":"read","format":"json"}]})).answer(&r.web.daemon));
         assert_eq!(api.document.items, socket.document.items);
         assert_eq!(api.document.header, socket.document.header);
-        assert_eq!(socket.snapshot.read_at, socket_read_at);
+        assert_eq!(socket.snapshot.read_position, socket_read_position);
         let (status, _, page) = send_html(&r, "/s/claude-code%3Anope").await;
         assert_eq!(status, StatusCode::NOT_FOUND);
         assert!(page.contains("not_found"));

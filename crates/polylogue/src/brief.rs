@@ -794,7 +794,7 @@ impl Fitter {
                             },
                         );
                         self.left_out.push(LeftOut {
-                            what: format!("details of {}", item.refs.join(" ")),
+                            item: format!("details of {}", item.refs.join(" ")),
                             reason: format!("not available ({error})"),
                         });
                         Item {
@@ -815,7 +815,7 @@ impl Fitter {
                 } else {
                     unavailable[section_index].push("budget");
                     self.left_out.push(LeftOut {
-                        what: format!("details of {}", item.refs.join(" ")),
+                        item: format!("details of {}", item.refs.join(" ")),
                         reason: format!(
                             "budget cannot fit source attribution; expand: {}",
                             section.pull
@@ -874,13 +874,13 @@ impl Fitter {
             );
             if omitted > 0 {
                 self.left_out.push(LeftOut {
-                    what: format!("{omitted} {}", section.what),
+                    item: format!("{omitted} {}", section.what),
                     reason: format!("budget {} tokens; expand: {}", self.budget, section.pull),
                 });
             }
             if shortened > 0 {
                 self.left_out.push(LeftOut {
-                    what: format!("{shortened} shortened {}", section.what),
+                    item: format!("{shortened} shortened {}", section.what),
                     reason: format!(
                         "source tails omitted for budget {} tokens; expand: {}",
                         self.budget, section.pull
@@ -1354,7 +1354,7 @@ fn session_start(
     let (notices, inspect_count) = notices.unwrap_or_default();
     if inspect_count > 0 {
         fit.left_out.push(LeftOut {
-            what: format!("{inspect_count} signal records"),
+            item: format!("{inspect_count} signal records"),
             reason: "recipient/directory scope or historical effect state requires inspection"
                 .into(),
         });
@@ -1381,7 +1381,7 @@ fn session_start(
         .unwrap_or(0);
     if other_annotations > 0 {
         fit.left_out.push(LeftOut {
-            what: format!("{other_annotations} annotations by other authors"),
+            item: format!("{other_annotations} annotations by other authors"),
             reason: "an annotation by another author needs an eligible operator judgment before injection".into(),
         });
         fit.pointers.push(format!(
@@ -1391,7 +1391,7 @@ fn session_start(
     if !deadline.late.is_empty() {
         for what in &deadline.late {
             fit.left_out.push(LeftOut {
-                what: (*what).into(),
+                item: (*what).into(),
                 reason: "deadline".into(),
             });
         }
@@ -1615,7 +1615,7 @@ fn session_brief(
     }
     let _ = writeln!(text, "Messages available: {}", messages.len());
     let mut left_out = vec![LeftOut {
-        what: "tool calls and their output".into(),
+        item: "tool calls and their output".into(),
         reason: "a session brief carries prompts, notes and the last answer".into(),
     }];
     if other_annotations > 0 {
@@ -1629,14 +1629,14 @@ fn session_brief(
             ))
         );
         left_out.push(LeftOut {
-            what: format!("{other_annotations} annotations by other authors"),
+            item: format!("{other_annotations} annotations by other authors"),
             reason: "an annotation by another author needs an eligible operator judgment before injection".into(),
         });
     }
     for issue in &selected.parents().issues {
         let _ = writeln!(text, "Parents incomplete: {issue}");
         left_out.push(LeftOut {
-            what: "inherited session content".into(),
+            item: "inherited session content".into(),
             reason: issue.to_string(),
         });
     }

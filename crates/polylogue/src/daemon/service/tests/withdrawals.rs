@@ -218,7 +218,7 @@ fn withdraw_saved_query_by_name_pins_the_family_and_undo_restores_its_watch() {
         .unwrap()
         .unwrap();
     assert_eq!(restored.revisions, before.revisions);
-    assert_eq!(restored.kept, before.kept);
+    assert_eq!(restored.saved_rows, before.saved_rows);
     assert_eq!(restored.watch, before.watch);
 }
 

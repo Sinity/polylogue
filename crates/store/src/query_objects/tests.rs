@@ -54,9 +54,9 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
     };
     QueryRun {
         id: run_id(id),
-        question: Some(object.id),
+        query_id: Some(object.id),
         at: Timestamp::from_unix_ms(at).unwrap(),
-        read_at: position.clone(),
+        read_position: position.clone(),
         machine: "synthetic-machine".into(),
         authorship,
         binding: RunBinding::Original {
@@ -85,13 +85,13 @@ pub(super) fn run(object: &QueryObject, id: &str, at: i64, position: ChangePosit
                         resolved_times: vec![],
                         random_seed: 7,
                         read_positions: BTreeMap::from([
-                            ("generation".into(), position.generation),
+                            ("generation".into(), position.index_instance),
                             ("index".into(), position.index.to_string()),
                             ("archive".into(), position.archive.to_string()),
                         ]),
                         versions: BTreeMap::from([("compiler".into(), "shared-query-v1".into())]),
                     },
-                    scope_fingerprint: None,
+                    access_fingerprint: None,
                     original_text: "sessions".into(),
                 },
             }),
@@ -354,7 +354,7 @@ fn result_output_schemas_require_the_kept_columns() {
         write: polylogue_model::user::UserWrite::Save(Box::new(polylogue_model::user::Save {
             name: None,
             query: "sessions | select title".into(),
-            read_at: "synthetic-read".into(),
+            read_position: "synthetic-read".into(),
             rows_json: serde_json::json!({"unit":"sessions","columns":columns,"rows":[{"title":"synthetic"}]}).to_string(),
             denominator: None,
             watch: None,
@@ -439,7 +439,7 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
         let text = "sessions where since:7d";
         let selection = reader.prepare_selection(text, &options).unwrap();
         let object = selection.query_object().unwrap();
-        let read_at = reader.change_position().unwrap();
+        let read_position = reader.change_position().unwrap();
         archive
             .writer
             .archive()
@@ -461,7 +461,7 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
         let context = selection.cursor_context();
         assert!(context.resolved_times.is_empty());
         assert!(context.versions.contains_key("resolved_times"));
-        let mut execution = run(&object, "execution", 1, read_at);
+        let mut execution = run(&object, "execution", 1, read_position);
         execution.at = Timestamp::from_unix_ns(options.clock.now.as_nanosecond()).unwrap();
         let original = execution.binding.original().unwrap();
         let binding = selection
@@ -478,7 +478,7 @@ fn executed_selection_records_its_clock_resolution_and_read_context() {
             binding.replay.context.read_positions,
             context.read_positions
         );
-        assert_eq!(binding.replay.scope_fingerprint, None);
+        assert_eq!(binding.replay.access_fingerprint, None);
         assert_eq!(binding.replay.original_text, text);
         let restored = polylogue_query::plan::replay_binding(&binding.replay).unwrap();
         assert_eq!(restored.question_id(), object.id);
@@ -659,21 +659,21 @@ fn object_run_has_no_question_and_query_run_cannot_omit_one() {
     use polylogue_model::query_objects::ObjectExecutionBinding;
     let object = question("sessions");
     let position = ChangePosition {
-        generation: "synthetic".into(),
+        index_instance: "synthetic".into(),
         index: 1,
         archive: 1,
     };
     let mut original = run(&object, "query", 1, position.clone());
     assert!(validate_run(&original).is_ok());
-    original.question = None;
+    original.query_id = None;
     assert!(validate_run(&original).is_err());
     let mut object_run = run(&object, "object", 1, position);
-    object_run.question = None;
+    object_run.query_id = None;
     object_run.binding = RunBinding::OriginalObject {
         execution: Box::new(ObjectExecutionBinding {
             reference: polylogue_model::Reference::Request("accepted:opaque@#..id".into()),
             content_hash: polylogue_model::BlobHash::of(b"stored original record and source"),
-            scope_fingerprint: None,
+            access_fingerprint: None,
             versions: Default::default(),
             presentation: ExecutionPresentation::Read {
                 options: Default::default(),
@@ -701,7 +701,7 @@ fn object_run_has_no_question_and_query_run_cannot_omit_one() {
         .unwrap();
     assert_eq!(stored, (None, "request:accepted:opaque@#..id".into()));
     let mut invalid = object_run.clone();
-    invalid.question = Some(object.id);
+    invalid.query_id = Some(object.id);
     assert!(validate_run(&invalid).is_err());
     let fetched = lookup_run(&conn, Source::Standalone, &object_run.id)
         .unwrap()

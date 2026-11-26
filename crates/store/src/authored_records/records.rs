@@ -33,8 +33,8 @@ fn ids(conn: &Connection, table: &str, filter: &str, seq: Option<i64>) -> Result
 }
 fn kept(conn: &Connection, id: &str) -> Result<KeptResult> {
     let source = Source::reading(conn)?;
-    let (name, query, at, read_at, rows_json): (Option<String>, String, i64, String, String) = conn
-        .query_row(
+    let (name, query, at, read_position, rows_json): (Option<String>, String, i64, String, String) =
+        conn.query_row(
             &source.sql(
                 "SELECT name,query,ran_at,read_position,rows_json FROM @source.saved_rows WHERE id=?1",
             ),
@@ -46,7 +46,7 @@ fn kept(conn: &Connection, id: &str) -> Result<KeptResult> {
         name,
         query,
         ran_at: time(at)?,
-        read_at,
+        read_position,
         rows_json,
     })
 }
@@ -137,7 +137,7 @@ pub(super) fn capture(
         effect.annotations.push(row.fact);
     }
     if let UserWrite::Save(_) = &request.write {
-        effect.kept_results.push(kept(conn, &request.id)?);
+        effect.saved_rows.push(kept(conn, &request.id)?);
     }
     let touched = |table: &str, event_table: &str, column: &str| -> Result<Vec<String>> {
         Ok(conn.prepare(&source.sql(&format!("SELECT id FROM @source.{table} WHERE commit_seq=?1 UNION SELECT {column} FROM @source.{event_table} WHERE commit_seq=?1 ORDER BY 1")))?.query_map([counter],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?)
@@ -208,7 +208,7 @@ pub(crate) fn insert_kept(conn: &Connection, value: &KeptResult) -> Result<()> {
     crate::kept::validate_body(&value.id, &value.rows_json)?;
     crate::selection::check_kept_body(conn, &value.id, &value.rows_json)?;
     let source = Source::of(conn)?;
-    conn.execute(&source.sql("INSERT INTO @source.saved_rows(id,name,query,ran_at,read_position,rows_json) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.name,value.query,value.ran_at.unix_ms(),value.read_at,value.rows_json])?;
+    conn.execute(&source.sql("INSERT INTO @source.saved_rows(id,name,query,ran_at,read_position,rows_json) VALUES(?1,?2,?3,?4,?5,?6)"),params![value.id,value.name,value.query,value.ran_at.unix_ms(),value.read_position,value.rows_json])?;
     Ok(())
 }
 pub(super) fn insert_delivery(
@@ -261,7 +261,7 @@ fn append_delivery(
             }
             continue;
         }
-        conn.execute(&source.sql("INSERT INTO @source.delivery_event(delivery,outcome,at,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6)"),params![id,event.what.as_str(),event.at.unix_ms(),event.detail,event.request,counter])?;
+        conn.execute(&source.sql("INSERT INTO @source.delivery_event(delivery,outcome,at,detail,request,commit_seq) VALUES(?1,?2,?3,?4,?5,?6)"),params![id,event.outcome.as_str(),event.at.unix_ms(),event.detail,event.request,counter])?;
     }
     Ok(())
 }
@@ -387,7 +387,7 @@ pub(super) fn apply(
 ) -> Result<()> {
     crate::alternates::apply(conn, &effect.alternates, counter)?;
     crate::annotations::apply(conn, &effect.annotations, counter)?;
-    for value in &effect.kept_results {
+    for value in &effect.saved_rows {
         insert_kept(conn, value)?;
     }
     for value in &effect.deliveries {

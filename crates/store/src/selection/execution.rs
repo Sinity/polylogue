@@ -67,7 +67,7 @@ impl PreparedSelection<'_> {
                 let saved = object
                     .definitions
                     .iter()
-                    .find(|saved| saved.question == definition.question_id)
+                    .find(|saved| saved.query_id == definition.question_id)
                     .ok_or_else(|| {
                         SelectionError::invalid(
                             polylogue_model::Code::Internal,
@@ -78,7 +78,7 @@ impl PreparedSelection<'_> {
                     name: definition.name.clone(),
                     root: definition.root.clone(),
                     revision: definition.revision.clone(),
-                    question: definition.question_id,
+                    query_id: definition.question_id,
                     ast: saved.query.clone(),
                 })
             })
@@ -113,7 +113,7 @@ impl PreparedSelection<'_> {
                 read_positions: context.read_positions.clone(),
                 versions,
             },
-            scope_fingerprint: context.versions.get("scope").cloned(),
+            access_fingerprint: context.versions.get("access").cloned(),
             original_text: self.plan.text().to_owned(),
         };
         self.scope.check()?;

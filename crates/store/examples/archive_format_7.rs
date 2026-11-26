@@ -1003,10 +1003,10 @@ mod tests {
                 &hash[20..32]
             ))
             .unwrap(),
-            question: None,
+            query_id: None,
             at: polylogue_model::Timestamp::from_unix_ms(1_763_000_000_000).unwrap(),
             read_at: polylogue_model::ChangePosition {
-                generation: "synthetic".into(),
+                index_instance: "synthetic".into(),
                 index: 1,
                 archive: 1,
             },
@@ -1020,7 +1020,7 @@ mod tests {
                     reference: polylogue_model::Reference::parse("request:synthetic-request")
                         .unwrap(),
                     content_hash: polylogue_model::BlobHash::of(b"request"),
-                    scope_fingerprint: None,
+                    access_fingerprint: None,
                     versions: Default::default(),
                     presentation: ExecutionPresentation::Read {
                         options: Default::default(),

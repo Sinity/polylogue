@@ -653,7 +653,7 @@ fn read_at_is_a_time_or_a_position_in_one_string() {
     assert_eq!(
         options.annotation_position(),
         Some(&crate::ChangePosition {
-            generation: "generation".into(),
+            index_instance: "generation".into(),
             index: 2,
             archive: 3
         })

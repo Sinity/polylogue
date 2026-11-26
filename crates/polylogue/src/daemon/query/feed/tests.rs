@@ -155,7 +155,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
     let target = reader.change_position().unwrap();
     let future = format!(
         "{}:{}:{}",
-        target.generation,
+        target.index_instance,
         target.index + 1,
         target.archive
     );

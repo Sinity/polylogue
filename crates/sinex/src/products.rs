@@ -249,20 +249,20 @@ pub fn payload(product: &Product, occurrence: u64) -> Result<Value> {
                 }
                 UserWrite::DeliveryEvent {
                     delivery,
-                    what,
+                    outcome,
                     detail,
                 } => {
                     value["delivery"] = delivery.clone().into();
-                    value["what"] = what.as_str().into();
+                    value["outcome"] = outcome.as_str().into();
                     value["detail"] = serde_json::to_value(detail)?;
                 }
                 _ => {}
             }
             value
         }
-        Product::Query { object } => json!({"question": object.id}),
+        Product::Query { object } => json!({"query_id": object.id}),
         Product::QueryRun { run } => json!({
-            "run": run.id, "question": run.question, "at": run.at,
+            "run": run.id, "query_id": run.query_id, "at": run.at,
             "machine": run.machine, "binding_hash": run.binding_hash()?, "run_hash": run.record_hash()?,
         }),
         Product::QueryRunOutcome { outcome } => json!({

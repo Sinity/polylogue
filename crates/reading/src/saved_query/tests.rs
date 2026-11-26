@@ -8,7 +8,7 @@ fn history_version_work_uses_immutable_ids_not_original_query_text() {
         header: SavedQueryHeader {
             name: "focus".into(),
             selected_revision: "annotation:second@second".into(),
-            question: Reference::Query {
+            query_id: Reference::Query {
                 key: "01".repeat(32),
                 parameters: vec![],
             },
@@ -35,7 +35,7 @@ fn history_version_work_uses_immutable_ids_not_original_query_text() {
                     author: "operator".into(),
                 },
             ],
-            kept: vec![],
+            saved_rows: vec![],
             watch: None,
             dependents: vec![],
         },

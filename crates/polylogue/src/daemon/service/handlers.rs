@@ -457,7 +457,7 @@ pub(crate) fn save_selection(
         query,
         denominator: step.denominator,
         rows_json: String::new(),
-        read_at: String::new(),
+        read_position: String::new(),
         outcomes: None,
         watch: step.watch.then_some(polylogue_model::user::SaveWatch {
             hold: step.hold,
@@ -520,9 +520,10 @@ pub(crate) fn save_selection(
     );
     let kept = kept?;
     drop(reader);
-    let read_at = serde_json::json!({ "now": kept["now"], "position":kept["read_at"] }).to_string();
+    let read_position =
+        serde_json::json!({ "now": kept["now"], "position":kept["read_position"] }).to_string();
     save.rows_json = kept.to_string();
-    save.read_at = read_at;
+    save.read_position = read_position;
     Ok(super::answers::submit_result(
         d,
         invocation,
@@ -741,7 +742,7 @@ impl Operation for Advisory {
 #[serde(deny_unknown_fields)]
 pub(crate) struct DeliveryEventArguments {
     pub delivery: String,
-    pub what: polylogue_model::DeliveryOutcome,
+    pub outcome: polylogue_model::DeliveryOutcome,
     pub detail: Option<String>,
 }
 
@@ -760,7 +761,7 @@ impl Operation for DeliveryEvent {
             call.request_id.into(),
             UserWrite::DeliveryEvent {
                 delivery: arguments.delivery,
-                what: arguments.what,
+                outcome: arguments.outcome,
                 detail: arguments.detail,
             },
         ))

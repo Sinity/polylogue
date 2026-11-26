@@ -50,7 +50,7 @@ pub struct Save {
     pub query: String,
     pub denominator: Option<String>,
     pub rows_json: String,
-    pub read_at: String,
+    pub read_position: String,
     pub watch: Option<SaveWatch>,
     pub outcomes: Option<SaveReport>,
 }
@@ -60,7 +60,7 @@ pub struct Save {
 pub struct SaveReport {
     pub request: String,
     pub saved: Option<SavedPart>,
-    pub kept: KeptPart,
+    pub saved_rows: KeptPart,
     pub watch: Option<WatchPart>,
     pub repeat: bool,
     pub pending: bool,
@@ -150,7 +150,7 @@ pub enum UserWrite {
     /// What happened to a prepared delivery.
     DeliveryEvent {
         delivery: String,
-        what: DeliveryOutcome,
+        outcome: DeliveryOutcome,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         detail: Option<String>,
     },
@@ -226,7 +226,7 @@ pub struct Delivery {
 /// A reference or section a delivery did not include, and why.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct LeftOut {
-    pub what: String,
+    pub item: String,
     pub reason: String,
 }
 
@@ -239,7 +239,7 @@ impl UserWrite {
                 query: save.query.clone(),
                 denominator: save.denominator.clone(),
                 rows_json: String::new(),
-                read_at: String::new(),
+                read_position: String::new(),
                 watch: save.watch.clone(),
                 outcomes: None,
             })),

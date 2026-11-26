@@ -320,11 +320,11 @@ pub(crate) fn changes_after(
         .and_then(|text| polylogue_model::ChangePosition::parse(&text));
     let Some(position) = position else {
         return Err(QueryError::Invalid {
-            message: "after: takes a feed position `GENERATION:INDEX:ARCHIVE`".into(),
+            message: "after: takes a feed position `INDEX_INSTANCE:INDEX:ARCHIVE`".into(),
             position: x.span.start,
         });
     };
-    c.change_generations.push(position.generation);
+    c.change_generations.push(position.index_instance);
     Ok(format!(
         "(({r}.kind = 'annotation' AND {r}.seq > {archive}) OR ({r}.kind = 'removed' AND {r}.seq > {index}) \
          OR ({r}.kind = 'session' AND ({r}.changed > {index} OR {r}.live_changed > {index} OR {r}.derived_changed > {index})))",
@@ -834,7 +834,7 @@ pub(crate) fn refs(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String,
 }
 
 pub(crate) fn left_out(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<String, QueryError> {
-    delivery_member(c, x, "left_out_json", "json_extract(dj.value, '$.what')")
+    delivery_member(c, x, "left_out_json", "json_extract(dj.value, '$.item')")
 }
 
 fn delivery_member(

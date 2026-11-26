@@ -207,7 +207,7 @@ fn export_file(w: &ClaudeHome, sessions: &[&str]) -> std::path::PathBuf {
             query: format!("query:{}", "0".repeat(64)),
             query_text: "synthetic session and authored state".into(),
             ran_at: Timestamp::from_unix_ms(1_790_000_000_000).unwrap(),
-            read_at: reader.change_position().unwrap(),
+            read_position: reader.change_position().unwrap(),
             freshness: polylogue_model::freshness::ReadFreshness {
                 local: polylogue_model::freshness::ReadCompleteness::empty(),
                 sinex: polylogue_model::freshness::IndexFreshness::Standalone,
@@ -318,7 +318,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         name: Some("kept".into()),
         query: "sessions".into(),
         rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-        read_at: "{}".into(),
+        read_position: "{}".into(),
         denominator: None,
         watch: None,
         outcomes: None,
@@ -335,7 +335,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
     }));
     write(UserWrite::DeliveryEvent {
         delivery,
-        what: DeliveryOutcome::Delivered,
+        outcome: DeliveryOutcome::Delivered,
         detail: None,
     });
     let chat_request = serde_json::json!({"provider": "chatgpt", "text": "synthetic"});

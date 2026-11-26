@@ -230,7 +230,7 @@ fn a_repeated_delivery_event_is_applied_once() {
     let id = format!("{id}-1");
     let event = crate::test_daemon::Call::new(
         "internal delivery-event",
-        serde_json::json!({"delivery": id.clone(), "what": polylogue_model::DeliveryOutcome::Delivered, "detail": Some("written to the harness hook output")}),
+        serde_json::json!({"delivery": id.clone(), "outcome": polylogue_model::DeliveryOutcome::Delivered, "detail": Some("written to the harness hook output")}),
     );
     for _ in 0..2 {
         let answer = crate::test_answers::ok((event.clone()).answer(&d.daemon));
@@ -304,7 +304,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
                 name: None,
                 query: "sessions".into(),
                 rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-                read_at: "{}".into(),
+                read_position: "{}".into(),
                 denominator: None,
                 watch: None,
                 outcomes: None,
@@ -331,7 +331,7 @@ fn a_brief_answers_while_the_writer_queue_is_full_and_its_delivery_commits_once_
     let id = format!("{id}-1");
     assert_eq!(answer["delivery"], id.as_str());
     // Its outcome waits behind it, in order.
-    let event = crate::test_answers::ok(crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": id.clone(), "what": polylogue_model::DeliveryOutcome::Delivered})).answer(&d.daemon));
+    let event = crate::test_answers::ok(crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": id.clone(), "outcome": polylogue_model::DeliveryOutcome::Delivered})).answer(&d.daemon));
     assert_eq!(event["queued"], true);
     pause.release();
     held.join().unwrap();
@@ -379,7 +379,7 @@ fn timeout_outcome_requires_positive_preparation_without_waiting_for_the_writer(
     let prepared = brief(&d, &id, StartSource::Startup);
     let id = format!("{id}-1");
     let event = |delivery: &str| {
-        crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": delivery, "what": polylogue_model::DeliveryOutcome::NotSent, "detail": Some("timeout")})).answer(&d.daemon)
+        crate::test_daemon::Call::new("internal delivery-event", serde_json::json!({"delivery": delivery, "outcome": polylogue_model::DeliveryOutcome::NotSent, "detail": Some("timeout")})).answer(&d.daemon)
     };
     let unknown = crate::test_answers::ok(event("unconfirmed-prepare"));
     let known = crate::test_answers::ok(event(&id));
@@ -400,7 +400,7 @@ fn delivered(d: &test_daemon::TestDaemon, delivery: &str) {
     crate::test_answers::ok(
         crate::test_daemon::Call::new(
             "internal delivery-event",
-            serde_json::json!({"delivery": delivery, "what": polylogue_model::DeliveryOutcome::Delivered, "detail": "written to the harness hook output"}),
+            serde_json::json!({"delivery": delivery, "outcome": polylogue_model::DeliveryOutcome::Delivered, "detail": "written to the harness hook output"}),
         )
         .answer(&d.daemon),
     );

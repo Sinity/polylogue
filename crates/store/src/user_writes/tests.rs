@@ -21,7 +21,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             name: Some("example".into()),
             query: "sessions".into(),
             rows_json: "{\"unit\":\"sessions\",\"columns\":[],\"rows\":[]}".into(),
-            read_at: "{\"now\":1}".into(),
+            read_position: "{\"now\":1}".into(),
             denominator: None,
             watch: None,
             outcomes: None,
@@ -34,7 +34,7 @@ fn search_requests_with_resolved_content_hashes_conflict_without_changing_data()
             query: "sessions".into(),
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-            read_at: "{}".into(),
+            read_position: "{}".into(),
             watch: None,
             outcomes: None,
         })),
@@ -121,7 +121,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
                 name: None,
                 query: "sessions".into(),
                 rows_json: rows_json.into(),
-                read_at: "{\"now\":1}".into(),
+                read_position: "{\"now\":1}".into(),
                 denominator: None,
                 watch: None,
                 outcomes: None,
@@ -151,7 +151,7 @@ fn a_kept_body_later_preparations_cannot_decode_is_refused_without_recording_a_r
             query: "sessions".into(),
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-            read_at: "{}".into(),
+            read_position: "{}".into(),
             watch: None,
             outcomes: None,
         })),
@@ -350,7 +350,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
                 request: "forged-request".into(),
                 repeat: true,
                 pending: true,
-                kept: polylogue_model::user::KeptPart {
+                saved_rows: polylogue_model::user::KeptPart {
                     result: "result:caller-cannot-choose-this".into(),
                     rows: 0,
                     at: Timestamp::from_unix_ms(1).unwrap(),
@@ -361,7 +361,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
             query: "sessions".into(),
             denominator: None,
             rows_json: r#"{"unit":"sessions","columns":[],"rows":[]}"#.into(),
-            read_at: r#"{"now":1}"#.into(),
+            read_position: r#"{"now":1}"#.into(),
             watch: Some(polylogue_model::user::SaveWatch {
                 hold: Some("20m".into()),
                 notify: false,
@@ -400,7 +400,7 @@ fn save_selection_rolls_back_every_effect_when_the_kept_insert_fails() {
     assert!(repeated.outcome.repeat);
     assert_eq!(first.save, repeated.save);
     assert_eq!(
-        first.save.as_ref().unwrap().kept.result,
+        first.save.as_ref().unwrap().saved_rows.result,
         "result:atomic-save"
     );
     assert_eq!(

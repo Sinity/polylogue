@@ -781,7 +781,7 @@ fn a_context_timeout_emits_an_unreferenced_notice_and_names_only_the_original_pr
             outcome["arguments"]["delivery"],
             format!("{}-1", prepare["request_id"].as_str().unwrap())
         );
-        assert_eq!(outcome["arguments"]["what"], "not_sent");
+        assert_eq!(outcome["arguments"]["outcome"], "not_sent");
         assert_eq!(outcome["arguments"]["detail"], "timeout");
         write!(
             stream,

@@ -268,8 +268,8 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
     );
     let next = current.last().unwrap()["position"].as_str().unwrap();
     assert_ne!(
-        ChangePosition::parse(next).unwrap().generation,
-        ChangePosition::parse(&checkpoint).unwrap().generation
+        ChangePosition::parse(next).unwrap().index_instance,
+        ChangePosition::parse(&checkpoint).unwrap().index_instance
     );
 }
 

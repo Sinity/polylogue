@@ -24,7 +24,7 @@ pub(crate) fn query_outcome(
         notes,
         ..
     } = answer;
-    value.read_at_mut().freshness = Some(freshness.clone());
+    value.read_position_mut().freshness = Some(freshness.clone());
     let mut notes = notes;
     notes.extend(freshness.notes().into_iter().map(str::to_owned));
     let degraded = !freshness.up_to_date() || outcome == crate::daemon::query::Outcome::Incomplete;
@@ -352,7 +352,7 @@ pub(crate) fn delivery_event(
     };
     if let UserWrite::DeliveryEvent {
         delivery,
-        what: polylogue_model::DeliveryOutcome::NotSent,
+        outcome: polylogue_model::DeliveryOutcome::NotSent,
         detail,
     } = &write
         && detail.as_deref() == Some("timeout")
@@ -612,9 +612,9 @@ pub(crate) fn query_targets_in(
                 .extend(operation.cursor_versions());
             let run = QueryRun {
                 id: polylogue_reading::operation::new_run_id(),
-                question: Some(selection.question_id()),
+                query_id: Some(selection.question_id()),
                 at: operation.ran_at,
-                read_at: reader.change_position()?,
+                read_position: reader.change_position()?,
                 machine: operation.machine.clone(),
                 authorship: operation.authorship.clone(),
                 binding: RunBinding::Original {

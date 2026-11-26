@@ -141,7 +141,7 @@ fn later_item(
 }
 
 fn advances(conn: &Connection, previous: &SeenMark, next: &SeenMark) -> Result<bool> {
-    if previous.at.generation != next.at.generation {
+    if previous.at.index_instance != next.at.index_instance {
         // The caller validated the incoming generation against the active index.
         later_item(conn, &next.target, None, next.item.as_deref())?;
         return Ok(true);
@@ -213,7 +213,7 @@ pub(crate) fn advancing(
     }
     let mut accepted = BTreeMap::new();
     for mark in &proposed {
-        if mark.at.generation != generation {
+        if mark.at.index_instance != generation {
             return Err(polylogue_model::Reason::SeenFromAnotherGeneration {}.into());
         }
         if ChangePosition::parse(&mark.at.to_string()).is_none() {

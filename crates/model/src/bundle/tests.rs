@@ -7,8 +7,8 @@ fn manifest() -> Manifest {
         query: format!("query:{}", "a".repeat(64)),
         query_text: "sessions".into(),
         ran_at: Timestamp::from_unix_ms(1).unwrap(),
-        read_at: ChangePosition {
-            generation: "generation".into(),
+        read_position: ChangePosition {
+            index_instance: "generation".into(),
             index: 2,
             archive: 3,
         },
@@ -62,13 +62,13 @@ fn manifest_refuses_a_query_that_is_no_question_or_run_and_a_bad_position() {
         assert_eq!(value.validate(), Err(BundleError::InvalidQuery), "{query}");
     }
     let mut value = manifest();
-    value.read_at.generation.clear();
+    value.read_position.index_instance.clear();
     assert_eq!(value.validate(), Err(BundleError::InvalidPosition));
     let mut value = manifest();
-    value.read_at.index = -1;
+    value.read_position.index = -1;
     assert_eq!(value.validate(), Err(BundleError::InvalidPosition));
     let mut value = manifest();
-    value.read_at.archive = -1;
+    value.read_position.archive = -1;
     assert_eq!(value.validate(), Err(BundleError::InvalidPosition));
 }
 
@@ -388,7 +388,7 @@ fn declared_blob_records_require_blob_transfer() {
         "format":"polylogue-bundle","version":5,
         "query":"query:0000000000000000000000000000000000000000000000000000000000000000",
         "query_text":"synthetic","ran_at":"2026-01-01T00:00:00Z",
-        "read_at":{"generation":"synthetic","index":0,"archive":0},
+        "read_position":{"generation":"synthetic","index":0,"archive":0},
         "counts":{"sessions":0,"messages":0,"documents":0,"events":0,"links":0,
                   "authored":0,"annotations":0,"text_fragments":0,"alternates":0,"alternate_parts":0,"blobs":1},
         "flags":{"format":"jsonl","with_blobs":false,

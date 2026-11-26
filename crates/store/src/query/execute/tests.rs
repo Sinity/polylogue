@@ -417,7 +417,7 @@ fn delivery_filters_read_string_refs_and_structured_omissions_without_reparsing_
                 r#"a literal \"quote\" and slash\"#.into(),
             ],
             vec![LeftOut {
-                what: "session:codex:other".into(),
+                item: "session:codex:other".into(),
                 reason: "budget".into(),
             }],
         ),

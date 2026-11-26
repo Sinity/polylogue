@@ -145,14 +145,14 @@ fn outcome_event(
     d: &Daemon,
     invocation: &Invocation,
     delivery: &str,
-    what: DeliveryOutcome,
+    outcome: DeliveryOutcome,
     detail: String,
 ) -> Result<(), Failure> {
     let request = invocation.request(
         polylogue_store::user_writes::new_request_id(),
         UserWrite::DeliveryEvent {
             delivery: delivery.to_owned(),
-            what,
+            outcome,
             detail: Some(detail),
         },
     );

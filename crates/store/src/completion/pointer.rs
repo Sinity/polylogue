@@ -24,7 +24,7 @@ impl CatalogPointer {
     ) -> Result<CatalogWriter> {
         let target = self.path.with_file_name(format!(
             "catalog.{}.{}.db",
-            blake3::hash(metadata.position.generation.as_bytes()).to_hex(),
+            blake3::hash(metadata.position.index_instance.as_bytes()).to_hex(),
             uuid::Uuid::now_v7(),
         ));
         CatalogWriter::build(&target, metadata, populate)

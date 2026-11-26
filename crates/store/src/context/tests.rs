@@ -36,7 +36,7 @@ fn pending_notices_are_selected_by_directory_scope_and_acknowledgement() {
             "ack-old".into(),
             UserWrite::DeliveryEvent {
                 delivery: "acknowledged".into(),
-                what: polylogue_model::DeliveryOutcome::Delivered,
+                outcome: polylogue_model::DeliveryOutcome::Delivered,
                 detail: None,
             },
         ))

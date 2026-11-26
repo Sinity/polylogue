@@ -447,7 +447,7 @@ fn live_initial_queries_page_through_the_real_http_api() {
             assert_eq!(status, StatusCode::OK, "{body}");
             let page: serde_json::Value = serde_json::from_str(&body).unwrap();
             assert!(
-                page["read_at"]["cursor"]
+                page["read_position"]["cursor"]
                     .as_str()
                     .and_then(polylogue_model::ChangePosition::parse)
                     .is_some(),
