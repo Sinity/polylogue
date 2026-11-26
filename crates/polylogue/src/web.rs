@@ -379,12 +379,12 @@ fn browser_response<T: serde::Serialize + serde::de::DeserializeOwned>(
 fn answer_page<T>(answers: &[(&Answer<T>, &str)], render: impl FnOnce() -> String) -> HttpResponse {
     let failure = answers
         .iter()
-        .find_map(|(answer, _)| match &answer.outcome {
-            command_surface::Outcome::Error(failure) => Some(failure),
+        .find_map(|(answer, cli)| match &answer.outcome {
+            command_surface::Outcome::Error(failure) => Some((failure, *cli)),
             _ => None,
         });
     let status = failure
-        .and_then(|failure| failure.kind.http_status())
+        .and_then(|(failure, _)| failure.kind.http_status())
         .and_then(|status| StatusCode::from_u16(status).ok())
         .unwrap_or(if failure.is_some() {
             StatusCode::INTERNAL_SERVER_ERROR
@@ -392,8 +392,8 @@ fn answer_page<T>(answers: &[(&Answer<T>, &str)], render: impl FnOnce() -> Strin
             StatusCode::OK
         });
     let content = pages::answer_content(answers);
-    let html = if failure.is_some() {
-        pages::layout("Read failed", "", answers[0].1, &content)
+    let html = if let Some((_, cli)) = failure {
+        pages::layout("Read failed", "", cli, &content)
     } else {
         // Both product templates and typed read pages use the shared frame.
         render().replacen(
@@ -453,7 +453,7 @@ async fn home(
     answer_page(
         &[
             (&status, "polylogue status"),
-            (&sessions, "polylogue sessions --page-size 30"),
+            (&sessions, "polylogue --page-size 30 -- sessions"),
         ],
         || pages::home(status.value().unwrap(), &sessions.value().unwrap()["reply"]),
     )
@@ -488,13 +488,14 @@ async fn search(
         p.cursor.clone(),
     )
     .await;
-    let mut cli = format!("polylogue {} --why", polylogue_render::shell_quote(&p.q));
+    let mut cli = String::from("polylogue --why");
     if let Some(cursor) = &p.cursor {
         cli.push_str(&format!(
             " --cursor {}",
             polylogue_render::shell_quote(cursor)
         ));
     }
+    cli.push_str(&format!(" -- {}", polylogue_render::shell_quote(&p.q)));
     answer_page(&[(&answer, &cli)], || {
         pages::search(&p.q, &answer.value().unwrap()["reply"], p.cursor.as_deref())
     })
@@ -512,7 +513,7 @@ async fn cost(
         p.q.trim()
     };
     let text = format!("{scope} | measure usage");
-    let cli = format!("polylogue {}", polylogue_render::shell_quote(&text));
+    let cli = format!("polylogue -- {}", polylogue_render::shell_quote(&text));
     let answer = view::<Line>(&web, &lifetime, line(text, None, false), None).await;
     answer_page(&[(&answer, &cli)], || {
         pages::cost(scope, &answer.value().unwrap()["reply"]["data"])
@@ -535,7 +536,7 @@ async fn day(
     };
     let mut answers = Vec::new();
     for query in pages::day_queries(date) {
-        let cli = format!("polylogue {}", polylogue_render::shell_quote(&query));
+        let cli = format!("polylogue -- {}", polylogue_render::shell_quote(&query));
         let answer = view::<Line>(&web, &lifetime, line(query, None, false), None).await;
         answers.push((answer, cli));
     }

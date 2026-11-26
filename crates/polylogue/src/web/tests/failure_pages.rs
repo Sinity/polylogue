@@ -183,7 +183,14 @@ fn failure_pages_show_the_suggested_shorter_period() {
         "sessions since:7d".into(),
     ));
     let answer = Answer::<Value>::error(failure);
-    let response = answer_page(&[(&answer, "polylogue sessions")], String::new);
+    let status = Answer::ok(Value::Null);
+    let response = answer_page(
+        &[
+            (&status, "polylogue status"),
+            (&answer, "polylogue -- sessions"),
+        ],
+        String::new,
+    );
     rt().block_on(async {
         assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
         let body = String::from_utf8(
@@ -193,8 +200,25 @@ fn failure_pages_show_the_suggested_shorter_period() {
                 .to_vec(),
         )
         .unwrap();
+        assert_copy_command(&body, "polylogue -- sessions");
         assert!(body.contains("<p><code>deadline_exceeded</code></p>"));
         assert!(body.contains("<p>restrict the query to a shorter time range or one session</p>"));
         assert!(body.contains("<p>Try <a href=\"/search?q=sessions%20since%3A7d\"><code>sessions since:7d</code></a></p>"));
+    });
+}
+
+#[test]
+fn failed_search_commands_keep_option_words_in_the_selection() {
+    let r = reader();
+    rt().block_on(async {
+        let (status, _, body) = send(
+            &r,
+            authed(get("/search?q=--bad%20%28"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert_copy_command(&body, "polylogue --why -- '--bad ('");
     });
 }
