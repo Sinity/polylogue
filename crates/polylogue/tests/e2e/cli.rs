@@ -1029,8 +1029,11 @@ fn verb_alone_refused_off_terminal_with_lines() {
     let failure = answer.failure().expect("a picker needs a terminal");
     assert_eq!(failure.code.as_deref(), Some("ambiguous"));
     assert_eq!(
-        failure.hint.as_deref().unwrap().trim(),
-        "polylogue session:claude-code:s1 read\npolylogue session:claude-code:s2 read"
+        failure.candidates(),
+        [
+            "polylogue session:claude-code:s1 read",
+            "polylogue session:claude-code:s2 read"
+        ]
     );
 }
 

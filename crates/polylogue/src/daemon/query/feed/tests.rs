@@ -174,7 +174,7 @@ fn delta_uses_both_counters_keeps_peers_and_repeats_a_completed_checkpoint_idemp
         )
         .unwrap_err()
         .code(),
-        "bad_request"
+        "bad_value"
     );
 }
 
