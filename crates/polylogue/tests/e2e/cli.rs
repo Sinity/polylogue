@@ -289,6 +289,112 @@ pub(super) fn query_rows(out: &Output) -> serde_json::Value {
 }
 
 #[cfg(target_os = "linux")]
+#[test]
+fn killing_the_test_parent_stops_its_real_daemon() {
+    use std::os::unix::process::ExitStatusExt;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = Daemon(
+        polylogue_testkit::spawn_daemon(
+            crate::test_process(dir.path())
+                .args([
+                    "--exact",
+                    "cli::daemon_parent_fixture",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("POLYLOGUE_DAEMON_PARENT_FIXTURE", dir.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped()),
+        )
+        .unwrap(),
+    );
+    let mut stdout = BufReader::new(first.0.stdout.take().unwrap());
+    let mut line = String::new();
+    loop {
+        assert_ne!(stdout.read_line(&mut line).unwrap(), 0, "{line}");
+        if line.contains("daemon_pid:") {
+            break;
+        }
+        line.clear();
+    }
+    let daemon_pid: u64 = line
+        .split_once("daemon_pid:")
+        .unwrap()
+        .1
+        .trim()
+        .parse()
+        .unwrap();
+    let mut stderr = BufReader::new(first.0.stderr.take().unwrap());
+    loop {
+        line.clear();
+        assert_ne!(
+            stderr.read_line(&mut line).unwrap(),
+            0,
+            "no daemon readiness"
+        );
+        if line.contains("serving") {
+            break;
+        }
+    }
+    let running = crate::command(dir.path())
+        .args(["--json", "status"])
+        .env("XDG_CONFIG_HOME", dir.path().join("config"))
+        .output()
+        .unwrap();
+    let answer: command_surface::Answer<serde_json::Value> =
+        serde_json::from_slice(&running.stdout).unwrap();
+    assert_eq!(running.status.code(), Some(i32::from(answer.exit_code())));
+    assert!(
+        matches!(
+            &answer.outcome,
+            command_surface::Outcome::Ok(_) | command_surface::Outcome::Degraded { .. }
+        ),
+        "{answer:?}"
+    );
+    assert_eq!(answer.value().unwrap()["pid"].as_u64(), Some(daemon_pid));
+    assert!(matches!(
+        polylogue_store::Archive::open_or_create(&dir.path().join("archive")),
+        Err(polylogue_store::StoreError::Locked { .. })
+    ));
+    let exit = polylogue_testkit::ProcessExit::watch(daemon_pid.try_into().unwrap()).unwrap();
+    first.0.kill().unwrap();
+    assert_eq!(first.0.wait().unwrap().signal(), Some(9));
+    // Stderr can close before other descriptors during process teardown.
+    // Wait for process exit before checking that the archive lock is released.
+    exit.wait().unwrap();
+    let mut remaining = String::new();
+    stderr.read_to_string(&mut remaining).unwrap();
+    let (_archive, _lock) = polylogue_store::Archive::open_or_create(&dir.path().join("archive"))
+        .expect("the killed first daemon must release its archive lock");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "subprocess fixture for killing_the_test_parent_stops_its_real_daemon"]
+fn daemon_parent_fixture() {
+    let Some(dir) = std::env::var_os("POLYLOGUE_DAEMON_PARENT_FIXTURE") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    let daemon = Daemon(
+        polylogue_testkit::spawn_daemon(
+            crate::command(&dir)
+                .arg("daemon")
+                .env("XDG_CONFIG_HOME", dir.join("config"))
+                .stderr(Stdio::inherit()),
+        )
+        .unwrap(),
+    );
+    println!("daemon_pid:{}", daemon.0.id());
+    std::io::stdout().flush().unwrap();
+    let mut end = String::new();
+    std::io::stdin().read_line(&mut end).unwrap();
+    drop(daemon);
+}
+
+#[cfg(target_os = "linux")]
 fn io_counts(pid: u64) -> (u64, u64) {
     let text = std::fs::read_to_string(format!("/proc/{pid}/io")).unwrap();
     let value = |name: &str| {
