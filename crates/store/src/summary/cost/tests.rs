@@ -50,7 +50,7 @@ fn costs(index: &Connection) -> Vec<(String, Option<i64>)> {
 fn states(index: &Connection, session: Option<i64>) -> Vec<(String, i64, String)> {
     index
         .prepare(
-            "SELECT name, session_pk, version FROM derive_state
+            "SELECT name, session_pk, version FROM summary_state
                    WHERE (?1 IS NULL OR session_pk = ?1) AND name <> 'cost'
                    ORDER BY name, session_pk",
         )
@@ -153,12 +153,11 @@ fn changed_usage_derives_only_its_session_and_preserves_cache_and_tier_fields() 
         None,
     )
     .unwrap();
-    // The changed session: its seven session derivations (session, title,
-    // active path, repository, session span, duplicates, tool calls) and its
-    // cost; the unrelated one: its cost alone.
+    // Both sessions: the changed one for its rows, the unrelated one for
+    // the catalog's moved version.
     assert_eq!(
         super::super::run_with_catalog(&mut index, &catalog("second", 2)).unwrap(),
-        9
+        2
     );
     assert_eq!(
         costs(&index),
@@ -198,7 +197,7 @@ fn writer_uses_catalog_derivation_and_keeps_provider_reported_cost_separate() {
         vec![json!({"cost_nusd": 1_250_000_000i64, "provider_cost_nusd": 250_000_000})]
     );
     assert_eq!(
-        w.rows("SELECT count(*) AS n FROM derive_state WHERE name = 'cost'"),
+        w.rows("SELECT count(*) AS n FROM summary_state WHERE name = 'cost'"),
         vec![json!({"n": 1})]
     );
     assert_eq!(w.writer.derive().unwrap(), 0);

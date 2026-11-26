@@ -724,9 +724,7 @@ pub(crate) fn refresh_stale(conn: &Connection) -> Result<()> {
     // commit each session's item and value rows as independent transactions.
     conn.execute_batch("SAVEPOINT fixture_refresh")?;
     let result = (|| {
-        let counter = crate::session_values::write_counter(conn)?;
         for pk in sessions {
-            crate::session_values::rebuild(conn, pk, counter)?;
             conn.execute_batch("SAVEPOINT fixture_items")?;
             let result = rebuild(conn, pk, None, &BTreeSet::new(), MessageEntries::Fixture);
             match result {

@@ -145,8 +145,7 @@ fn setting(id: &str, value: &str) -> UserRequest {
 }
 
 fn write_counter(archive: &Archive) -> i64 {
-    crate::session_values::write_counter(&crate::archive::open_read(&archive.archive_db()).unwrap())
-        .unwrap()
+    crate::write_counter(&crate::archive::open_read(&archive.archive_db()).unwrap()).unwrap()
 }
 
 #[test]

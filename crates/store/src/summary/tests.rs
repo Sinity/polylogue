@@ -7,19 +7,6 @@ fn one(w: &WriterArchive, sql: &str) -> Json {
 }
 
 #[test]
-fn every_derivation_runs_after_what_it_reads() {
-    for (i, d) in super::ALL.iter().enumerate() {
-        for a in d.after {
-            assert!(
-                super::ALL[..i].iter().any(|x| x.name == *a),
-                "{} reads {a}, which does not run before it",
-                d.name
-            );
-        }
-    }
-}
-
-#[test]
 fn a_shell_call_s_command_is_normalized_by_the_derive_step() {
     let mut w = WriterArchive::new();
     w.write("a", bash("a", 1, 1_000, "cargo test -p x", true, "ok"));
@@ -215,306 +202,6 @@ fn session_read_preserves_every_recorded_fact() {
     );
 }
 
-fn versioned_rules(version: i64) -> [super::Derivation; 4] {
-    use super::{Derivation, Output, Version};
-    [
-        Derivation {
-            products: &[],
-            name: "upstream",
-            version: Version::Rules(version),
-            after: &[],
-            dirtied_by: &[],
-            compute: if version == 1 {
-                |_, _, _| {
-                    Ok(Output::Columns(vec![(
-                        "derived_title",
-                        Some("before".into()),
-                    )]))
-                }
-            } else {
-                |_, _, _| {
-                    Ok(Output::Columns(vec![(
-                        "derived_title",
-                        Some("after".into()),
-                    )]))
-                }
-            },
-            class: super::Class::Session,
-        },
-        Derivation {
-            products: &[],
-            name: "dependent",
-            version: Version::Rules(1),
-            after: &["upstream"],
-            dirtied_by: &[],
-            compute: |conn, pk, _| {
-                let title = conn.query_row(
-                    "SELECT derived_title FROM session WHERE pk = ?1",
-                    [pk],
-                    |r| r.get(0),
-                )?;
-                Ok(Output::Columns(vec![("repo", title)]))
-            },
-            class: super::Class::Session,
-        },
-        Derivation {
-            products: &[],
-            name: "unrelated",
-            version: Version::Rules(1),
-            after: &[],
-            dirtied_by: &[],
-            compute: |_, _, _| {
-                Ok(Output::Columns(vec![(
-                    "repo_root",
-                    Some("unrelated".into()),
-                )]))
-            },
-            class: super::Class::Session,
-        },
-        super::cost::DERIVATION,
-    ]
-}
-
-fn synthetic_catalog(version: &str) -> polylogue_model::Catalog {
-    serde_json::from_value(json!({"version": version, "models": {}})).unwrap()
-}
-
-#[test]
-fn upstream_rule_change_invalidates_unchanged_dependents_only() {
-    let mut index = rusqlite::Connection::open_in_memory().unwrap();
-    crate::schema::create_index(&index).unwrap();
-    index
-        .execute(
-            "INSERT INTO session(id, origin, native_id, kind, changed)
-        VALUES ('test:s', 'test', 's', 'main', 1)",
-            [],
-        )
-        .unwrap();
-    let catalog = synthetic_catalog("first");
-    assert_eq!(
-        super::run_all(&mut index, &catalog, &versioned_rules(1)).unwrap(),
-        4
-    );
-    assert_eq!(
-        index
-            .query_row("SELECT repo FROM session", [], |r| r.get::<_, String>(0))
-            .unwrap(),
-        "before"
-    );
-    assert_eq!(
-        super::run_all(&mut index, &catalog, &versioned_rules(2)).unwrap(),
-        2
-    );
-    assert_eq!(
-        index
-            .query_row("SELECT repo FROM session", [], |r| r.get::<_, String>(0))
-            .unwrap(),
-        "after"
-    );
-    // Deriving changes no session's own rows (docs/measures.md, convergence).
-    let changed: i64 = index
-        .query_row("SELECT changed FROM session", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(changed, 1);
-    assert_eq!(
-        super::run_all(&mut index, &catalog, &versioned_rules(2)).unwrap(),
-        0
-    );
-    assert_eq!(
-        super::run_all(
-            &mut index,
-            &synthetic_catalog("second"),
-            &versioned_rules(2),
-        )
-        .unwrap(),
-        1
-    );
-    assert_eq!(
-        index
-            .query_row("SELECT repo_root FROM session", [], |r| r
-                .get::<_, String>(0))
-            .unwrap(),
-        "unrelated"
-    );
-}
-
-#[test]
-fn dependency_identity_includes_transitive_rules_and_ignores_list_order() {
-    let catalog = synthetic_catalog("same");
-    let mut first = versioned_rules(1).to_vec();
-    use super::Output;
-    first.push(super::Derivation {
-        products: &[],
-        name: "grandchild",
-        version: super::Version::Rules(1),
-        after: &["upstream", "dependent"],
-        dirtied_by: &[],
-        compute: |_, _, _| Ok(Output::Columns(Vec::new())),
-        class: super::Class::Session,
-    });
-    let original = super::versions(&first, &catalog).unwrap();
-    first[4].after = &["dependent", "upstream"];
-    assert_eq!(super::versions(&first, &catalog).unwrap(), original);
-    first[0].version = super::Version::Rules(2);
-    let changed = super::versions(&first, &catalog).unwrap();
-    for i in [0, 1, 4] {
-        assert_ne!(original[i], changed[i]);
-    }
-    for i in [2, 3] {
-        assert_eq!(original[i], changed[i]);
-    }
-}
-
-#[test]
-fn invalid_dependency_declarations_are_refused_before_any_rows_change() {
-    let mut missing = versioned_rules(1);
-    missing[1].after = &["missing"];
-    let mut cyclic = versioned_rules(1);
-    cyclic[0].after = &["dependent"];
-    let mut backward = versioned_rules(1);
-    backward.swap(0, 1);
-    let mut duplicate = versioned_rules(1);
-    duplicate[2].name = "upstream";
-    for (rules, reason) in [
-        (missing, "missing"),
-        (cyclic, "cycle"),
-        (backward, "must follow"),
-        (duplicate, "duplicate"),
-    ] {
-        let mut index = rusqlite::Connection::open_in_memory().unwrap();
-        crate::schema::create_index(&index).unwrap();
-        index
-            .execute(
-                "INSERT INTO session(id, origin, native_id, kind, changed)
-            VALUES ('test:s', 'test', 's', 'main', 1)",
-                [],
-            )
-            .unwrap();
-        let error = super::run_all(&mut index, &synthetic_catalog("same"), &rules).unwrap_err();
-        assert!(
-            matches!(error, crate::StoreError::Internal(ref detail) if detail.contains(reason)),
-            "{error}"
-        );
-        assert_eq!(
-            index
-                .query_row("SELECT count(*) FROM derive_state", [], |r| r
-                    .get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        assert_eq!(
-            index
-                .query_row("SELECT derived_title FROM session", [], |r| r
-                    .get::<_, Option<String>>(0))
-                .unwrap(),
-            None
-        );
-    }
-}
-
-#[test]
-fn a_failed_derivation_rolls_back_values_counters_and_markers() {
-    use super::{Derivation, Output, Version};
-    let mut index = rusqlite::Connection::open_in_memory().unwrap();
-    crate::schema::create_index(&index).unwrap();
-    index.execute_batch("INSERT INTO session(id,origin,native_id,kind,changed) VALUES ('test:a','test','a','main',1),('test:b','test','b','main',1); INSERT INTO meta VALUES ('write_counter','1')").unwrap();
-    let mut rule = Derivation {
-        products: &[],
-        name: "synthetic",
-        version: Version::Rules(1),
-        after: &[],
-        dirtied_by: &[],
-        compute: |_, _, _| {
-            Ok(Output::Columns(vec![(
-                "derived_title",
-                Some("before".into()),
-            )]))
-        },
-        class: super::Class::Session,
-    };
-    let catalog = synthetic_catalog("same");
-    assert_eq!(
-        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
-        2
-    );
-    let before: String = index
-        .query_row(
-            "SELECT value FROM meta WHERE key='write_counter'",
-            [],
-            |r| r.get(0),
-        )
-        .unwrap();
-    rule.version = Version::Rules(2);
-    // Sessions are taken newest first: the second one's write fails after
-    // the first one's applied, in the same transaction.
-    rule.compute = |_, pk, _| {
-        let column = if pk == 1 {
-            "no_such_column"
-        } else {
-            "derived_title"
-        };
-        Ok(Output::Columns(vec![(column, Some("after".into()))]))
-    };
-    assert!(
-        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule))
-            .unwrap_err()
-            .to_string()
-            .contains("no_such_column")
-    );
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT value FROM meta WHERE key='write_counter'",
-                [],
-                |r| r.get::<_, String>(0)
-            )
-            .unwrap(),
-        before
-    );
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM session WHERE derived_title='before' AND changed=1",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        2
-    );
-    assert_eq!(
-        index
-            .query_row(
-                "SELECT count(*) FROM derive_state WHERE version='1'",
-                [],
-                |r| r.get::<_, i64>(0)
-            )
-            .unwrap(),
-        2
-    );
-    // Both sessions are still due for the new version.
-    assert_eq!(
-        index
-            .query_row("SELECT count(*) FROM derive_due", [], |r| r
-                .get::<_, i64>(0))
-            .unwrap(),
-        2
-    );
-    rule.compute = |_, _, _| {
-        Ok(Output::Columns(vec![(
-            "derived_title",
-            Some("after".into()),
-        )]))
-    };
-    assert_eq!(
-        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
-        2
-    );
-    assert_eq!(
-        super::run_all(&mut index, &catalog, std::slice::from_ref(&rule)).unwrap(),
-        0
-    );
-}
-
 #[test]
 fn stored_products_declare_validity_and_tests() {
     use polylogue_model::derived::Validity;
@@ -647,13 +334,14 @@ fn fork_with_parents_shows_inherited_count() {
     assert_eq!(keys.len(), 2, "{keys:?}");
 }
 
-/// SQLite steps of a derive pass after one of `sessions` derived sessions
-/// changed.
-fn derive_steps(sessions: i64) -> usize {
+/// SQLite steps of a summary pass after one of `sessions` summarized
+/// sessions changed.
+fn summary_steps(sessions: i64) -> usize {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let mut index = rusqlite::Connection::open_in_memory().unwrap();
     crate::schema::create_index(&index).unwrap();
+    crate::sql_functions::register(&index).unwrap();
     index
         .execute(
             "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
@@ -662,12 +350,9 @@ fn derive_steps(sessions: i64) -> usize {
             [sessions],
         )
         .unwrap();
-    let catalog = synthetic_catalog("same");
-    let rules = versioned_rules(1);
-    super::run_all(&mut index, &catalog, &rules).unwrap();
-    index
-        .execute("UPDATE session SET changed = 2 WHERE pk = 1", [])
-        .unwrap();
+    crate::summary::mark_every_session(&index).unwrap();
+    super::run(&mut index).unwrap();
+    crate::summary::mark(&index, 1, &super::Key::start()).unwrap();
     // Statements the first pass cached are prepared again after a schema
     // change, a number of times that depends on that pass's history; the
     // measured pass starts with none cached.
@@ -683,15 +368,14 @@ fn derive_steps(sessions: i64) -> usize {
             }),
         )
         .unwrap();
-    // The three session derivations; cost is a row value written with its row.
-    assert_eq!(super::run_all(&mut index, &catalog, &rules).unwrap(), 3);
+    assert_eq!(super::run(&mut index).unwrap(), 1);
     index.progress_handler(0, None::<fn() -> bool>).unwrap();
     steps.load(Ordering::Relaxed)
 }
 
 #[test]
-fn derive_discovery_steps_independent_of_session_count() {
-    assert_eq!(derive_steps(10), derive_steps(2_000));
+fn summary_discovery_steps_independent_of_session_count() {
+    assert_eq!(summary_steps(10), summary_steps(2_000));
 }
 
 /// Writes sessions `from..to` from one input of their own, each a prompt and
@@ -741,9 +425,9 @@ fn write_shell_sessions(w: &mut WriterArchive, from: u32, to: u32) {
     );
 }
 
-/// SQLite steps of running every derivation on the session `name` from the
-/// start, as a first build does, on an index without planner statistics.
-fn steps_to_derive_from_start(w: &WriterArchive, name: &str) -> usize {
+/// SQLite steps of computing every summary of the session `name` from its
+/// first row, as after a rebuild, on an index without planner statistics.
+fn steps_to_summarize_from_start(w: &WriterArchive, name: &str) -> usize {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     let mut index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
@@ -758,41 +442,33 @@ fn steps_to_derive_from_start(w: &WriterArchive, name: &str) -> usize {
             |r| r.get(0),
         )
         .unwrap();
-    let tx = index.transaction().unwrap();
-    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    let inputs = super::Inputs {
-        catalog: polylogue_model::Catalog::builtin(),
-        from_start: true,
-    };
+    index
+        .execute("DELETE FROM summary_state WHERE session_pk = ?1", [pk])
+        .unwrap();
+    crate::summary::mark(&index, pk, &super::Key::start()).unwrap();
     let steps = Arc::new(AtomicUsize::new(0));
     let counted = Arc::clone(&steps);
-    tx.progress_handler(
-        1,
-        Some(move || {
-            counted.fetch_add(1, Ordering::Relaxed);
-            false
-        }),
-    )
-    .unwrap();
-    for derivation in super::ALL {
-        (derivation.compute)(&tx, pk, &inputs)
-            .unwrap()
-            .apply(&tx, pk, &changes)
-            .unwrap();
-    }
-    tx.progress_handler(0, None::<fn() -> bool>).unwrap();
-    drop(changes);
-    tx.rollback().unwrap();
+    index
+        .progress_handler(
+            1,
+            Some(move || {
+                counted.fetch_add(1, Ordering::Relaxed);
+                false
+            }),
+        )
+        .unwrap();
+    assert_eq!(super::run(&mut index).unwrap(), 1);
+    index.progress_handler(0, None::<fn() -> bool>).unwrap();
     steps.load(Ordering::Relaxed)
 }
 
-/// Each derivation reads its session's rows through an index led by the
+/// Each summary reads its session's rows through an index led by the
 /// session (docs/measures.md: derived data is computed at session grain), so
 /// its cost does not grow with the calls other sessions hold, even where
 /// one action is most of the archive's calls and the planner has no
 /// statistics.
 #[test]
-fn deriving_a_session_costs_the_same_however_many_calls_other_sessions_hold() {
+fn summarizing_a_session_costs_the_same_however_many_calls_other_sessions_hold() {
     let mut w = WriterArchive::new();
     write_shell_sessions(&mut w, 0, 10);
     let mut target = prose("target", 0, 1_000, "fix the build");
@@ -822,14 +498,14 @@ fn deriving_a_session_costs_the_same_however_many_calls_other_sessions_hold() {
     for from in [10, 20] {
         write_shell_sessions(&mut w, from, from + 10);
     }
-    let before = steps_to_derive_from_start(&w, "target");
+    let before = steps_to_summarize_from_start(&w, "target");
     for from in (30..110).step_by(10) {
         write_shell_sessions(&mut w, from, from + 10);
     }
     // Not exactly equal: the passed-without-result update takes a few steps
     // fewer once more rows surround the session's. A read of other
     // sessions' calls adds thousands.
-    let after = steps_to_derive_from_start(&w, "target");
+    let after = steps_to_summarize_from_start(&w, "target");
     assert!(after <= before, "{before} steps became {after}");
 
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
@@ -908,14 +584,14 @@ fn user_write_served_between_derive_commits() {
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     index
         .execute(
-            "INSERT INTO derive_due(session_pk, rows_changed) SELECT pk, 1 FROM session WHERE true
-             ON CONFLICT(session_pk) DO UPDATE SET rows_changed = 1",
+            "INSERT INTO summary_due(session_pk, from_order) SELECT pk, X'' FROM session WHERE true
+             ON CONFLICT(session_pk) DO UPDATE SET from_order = X''",
             [],
         )
         .unwrap();
     let due = || -> i64 {
         index
-            .query_row("SELECT count(*) FROM derive_due", [], |r| r.get(0))
+            .query_row("SELECT count(*) FROM summary_due", [], |r| r.get(0))
             .unwrap()
     };
     let sender = w.writer.sender();
@@ -1095,8 +771,8 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
             .query_row(
                 "SELECT (SELECT sp.last_at FROM session_span sp WHERE sp.session_pk = s.pk),
                         s.message_count,
-                        (SELECT count(*) FROM derive_due d WHERE d.session_pk = s.pk),
-                        (SELECT count(*) FROM derive_state d WHERE d.session_pk = s.pk)
+                        (SELECT count(*) FROM summary_due d WHERE d.session_pk = s.pk),
+                        (SELECT count(*) FROM summary_state d WHERE d.session_pk = s.pk)
                  FROM session s WHERE s.id = 'claude-code:a'",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
@@ -1118,9 +794,8 @@ fn a_value_computed_from_rows_that_changed_is_not_stored() {
         pause.release();
         assert_eq!(deriving.join().unwrap(), 0);
     });
-    // The count update kept up with both messages; nothing the pass computed
-    // was stored, and the session is still due.
-    assert_eq!(state(), (None, 2, 1, 0));
+    // Nothing the pass computed was stored, and the session is still due.
+    assert_eq!(state(), (None, 0, 1, 0));
     assert!(w.writer.derive().unwrap() > 0);
     assert_eq!(state(), (Some(3_000), 2, 0, super::ALL.len() as i64));
 }
@@ -1147,7 +822,7 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     assert_eq!(
         index
-            .query_row("SELECT count(*) FROM derive_due", [], |r| r
+            .query_row("SELECT count(*) FROM summary_due", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
         1
@@ -1159,7 +834,7 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
     let index = rusqlite::Connection::open(w.archive.index_db()).unwrap();
     assert_eq!(
         index
-            .query_row("SELECT count(*) FROM derive_due", [], |r| r
+            .query_row("SELECT count(*) FROM summary_due", [], |r| r
                 .get::<_, i64>(0))
             .unwrap(),
         0
@@ -1167,3 +842,39 @@ fn a_stop_reaches_the_derive_worker_before_writer_teardown() {
 }
 
 mod prepared_items;
+
+/// The summary worker's cost of an append follows the append: one message
+/// appended to a session of 10,000 is folded from the state the previous
+/// run kept, reading only the new row, and gives what folding every row
+/// from the start gives.
+#[test]
+fn appending_one_message_to_a_long_session_reads_the_appended_row() {
+    let mut w = WriterArchive::new();
+    let mut messages = Vec::new();
+    for n in 0..10_000 {
+        messages.extend(prose("s", n, 1_000 + i64::from(n) * 20, "a question"));
+    }
+    w.write("s", messages);
+    w.write_underived("s", prose("s", 10_000, 500_000, "one more question"));
+    let index = crate::archive::open_read(&w.archive.index_db()).unwrap();
+    crate::sql_functions::register(&index).unwrap();
+    let (pk, from): (i64, Vec<u8>) = index
+        .query_row(
+            "SELECT s.pk, d.from_order FROM session s JOIN summary_due d ON d.session_pk = s.pk
+             WHERE s.id = 'claude-code:s'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    let run = super::fold::Run { conn: &index };
+    let appended = run.session(pk, &super::Key(from)).unwrap();
+    assert_eq!(appended.read, 1);
+    let whole = run.session(pk, &super::Key::start()).unwrap();
+    assert_eq!(whole.read, 10_001);
+    assert_eq!(appended.output.counts, whole.output.counts);
+    assert_eq!(appended.output.values, whole.output.values);
+    assert_eq!(
+        serde_json::to_value(&appended.output.span).unwrap(),
+        serde_json::to_value(&whole.output.span).unwrap()
+    );
+}

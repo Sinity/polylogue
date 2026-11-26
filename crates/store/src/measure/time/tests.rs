@@ -101,11 +101,15 @@ fn span_and_parties_match_a_hand_computed_session() {
         span.wall_ms.unwrap()
     );
     assert_eq!(
-        (RULE_VERSION, serde_json::to_value(&span).unwrap()),
+        (
+            <crate::summary::span::SessionSpan as crate::summary::fold::Fold>::VERSION,
+            serde_json::to_value(&span).unwrap()
+        ),
         (
             // 2: the human party is unknown without a provider turn end.
             // 3: a stored prefix ends at a session order of the message.
-            3,
+            // 4: folded from the session summary's stored state.
+            4,
             serde_json::json!({
                 "first_at":0,"last_at":4500000,"time_source":"messages","wall_ms":4500000,"clustered_ms":3720000,"tool_sum_ms":3434000,"tool_union_ms":1704000,"tool_overlap_ms":1730000,
                 "tool_untimed":0,"tool_no_result":0,"tool_same_timestamp":0,"tool_reversed":0,"timed_messages":18,"untimed_messages":0,"unordered_gaps":0,"first_failure_at":2262000,"prompts_to_failure":1,"prompted":true,"ends_with":"model_text","ends_with_message":"m17","last_stop_reason":"end_turn"
@@ -645,47 +649,12 @@ fn span_after_append_equals_full_recompute() {
 }
 
 #[test]
-fn an_append_derives_the_span_from_the_messages_after_the_settled_one() {
-    let mut w = WriterArchive::new();
-    let mut messages = Vec::new();
-    for n in 0..100 {
-        messages.extend(prose("s", n, 1_000 + i64::from(n) * 20, "a question"));
-        messages.push(answer(n, 1_010 + i64::from(n) * 20));
-    }
-    w.write("s", messages);
-    w.write_underived("s", prose("s", 100, 5_000, "one more"));
-    let mut conn = index(&w);
-    // The fixture's writer stays alive and may still commit to the index
-    // (search entries, a log checkpoint); taking the write lock first keeps
-    // this transaction's snapshot current until its own writes.
-    let tx = conn
-        .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-        .unwrap();
-    let pk: i64 = tx
-        .query_row("SELECT pk FROM session WHERE id='claude-code:s'", [], |r| {
-            r.get(0)
-        })
-        .unwrap();
-    let (derived, read) = derive(&tx, pk, false).unwrap();
-    assert_eq!(read, 1);
-    write_derived(&tx, pk, &derived).unwrap();
-    let (stored, computed) = stored_and_computed(&tx, "s");
-    assert_eq!(stored, computed);
-    // From the start, the same derivation reads all 201 messages.
-    let (derived, read) = derive(&tx, pk, true).unwrap();
-    assert_eq!(read, 201);
-    write_derived(&tx, pk, &derived).unwrap();
-    assert_eq!(stored, stored_and_computed(&tx, "s").0);
-}
-
-#[test]
 fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
     // A stored prefix is read back by the version that wrote it; a prefix of
-    // another shape would not decode. Bumping RULE_VERSION derives every
-    // session from its start, so a change here needs a new version.
+    // another shape would not decode. Bumping the span fold's version folds
+    // every session from its start, so a change here needs a new version.
     let prefix = Prefix {
         end: Some((("1order".into(), "m".into()), 3)),
-        script: true,
         first: Some(4),
         last: Some(5),
         timed: 6,
@@ -713,11 +682,14 @@ fn a_stored_prefix_changes_shape_only_with_a_new_rule_version() {
         }],
     };
     assert_eq!(
-        (RULE_VERSION, serde_json::to_value(&prefix).unwrap()),
         (
-            3,
+            <crate::summary::span::SessionSpan as crate::summary::fold::Fold>::VERSION,
+            serde_json::to_value(&prefix).unwrap()
+        ),
+        (
+            4,
             json!({
-                "end":[["1order","m"],3],"script":true,"first":4,"last":5,"timed":6,"untimed":7,
+                "end":[["1order","m"],3],"first":4,"last":5,"timed":6,"untimed":7,
                 "unordered_gaps":8,"previous":[9,"model"],"tools":10,"intervals":11,"tool_untimed":12,
                 "tool_no_result":13,"tool_same_timestamp":14,"tool_reversed":15,"tool_sum_ms":16,
                 "tool_union_ms":17,"clustered_ms":18,"prompts":19,"failure":[20,21],"stop_reported":true,

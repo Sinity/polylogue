@@ -314,8 +314,8 @@ impl<'a, 'c> Composer<'a, 'c> {
         self.stream().outcomes.push(outcome);
     }
 
-    /// Ends the session `session`: pairs its calls, composes its events,
-    /// settles its row and applies its live events.
+    /// Ends the session `session`: pairs its calls, composes its events and
+    /// settles its row.
     pub(super) fn end(&mut self, session: &str) -> Result<()> {
         let work = &mut self.0;
         work.pair_stream_calls(session)?;
@@ -347,27 +347,6 @@ impl<'a, 'c> Composer<'a, 'c> {
             work.compose_event(&shown, &stated)?;
         }
         work.settle_session(session)?;
-        // The live events in (time, line) order. Each is read again to be
-        // applied, so a session's events are never held decoded at once.
-        let events = std::mem::take(&mut work.stream().events);
-        let mut live = Vec::new();
-        for (n, event) in events.iter().enumerate() {
-            let value = readings::read_event(work.tx(), &mut work.reader, event.piece)?;
-            if polylogue_model::live::is_live_event(&value.kind) {
-                live.push((
-                    value.at.map(Timestamp::unix_ms),
-                    event.input_pk,
-                    event.chain,
-                    event.seq,
-                    n,
-                ));
-            }
-        }
-        live.sort_unstable();
-        for (.., n) in live {
-            let value = readings::read_event(work.tx(), &mut work.reader, events[n].piece)?;
-            work.apply_live(&value)?;
-        }
         Ok(())
     }
 
@@ -414,7 +393,6 @@ impl<'c> Work<'_, 'c> {
             calls,
             released_texts,
             released_groups,
-            live,
         } = touched;
         // Sessions composed whole: every message, event and link their
         // readings state, and every row they show now, are composed again.
@@ -536,30 +514,8 @@ impl<'c> Work<'_, 'c> {
         for session in session_work {
             self.settle_session(&session)?;
         }
-        for event in live {
-            self.apply_live(&event)?;
-        }
         readings::remove_released_texts(self.tx(), &released_texts)?;
         readings::remove_released_groups(self.tx(), &released_groups)?;
-        Ok(())
-    }
-
-    /// Applies a live event to the session it names, once that has a row.
-    fn apply_live(&mut self, event: &Event) -> Result<()> {
-        let Some(session) = &event.session else {
-            return Ok(());
-        };
-        let shown = self.ids.session(&session.to_string())?;
-        if let Some(pk) = self.session_pk(&shown)? {
-            crate::live::apply(
-                self.tx(),
-                pk,
-                &event.kind,
-                event.at.map(|t| t.unix_ms()),
-                &event.data,
-                self.context.counter,
-            )?;
-        }
         Ok(())
     }
 
@@ -608,7 +564,7 @@ impl<'c> Work<'_, 'c> {
             }
             let pk = self.session_row(session)?;
             self.context.changes.whole_session(pk);
-            self.context.changes.session(self.tx(), pk)?;
+            self.context.changes.session(pk);
             self.tx()
                 .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
                 .execute(params![pk, !own])?;
@@ -650,7 +606,7 @@ impl<'c> Work<'_, 'c> {
             }
             (_, true) => {
                 let pk = self.session_row(session)?;
-                self.context.changes.session(self.tx(), pk)?;
+                self.context.changes.session(pk);
                 self.tx()
                     .prepare_cached("UPDATE session SET stub=?2 WHERE pk=?1 AND stub IS NOT ?2")?
                     .execute(params![pk, !own])?;
@@ -941,7 +897,8 @@ impl<'c> Work<'_, 'c> {
                         self.update_message(pk, &row)?;
                         self.events_after(shown, false)?;
                     }
-                    self.context.changes.session(self.tx(), session_pk)?;
+                    self.context.changes.reached(self.tx(), pk)?;
+                    self.context.changes.session(session_pk);
                     return Ok(Some(session));
                 }
                 self.context.changes.message(self.tx(), pk)?;
@@ -951,7 +908,7 @@ impl<'c> Work<'_, 'c> {
                     .prepare_cached("DELETE FROM message_route WHERE message_pk=?1")?
                     .execute([pk])?;
                 if before_session != session_pk {
-                    self.context.changes.session(self.tx(), before_session)?;
+                    self.context.changes.session(before_session);
                 }
                 self.events_after(shown, true)?;
                 pk
@@ -973,7 +930,7 @@ impl<'c> Work<'_, 'c> {
                 pk
             }
         };
-        self.context.changes.session(self.tx(), session_pk)?;
+        self.context.changes.session(session_pk);
         let mut items = std::mem::take(&mut value.items);
         polylogue_model::read::update_message_entries(
             &mut items,
@@ -1044,7 +1001,8 @@ impl<'c> Work<'_, 'c> {
             ],
         )?;
         if same {
-            self.context.changes.session(self.tx(), session_pk)?;
+            self.context.changes.reached(self.tx(), pk)?;
+            self.context.changes.session(session_pk);
         }
         Ok(same)
     }
@@ -1143,7 +1101,7 @@ impl<'c> Work<'_, 'c> {
             .execute("DELETE FROM message_route WHERE message_pk=?1", [pk])?;
         self.events_after(id, true)?;
         self.tx().execute("DELETE FROM message WHERE pk=?1", [pk])?;
-        self.context.changes.session(self.tx(), session_pk)?;
+        self.context.changes.session(session_pk);
         Ok(())
     }
 
@@ -1337,7 +1295,7 @@ impl<'c> Work<'_, 'c> {
         let stream = self.stream();
         let calls = std::mem::take(&mut stream.calls);
         let results = std::mem::take(&mut stream.results);
-        let mut paired = HashMap::<String, (Pairing, bool)>::new();
+        let mut paired = HashMap::<String, Pairing>::new();
         for call in &calls {
             let Some(call_id) = &call.call_id else {
                 self.insert_call(call, &Pairing::unpaired())?;
@@ -1348,16 +1306,9 @@ impl<'c> Work<'_, 'c> {
                     .get(call_id)
                     .map(|r| (r.place.1.clone(), r.place.2, r.outcome.clone(), r.at));
                 let background = self.background_outcome(session, call_id)?;
-                let pairing = Pairing::of(result, background.as_ref());
-                paired.insert(call_id.clone(), (pairing, background.is_some()));
+                paired.insert(call_id.clone(), Pairing::of(result, background.as_ref()));
             }
-            let (pairing, background) = &paired[call_id];
-            self.insert_call(call, pairing)?;
-            if *background {
-                self.tx()
-                    .prepare_cached("UPDATE session_span SET prefix = NULL WHERE session_pk = ?1")?
-                    .execute([call.session_pk])?;
-            }
+            self.insert_call(call, &paired[call_id])?;
         }
         Ok(())
     }
@@ -1417,7 +1368,7 @@ impl<'c> Work<'_, 'c> {
             self.context
                 .changes
                 .call_result(self.tx(), session_pk, &call_id)?;
-            self.context.changes.session(self.tx(), session_pk)?;
+            self.context.changes.session(session_pk);
             self.tx()
                 .prepare_cached(
                     "UPDATE tool_call SET result_message_id=?3,result_idx=?4,outcome=?5,outcome_reason=?6,
@@ -1425,12 +1376,6 @@ impl<'c> Work<'_, 'c> {
                      WHERE session_pk=?1 AND call_id=?2",
                 )?
                 .execute(params![session_pk, call_id, columns.message, columns.idx, columns.outcome, columns.reason, columns.exit, columns.result_at, columns.duration])?;
-            if background.is_some() {
-                // The call's outcome changed outside its messages.
-                self.tx()
-                    .prepare_cached("UPDATE session_span SET prefix = NULL WHERE session_pk = ?1")?
-                    .execute([session_pk])?;
-            }
         }
         Ok(())
     }
@@ -1665,6 +1610,14 @@ impl<'c> Work<'_, 'c> {
             None => None,
         };
         let piece = winner.piece;
+        let order = session_pk.map(|_| {
+            crate::encoding::session_order(
+                winner.event.at.map(Timestamp::unix_ms),
+                &winner.input,
+                seq,
+                winner.start.unwrap_or(0),
+            )
+        });
         let values = params![
             shown,
             session_pk,
@@ -1680,6 +1633,7 @@ impl<'c> Work<'_, 'c> {
             piece.start,
             piece.length,
             piece.data_length,
+            order,
         ];
         match stored {
             Some((pk, before_session, before)) => {
@@ -1700,13 +1654,13 @@ impl<'c> Work<'_, 'c> {
                 if !moved_only {
                     self.context.changes.event(self.tx(), pk)?;
                     if let Some(session) = before_session.filter(|s| Some(*s) != session_pk) {
-                        self.context.changes.session(self.tx(), session)?;
+                        self.context.changes.session(session);
                     }
                 }
                 self.tx().prepare_cached(
                     "UPDATE event SET session_pk=?2,seq=?3,after_message_id=?4,kind=?5,at=?6,input_pk=?7,
                          source_chain=?8,source_start=?9,source_end=?10,content_group=?11,content_start=?12,
-                         content_length=?13,data_length=?14 WHERE id=?1",
+                         content_length=?13,data_length=?14,session_order=?15 WHERE id=?1",
                 )?
                 .execute(values)?;
                 if moved_only {
@@ -1716,8 +1670,8 @@ impl<'c> Work<'_, 'c> {
             None => {
                 self.tx().prepare_cached(
                     "INSERT INTO event(id,session_pk,seq,after_message_id,kind,at,input_pk,source_chain,source_start,
-                         source_end,content_group,content_start,content_length,data_length)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                         source_end,content_group,content_start,content_length,data_length,session_order)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
                 )?
                 .execute(values)?;
                 let pk = self.tx().last_insert_rowid();
@@ -1725,7 +1679,7 @@ impl<'c> Work<'_, 'c> {
             }
         }
         if let Some(session) = session_pk {
-            self.context.changes.session(self.tx(), session)?;
+            self.context.changes.session(session);
         }
         Ok(())
     }
@@ -1894,7 +1848,7 @@ impl<'c> Work<'_, 'c> {
     fn mark_link_sessions(&mut self, parent: &str, child: &str) -> Result<()> {
         for session in [parent, child] {
             if let Some(pk) = self.session_pk(session)? {
-                self.context.changes.session(self.tx(), pk)?;
+                self.context.changes.session(pk);
             }
         }
         Ok(())

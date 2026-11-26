@@ -454,6 +454,12 @@ generated page of the thing they belong to, or on the area page that owns them.
 
 - **derivation**: a product computed from parsed rows, declared with its
   construct, unit, denominator and unknown rule.
+- **session summary**: a derivation of one session that is not a column of
+  one of its rows (its counts, spans, values, live facts, title, lineage),
+  computed from the session's assembled rows by the summary worker for the
+  sessions marked due.
+- **fold**: a session summary computed over the session's rows in order,
+  resumed from a state stored after an earlier row.
 - **validity kind**: how a derivation's validity is shown: `exact`,
   `parameterized`, `extracted` or `judged`.
 - **measure**: a computation a pipeline cannot express, named after `| measure`

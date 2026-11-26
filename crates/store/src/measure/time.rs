@@ -9,8 +9,6 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
-pub(crate) const RULE_VERSION: i64 = 3;
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Span {
     pub first_at: Option<i64>,
@@ -64,14 +62,15 @@ pub struct SessionTime {
     pub parameters: &'static [polylogue_model::derived::Parameter],
 }
 
-struct Message {
-    id: String,
-    at: Option<i64>,
-    author: String,
-    prompt: Option<String>,
-    stop: Option<String>,
-    last_block: Option<String>,
-    open_call: bool,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Message {
+    pub id: String,
+    pub at: Option<i64>,
+    pub author: String,
+    pub prompt: Option<String>,
+    pub stop: Option<String>,
+    pub last_block: Option<String>,
+    pub open_call: bool,
 }
 
 impl Message {
@@ -108,23 +107,25 @@ impl Message {
     }
 }
 
-struct Tool {
-    message_index: usize,
-    key: String,
-    start: Option<i64>,
-    end: Option<i64>,
-    paired: bool,
-    failed: bool,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct Tool {
+    pub message_index: usize,
+    pub key: String,
+    pub start: Option<i64>,
+    pub end: Option<i64>,
+    pub paired: bool,
+    pub failed: bool,
 }
 
 /// What the calculation reads of a session, in session order: its own
 /// messages and the calls they make, with each one's place.
-struct Rows {
-    messages: Vec<Message>,
-    keys: Vec<OrderKey>,
-    tools: Vec<Tool>,
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub(crate) struct Rows {
+    pub messages: Vec<Message>,
+    pub keys: Vec<OrderKey>,
+    pub tools: Vec<Tool>,
     /// Where each call's result is, when it has one.
-    result_keys: Vec<Option<OrderKey>>,
+    pub result_keys: Vec<Option<OrderKey>>,
 }
 
 /// The rows after `after` in session order, or all of them.
@@ -217,15 +218,10 @@ fn from_events(conn: &Connection, pk: i64) -> Result<Prefix> {
         [pk],
         |r| <(_, _)>::try_from(r),
     )?;
-    let mut prefix = Prefix {
-        first,
-        last,
-        ..Prefix::default()
-    };
-    if let Some((a, b)) = first.zip(last) {
-        prefix.add_parties(split(a, b, &[], &[]));
-    }
-    Ok(prefix)
+    Ok(match first.zip(last) {
+        Some((first, last)) => Prefix::of_events(first, last),
+        None => Prefix::default(),
+    })
 }
 
 fn calculate(messages: &[Message], tools: &[Tool], gap_ms: i64) -> (Span, Vec<PartyTime>) {
@@ -236,15 +232,12 @@ fn calculate(messages: &[Message], tools: &[Tool], gap_ms: i64) -> (Span, Vec<Pa
 
 /// The calculation's state after a run of a session's messages in order.
 /// Every part of it adds across a settled message (one no interval crosses),
-/// so it is stored with the span at the last settled message
-/// (`session_span.prefix`) and the next derivation reads only the messages
-/// after it.
+/// so the session span fold keeps it at the last settled message and adds
+/// only the messages after it.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Prefix {
     /// The settled message the prefix ends at, and its time.
-    end: Option<(OrderKey, i64)>,
-    /// Whether the session had a script call: it decides which code calls count.
-    script: bool,
+    pub end: Option<(OrderKey, i64)>,
     first: Option<i64>,
     last: Option<i64>,
     timed: i64,
@@ -275,7 +268,13 @@ pub(crate) struct Prefix {
 impl Prefix {
     /// Adds the messages that follow, and their calls; a call's
     /// `message_index` counts from `offset`.
-    fn extend(&mut self, messages: &[Message], tools: &[Tool], offset: usize, gap_ms: i64) {
+    pub(crate) fn extend(
+        &mut self,
+        messages: &[Message],
+        tools: &[Tool],
+        offset: usize,
+        gap_ms: i64,
+    ) {
         let last_before = self.last;
         let mut prompts_through = Vec::with_capacity(messages.len());
         let mut clustered = Vec::new();
@@ -350,6 +349,27 @@ impl Prefix {
         }
     }
 
+    /// No message was added.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.timed == 0 && self.untimed == 0
+    }
+
+    /// The clocks of a session without messages, from its events' times.
+    pub(crate) fn of_events(first: i64, last: i64) -> Self {
+        let mut prefix = Prefix {
+            first: Some(first),
+            last: Some(last),
+            ..Prefix::default()
+        };
+        prefix.add_parties(split(first, last, &[], &[]));
+        prefix
+    }
+
+    /// The latest message time added.
+    pub(crate) fn last(&self) -> Option<i64> {
+        self.last
+    }
+
     fn add_parties(&mut self, parties: Vec<PartyTime>) {
         let mut totals: BTreeMap<(Party, String), i64> = std::mem::take(&mut self.parties)
             .into_iter()
@@ -364,7 +384,7 @@ impl Prefix {
             .collect();
     }
 
-    fn finish(&self) -> (Span, Vec<PartyTime>) {
+    pub(crate) fn finish(&self) -> (Span, Vec<PartyTime>) {
         let time_source = if self.timed > 0 {
             "messages"
         } else if self.untimed == 0 && self.first.is_some() {
@@ -416,20 +436,13 @@ impl Prefix {
     }
 }
 
-/// The earliest time among `rows`: a message's, or the start of a call.
-fn earliest(rows: &Rows) -> Option<i64> {
-    let messages = rows.messages.iter().filter_map(|m| m.at);
-    let calls = rows.tools.iter().filter_map(|t| t.start);
-    messages.chain(calls).min()
-}
-
 /// The last message the calculation can stop at and later resume after,
 /// given the latest time before `rows`: it is timed with the latest time so
 /// far, no later message or call starts before it, every call up to it has
 /// its result (if any) up to it, and no call up to it still waits for its
 /// result (it has no model message after it), whose arrival would make the
 /// next derivation read the session again.
-fn settled(before: Option<i64>, rows: &Rows) -> Option<usize> {
+pub(crate) fn settled(before: Option<i64>, rows: &Rows) -> Option<usize> {
     let n = rows.messages.len();
     let mut starts = vec![None::<i64>; n];
     for t in &rows.tools {
@@ -476,164 +489,6 @@ fn settled(before: Option<i64>, rows: &Rows) -> Option<usize> {
         }
     }
     found
-}
-
-/// A session's span and parties, with the calculation's state at its last
-/// settled message when it has one ([`derive`]).
-#[derive(Debug)]
-pub(crate) struct Derived {
-    span: Span,
-    parties: Vec<PartyTime>,
-    prefix: Option<Prefix>,
-}
-
-/// Derives the session's span and parties: from the stored prefix when
-/// nothing up to its settled message changed since it was stored, reading
-/// only the messages after it, else from the whole session. Returns them
-/// with the number of messages read.
-pub(crate) fn derive(conn: &Connection, pk: i64, from_start: bool) -> Result<(Derived, usize)> {
-    let script: bool = conn
-        .prepare_cached(
-            "SELECT EXISTS(SELECT 1 FROM tool_call WHERE session_pk=?1 AND run_by_script=1)",
-        )?
-        .query_row([pk], |r| r.get(0))?;
-    let mut resumed = None;
-    if !from_start && let Some(prefix) = resumable(conn, pk, script)? {
-        let (key, at) = prefix
-            .end
-            .clone()
-            .expect("a stored prefix ends at a message");
-        let rows = read_rows(conn, pk, Some(&key))?;
-        if earliest(&rows).is_none_or(|e| e >= at) {
-            resumed = Some((prefix, rows));
-        }
-    }
-    let (mut prefix, rows) = match resumed {
-        Some(found) => found,
-        None => {
-            let rows = read_rows(conn, pk, None)?;
-            if rows.messages.is_empty() {
-                let (span, parties) = from_events(conn, pk)?.finish();
-                return Ok((
-                    Derived {
-                        span,
-                        parties,
-                        prefix: None,
-                    },
-                    0,
-                ));
-            }
-            (Prefix::default(), rows)
-        }
-    };
-    let gap_ms = CLUSTER_GAP_MS;
-    let (stored, whole) = match settled(prefix.last, &rows) {
-        Some(c) => {
-            let split = rows.tools.partition_point(|t| t.message_index <= c);
-            prefix.extend(&rows.messages[..=c], &rows.tools[..split], 0, gap_ms);
-            let at = rows.messages[c].at.expect("a settled message is timed");
-            prefix.end = Some((rows.keys[c].clone(), at));
-            prefix.script = script;
-            let mut whole = prefix.clone();
-            whole.extend(&rows.messages[c + 1..], &rows.tools[split..], c + 1, gap_ms);
-            (Some(prefix), whole)
-        }
-        None => {
-            let mut whole = prefix.clone();
-            whole.extend(&rows.messages, &rows.tools, 0, gap_ms);
-            (prefix.end.is_some().then_some(prefix), whole)
-        }
-    };
-    let (span, parties) = whole.finish();
-    Ok((
-        Derived {
-            span,
-            parties,
-            prefix: stored,
-        },
-        rows.messages.len(),
-    ))
-}
-
-pub(crate) fn write_derived(conn: &Connection, pk: i64, derived: &Derived) -> Result<()> {
-    write(
-        conn,
-        pk,
-        &derived.span,
-        &derived.parties,
-        derived.prefix.as_ref(),
-    )
-}
-
-/// The stored prefix of the session, when the calculation can resume from
-/// it: it is forgotten whenever a transaction changes a message up to its
-/// settled message ([`forget_settled`]); no call up to it got its result
-/// after it, and whether the session has a script call is unchanged.
-fn resumable(conn: &Connection, pk: i64, script: bool) -> Result<Option<Prefix>> {
-    let stored: Option<String> = conn
-        .prepare_cached("SELECT prefix FROM session_span WHERE session_pk=?1")?
-        .query_row([pk], |r| r.get(0))
-        .optional()?
-        .flatten();
-    let Some(stored) = stored else {
-        return Ok(None);
-    };
-    let prefix: Prefix = serde_json::from_str(&stored)?;
-    let Some((end, _)) = &prefix.end else {
-        return Ok(None);
-    };
-    if prefix.script != script {
-        return Ok(None);
-    }
-    let (order, id) = end;
-    let answered_later: bool = conn
-        .prepare_cached(
-            "SELECT EXISTS(SELECT 1 FROM message m CROSS JOIN block b ON b.message_pk=m.pk
-               CROSS JOIN tool_call t ON t.result_message_id=m.id AND t.result_idx=b.idx
-               JOIN block cb ON cb.pk=t.call_block_pk JOIN message cm ON cm.pk=cb.message_pk
-             WHERE m.session_pk=?1 AND (m.session_order,m.id)>(?2,?3)
-               AND (cm.session_order,cm.id)<=(?2,?3))",
-        )?
-        .query_row(params![pk, order, id], |r| r.get(0))?;
-    Ok((!answered_later).then_some(prefix))
-}
-
-/// Forgets the stored prefix of each session whose messages up to its
-/// settled message the transaction changed, or that it changed as a whole;
-/// the next derivation reads those sessions from the start. (A call's
-/// outcome reported outside its messages forgets it too, where the writer
-/// applies it.)
-pub(crate) fn forget_settled(
-    tx: &Connection,
-    changes: &crate::change_summary::ChangeSummary,
-    sessions: &BTreeMap<i64, crate::change_summary::SessionChange>,
-) -> Result<()> {
-    #[derive(Deserialize)]
-    struct End {
-        end: Option<(OrderKey, i64)>,
-    }
-    for (&pk, change) in sessions {
-        let stored: Option<String> = tx
-            .prepare_cached("SELECT prefix FROM session_span WHERE session_pk=?1")?
-            .query_row([pk], |r| r.get(0))
-            .optional()?
-            .flatten();
-        let Some(stored) = stored else {
-            continue;
-        };
-        let touched = match serde_json::from_str::<End>(&stored)?.end {
-            Some((end, _)) if !change.whole => changes
-                .places(tx, pk, &change.messages)?
-                .iter()
-                .any(|place| place <= &end),
-            _ => true,
-        };
-        if touched {
-            tx.prepare_cached("UPDATE session_span SET prefix=NULL WHERE session_pk=?1")?
-                .execute([pk])?;
-        }
-    }
-    Ok(())
 }
 
 fn union_ms(mut intervals: Vec<(i64, i64)>) -> i64 {
@@ -730,16 +585,9 @@ fn split(
         .collect()
 }
 
-fn write(
-    conn: &Connection,
-    pk: i64,
-    span: &Span,
-    parties: &[PartyTime],
-    prefix: Option<&Prefix>,
-) -> Result<()> {
-    let prefix = prefix.map(serde_json::to_string).transpose()?;
-    conn.prepare_cached("INSERT OR REPLACE INTO session_span(session_pk,first_at,last_at,time_source,wall_ms,clustered_ms,tool_sum_ms,tool_union_ms,tool_overlap_ms,tool_untimed,tool_no_result,tool_same_timestamp,tool_reversed,timed_messages,untimed_messages,unordered_gaps,first_failure_at,prompts_to_failure,prompted,ends_with,ends_with_message,last_stop_reason,prefix) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)")?
-        .execute(params![pk,span.first_at,span.last_at,span.time_source,span.wall_ms,span.clustered_ms,span.tool_sum_ms,span.tool_union_ms,span.tool_overlap_ms,span.tool_untimed,span.tool_no_result,span.tool_same_timestamp,span.tool_reversed,span.timed_messages,span.untimed_messages,span.unordered_gaps,span.first_failure_at,span.prompts_to_failure,span.prompted,span.ends_with,span.ends_with_message,span.last_stop_reason,prefix])?;
+pub(crate) fn write(conn: &Connection, pk: i64, span: &Span, parties: &[PartyTime]) -> Result<()> {
+    conn.prepare_cached("INSERT OR REPLACE INTO session_span(session_pk,first_at,last_at,time_source,wall_ms,clustered_ms,tool_sum_ms,tool_union_ms,tool_overlap_ms,tool_untimed,tool_no_result,tool_same_timestamp,tool_reversed,timed_messages,untimed_messages,unordered_gaps,first_failure_at,prompts_to_failure,prompted,ends_with,ends_with_message,last_stop_reason) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)")?
+        .execute(params![pk,span.first_at,span.last_at,span.time_source,span.wall_ms,span.clustered_ms,span.tool_sum_ms,span.tool_union_ms,span.tool_overlap_ms,span.tool_untimed,span.tool_no_result,span.tool_same_timestamp,span.tool_reversed,span.timed_messages,span.untimed_messages,span.unordered_gaps,span.first_failure_at,span.prompts_to_failure,span.prompted,span.ends_with,span.ends_with_message,span.last_stop_reason])?;
     conn.prepare_cached("DELETE FROM session_time WHERE session_pk=?1")?
         .execute([pk])?;
     let mut statement = conn
@@ -801,7 +649,7 @@ pub(crate) fn selected_spans(
     if count == 1
         && let Some(pk) = pk
     {
-        let span = if crate::derive::is_current(conn, "session_span", pk)? {
+        let span = if crate::summary::is_current(conn, "session_span", pk)? {
             stored(conn, pk)?
         } else {
             Some(compute(conn, pk, CLUSTER_GAP_MS)?.0)
@@ -823,7 +671,7 @@ pub(crate) fn read(
     pk: i64,
     compute_behind: bool,
 ) -> Result<(Option<Span>, Vec<PartyTime>, bool)> {
-    if !crate::derive::is_current(conn, "session_span", pk)? {
+    if !crate::summary::is_current(conn, "session_span", pk)? {
         return if compute_behind {
             let (s, l) = compute(conn, pk, CLUSTER_GAP_MS)?;
             Ok((Some(s), l, true))

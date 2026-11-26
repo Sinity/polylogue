@@ -31,7 +31,7 @@ pub fn display_title(s: &str) -> String {
 
 pub fn current(s: &str, name: &str) -> String {
     format!(
-        "(NOT EXISTS(SELECT 1 FROM derive_due dd WHERE dd.session_pk={s}.pk) AND EXISTS(SELECT 1 FROM derive_state ds WHERE ds.session_pk={s}.pk AND ds.name='{name}' AND pl_derived_current(ds.name,ds.version)))"
+        "(NOT EXISTS(SELECT 1 FROM summary_due dd WHERE dd.session_pk={s}.pk) AND EXISTS(SELECT 1 FROM summary_state ds WHERE ds.session_pk={s}.pk AND ds.name='{name}' AND pl_summary_current(ds.name,ds.version)))"
     )
 }
 

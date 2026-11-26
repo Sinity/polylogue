@@ -22,7 +22,7 @@ pub(super) const BATCH_MESSAGES: usize = 1_000;
 
 /// Tables composition writes that the build file's own triggers fill when
 /// a session row is appended: they are not taken from the composer.
-const MADE_BY_TRIGGERS: &[&str] = &["derive_due", "session_cwd_member", "session_lineage"];
+const MADE_BY_TRIGGERS: &[&str] = &["summary_due", "session_cwd_member", "session_lineage"];
 
 /// Whole sessions of the stream, in stream order, numbered from zero.
 #[derive(Default)]

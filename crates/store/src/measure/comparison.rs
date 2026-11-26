@@ -120,10 +120,10 @@ pub fn compare(reader: &Reader<'_>, selection: &Selection, options: &str) -> Res
         } else {
             None
         };
-        let counts_current = crate::derive::is_current(conn, "counts", pk)?;
+        let counts_current = crate::summary::is_current(conn, "counts", pk)?;
         let counts = if needs_counts && (counts_current || single) {
             // Counts use the same function at derivation and read boundaries.
-            Some(crate::derive::counts::read(conn, pk, counts_current)?)
+            Some(crate::summary::counts::read(conn, pk, counts_current)?)
         } else {
             None
         };

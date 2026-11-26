@@ -97,7 +97,7 @@ enum Msg {
     DeriveInBackground(SyncSender<Result<bool>>),
     /// One wave of derived values from the derive thread, answered with
     /// which sessions it applied.
-    DeriveWrite(Box<crate::derive::Write>, SyncSender<Result<Vec<bool>>>),
+    DeriveWrite(Box<crate::summary::Write>, SyncSender<Result<Vec<bool>>>),
     /// One batch of full-text entries from the search thread, answered with
     /// the number written.
     SearchWrite(
@@ -688,7 +688,7 @@ impl Inner {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(group));
             }
             for (write, reply) in derive_writes.drain(..) {
-                let result = crate::derive::apply(&self.index, &write);
+                let result = crate::summary::apply(&self.index, &write);
                 if result.is_ok() {
                     self.commits
                         .committed(crate::completion::Committed::CONTENT);
@@ -732,7 +732,7 @@ impl Inner {
                 let _ = reply.send(result);
             }
             for reply in background_derives.drain(..) {
-                let pending = crate::derive::caught_up(&self.index).map(|current| !current);
+                let pending = crate::summary::caught_up(&self.index).map(|current| !current);
                 let requested = pending.as_ref().is_ok_and(|pending| *pending);
                 // A caller with no new reading must not wait for an unrelated
                 // computation, including the work preparing that computation.
@@ -976,7 +976,7 @@ impl Inner {
                 }
                 inner.project_alternate_text()?;
                 crate::text_rows::index_pending(&inner.index)?;
-                crate::derive::mark_moved_versions(&mut inner.index)
+                crate::summary::mark_moved_versions(&mut inner.index)
             })
             .and_then(|prepared| prepared.ok_or(StoreError::WriterGone));
         match (prepared, waiting) {
@@ -1272,7 +1272,7 @@ impl Inner {
             }
             batches += 1;
         }
-        let (messages, read) = rows::finish_upkeep(&itx, touched, &changes, counter)?;
+        let (messages, read) = rows::finish(&itx, touched, &changes, counter)?;
         self.report.item_units_read += read;
         let followed = self.followed.take_followed();
         let committed = crate::chain_progress::refresh(&itx, &followed.changes)

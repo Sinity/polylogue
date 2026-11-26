@@ -66,13 +66,14 @@ Analyses are computed when their data arrives, and at read only when that cannot
 
 Derived data converges through one path, with no separate pass and no refresh, rebuild or recompute command.
 
-- **Two grains, one mechanism each.** A value of one row (a normalized command, a message's cost) is a function of that row and is written with it, by the same function, whenever the row is composed. A value of one session (its counts, spans, time by party, active path, duplicates, title, commit and pull-request links, logical-session root, the place of each transcript entry among the others) is a function of the session's shown rows and is computed by the derive step. There is no third way: no value of a session is kept current by subtracting what a changed row contributed and adding what it contributes now, and none is kept by a trigger. A value kept by difference is right only while every path that changes a row reports the change; a value computed from the rows is right whenever it is computed.
-- **Marks.** The transaction that changes a session's shown rows marks the session due; a derivation whose version moved marks every session for that derivation alone. The derive step finds its work through the marks, never by scanning sessions. A mark is ordinary pending work: a crash leaves marks behind and the next start works through them.
-- **Cross-session causes** mark the sessions they reach in their own transaction: a link change marks the logical-session root of the child's subtree and the session cost of its ancestors; a changed repository lookup marks the sessions at or under its directory for the repository derivation alone.
-- **Recompute.** The derive step runs beside the writer and never in the writer's transactions. It takes due sessions, newest first, and runs each round's derivations in waves: a derivation's wave is one past the latest wave of the derivations it reads. For each session it reads the derivation's inputs and computes on its own read connection, and the writer only writes the result, and only while the session's rows and marks are as they were when its inputs were read. A session that changed meanwhile keeps its mark and its earlier values and is derived by the next pass. A derivation may keep, with its result, the state that lets an append continue from where it stopped instead of reading the session again; continuing must give what reading the whole session gives.
+- **Two grains, one mechanism each.** A value of one row (a normalized command, a message's cost) is a function of that row and is written with it, by the same function, whenever the row is composed. A value of one session (its counts, spans, time by party, completion values and first prompt, live facts, active path, duplicates, title, commit and pull-request links, logical-session root, the place of each transcript entry among the others) is a *session summary*: a function of the session's shown rows, computed by the summary worker. There is no third way: no value of a session is kept current by subtracting what a changed row contributed and adding what it contributes now, none is kept by a trigger, and none is computed in the transaction that writes the rows. A value kept by difference is right only while every path that changes a row reports the change; a value computed from the rows is right whenever it is computed.
+- **Marks.** The code that assembles a session's rows marks the session due in the same transaction, with the earliest place in the session's row order that its changes reached, before or after them; a summary whose version moved marks every session. The worker finds its work through the marks, never by scanning sessions. A mark is ordinary pending work: a crash leaves marks behind and the next start works through them.
+- **Cross-session causes** mark the sessions they reach in their own transaction: a link change marks the logical-session root of the child's subtree; a changed repository lookup marks the sessions at or under its directory.
+- **Folds.** A summary whose value depends on the rows in order is a fold over the session's messages and events in row order (a row's place, then messages before events, then its ID). One ordered read serves every fold: the worker starts from the folds' state stored after the nearest row before the earliest change, reads the rows after it and stores the state again after the last row and at every 512th row, so an append of k rows reads k rows and a change before the end starts from the nearest earlier state. Folding the rows after a state gives what folding every row from the start gives; a fold that cannot continue from its state (a message timed before what its state already settled) starts the session again from its first row.
+- **The worker.** The summary worker runs beside the writer and never in the writer's transactions. It takes due sessions, newest first, in two waves: first the summaries that mark rows of the session (duplicates, the active path) and those with causes of their own (lineage), whose changed rows move where the folds start; then the folds, and the session's own columns from its records and the folds. It reads on its own read connection, and the writer only writes the result, and only while the session's rows and marks are as they were when its inputs were read. A session that changed meanwhile keeps its mark and its earlier values and is summarized by the next pass.
 - **A build derives as it composes.** In a build of the index a session's rows are together when they are composed, so its derived values are computed then, on every core, and loaded with the rows; what needs other sessions' rows is derived after the load and before the index is installed. Upkeep and a build give the same derived values ([architecture.md](architecture.md#one-path)).
 - **Reads of due sessions:** an aggregate counts due sessions as `pending` and never shows their old values as current; a read of one session computes its products on the spot with the same function, so a single-session reply is never stale.
-- **Versions:** rule edits bump `Rules(n)`; shipped tables (prices, command classes) are versioned by content hash, so a forgotten bump cannot ship. Changing a derivation's version re-derives exactly that derivation; there is no index-wide version. A golden-output test per derivation fails when output changes without a version change.
+- **Versions:** rule edits bump `Rules(n)`; shipped tables (prices, command classes) are versioned by content hash, so a forgotten bump cannot ship. Changing a derivation's version re-derives exactly that derivation (a fold's, every fold from the session's first row); there is no index-wide version. A golden-output test per derivation fails when output changes without a version change.
 - **Re-parse:** a chain whose reading is replaced or removed changes the shown rows of its sessions, which marks them due like any other change.
 - Ongoing cost is per changed session, never per archive.
 
@@ -81,14 +82,19 @@ Derived data converges through one path, with no separate pass and no refresh, r
 Every derivation declares its construct beside its code, so the code is the catalog:
 
 ```rust
-struct Derivation {
+struct Summary {
     name: &'static str,
     version: Version,                  // Rules(n) | Content(hash of a shipped table)
-    after: &'static [&'static str],
-    class: Class,                      // Row (a value of one row) | PerChange (kept with each change) | Session
-    compute: fn(&Connection, i64, &Inputs) -> Result<Output>,  // reads and computes; the writer writes the Output
-    dirtied_by: &'static [Cause],      // SessionChanged implicit; LinkChanged{Descendants|Ancestors}; RepoLookupChanged; MessagesRewritten
+    kind: Kind,                        // Row (a value of one row, written with it) | Marks (rows of the
+                                       //   session, first wave) | Fold | AfterFolds (from records and folds)
     construct: Construct,
+}
+trait Fold {                           // a summary over the session's rows in order
+    type State: Serialize + DeserializeOwned + Default;
+    const NAME: &'static str;
+    const VERSION: i64;
+    fn step(state: &mut Self::State, row: &SessionRow, cx: &Context, out: &mut Output) -> Result<Flow>;
+    fn end(state: &Self::State, cx: &Context, out: &mut Output) -> Result<()>;
 }
 struct Construct {
     represents: &'static str,          // what it measures and why someone wants it

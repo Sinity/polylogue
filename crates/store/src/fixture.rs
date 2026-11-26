@@ -98,6 +98,20 @@ impl Fixture {
         // Fixture rows count their changes from 1, after a write position of
         // 0; the empty build's own commits are not part of the fixture.
         index.execute("DELETE FROM meta WHERE key='write_counter'", [])?;
+        // Fixture rows are written outside the writer, which marks a session
+        // due when it changes the session's rows: here each change of a
+        // session's own rows marks it due from its first row.
+        index.execute_batch(
+            "CREATE TEMP TRIGGER fixture_session_due AFTER INSERT ON main.session BEGIN
+               INSERT INTO summary_due(session_pk, from_order) VALUES (NEW.pk, X'')
+                 ON CONFLICT(session_pk) DO UPDATE SET from_order = X'', marked = marked + 1;
+             END;
+             CREATE TEMP TRIGGER fixture_rows_due AFTER UPDATE OF changed ON main.session
+             WHEN NEW.changed IS NOT OLD.changed BEGIN
+               INSERT INTO summary_due(session_pk, from_order) VALUES (NEW.pk, X'')
+                 ON CONFLICT(session_pk) DO UPDATE SET from_order = X'', marked = marked + 1;
+             END;",
+        )?;
         let archive_conn = open_write(&archive.archive_db(), crate::archive::cache::SETUP)?;
         index.execute(
             "INSERT INTO input_ref(id,format) VALUES ('fixture','fixture')",
@@ -115,23 +129,11 @@ impl Fixture {
         })
     }
 
-    /// Rows changed outside the writer, which describes its changes row by
-    /// row: clears the session's settled search prefix, so its next
-    /// derivation reads it from the start.
-    fn forget_settled(&self, session_pk: i64) -> Result<()> {
-        self.index.execute(
-            "UPDATE session_span SET prefix=NULL WHERE session_pk=?1",
-            [session_pk],
-        )?;
-        Ok(())
-    }
-
     fn refresh_counts(&self, session: i64) -> Result<()> {
-        crate::derive::counts::apply_values(
+        crate::summary::counts::apply(
             &self.index,
             session,
-            &crate::derive::counts::compute(&self.index, session)?,
-            None,
+            &crate::summary::counts::compute(&self.index, session)?,
         )
     }
 
@@ -151,13 +153,13 @@ impl Fixture {
 
     /// Runs all derivations over the raw rows written so far.
     pub fn derive(&mut self) -> Result<u64> {
-        crate::derive::run(&mut self.index)
+        crate::summary::run(&mut self.index)
     }
 
     /// Runs the derivations with a test's declared model prices.
     #[cfg(test)]
     pub fn derive_with_catalog(&mut self, catalog: &polylogue_model::Catalog) -> Result<u64> {
-        crate::derive::run_with_catalog(&mut self.index, catalog)
+        crate::summary::run_with_catalog(&mut self.index, catalog)
     }
 
     /// The writer indexes each session's items as it commits; fixture rows
@@ -231,10 +233,6 @@ impl Fixture {
         )?;
         self.index.execute(
             "UPDATE session SET changed=changed+1, last_activity_at=(SELECT max(at) FROM message WHERE session_pk=session.pk) WHERE pk=(SELECT session_pk FROM message WHERE pk=?1)",
-            [message_pk],
-        )?;
-        self.index.execute(
-            "UPDATE session_span SET prefix=NULL WHERE session_pk=(SELECT session_pk FROM message WHERE pk=?1)",
             [message_pk],
         )?;
         crate::items::refresh_stale(&self.index)?;
@@ -369,7 +367,6 @@ impl Fixture {
             "UPDATE session SET changed = changed + 1 WHERE pk = ?1",
             [session_pk],
         )?;
-        self.forget_settled(session_pk)?;
         let mut idx = 0;
         if let Some(t) = m.thinking {
             let id = crate::text_rows::intern(&self.index, t)?;
@@ -457,7 +454,6 @@ impl Fixture {
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],
         )?;
-        self.forget_settled(session_pk)?;
         self.refresh_counts(session_pk)?;
         crate::items::refresh_stale(&self.index)?;
         Ok(pk)
@@ -565,12 +561,7 @@ impl Fixture {
             tx.execute_batch(sql)?;
         }
         for &pk in &pks {
-            crate::derive::counts::apply_values(
-                &tx,
-                pk,
-                &crate::derive::counts::compute(&tx, pk)?,
-                None,
-            )?;
+            crate::summary::counts::apply(&tx, pk, &crate::summary::counts::compute(&tx, pk)?)?;
         }
         tx.commit()?;
         crate::text_rows::index_pending(&self.index)?;
@@ -645,9 +636,10 @@ impl Fixture {
         let piece = crate::content::store_piece(&self.index, &fields, Some(b"{}"))?;
         self.index.execute(
             "INSERT INTO event(id,session_pk,seq,kind,at,input_pk,source_chain,content_group,content_start,
-                 content_length,data_length) VALUES (?1,?2,?3,?4,?5,?6,1,?7,?8,?9,?10)",
+                 content_length,data_length,session_order) VALUES (?1,?2,?3,?4,?5,?6,1,?7,?8,?9,?10,?11)",
             params![id, session_pk, self.seq, kind, at, self.input_pk, piece.group, piece.start,
-                piece.length, piece.data_length],
+                piece.length, piece.data_length,
+                crate::encoding::session_order(at, "fixture", self.seq, 0)],
         )?;
         let hash = *blake3::hash(b"{}").as_bytes();
         self.index.execute(
@@ -672,7 +664,6 @@ impl Fixture {
             "UPDATE session SET changed=changed+1 WHERE pk=?1",
             [session_pk],
         )?;
-        self.forget_settled(session_pk)?;
         self.refresh_counts(session_pk)?;
         crate::items::refresh_stale(&self.index)?;
         Ok(())
@@ -728,10 +719,6 @@ impl Fixture {
         self.index.execute(
             "UPDATE session SET changed = changed + 1
              WHERE pk = (SELECT session_pk FROM message WHERE pk = ?1)",
-            [message_pk],
-        )?;
-        self.index.execute(
-            "UPDATE session_span SET prefix=NULL WHERE session_pk=(SELECT session_pk FROM message WHERE pk=?1)",
             [message_pk],
         )?;
         crate::items::refresh_stale(&self.index)?;

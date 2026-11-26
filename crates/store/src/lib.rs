@@ -9,6 +9,7 @@
 //!   frame segments.
 
 mod helpers;
+pub(crate) use helpers::write_counter;
 pub use helpers::{ConnExt, OptionExt, ResultExt, meta_get, meta_set, to_i64, to_u64};
 
 pub mod annotations;
@@ -27,7 +28,6 @@ mod container_members;
 mod content;
 pub mod context;
 pub mod coverage;
-pub mod derive;
 pub mod documents;
 mod encoding;
 mod events;
@@ -43,6 +43,7 @@ mod kept;
 pub mod lineage;
 mod live;
 pub mod log;
+pub mod summary;
 pub use live::{
     FollowSnapshot, FollowedCall, FollowedMessage, LiveDetail, LiveEditedFiles, LiveRoot,
     LiveSession, ProcessRow, RunningCandidates, RunningSession,
@@ -73,7 +74,6 @@ pub mod selection;
 pub mod session_bundle;
 mod session_row;
 pub mod session_sql;
-mod session_values;
 pub mod signals;
 pub(crate) mod sorted_runs;
 pub(crate) mod source;

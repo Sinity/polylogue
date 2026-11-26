@@ -214,8 +214,7 @@ impl ArchiveWriter {
         crate::write_lock::sync_register(archive)?;
         crate::chain_progress::record_source_changes(&conn)?;
         let position = Position(
-            u64::try_from(crate::session_values::write_counter(&conn)?)
-                .or_stored("negative write counter")?,
+            u64::try_from(crate::write_counter(&conn)?).or_stored("negative write counter")?,
         );
         let (tx, rx) = sync_channel(BULK_QUEUE);
         let shared = Arc::new(Shared {
@@ -586,8 +585,7 @@ impl Inner {
     /// The position as it stands, for a request that writes nothing.
     fn position(&self) -> Result<Position> {
         Ok(Position(
-            u64::try_from(crate::session_values::write_counter(&self.conn)?)
-                .or_stored("negative write counter")?,
+            u64::try_from(crate::write_counter(&self.conn)?).or_stored("negative write counter")?,
         ))
     }
 
@@ -757,7 +755,7 @@ impl Inner {
             [&request.id],
         )?;
         let seq = if known {
-            crate::session_values::write_counter(&tx)?
+            crate::write_counter(&tx)?
         } else {
             bump_counter(&tx)?
         };

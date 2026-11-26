@@ -1,18 +1,18 @@
 //! API-equivalent message cost from recorded usage and the compiled price catalog.
 
-use super::{Class, Derivation, Output, Version};
+use super::{Kind, Summary, Version};
 use crate::Result;
 use polylogue_model::{Catalog, Usage};
 use rusqlite::{Connection, Transaction, params};
 
-pub(super) const DERIVATION: Derivation = Derivation {
+pub(super) const SUMMARY: Summary = Summary {
     name: "cost",
-    class: Class::Row,
     products: &[],
     version: Version::Catalog(1),
-    after: &[],
-    dirtied_by: &[],
-    compute: |conn, pk, inputs| compute(conn, pk, inputs.catalog).map(Output::Cost),
+    kind: Kind::Row(|conn, pk, catalog, out| {
+        out.cost = compute(conn, pk, catalog)?;
+        Ok(())
+    }),
 };
 
 /// The session's messages whose cost changes, with their new cost.

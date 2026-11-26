@@ -26,6 +26,7 @@ mod sparse_block_selection;
 mod stopping;
 mod stored_replay;
 mod stored_values;
+mod summary_folds;
 mod tool_durations;
 mod unreported_derive_failures;
 mod usage_range;
@@ -57,7 +58,7 @@ fn write_test_rows(
         },
         &mut touched,
     )?;
-    let (written, _) = rows::finish_upkeep(tx, touched, &changes, counter)?;
+    let (written, _) = rows::finish(tx, touched, &changes, counter)?;
     Ok(written)
 }
 

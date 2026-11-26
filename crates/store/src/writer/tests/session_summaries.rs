@@ -3,13 +3,26 @@ use super::*;
 fn connection() -> Connection {
     let c = Connection::open_in_memory().unwrap();
     crate::schema::create_index(&c).unwrap();
+    crate::sql_functions::register(&c).unwrap();
     c.pragma_update(None, "foreign_keys", true).unwrap();
     c
 }
-fn apply(tx: &Transaction<'_>, b: Batch) {
+/// Writes `b`'s rows in one transaction, then computes the summaries of
+/// the sessions it marked due; each session's stored counts then equal
+/// those computed from all its rows.
+fn apply(c: &mut Connection, b: Batch) {
     let step = b.parse[0].clone();
-    write_test_rows(tx, &b, &step, 1, 1).unwrap();
-    let pks = tx
+    {
+        let tx = c.transaction().unwrap();
+        write_test_rows(&tx, &b, &step, 1, 1).unwrap();
+        tx.commit().unwrap();
+    }
+    summarize(c);
+}
+
+fn summarize(c: &mut Connection) {
+    crate::summary::run(c).unwrap();
+    let pks = c
         .prepare("SELECT pk FROM session")
         .unwrap()
         .query_map([], |r| r.get::<_, i64>(0))
@@ -18,44 +31,14 @@ fn apply(tx: &Transaction<'_>, b: Batch) {
         .unwrap();
     for pk in pks {
         assert_eq!(
-            crate::derive::counts::read(tx, pk, true).unwrap(),
-            crate::derive::counts::compute(tx, pk).unwrap()
+            crate::summary::counts::read(c, pk, true).unwrap(),
+            crate::summary::counts::compute(c, pk).unwrap()
         );
     }
 }
-fn fresh(count: usize, input: &str, session: &str) -> Batch {
-    batch(
-        input,
-        Route::Live,
-        0,
-        (0..count)
-            .map(|n| {
-                let mut m = text_message(
-                    &format!("{input}-{n}"),
-                    session,
-                    if n % 2 == 0 {
-                        Role::User
-                    } else {
-                        Role::Assistant
-                    },
-                    "one two three",
-                    None,
-                );
-                if n % 2 != 0 {
-                    m.blocks.push(Block::Thinking {
-                        text: Some("four five".into()),
-                        signature: None,
-                        redacted: false,
-                    });
-                }
-                row(n as u64, m)
-            })
-            .collect(),
-        &[session],
-    )
-}
+
 #[test]
-fn count_contributions_keep_script_changes_late_results_and_rollback() {
+fn counts_follow_script_calls_and_late_results() {
     use polylogue_model::{ErrorReason, ToolAction, ToolOutcome};
     let mut c = connection();
     let mut code = text_message("code", "s", Role::Assistant, "", None);
@@ -69,18 +52,18 @@ fn count_contributions_keep_script_changes_late_results_and_rollback() {
         path: None,
         run_by_script: false,
     }];
-    {
-        let tx = c.transaction().unwrap();
-        apply(
-            &tx,
-            batch("code-input", Route::Live, 0, vec![row(0, code)], &["s"]),
-        );
-        tx.commit().unwrap();
-    }
-    let before: i64 = c
-        .query_row("SELECT tool_call_count FROM session", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(before, 1);
+    apply(
+        &mut c,
+        batch("code-input", Route::Live, 0, vec![row(0, code)], &["s"]),
+    );
+    let calls = |c: &Connection| -> (i64, i64) {
+        c.query_row("SELECT tool_call_count,error_count FROM session", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap()
+    };
+    assert_eq!(calls(&c), (1, 0));
+    // A call run by a script: the code call counts through its commands.
     let mut script = text_message("command", "s", Role::Assistant, "", None);
     script.blocks = vec![Block::ToolCall {
         call_id: Some("command".into()),
@@ -92,14 +75,11 @@ fn count_contributions_keep_script_changes_late_results_and_rollback() {
         path: None,
         run_by_script: true,
     }];
-    {
-        let tx = c.transaction().unwrap();
-        apply(
-            &tx,
-            batch("script-input", Route::Live, 0, vec![row(0, script)], &["s"]),
-        );
-        tx.commit().unwrap();
-    }
+    apply(
+        &mut c,
+        batch("script-input", Route::Live, 0, vec![row(0, script)], &["s"]),
+    );
+    assert_eq!(calls(&c), (1, 0));
     let mut result = text_message("result", "s", Role::User, "", None);
     result.blocks = vec![Block::ToolResult {
         reported_duration_ms: None,
@@ -111,210 +91,85 @@ fn count_contributions_keep_script_changes_late_results_and_rollback() {
         data: None,
         attachments: vec![],
     }];
-    let late = batch("late-input", Route::Live, 0, vec![row(0, result)], &["s"]);
-    {
-        let tx = c.transaction().unwrap();
-        apply(&tx, late.clone());
-        assert_eq!(
-            tx.query_row("SELECT error_count FROM session", [], |r| r
-                .get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-    }
-    assert_eq!(
-        c.query_row("SELECT error_count FROM session", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
+    apply(
+        &mut c,
+        batch("late-input", Route::Live, 0, vec![row(0, result)], &["s"]),
     );
-    {
-        let tx = c.transaction().unwrap();
-        apply(&tx, late);
-        tx.commit().unwrap();
-    }
-    let tx = c.transaction().unwrap();
-    let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-    let (call, session, call_id): (i64, i64, String) = tx
-        .query_row(
-            "SELECT pk,session_pk,call_id FROM tool_call WHERE run_by_script=1",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .unwrap();
-    changes.call_result(&tx, session, &call_id).unwrap();
-    tx.execute("UPDATE tool_call SET run_by_script=0 WHERE pk=?1", [call])
-        .unwrap();
-    changes.finish_summaries(&tx, Some(2)).unwrap();
-    let pk: i64 = tx
+    assert_eq!(calls(&c), (1, 1));
+    // Without a script call the code call counts again.
+    let pk: i64 = c
         .query_row("SELECT pk FROM session", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(
-        crate::derive::counts::read(&tx, pk, true).unwrap(),
-        crate::derive::counts::compute(&tx, pk).unwrap()
-    );
-    assert_eq!(
-        tx.query_row("SELECT tool_call_count,error_count FROM session", [], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-        })
-        .unwrap(),
-        (2, 1)
-    );
-    assert_eq!(
-        tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-            .get::<_, i64>(
-            0
-        ))
-        .unwrap(),
-        0
-    );
+    c.execute("UPDATE tool_call SET run_by_script=0", [])
+        .unwrap();
+    crate::summary::mark(&c, pk, &crate::summary::Key::start()).unwrap();
+    summarize(&mut c);
+    assert_eq!(calls(&c), (2, 1));
 }
 
+/// An event moved to another session, or removed, outside a re-parse:
+/// what the change summary records of it before the change marks both
+/// sessions due from where it was.
 #[test]
-fn missing_count_baseline_is_recomputed_on_reopen() {
-    let d = tempfile::tempdir().unwrap();
-    let path = d.path().join("index.db");
-    {
-        let mut c = Connection::open(&path).unwrap();
-        crate::schema::create_index(&c).unwrap();
-        let tx = c.transaction().unwrap();
-        apply(&tx, fresh(8, "old", "s"));
-        tx.commit().unwrap();
-        c.execute("UPDATE session SET word_count=NULL", []).unwrap();
-        c.execute("INSERT INTO derive_state(name,session_pk,version)SELECT 'counts',pk,'stale' FROM session",[]).unwrap();
-    }
-    let mut c = Connection::open(&path).unwrap();
-    crate::schema::ensure_index(&c).unwrap();
-    assert_eq!(
-        c.query_row("SELECT word_count FROM session", [], |r| r
-            .get::<_, Option<i64>>(0))
-            .unwrap(),
-        None
-    );
-    {
-        let tx = c.transaction().unwrap();
-        apply(&tx, fresh(1, "new", "s"));
-        tx.commit().unwrap();
-    }
-    assert_eq!(
-        c.query_row("SELECT message_count FROM session", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        9
-    );
-    assert_eq!(
-        c.query_row(
-            "SELECT version FROM derive_state WHERE name='counts'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "stale"
-    );
-    let current = crate::session_sql::current("s", "counts");
-    assert!(
-        !c.query_row(&format!("SELECT {current} FROM session s"), [], |r| r
-            .get::<_, bool>(0))
-            .unwrap()
-    );
-}
-
-#[test]
-fn compaction_moves_and_removal_keep_both_sessions_across_rollback() {
-    let mut c = connection();
-    let mut b = batch("events", Route::Live, 0, vec![], &["s", "to"]);
-    b.parse[0].output.events.push(Event {
-        session: Some(sid("s")),
-        kind: "compaction".into(),
-        at: None,
-        at_quality: polylogue_model::TimeQuality::Unknown,
-        at_precision: None,
-        at_until: None,
-        after: None,
-        range: None,
-        data: serde_json::to_value(polylogue_model::CompactionBoundary::default()).unwrap(),
-    });
-    {
-        let tx = c.transaction().unwrap();
-        apply(&tx, b);
-        tx.commit().unwrap();
-    }
+fn a_moved_or_removed_compaction_is_counted_where_it_is() {
     for remove in [false, true] {
-        let tx = c.transaction().unwrap();
-        let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
-        let event = tx
-            .query_row("SELECT pk FROM event", [], |r| r.get::<_, i64>(0))
-            .unwrap();
-        changes.event(&tx, event).unwrap();
-        if remove {
-            tx.execute("DELETE FROM event WHERE pk=?1", [event])
-                .unwrap();
-        } else {
-            let target = tx
-                .query_row(
-                    "SELECT pk FROM session WHERE id='claude-code:to'",
-                    [],
-                    |r| r.get::<_, i64>(0),
-                )
-                .unwrap();
-            changes.session(&tx, target).unwrap();
-            tx.execute(
-                "UPDATE event SET session_pk=?2 WHERE pk=?1",
-                params![event, target],
+        let mut c = connection();
+        let mut b = batch("events", Route::Live, 0, vec![], &["s", "to"]);
+        b.parse[0].output.events.push(Event {
+            session: Some(sid("s")),
+            kind: "compaction".into(),
+            at: None,
+            at_quality: polylogue_model::TimeQuality::Unknown,
+            at_precision: None,
+            at_until: None,
+            after: None,
+            range: None,
+            data: serde_json::to_value(polylogue_model::CompactionBoundary::default()).unwrap(),
+        });
+        apply(&mut c, b);
+        let count = |c: &Connection, id: &str| -> i64 {
+            c.query_row(
+                "SELECT compaction_count FROM session WHERE id=?1",
+                [format!("claude-code:{id}")],
+                |r| r.get(0),
             )
-            .unwrap();
-        }
-        changes.finish_summaries(&tx, Some(2)).unwrap();
-        for (id, expected) in [("s", 0), ("to", i64::from(!remove))] {
-            assert_eq!(
-                tx.query_row(
-                    "SELECT compaction_count FROM session WHERE id=?1",
-                    [format!("claude-code:{id}")],
-                    |r| r.get::<_, i64>(0)
+            .unwrap()
+        };
+        assert_eq!((count(&c, "s"), count(&c, "to")), (1, 0));
+        {
+            let tx = c.transaction().unwrap();
+            let changes = crate::change_summary::ChangeSummary::start(&tx).unwrap();
+            let event = tx
+                .query_row("SELECT pk FROM event", [], |r| r.get::<_, i64>(0))
+                .unwrap();
+            changes.event(&tx, event).unwrap();
+            if remove {
+                tx.execute("DELETE FROM event WHERE pk=?1", [event])
+                    .unwrap();
+            } else {
+                tx.execute(
+                    "UPDATE event SET session_pk=(SELECT pk FROM session WHERE id='claude-code:to')
+                     WHERE pk=?1",
+                    [event],
                 )
-                .unwrap(),
-                expected,
-                "{id} after {}",
-                if remove { "removal" } else { "move" }
-            );
+                .unwrap();
+            }
+            changes.mark_due(&tx, 2).unwrap();
+            tx.commit().unwrap();
         }
-        let sessions = tx
-            .prepare("SELECT pk FROM session")
-            .unwrap()
-            .query_map([], |r| r.get::<_, i64>(0))
-            .unwrap()
-            .collect::<rusqlite::Result<Vec<_>>>()
-            .unwrap();
-        for session in sessions {
-            assert_eq!(
-                crate::derive::counts::read(&tx, session, true).unwrap(),
-                crate::derive::counts::compute(&tx, session).unwrap()
-            );
-        }
+        summarize(&mut c);
         assert_eq!(
-            tx.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |r| r
-                .get::<_, i64>(
-                0
-            ))
-            .unwrap(),
-            0
+            (count(&c, "s"), count(&c, "to")),
+            (0, i64::from(!remove)),
+            "after {}",
+            if remove { "removal" } else { "move" }
         );
     }
-    assert_eq!(
-        c.query_row(
-            "SELECT compaction_count FROM session WHERE id='claude-code:s'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        1
-    );
 }
 
 #[test]
 fn fresh_contributions_match_the_full_recompute() {
     let mut c = connection();
-    let tx = c.transaction().unwrap();
     let mut messages = Vec::new();
     for (n, role, kind) in [
         (0, Role::User, Some(PromptKind::Prose)),
@@ -330,8 +185,8 @@ fn fresh_contributions_match_the_full_recompute() {
         m.prompt_kind = kind;
         messages.push(row(n, m));
     }
-    apply(&tx, batch("authors", Route::Live, 0, messages, &["s"]));
-    let got=tx.query_row("SELECT human_prompt_count,human_command_count,human_word_count,model_word_count,word_count FROM session",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap();
+    apply(&mut c, batch("authors", Route::Live, 0, messages, &["s"]));
+    let got=c.query_row("SELECT human_prompt_count,human_command_count,human_word_count,model_word_count,word_count FROM session",[],|r|Ok((r.get::<_,i64>(0)?,r.get::<_,i64>(1)?,r.get::<_,i64>(2)?,r.get::<_,i64>(3)?,r.get::<_,i64>(4)?))).unwrap();
     assert_eq!(got, (1, 1, 6, 6, 12));
 }
 
@@ -350,14 +205,10 @@ fn background_outcomes_change_counts_only_for_the_named_call() {
         path: None,
         run_by_script: false,
     }];
-    {
-        let tx = c.transaction().unwrap();
-        apply(
-            &tx,
-            batch("call", Route::Live, 0, vec![row(0, call)], &["s"]),
-        );
-        tx.commit().unwrap();
-    }
+    apply(
+        &mut c,
+        batch("call", Route::Live, 0, vec![row(0, call)], &["s"]),
+    );
     for (n, call_id, errors) in [(0, None, 0), (1, Some("missing"), 0), (2, Some("named"), 1)] {
         let mut b = batch(&format!("background-{n}"), Route::Live, 0, vec![], &["s"]);
         b.parse[0]
@@ -375,14 +226,12 @@ fn background_outcomes_change_counts_only_for_the_named_call() {
                 },
                 output_file: None,
             });
-        let tx = c.transaction().unwrap();
-        apply(&tx, b);
+        apply(&mut c, b);
         assert_eq!(
-            tx.query_row("SELECT error_count FROM session", [], |r| r
+            c.query_row("SELECT error_count FROM session", [], |r| r
                 .get::<_, i64>(0))
                 .unwrap(),
             errors
         );
-        tx.commit().unwrap();
     }
 }

@@ -66,5 +66,14 @@ pub fn meta_set(conn: &Connection, key: &str, value: impl rusqlite::ToSql) -> Re
     conn.execute("INSERT INTO meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", rusqlite::params![key,value])?;
     Ok(())
 }
+/// The write counter of the last committed transaction (`meta`).
+pub(crate) fn write_counter(conn: &Connection) -> Result<i64> {
+    Ok(conn
+        .scalar_optional(
+            "SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'write_counter'",
+            [],
+        )?
+        .unwrap_or(0))
+}
 #[cfg(test)]
 mod tests;
