@@ -1,6 +1,6 @@
 //! Types every Polylogue crate shares, their rules and
 //! crash-safe file replacement.
-// build-settings experiment: rebuild 2
+// build-settings experiment: rebuild 3
 
 #[macro_use]
 mod stored_names;
