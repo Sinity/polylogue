@@ -40,17 +40,18 @@ fn import_provider_cancel_stops_job() {
 
 #[test]
 fn import_dot_slash_name_reads_file() {
-    let d = test_daemon::start("import a file named like a provider");
+    let d = test_daemon::start("import a path named like a provider");
     let dir = tempfile::tempdir().unwrap();
-    // A ChatGPT conversation export in a file that happens to be called
+    // A ChatGPT export unpacked into a directory that happens to be called
     // `chatgpt`.
-    let conversation = json!([{"id": "s9", "title": "A file named chatgpt", "mapping": {"node": {
+    let conversation = json!([{"id": "s9", "title": "A directory named chatgpt", "mapping": {"node": {
         "id": "node", "parent": null, "children": [], "message": {"id": "m9",
         "author": {"role": "user"}, "create_time": 1700000000,
-        "content": {"content_type": "text", "parts": ["a file named chatgpt"]}, "metadata": {}}}},
+        "content": {"content_type": "text", "parts": ["a directory named chatgpt"]}, "metadata": {}}}},
         "current_node": "node"}]);
+    std::fs::create_dir(dir.path().join("chatgpt")).unwrap();
     std::fs::write(
-        dir.path().join("chatgpt"),
+        dir.path().join("chatgpt/conversations.json"),
         serde_json::to_vec(&conversation).unwrap(),
     )
     .unwrap();
@@ -58,11 +59,8 @@ fn import_dot_slash_name_reads_file() {
     call.cwd = Some(dir.path().to_owned());
     let report = crate::test_answers::ok(call.answer(&d.daemon));
     assert!(report.get("job").is_none(), "{report}");
-    assert_eq!(
-        report["imported"],
-        json!([dir.path().join("./chatgpt")]),
-        "{report}"
-    );
+    assert_eq!(report["refused"], json!([]), "{report}");
+    assert_eq!(report["packages"][0]["sessions"], 1, "{report}");
     assert!(
         d.daemon
             .reads

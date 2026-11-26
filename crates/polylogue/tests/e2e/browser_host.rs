@@ -254,9 +254,12 @@ fn web_chat_acts_run_through_the_command_line_and_the_popup() {
         found(&draft, "status", "queued") && draft.to_string().contains("\"submit\":false"),
         "{draft}"
     );
+    // A command line without a terminal is not the operator
+    // (docs/authorship.md), so its submit waits for the operator's answer.
     let submitted = json_of(&["start", "a new conversation", "--in", "chatgpt", "--submit"]);
     assert!(
-        submitted.to_string().contains("\"needs_approval\":false"),
+        submitted.to_string().contains("\"needs_approval\":true")
+            && found(&submitted, "status", "awaiting_approval"),
         "{submitted}"
     );
 
