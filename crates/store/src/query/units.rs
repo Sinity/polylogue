@@ -835,7 +835,7 @@ static LINKS: UnitSpec = UnitSpec {
         "{r}.parent_id",
         "{r}.child_id",
         "{r}.kind",
-        "{r}.how",
+        "{r}.reason",
         "{r}.branch_point",
         "{r}.spawning_call",
     ]),

@@ -606,7 +606,7 @@ fn write_messages(
                      content_group,content_start,content_length)
                  VALUES (?1,?2,?3,?4,?5,?6-?5,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
                  ON CONFLICT(input_pk,chain,message_id) DO UPDATE SET session_id=excluded.session_id,
-                     source_start=excluded.source_start,source_length=excluded.source_length,seq=excluded.seq,
+                     source_start=excluded.source_start,source_length=excluded.source_length,position=excluded.position,
                      record_position=excluded.record_position,at=excluded.at,route=excluded.route,
                      state=excluded.state,id_kind=excluded.id_kind,hash=excluded.hash,
                      layout=excluded.layout,response_key=excluded.response_key,content_name=excluded.content_name,

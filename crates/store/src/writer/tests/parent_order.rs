@@ -97,7 +97,7 @@ fn copied_parent_families_follow_child_coordinates_instead_of_link_insertion() {
             .collect::<Vec<_>>(),
         ["claude-code:c0", "claude-code:p0"]
     );
-    let coordinates = reader.query("SELECT s.message_id AS id,s.source_start FROM message_parse s JOIN input_ref i ON i.pk=s.input_pk WHERE i.id='child-file' ORDER BY s.seq,s.record_position", &[]).unwrap();
+    let coordinates = reader.query("SELECT s.message_id AS id,s.source_start FROM message_parse s JOIN input_ref i ON i.pk=s.input_pk WHERE i.id='child-file' ORDER BY s.position,s.record_position", &[]).unwrap();
     assert_eq!(
         coordinates
             .iter()
