@@ -32,7 +32,9 @@
 //! the query language's unit columns (`slots.pos`, `runs.read_at`), which are
 //! words users and saved queries write; the client's own request envelope
 //! kept with a line or a binding (`resolve_line.request`,
-//! `accepted_request`), which records what the caller sent.
+//! `accepted_request`), which records what the caller sent, is compared as
+//! a value and never decoded into typed arguments, and holds none of these
+//! keys (a `rows` line's arguments name none of them).
 use polylogue_model::authored::AuthoredEffect;
 use polylogue_model::query_objects::{QueryObject, QueryRun, QueryRunOutcome};
 use polylogue_model::signal::EventRecord;
