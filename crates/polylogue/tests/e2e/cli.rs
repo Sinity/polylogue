@@ -779,6 +779,7 @@ mod stored_text;
 mod search_snippets;
 
 mod hook_errors;
+mod live_acts;
 
 mod grok_export;
 

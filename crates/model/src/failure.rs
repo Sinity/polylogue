@@ -225,6 +225,8 @@ reasons! {
         "{path} is not a directory";
     ResumeInNeedsSession "resume_in_needs_session" => BadRequest {}
         "resume --in needs the session whose work it continues";
+    ContinuationRequestUsed "continuation_request_used" => Conflict {}
+        "this request ID already names a different operation";
     ResumeOptionsNeedIn "resume_options_need_in" => BadRequest {}
         "resume --at, --cwd and --stop-source apply only with --in HARNESS";
     /// A session whose harness has no resume command of its own.

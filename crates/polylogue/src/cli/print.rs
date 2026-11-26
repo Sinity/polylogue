@@ -295,7 +295,15 @@ pub fn sent(report: &protocol::acts::SendReport, _style: TextStyle) -> String {
         }
     }
     for skipped in &report.skipped {
-        let _ = writeln!(out, "skipped {}: {}", skipped.session, skipped.line);
+        let reason = match skipped.reason {
+            protocol::acts::SkipReason::SessionMissing => "session missing",
+            protocol::acts::SkipReason::SessionNotRunning { state } => state.as_str(),
+        };
+        let _ = writeln!(
+            out,
+            "skipped {} ({reason}): {}",
+            skipped.session, skipped.line
+        );
     }
     polylogue_render::terminal::escape(&out)
 }
@@ -314,6 +322,17 @@ pub fn act(acted: &protocol::acts::Acted, _style: TextStyle) -> String {
                 name_of(&answered.outcome),
                 name_of(&answered.channel)
             );
+            if let Some(cancellation) = &answered.cancellation {
+                let _ = write!(
+                    out,
+                    "; no matching permission option (offered: {})",
+                    if cancellation.options.is_empty() {
+                        "none".into()
+                    } else {
+                        cancellation.options.join(", ")
+                    }
+                );
+            }
             if let Some(note) = &answered.note {
                 let _ = write!(out, "; {note}");
             }

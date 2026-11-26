@@ -47,6 +47,9 @@ fn answer() -> Answer {
         vectors_error: None,
         verification: None,
         pending_writes: PendingWrites {
+            delivery_write_failures: 0,
+            mailbox_failures: 0,
+            host_reattachment_failures: 0,
             delivery_outcomes: 0,
             live_event_lines: 0,
             last_error: None,

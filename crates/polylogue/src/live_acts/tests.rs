@@ -47,17 +47,18 @@ fn resumed_runs_of_one_session_queue_in_order() {
     let run = |n: u8| ResumeRun {
         session: session.clone(),
         delivery: format!("d{n}"),
-        text: String::new(),
+        argv: Vec::new(),
+        cwd: PathBuf::new(),
     };
     let reported = || match received.try_recv() {
-        Ok(Report::Resume(run)) => Some(run.delivery),
+        Ok(Report::Resume(run, _)) => Some(run.delivery),
         Ok(_) => panic!("only resumes are reported"),
         Err(_) => None,
     };
-    assert!(acts.resume(run(1)));
+    assert!(acts.resume(run(1)).unwrap().is_some());
     assert_eq!(reported(), Some("d1".into()));
-    assert!(!acts.resume(run(2)));
-    assert!(!acts.resume(run(3)));
+    assert!(acts.resume(run(2)).unwrap().is_none());
+    assert!(acts.resume(run(3)).unwrap().is_none());
     assert_eq!(reported(), None, "queued runs wait for the running one");
     assert_eq!(
         acts.resume_finished(&session).map(|r| r.delivery),
@@ -68,7 +69,7 @@ fn resumed_runs_of_one_session_queue_in_order() {
         Some("d3".into())
     );
     assert_eq!(acts.resume_finished(&session), None);
-    assert!(acts.resume(run(4)));
+    assert!(acts.resume(run(4)).unwrap().is_some());
     assert_eq!(reported(), Some("d4".into()));
 }
 
@@ -89,11 +90,12 @@ fn a_resume_nobody_can_run_leaves_the_session_free() {
     let run = |n: u8| ResumeRun {
         session: session.clone(),
         delivery: format!("d{n}"),
-        text: String::new(),
+        argv: Vec::new(),
+        cwd: PathBuf::new(),
     };
-    assert!(!acts.resume(run(1)));
+    assert!(acts.resume(run(1)).is_err());
     assert_eq!(acts.resume_finished(&session), None);
-    assert!(!acts.resume(run(2)));
+    assert!(acts.resume(run(2)).is_err());
     assert_eq!(acts.resume_finished(&session), None);
 }
 
