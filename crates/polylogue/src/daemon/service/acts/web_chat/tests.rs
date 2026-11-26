@@ -1,7 +1,7 @@
 //! Web chats as recipients of `send`, `answer` and `start`
 //! (docs/extension.md, Chat actions; docs/session-control.md).
-use crate::commands::Surface;
 use crate::test_daemon::{self, Call, TestDaemon};
+use command_surface::Via;
 use polylogue_model::authorship::{Authorship, Channel};
 use polylogue_model::{Author, Origin};
 use serde_json::{Value, json};
@@ -32,11 +32,11 @@ fn step(
     d: &TestDaemon,
     selection: &str,
     step: Value,
-    surface: Surface,
+    surface: Via,
 ) -> Result<Value, command_surface::Failure> {
     let answer = Call::new("rows", json!({"selection": selection, "steps": [step]}))
         .authorship(operator())
-        .surface(surface)
+        .channel(surface)
         .answer(&d.daemon);
     let report = crate::test_answers::ok(answer);
     let outcome = &report["reply"]["steps"][0]["outcome"];
@@ -51,7 +51,7 @@ fn send(d: &TestDaemon, selection: &str, text: &str) -> Value {
         d,
         selection,
         json!({"verb": "send", "text": text}),
-        Surface::Cli,
+        Via::Cli,
     )
     .unwrap();
     sent["reached"][0]["action"].clone()
@@ -78,7 +78,7 @@ fn send_to_web_chat_is_held_for_approval() {
         &d,
         "session:chatgpt:conv-9",
         json!({"verb": "send", "text": "and the same for the 2023 export"}),
-        Surface::Cli,
+        Via::Cli,
     )
     .unwrap_err();
     assert_eq!(refused.code.as_deref(), Some("browser_actions_off"));
@@ -124,7 +124,7 @@ fn answer_allow_releases_held_turn() {
         &d,
         "session:chatgpt:conv-9",
         json!({"verb": "answer", "value": "allow"}),
-        Surface::Cli,
+        Via::Cli,
     )
     .unwrap();
     assert_eq!(allowed[0]["action"]["id"], id.as_str(), "{allowed}");
@@ -144,7 +144,7 @@ fn answer_allow_releases_held_turn() {
         &d,
         "session:chatgpt:conv-9",
         json!({"verb": "answer", "value": "deny"}),
-        Surface::Cli,
+        Via::Cli,
     )
     .unwrap_err();
     assert_eq!(late.code.as_deref(), Some("conflict"));
@@ -159,7 +159,7 @@ fn answer_allow_releases_held_turn() {
         &d,
         "session:chatgpt:conv-11",
         json!({"verb": "answer", "value": "deny", "reason": "not now"}),
-        Surface::Cli,
+        Via::Cli,
     )
     .unwrap();
     let declined = action(&d, other["id"].as_str().unwrap());
@@ -177,7 +177,7 @@ fn mcp_answer_on_held_turn_refused() {
         &d,
         "session:chatgpt:conv-9",
         json!({"verb": "answer", "value": "allow"}),
-        Surface::Mcp,
+        Via::Mcp,
     )
     .unwrap_err();
     assert_eq!(refused.code.as_deref(), Some("refused"));

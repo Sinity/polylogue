@@ -38,7 +38,11 @@ fn every_stopped_prefix_keeps_the_previous_position_and_retry_delivers_every_lin
     let lines = example();
     for prefix in 0..lines.len() {
         let mut output = Vec::new();
-        assert!(receive(&wire(&lines[..prefix])[..], &mut output, Some("g:1:1")).is_err());
+        // A reply that ends before its answer: the daemon went away (exit 6).
+        assert_eq!(
+            receive(&wire(&lines[..prefix])[..], &mut output, Some("g:1:1")).unwrap(),
+            6
+        );
         assert!(completed(&output).is_empty(), "prefix {prefix}");
         let mut retry = Vec::new();
         assert_eq!(
@@ -57,8 +61,9 @@ fn every_stopped_prefix_keeps_the_previous_position_and_retry_delivers_every_lin
     let encoded = wire(&lines);
     for cutoff in 0..encoded.len() {
         let mut output = Vec::new();
-        assert!(
-            receive(&encoded[..cutoff], &mut output, Some("g:1:1")).is_err(),
+        assert_eq!(
+            receive(&encoded[..cutoff], &mut output, Some("g:1:1")).unwrap(),
+            6,
             "cutoff {cutoff}"
         );
         assert!(completed(&output).is_empty(), "cutoff {cutoff}");
@@ -271,20 +276,10 @@ fn a_receiver_stages_the_replacement_references_until_complete_after_a_rebuild()
 #[test]
 fn a_prepared_feed_survives_daemon_close_without_holding_its_reader() {
     let daemon = crate::test_daemon::start("synthetic finite delivery");
-    let mut wire = Vec::new();
-    let operation = daemon
-        .daemon
-        .operation_context(&polylogue_reading::operation::Context::worker_authorship(
-            "finite-feed-fixture",
-        ))
-        .unwrap();
-    <crate::daemon::service::feeds::Changes as crate::daemon::handler::Feed>::produce(
-        serde_json::from_value(serde_json::json!({})).unwrap(),
-        &daemon.daemon,
-        &operation,
-        &mut wire,
-    )
-    .unwrap();
+    let (mut wire, answer) = crate::test_daemon::Call::new("dev feed", serde_json::json!({}))
+        .answer_with_events(&daemon.daemon);
+    assert_eq!(answer.exit_code(), 0, "{answer:?}");
+    crate::protocol::stream::event(&mut wire, "answer", &answer).unwrap();
     drop(daemon);
     let mut output = Vec::new();
     assert_eq!(receive(&wire[..], &mut output, None).unwrap(), 0);
@@ -354,9 +349,11 @@ fn request(v: &command_surface::ParsedCommand) -> Result<command_surface::Runnab
 fn a_change_feed_deadline_uses_timeout_exit_code() {
     let mut output = Vec::new();
     let mut wire = Vec::new();
-    crate::protocol::stream::error(
+    crate::protocol::stream::event(
         &mut wire,
-        crate::daemon::Failure::deadline_exceeded("read deadline exceeded"),
+        "answer",
+        &crate::daemon::Failure::deadline_exceeded("read deadline exceeded")
+            .answer::<serde_json::Value>(),
     )
     .unwrap();
     assert_eq!(receive(&wire[..], &mut output, None).unwrap(), 7);

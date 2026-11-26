@@ -38,26 +38,14 @@ fn brief_routes_by_selection_form() {
 
 #[test]
 fn brief_keeps_envelope_budget_until_step_overrides_it() {
-    use crate::daemon::handler::Handler;
+    use crate::daemon::handler::Operation;
     use command_surface::TokenBudget;
     let d = test_daemon::start("a clock discussion");
-    let caller = crate::commands::Caller {
-        surface: crate::commands::Surface::Cli,
-        cwd: Some(d.home.clone()),
-    };
     let authorship = polylogue_reading::operation::Context::worker_authorship("brief-test");
-    let invocation = d.daemon.invocation(&authorship);
-    let acquired = std::sync::atomic::AtomicBool::new(false);
-    let call = crate::daemon::handler::Call {
-        daemon: &d.daemon,
-        row: crate::commands::command("rows").unwrap(),
-        invocation: &invocation,
-        caller: &caller,
-        request_id: "budget-brief",
-        cursor: None,
-        budget: TokenBudget::Tokens(0),
-        reader_acquired: &acquired,
-    };
+    let parts = test_daemon::CallParts::new(&d.daemon, authorship, "budget-brief")
+        .cwd(d.home.clone())
+        .budget(TokenBudget::Tokens(0));
+    let call = parts.call(&d.daemon);
     let brief = |step: Value| {
         let rows = serde_json::from_value(json!({"steps": [step]})).unwrap();
         let answer = crate::daemon::service::line::Line::run(rows, &call).unwrap();

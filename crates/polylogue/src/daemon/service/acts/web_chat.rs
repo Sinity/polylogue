@@ -7,7 +7,6 @@
 use super::super::browser as chat;
 use super::{Failure, error};
 use crate::browser::actions::{self, ChatFile, ChatRequest};
-use crate::commands::Surface;
 use crate::daemon::handler::Call;
 use crate::protocol::act as protocol;
 use command_surface::Answer;
@@ -221,7 +220,7 @@ pub(crate) fn answer_action(
             )));
         }
     };
-    if call.caller.surface == Surface::Mcp {
+    if call.caller.channel() == polylogue_model::authorship::Channel::Mcp {
         return Ok(error(
             polylogue_model::Code::Refused,
             "a held web chat turn is the operator's to answer: approve it in the browser or terminal",

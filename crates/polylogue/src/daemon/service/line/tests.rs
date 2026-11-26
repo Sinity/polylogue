@@ -399,7 +399,7 @@ fn mcp_follow_refused_with_read_call() {
     let d = test_daemon::start("first prompt");
     let rows = json!({"selection": "session:claude-code:s1", "steps": [{"verb": "read", "follow": true, "view": "dialogue"}]});
     let answer = Call::new("rows", rows)
-        .surface(crate::commands::Surface::Mcp)
+        .channel(command_surface::Via::Mcp)
         .answer(&d.daemon);
     assert_eq!(
         refusal(answer.clone()).message,
@@ -413,7 +413,7 @@ fn mcp_follow_refused_with_read_call() {
     );
     let read = crate::test_answers::ok(
         Call::from_request(next)
-            .surface(crate::commands::Surface::Mcp)
+            .channel(command_surface::Via::Mcp)
             .answer(&d.daemon),
     );
     assert_eq!(read["reply"]["steps"][0]["outcome"]["status"], "done");
@@ -422,7 +422,6 @@ fn mcp_follow_refused_with_read_call() {
 #[test]
 fn listing_wait_returns_when_rows_match() {
     let d = test_daemon::start("first prompt");
-    let reads = d.watch_reads();
     std::thread::scope(|scope| {
         let waiting = scope.spawn(|| {
             line(
@@ -431,11 +430,9 @@ fn listing_wait_returns_when_rows_match() {
                 json!({"selection": "sessions where tag:ready", "wait": "1m"}),
             )
         });
-        let read = reads
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        while read.limit.stage() != Some("listing wait") {
-            read.limit.check().unwrap();
+        // The listing is waiting, or about to: either way the tag below is
+        // the change it answers with.
+        while d.daemon.requests.running() == 0 {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         let tagged = steps(
@@ -452,19 +449,18 @@ fn listing_wait_returns_when_rows_match() {
 
 #[test]
 fn listing_wait_caps_long_mcp_requests() {
-    use crate::commands::Surface;
     use std::time::Duration;
 
     assert_eq!(
-        super::listing_wait("1h", Surface::Mcp).unwrap(),
+        super::listing_wait("1h", polylogue_model::authorship::Channel::Mcp).unwrap(),
         Duration::from_secs(50)
     );
     assert_eq!(
-        super::listing_wait("25ms", Surface::Mcp).unwrap(),
+        super::listing_wait("25ms", polylogue_model::authorship::Channel::Mcp).unwrap(),
         Duration::from_millis(25)
     );
     assert_eq!(
-        super::listing_wait("1h", Surface::Cli).unwrap(),
+        super::listing_wait("1h", polylogue_model::authorship::Channel::Cli).unwrap(),
         Duration::from_secs(3600)
     );
 }
@@ -479,20 +475,12 @@ fn mcp_wait_returns_empty_with_same_call() {
         deadline: command_surface::Deadline::None,
         budget_tokens: Default::default(),
         cursor: None,
-        fresh: true,
+        fresh: false,
         format: Default::default(),
     };
-    let call = Call::from_request(&request);
-    let invocation = d
-        .daemon
-        .invocation(&call.authorship)
-        .with_accepted_request(Some(std::sync::Arc::new(request.clone())));
-    let answer = call
-        .surface(crate::commands::Surface::Mcp)
-        .limit(polylogue_store::read::limit::ReadLimit::without_deadline(
-            Default::default(),
-        ))
-        .answer_with(&d.daemon, &invocation);
+    let answer = Call::from_request(&request)
+        .channel(command_surface::Via::Mcp)
+        .answer(&d.daemon);
     assert!(
         matches!(answer.outcome, command_surface::Outcome::Empty(_)),
         "{answer:?}"
@@ -508,7 +496,7 @@ fn listing_wait_answers_before_request_deadline() {
         "rows",
         json!({"selection": "sessions where tag:later", "wait": "1h"}),
     )
-    .limit(polylogue_store::read::limit::ReadLimit::new(
+    .within(&polylogue_store::read::limit::ReadLimit::new(
         std::time::Duration::from_secs(5),
         Default::default(),
     ))
@@ -525,17 +513,18 @@ fn listing_wait_answers_before_request_deadline() {
 fn socket_events(d: &TestDaemon, id: &str, arguments: Value) -> Vec<(String, Value)> {
     let request = crate::client::request("rows", arguments, id.into());
     let mut events = Vec::new();
-    crate::client::stream::run_call(
+    let answer = crate::client::call_streaming(
         &d.daemon.archive,
         &request,
         Some(std::time::Duration::from_secs(10)),
         |frame| {
-            let done = frame.event == "answer";
             events.push((frame.event, serde_json::from_str(&frame.data).unwrap()));
-            Ok(done)
+            Ok(false)
         },
     )
-    .unwrap();
+    .unwrap()
+    .expect("the line answers");
+    events.push(("answer".into(), serde_json::to_value(answer).unwrap()));
     events
 }
 
@@ -817,7 +806,7 @@ fn line_deadline_still_applies_after_resolution_journal_handoff() {
     )
     .id("line-deadline");
     let (answer, handed_off) = std::thread::scope(|scope| {
-        let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
+        let worker = scope.spawn(|| request.within(&limit.clone()).answer(&d.daemon));
         let until = Instant::now() + Duration::from_secs(5);
         while limit.stage() != Some("write") && !worker.is_finished() && Instant::now() < until {
             std::thread::yield_now();
@@ -1246,7 +1235,7 @@ fn an_owned_save_finishes_atomically_after_deadline_then_stops_later_steps() {
     )
     .id("owned-save");
     let answer = std::thread::scope(|scope| {
-        let worker = scope.spawn(|| request.limit(limit.clone()).answer(&d.daemon));
+        let worker = scope.spawn(|| request.within(&limit.clone()).answer(&d.daemon));
         pause.wait().expect("Save must reach writer ownership");
         while limit.check().is_ok() {
             std::thread::yield_now();

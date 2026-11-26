@@ -1,19 +1,12 @@
-//! Each operation is declared once with its handler; every surface reaches
-//! the same typed handler. Ported case by case from the tests of the
-//! typed adapters this module replaces.
+//! Each operation is declared once with its row; every surface reaches the
+//! same typed operation through one `answer`.
 mod feeds;
 mod panics;
 mod setting;
 use super::*;
 
+use polylogue_model::authorship::Channel;
 use serde_json::json;
-
-fn runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap()
-}
 
 fn request(
     operation: &str,
@@ -33,23 +26,15 @@ fn description(name: &str) -> &'static command_surface::OperationDescription {
         .unwrap()
 }
 
-fn policy(name: &str, arguments: Value, surface: Surface) -> Result<Policy, Failure> {
-    let row = crate::commands::command(name).unwrap();
-    row.registration()
-        .unwrap()
-        .admit(&arguments, row, &Caller { surface, cwd: None })
+fn policy(name: &str, arguments: Value, channel: Channel) -> Result<Policy, Failure> {
+    super::policy(crate::commands::command(name).unwrap(), &arguments, channel)
 }
 
 #[test]
-fn typed_query_runs_through_the_shared_table_and_socket() {
+fn typed_query_runs_through_one_answer_in_process_and_on_the_socket() {
     let daemon = crate::test_daemon::start("typed operation example");
-    let table = crate::commands::table(Arc::clone(&daemon.daemon));
     let envelope = request("rows", json!({"selection":"sessions"}), "query-example");
-    let answer = runtime().block_on(table.call(
-        envelope.clone(),
-        command_surface::Via::Cli,
-        Default::default(),
-    ));
+    let answer = crate::test_daemon::Call::from_request(&envelope).answer(&daemon.daemon);
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
     let crate::protocol::line::LineAnswer::Listing(typed) =
         serde_json::from_value(answer.value().unwrap().clone()).unwrap()
@@ -66,7 +51,7 @@ fn typed_query_runs_through_the_shared_table_and_socket() {
 }
 
 #[test]
-fn a_blocked_optional_count_leaves_the_completed_socket_page_available() {
+fn a_page_whose_count_runs_past_the_deadline_answers_rows_and_count_deferred() {
     use polylogue_store::fault::{self, Action};
     use std::time::Duration;
 
@@ -84,12 +69,12 @@ fn a_blocked_optional_count_leaves_the_completed_socket_page_available() {
     assert_eq!(control["rows"].as_array().unwrap().len(), 1);
 
     // This statement counts the population. Neither page key selection
-    // nor hydration starts with it.
-    let observations = daemon.watch_reads();
+    // nor hydration starts with it. It is held until the time left for the
+    // count (the deadline less the reply's fifth) has passed.
     let mut listing = request(
         "rows",
         json!({"selection":"sessions", "page_size":1}),
-        "blocked-optional-count",
+        "count-past-its-time",
     );
     listing.deadline = command_surface::Deadline::Milliseconds(1_000);
     fault::arm(
@@ -99,19 +84,26 @@ fn a_blocked_optional_count_leaves_the_completed_socket_page_available() {
         0,
         1,
     );
-    let answer = crate::client::call(&socket, &listing);
-    let reached_count = fault::held();
-    fault::release();
-    let observation = observations.recv_timeout(Duration::from_secs(5)).unwrap();
-    daemon.assert_read_released(&observation);
+    let answer = std::thread::scope(|scope| {
+        let call = scope.spawn(|| crate::client::call(&socket, &listing));
+        let start = std::time::Instant::now();
+        while !fault::held() {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "the count never ran"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        std::thread::sleep(Duration::from_millis(850));
+        fault::release();
+        call.join().unwrap()
+    });
     fault::clear();
-    assert!(reached_count, "the fixture did not hold the optional count");
-
-    // The client answered while the count statement was still held.
+    daemon.assert_reads_released();
     let answer = answer.unwrap();
     let reply = &answer
         .value()
-        .unwrap_or_else(|| panic!("the held count hid the completed page: {answer:?}"))["reply"];
+        .unwrap_or_else(|| panic!("the late count hid the completed page: {answer:?}"))["reply"];
     assert_eq!(reply["rows"], control["rows"]);
     assert!(reply["count"].is_null());
     assert!(reply["notes"].as_array().unwrap().contains(&json!(
@@ -128,17 +120,14 @@ fn a_blocked_optional_count_leaves_the_completed_socket_page_available() {
 #[test]
 fn typed_query_refuses_unknown_fields_and_another_operations_arguments() {
     let daemon = crate::test_daemon::start("typed operation refusal");
-    let table = crate::commands::table(Arc::clone(&daemon.daemon));
     for arguments in [
         json!({"author":"operator"}),
         json!({"paths":["some-input"]}),
         json!({"selection":42}),
     ] {
-        let answer = runtime().block_on(table.call(
-            request("rows", arguments, "refusal"),
-            command_surface::Via::Mcp,
-            Default::default(),
-        ));
+        let answer = crate::test_daemon::Call::new("rows", arguments)
+            .channel(command_surface::Via::Mcp)
+            .answer(&daemon.daemon);
         assert_eq!(answer.exit_code(), 2, "{answer:?}");
         assert!(answer.value().is_none());
     }
@@ -203,7 +192,7 @@ fn closed_argument_names(
 fn each_typed_request_is_closed() {
     for command in crate::commands::COMMANDS
         .iter()
-        .filter(|command| command.registration().is_some())
+        .filter(|command| command.operation().is_some())
     {
         let schema = &description(command.name).input_schema;
         closed_argument_names(schema, schema);
@@ -294,12 +283,7 @@ fn typed_setting_catalog_is_a_real_table_answer() {
     };
     let _: crate::protocol::setting::Answer =
         serde_json::from_value(data).expect("catalog producer emits its declared answer");
-    let table = crate::commands::table(Arc::clone(&daemon.daemon));
-    let answer = runtime().block_on(table.call(
-        request("set", json!({}), "catalog-example"),
-        command_surface::Via::Cli,
-        Default::default(),
-    ));
+    let answer = crate::test_daemon::Call::new("set", json!({})).answer(&daemon.daemon);
     let catalog: Vec<polylogue_model::settings::Current> = serde_json::from_value(
         answer
             .value()
@@ -312,21 +296,12 @@ fn typed_setting_catalog_is_a_real_table_answer() {
             .iter()
             .any(|current| current.key == "browser.actions")
     );
-    let wrong_type = runtime().block_on(table.call(
-        request(
-            "set",
-            json!({"key":"browser.actions", "machine":true}),
-            "invalid-catalog-example",
-        ),
-        command_surface::Via::Cli,
-        Default::default(),
-    ));
+    let wrong_type =
+        crate::test_daemon::Call::new("set", json!({"key":"browser.actions", "machine":true}))
+            .answer(&daemon.daemon);
     assert!(wrong_type.value().is_none(), "{wrong_type:?}");
-    let all_hosts = runtime().block_on(table.call(
-        request("set", json!({"machine":"*"}), "invalid-host-example"),
-        command_surface::Via::Cli,
-        Default::default(),
-    ));
+    let all_hosts =
+        crate::test_daemon::Call::new("set", json!({"machine":"*"})).answer(&daemon.daemon);
     assert_eq!(
         all_hosts
             .failure()
@@ -351,7 +326,7 @@ fn typed_import_uses_the_same_path_and_answer_schema() {
     );
     let daemon = crate::test_daemon::start("relative import refusal");
     let refused = crate::test_daemon::Call::new("import", json!({"paths":["relative.json"]}))
-        .surface(Surface::Mcp)
+        .channel(command_surface::Via::Mcp)
         .answer(&daemon.daemon);
     assert_eq!(
         refused
@@ -367,7 +342,7 @@ fn typed_import_uses_the_same_path_and_answer_schema() {
         policy(
             "import",
             json!({"paths":[],"author":"operator"}),
-            Surface::Mcp
+            Channel::Mcp
         )
         .is_err()
     );
@@ -376,22 +351,22 @@ fn typed_import_uses_the_same_path_and_answer_schema() {
 #[test]
 fn mixed_setting_reads_use_scope_fences_from_the_decoded_request() {
     assert!(crate::commands::command("set").unwrap().writes);
-    let read = policy("set", json!({}), Surface::Http).unwrap();
+    let read = policy("set", json!({}), Channel::Web).unwrap();
     let write = policy(
         "set",
         json!({"key":"browser.actions","value":"on"}),
-        Surface::Http,
+        Channel::Web,
     )
     .unwrap();
     // A read takes a read scope and keeps the caller's read deadline; a
     // write keeps its result instead of inheriting one.
-    assert!(read.read_only && read.read_phase);
-    assert!(!write.read_only && !write.read_phase);
+    assert!(!read.changes_archive && read.bound == Bound::Whole && read.takes_get());
+    assert!(write.changes_archive && write.bound == Bound::None && !write.takes_get());
 }
 
 #[test]
 fn typed_write_identity_comes_from_the_request_on_every_surface() {
-    for surface in [Surface::Cli, Surface::Http, Surface::Mcp] {
+    for surface in [Channel::Cli, Channel::Web, Channel::Mcp] {
         assert!(policy("set", json!({}), surface).is_ok());
         assert!(
             policy(
@@ -518,10 +493,10 @@ fn named_context_budget_and_identity_survive_the_socket() {
     envelope.budget_tokens = command_surface::TokenBudget::Tokens(200);
     // A hook's brief records its delivery, so it writes; its read phase
     // still has a deadline.
-    let hook = policy("rows", envelope.arguments.clone(), Surface::Hook).unwrap();
-    assert!(!hook.read_only && hook.read_phase);
-    let person = policy("rows", envelope.arguments.clone(), Surface::Cli).unwrap();
-    assert!(person.read_only);
+    let hook = policy("rows", envelope.arguments.clone(), Channel::Hook).unwrap();
+    assert!(hook.changes_archive && hook.bound == Bound::UntilHandOver);
+    let person = policy("rows", envelope.arguments.clone(), Channel::Cli).unwrap();
+    assert!(!person.changes_archive);
     for (budget, option) in [
         (command_surface::TokenBudget::Default, None),
         (command_surface::TokenBudget::Unlimited, Some("none")),
@@ -574,7 +549,7 @@ fn named_context_budget_and_identity_survive_the_socket() {
     let refused = crate::client::call_ready(&daemon.daemon.archive, &unsupported).unwrap();
     assert_eq!(
         refused.failure().map(|failure| failure.message.as_str()),
-        Some("operation does not prepare budgeted context"),
+        Some("status does not take budget_tokens"),
         "{refused:?}"
     );
 }

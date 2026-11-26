@@ -39,7 +39,8 @@ fn prepared(d: &test_daemon::TestDaemon, id: &str, text: &str) {
 fn claim_ids(d: &test_daemon::TestDaemon) -> Vec<String> {
     let answer =
         crate::test_daemon::Call::new("internal mail-claim", serde_json::json!({"session": s1()}))
-            .answer_with(&d.daemon, &invocation(d));
+            .authorship(invocation(d).authorship)
+            .answer(&d.daemon);
     crate::test_answers::ok(answer)["deliveries"]
         .as_array()
         .unwrap()
@@ -329,7 +330,7 @@ fn role_addresses_and_role_starts() {
         refused["error"]["message"],
         "no_live_instance: the role reviewer has no running session and none ran before to take a directory from; start one with `polylogue start --role reviewer --cwd DIR TEXT`"
     );
-    let started = crate::test_answers::ok(crate::test_daemon::Call::new("start", serde_json::json!({"role": Some("reviewer"), "cwd": work.path(), "text": "look at the store"})).answer_with(&d.daemon, &invocation(&d)));
+    let started = crate::test_answers::ok(crate::test_daemon::Call::new("start", serde_json::json!({"role": Some("reviewer"), "cwd": work.path(), "text": "look at the store"})).authorship(invocation(&d).authorship).answer(&d.daemon));
     assert_eq!(started["session"], "codex:t1");
     assert_eq!(started["role"], "reviewer");
     let first = &turns(fixture.path())[0];
@@ -378,7 +379,7 @@ fn role_addresses_and_role_starts() {
     assert_eq!(restarted["deliveries"][0]["session"], "codex:t2");
     assert!(turns(fixture.path())[2].contains("one more"));
     // A role's harness and an explicit other harness conflict.
-    let conflict = serde_json::to_value(crate::test_daemon::Call::new("start", serde_json::json!({"in": Some("hermes"), "role": Some("reviewer"), "cwd": work.path(), "text": "x"})).answer_with(&d.daemon, &invocation(&d)))
+    let conflict = serde_json::to_value(crate::test_daemon::Call::new("start", serde_json::json!({"in": Some("hermes"), "role": Some("reviewer"), "cwd": work.path(), "text": "x"})).authorship(invocation(&d).authorship).answer(&d.daemon))
     .unwrap();
     assert_eq!(conflict["error"]["kind"], "bad_value");
 }

@@ -350,18 +350,13 @@ impl ReadServices for LineReads<'_> {
                 .map_or(Default::default(), |accepted| accepted.format),
         };
         // A continuation obeys the same declared options as its first page.
-        let row = crate::commands::command("rows").expect("rows is a row");
-        row.registration()
-            .expect("rows is answered by the daemon")
-            .admit(
-                &request.arguments,
-                row,
-                &crate::commands::Caller {
-                    surface: crate::commands::Surface::Cli,
-                    cwd: None,
-                },
-            )
-            .map_err(|failure| Error::Operation(failure.error))?;
+        let row = crate::commands::command(&request.operation).expect("rows is a row");
+        crate::daemon::handler::policy(
+            row,
+            &request.arguments,
+            polylogue_model::authorship::Channel::Cli,
+        )
+        .map_err(|failure| Error::Operation(failure.error))?;
         Ok(ReadyCall { request })
     }
     fn attachment_call(&self, at: &AttachmentPlace) -> Result<ReadyCall, Error> {

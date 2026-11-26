@@ -108,11 +108,11 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         )),
         via: polylogue_model::authorship::Channel::Mcp,
     };
-    let invocation = w
-        .daemon
-        .invocation(&caller)
-        .with_calling_session(Some("claude-code:s1".into()));
-    crate::test_answers::ok(save.answer_with(&w.daemon, &invocation));
+    let as_caller = |call: crate::test_daemon::Call| {
+        call.authorship(caller.clone())
+            .calling_session("claude-code:s1")
+    };
+    crate::test_answers::ok(as_caller(save).answer(&w.daemon));
     let kept = crate::test_answers::step(
         crate::test_daemon::Call::new(
             "rows",
@@ -135,9 +135,8 @@ fn query_explanation_uses_archive_definitions_session_and_day_without_writes() {
         "query:mine".into(),
         kept.kept.result.clone(),
     ] {
-        let result = crate::test_answers::ok(
-            (explain(Some(&expression))).answer_with(&w.daemon, &invocation),
-        );
+        let result =
+            crate::test_answers::ok(as_caller(explain(Some(&expression))).answer(&w.daemon));
         let explanation = &result["reply"]["plan"]["explanation"];
         let program = &explanation["program"];
         // A unit's rows are read key first; a derived relation whole.

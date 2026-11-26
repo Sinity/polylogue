@@ -349,7 +349,7 @@ fn every_store_error_variant_has_a_code_and_kind() {
         ),
         (
             E::ReadPoolClosed,
-            Code::NotRunning,
+            Code::ShuttingDown,
             FailureKind::NotRunning,
             true,
         ),

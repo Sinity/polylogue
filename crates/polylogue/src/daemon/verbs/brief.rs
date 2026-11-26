@@ -3,7 +3,7 @@
 //! sessions are an index of them, search words are a recall.
 use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built_use};
 use crate::daemon::Failure;
-use crate::daemon::handler::{Call, Handler};
+use crate::daemon::handler::{Call, Operation};
 use crate::daemon::service::handlers;
 use crate::protocol::context;
 use crate::protocol::line::StepAnswer;

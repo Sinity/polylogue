@@ -114,7 +114,7 @@ fn open_and_begin_failures_release_the_slot_for_waiters() {
             let pool = &pool;
             let dir = &dir;
             let attempt = scope.spawn(move || {
-                let result = pool.acquire(|path| {
+                let result = pool.acquire(Lane::Ordinary, None, |path| {
                     opening.send(()).unwrap();
                     released.recv().unwrap();
                     if begin_failure {
@@ -152,7 +152,7 @@ fn close_while_connecting_refuses_the_pending_reader_and_releases_its_slot() {
         let pool = &pool;
         let attempt = scope.spawn(move || {
             assert!(matches!(
-                pool.acquire(|path| {
+                pool.acquire(Lane::Ordinary, None, |path| {
                     opening.send(()).unwrap();
                     released.recv().unwrap();
                     pool.connect(path)
@@ -305,3 +305,63 @@ mod order;
 #[path = "tests/known_inputs.rs"]
 mod known_inputs;
 mod observations;
+
+/// The reserved connection serves only the interactive lane, and readers in
+/// the background lane are held by one thread at a time; a thread that
+/// already holds one may take another.
+#[test]
+fn lanes_decide_the_reserved_connection_and_one_background_holder() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(&dir.path().join("archive")).unwrap();
+    let pool = ReadPool::with_budget(&fixture.archive, 2, 8 << 20).unwrap();
+    let unbounded = &limit::ReadLimit::without_deadline(Default::default());
+    let pool = &pool;
+    let expired =
+        || limit::ReadLimit::new(std::time::Duration::from_millis(20), Default::default());
+    std::thread::scope(|scope| {
+        // Both ordinary connections taken on another thread.
+        let (held, taken) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let holder = scope.spawn(move || {
+            let first = pool.checkout(Lane::Ordinary, unbounded).unwrap();
+            let second = pool.checkout(Lane::Ordinary, unbounded).unwrap();
+            held.send(()).unwrap();
+            released.recv().unwrap();
+            drop((first, second));
+        });
+        taken.recv().unwrap();
+        let ordinary = scope
+            .spawn(|| pool.checkout(Lane::Ordinary, &expired()).map(drop))
+            .join()
+            .unwrap();
+        assert!(matches!(ordinary, Err(StoreError::ReadDeadlineExceeded)));
+        let interactive = scope
+            .spawn(|| pool.checkout(Lane::Interactive, &expired()).map(drop))
+            .join()
+            .unwrap();
+        assert!(interactive.is_ok(), "{interactive:?}");
+        release.send(()).unwrap();
+        holder.join().unwrap();
+    });
+    std::thread::scope(|scope| {
+        let (held, taken) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel::<()>();
+        let holder = scope.spawn(move || {
+            let first = pool.checkout(Lane::Background, unbounded).unwrap();
+            // The holder's own second background reader is not refused.
+            let second = pool.checkout(Lane::Background, unbounded).unwrap();
+            held.send(()).unwrap();
+            released.recv().unwrap();
+            drop((first, second));
+        });
+        taken.recv().unwrap();
+        let other = scope
+            .spawn(|| pool.checkout(Lane::Background, &expired()).map(drop))
+            .join()
+            .unwrap();
+        assert!(matches!(other, Err(StoreError::ReadDeadlineExceeded)));
+        release.send(()).unwrap();
+        holder.join().unwrap();
+        assert!(pool.checkout(Lane::Background, &expired()).is_ok());
+    });
+}

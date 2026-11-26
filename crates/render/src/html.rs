@@ -118,7 +118,7 @@ fn ready(call: &ReadyCall, commands: Option<&OperationDeclarations>) -> Result<M
     })?;
     let cli = commands.cli_command(&call.request)?;
     Ok(
-        html! { @if let Ok(url) = crate::ready::http_url(commands, &call.request) { a class="ready-call" href=(url) { (cli) } } @else { code class="ready-call" { (cli) } } },
+        html! { @if let Ok(url) = crate::ready::reader_url(commands, &call.request) { a class="ready-call" href=(url) { (cli) } } @else { code class="ready-call" { (cli) } } },
     )
 }
 /// The notes after an attachment's description, shared with the text encoders.

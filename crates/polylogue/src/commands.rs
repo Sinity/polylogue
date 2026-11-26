@@ -15,11 +15,10 @@
 pub(crate) mod arguments;
 
 use crate::cli::{calling_process, local};
-use crate::daemon::handler::{FeedRegistration, Registration, daemon, feed, streams};
+use crate::daemon::handler::{Row, daemon};
 use crate::daemon::service::handlers as H;
 use crate::daemon::service::{acts, browser, feeds, line};
 use serde_json::Value;
-use std::path::PathBuf;
 use std::process::ExitCode;
 use std::sync::LazyLock;
 
@@ -181,13 +180,8 @@ pub type Deliver = fn(
 /// What runs a command.
 #[derive(Clone, Copy)]
 pub enum Run {
-    /// The daemon answers through the row's handler.
-    Daemon(Registration),
-    /// A stream the command line follows over the socket.
-    Feed {
-        registration: FeedRegistration,
-        deliver: Deliver,
-    },
+    /// The daemon answers through the row's operation.
+    Daemon(&'static dyn Row),
     /// Runs in the calling process (the CLI only), with `--json`.
     Local(
         fn(
@@ -265,14 +259,17 @@ pub struct Command {
     /// What the command line does with the answer in place of printing it
     /// (`export` writes a file, `continue --exec` runs the plan).
     pub output: Option<OutputHandler>,
+    /// What the command line does in place of one request and its printed
+    /// answer: `dev feed` follows its events.
+    pub deliver: Option<Deliver>,
 }
 
 impl Command {
-    /// The handler registration of a row the daemon answers once.
-    pub(crate) fn registration(&self) -> Option<&Registration> {
-        match &self.run {
-            Run::Daemon(registration) => Some(registration),
-            Run::Feed { .. } | Run::Local(..) | Run::ConfiguredLocal(..) => None,
+    /// The operation of a row the daemon answers.
+    pub(crate) fn operation(&self) -> Option<&'static dyn Row> {
+        match self.run {
+            Run::Daemon(operation) => Some(operation),
+            Run::Local(..) | Run::ConfiguredLocal(..) => None,
         }
     }
 
@@ -291,35 +288,6 @@ pub struct Group {
     pub help: &'static str,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Surface {
-    Cli,
-    Mcp,
-    Http,
-    Hook,
-}
-
-/// Who is calling, for what a command's arguments leave open.
-#[derive(Clone, Debug)]
-pub struct Caller {
-    pub surface: Surface,
-    /// The caller's working directory, which `cwd` defaults to; HTTP
-    /// callers have none and must name one.
-    pub cwd: Option<PathBuf>,
-}
-
-impl Caller {
-    /// The sender a prepared context is recorded under: MCP hands it to a
-    /// model; the command line and the reader show it to a person.
-    pub fn sender(&self) -> Option<polylogue_model::DeliverySender> {
-        match self.surface {
-            Surface::Mcp => Some(polylogue_model::DeliverySender::Mcp),
-            Surface::Hook => Some(polylogue_model::DeliverySender::Hook),
-            Surface::Cli | Surface::Http => None,
-        }
-    }
-}
-
 /// A command on the command line only, sent to the daemon unless its
 /// action is local.
 const CLI: Command = Command {
@@ -336,6 +304,7 @@ const CLI: Command = Command {
     http: false,
     writes: false,
     output: None,
+    deliver: None,
 };
 
 pub const GROUPS: &[Group] = &[
@@ -387,7 +356,7 @@ pub static COMMANDS: &[Command] = &[
         reason: "Acts on selected rows with verbs, in order, on every surface",
         latency: command_surface::LatencyClass::Search,
         help: "A selection and the verbs that act on its rows, in order: the line every surface carries",
-        run: Run::Daemon(streams::<line::Line>()),
+        run: Run::Daemon(daemon::<line::Line>()),
         cli: Cli::Line,
         tool: Some(Tool::Read),
         http: true,
@@ -497,12 +466,11 @@ pub static COMMANDS: &[Command] = &[
     },
     Command {
         name: "dev feed",
+        reason: "Give a consumer every change since its last applied position, once",
         examples: &["polylogue dev feed"],
         help: "A finite JSON-lines change feed; persist its new position only after applying the complete batch",
-        run: Run::Feed {
-            registration: feed::<feeds::Changes>(),
-            deliver: crate::cli::changes::run,
-        },
+        run: Run::Daemon(daemon::<feeds::Changes>()),
+        deliver: Some(crate::cli::changes::run),
         http: true,
         ..CLI
     },
@@ -776,7 +744,7 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
             for tool in Tool::ALL {
                 if COMMANDS
                     .iter()
-                    .any(|command| command.tool == Some(tool) && command.registration().is_some())
+                    .any(|command| command.tool == Some(tool) && command.operation().is_some())
                 {
                     declarations
                         .declare_tool(command_surface::ToolFamily {
@@ -793,13 +761,7 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                     Run::Local(_, declare, _) | Run::ConfiguredLocal(_, declare, _) => {
                         declare(&mut declarations, command)
                     }
-                    Run::Feed { registration, .. } => {
-                        registration.declare(&mut declarations, command)
-                    }
-                    _ => command
-                        .registration()
-                        .expect("request registration")
-                        .declare(&mut declarations, command),
+                    Run::Daemon(operation) => operation.declare(&mut declarations, command),
                 }
                 if command.cli == Cli::Line {
                     declarations
@@ -817,19 +779,6 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
             declarations.finish()
         });
     &DECLARATIONS
-}
-
-/// Every daemon row's handler bound to its declaration.
-pub fn table(
-    daemon: std::sync::Arc<crate::daemon::service::Daemon>,
-) -> command_surface::OperationTable {
-    let mut table = command_surface::OperationTable::new(std::sync::Arc::clone(declarations()));
-    for command in COMMANDS.iter() {
-        if let Some(registration) = command.registration() {
-            registration.bind(std::sync::Arc::clone(&daemon), &mut table, command);
-        }
-    }
-    table
 }
 
 #[cfg(test)]

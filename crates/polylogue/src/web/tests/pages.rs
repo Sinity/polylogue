@@ -1,8 +1,10 @@
+/// The feed's lines, without the final answer that ends the reply.
 fn feed_frames(text: &str) -> Vec<serde_json::Value> {
     command_surface::SseDecoder::new()
         .push(text.as_bytes())
         .unwrap()
         .into_iter()
+        .filter(|event| event.event != "answer")
         .map(|event| serde_json::from_str(&event.data).unwrap())
         .collect()
 }
@@ -21,17 +23,6 @@ fn page_navigation_and_message_routes_use_the_shared_selection() {
             .as_ref()
             .expect("small budget continues");
         assert_eq!(next.request.operation, "rows");
-        let (_, headers, _) = send(
-            &r,
-            authed(get("/m/claude-code:u1"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(
-            headers[header::LOCATION],
-            "/api/v1/rows?selection=message%3Aclaude-code%3Au1&steps=read"
-        );
         let (status, _, body) = send_html(&r, "/m/claude-code:u1").await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
@@ -401,17 +392,11 @@ fn previous_links_reopen_unicode_fragments_without_browser_history() {
 }
 
 #[test]
-fn message_redirects_quote_literal_ids_without_resolving_source_rows() {
+fn message_urls_read_literal_ids_without_resolving_source_rows() {
     let r = reader();
     let id = "claude-code:slash\\tab\tline\nquote\"AKIAIOSFODNN7EXAMPLE";
     rt().block_on(async {
         let path = format!("/m/{}", polylogue_render::html::encode_path_segment(id));
-        let (status, headers, _) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-        assert_eq!(status, StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(
-            headers[header::LOCATION],
-            "/api/v1/rows?selection=message%3Aclaude-code%3Aslash%5Ctab%09line%0Aquote%22AKIAIOSFODNN7EXAMPLE&steps=read"
-        );
         let (status, _, body) = send_html(&r, &path).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     });

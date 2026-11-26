@@ -115,7 +115,7 @@ fn continuation_encodes_the_complete_ready_call_without_decoding_its_cursor() {
             "synthetic",
         )
     };
-    let url = http_url(&read_table(), &call).unwrap();
+    let url = crate::ready::http_url(&read_table(), &call).unwrap();
     let fields = url_parameters(&url);
     assert_eq!(fields["cursor"], "sealed +λ&?");
     let args: Value = serde_json::from_str(&fields["arguments"]).unwrap();

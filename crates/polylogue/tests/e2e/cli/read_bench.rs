@@ -1,7 +1,7 @@
 //! The opt-in benchmark runs in this CLI and daemon test binary.
 use super::read_current::Items;
 use super::*;
-use polylogue_model::read::{ItemKind, ReadItem};
+use polylogue_model::read::ReadItem;
 use serde_json::{Value, json};
 use std::collections::HashSet;
 
@@ -325,11 +325,14 @@ fn check_cancelled_client(env: &crate::Fixture, daemon: &Daemon, expected: &[Str
         ],
     );
     let page = read_page(after);
+    // The first page holds the first message's opening, whole or as the
+    // first fragment of a body longer than the page budget.
+    let opening = expected[0].lines().next().unwrap();
+    let items = serde_json::to_string(&page.document.items).unwrap();
     assert!(
-        page.document
-            .items
-            .iter()
-            .any(|item| { matches!(&item.kind, ItemKind::Text { text } if text == &expected[0]) })
+        items.contains(opening),
+        "the recovery read lost the first message: {}",
+        &items[..items.len().min(2000)]
     );
     eprintln!("read bench: recovery read verified");
     memory(daemon.0.id())

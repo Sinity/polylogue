@@ -116,9 +116,7 @@ fn surface_answer(
                 format: Default::default(),
             };
             writeln!(stream, "{}", serde_json::to_string(&request).unwrap()).unwrap();
-            let mut line = String::new();
-            BufReader::new(stream).read_line(&mut line).unwrap();
-            serde_json::from_str(&line).unwrap()
+            super::socket_answer(stream)
         }
         "mcp" => {
             let reply = mcp.request(
@@ -194,9 +192,7 @@ fn mcp_brief_names_a_delivery_only_when_the_brief_is_not_empty() {
                 request_id,
             );
             writeln!(socket, "{}", serde_json::to_string(&request).unwrap()).unwrap();
-            let mut line = String::new();
-            BufReader::new(socket).read_line(&mut line).unwrap();
-            serde_json::from_str(&line).unwrap()
+            super::socket_answer(socket)
         };
         let brief = |answer| {
             let value = value(answer).unwrap();

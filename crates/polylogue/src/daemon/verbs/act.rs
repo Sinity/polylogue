@@ -5,7 +5,7 @@ use super::{
     RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use, sessions,
 };
 use crate::daemon::Failure;
-use crate::daemon::handler::{Call, Handler};
+use crate::daemon::handler::{Call, Operation};
 use crate::daemon::service::acts;
 use crate::protocol::act;
 use crate::protocol::line::{SendReport, Skipped, StepAnswer};

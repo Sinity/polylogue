@@ -1,7 +1,5 @@
 use super::*;
 use polylogue_store::Archive;
-use std::future::Future;
-use std::task::Poll;
 use std::time::{Duration, Instant};
 
 #[test]
@@ -81,75 +79,63 @@ fn a_socket_path_no_client_can_connect_to_is_refused() {
     assert!(!path.exists());
 }
 
-#[tokio::test]
-async fn an_already_published_socket_connects_on_the_first_attempt() {
+#[test]
+fn an_already_published_socket_connects_on_the_first_attempt() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("daemon.sock");
     let _listener = bind(&path).unwrap();
-    crate::client::wait_for_socket(&path, Some(Instant::now() + Duration::from_secs(2)))
-        .await
-        .unwrap();
+    crate::client::wait_for_socket(&path, Some(Instant::now() + Duration::from_secs(2))).unwrap();
 }
 
-#[tokio::test]
-async fn socket_publication_wakes_an_already_waiting_client() {
+/// Waits on another thread, which must still be waiting after a moment.
+fn waiting(path: &std::path::Path) -> std::sync::mpsc::Receiver<io::Result<()>> {
+    let (done, result) = std::sync::mpsc::channel();
+    let path = path.to_owned();
+    std::thread::spawn(move || {
+        let _ = done.send(crate::client::wait_for_socket(&path, None));
+    });
+    assert!(
+        result.recv_timeout(Duration::from_millis(50)).is_err(),
+        "the wait ended before anything happened"
+    );
+    result
+}
+
+#[test]
+fn socket_publication_wakes_an_already_waiting_client() {
     let dir = tempfile::tempdir().unwrap();
     let (_archive, _lock) = Archive::open_or_create(dir.path()).unwrap();
     let path = dir.path().join("daemon.sock");
-    let wait = crate::client::wait_for_socket(&path, None);
-    tokio::pin!(wait);
-    std::future::poll_fn(|context| {
-        assert!(wait.as_mut().poll(context).is_pending());
-        Poll::Ready(())
-    })
-    .await;
+    let result = waiting(&path);
     let _listener = bind(&path).unwrap();
-    tokio::time::timeout(Duration::from_secs(2), wait)
-        .await
+    result
+        .recv_timeout(Duration::from_secs(2))
         .unwrap()
         .unwrap();
 }
 
-#[tokio::test]
-async fn failed_archive_startup_wakes_an_unlimited_client() {
+#[test]
+fn failed_archive_startup_wakes_an_unlimited_client() {
     let dir = tempfile::tempdir().unwrap();
     let (_archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let path = dir.path().join("daemon.sock");
-    let wait = crate::client::wait_for_socket(&path, None);
-    tokio::pin!(wait);
-    std::future::poll_fn(|context| {
-        assert!(wait.as_mut().poll(context).is_pending());
-        Poll::Ready(())
-    })
-    .await;
+    let result = waiting(&path);
     drop(lock);
-    let error = tokio::time::timeout(Duration::from_secs(2), wait)
-        .await
+    let error = result
+        .recv_timeout(Duration::from_secs(2))
         .unwrap()
         .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
 }
 
-#[tokio::test]
-async fn socket_wait_times_out_at_its_deadline_and_returns_a_startup_failure_at_once() {
+#[test]
+fn socket_wait_times_out_at_its_deadline_and_returns_a_startup_failure_at_once() {
     let dir = tempfile::tempdir().unwrap();
     let (_archive, lock) = Archive::open_or_create(dir.path()).unwrap();
     let path = dir.path().join("daemon.sock");
-    let error = tokio::time::timeout(
-        Duration::from_secs(2),
-        crate::client::wait_for_socket(&path, Some(Instant::now())),
-    )
-    .await
-    .unwrap()
-    .unwrap_err();
+    let error = crate::client::wait_for_socket(&path, Some(Instant::now())).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::TimedOut);
     drop(lock);
-    let error = tokio::time::timeout(
-        Duration::from_secs(2),
-        crate::client::wait_for_socket(&path, None),
-    )
-    .await
-    .unwrap()
-    .unwrap_err();
+    let error = crate::client::wait_for_socket(&path, None).unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::NotFound);
 }

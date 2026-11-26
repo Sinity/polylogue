@@ -20,7 +20,6 @@ use tokio::{
     signal::unix::{SignalKind, signal},
     sync::oneshot,
 };
-use tokio_util::sync::CancellationToken;
 
 /// Reports termination even while unwinding; joins keep the result.
 /// A finite completion snapshot explicitly marks its expected return.
@@ -452,29 +451,28 @@ fn worker_stop(
 const READINESS_BUDGET: Duration = Duration::from_secs(2);
 
 async fn probe(archive: &polylogue_store::Archive, budget: Duration) -> bool {
-    let request = command_surface::Request {
-        operation: super::server::PING.into(),
-        arguments: serde_json::json!({}),
-        request_id: "daemon-liveness".into(),
-        deadline: command_surface::Deadline::None,
-        budget_tokens: Default::default(),
-        cursor: None,
-        fresh: false,
-        format: Default::default(),
-    };
-    matches!(
-        tokio::time::timeout(
-            budget,
-            crate::client::call_ready_as(
-                archive,
-                &request,
-                &CancellationToken::new(),
-                Default::default(),
-            )
-        )
-        .await,
-        Ok(Ok(_))
-    )
+    let archive = archive.clone();
+    tokio::task::spawn_blocking(move || {
+        let request = command_surface::Request {
+            operation: super::server::PING.into(),
+            arguments: serde_json::json!({}),
+            request_id: "daemon-liveness".into(),
+            deadline: command_surface::Deadline::None,
+            budget_tokens: Default::default(),
+            cursor: None,
+            fresh: false,
+            format: Default::default(),
+        };
+        crate::client::Exchange {
+            caller: Default::default(),
+            budget: Some(budget),
+            ..crate::client::Exchange::new(&request)
+        }
+        .call_ready(&archive)
+        .is_ok_and(|answer| !answer.is_error())
+    })
+    .await
+    .unwrap_or(false)
 }
 
 fn drain(mut app: Started) -> io::Result<()> {

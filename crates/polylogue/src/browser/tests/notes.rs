@@ -45,9 +45,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
         )
         .unwrap(),
     );
-    let mut socket =
-        server::Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
-            .unwrap();
+    let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
     assert_eq!(
         exchange(
             &host,
@@ -76,9 +74,7 @@ fn selected_passage_notes_survive_restart_and_identical_retries() {
     drop(runtime);
     let mut runtime =
         crate::test_daemon::start_runtime(&root, config, service::ArchiveMode::Standalone).unwrap();
-    let mut socket =
-        server::Server::start(Arc::clone(&runtime.daemon), Arc::clone(&runtime.operations))
-            .unwrap();
+    let mut socket = server::Server::start(Arc::clone(&runtime.daemon)).unwrap();
     let retry = exchange(&host, "POST", "/v1/notes", input.to_string().as_bytes());
     assert_eq!(retry.status, 200, "{}", retry.json());
     assert_eq!(retry.json()["note"]["id"], input["request_id"]);

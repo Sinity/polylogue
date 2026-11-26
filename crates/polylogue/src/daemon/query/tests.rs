@@ -1718,7 +1718,7 @@ fn optional_count_timeout_preserves_a_completed_query_answer() {
         true,
         false,
         "query",
-        Some("sessions"),
+        &|| Some("sessions".into()),
         || {
             let reader = pool.reader().unwrap();
             let mut prepared = super::prepare(&reader, ask("sessions")).unwrap();
@@ -1727,8 +1727,8 @@ fn optional_count_timeout_preserves_a_completed_query_answer() {
             polylogue_store::query::Statements::Keyed(rows) => rows.count = "WITH RECURSIVE slow(n) AS (SELECT 0 UNION ALL SELECT n+1 FROM slow WHERE n<1000000000) SELECT count(*), 0 FROM slow".into(),
             _ => panic!("keyed session selection"),
         }
-            crate::daemon::handler::finish_read_phase("optional query count").unwrap();
-            let answer = prepared.complete().unwrap();
+            crate::daemon::handler::hand_over("optional query count").unwrap();
+            let answer = prepared.complete_within(&limit).unwrap();
             command_surface::Answer {
                 outcome: command_surface::Outcome::Ok(serde_json::to_value(answer.value).unwrap()),
                 envelope: Default::default(),

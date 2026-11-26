@@ -4,8 +4,6 @@ use super::{Archive, fail};
 use crate::daemon::query::feed::Line;
 use polylogue_model::ChangePosition;
 use polylogue_model::JsonExt as _;
-#[cfg(test)]
-use std::io::Read;
 use std::io::{self, Write};
 use std::process::ExitCode;
 
@@ -65,14 +63,14 @@ fn send(
         })
         .transpose()?;
     consume(output, previous.as_deref(), |callback| {
-        crate::client::stream::run_call(archive, request, timeout, callback)
+        crate::client::call_streaming(archive, request, timeout, callback)
     })
 }
 
 #[cfg(test)]
-fn receive(input: impl Read, output: &mut impl Write, previous: Option<&str>) -> io::Result<u8> {
+fn receive(mut input: &[u8], output: &mut impl Write, previous: Option<&str>) -> io::Result<u8> {
     consume(output, previous, |callback| {
-        crate::client::stream::receive(input, callback)
+        crate::client::receive(&mut input, None, callback)
     })
 }
 
@@ -81,7 +79,7 @@ fn consume(
     previous: Option<&str>,
     run: impl FnOnce(
         &mut dyn FnMut(command_surface::SseEvent) -> io::Result<bool>,
-    ) -> Result<(), crate::client::stream::Error>,
+    ) -> io::Result<Option<command_surface::Answer<serde_json::Value>>>,
 ) -> io::Result<u8> {
     let mut begun = None;
     let mut seen = 0_u64;
@@ -198,16 +196,19 @@ fn consume(
         }
         Ok(false)
     });
-    match result {
-        Ok(()) => Ok(0),
-        Err(crate::client::stream::Error::Io(error)) => Err(error),
-        Err(crate::client::stream::Error::Answer(answer)) => {
+    match result? {
+        None => Ok(0),
+        Some(answer) if answer.is_error() => {
             let code = answer.exit_code();
             serde_json::to_writer(&mut *output, &answer)?;
             output.write_all(b"\n")?;
             output.flush()?;
             Ok(code)
         }
+        Some(_) => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the change feed answered without completing its batch",
+        )),
     }
 }
 

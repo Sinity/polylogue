@@ -91,12 +91,10 @@ pub(crate) fn run(
         if left.is_some_and(|left| left.is_zero()) {
             return Ok(marks);
         }
-        // Waiting for the next commit is not work: the executor place goes
-        // to other requests meanwhile.
         if commits.is_none() && left.is_none() {
             return Ok(marks);
         }
-        crate::daemon::executor::outside(|| match (&commits, left) {
+        match (&commits, left) {
             (Some(commits), Some(left)) => {
                 let _ = commits.recv_timeout(left);
             }
@@ -107,7 +105,7 @@ pub(crate) fn run(
             // can end the follow.
             (None, Some(left)) => std::thread::sleep(left),
             (None, None) => unreachable!("returned above"),
-        });
+        }
     }
 }
 

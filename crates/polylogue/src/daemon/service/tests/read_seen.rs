@@ -1,6 +1,5 @@
 //! Physical-session display progress through the ordinary rows consumer.
 use super::*;
-use crate::commands::Surface;
 use crate::test_daemon::{Call, TestDaemon};
 use polylogue_model::{Reference, read::*, user::SeenMark};
 use serde_json::json;
@@ -21,6 +20,7 @@ fn marks_of(d: &TestDaemon, target: &str) -> Vec<SeenMark> {
     // A synchronous write drains the earlier acknowledgement, without polling.
     d.set("browser.actions", "on");
     let author = request(json!({"verb":"read"}))
+        .caller
         .authorship
         .author
         .to_string();
@@ -166,15 +166,19 @@ fn displayed_progress_is_surface_bound_and_partial_entries_remain_unseen() {
         "fixture must require transfer fragments"
     );
     let d = test_daemon::start(&text);
-    for surface in [Surface::Cli, Surface::Http, Surface::Hook] {
-        let displayed = surface != Surface::Cli;
+    for surface in [
+        command_surface::Via::Cli,
+        command_surface::Via::Web,
+        command_surface::Via::Hook,
+    ] {
+        let displayed = surface != command_surface::Via::Cli;
         let mut next = Some(request(
             json!({"verb":"read", "displayed":displayed, "budget":100000}),
         ));
         let mut calls = std::collections::BTreeSet::new();
         while let Some(mut call) = next.take() {
             call.arguments["steps"][0]["displayed"] = displayed.into();
-            let page = crate::test_answers::read(call.surface(surface).answer(&d.daemon));
+            let page = crate::test_answers::read(call.channel(surface).answer(&d.daemon));
             assert!(marks(&d).is_empty(), "{surface:?} cannot mark this page");
             if let Some(ready) = page.document.footer.next {
                 assert!(calls.insert(serde_json::to_string(&ready.request).unwrap()));
@@ -186,7 +190,8 @@ fn displayed_progress_is_surface_bound_and_partial_entries_remain_unseen() {
     let mut saw_fragment = false;
     // The lead-only page and an unfinished first body must not consume a message.
     while let Some(call) = next.take() {
-        let page = crate::test_answers::read(call.surface(Surface::Mcp).answer(&d.daemon));
+        let page =
+            crate::test_answers::read(call.channel(command_surface::Via::Mcp).answer(&d.daemon));
         saw_fragment |= page
             .document
             .items
@@ -210,7 +215,8 @@ fn displayed_progress_is_surface_bound_and_partial_entries_remain_unseen() {
     let mut next = Some(request(json!({"verb":"read", "budget":100000})));
     let mut calls = std::collections::BTreeSet::new();
     while let Some(call) = next.take() {
-        let page = crate::test_answers::read(call.surface(Surface::Mcp).answer(&d.daemon));
+        let page =
+            crate::test_answers::read(call.channel(command_surface::Via::Mcp).answer(&d.daemon));
         if let Some(ready) = &page.document.footer.next {
             assert!(
                 calls.insert(serde_json::to_string(&ready.request).unwrap()),
@@ -244,7 +250,7 @@ fn inline_child_last_keeps_the_latest_rendered_physical_parent_progress() {
     let page = crate::test_answers::read(Call::new("rows", json!({
         "selection":target,
         "steps":[{"verb":"read", "show":["spawns:full", "harness:full"], "hide":["tools"], "budget":100000}],
-    })).surface(Surface::Mcp).answer(&d.daemon));
+    })).channel(command_surface::Via::Mcp).answer(&d.daemon));
     assert!(
         page.document.footer.next.is_none(),
         "the small family must fit one page"
@@ -301,7 +307,7 @@ fn logical_seen_keeps_unread_root_when_its_continuation_was_read_first() {
     let step = json!({"verb":"read","from":"seen","budget":100000,"hide":["tools"]});
     let continuation = crate::test_answers::read(
         composed_call("session:claude-code:cont", step.clone())
-            .surface(Surface::Mcp)
+            .channel(command_surface::Via::Mcp)
             .answer(&d.daemon),
     );
     assert_eq!(body_text(&continuation), ["continuation question"]);
@@ -316,7 +322,7 @@ fn logical_seen_keeps_unread_root_when_its_continuation_was_read_first() {
     );
     let root = crate::test_answers::read(
         composed_call("root:claude-code:root", step.clone())
-            .surface(Surface::Mcp)
+            .channel(command_surface::Via::Mcp)
             .answer(&d.daemon),
     );
     assert_eq!(body_text(&root), ["root question"]);
@@ -344,7 +350,7 @@ fn logical_seen_keeps_copied_prefix_progress_on_its_physical_owner() {
             "session:claude-code:fork",
             json!({"verb":"read","view":"context","at":"claude-code:f1","budget":100000}),
         )
-        .surface(Surface::Mcp)
+        .channel(command_surface::Via::Mcp)
         .answer(&d.daemon),
     );
     assert_eq!(body_text(&inherited), ["root question"]);
@@ -354,7 +360,7 @@ fn logical_seen_keeps_copied_prefix_progress_on_its_physical_owner() {
     );
     let fork = crate::test_answers::read(
         composed_call("root:claude-code:fork", step.clone())
-            .surface(Surface::Mcp)
+            .channel(command_surface::Via::Mcp)
             .answer(&d.daemon),
     );
     assert_eq!(body_text(&fork), ["forked question"]);
@@ -417,7 +423,7 @@ fn logical_seen_cursor_keeps_all_accepted_bounds_through_parent_append_and_resta
             "root:claude-code:root",
             json!({"verb":"read","from":"seen","budget":1000,"hide":["annotations"]}),
         )
-        .surface(Surface::Mcp)
+        .channel(command_surface::Via::Mcp)
         .answer(&d.daemon),
     );
     let next = first
@@ -433,7 +439,7 @@ fn logical_seen_cursor_keeps_all_accepted_bounds_through_parent_append_and_resta
             "root:claude-code:root",
             json!({"verb":"read","budget":100000,"hide":["annotations"]}),
         )
-        .surface(Surface::Mcp)
+        .channel(command_surface::Via::Mcp)
         .answer(&d.daemon),
     );
     let mut accepted = std::collections::BTreeSet::new();
@@ -441,7 +447,7 @@ fn logical_seen_cursor_keeps_all_accepted_bounds_through_parent_append_and_resta
         assert!(accepted.insert(serde_json::to_string(&next.request).unwrap()));
         newer = crate::test_answers::read(
             Call::from_request(&next.request)
-                .surface(Surface::Mcp)
+                .channel(command_surface::Via::Mcp)
                 .answer(&d.daemon),
         );
     }
@@ -575,7 +581,7 @@ fn logical_seen_matches_physical_trimming_after_an_inline_spawn_and_parent_tail(
     let step = json!({"verb":"read","show":["spawns:full","harness:full"],"hide":["tools"],"budget":100000});
     let displayed = crate::test_answers::read(
         composed_call("session:claude-code:root", step.clone())
-            .surface(Surface::Mcp)
+            .channel(command_surface::Via::Mcp)
             .answer(&d.daemon),
     );
     assert_eq!(

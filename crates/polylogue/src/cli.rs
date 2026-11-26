@@ -490,22 +490,21 @@ pub fn run(matches: &ArgMatches, startup: &crate::config::Startup) -> ExitCode {
                 Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error),
             };
         }
-        Run::Daemon(_) | Run::Feed { .. } => {}
+        Run::Daemon(_) => {}
     }
     let call = &values.request;
-    if let Run::Feed {
-        registration,
-        deliver,
-    } = cmd.run
+    // The request is checked here as the daemon checks it, so a refusal
+    // needs no daemon.
+    if let Err(failure) = crate::daemon::handler::policy(
+        cmd,
+        &call.arguments,
+        polylogue_model::authorship::Channel::Cli,
+    )
+    .and_then(|row_policy| crate::daemon::handler::refused_options(cmd, &row_policy, call))
     {
-        if let Err(failure) = registration.validate(call) {
-            return fail(
-                policy,
-                json,
-                polylogue_model::Code::BadRequest,
-                &failure.error.message,
-            );
-        }
+        return fail_with(policy, json, &failure.error, &[]);
+    }
+    if let Some(deliver) = cmd.deliver {
         return deliver(&values, startup, call);
     }
     let root = startup.config.archive.clone();
@@ -835,37 +834,25 @@ pub(crate) fn is_down(e: &std::io::Error) -> bool {
     )
 }
 
-pub(crate) fn wait_for_ready<T>(
+/// Runs `call` (a connection), waiting while the archive's daemon is still
+/// opening it, until `deadline_ms`.
+pub(crate) fn when_ready<T>(
     archive: &Archive,
     deadline_ms: Option<i64>,
     mut call: impl FnMut() -> std::io::Result<T>,
-) -> std::io::Result<T> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()?
-        .block_on(when_ready(archive, deadline_ms, || {
-            std::future::ready(call())
-        }))
-}
-
-pub(crate) async fn when_ready<T, F: std::future::Future<Output = std::io::Result<T>>>(
-    archive: &Archive,
-    deadline_ms: Option<i64>,
-    mut call: impl FnMut() -> F,
 ) -> std::io::Result<T> {
     let mut told = false;
     let until = deadline_ms.map(|deadline_ms| {
         std::time::Instant::now() + crate::daemon::execution::remaining(Some(deadline_ms))
     });
     loop {
-        match call().await {
+        match call() {
             Err(e) if is_down(&e) && archive.lock_held() => {
                 if !told {
                     eprintln!("polylogue: waiting for the daemon to finish opening the archive");
                     told = true;
                 }
-                crate::client::wait_for_socket(&archive.socket(), until).await?;
+                crate::client::wait_for_socket(&archive.socket(), until)?;
             }
             other => return other,
         }

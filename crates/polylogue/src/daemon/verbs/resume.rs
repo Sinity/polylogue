@@ -3,7 +3,7 @@
 //! its work to a new session of another harness.
 use super::{Given, RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, sessions};
 use crate::daemon::Failure;
-use crate::daemon::handler::Handler;
+use crate::daemon::handler::Operation;
 use crate::daemon::service::{acts, handlers};
 use crate::protocol::line::StepAnswer;
 use crate::protocol::steps::ResumeStep;

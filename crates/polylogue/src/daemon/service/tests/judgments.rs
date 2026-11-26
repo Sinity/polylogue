@@ -24,9 +24,12 @@ fn send_as(
     request: crate::test_daemon::Call,
     author: Author,
 ) -> command_surface::Answer<serde_json::Value> {
-    let limit = crate::daemon::execution::limit(None, Default::default());
+    let limit = polylogue_store::read::limit::ReadLimit::new(
+        crate::daemon::execution::default_read_deadline(),
+        Default::default(),
+    );
     (request)
-        .limit(limit.clone())
+        .within(&limit.clone())
         .authorship(
             polylogue_model::authorship::Authorship {
                 author,

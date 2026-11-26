@@ -39,7 +39,11 @@ fn a_starting_daemon_is_waited_for() {
                 serde_json::json!({"ready": true}),
             ))
             .unwrap();
-            std::io::Write::write_all(&mut &stream, format!("{reply}\n").as_bytes()).unwrap();
+            std::io::Write::write_all(
+                &mut &stream,
+                format!("event: answer\ndata: {reply}\n\n").as_bytes(),
+            )
+            .unwrap();
             break;
         }
         drop(lock);
@@ -126,7 +130,7 @@ fn shell_completion_escapes_daemon_help_and_omits_control_values() {
 }
 
 #[test]
-fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
+fn an_answer_frame_without_its_end_is_the_daemon_gone() {
     use std::io::{BufRead, Write};
     let directory = tempfile::tempdir().unwrap();
     let archive = Archive::at(directory.path());
@@ -142,7 +146,7 @@ fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
             .unwrap();
         write!(
             stream,
-            "{}",
+            "event: answer\ndata: {}",
             serde_json::to_string(&command_surface::Answer::ok(
                 serde_json::json!({"stale":"complete JSON but incomplete frame"})
             ))
@@ -160,8 +164,12 @@ fn a_json_value_without_its_final_line_boundary_is_not_a_completed_answer() {
         fresh: false,
         format: Default::default(),
     };
-    let error = crate::client::call_ready(&archive, &call).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    let answer = crate::client::call_ready(&archive, &call).unwrap();
+    assert_eq!(
+        answer.failure().and_then(|failure| failure.code.as_deref()),
+        Some("not_running"),
+        "{answer:?}"
+    );
     server.join().unwrap();
 }
 

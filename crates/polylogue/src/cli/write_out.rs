@@ -183,7 +183,7 @@ pub(crate) fn line_stream(
     }
     let archive = Archive::at(&startup.config.archive);
     let result = write_read_stream(startup, parsed, state, |callback| {
-        crate::client::stream::run_call(
+        crate::client::call_streaming(
             &archive,
             &call,
             crate::client::connection_deadline(&call, None),
@@ -395,7 +395,7 @@ fn write_read_stream(
     state: &mut super::run_line::OutputState,
     run: impl FnOnce(
         &mut dyn FnMut(command_surface::SseEvent) -> io::Result<bool>,
-    ) -> Result<(), crate::client::stream::Error>,
+    ) -> io::Result<Option<command_surface::Answer<serde_json::Value>>>,
 ) -> Result<u8, OutputError> {
     use super::line::Destination;
     let json = parsed.line.json;
@@ -405,7 +405,7 @@ fn write_read_stream(
     let mut completed = false;
     let mut code = 0_u8;
     let mut failed = None;
-    let result = run(&mut |frame| {
+    let mut on_frame = |frame: command_surface::SseEvent| {
         let follow_record = frame.event == "record"
             && parsed
                 .steps
@@ -696,7 +696,26 @@ fn write_read_stream(
             }
         }
         Ok(false)
-    });
+    };
+    // The final answer ends the line like its `steps` events; a failure
+    // after events have arrived is that answer's error.
+    let result = match run(&mut on_frame) {
+        Ok(Some(answer)) if !answer.is_error() => serde_json::to_string(&answer)
+            .map_err(io::Error::other)
+            .and_then(|data| {
+                on_frame(command_surface::SseEvent {
+                    id: None,
+                    event: "answer".into(),
+                    data,
+                    retry: None,
+                })
+            })
+            .map(drop)
+            .map_err(Refusal::Io),
+        Ok(Some(answer)) => Err(Refusal::Answer(Box::new(answer))),
+        Ok(None) => Ok(()),
+        Err(error) => Err(Refusal::Io(error)),
+    };
     if let Err(error) = result {
         let kept = if let Some(Sink::Directory(bundle)) = sink.as_mut() {
             Some(bundle.error(error.to_string()).to_string())
@@ -704,15 +723,7 @@ fn write_read_stream(
             None
         };
         return Err(match error {
-            crate::client::stream::Error::Answer(mut answer)
-                if matches!(
-                    answer.as_ref(),
-                    command_surface::Answer {
-                        outcome: command_surface::Outcome::Error(_),
-                        ..
-                    }
-                ) =>
-            {
+            Refusal::Answer(mut answer) => {
                 if let (
                     Some(note),
                     command_surface::Answer {
@@ -726,7 +737,7 @@ fn write_read_stream(
                 }
                 OutputError::Answer(answer)
             }
-            other => OutputError::Text(kept.unwrap_or_else(|| other.to_string())),
+            Refusal::Io(other) => OutputError::Text(kept.unwrap_or_else(|| other.to_string())),
         });
     }
     if !completed {
@@ -734,6 +745,24 @@ fn write_read_stream(
     }
     Ok(code)
 }
+/// How a streamed line ended without completing.
+enum Refusal {
+    Answer(Box<command_surface::Answer<serde_json::Value>>),
+    Io(io::Error),
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Answer(answer) => match answer.failure() {
+                Some(failure) => formatter.write_str(&failure.message),
+                None => formatter.write_str("the line failed"),
+            },
+            Self::Io(error) => error.fmt(formatter),
+        }
+    }
+}
+
 fn written(value: serde_json::Value, code: u8) -> io::Result<()> {
     let answer = if code == 5 {
         command_surface::Answer {

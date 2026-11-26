@@ -170,15 +170,12 @@ async fn picker_call(
     archive: &Archive,
     request: &RunnableRequest,
 ) -> picker::Result<Answer<Value>> {
-    crate::client::call_ready_as(
-        archive,
-        request,
-        &tokio_util::sync::CancellationToken::new(),
-        crate::client::this_process(),
-    )
-    .await
-    .map_err(client_failure)
-    .map_err(crate::daemon::Failure::from)
+    let (archive, request) = (archive.clone(), request.clone());
+    tokio::task::spawn_blocking(move || crate::client::call_ready(&archive, &request))
+        .await
+        .map_err(crate::daemon::Failure::internal)?
+        .map_err(client_failure)
+        .map_err(crate::daemon::Failure::from)
 }
 
 fn decoded(answer: &Answer<Value>) -> Result<LineAnswer, command_surface::Failure> {

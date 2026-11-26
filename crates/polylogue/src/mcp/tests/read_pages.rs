@@ -188,7 +188,7 @@ impl AllItems {
         let mut began = false;
         let mut header = None;
         let mut completed = false;
-        crate::client::stream::receive(bytes.as_slice(), |frame| {
+        crate::client::receive(&mut bytes.as_slice(), None, |frame| {
             match frame.event.as_str() {
                 "begin" => {
                     assert!(!began);

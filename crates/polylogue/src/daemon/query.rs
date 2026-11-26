@@ -2,9 +2,8 @@
 //! then count its population within the same read transaction. A slow optional
 //! count leaves the completed rows available.
 
-use polylogue_model::LockExt as _;
+use polylogue_store::Reader;
 use polylogue_store::query::{Options, Program, RowKind, Shape};
-use polylogue_store::{ReadScopeToken, Reader};
 #[cfg(test)]
 use polylogue_store::{SqlValue, query::ColKind};
 use query_language::time::DaySetting;
@@ -620,34 +619,6 @@ impl QueryAnswer {
     }
 }
 
-pub(crate) type CountReply = command_surface::Answer<crate::protocol::query::Answer>;
-pub(super) type CountPageSender = tokio::sync::oneshot::Sender<std::sync::Arc<CountPage>>;
-
-/// The worker and the request can each take the page once. The worker keeps
-/// its reader and takes the page when it has counted that snapshot. The
-/// request may take it first if there is no time left to wait for the count.
-pub(super) struct CountPage {
-    answer: std::sync::Mutex<Option<QueryAnswer>>,
-    freshness: polylogue_model::freshness::ReadFreshness,
-    scope: ReadScopeToken,
-    retry: String,
-}
-
-impl CountPage {
-    fn take(&self) -> Option<QueryAnswer> {
-        self.answer.locked().take()
-    }
-
-    pub(super) fn without_count(&self) -> Option<CountReply> {
-        let mut answer = self.take()?;
-        if let Err(error) = self.scope.check() {
-            return Some(super::service::store_error(&error));
-        }
-        answer.count_deferred(self.retry.clone());
-        Some(super::service::query_outcome(answer, &self.freshness))
-    }
-}
-
 /// An answer whose rows are ready before its optional exact count runs.
 pub struct PreparedQuery<'read, 'pool> {
     reader: &'read Reader<'pool>,
@@ -656,25 +627,25 @@ pub struct PreparedQuery<'read, 'pool> {
     similarity: Option<std::sync::Arc<polylogue_store::vectors::Similarity>>,
 }
 impl PreparedQuery<'_, '_> {
-    pub fn complete(self) -> Result<QueryAnswer, Failure> {
-        self.count(None)
-    }
-
     pub(super) fn is_empty(&self) -> bool {
         self.answer.outcome == Outcome::Empty
     }
 
-    pub(super) fn complete_reply(
+    /// Completes a listing's page with its optional exact count, run on this
+    /// reader after the page under the request's deadline less the time its
+    /// reply needs. A count that runs out answers "count deferred" with the
+    /// command that runs it without a deadline.
+    pub(super) fn complete_within(
         self,
-        freshness: &polylogue_model::freshness::ReadFreshness,
+        limit: &polylogue_store::read::limit::ReadLimit,
     ) -> Result<QueryAnswer, Failure> {
-        self.count(super::handler::count_page_sender().map(|sender| (freshness, sender)))
+        if let (Some(deadline), Some(left)) = (limit.deadline(), limit.remaining()) {
+            limit.stop_by(deadline - super::service::answer_reserve(left));
+        }
+        self.complete()
     }
 
-    fn count(
-        self,
-        offer: Option<(&polylogue_model::freshness::ReadFreshness, CountPageSender)>,
-    ) -> Result<QueryAnswer, Failure> {
+    pub fn complete(self) -> Result<QueryAnswer, Failure> {
         let Self {
             reader,
             answer,
@@ -684,41 +655,12 @@ impl PreparedQuery<'_, '_> {
         let Some(program) = count_program else {
             return Ok(answer);
         };
-        let retry = || {
-            format!(
-                "count deferred; run the exact count without a deadline: polylogue {} --deadline none",
-                polylogue_render::shell_quote(&if program.measure.is_some() {
-                    program.query.clone()
-                } else {
-                    format!("{} | count", program.query)
-                })
-            )
-        };
-        let mut answer = Some(answer);
-        let page = if let Some((freshness, sender)) = offer {
-            let page = std::sync::Arc::new(CountPage {
-                answer: std::sync::Mutex::new(answer.take()),
-                freshness: freshness.clone(),
-                scope: reader.scope_token(),
-                retry: retry(),
-            });
-            sender
-                .send(page.clone())
-                .map_err(|_| Failure::from(polylogue_store::StoreError::ReadCancelled))?;
-            Some(page)
-        } else {
-            None
-        };
         let query_count = || reader.query_count(&program);
         let counts = match similarity {
             Some(similarity) => reader.with_similarity(similarity, query_count),
             None => query_count(),
         }?;
-        let mut answer = match page {
-            Some(page) => page.take(),
-            None => answer,
-        }
-        .ok_or_else(|| Failure::from(polylogue_store::StoreError::ReadCancelled))?;
+        let mut answer = answer;
         if let Some((count, without)) = counts {
             match &mut answer.value {
                 crate::protocol::query::Answer::Rows(rows) => {
@@ -740,7 +682,14 @@ impl PreparedQuery<'_, '_> {
                 crate::protocol::query::Answer::Measure(_) => {}
             }
         } else {
-            answer.count_deferred(retry());
+            answer.count_deferred(format!(
+                "count deferred; run the exact count without a deadline: polylogue {} --deadline none",
+                polylogue_render::shell_quote(&if program.measure.is_some() {
+                    program.query.clone()
+                } else {
+                    format!("{} | count", program.query)
+                })
+            ));
         }
         Ok(answer)
     }

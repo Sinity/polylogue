@@ -559,15 +559,10 @@ fn ordinary_session_annotation_times_keep_old_new_withdrawn_and_expired_versions
             .restore_annotation(unknown, None)
             .unwrap();
 
-        let mut invocation = d
-            .daemon
-            .invocation(&Call::new("rows", json!({})).authorship);
-        invocation.at = second;
         for (root, text) in [("time-message", "new message"), ("time-span", "new span")] {
-            let _ = crate::test_answers::step(Call::new("rows", json!({"selection":format!("annotation:{root}@{root}"),"steps":[{"verb":"edit","text":text}]})).answer_with(&d.daemon, &invocation));
+            let _ = crate::test_answers::step(Call::new("rows", json!({"selection":format!("annotation:{root}@{root}"),"steps":[{"verb":"edit","text":text}]})).at(second).answer(&d.daemon));
         }
-        invocation.at = withdrawn;
-        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:time-message","steps":[{"verb":"withdraw","reason":"no longer current"}]})).answer_with(&d.daemon, &invocation));
+        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:time-message","steps":[{"verb":"withdraw","reason":"no longer current"}]})).at(withdrawn).answer(&d.daemon));
         // Current reads still expose unknown authored time, and apply current expiry.
         assert_eq!(
             annotations(&read(&d.daemon, target, false), "claude-code:u1")[0].value,
@@ -846,9 +841,7 @@ fn historical_context_pages_bind_the_message_and_cutoff_through_append_and_reope
         };
         let mut call = historical_call(target, &at, 1, View::Context);
         call.arguments["steps"][0]["physical"] = json!(physical);
-        let mut invocation = d.daemon.invocation(&call.authorship);
-        invocation.at = now;
-        let first = crate::test_answers::read(call.answer_with(&d.daemon, &invocation));
+        let first = crate::test_answers::read(call.at(now).answer(&d.daemon));
         assert_eq!(
             first.snapshot.query, target,
             "the acknowledged reading retains its original selector"
@@ -871,7 +864,7 @@ fn historical_context_pages_bind_the_message_and_cutoff_through_append_and_reope
                 "the read cursor belongs to another reading: the reading options differ"
             );
         }
-        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:context-note","steps":[{"verb":"edit","text":"a later context note"}]})).answer_with(&d.daemon, &invocation));
+        let _ = crate::test_answers::step(Call::new("rows", json!({"selection":"annotation:context-note","steps":[{"verb":"edit","text":"a later context note"}]})).at(now).answer(&d.daemon));
         std::fs::OpenOptions::new()
             .append(true)
             .open(&path)
@@ -1179,7 +1172,10 @@ fn context_stream_stops_on_scope_reset_and_cancellation_before_source_frames() {
             via: polylogue_model::authorship::Channel::Cli,
         };
         let operation = d.daemon.operation_context(&actor).unwrap();
-        let limit = crate::daemon::execution::limit(None, Default::default());
+        let limit = polylogue_store::read::limit::ReadLimit::new(
+            crate::daemon::execution::default_read_deadline(),
+            Default::default(),
+        );
         let cancellation = limit.cancellation.clone();
         let archive = &d.daemon.archive;
         let mut output = Interrupt {

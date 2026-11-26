@@ -16,7 +16,6 @@ fn fixture() -> Fixture {
     let daemon = crate::test_daemon::start("synthetic workbench prompt");
     let web = Arc::new(Web {
         daemon: Arc::clone(&daemon.daemon),
-        operations: Arc::clone(daemon.operations()),
         key: "notes".into(),
         token: "token".into(),
         port: 8765,
@@ -161,7 +160,7 @@ async fn stored(f: &Fixture, root: &str, revision: &str) -> Annotation {
     let mut began = false;
     let mut completed = false;
     let mut found = Vec::new();
-    crate::client::stream::receive(bytes.as_slice(), |frame| {
+    crate::client::receive(&mut bytes.as_slice(), None, |frame| {
         match frame.event.as_str() {
             "begin" => {
                 assert!(!began);

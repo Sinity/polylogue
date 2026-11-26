@@ -33,6 +33,8 @@ impl Stages {
 #[derive(Clone, Debug)]
 pub struct ReadLimit {
     deadline: Option<Instant>,
+    /// An earlier stop set after the limit was made, shared by its clones.
+    earlier: Arc<Mutex<Option<Instant>>>,
     steps: Arc<AtomicU64>,
     stages: Arc<Mutex<Stages>>,
     scopes: Arc<Mutex<Vec<super::scope::ReadScopeToken>>>,
@@ -57,6 +59,7 @@ impl ReadLimit {
     fn with_deadline(deadline: Option<Instant>, cancellation: Cancellation) -> Self {
         Self {
             deadline,
+            earlier: Default::default(),
             cancellation,
             steps: Arc::new(AtomicU64::new(0)),
             stages: Default::default(),
@@ -66,7 +69,18 @@ impl ReadLimit {
 
     /// When this request's reads stop, when they have a deadline.
     pub fn deadline(&self) -> Option<Instant> {
-        self.deadline
+        match *self.earlier.locked() {
+            Some(earlier) => Some(self.deadline.map_or(earlier, |at| at.min(earlier))),
+            None => self.deadline,
+        }
+    }
+
+    /// Brings the deadline forward to `at` for this limit and every clone
+    /// of it, including the readers it is installed on: work that must leave
+    /// time for its reply, such as a listing's optional count.
+    pub fn stop_by(&self, at: Instant) {
+        let mut earlier = self.earlier.locked();
+        *earlier = Some(earlier.map_or(at, |earlier| earlier.min(at)));
     }
 
     pub fn stage(&self) -> Option<&'static str> {
@@ -110,7 +124,7 @@ impl ReadLimit {
 
     /// The time left before the deadline; `None` with no deadline.
     pub fn remaining(&self) -> Option<Duration> {
-        self.deadline
+        self.deadline()
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
 
@@ -120,7 +134,7 @@ impl ReadLimit {
         }
         self.cancellation.check()?;
         if self
-            .deadline
+            .deadline()
             .is_some_and(|deadline| Instant::now() >= deadline)
         {
             Err(StoreError::ReadDeadlineExceeded)

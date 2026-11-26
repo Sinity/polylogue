@@ -1,6 +1,7 @@
 """Public client contracts against a real synthetic daemon, started by e2e."""
 
 import base64
+import io
 import json
 import sys
 import socket
@@ -11,7 +12,7 @@ from dataclasses import FrozenInstanceError
 from pathlib import Path
 
 from polylogue.models import Answer
-from polylogue.client import Client, Refused
+from polylogue.client import Client, Refused, read_answer
 
 ARCHIVE, EXECUTABLE = sys.argv[1:3]
 del sys.argv[1:3]
@@ -80,9 +81,10 @@ class ClientTests(unittest.TestCase):
                         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as upstream:
                             upstream.connect(str(self.archive_alias / "daemon.sock"))
                             upstream.sendall(raw)
+                            upstream.shutdown(socket.SHUT_WR)
                             with upstream.makefile("rb") as response:
-                                raw_answer = response.readline()
-                        observed["answer"] = json.loads(raw_answer)
+                                raw_answer = response.read()
+                        observed["answer"] = read_answer(io.BytesIO(raw_answer))
                         connection.sendall(raw_answer)
                 worker = threading.Thread(target=forward, daemon=True)
                 worker.start()

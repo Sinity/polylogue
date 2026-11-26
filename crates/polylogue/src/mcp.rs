@@ -29,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 pub fn tool_commands() -> impl Iterator<Item = &'static Command> {
     COMMANDS
         .iter()
-        .filter(|c| c.tool.is_some() && c.registration().is_some())
+        .filter(|c| c.tool.is_some() && c.operation().is_some())
 }
 
 /// The operations of one tool.
@@ -324,12 +324,12 @@ async fn answer_call(
             )));
         }
     }
-    let access = match command
-        .registration()
-        .expect("tool handler")
-        .tool_access(&request.arguments, command)
-    {
-        Ok(access) => access,
+    let access = match crate::daemon::handler::policy(
+        command,
+        &request.arguments,
+        polylogue_model::authorship::Channel::Mcp,
+    ) {
+        Ok(policy) => policy.access,
         Err(failure) => return Ok(refusal(failure.error, None)),
     };
     let setting_read = command.name == "set" && access == ToolAccess::Read;
@@ -367,19 +367,18 @@ async fn run(
         .ok_or_else(|| bad_request(&format!("unknown operation {}", request.operation)))?;
     // The row's typed arguments are checked here, as the daemon checks them,
     // so a malformed call is refused without a daemon.
-    if let Some(registration) = command.registration() {
-        let policy = match registration.admit(
-            &request.arguments,
+    if command.operation().is_some() {
+        if let Err(failure) = crate::daemon::handler::policy(
             command,
-            &crate::commands::Caller {
-                surface: crate::commands::Surface::Mcp,
-                cwd: None,
-            },
+            &request.arguments,
+            polylogue_model::authorship::Channel::Mcp,
         ) {
-            Ok(policy) => policy,
-            Err(failure) => return Ok(refusal(failure.error, None)),
-        };
-        if policy.streaming {
+            return Ok(refusal(failure.error, None));
+        }
+        let streams = command.name == "rows"
+            && serde_json::from_value::<crate::protocol::line::Rows>(request.arguments.clone())
+                .is_ok_and(|rows| crate::daemon::service::line::streams(&rows));
+        if streams {
             let mut next = request.clone();
             if command.name == "rows" {
                 if let Some(steps) = next.arguments["steps"].as_array_mut() {
@@ -455,11 +454,14 @@ async fn run(
         for next in &answer.envelope.next {
             let access = crate::commands::command(&next.request.operation)
                 .and_then(|row| {
-                    row.registration().and_then(|registration| {
-                        registration.tool_access(&next.request.arguments, row).ok()
-                    })
+                    crate::daemon::handler::policy(
+                        row,
+                        &next.request.arguments,
+                        polylogue_model::authorship::Channel::Mcp,
+                    )
+                    .ok()
                 })
-                .unwrap_or(ToolAccess::Read);
+                .map_or(ToolAccess::Read, |policy| policy.access);
             let tool = Tool::with_access(access);
             text.push_str(&format!(
                 "\nnext: {} {}",

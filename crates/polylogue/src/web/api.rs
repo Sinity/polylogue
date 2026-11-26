@@ -1,17 +1,25 @@
-//! The reader's JSON API under `/api/v1/`: the
-//! same data as `--json`, one route per command the table offers over
-//! HTTP, at its words joined by `/` (`/api/v1/note/add`). A command that
-//! writes is a POST with a JSON object body; one that reads is a GET with
-//! its arguments as query parameters (a list argument repeats its name).
+//! The reader's JSON API under `/api/v1/`: the same data as `--json`, one
+//! route per command the table offers over HTTP, at its words joined by `/`
+//! (`/api/v1/dev/sql`). A POST carries a JSON object body; a GET carries its
+//! arguments as query parameters (a list argument repeats its name) and runs
+//! only a request whose policy reads and leaves the archive unchanged.
+//!
+//! Each request is answered by the daemon's one `answer`, in a blocking
+//! task. A reply with no events is one `application/json` body with the
+//! answer's HTTP status; a reply whose first event was written is
+//! `text/event-stream` with the shared frames, ending with its `answer`.
 
-use super::{Web, json_answer};
-use crate::commands::{COMMANDS, Command, Run};
-use crate::daemon::execution;
+use super::{Lifetime, Web, json_answer};
+use crate::commands::{COMMANDS, Command};
+use crate::daemon::output::{Output, Sink, Spill, answer_frame};
 use axum::Router;
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response as HttpResponse};
+use command_surface::Answer;
+use serde_json::Value;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 
 /// The commands offered over HTTP.
 pub fn http_commands() -> impl Iterator<Item = &'static Command> {
@@ -21,61 +29,63 @@ pub fn http_commands() -> impl Iterator<Item = &'static Command> {
 pub fn routes() -> Router<Arc<Web>> {
     let mut router = Router::new();
     for c in http_commands() {
-        let mut methods = axum::routing::MethodRouter::new();
-        if c.writes {
-            methods = methods.post(
-                move |State(web): State<Arc<Web>>, headers: HeaderMap, body: String| async move {
-                    if !super::access::content_type(&headers, "application/json") {
-                        return (
-                            StatusCode::UNSUPPORTED_MEDIA_TYPE,
-                            "command writes require application/json",
-                        )
-                            .into_response();
+        let methods = axum::routing::post(
+            move |State(web): State<Arc<Web>>,
+                  Extension(lifetime): Extension<Lifetime>,
+                  headers: HeaderMap,
+                  body: String| async move {
+                if !super::access::content_type(&headers, "application/json") {
+                    return (
+                        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+                        "a POST body is application/json",
+                    )
+                        .into_response();
+                }
+                match body_request(c, &body) {
+                    Ok((request, evidence)) => {
+                        respond(&web, request, lifetime.caller(&evidence)).await
                     }
-                    answer_as(&web, c, body_request(c, &body), &headers).await
-                },
-            );
-        }
-        if !c.writes || matches!(c.name, "rows" | "set") {
-            methods = methods.get(
-                move |State(web): State<Arc<Web>>,
-                      Query(pairs): Query<Vec<(String, String)>>,
-                      headers: HeaderMap| async move {
-                    let request = query_request(c, &pairs).and_then(|request| {
-                        if c.name == "set"
-                            && c.registration()
-                                .expect("set handler")
-                                .tool_access(&request.arguments, c)
-                                .map_err(|failure| failure.error.message)?
-                                > crate::commands::ToolAccess::Read
-                        {
-                            return Err("use POST /api/v1/set".into());
-                        }
-                        Ok(HttpCall {
-                            request,
-                            caller: Default::default(),
-                            get: true,
-                        })
-                    });
-                    answer_as(&web, c, request, &headers).await
-                },
-            );
-        }
+                    Err(error) => refused(&web, error),
+                }
+            },
+        )
+        .get(
+            move |State(web): State<Arc<Web>>,
+                  Extension(lifetime): Extension<Lifetime>,
+                  Query(pairs): Query<Vec<(String, String)>>| async move {
+                match get_request(c, &pairs) {
+                    Ok(request) => {
+                        respond(&web, request, lifetime.caller(&Default::default())).await
+                    }
+                    Err(error) => refused(&web, error),
+                }
+            },
+        );
         router = router.route(&c.http_path(), methods);
     }
     router.layer(axum::extract::DefaultBodyLimit::disable())
 }
 
-struct HttpCall {
-    request: command_surface::RunnableRequest,
-    caller: command_surface::CallerEvidence,
-    get: bool,
+fn refused(web: &Web, error: String) -> HttpResponse {
+    json_answer(
+        web,
+        crate::daemon::service::error(polylogue_model::Code::BadRequest, error),
+    )
 }
 
 /// A POST takes the shared request or the operation's arguments. The calling
 /// session belongs to the transport, outside those arguments.
-fn body_request(c: &Command, body: &str) -> Result<HttpCall, String> {
-    use serde_json::{Map, Value, json};
+fn body_request(
+    c: &Command,
+    body: &str,
+) -> Result<
+    (
+        command_surface::RunnableRequest,
+        command_surface::CallerEvidence,
+    ),
+    String,
+> {
+    use serde_json::{Map, json};
     let mut object: Map<String, Value> = if body.trim().is_empty() {
         Map::new()
     } else {
@@ -113,56 +123,81 @@ fn body_request(c: &Command, body: &str) -> Result<HttpCall, String> {
     let request = crate::commands::declarations()
         .parse_http_call(Value::Object(object), &author)
         .map_err(|failure| failure.message)?;
-    Ok(HttpCall {
-        request,
-        caller,
-        get: false,
-    })
+    if request.operation != c.name {
+        return Err("route does not match operation".into());
+    }
+    Ok((request, caller))
 }
 
-/// GET carries a listing or one read step. Each step's values use the same
-/// query decoder as command arguments, with its own typed declaration.
-fn query_request(
+/// A GET runs only what reads and leaves the archive unchanged, as its
+/// policy says.
+fn get_request(
+    c: &Command,
+    pairs: &[(String, String)],
+) -> Result<command_surface::RunnableRequest, String> {
+    let request = query_request(c, pairs)?;
+    if request.operation != c.name {
+        return Err("route does not match operation".into());
+    }
+    let policy = crate::daemon::handler::policy(
+        c,
+        &request.arguments,
+        polylogue_model::authorship::Channel::Web,
+    )
+    .map_err(|failure| failure.error.message)?;
+    if !policy.takes_get() {
+        return Err(format!("use POST /api/v1{}", c.http_path()));
+    }
+    Ok(request)
+}
+
+/// A request from query pairs. A row with declared steps takes one step's
+/// arguments as query values under their own names, beside the row's own
+/// and the envelope's; `steps` names its verb.
+pub(super) fn query_request(
     c: &Command,
     pairs: &[(String, String)],
 ) -> Result<command_surface::RunnableRequest, String> {
     let declarations = crate::commands::declarations();
     let id = polylogue_store::user_writes::new_request_id();
-    if c.name != "rows" {
-        return declarations
-            .parse_http_query(c.name, pairs, id)
-            .map_err(|failure| failure.message);
-    }
     let verbs: Vec<_> = pairs
         .iter()
         .filter(|(name, _)| name == "steps")
         .map(|(_, value)| value.as_str())
         .collect();
-    if verbs.is_empty() {
+    let Some(steps) = declarations
+        .steps(c.name, "steps")
+        .filter(|_| !verbs.is_empty())
+    else {
         return declarations
-            .parse_http_query("rows", pairs, id)
+            .parse_http_query(c.name, pairs, id)
             .map_err(|failure| failure.message);
-    }
-    let [verb @ ("read" | "brief")] = verbs.as_slice() else {
-        return Err(match verbs.as_slice() {
-            [verb] => format!(
-                "a GET carries only the read and brief steps, not {verb}; use POST /api/v1/rows"
-            ),
-            _ => "a GET carries one step; use POST /api/v1/rows for several".into(),
-        });
     };
-    let fields = declarations
-        .descriptions()
+    let [verb] = verbs.as_slice() else {
+        return Err(format!(
+            "a GET carries one step; use POST /api/v1{} for several",
+            c.http_path()
+        ));
+    };
+    if !steps
+        .verbs()
         .iter()
-        .find(|row| row.spec.name == "rows")
-        .expect("rows declaration");
+        .any(|declared| declared.verb() == *verb)
+        || step_query_declarations(c).spec_named(verb).is_none()
+    {
+        return Err(format!(
+            "a GET carries only the read and brief steps, not {verb}; use POST /api/v1{}",
+            c.http_path()
+        ));
+    }
+    let fields = declarations.spec_named(c.name).expect("declared row");
     let mut line_pairs = Vec::new();
     let mut step_pairs = Vec::new();
     for (name, value) in pairs {
         if name == "steps" {
             continue;
         }
-        if fields.spec.argument(name).is_some()
+        if fields.argument(name).is_some()
             || matches!(
                 name.as_str(),
                 "request_id" | "deadline" | "budget_tokens" | "fresh" | "operation" | "arguments"
@@ -173,477 +208,191 @@ fn query_request(
             step_pairs.push((name.clone(), value.clone()));
         }
     }
-    let step = step_query_declarations()
+    let step = step_query_declarations(c)
         .parse_http_query(verb, &step_pairs, "http-step")
         .map_err(|failure| failure.message)?;
     let cursor = step.cursor;
     let mut step = step.arguments;
+    let object = step
+        .as_object_mut()
+        .ok_or("step arguments must be an object")?;
     if let Some(cursor) = cursor {
-        step.as_object_mut()
-            .expect("step arguments")
-            .insert("cursor".into(), cursor.into());
+        object.insert("cursor".into(), cursor.into());
     }
-    step.as_object_mut()
-        .expect("step arguments")
-        .insert("verb".into(), (*verb).into());
+    object.insert("verb".into(), (*verb).into());
     let mut request = declarations
-        .parse_http_query("rows", &line_pairs, id)
+        .parse_http_query(c.name, &line_pairs, id)
         .map_err(|failure| failure.message)?;
     request
         .arguments
         .as_object_mut()
-        .expect("rows arguments")
+        .ok_or("arguments must be an object")?
         .insert("steps".into(), serde_json::json!([step]));
     Ok(request)
 }
 
-fn step_query_declarations() -> &'static command_surface::OperationDeclarations {
-    static STEPS: std::sync::LazyLock<std::sync::Arc<command_surface::OperationDeclarations>> =
-        std::sync::LazyLock::new(|| {
-            fn declare<A: command_surface::JsonSchema>(
-                builder: &mut command_surface::DeclarationsBuilder,
-                name: &'static str,
-            ) {
-                let row = Command {
-                    name,
-                    ..*crate::commands::command("rows").expect("rows command")
-                };
-                let mut spec = crate::commands::specification::<A>(&row);
-                spec.kind = command_surface::OperationKind::Request { tool: None };
-                // These declarations only decode HTTP query values; step fields
-                // do not consume the command line's budget or cursor options.
-                for argument in &mut spec.arguments {
-                    if matches!(argument.name.as_str(), "budget" | "cursor") {
-                        argument.form = command_surface::ArgumentForm::Positional;
-                    }
+/// Declarations that decode one step's query values: the read-only steps a
+/// GET may carry.
+fn step_query_declarations(row: &Command) -> &'static command_surface::OperationDeclarations {
+    static STEPS: std::sync::OnceLock<std::sync::Arc<command_surface::OperationDeclarations>> =
+        std::sync::OnceLock::new();
+    STEPS.get_or_init(|| {
+        fn declare<A: command_surface::JsonSchema>(
+            builder: &mut command_surface::DeclarationsBuilder,
+            row: &Command,
+            name: &'static str,
+        ) {
+            let step = Command { name, ..*row };
+            let mut spec = crate::commands::specification::<A>(&step);
+            spec.kind = command_surface::OperationKind::Request { tool: None };
+            // These declarations only decode HTTP query values; step fields
+            // do not consume the command line's budget or cursor options.
+            for argument in &mut spec.arguments {
+                if matches!(argument.name.as_str(), "budget" | "cursor") {
+                    argument.form = command_surface::ArgumentForm::Positional;
                 }
-                builder
-                    .declare::<A, serde_json::Value>(
-                        spec,
-                        crate::cli::print::json::<serde_json::Value>,
-                    )
-                    .expect("read step query declaration");
             }
-            let mut builder = command_surface::OperationDeclarations::builder(
-                "polylogue",
-                crate::commands::deadlines(),
-            );
-            declare::<crate::protocol::steps::ReadStep>(&mut builder, "read");
-            declare::<crate::protocol::steps::BriefStep>(&mut builder, "brief");
-            builder.finish()
-        });
-    &STEPS
-}
-
-#[cfg(test)]
-async fn answer(
-    web: &Arc<Web>,
-    c: &'static Command,
-    request: Result<command_surface::RunnableRequest, String>,
-    headers: &HeaderMap,
-) -> HttpResponse {
-    answer_as(
-        web,
-        c,
-        request.map(|request| HttpCall {
-            request,
-            caller: Default::default(),
-            get: false,
-        }),
-        headers,
-    )
-    .await
-}
-
-/// Answers one request through the row's handler.
-async fn answer_as(
-    web: &Arc<Web>,
-    c: &'static Command,
-    request: Result<HttpCall, String>,
-    headers: &HeaderMap,
-) -> HttpResponse {
-    let HttpCall {
-        request,
-        caller: details,
-        get,
-    } = match request {
-        Ok(call) if call.request.operation == c.name => call,
-        Ok(_) => {
-            return json_answer(
-                web,
-                crate::daemon::service::error(
-                    polylogue_model::Code::BadRequest,
-                    "route does not match operation",
-                ),
-            );
+            builder
+                .declare::<A, serde_json::Value>(spec, crate::cli::print::json::<serde_json::Value>)
+                .expect("read step query declaration");
         }
-        Err(error) => {
-            return json_answer(
-                web,
-                crate::daemon::service::error(polylogue_model::Code::BadRequest, error),
-            );
-        }
-    };
-    let parent_deadline = super::parent_deadline();
-    match c.run {
-        Run::Daemon(_) => {}
-        Run::Feed { registration, .. } => {
-            let produce = match registration.prepare(&request) {
-                Ok(produce) => produce,
-                Err(failure) => return json_answer(web, failure.answer::<serde_json::Value>()),
-            };
-            let limit = execution::request_limit(
-                request.deadline,
-                c.latency,
-                true,
-                parent_deadline,
-                super::request_limit().cancellation,
-            );
-            let accepted = accepted(web, &details, limit.cancellation.clone());
-            return stream_as(
-                web,
-                crate::daemon::executor::Class::Ordinary,
-                limit,
-                request,
-                accepted,
-                produce,
-            )
-            .await;
-        }
-        Run::Local(..) | Run::ConfiguredLocal(..) => return StatusCode::NOT_FOUND.into_response(),
-    };
-    let table = &web.operations;
-    let accepted = accepted(web, &details, super::request_limit().cancellation);
-    use crate::daemon::handler::{HandlerReply, dispatch_native};
-    let (request, read_scope, dispatched) = match dispatch_native(
-        &web.daemon,
-        table,
-        c,
-        request,
-        accepted,
-        command_surface::Via::Web,
-        get,
-    )
-    .await
-    {
-        HandlerReply::Refused(answer) => return json_answer(web, answer),
-        HandlerReply::Stream {
-            request,
-            accepted,
-            policy,
-            produce,
-        } => {
-            let limit = execution::request_limit(
-                request.deadline,
-                c.latency,
-                policy.default_deadline,
-                parent_deadline,
-                super::request_limit().cancellation,
-            );
-            return stream_as(web, policy.class, limit, request, *accepted, produce).await;
-        }
-        HandlerReply::Answer(ready, answer) => (
-            ready.web_request.expect("web replies retain their request"),
-            ready.scope,
-            answer,
-        ),
-    };
-    let scopes = crate::protocol::ReadScopes::single(read_scope.clone());
-    let answer = crate::protocol::scope_answer(dispatched, &scopes);
-    let line = answer
-        .value()
-        .filter(|_| c.name == "rows")
-        .and_then(|value| {
-            serde_json::from_value::<crate::protocol::line::LineAnswer>(value.clone()).ok()
-        });
-    let failed_step = line.as_ref().and_then(|line| line.failed_step().cloned());
-    let single_read = matches!(&line, Some(crate::protocol::line::LineAnswer::Steps(steps))
-        if steps.steps.len() == 1 && matches!(steps.steps[0].outcome,
-            crate::protocol::line::StepOutcome::Done { reply: crate::protocol::line::StepAnswer::Read(_), .. }));
-    let single_step = matches!(&line, Some(crate::protocol::line::LineAnswer::Steps(steps)) if steps.steps.len() == 1);
-    let step_status = failed_step
-        .as_ref()
-        .and_then(|error| error.kind.http_status())
-        .and_then(|status| StatusCode::from_u16(status).ok());
-    let wants_html = headers
-        .get(header::ACCEPT)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| {
-            value.split(',').any(|kind| {
-                kind.split(';')
-                    .next()
-                    .is_some_and(|kind| kind.trim() == "text/html")
-            })
-        });
-    if wants_html
-        && single_step
-        && let Some(error) = &failed_step
-    {
-        return super::failed_with(error);
-    }
-    if wants_html && c.name == "rows" && !single_read {
-        let declarations = crate::commands::declarations();
-        let rendered = declarations
-            .render_text("rows", &answer, command_surface::TextStyle::Plain)
-            .and_then(|text| declarations.cli_command(&request).map(|cli| (text, cli)));
-        let (mut text, cli) = match rendered {
-            Ok(rendered) => rendered,
-            Err(error) => {
-                return json_answer(
-                    web,
-                    command_surface::Answer::<serde_json::Value>::error(error),
-                );
-            }
-        };
-        text.push_str(&declarations.render_footer(command_surface::Via::Web, &answer));
-        let html = super::pages::layout(
-            "Polylogue",
-            "",
-            &cli,
-            &format!("<pre>{}</pre>", polylogue_render::html::escape(&text)),
+        let mut builder = command_surface::OperationDeclarations::builder(
+            crate::commands::PRODUCT,
+            crate::commands::deadlines(),
         );
-        let status = step_status
-            .or_else(|| {
-                answer
-                    .http_status()
-                    .and_then(|status| StatusCode::from_u16(status).ok())
-            })
-            // As the JSON answers: an outcome with no mapped status is not a success.
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
-        return scoped_body_response(
-            web,
-            status,
-            "text/html; charset=utf-8",
-            html.into_bytes(),
-            &scopes,
-        );
-    }
-    if c.name == "rows"
-        && wants_html
-        && let Some(value) = answer.value()
-    {
-        let page = serde_json::from_value::<crate::protocol::line::LineAnswer>(value.clone())
-            .and_then(|line| match line {
-                crate::protocol::line::LineAnswer::Steps(mut steps) if steps.steps.len() == 1 => {
-                    match steps.steps.remove(0).outcome {
-                        crate::protocol::line::StepOutcome::Done {
-                            reply: crate::protocol::line::StepAnswer::Read(page),
-                            ..
-                        } => Ok(*page),
-                        _ => Err(serde::de::Error::custom(
-                            "the line did not return a read page",
-                        )),
-                    }
-                }
-                _ => Err(serde::de::Error::custom("HTML requires one read step")),
-            });
-        match page
-            .map_err(|error| {
-                command_surface::Failure::new(command_surface::FailureKind::Io, error.to_string())
-            })
-            .and_then(|page| super::pages::reader::read(&page, table, &request))
-        {
-            Ok(html) => {
-                if let Err(error) = scopes.check() {
-                    return json_answer(web, crate::daemon::service::store_error(&error));
-                }
-                return scoped_body_response(
-                    web,
-                    StatusCode::OK,
-                    "text/html; charset=utf-8",
-                    html.into_bytes(),
-                    &scopes,
-                );
-            }
-            Err(error) => {
-                return json_answer(
-                    web,
-                    command_surface::Answer::<serde_json::Value>::error(error),
-                );
-            }
+        declare::<crate::protocol::steps::ReadStep>(&mut builder, row, "read");
+        declare::<crate::protocol::steps::BriefStep>(&mut builder, row, "brief");
+        builder.finish()
+    })
+}
+
+/// One piece of a reply on its way from the blocking task to the response.
+enum Piece {
+    Bytes(Vec<u8>),
+    /// A reply with no events, and the failure its reply carries inside it.
+    Answer(Box<(Answer<Value>, Option<command_surface::FailureKind>)>),
+}
+
+/// The response side of a reply as a [`Sink`].
+struct Channel(mpsc::Sender<Piece>);
+
+impl Sink for Channel {
+    fn try_send(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        match self.0.try_send(Piece::Bytes(bytes.to_vec())) {
+            Ok(()) => Ok(bytes.len()),
+            Err(mpsc::error::TrySendError::Full(_)) => Ok(0),
+            Err(mpsc::error::TrySendError::Closed(_)) => Err(gone()),
         }
     }
-    let (status, bytes) = super::prepare_json_answer(web, answer);
-    let status = step_status.unwrap_or(status);
-    scoped_body_response(web, status, "application/json", bytes, &scopes)
-}
-
-struct ScopedBytes {
-    bytes: Vec<u8>,
-    offset: usize,
-    scopes: crate::protocol::ReadScopes,
-}
-impl tokio::io::AsyncRead for ScopedBytes {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        _: &mut std::task::Context<'_>,
-        buffer: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        let this = self.get_mut();
-        let scopes = this.scopes.clone();
-        std::task::Poll::Ready(
-            scopes
-                .with_current(|| {
-                    let end = this
-                        .bytes
-                        .len()
-                        .min(this.offset.saturating_add(buffer.remaining()));
-                    buffer.put_slice(&this.bytes[this.offset..end]);
-                    this.offset = end;
-                    Ok(())
-                })
-                .map_err(std::io::Error::other),
-        )
+    fn send(&mut self, bytes: &[u8]) -> std::io::Result<()> {
+        self.0
+            .blocking_send(Piece::Bytes(bytes.to_vec()))
+            .map_err(|_| gone())
     }
 }
 
-/// Encode before this boundary, then fence each bounded body-frame activation.
-fn scoped_body_response(
-    web: &Web,
-    status: StatusCode,
-    media_type: &'static str,
-    bytes: Vec<u8>,
-    scopes: &crate::protocol::ReadScopes,
-) -> HttpResponse {
-    let length = bytes.len();
-    if let Err(error) = scopes.check() {
-        return json_answer(web, crate::daemon::service::store_error(&error));
-    }
-    let body = if scopes.has_scope() {
-        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(ScopedBytes {
-            bytes,
-            offset: 0,
-            scopes: scopes.clone(),
-        }))
-    } else {
-        axum::body::Body::from(bytes)
-    };
-    let mut response = (status, body).into_response();
-    response.headers_mut().insert(
-        header::CONTENT_TYPE,
-        axum::http::HeaderValue::from_static(media_type),
-    );
-    response.headers_mut().insert(
-        header::CONTENT_LENGTH,
-        length.to_string().parse().expect("numeric content length"),
-    );
-    response
+fn gone() -> std::io::Error {
+    std::io::ErrorKind::BrokenPipe.into()
 }
 
-#[cfg(test)]
-async fn stream(
+/// One HTTP reply: until its first event it may still be a JSON answer.
+struct Reply {
+    spill: Option<Spill<Channel>>,
+    streaming: bool,
+}
+
+impl Output for Reply {
+    fn events(&mut self, frames: &[u8]) -> std::io::Result<()> {
+        self.streaming = true;
+        self.spill.as_mut().ok_or_else(gone)?.write(frames)
+    }
+
+    fn answer(
+        &mut self,
+        answer: Answer<Value>,
+        inside: Option<command_surface::FailureKind>,
+    ) -> std::io::Result<()> {
+        let mut spill = self.spill.take().ok_or_else(gone)?;
+        if self.streaming {
+            spill.write(&answer_frame(&answer)?)?;
+            spill.finish().map(drop)
+        } else {
+            let Channel(sender) = spill.finish()?;
+            sender
+                .blocking_send(Piece::Answer(Box::new((answer, inside))))
+                .map_err(|_| gone())
+        }
+    }
+}
+
+/// Answers one request in a blocking task. The response is the answer as
+/// JSON, or the stream of its events once the first one is written.
+/// Dropping the response before the reply ends cancels the request.
+pub(super) async fn respond(
     web: &Arc<Web>,
-    class: crate::daemon::executor::Class,
-    limit: polylogue_store::read::limit::ReadLimit,
     request: command_surface::RunnableRequest,
-    produce: crate::daemon::streaming::Produce,
+    caller: crate::operation::Caller,
 ) -> HttpResponse {
-    let accepted = accepted(web, &Default::default(), limit.cancellation.clone());
-    stream_as(web, class, limit, request, accepted, produce).await
-}
-
-fn accepted(
-    web: &Web,
-    details: &command_surface::CallerEvidence,
-    cancellation: polylogue_store::cancellation::Cancellation,
-) -> crate::operation::Accepted {
-    let mut accepted = crate::operation::Accepted::new(
-        &web.daemon.callers,
-        details,
-        command_surface::Via::Web,
-        cancellation,
-    );
-    accepted.parent = super::parent_lifetime();
-    accepted
-}
-
-/// Headers are committed on the first produced bytes. Subsequent failures
-/// terminate the stream with an error event, without completion.
-async fn stream_as(
-    web: &Arc<Web>,
-    class: crate::daemon::executor::Class,
-    limit: polylogue_store::read::limit::ReadLimit,
-    accepted_request: command_surface::RunnableRequest,
-    accepted: crate::operation::Accepted,
-    produce: crate::daemon::streaming::Produce,
-) -> HttpResponse {
-    let cancellation = limit.cancellation.clone();
-    let invocation = web
-        .daemon
-        .invocation(&accepted.authorship)
-        .with_accepted_request(Some(Arc::new(accepted_request)))
-        .with_calling_session(accepted.calling_session.clone())
-        .with_parent(accepted.parent);
-    let mut cancel = polylogue_store::cancellation::CancelOnDrop::new(cancellation.clone());
-    let input =
-        match crate::daemon::streaming::start(&web.daemon, class, limit, invocation, produce) {
-            Ok(input) => input,
-            Err(failure) => return json_answer(web, failure.answer::<serde_json::Value>()),
+    let (sender, mut pieces) = mpsc::channel(16);
+    let cancel = polylogue_store::cancellation::CancelOnDrop::new(caller.stop.clone());
+    let daemon = Arc::clone(&web.daemon);
+    let staging = daemon.archive.staging_dir();
+    tokio::task::spawn_blocking(move || {
+        let mut reply = Reply {
+            spill: Some(Spill::new(Channel(sender), staging)),
+            streaming: false,
         };
-    let first = match input.next().await {
-        Ok(crate::daemon::stream_buffer::Next::Bytes(bytes)) => bytes,
-        Ok(crate::daemon::stream_buffer::Next::Failed(failure)) => {
-            return json_answer(web, failure.answer::<serde_json::Value>());
+        crate::daemon::handler::answer(&daemon, &request, &caller, &mut reply);
+    });
+    match pieces.recv().await {
+        Some(Piece::Answer(answer)) => {
+            let mut cancel = cancel;
+            cancel.disarm();
+            let (answer, inside) = *answer;
+            let (status, bytes) = super::prepare_json_answer(web, answer);
+            // A line whose step failed answers with that failure's status.
+            let status = inside
+                .and_then(|kind| kind.http_status())
+                .and_then(|status| StatusCode::from_u16(status).ok())
+                .unwrap_or(status);
+            (status, [(header::CONTENT_TYPE, "application/json")], bytes).into_response()
         }
-        Ok(crate::daemon::stream_buffer::Next::End) => {
-            return json_answer(
-                web,
-                crate::daemon::service::error(
-                    polylogue_model::Code::Internal,
-                    "stream completed without producing events",
-                ),
-            );
-        }
-        Err(error) => {
-            return json_answer(
-                web,
-                crate::daemon::service::error(polylogue_model::Code::Io, error),
-            );
-        }
-    };
-    cancel.disarm();
-    let body = StreamBody {
-        input: Arc::new(input),
-        pending: first,
-        offset: 0,
-        next: None,
-        ended: false,
-        cancellation,
-    };
-    (
-        [
-            (header::CONTENT_TYPE, "text/event-stream"),
-            (header::CACHE_CONTROL, "no-cache"),
-        ],
-        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(body)),
-    )
-        .into_response()
+        Some(Piece::Bytes(first)) => (
+            [
+                (header::CONTENT_TYPE, "text/event-stream"),
+                (header::CACHE_CONTROL, "no-cache"),
+            ],
+            axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(EventBody {
+                pieces,
+                pending: first,
+                offset: 0,
+                _cancel: cancel,
+            })),
+        )
+            .into_response(),
+        None => json_answer(
+            web,
+            crate::daemon::Failure::internal("the request ended without an answer")
+                .answer::<Value>(),
+        ),
+    }
 }
 
-type NextChunk = std::pin::Pin<
-    Box<
-        dyn std::future::Future<Output = std::io::Result<crate::daemon::stream_buffer::Next>>
-            + Send,
-    >,
->;
-
-/// The body of a streamed response, read from the stream buffer; dropping
-/// it, as when the browser goes away, cancels the producer.
-struct StreamBody {
-    input: Arc<crate::daemon::stream_buffer::StreamInput>,
+/// The body of a streamed response; dropping it, as when the browser goes
+/// away, cancels the request.
+struct EventBody {
+    pieces: mpsc::Receiver<Piece>,
     pending: Vec<u8>,
     offset: usize,
-    next: Option<NextChunk>,
-    ended: bool,
-    cancellation: polylogue_store::cancellation::Cancellation,
+    _cancel: polylogue_store::cancellation::CancelOnDrop,
 }
-impl tokio::io::AsyncRead for StreamBody {
+
+impl tokio::io::AsyncRead for EventBody {
     fn poll_read(
         self: std::pin::Pin<&mut Self>,
         context: &mut std::task::Context<'_>,
         buffer: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        use crate::daemon::stream_buffer::Next;
         let this = self.get_mut();
         loop {
             if this.offset < this.pending.len() {
@@ -655,34 +404,14 @@ impl tokio::io::AsyncRead for StreamBody {
                 this.offset = end;
                 return std::task::Poll::Ready(Ok(()));
             }
-            if this.ended {
-                return std::task::Poll::Ready(Ok(()));
-            }
-            let next = this.next.get_or_insert_with(|| {
-                let input = Arc::clone(&this.input);
-                Box::pin(async move { input.next().await })
-            });
-            let chunk = std::task::ready!(next.as_mut().poll(context));
-            this.next = None;
-            this.offset = 0;
-            match chunk? {
-                Next::Bytes(bytes) => this.pending = bytes,
-                Next::Failed(failure) => {
-                    this.pending.clear();
-                    crate::protocol::stream::error(&mut this.pending, failure)?;
-                    this.ended = true;
+            match std::task::ready!(this.pieces.poll_recv(context)) {
+                Some(Piece::Bytes(bytes)) => {
+                    this.pending = bytes;
+                    this.offset = 0;
                 }
-                Next::End => {
-                    this.pending.clear();
-                    this.ended = true;
-                }
+                Some(Piece::Answer(_)) | None => return std::task::Poll::Ready(Ok(())),
             }
         }
-    }
-}
-impl Drop for StreamBody {
-    fn drop(&mut self) {
-        self.cancellation.cancel();
     }
 }
 

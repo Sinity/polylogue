@@ -28,6 +28,8 @@ The read-class `internal advisory` operation has a stricter preparation cap of 2
 
 Pure writes, including imports, await their committed result without a read deadline. Mixed operations keep deadlines for their read preparation and end that phase when they hand the mutation to the writer: a preparation that has run out refuses the handoff, and a handed-over write replies with its committed result however long the commit takes, never a timeout. Classification follows the accepted arguments, so showing a setting stays bounded while writing it keeps its result. In a chain each step has its own class and deadline.
 
+**A listing's count** runs after its page, on the request's own reader, until the deadline less the time the reply needs (a fifth of what is left, at most a second); a count that runs out answers the page with `count deferred` and the command that counts without a deadline.
+
 **Deadlines are interactive defaults.** A read whose row declares no latency class, called with the default deadline, stops after 30 seconds; `--deadline none` lifts it. The CLI's socket timeout is the deadline plus 50 ms, so a hung daemon never hangs a shell. Any caller lifts a deadline (`--deadline MS`, `--deadline none`; `deadline: null` over MCP and HTTP); cancellation is in [query.md](query.md#deadlines).
 
 A stopped read names the stage that ran out. A page or similarity stage suggests a shorter query only when the query has no top-level time bound on its unit's main time field. Other stages, and queries already bounded in time, say "rerun with `--deadline none`, or narrow to one session". Recall and briefs give that same hint without a query-shaped suggestion, including when an inner page or similarity stage stopped.
@@ -36,7 +38,7 @@ A stopped read names the stage that ran out. A page or similarity stage suggests
 
 | Daemon | Command line |
 |---|---|
-| busy with a first build or re-parse | interactive replies keep their budgets on the reserved executor place and read connection; replies over data not yet indexed are `degraded` (exit 5) and name what is missing in their notes on standard error |
+| busy with a first build or re-parse | interactive replies keep their budgets on the reserved read connection; replies over data not yet indexed are `degraded` (exit 5) and name what is missing in their notes on standard error |
 | starting (lock held, socket not bound) | waits up to the class deadline, printing "polylogue: waiting for the daemon to finish opening the archive" once on standard error, then exit 7 if the deadline passes |
 | down | the local class, completion and the picker's candidates (from the catalog file) work; everything else exits 6 with one line naming the archive and `polylogue daemon`. Nothing starts a daemon implicitly |
 | hung | the socket timeout ends the command, exit 7 |

@@ -95,7 +95,7 @@ fn blocked(runtime: &Runtime, path: &std::path::Path) {
             serde_json::json!({"selection":"question", "steps":[{"verb":"brief"}]}),
         )
         .id("delivery")
-        .surface(crate::commands::Surface::Hook),
+        .channel(command_surface::Via::Hook),
         crate::test_daemon::Call::new(
             "rows",
             serde_json::json!({"selection":"sessions", "steps":[{"verb":"save"}]}),
@@ -132,6 +132,10 @@ fn missing_config_is_standalone() {
     assert!(matches!(startup.mode, ArchiveMode::Standalone));
     let runtime = launch(startup).unwrap();
     assert!(runtime.daemon.writes.is_some());
+    // Status reads the session figures once the first snapshot is read.
+    while !runtime.daemon.status_snapshot.is_read() {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
     assert_eq!(
         crate::test_answers::ok(
             crate::test_daemon::Call::new("status", serde_json::json!({})).answer(&runtime.daemon)

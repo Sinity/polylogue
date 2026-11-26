@@ -3,10 +3,7 @@ use super::*;
 #[test]
 fn attachment_read_refuses_once_the_daemon_stops_accepting() {
     let daemon = test_daemon::start("synthetic stopped reads");
-    daemon
-        .daemon
-        .stopping
-        .store(true, std::sync::atomic::Ordering::Release);
+    daemon.daemon.requests.refuse();
     let response = crate::daemon::attachment::read(
         crate::daemon::attachment::Range {
             message: polylogue_model::MessageId::parse("claude-code:synthetic").unwrap(),

@@ -6,13 +6,13 @@
 
 pub(crate) mod attachment;
 pub mod execution;
-pub(crate) mod executor;
 mod failure;
 pub(crate) mod handler;
 pub(crate) mod hangup;
 pub(crate) mod here;
 pub(crate) mod lifecycle;
 pub mod measure;
+pub(crate) mod output;
 pub mod query;
 pub(crate) mod queued_deliveries;
 pub(crate) mod schema;
@@ -21,8 +21,6 @@ pub mod seen;
 pub mod server;
 pub mod service;
 pub(crate) mod storage_stop;
-pub(crate) mod stream_buffer;
-pub(crate) mod streaming;
 pub(crate) mod verbs;
 mod verify;
 pub mod warm;

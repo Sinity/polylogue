@@ -55,8 +55,7 @@ fn import_dot_slash_name_reads_file() {
         serde_json::to_vec(&conversation).unwrap(),
     )
     .unwrap();
-    let mut call = Call::new("import", json!({"paths": ["./chatgpt"]}));
-    call.cwd = Some(dir.path().to_owned());
+    let call = Call::new("import", json!({"paths": ["./chatgpt"]})).cwd(dir.path().to_owned());
     let report = crate::test_answers::ok(call.answer(&d.daemon));
     assert!(report.get("job").is_none(), "{report}");
     assert_eq!(report["refused"], json!([]), "{report}");

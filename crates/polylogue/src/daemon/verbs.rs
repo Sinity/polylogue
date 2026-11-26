@@ -78,23 +78,6 @@ impl<'a> StepCall<'a> {
     }
 }
 
-impl<'a> Call<'a> {
-    /// The same call; its fields are all borrowed.
-    pub(crate) fn copy(&self) -> Call<'a> {
-        Call {
-            daemon: self.daemon,
-            row: self.row,
-            invocation: self.invocation,
-            caller: self.caller,
-            request_id: self.request_id,
-            cursor: self.cursor,
-            budget: self.budget,
-            #[cfg(test)]
-            reader_acquired: self.reader_acquired,
-        }
-    }
-}
-
 /// The selection as the line gave it and the rows it resolved to.
 pub(crate) struct Selection {
     pub given: Given,

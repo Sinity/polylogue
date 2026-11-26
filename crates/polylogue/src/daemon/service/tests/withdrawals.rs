@@ -129,8 +129,6 @@ fn withdraw_saved_query_by_name_pins_the_family_and_undo_restores_its_watch() {
         .saved_query_record("focus")
         .unwrap()
         .unwrap();
-    let arguments =
-        json!({"selection":"query:focus","steps":[{"verb":"withdraw","reason":"finished"}]});
     // The definition is one selected record, even though its results contain two notes.
     let withdrawn = command(
         &d,
@@ -191,7 +189,11 @@ fn withdraw_saved_query_by_name_pins_the_family_and_undo_restores_its_watch() {
             .is_none()
     );
     assert_eq!(count(&d, "annotations where kind:note"), 2);
-    let repeated = steps(call("withdraw-focus", arguments).answer(&d.daemon));
+    // A retry sends the same request: the command line's spelling of it.
+    let repeated = command(
+        &d,
+        "polylogue --request-id withdraw-focus query:focus withdraw --reason finished",
+    );
     assert!(
         matches!(&repeated.steps[0].outcome, StepOutcome::Done { reply: StepAnswer::Wrote(report), undo: again }
         if report.repeat && report.id == outcome.id && again == undo)

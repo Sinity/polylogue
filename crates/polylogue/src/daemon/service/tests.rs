@@ -271,13 +271,7 @@ fn startup_failure_after_workers_start_releases_the_runtime_and_lock() {
         weak = Arc::downgrade(&runtime.daemon);
         // A directory cannot be replaced by the Unix socket binder.
         std::fs::create_dir(runtime.daemon.archive.socket()).unwrap();
-        assert!(
-            crate::daemon::server::Server::start(
-                Arc::clone(&runtime.daemon),
-                Arc::clone(&runtime.operations)
-            )
-            .is_err()
-        );
+        assert!(crate::daemon::server::Server::start(Arc::clone(&runtime.daemon)).is_err());
     }
     assert!(weak.upgrade().is_none());
     assert!(Archive::open_or_create(&root).is_ok());
@@ -375,16 +369,19 @@ fn stopping_releases_requests_waiting_for_a_full_pool_before_workers_or_running_
         let held = held.clone();
         let (release, released) = sync_channel(0);
         let holder = std::thread::spawn(move || {
-            polylogue_store::reserved_reads(|| {
-                let reader = daemon.reads.reader().unwrap();
-                assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
-                held.send(()).unwrap();
-                released.recv().unwrap();
-                assert!(matches!(
-                    reader.query("SELECT 42 AS n", &[]),
-                    Err(StoreError::Stopped)
-                ));
-            });
+            let limit =
+                polylogue_store::read::limit::ReadLimit::without_deadline(Default::default());
+            let reader = daemon
+                .reads
+                .checkout(polylogue_store::Lane::Interactive, &limit)
+                .unwrap();
+            assert_eq!(reader.query("SELECT 42 AS n", &[]).unwrap()[0]["n"], 42);
+            held.send(()).unwrap();
+            released.recv().unwrap();
+            assert!(matches!(
+                reader.query("SELECT 42 AS n", &[]),
+                Err(StoreError::Stopped)
+            ));
         });
         holders.push((release, holder));
     }
@@ -487,7 +484,7 @@ fn read_and_query_share_stored_titles() {
         use std::io::Write;
         socket.write_all(b"\n").unwrap();
         let mut records = Vec::new();
-        crate::client::stream::receive(socket, |event| {
+        crate::client::receive(&mut socket, None, |event| {
             if event.event == "record" {
                 let transfer: polylogue_model::read::ReadRecord =
                     serde_json::from_str(&event.data).map_err(std::io::Error::other)?;
@@ -495,9 +492,10 @@ fn read_and_query_share_stored_titles() {
                     records.push(record.clone());
                 }
             }
-            Ok(event.event == "complete")
+            Ok(false)
         })
-        .unwrap();
+        .unwrap()
+        .expect("the line answers");
         records
     };
     let before = records();

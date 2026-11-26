@@ -74,7 +74,7 @@ fn deliver(destination: &Path, failed: bool) -> Result<u8, OutputError> {
                 polylogue_model::Code::ReadOutput,
                 "synthetic stream interrupted",
             ));
-        crate::protocol::stream::event(&mut bytes, "error", &answer).unwrap();
+        crate::protocol::stream::event(&mut bytes, "answer", &answer).unwrap();
     } else {
         let complete = ReadComplete {
             footer: ReadFooter::default(),
@@ -94,7 +94,7 @@ fn deliver(destination: &Path, failed: bool) -> Result<u8, OutputError> {
         crate::protocol::stream::event(&mut bytes, "answer", &answer).unwrap();
     }
     write_read_stream(&startup, &parsed, &mut Default::default(), |callback| {
-        crate::client::stream::receive(std::io::Cursor::new(bytes), callback)
+        crate::client::receive(&mut bytes.as_slice(), None, callback)
     })
 }
 

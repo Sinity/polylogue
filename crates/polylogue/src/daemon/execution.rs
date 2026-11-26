@@ -1,8 +1,8 @@
-//! Request deadlines and transport cancellation. Only read work is interrupted;
-//! a committed write keeps its result.
-use command_surface::{Answer, Deadline, LatencyClass};
-use polylogue_store::{cancellation::Cancellation, read::limit::ReadLimit};
-use std::time::{Duration, Instant};
+//! Deadlines as callers name them, and the refusal of a read that ran out.
+//! Only read work is interrupted; a committed write keeps its result.
+use command_surface::Answer;
+use polylogue_store::read::limit::ReadLimit;
+use std::time::Duration;
 
 pub const DEFAULT_READ_DEADLINE_MS: u64 = 30_000;
 
@@ -24,33 +24,6 @@ pub fn remaining(deadline_ms: Option<i64>) -> Duration {
                 .max(0) as u64,
         )
     })
-}
-
-pub fn limit(deadline_ms: Option<i64>, cancellation: Cancellation) -> ReadLimit {
-    ReadLimit::new(remaining(deadline_ms), cancellation)
-}
-
-/// Resolve the operation's deadline for transport work, within the caller's
-/// already accepted deadline. A missing default gets the daemon's read limit
-/// only when the operation takes a default.
-pub(crate) fn request_limit(
-    deadline: Deadline,
-    latency: LatencyClass,
-    default_deadline: bool,
-    parent: Option<Instant>,
-    cancellation: Cancellation,
-) -> ReadLimit {
-    let declared = crate::commands::deadlines().get(latency);
-    let duration = match deadline {
-        Deadline::Default if !default_deadline => None,
-        Deadline::Default if declared.is_none() => Some(default_read_deadline()),
-        deadline => deadline.duration(declared),
-    };
-    let request = duration.and_then(|duration| Instant::now().checked_add(duration));
-    match [parent, request].into_iter().flatten().min() {
-        Some(deadline) => ReadLimit::at(deadline, cancellation),
-        None => ReadLimit::without_deadline(cancellation),
-    }
 }
 
 /// A stopped read names its stage and any shorter query suited to the caller.

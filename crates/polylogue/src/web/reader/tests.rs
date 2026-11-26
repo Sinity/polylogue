@@ -1,22 +1,32 @@
 use super::*;
-#[test]
-fn object_urls_forward_target_and_parameters() {
-    let parameters = vec![
-        ("view".into(), "dialogue".into()),
-        ("cursor".into(), "sealed +λ&?".into()),
-    ];
-    assert_eq!(
-        target_url("message:test:session:message", &parameters).unwrap(),
-        "/api/v1/rows?selection=message%3Atest%3Asession%3Amessage&steps=read&view=dialogue&cursor=sealed%20%2B%CE%BB%26%3F"
-    );
-}
+use tower::ServiceExt;
+
+/// An object URL already names the selection and its read step; a query
+/// value that would name them again is refused.
 #[test]
 fn a_path_target_cannot_be_overridden_by_query_parameters() {
-    assert_eq!(
-        target_url(
-            "session:test:session",
-            &[("target".into(), "another selection".into())]
-        ),
-        Err("the object URL already supplies selection and its read step".to_owned())
-    );
+    let daemon = crate::test_daemon::start("reader route refusal");
+    let web = Arc::new(Web {
+        daemon: Arc::clone(&daemon.daemon),
+        key: "synthetic".into(),
+        token: "synthetic".into(),
+        port: 8765,
+    });
+    let response = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            super::super::router(web)
+                .oneshot(
+                    axum::http::Request::get("/s/test:session?target=another%20selection")
+                        .header(header::HOST, "127.0.0.1:8765")
+                        .header(header::AUTHORIZATION, "Bearer synthetic")
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+        });
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }

@@ -1,17 +1,11 @@
 use super::*;
 fn accepts(arguments: &Value) -> bool {
-    let row = command("rows").unwrap();
-    row.registration()
-        .unwrap()
-        .admit(
-            arguments,
-            row,
-            &Caller {
-                surface: Surface::Mcp,
-                cwd: None,
-            },
-        )
-        .is_ok()
+    crate::daemon::handler::policy(
+        command("rows").unwrap(),
+        arguments,
+        polylogue_model::authorship::Channel::Mcp,
+    )
+    .is_ok()
 }
 #[test]
 fn authored_steps_are_admitted_and_transport_identity_fields_are_refused() {

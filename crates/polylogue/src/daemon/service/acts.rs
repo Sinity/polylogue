@@ -9,7 +9,8 @@
 //! starts on the protocol [`polylogue_model::live::channel::host_protocol`]
 //! names.
 use super::{Daemon, Failure, authored_preparation, error, ok, writer};
-use crate::daemon::handler::{Call, Handler};
+use crate::commands::ToolAccess;
+use crate::daemon::handler::{Call, Operation, Policy};
 use crate::live_acts::{ResumeRun, probe};
 use crate::protocol::act as protocol;
 use command_surface::Answer;
@@ -25,12 +26,15 @@ pub(crate) mod web_chat;
 
 /// The acts' handlers: each records its act and reaches its session.
 macro_rules! act {
-    ($(#[$doc:meta])* $name:ident, $arguments:ty, |$args:ident, $call:ident| $body:expr) => {
+    ($(#[$doc:meta])* $name:ident, $arguments:ty, $access:expr, |$args:ident, $call:ident| $body:expr) => {
         $(#[$doc])*
         pub(crate) struct $name;
-        impl Handler for $name {
+        impl Operation for $name {
             type Arguments = $arguments;
-            type Answer = Value;
+            type Reply = Value;
+            fn policy(_: &Self::Arguments, _: polylogue_model::authorship::Channel) -> Result<Policy, Failure> {
+                Ok(Policy::write($access))
+            }
             fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Value>, Failure> {
                 $body
             }
@@ -38,44 +42,53 @@ macro_rules! act {
     };
 }
 
-act!(SendMessage, protocol::SendMessage, |a, call| send_message(
-    call.daemon,
-    call.invocation,
-    call.request_id,
-    &a.target,
-    &a.text,
-    a.live,
-    a.about
-));
+act!(
+    SendMessage,
+    protocol::SendMessage,
+    ToolAccess::Act,
+    |a, call| send_message(
+        call.daemon,
+        call.invocation,
+        call.request_id,
+        &a.target,
+        &a.text,
+        a.live,
+        a.about
+    )
+);
 act!(
     /// A hook takes the messages and notices pending for its session.
     Claim,
-    protocol::Claim,
+    protocol::Claim, ToolAccess::Write,
     |a, call| claim(call.daemon, &a.session)
 );
-act!(AnswerRequest, protocol::Answer, |a, call| answer(
-    call.daemon,
-    call.invocation,
-    call.request_id,
-    &a.session,
-    a.decision == protocol::Decision::Approve,
-    a.text,
-    a.standing
-));
-act!(Permission, protocol::Permission, |a, call| permission(
-    call.daemon,
-    call.invocation,
-    &a.session,
-    &a.tool,
-    &a.input
-));
-act!(Interrupt, protocol::Interrupt, |a, call| interrupt(
-    call.daemon,
-    call.invocation,
-    call.request_id,
-    &a.session
-));
-act!(Start, protocol::Start, |a, call| {
+act!(
+    AnswerRequest,
+    protocol::Answer,
+    ToolAccess::Act,
+    |a, call| answer(
+        call.daemon,
+        call.invocation,
+        call.request_id,
+        &a.session,
+        a.decision == protocol::Decision::Approve,
+        a.text,
+        a.standing
+    )
+);
+act!(
+    Permission,
+    protocol::Permission,
+    ToolAccess::Write,
+    |a, call| permission(call.daemon, call.invocation, &a.session, &a.tool, &a.input)
+);
+act!(
+    Interrupt,
+    protocol::Interrupt,
+    ToolAccess::Act,
+    |a, call| interrupt(call.daemon, call.invocation, call.request_id, &a.session)
+);
+act!(Start, protocol::Start, ToolAccess::Act, |a, call| {
     if let Some(provider) = a
         .harness
         .as_deref()
@@ -111,19 +124,24 @@ act!(Start, protocol::Start, |a, call| {
         )
     }
 });
-act!(HandOffSession, protocol::HandOff, |a, call| hand_off(
-    call.daemon,
-    call.invocation,
-    &HandOff {
-        request_id: call.request_id,
-        source: &a.session,
-        to: &a.to,
-        cwd: a.cwd.as_deref(),
-        at: a.at.as_deref(),
-        stop_source: a.stop_source,
-        print: a.print,
-    },
-));
+act!(
+    HandOffSession,
+    protocol::HandOff,
+    ToolAccess::Act,
+    |a, call| hand_off(
+        call.daemon,
+        call.invocation,
+        &HandOff {
+            request_id: call.request_id,
+            source: &a.session,
+            to: &a.to,
+            cwd: a.cwd.as_deref(),
+            at: a.at.as_deref(),
+            stop_source: a.stop_source,
+            print: a.print,
+        },
+    )
+);
 
 fn now(d: &Daemon) -> i64 {
     d.config.requests.now().unix_ms()

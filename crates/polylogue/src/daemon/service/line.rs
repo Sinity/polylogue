@@ -5,8 +5,8 @@
 //! A selection with no steps is the listing; a line ending in a streamed
 //! read streams.
 use super::{Failure, answers, handlers, query_targets};
-use crate::commands::{Caller, Command, Surface, ToolAccess};
-use crate::daemon::handler::{Call, CountReplyMap, Handler, Streams};
+use crate::commands::ToolAccess;
+use crate::daemon::handler::{Bound, Call, Operation, Policy};
 use crate::daemon::verbs::{
     self, Given, RowRule, Selection, StepCall, read::LineReads, refused_pick, rows_rule,
 };
@@ -14,7 +14,8 @@ use crate::protocol::line::{
     LineAnswer, LineExplanation, Resolved, Rows, SelectionForm, Step, StepExplanation, StepOutcome,
     StepReport, StepsAnswer,
 };
-use command_surface::{Access, Answer, Envelope, Outcome, TextStyle};
+use command_surface::{Answer, Envelope, Outcome, TextStyle};
+use polylogue_model::authorship::Channel;
 use polylogue_model::read::ReadDelivery;
 use polylogue_model::user::UserWrite;
 use polylogue_model::{Code, Reference};
@@ -26,49 +27,43 @@ use std::time::{Duration, Instant};
 
 pub(crate) struct Line;
 
-impl Handler for Line {
+impl Operation for Line {
     type Arguments = Rows;
-    type Answer = LineAnswer;
-    const PAGES: bool = true;
-    const BUDGETED: bool = true;
-    const READS_FIRST: bool = true;
-    fn count_reply(rows: &Rows) -> Option<CountReplyMap<Self::Answer>> {
-        if rows.steps.is_empty() && !rows.explain {
-            Some(listing_answer)
-        } else {
-            None
-        }
+    type Reply = LineAnswer;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = crate::cli::print::line;
+    fn failure(line: &LineAnswer) -> Option<command_surface::FailureKind> {
+        line.failed_step().map(|failure| failure.kind)
     }
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = crate::cli::print::line;
-    fn read_only(rows: &Rows, _: &Command, caller: &Caller) -> bool {
-        rows.access() == ToolAccess::Read
-            && !(caller.sender().is_some()
-                && rows.steps.iter().any(|s| matches!(s, Step::Brief(_))))
-    }
-    fn default_deadline(rows: &Rows) -> bool {
-        !streams(rows)
-    }
-    fn tool_access(rows: &Rows, _: &Command) -> ToolAccess {
-        rows.access()
-    }
-    fn access(rows: &Rows, _: Access) -> Access {
-        if rows.access() > ToolAccess::Read {
-            Access::Write
-        } else {
-            Access::Read
-        }
-    }
-    fn query_text(rows: &Rows) -> Option<&str> {
-        query_selection(rows)
-    }
-    fn ranking_query(rows: &Rows, _: &Command) -> Option<String> {
-        if rows.explain {
-            None
-        } else {
-            query_selection(rows).map(str::to_owned)
-        }
+    /// A line's access is its highest step's. It changes the archive when a
+    /// step writes or acts, or a brief records its delivery to a model or a
+    /// hook; a line with a streamed read takes only a deadline its caller
+    /// names.
+    fn policy(rows: &Rows, channel: Channel) -> Result<Policy, Failure> {
+        let changes_archive = rows.access() > ToolAccess::Read
+            || (crate::operation::sender(channel).is_some()
+                && rows.steps.iter().any(|step| matches!(step, Step::Brief(_))));
+        Ok(Policy {
+            access: rows.access(),
+            changes_archive,
+            bound: if streams(rows) {
+                Bound::CallerOnly
+            } else if changes_archive {
+                Bound::UntilHandOver
+            } else {
+                Bound::Whole
+            },
+            pages: true,
+            budgeted: true,
+            ..Policy::READ
+        })
     }
     fn run(rows: Rows, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
+        if let Some(text) = query_selection(&rows) {
+            call.runs_query(text);
+            if !rows.explain {
+                crate::daemon::query::prefetch_ranking(call, text);
+            }
+        }
         if let Some(failure) = refused_surface(&rows, call)? {
             let next = match failure.suggestion() {
                 Some(command_surface::Suggestion::Request(request)) => Some(request.clone()),
@@ -90,6 +85,24 @@ impl Handler for Line {
         }
         let limit = ReadLimit::current();
         let selection = prepare(&rows, given, call)?;
+        if streams(&rows) {
+            let context = call.context()?;
+            let mut events = call.events();
+            let mut answer = execute_steps(
+                rows.steps,
+                &selection,
+                call,
+                limit.as_ref(),
+                Some(Stream {
+                    context: &context,
+                    output: &mut events,
+                }),
+            )?;
+            if rows.return_selection {
+                attach_population(&mut answer, &selection, call);
+            }
+            return Ok(answer.map(LineAnswer::Steps));
+        }
         let resolved = summary(&selection);
         if rows.dry_run {
             let steps = rows
@@ -129,49 +142,8 @@ impl Handler for Line {
     }
 }
 
-impl Streams for Line {
-    fn streaming(rows: &Rows) -> bool {
-        streams(rows)
-    }
-    fn produce(
-        rows: Rows,
-        call: &Call<'_>,
-        context: &Arc<Context>,
-        output: &mut dyn Write,
-    ) -> Result<(), Failure> {
-        // The stream's call carries no request ID; the accepted request does.
-        let request_id = context
-            .accepted_request()
-            .map(|request| request.request_id.clone())
-            .unwrap_or_default();
-        let call = Call {
-            request_id: &request_id,
-            ..call.copy()
-        };
-        if let Some(failure) = refused_surface(&rows, &call)? {
-            return Err(failure);
-        }
-        let given = given(&rows)?;
-        check(&rows, &given)?;
-        let limit = ReadLimit::current();
-        let selection = prepare(&rows, given, &call)?;
-        let mut answer = execute_steps(
-            rows.steps,
-            &selection,
-            &call,
-            limit.as_ref(),
-            Some(Stream { context, output }),
-        )?;
-        if rows.return_selection {
-            attach_population(&mut answer, &selection, &call);
-        }
-        crate::protocol::stream::event(output, "answer", &answer.map(LineAnswer::Steps))
-            .map_err(Failure::io)
-    }
-}
-
 /// One streamed read makes the line an ordered stream; a follow remains last.
-fn streams(rows: &Rows) -> bool {
+pub(crate) fn streams(rows: &Rows) -> bool {
     !rows.explain
         && !rows.dry_run
         && rows.steps.iter().any(|step| {
@@ -339,7 +311,7 @@ fn refused_surface(rows: &Rows, call: &Call<'_>) -> Result<Option<Failure>, Fail
             .into(),
         ));
     }
-    if call.caller.surface == Surface::Mcp
+    if call.caller.channel() == Channel::Mcp
         && rows
             .steps
             .iter()
@@ -785,7 +757,7 @@ impl Stream<'_> {
     }
 }
 
-/// Selection, step identities, failures and outcomes have one executor in
+/// Selection, step identities, failures and outcomes are handled once for
 /// finite and streamed delivery. A stream only changes where read records go.
 fn execute_steps(
     steps: Vec<Step>,
@@ -870,17 +842,17 @@ fn execute_steps(
     })
 }
 
-fn listing_answer(answer: crate::daemon::query::CountReply) -> Answer<LineAnswer> {
+fn listing_answer(answer: Answer<crate::protocol::query::Answer>) -> Answer<LineAnswer> {
     answer.map(|found| LineAnswer::Listing(Box::new(found)))
 }
 
 /// How long a `--wait` waits: over MCP at most 50 seconds, which a model
 /// can hold a call open for.
-pub(super) fn listing_wait(wait: &str, surface: Surface) -> Result<Duration, Failure> {
+pub(super) fn listing_wait(wait: &str, channel: Channel) -> Result<Duration, Failure> {
     let millis = crate::signals::duration(wait)
         .ok_or_else(|| Failure::bad_value("--wait needs a duration such as 30s or 30m"))?;
     let duration = Duration::from_millis(millis as u64);
-    Ok(if surface == Surface::Mcp {
+    Ok(if channel == Channel::Mcp {
         duration.min(Duration::from_secs(50))
     } else {
         duration
@@ -907,7 +879,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
     let Some(wait) = rows.wait.as_deref() else {
         return handlers::Query::run(arguments, call).map(listing_answer);
     };
-    let mut duration = listing_wait(wait, call.caller.surface)?;
+    let mut duration = listing_wait(wait, call.caller.channel())?;
     let limit = ReadLimit::current();
     if let Some(left) = limit.as_ref().and_then(ReadLimit::remaining) {
         duration = duration.min(left.saturating_sub(super::follow::REPLY_MARGIN));
@@ -945,12 +917,12 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
             .and_then(ReadLimit::remaining)
             .map_or(left, |remaining| left.min(remaining));
         ReadLimit::set_stage("listing wait");
-        crate::daemon::executor::outside(|| match &commits {
+        match &commits {
             Some(commits) => {
                 let _ = commits.recv_timeout(left);
             }
             None => std::thread::sleep(left),
-        });
+        }
     }
 }
 

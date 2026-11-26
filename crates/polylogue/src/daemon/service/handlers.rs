@@ -8,10 +8,11 @@ use super::{
 };
 use crate::brief::Ask;
 use crate::cli::print;
-use crate::commands::{Caller, Command};
-use crate::daemon::handler::{Call, Handler};
+use crate::commands::ToolAccess;
+use crate::daemon::handler::{Bound, Call, Lane, Late, Operation, Policy};
 use crate::protocol;
-use command_surface::{Access, Answer, TextStyle};
+use command_surface::{Answer, TextStyle};
+use polylogue_model::authorship::Channel;
 use polylogue_model::user::UserWrite;
 use serde_json::Value;
 use std::sync::mpsc::sync_channel;
@@ -78,8 +79,8 @@ fn query_reply(
             };
             match super::super::query::prepare(&reader, ask).and_then(|prepared| {
                 if finish_reads || !prepared.is_empty() || !freshness.up_to_date() {
-                    super::super::handler::finish_read_phase("optional query count")?;
-                    prepared.complete_reply(&freshness)
+                    call.hand_over("optional query count")?;
+                    prepared.complete_within(call.limit)
                 } else {
                     prepared.complete()
                 }
@@ -92,18 +93,19 @@ fn query_reply(
 }
 
 pub(crate) struct Query;
-impl Handler for Query {
+impl Operation for Query {
     type Arguments = protocol::query::Arguments;
-    type Answer = protocol::query::Answer;
-    const PAGES: bool = true;
-    fn query_text(arguments: &Self::Arguments) -> Option<&str> {
-        Some(&arguments.query)
+    type Reply = protocol::query::Answer;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::query;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            pages: true,
+            ..Policy::READ
+        })
     }
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
-    fn ranking_query(arguments: &Self::Arguments, _row: &Command) -> Option<String> {
-        Some(arguments.query.clone())
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
+        call.runs_query(&arguments.query);
+        super::super::query::prefetch_ranking(call, &arguments.query);
         run_query(call, QueryInput::of(&arguments))
     }
 }
@@ -117,10 +119,13 @@ pub(super) fn waiting_query(
 }
 
 pub(crate) struct Sql;
-impl Handler for Sql {
+impl Operation for Sql {
     type Arguments = protocol::query::Sql;
-    type Answer = protocol::query::SqlRows;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    type Reply = protocol::query::SqlRows;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy::READ)
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let reader = call.reader()?;
         Ok(
             // Compiled under a read-only authorizer: a statement that writes,
@@ -137,11 +142,16 @@ impl Handler for Sql {
 
 /// Grammar completions at a UTF-8 byte offset in the full query text.
 pub(crate) struct Complete;
-impl Handler for Complete {
+impl Operation for Complete {
     type Arguments = protocol::complete::Arguments;
-    type Answer = protocol::complete::Answer;
-    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    type Reply = protocol::complete::Answer;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            lane: Lane::Interactive,
+            ..Policy::READ
+        })
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let text = arguments.text;
         let position = match arguments.position.map(usize::try_from).transpose() {
             Ok(position) => position.unwrap_or(text.len()),
@@ -187,26 +197,13 @@ fn status_is_deep(arguments: &protocol::status::Arguments) -> bool {
 }
 
 pub(crate) struct Status;
-impl Handler for Status {
+impl Operation for Status {
     type Arguments = protocol::status::Arguments;
-    type Answer = protocol::status::Answer;
-    /// Status reads the daemon's snapshot and its own state, so it waits for
-    /// no place behind requests that wait on the writer or the engine.
-    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Immediate;
-    fn class(arguments: &Self::Arguments) -> crate::daemon::executor::Class {
-        if status_is_deep(arguments) {
-            crate::daemon::executor::Class::Background
-        } else {
-            Self::CLASS
-        }
-    }
-    fn default_deadline(arguments: &Self::Arguments) -> bool {
-        !status_is_deep(arguments)
-    }
-    fn validate(
-        arguments: &Self::Arguments,
-        caller: &crate::commands::Caller,
-    ) -> Result<(), Failure> {
+    type Reply = protocol::status::Answer;
+    /// Status reads the daemon's snapshot and its own state and takes the
+    /// reserved reader if any; vector counts and verification are slow work
+    /// at idle priority with no default deadline.
+    fn policy(arguments: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
         if arguments.manifest.is_some() && !arguments.verify {
             return Err(Failure::bad_request("--manifest requires --verify"));
         }
@@ -220,19 +217,30 @@ impl Handler for Status {
                 "--watch cannot be combined with --line or --verify",
             ));
         }
-        if arguments.watch && caller.surface != crate::commands::Surface::Cli {
+        if arguments.watch && !crate::operation::command_line(channel) {
             return Err(Failure::bad_request(
                 "--watch redraws a terminal and is available only on the command line",
             ));
         }
-        if arguments.verify && caller.surface != crate::commands::Surface::Cli {
+        if arguments.verify && !crate::operation::command_line(channel) {
             return Err(Failure::bad_request(
                 "archive verification is available only on the command line",
             ));
         }
-        Ok(())
+        Ok(if status_is_deep(arguments) {
+            Policy {
+                bound: Bound::CallerOnly,
+                lane: Lane::Background,
+                ..Policy::READ
+            }
+        } else {
+            Policy {
+                lane: Lane::Interactive,
+                ..Policy::READ
+            }
+        })
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let manifest = arguments
             .manifest
             .as_deref()
@@ -275,10 +283,15 @@ impl Handler for Status {
 
 /// Pages of the language, a verb's fields, or the full reference.
 pub(crate) struct Help;
-impl Handler for Help {
+impl Operation for Help {
     type Arguments = protocol::help::Arguments;
-    type Answer = Value;
-    const PAGES: bool = true;
+    type Reply = Value;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            pages: true,
+            ..Policy::READ
+        })
+    }
     const PRINT: fn(&Value, TextStyle) -> String = |value, style| {
         value.get("manual").and_then(Value::as_str).map_or_else(
             || print::json(value, style),
@@ -335,14 +348,17 @@ impl Handler for Help {
 
 /// Observes stored wire structure at idle priority.
 pub(crate) struct SchemaInfer;
-impl Handler for SchemaInfer {
+impl Operation for SchemaInfer {
     type Arguments = protocol::schema::Infer;
-    type Answer = super::super::schema::Inference;
-    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Background;
-    fn default_deadline(_: &Self::Arguments) -> bool {
-        false
+    type Reply = super::super::schema::Inference;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            bound: Bound::CallerOnly,
+            lane: Lane::Background,
+            ..Policy::READ
+        })
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let protocol::schema::Infer {
             origin,
             all,
@@ -378,10 +394,13 @@ impl Handler for SchemaInfer {
 
 /// Stored wire fields no parser reads.
 pub(crate) struct SchemaUnread;
-impl Handler for SchemaUnread {
+impl Operation for SchemaUnread {
     type Arguments = protocol::schema::Unread;
-    type Answer = polylogue_store::wire_shapes::Report;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    type Reply = polylogue_store::wire_shapes::Report;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy::READ)
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         if arguments.origin.is_some() && arguments.all {
             return Ok(error(
                 polylogue_model::Code::BadRequest,
@@ -396,29 +415,23 @@ impl Handler for SchemaUnread {
 }
 
 pub(crate) struct Import;
-impl Handler for Import {
+impl Operation for Import {
     type Arguments = protocol::import::Arguments;
-    type Answer = protocol::import::Answer;
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = crate::cli::print::import;
-    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Background;
-    fn class(arguments: &Self::Arguments) -> crate::daemon::executor::Class {
-        if arguments.provider().is_some() {
-            crate::daemon::executor::Class::Ordinary
+    type Reply = protocol::import::Answer;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = crate::cli::print::import;
+    /// Files are imported at idle priority; a provider's import job is
+    /// started, shown or awaited like any other request.
+    fn policy(arguments: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(if arguments.provider().is_some() {
+            Policy::write(ToolAccess::Act)
         } else {
-            Self::CLASS
-        }
+            Policy {
+                lane: Lane::Background,
+                ..Policy::write(ToolAccess::Write)
+            }
+        })
     }
-    fn tool_access(arguments: &Self::Arguments, _: &Command) -> crate::commands::ToolAccess {
-        if arguments.provider().is_some() {
-            crate::commands::ToolAccess::Act
-        } else {
-            crate::commands::ToolAccess::Write
-        }
-    }
-    fn read_phase(_: &Self::Arguments, _: &Command, _: &Caller) -> bool {
-        false
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         if let Some(named) = &arguments.provider {
             if !arguments.paths.is_empty() {
                 return Err(Failure::bad_request(
@@ -600,27 +613,17 @@ fn setting_writes(arguments: &protocol::setting::Arguments) -> bool {
 
 /// Reads a setting or the catalog without a value; writes one with a value.
 pub(crate) struct Setting;
-impl Handler for Setting {
+impl Operation for Setting {
     type Arguments = protocol::setting::Arguments;
-    type Answer = protocol::setting::Answer;
-    fn tool_access(arguments: &Self::Arguments, _: &Command) -> crate::commands::ToolAccess {
-        if setting_writes(arguments) {
-            crate::commands::ToolAccess::Write
+    type Reply = protocol::setting::Answer;
+    fn policy(arguments: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(if setting_writes(arguments) {
+            Policy::write(ToolAccess::Write)
         } else {
-            crate::commands::ToolAccess::Read
-        }
+            Policy::READ
+        })
     }
-    fn read_only(arguments: &Self::Arguments, _: &Command, _: &Caller) -> bool {
-        !setting_writes(arguments)
-    }
-    fn access(arguments: &Self::Arguments, _: Access) -> Access {
-        if setting_writes(arguments) {
-            Access::Write
-        } else {
-            Access::Read
-        }
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let protocol::setting::Arguments {
             key,
             value,
@@ -694,11 +697,14 @@ impl Handler for Setting {
 /// With a session, its resume commands; without, the sessions in a
 /// directory worth resuming.
 pub(crate) struct Continue;
-impl Handler for Continue {
+impl Operation for Continue {
     type Arguments = protocol::resume::Arguments;
-    type Answer = protocol::resume::Answer;
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::resume;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    type Reply = protocol::resume::Answer;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::resume;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy::READ)
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let reader = call.reader()?;
         if let Some(session) = arguments.session {
             return Ok(match crate::resume::plan(&reader, &session) {
@@ -720,20 +726,21 @@ impl Handler for Continue {
 
 /// Previews embedding work, or builds it when the caller confirms.
 pub(crate) struct Embed;
-impl Handler for Embed {
+impl Operation for Embed {
     type Arguments = protocol::embed::Arguments;
-    type Answer = crate::embeddings::Answer;
-    fn read_only(arguments: &Self::Arguments, _: &Command, _: &Caller) -> bool {
-        !arguments.yes
-    }
-    fn access(arguments: &Self::Arguments, _: Access) -> Access {
-        if arguments.yes {
-            Access::Write
+    type Reply = crate::embeddings::Answer;
+    /// The act tool runs it: a confirmed build spends on a paid provider.
+    fn policy(arguments: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(if arguments.yes {
+            Policy::write(ToolAccess::Act)
         } else {
-            Access::Read
-        }
+            Policy {
+                access: ToolAccess::Act,
+                ..Policy::READ
+            }
+        })
     }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let reader = call.reader()?;
         let context = call.context()?;
         let d = call.daemon;
@@ -752,6 +759,20 @@ impl Handler for Embed {
                 operation: &context,
             },
         ))
+    }
+}
+
+/// Prepared context reads under a deadline; for a caller with a sender
+/// (MCP, a hook) it then records a delivery, so it changes the archive.
+fn context_policy(channel: Channel) -> Policy {
+    if crate::operation::sender(channel).is_some() {
+        Policy {
+            access: ToolAccess::Read,
+            bound: Bound::UntilHandOver,
+            ..Policy::write(ToolAccess::Read)
+        }
+    } else {
+        Policy::READ
     }
 }
 
@@ -780,15 +801,18 @@ pub(crate) fn prepare_context(
 }
 
 pub(crate) struct Brief;
-impl Handler for Brief {
+impl Operation for Brief {
     type Arguments = protocol::context::Brief;
-    type Answer = protocol::context::Answer;
-    const CLASS: crate::daemon::executor::Class = crate::daemon::executor::Class::Interactive;
-    const BUDGETED: bool = true;
-    const RECORDS_DELIVERY: bool = true;
-    const READS_FIRST: bool = true;
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::context;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    type Reply = protocol::context::Answer;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::context;
+    fn policy(_: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            lane: Lane::Interactive,
+            budgeted: true,
+            ..context_policy(channel)
+        })
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let cwd = call.directory(arguments.cwd.as_deref())?;
         prepare_context(
             call,
@@ -803,17 +827,17 @@ impl Handler for Brief {
 
 /// One operator-judged file pointer, silent when unavailable within its cap.
 pub(crate) struct Advisory;
-impl Handler for Advisory {
+impl Operation for Advisory {
     type Arguments = protocol::context::Advisory;
-    type Answer = protocol::context::Answer;
-    const FAILS_OPEN: bool = true;
-    const RECORDS_DELIVERY: bool = true;
-    const READS_FIRST: bool = true;
-    fn read_cap() -> Option<std::time::Duration> {
-        Some(crate::advisory::BUDGET)
+    type Reply = protocol::context::Answer;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::context;
+    fn policy(_: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            late: Late::AnswerEmpty,
+            ..context_policy(channel)
+        })
     }
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::context;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let cwd = call.directory(arguments.cwd.as_deref())?;
         prepare_context(
             call,
@@ -827,14 +851,17 @@ impl Handler for Advisory {
 }
 
 pub(crate) struct Takeover;
-impl Handler for Takeover {
+impl Operation for Takeover {
     type Arguments = protocol::context::Takeover;
-    type Answer = protocol::context::Answer;
-    const BUDGETED: bool = true;
-    const RECORDS_DELIVERY: bool = true;
-    const READS_FIRST: bool = true;
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::context;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    type Reply = protocol::context::Answer;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::context;
+    fn policy(_: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            budgeted: true,
+            ..context_policy(channel)
+        })
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         prepare_context(
             call,
             Ask::Takeover {
@@ -846,18 +873,19 @@ impl Handler for Takeover {
 }
 
 pub(crate) struct Recall;
-impl Handler for Recall {
+impl Operation for Recall {
     type Arguments = protocol::context::Recall;
-    type Answer = protocol::context::Answer;
-    const PAGES: bool = true;
-    const BUDGETED: bool = true;
-    const RECORDS_DELIVERY: bool = true;
-    const READS_FIRST: bool = true;
-    fn query_text(arguments: &Self::Arguments) -> Option<&str> {
-        Some(&arguments.query)
+    type Reply = protocol::context::Answer;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = print::context;
+    fn policy(_: &Self::Arguments, channel: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            pages: true,
+            budgeted: true,
+            ..context_policy(channel)
+        })
     }
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::context;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
+        call.runs_query(&arguments.query);
         prepare_context(
             call,
             Ask::Recall {
@@ -872,10 +900,13 @@ impl Handler for Recall {
 
 /// What happened to a delivery after it was handed out; queued at once.
 pub(crate) struct DeliveryEvent;
-impl Handler for DeliveryEvent {
+impl Operation for DeliveryEvent {
     type Arguments = protocol::act::DeliveryEvent;
-    type Answer = Value;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    type Reply = Value;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy::write(ToolAccess::Write))
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         Ok(delivery_event(
             call.daemon,
             call.invocation,
@@ -891,11 +922,16 @@ impl Handler for DeliveryEvent {
 
 /// A browser selection saved as the operator's note on its message.
 pub(crate) struct SelectionNote;
-impl Handler for SelectionNote {
+impl Operation for SelectionNote {
     type Arguments = protocol::browser::SelectionNote;
-    type Answer = polylogue_model::user::UserOutcome;
-    const READS_FIRST: bool = true;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
+    type Reply = polylogue_model::user::UserOutcome;
+    fn policy(_: &Self::Arguments, _: Channel) -> Result<Policy, Failure> {
+        Ok(Policy {
+            bound: Bound::UntilHandOver,
+            ..Policy::write(ToolAccess::Write)
+        })
+    }
+    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Reply>, Failure> {
         let (d, invocation) = (call.daemon, call.invocation);
         let input = crate::browser::notes::SelectionNote {
             request_id: call.request_id.into(),

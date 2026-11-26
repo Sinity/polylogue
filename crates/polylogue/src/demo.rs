@@ -3,7 +3,7 @@
 use polylogue_model::JsonExt as _;
 mod files;
 
-use crate::commands::{self, Caller, Command, Surface};
+use crate::commands::{self, Command};
 use crate::daemon::service;
 use polylogue_engine::Config;
 use serde::{Deserialize as _, Serialize};
@@ -133,29 +133,18 @@ fn run(directory: &Path, startup: &crate::config::Startup) -> Result<Tour, Strin
     let invoke = |command: &str, arguments: Value| -> Result<Value, String> {
         let declaration =
             commands::command(command).ok_or_else(|| format!("no command {command}"))?;
-        let authorship: polylogue_model::authorship::Authorship = command_surface::author_of(
-            &command_surface::CallerEvidence::default(),
+        let mut caller = crate::operation::Caller::local(
             command_surface::Via::Cli,
-            None,
-        )
-        .into();
-        let invocation = runtime.daemon.invocation(&authorship);
-        let limit = crate::daemon::execution::limit(None, Default::default());
-        let answer = crate::daemon::handler::local(
+            runtime.daemon.archive.stop().child(),
+        );
+        caller.cwd = Some(directory.clone());
+        let request = crate::client::request(
             declaration.name,
             arguments,
-            &crate::daemon::handler::Local {
-                daemon: &runtime.daemon,
-                invocation: &invocation,
-                caller: &Caller {
-                    surface: Surface::Cli,
-                    cwd: Some(directory.clone()),
-                },
-                limit: &limit,
-                request_id: &polylogue_store::user_writes::new_request_id(),
-                cursor: None,
-            },
+            polylogue_store::user_writes::new_request_id(),
         );
+        let (_, answer) =
+            crate::daemon::handler::answer_collected(&runtime.daemon, &request, &caller);
         crate::protocol::into_value(answer).map_err(|failure| {
             format!(
                 "{command}: {}: {}",

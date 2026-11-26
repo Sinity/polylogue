@@ -208,18 +208,18 @@ fn changing_a_saved_question_moves_its_existing_watch_to_the_exact_new_revision(
 fn a_saved_result_name_stays_fixed_when_the_newest_named_result_changes() {
     let d = two_sessions();
     let save_at = |id: &str, selection: &str, milliseconds: i64| {
-        let mut invocation = d.daemon.invocation(&Authorship {
+        let authorship = Authorship {
             author: Author::AgentOrigin(Origin::new("codex").unwrap()),
             via: Channel::Mcp,
-        });
-        invocation.at = polylogue_model::Timestamp::from_unix_ms(milliseconds).unwrap();
+        };
         let answer = Call::new(
             "rows",
             json!({"selection":selection,"steps":[{"verb":"save","name":"population"}]}),
         )
         .id(id)
-        .authorship(invocation.authorship.clone())
-        .answer_with(&d.daemon, &invocation);
+        .authorship(authorship)
+        .at(polylogue_model::Timestamp::from_unix_ms(milliseconds).unwrap())
+        .answer(&d.daemon);
         match crate::test_answers::step(answer) {
             StepAnswer::Saved(report) => report,
             other => panic!("expected accepted Save: {other:?}"),
