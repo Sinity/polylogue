@@ -634,10 +634,9 @@ it.each(["missing", "unknown"])("captures cached content when the daemon reports
   const before = start(chrome, { indexedDB: new IDBFactory() });
   expect((await before.captureTab(1, "changed")).outcome).toBe("stored");
   host.stored.length = 0;
-  host.operations["internal conversations"] = () => ({ json: {
-    daemon: state === "missing" ? "running" : "unknown",
-    conversations: [{ id: "c1", state, downloading: false }],
-  } });
+  host.operations["internal conversations"] = () => state === "unknown"
+    ? { status: 503, json: { error: "daemon_required", reason: { name: "daemon_did_not_answer", fields: {} } } }
+    : { json: { provider: "chatgpt", conversations: [{ id: "c1", messages: null, downloading: null }] } };
   await chrome.storage.session.clear();
   const after = start(chrome, { indexedDB: new IDBFactory() });
   expect((await after.captureTab(1, "sweep")).outcome).toBe("stored");

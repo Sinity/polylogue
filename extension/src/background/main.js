@@ -235,7 +235,7 @@ export function start(chrome, { indexedDB = globalThis.indexedDB } = {}) {
     },
     "polylogue.answer": async (message) => host.call("internal chat answer", { id: message.id, value: message.value === "allow" ? "allow" : "deny" }),
     "polylogue.reader": async () => {
-      throw new HostError("reader_unavailable", null, "The daemon has no operation for the reader address; open Polylogue with `polylogue web`.");
+      throw new HostError("reader_unavailable", null, "The reader address is unavailable; open Polylogue with `polylogue web`.");
     },
   };
 
