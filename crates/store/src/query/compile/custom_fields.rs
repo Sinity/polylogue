@@ -876,7 +876,11 @@ pub(crate) fn links_to(c: &mut Compiler<'_>, x: &Call<'_, '_, '_>) -> Result<Str
         let reference = polylogue_model::Reference::parse(&value)
             .map_err(|error| x.bad(value.clone(), error.to_string()))?;
         let p = c.text_param(&reference.to_string());
-        clauses.push(format!("EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.record={}.id AND l.role<>'about' AND (l.ref={p} OR (l.ref>{p}||'@' AND l.ref<{p}||'A')))",x.row()));
+        clauses.push(format!(
+            "EXISTS(SELECT 1 FROM source_annotation_link l WHERE l.record={}.id AND l.role<>'about' AND {})",
+            x.row(),
+            crate::session_sql::names_record("l.ref", &p)
+        ));
     }
     any_of(x, clauses)
 }
