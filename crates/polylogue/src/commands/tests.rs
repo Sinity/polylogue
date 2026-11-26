@@ -217,17 +217,6 @@ fn line_listing_carries_its_selection_and_page_size() {
 }
 
 #[test]
-fn every_measurement_is_a_command_taking_a_query_unless_whole_archive() {
-    for m in MEASURES {
-        let c = command(&format!("measure {}", m.name)).unwrap();
-        assert_eq!(
-            request_arguments_of(c).iter().any(|a| a.name == "query"),
-            !m.whole_archive
-        );
-    }
-}
-
-#[test]
 fn chat_send_reads_attached_files_on_the_command_line() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("notes.md"), b"synthetic").unwrap();
@@ -321,38 +310,6 @@ fn request_id_travels_beside_the_arguments_on_every_surface() {
             );
         }
     }
-}
-
-#[test]
-fn measure_options_render_the_measure_clause() {
-    for (name, option, metric) in [
-        ("facets", "--option", "deep"),
-        ("outlook", "--option", "example:linear"),
-        ("compare", "--option", "origin,words"),
-        ("daily", "--metric", "tokens"),
-    ] {
-        let (command, _, arguments) = cli(&[
-            "polylogue",
-            "measure",
-            name,
-            option,
-            metric,
-            "sessions where origin:codex",
-        ]);
-        let measure: crate::protocol::query::MeasureArguments =
-            serde_json::from_value(arguments).unwrap();
-        assert_eq!(
-            crate::daemon::service::handlers::measure_query(command.name, &measure),
-            format!(r#"sessions where origin:codex | measure "{name}:{metric}""#)
-        );
-    }
-    let (command, _, arguments) = cli(&["polylogue", "measure", "daily", "--metric", "tokens"]);
-    let measure: crate::protocol::query::MeasureArguments =
-        serde_json::from_value(arguments).unwrap();
-    assert_eq!(
-        crate::daemon::service::handlers::measure_query(command.name, &measure),
-        r#"sessions | measure "daily:tokens""#
-    );
 }
 
 mod annotations;

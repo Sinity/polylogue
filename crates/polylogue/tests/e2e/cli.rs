@@ -16,10 +16,7 @@ fn follow(
 ) -> command_surface::Answer<serde_json::Value> {
     use std::io::Write as _;
     use std::os::unix::net::UnixStream;
-    assert!(matches!(
-        call.request.operation.as_str(),
-        "rows" | "attachment"
-    ));
+    assert_eq!(call.request.operation, "rows");
     let mut socket = UnixStream::connect(env.archive().join("daemon.sock")).unwrap();
     socket.set_read_timeout(Some(READY_DEADLINE)).unwrap();
     serde_json::to_writer(&mut socket, &call.request).unwrap();
@@ -42,6 +39,15 @@ fn read_page(value: serde_json::Value) -> polylogue_model::read::ReadPage {
     assert_eq!(outcome["status"], "done", "{value}");
     assert_eq!(outcome["reply"]["kind"], "read", "{value}");
     serde_json::from_value(outcome["reply"]["reply"].clone()).unwrap()
+}
+
+/// The attachment range a line's one read step answered with.
+fn attachment_page(value: &serde_json::Value) -> serde_json::Value {
+    assert_eq!(value["kind"], "steps", "{value}");
+    let outcome = &value["reply"]["steps"][0]["outcome"];
+    assert_eq!(outcome["status"], "done", "{value}");
+    assert_eq!(outcome["reply"]["kind"], "attachment", "{value}");
+    outcome["reply"]["reply"].clone()
 }
 
 fn read_failure(answer: command_surface::Answer<serde_json::Value>) -> command_surface::Failure {

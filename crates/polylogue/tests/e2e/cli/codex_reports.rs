@@ -19,9 +19,9 @@ fn codex_counts_usage_and_keeps_recorded_text() {
     wait_status(&env, |status| status["store"]["sessions"] == 1);
     let started = Instant::now();
     let answer = loop {
-        let out = cli(&env, &["--json", "measure", "usage"]);
+        let out = cli(&env, &["--json", "sessions | measure usage"]);
         assert!(out.status.success(), "{out:?}");
-        let answer = json(&out);
+        let answer = listing(json(&out));
         if answer["data"]["recorded_usage"]["measured_completion_observations"] == 2 {
             break answer;
         }
@@ -37,14 +37,14 @@ fn codex_counts_usage_and_keeps_recorded_text() {
     assert_eq!(data["recorded_usage"]["known_usage"]["input"], 30);
     assert_eq!(data["recorded_usage"]["known_usage"]["output"], 5);
     assert_eq!(data["api_cost"]["unpriced_messages"], 0);
-    let text = cli(&env, &["measure", "usage"]);
+    let text = cli(&env, &["sessions | measure usage"]);
     assert!(text.status.success(), "{text:?}");
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("unknown responses"), "{text}");
     assert!(text.contains("2 recorded usage observations"), "{text}");
-    let daily = cli(&env, &["--json", "measure", "daily", "--metric", "tokens"]);
+    let daily = cli(&env, &["--json", "sessions | measure daily:tokens"]);
     assert!(daily.status.success(), "{daily:?}");
-    let daily = json(&daily);
+    let daily = listing(json(&daily));
     let daily = &daily["data"];
     assert_eq!(daily["covers"], "recorded_known_values");
     assert_eq!(daily["timed_by"], "source_record_time");
@@ -71,9 +71,9 @@ fn codex_counts_usage_and_keeps_recorded_text() {
             .all(serde_json::Value::is_null)
     );
     assert!(daily["changes"].as_array().unwrap().is_empty());
-    let quota = cli(&env, &["--json", "measure", "quota"]);
+    let quota = cli(&env, &["--json", "sessions | measure quota"]);
     assert!(quota.status.success(), "{quota:?}");
-    let quota = json(&quota);
+    let quota = listing(json(&quota));
     let codex = quota["data"]["tools"]
         .as_array()
         .unwrap()

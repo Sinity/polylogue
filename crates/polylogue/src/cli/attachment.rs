@@ -1,103 +1,111 @@
-//! `attachment --out` writes the file only after every byte range and the
-//! whole BLAKE3 check out. The temporary file is private and removed on failure.
-use super::*;
+//! `attachment:… read --to FILE` writes the file only after every byte range
+//! and the whole BLAKE3 check out. The temporary file is private and removed
+//! on failure.
+use crate::daemon::attachment::BytePage;
+use crate::protocol::line::{LineAnswer, StepAnswer, StepOutcome};
 use base64::Engine as _;
+use command_surface::{Answer, RunnableRequest};
+use polylogue_model::Code;
+use polylogue_store::Archive;
+use serde_json::Value;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::Path;
+use std::process::ExitCode;
 
-pub(crate) fn output(
-    values: &command_surface::ParsedCommand,
-    answer: &command_surface::Answer<Value>,
+/// Whether the line reads an attachment: its selection is one
+/// `attachment:` reference and its one step is `read`.
+pub(crate) fn reads_attachment(request: &RunnableRequest) -> bool {
+    let arguments = &request.arguments;
+    arguments["selection"]
+        .as_str()
+        .and_then(|text| polylogue_model::Reference::parse(text.trim()).ok())
+        .is_some_and(|reference| matches!(reference, polylogue_model::Reference::Attachment { .. }))
+        && arguments["steps"]
+            .as_array()
+            .is_some_and(|steps| steps.len() == 1 && steps[0]["verb"] == "read")
+}
+
+/// Reads every range of the attachment and writes it to `path`.
+pub(crate) fn write_to(
     startup: &crate::config::Startup,
+    request: &RunnableRequest,
+    path: &Path,
     json: bool,
 ) -> ExitCode {
-    let data = answer
-        .value()
-        .expect("output handlers receive answers with values");
-    let out = match crate::cli::calling_process::options::<crate::cli::calling_process::Attachment>(
-        values,
-    ) {
-        Ok(options) => options.out,
-        Err(e) => {
-            return fail(startup.output, json, polylogue_model::Code::BadRequest, &e);
-        }
-    };
-    let Some(out) = out else {
-        if json {
-            println!(
-                "{}",
-                polylogue_render::terminal::json(
-                    &serde_json::to_value(answer).expect("answer serializes"),
-                    false
-                )
-            );
-        } else {
-            print!("{}", print::json(data, command_surface::TextStyle::Plain));
-        }
-        return ExitCode::from(answer.exit_code());
-    };
-    match write(values, PathBuf::from(out), data, startup) {
-        Ok(path) => {
+    match write(startup, request, path) {
+        Ok(written) => {
             if json {
                 println!(
                     "{}",
-                    serde_json::to_string(&command_surface::Answer::ok(
-                        serde_json::json!({"written":path})
-                    ))
-                    .expect("answer serializes")
+                    serde_json::to_string(&Answer::ok(serde_json::json!({"written":written})))
+                        .expect("answer serializes")
                 );
             }
             ExitCode::SUCCESS
         }
-        Err(e) => fail(
-            startup.output,
-            json,
-            polylogue_model::Code::AttachmentOutput,
-            &e,
-        ),
+        Err(Written::Refused(error)) => super::fail_with(startup.output, json, &error, &[]),
+        Err(Written::Output(message)) => {
+            super::fail(startup.output, json, Code::AttachmentOutput, &message)
+        }
+    }
+}
+
+enum Written {
+    /// The daemon refused a range.
+    Refused(command_surface::Failure),
+    /// The ranges do not make the attachment, or the file could not be written.
+    Output(String),
+}
+
+impl From<String> for Written {
+    fn from(message: String) -> Self {
+        Self::Output(message)
+    }
+}
+
+/// One range: the line answer's attachment page, or the refusal.
+fn range(archive: &Archive, request: &RunnableRequest) -> Result<BytePage, Written> {
+    let answer = crate::client::call_ready(archive, request).map_err(|e| e.to_string())?;
+    let value: &Value = match &answer.outcome {
+        command_surface::Outcome::Error(error) => return Err(Written::Refused(error.clone())),
+        _ => answer.value().expect("a non-error answer has a value"),
+    };
+    let line: LineAnswer = serde_json::from_value(value.clone()).map_err(|e| e.to_string())?;
+    let LineAnswer::Steps(steps) = line else {
+        return Err("the line returned no attachment".to_owned().into());
+    };
+    match steps.steps.into_iter().next().map(|step| step.outcome) {
+        Some(StepOutcome::Done {
+            reply: StepAnswer::Attachment(page),
+            ..
+        }) => Ok(*page),
+        Some(StepOutcome::Failed { error }) => Err(Written::Refused(error)),
+        _ => Err("the line returned no attachment".to_owned().into()),
     }
 }
 
 fn write(
-    values: &command_surface::ParsedCommand,
-    path: PathBuf,
-    data: &Value,
     startup: &crate::config::Startup,
-) -> Result<PathBuf, String> {
-    let mut temporary = super::staged_file::StagedFile::new(&path).map_err(|e| e.to_string())?;
-    let arguments: serde_json::Map<String, Value> =
-        ["message", "block", "attachment", "input", "length"]
-            .into_iter()
-            .filter_map(|name| {
-                values
-                    .request
-                    .arguments
-                    .get(name)
-                    .map(|value| (name.to_owned(), value.clone()))
-            })
-            .collect();
-    let mut request = crate::client::request(
-        "attachment",
-        Value::Object(arguments),
-        polylogue_store::user_writes::new_request_id(),
-    );
-    request.deadline = values.request.deadline;
-    let mut value = data.clone();
+    request: &RunnableRequest,
+    path: &Path,
+) -> Result<std::path::PathBuf, Written> {
+    let archive = Archive::at(&startup.config.archive);
+    let mut temporary = super::staged_file::StagedFile::new(path).map_err(|e| e.to_string())?;
+    let mut request = request.clone();
     let mut hasher = blake3::Hasher::new();
     let mut offset = 0;
     let mut selected = None;
     loop {
-        let page: crate::daemon::attachment::BytePage =
-            serde_json::from_value(value).map_err(|e| e.to_string())?;
+        let page = range(&archive, &request)?;
         if page.offset != offset {
-            return Err("attachment range is not contiguous".into());
+            return Err("attachment range is not contiguous".to_owned().into());
         }
         let identity = (page.input.clone(), page.blob, page.size);
         if selected
             .as_ref()
             .is_some_and(|previous| previous != &identity)
         {
-            return Err("attachment changed between ranges".into());
+            return Err("attachment changed between ranges".to_owned().into());
         }
         selected = Some(identity);
         let bytes = base64::engine::general_purpose::STANDARD
@@ -105,43 +113,24 @@ fn write(
             .map_err(|e| e.to_string())?;
         let end = offset
             .checked_add(bytes.len() as u64)
-            .ok_or("attachment offset overflow")?;
+            .ok_or("attachment offset overflow".to_owned())?;
         if end > page.size || bytes.is_empty() && page.next.is_some() {
-            return Err("invalid attachment range length".into());
+            return Err("invalid attachment range length".to_owned().into());
         }
         temporary.write_all(&bytes).map_err(|e| e.to_string())?;
         hasher.update(&bytes);
         offset = end;
         match page.next {
             Some(next) => {
-                request.cursor = Some(next);
-                value = match crate::client::call_ready(
-                    &Archive::at(&startup.config.archive.clone()),
-                    &request,
-                )
-                .map_err(|e| e.to_string())?
-                {
-                    command_surface::Answer {
-                        outcome: command_surface::Outcome::Error(error),
-                        ..
-                    } => {
-                        return Err(format!(
-                            "{}: {}",
-                            error.code.as_deref().unwrap_or_default(),
-                            error.message
-                        ));
-                    }
-                    answer => answer
-                        .value()
-                        .cloned()
-                        .expect("a non-error answer has a value"),
-                };
+                request.arguments["steps"][0]["cursor"] = Value::String(next);
             }
             None => {
                 if offset != page.size || hasher.finalize().as_bytes() != &page.blob.0 {
-                    return Err("complete attachment length or hash differs".into());
+                    return Err("complete attachment length or hash differs"
+                        .to_owned()
+                        .into());
                 }
-                return temporary.commit().map_err(|e| e.to_string());
+                return Ok(temporary.commit().map_err(|e| e.to_string())?);
             }
         }
     }

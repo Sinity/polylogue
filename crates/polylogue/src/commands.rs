@@ -16,7 +16,6 @@ pub(crate) mod arguments;
 
 use crate::cli::{calling_process, local};
 use crate::daemon::handler::{FeedRegistration, Registration, daemon, feed, streams};
-use crate::daemon::measure::{MEASURES, Measure};
 use crate::daemon::service::handlers as H;
 use crate::daemon::service::{acts, browser, feeds, line};
 use serde_json::{Map, Value};
@@ -361,10 +360,6 @@ pub const GROUPS: &[Group] = &[
         help: "Structure, counts and unread paths from stored revisions",
     },
     Group {
-        name: "measure",
-        help: "Token use, cost and subscription windows: `QUERY | measure WHAT` over the sessions a query selects",
-    },
-    Group {
         name: "chat",
         help: "Chat actions: turns the browser extension drafts or sends in a web chat",
     },
@@ -374,34 +369,8 @@ pub const GROUPS: &[Group] = &[
     },
 ];
 
-/// Every command, in help order, with the declared measurements after `set`.
-pub static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
-    let mut all = WRITTEN.to_vec();
-    let at = all
-        .iter()
-        .position(|c| c.name == "set")
-        .map_or(all.len(), |i| i + 1);
-    all.splice(at..at, MEASURES.iter().map(measure_command));
-    all
-});
-
-/// `measure NAME`: the sessions query `QUERY | measure NAME`.
-fn measure_command(m: &'static Measure) -> Command {
-    Command {
-        name: format!("measure {}", m.name).leak(),
-        reason: "A named measurement over the sessions a query selects",
-        help: m.help,
-        run: Run::Daemon(if m.whole_archive {
-            daemon::<H::MeasureArchive>()
-        } else {
-            daemon::<H::Measure>()
-        }),
-        tool: Some(Tool::Read),
-        ..CLI
-    }
-}
-
-const WRITTEN: &[Command] = &[
+/// Every command, in help order.
+pub static COMMANDS: &[Command] = &[
     Command {
         name: "help",
         examples: &["polylogue help units"],
@@ -518,18 +487,6 @@ const WRITTEN: &[Command] = &[
         tool: Some(Tool::Write),
         http: true,
         writes: true,
-        ..CLI
-    },
-    Command {
-        name: "attachment",
-        reason: "Retrieve the checked stored bytes behind an attachment descriptor",
-        latency: command_surface::LatencyClass::Read,
-        help: "Read a bounded range of the stored bytes for a message attachment",
-        calling_process: Some(calling_process::schema::<calling_process::Attachment>),
-        run: Run::Daemon(daemon::<H::Attachment>()),
-        output: Some(crate::cli::attachment::output),
-        tool: Some(Tool::Read),
-        http: true,
         ..CLI
     },
     Command {

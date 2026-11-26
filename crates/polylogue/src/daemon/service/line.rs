@@ -189,7 +189,7 @@ fn query_selection(rows: &Rows) -> Option<&str> {
 }
 
 /// A reference that names rows one by one: a session, message, block,
-/// annotation, alternate, page, role, tool call or kept result. Any other
+/// annotation, alternate, attachment, page, role, tool call or kept result. Any other
 /// text, a saved query's name included, is a query.
 fn named(text: &str) -> Option<Reference> {
     Reference::parse(text.trim()).ok().filter(|reference| {
@@ -204,6 +204,7 @@ fn named(text: &str) -> Option<Reference> {
                     | Reference::Role(_)
                     | Reference::Alternate { .. }
                     | Reference::ToolCall(..)
+                    | Reference::Attachment { .. }
             )
     })
 }

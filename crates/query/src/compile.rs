@@ -165,7 +165,7 @@ impl ColumnReference {
         }
     }
     pub fn from_unit(unit: &str) -> Option<Self> {
-        match crate::units::Unit::from_bound_name(unit)? {
+        match crate::units::Unit::from_name(unit)? {
             crate::units::Unit::Sessions => Some(Self::Session),
             crate::units::Unit::Documents => Some(Self::Document),
             crate::units::Unit::Messages => Some(Self::Message),
@@ -284,10 +284,8 @@ impl Bindings {
         for kept in self.kept.values() {
             kept.validate_output_metadata()?;
         }
-        let (mut query, _) = source::expand(text, self)?;
-        let catalog = source::bound_catalog(self)?;
-        source::preserve_live_units(&mut query, &catalog)?;
-        schema::output_metadata(&query, &catalog)
+        let (query, _) = source::expand(text, self)?;
+        schema::output_metadata(&query, &self.catalog())
     }
     pub fn definition_parameters(&self, text: &str) -> Result<Vec<String>, QueryError> {
         definition_parameters(text, &self.catalog())

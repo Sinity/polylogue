@@ -775,8 +775,8 @@ fn cost_uses_public_accounting_and_session_scope() {
             assert_copy_command(
                 &html,
                 &format!(
-                    "polylogue measure usage {}",
-                    polylogue_render::shell_quote(scope)
+                    "polylogue {}",
+                    polylogue_render::shell_quote(&format!("{scope} | measure usage"))
                 ),
             );
         }

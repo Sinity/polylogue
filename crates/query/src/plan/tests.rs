@@ -418,7 +418,7 @@ fn recorded_definitions_do_not_reinterpret_live_search_words() {
     let fixture: serde_json::Value =
         serde_json::from_str(include_str!("tests/fixtures/recorded-unit-objects.json")).unwrap();
     let object: polylogue_model::query_objects::QueryObject =
-        serde_json::from_str(fixture["objects"][2]["original_json"].as_str().unwrap()).unwrap();
+        serde_json::from_str(fixture["objects"][0]["original_json"].as_str().unwrap()).unwrap();
     let old = replay(&object, catalog_fingerprint()).unwrap();
     let mut loaded = Bindings::default();
     loaded

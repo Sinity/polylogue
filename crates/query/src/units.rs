@@ -32,18 +32,6 @@ impl Unit {
         crate::units::spec(self).name
     }
 
-    /// Interpret a source already validated by the shared binder against its
-    /// captured declaration. Live catalogs offer only `from_name` spellings;
-    /// sealed questions retain the names present when their identity was made.
-    pub fn from_bound_name(name: &str) -> Option<Unit> {
-        Self::from_name(name).or_else(|| match name.to_ascii_lowercase().as_str() {
-            "annotations" => Some(Self::Annotations),
-            "links" => Some(Self::SessionLinks),
-            "changes" => Some(Self::Feed),
-            _ => None,
-        })
-    }
-
     pub fn from_name(name: &str) -> Option<Unit> {
         let name = name.to_ascii_lowercase();
         Unit::all().find(|u| u.name() == name)

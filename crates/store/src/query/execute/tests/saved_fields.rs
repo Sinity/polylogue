@@ -797,8 +797,6 @@ fn recorded_unit_objects_execute_with_original_hash_and_body() {
     let d = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(d.path()).unwrap();
     session(&mut f, "test:parent");
-    session(&mut f, "test:child");
-    f.link("test:parent", "test:child", "spawn", None).unwrap();
     f.note(
         "note",
         None,
@@ -853,28 +851,8 @@ fn recorded_unit_objects_execute_with_original_hash_and_body() {
             named_rows, got,
             "current named reader executes the original object"
         );
-        match object.query.source {
-            query_language::ast::Source::Unit { ref unit, .. } if unit == "links" => {
-                assert_eq!(got.len(), 1);
-                assert_eq!(got[0]["parent"], "test:parent");
-                assert_eq!(got[0]["child"], "test:child");
-            }
-            query_language::ast::Source::Unit { ref unit, .. } if unit == "annotations" => {
-                assert_eq!(got.len(), 1);
-                assert_eq!(got[0]["value"], "retained interpretation");
-            }
-            query_language::ast::Source::Unit { ref unit, .. }
-                if unit == "changes" && object.query.transforms.is_empty() =>
-            {
-                assert!(got.iter().any(|r| r["annotation_kind"] == "note"));
-            }
-            query_language::ast::Source::Unit { ref unit, .. } if unit == "changes" => {
-                assert_eq!(got.len(), 1);
-                assert_eq!(got[0]["annotation_kind"], "note");
-                assert_eq!(got[0]["count"], 1);
-            }
-            _ => panic!("fixture is not an original renamed unit"),
-        }
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0]["value"], "retained interpretation");
         assert_eq!(restored_plan.question_id(), object.id);
     }
 }
@@ -1440,54 +1418,28 @@ fn original_kept_bodies_retain_their_recorded_units_and_reference_columns() {
         }
         assert_eq!(values, body["rows"].as_array().unwrap().clone(), "{id}");
         let schema = prepared.plan().output_schema().unwrap();
-        if body["unit"] == "annotations" {
-            assert_eq!(schema.unit.as_deref(), Some("annotations"));
-            assert!(
-                matches!(
-                    &program.row_kind,
-                    crate::query::compile::RowKind::UnitRows {
-                        unit: Unit::Annotations,
-                        ..
-                    }
-                ),
-                "recorded annotations keep native authored identity"
-            );
-            let reference = program
-                .columns
-                .iter()
-                .find(|c| c.name == "reference")
-                .unwrap();
-            assert_eq!(
-                reference.reference,
-                Some(polylogue_query::ColumnReference::Annotation)
-            );
-            assert_eq!(body["columns"][1]["reference"], "annotation");
-            assert_eq!(values[0]["reference"], "annotation:f4-note-1@f4-note-1");
-        } else if body["unit"] == "links" {
-            assert_eq!(schema.unit.as_deref(), Some("links"));
-            assert!(
-                matches!(
-                    &program.row_kind,
-                    crate::query::compile::RowKind::UnitRows {
-                        unit: Unit::SessionLinks,
-                        ..
-                    }
-                ),
-                "recorded links keep native row identity"
-            );
-            assert_eq!(
-                program.columns[0].reference,
-                Some(polylogue_query::ColumnReference::Session)
-            );
-        } else {
-            assert_eq!(body["unit"], "changes");
-            assert!(
-                schema.unit.is_none(),
-                "a retained grouped result has no native row domain"
-            );
-            assert_eq!(values[0]["annotation_kind"], "note");
-            assert_eq!(values[0]["count"], 1);
-        }
+        assert_eq!(schema.unit.as_deref(), Some("annotations"));
+        assert!(
+            matches!(
+                &program.row_kind,
+                crate::query::compile::RowKind::UnitRows {
+                    unit: Unit::Annotations,
+                    ..
+                }
+            ),
+            "recorded annotations keep native authored identity"
+        );
+        let reference = program
+            .columns
+            .iter()
+            .find(|c| c.name == "reference")
+            .unwrap();
+        assert_eq!(
+            reference.reference,
+            Some(polylogue_query::ColumnReference::Annotation)
+        );
+        assert_eq!(body["columns"][1]["reference"], "annotation");
+        assert_eq!(values[0]["reference"], "annotation:f4-note-1@f4-note-1");
     }
 }
 

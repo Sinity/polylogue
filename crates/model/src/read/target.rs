@@ -72,7 +72,7 @@ impl TryFrom<Reference> for ReadTarget {
             Reference::ToolCall(..)
             | Reference::Run(_)
             | Reference::Request(_)
-            | Reference::Attachment(_)
+            | Reference::Attachment { .. }
             | Reference::Alternate { .. }
             | Reference::Page(_)
             | Reference::Role(_)

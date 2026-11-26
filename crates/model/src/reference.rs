@@ -60,7 +60,14 @@ pub enum Reference {
     Event(String),
     Run(RunId),
     Request(String),
-    Attachment(String),
+    /// The `attachment`-th attachment of a message's `block`-th stored
+    /// block: the first of an image or file block, or one of a tool
+    /// result's.
+    Attachment {
+        message: MessageId,
+        block: u64,
+        attachment: u64,
+    },
     Annotation(RevisionReference),
     Alternate {
         revision: RevisionReference,
@@ -188,7 +195,20 @@ impl Reference {
             "event" => Self::Event(nonempty(rest)?),
             "run" => Self::Run(RunId::parse(rest).map_err(id)?),
             "request" => Self::Request(nonempty(rest)?),
-            "attachment" => Self::Attachment(nonempty(rest)?),
+            "attachment" => {
+                let (message, place) = rest
+                    .rsplit_once('#')
+                    .ok_or_else(|| ReferenceError::Incomplete(text.into()))?;
+                let (block, attachment) = match place.split_once('.') {
+                    Some((block, attachment)) => (number(block)?, number(attachment)?),
+                    None => (number(place)?, 0),
+                };
+                Self::Attachment {
+                    message: MessageId::parse(message).map_err(id)?,
+                    block,
+                    attachment,
+                }
+            }
             "annotation" => Self::Annotation(revision(rest)?),
             "alternate" => {
                 let (reference, part) = match rest.rsplit_once('#') {
@@ -357,7 +377,16 @@ impl fmt::Display for Reference {
             Self::Event(id) => write!(f, "event:{id}"),
             Self::Run(id) => write!(f, "run:{id}"),
             Self::Request(id) => write!(f, "request:{id}"),
-            Self::Attachment(id) => write!(f, "attachment:{id}"),
+            Self::Attachment {
+                message,
+                block,
+                attachment: 0,
+            } => write!(f, "attachment:{message}#{block}"),
+            Self::Attachment {
+                message,
+                block,
+                attachment,
+            } => write!(f, "attachment:{message}#{block}.{attachment}"),
             Self::Annotation(revision) => write!(f, "annotation:{revision}"),
             Self::Alternate { revision, part } => {
                 write!(f, "alternate:{revision}")?;

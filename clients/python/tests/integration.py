@@ -28,6 +28,10 @@ def read_page(answer):
     return answer["value"]["reply"]["steps"][0]["outcome"]["reply"]["reply"]
 
 
+def attachment_bytes(answer):
+    return read_page(answer)["content_base64"]
+
+
 class ClientTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -232,9 +236,10 @@ class ClientTests(unittest.TestCase):
         attachment = next(item["kind"] for item in page["document"]["items"]
                           if item["kind"]["kind"] == "attachment")
         request = attachment["open"]
-        self.assertEqual(request["operation"], "attachment")
+        self.assertEqual(request["operation"], "rows")
+        self.assertTrue(request["arguments"]["selection"].startswith("attachment:"))
         answer = self.checked_follow(request)
-        self.assertEqual(base64.b64decode(answer["value"]["content_base64"]), b"synthetic Python attachment")
+        self.assertEqual(base64.b64decode(attachment_bytes(answer)), b"synthetic Python attachment")
         for operation in ["query", "set"]:
             with self.assertRaises(ValueError):
                 self.client.follow_read({**request, "operation": operation})
@@ -243,7 +248,7 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(raised.exception.kind, "bad_request")
         self.assertIsNone(raised.exception.returncode)
         formatted = self.checked_follow({**request, "format": "json"})
-        self.assertEqual(base64.b64decode(formatted["value"]["content_base64"]), b"synthetic Python attachment")
+        self.assertEqual(base64.b64decode(attachment_bytes(formatted)), b"synthetic Python attachment")
 
     def test_refusals_keep_the_whole_answer(self):
         with self.assertRaises(Refused) as raised:

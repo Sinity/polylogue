@@ -5,6 +5,7 @@ use polylogue_model::read::{ItemKind, ReadItem, ReadPage};
 use serde_json::{Value, json};
 
 const MESSAGE: &str = "chatgpt:asset-message";
+const ATTACHMENT: &str = "attachment:chatgpt:asset-message#0";
 const SESSION: &str = "session:chatgpt:asset-session";
 const CAPTION: &str = "caption λ🙂字";
 const SECRET: &[u8] =
@@ -69,6 +70,8 @@ impl TestArchive {
         let imported = cli(&env, &["--json", "import", source.to_str().unwrap()]);
         assert!(imported.status.success(), "{imported:?}");
         assert_eq!(json(&imported)["pass"]["errors"], json!([]));
+        // The import answers once its bytes are stored; reads need the parse.
+        wait_status(&env, |status| status["store"]["messages"] == 1);
         if zip {
             std::fs::remove_file(source).unwrap();
         } else {
@@ -83,9 +86,9 @@ impl TestArchive {
         }
     }
     fn descriptor(&self) -> Value {
-        let output = cli(&self.env(), &["--json", "attachment", MESSAGE, "0"]);
+        let output = cli(&self.env(), &["--json", ATTACHMENT, "read"]);
         assert!(output.status.success(), "{output:?}");
-        json(&output)["descriptor"].clone()
+        attachment_page(&json(&output))["descriptor"].clone()
     }
 }
 
@@ -125,7 +128,7 @@ fn assert_available(env: &crate::Fixture, item: &ReadItem, descriptor: &Value) {
             .expect("available stored attachment needs its typed open action"),
     );
     assert_eq!(answer.exit_code(), 0, "{answer:?}");
-    let page = answer.value().unwrap();
+    let page = &attachment_page(answer.value().unwrap());
     assert_eq!(page["descriptor"], *descriptor);
     use base64::Engine as _;
     let bytes = base64::engine::general_purpose::STANDARD
@@ -230,13 +233,12 @@ fn attachment_out_writes_the_file_and_prints_only_its_path() {
     let target = fixture._dir.path().join("exact.bin");
     let args = [
         "--json",
-        "attachment",
-        MESSAGE,
-        "0",
-        "--out",
+        ATTACHMENT,
+        "read",
+        "--to",
         target.to_str().unwrap(),
-        "--length",
-        "7",
+        "--budget",
+        "3",
     ];
     std::fs::write(&target, b"previous complete output").unwrap();
     let output = cli(&fixture.env(), &args);
@@ -255,12 +257,11 @@ fn changed_attachment_between_ranges_does_not_replace_existing_output() {
     std::fs::write(&destination, b"existing complete output").unwrap();
     let args = [
         "--json",
-        "attachment",
-        MESSAGE,
-        "0",
-        "--out",
+        ATTACHMENT,
+        "read",
+        "--to",
         destination.to_str().unwrap(),
-        "--length",
+        "--budget",
         "1",
     ];
     let operator = std::thread::scope(|scope| {
@@ -325,13 +326,13 @@ fn attachment_pages_reconstruct_credential_shaped_binary_bytes() {
     let mut bytes = Vec::new();
     let mut cursor = None::<String>;
     loop {
-        let mut args = vec!["--json", "attachment", MESSAGE, "0", "--length", "7"];
+        let mut args = vec!["--json", ATTACHMENT, "read", "--budget", "3"];
         if let Some(cursor) = &cursor {
             args.extend(["--cursor", cursor]);
         }
         let output = cli(&fixture.env(), &args);
         assert!(output.status.success(), "{output:?}");
-        let page = json(&output);
+        let page = attachment_page(&json(&output));
         assert_eq!(page["offset"], bytes.len());
         let part = base64::engine::general_purpose::STANDARD
             .decode(page["content_base64"].as_str().unwrap())
@@ -479,10 +480,9 @@ fn an_available_empty_attachment_installs_an_empty_verified_file() {
         &fixture.env(),
         &[
             "--json",
-            "attachment",
-            MESSAGE,
-            "0",
-            "--out",
+            ATTACHMENT,
+            "read",
+            "--to",
             destination.to_str().unwrap(),
         ],
     );

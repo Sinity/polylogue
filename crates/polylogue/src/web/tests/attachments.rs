@@ -1,5 +1,6 @@
 use super::*;
 use base64::Engine as _;
+use serde_json::json;
 
 #[test]
 fn http_attachment_pages_preserve_credential_shaped_bytes_and_labels() {
@@ -9,29 +10,37 @@ fn http_attachment_pages_preserve_credential_shaped_bytes_and_labels() {
         let mut bytes = Vec::new();
         let mut cursor = None::<String>;
         loop {
-            let mut path = format!("/api/v1/attachment?message={message}&block=0&length=7");
+            let mut step = json!({"verb":"read","budget":3});
             if let Some(cursor) = &cursor {
-                path.push_str("&cursor=");
-                path.push_str(cursor);
+                step["cursor"] = json!(cursor);
             }
-            let (status, _, body) = send(&r, authed(get(&path)).body(Body::empty()).unwrap()).await;
-            assert_eq!(status, StatusCode::OK, "{body}");
-            let page: serde_json::Value = serde_json::from_str(&body).unwrap();
-            assert_eq!(page["offset"], bytes.len());
+            let body = json!({
+                "request_id": format!("attachment-{}", bytes.len()),
+                "selection": format!("attachment:{message}#0"),
+                "steps": [step],
+            });
+            let (status, _, raw) = send(
+                &r,
+                own_origin(authed(post("/api/v1/rows")))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{raw}");
+            // The test client hands back the one step's reply.
+            let page: crate::daemon::attachment::BytePage = serde_json::from_str(&raw).unwrap();
+            assert_eq!(page.offset, bytes.len() as u64);
             if bytes.is_empty() {
-                assert_eq!(page["descriptor"]["state"], "available");
-                assert!(
-                    page["descriptor"]
-                        .to_string()
-                        .contains("synthetic-private-label")
-                );
+                let descriptor = serde_json::to_value(&page.descriptor).unwrap();
+                assert_eq!(descriptor["state"], "available");
+                assert!(descriptor.to_string().contains("synthetic-private-label"));
             }
             bytes.extend(
                 base64::engine::general_purpose::STANDARD
-                    .decode(page["content_base64"].as_str().unwrap())
+                    .decode(&page.content_base64)
                     .unwrap(),
             );
-            cursor = page["next"].as_str().map(str::to_owned);
+            cursor = page.next;
             if cursor.is_none() {
                 break;
             }

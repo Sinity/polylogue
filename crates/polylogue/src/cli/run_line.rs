@@ -463,6 +463,25 @@ pub(crate) fn run(
         output_state.offset = 0;
         request.request_id = format!("{}-pick-suffix", request.request_id);
     }
+    if !parsed.line.dry_run
+        && !parsed.line.explain
+        && super::attachment::reads_attachment(&request)
+        && let Some(destination) = parsed
+            .steps
+            .first()
+            .and_then(|step| step.to.as_ref())
+            .filter(|destination| **destination != Destination::Stdout)
+    {
+        return match destination {
+            Destination::File(path) => super::attachment::write_to(startup, &request, path, json),
+            _ => super::fail(
+                startup.output,
+                json,
+                Code::BadRequest,
+                "an attachment's bytes are written to a file: read --to FILE",
+            ),
+        };
+    }
     if parsed.steps.iter().any(|step| {
         step.verb == "read"
             && (matches!(step.to, Some(Destination::File(_) | Destination::Dir(_)))
@@ -574,6 +593,11 @@ fn output(
                                     .and_then(|step| step.step["format"].as_str()),
                             ),
                             StepAnswer::Streamed(_) | StepAnswer::Followed(_) => Ok(()),
+                            StepAnswer::Attachment(page) => text_output(
+                                &super::print::json(page, super::style(startup.output)),
+                                to,
+                                startup,
+                            ),
                             StepAnswer::Brief(brief) => text_output(
                                 &super::print::context(brief, super::style(startup.output)),
                                 to,

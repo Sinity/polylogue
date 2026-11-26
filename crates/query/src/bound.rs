@@ -324,7 +324,7 @@ impl Bound {
                     binder
                         .kept
                         .get(id)
-                        .and_then(|kept| Unit::from_bound_name(&kept.unit)),
+                        .and_then(|kept| Unit::from_name(&kept.unit)),
                 )
             }
             (None, _) => (None, None),

@@ -1044,7 +1044,7 @@ pub fn value_text(value: &Value) -> Result<&str, QueryError> {
 }
 
 pub fn bind_unit(name: &str) -> Result<Unit, QueryError> {
-    Unit::from_bound_name(name.strip_prefix("pl.").unwrap_or(name))
+    Unit::from_name(name.strip_prefix("pl.").unwrap_or(name))
         .ok_or_else(|| not_built(&format!("unit {name}")))
 }
 

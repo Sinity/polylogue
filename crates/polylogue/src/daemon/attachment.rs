@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 
 pub(crate) const PAGE_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Serialize, Deserialize, schemars::JsonSchema)]
-pub(crate) struct BytePage {
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BytePage {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub descriptor: Option<polylogue_store::assets::AttachmentResolution>,
     /// Receiving member input; inline bytes belong to the selected source slot.

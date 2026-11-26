@@ -72,15 +72,19 @@ fn stored_attachment_metadata_keeps_the_original_descriptor() {
             .as_ref()
             .expect("stored attachment bytes must be reachable");
         let request: command_surface::RunnableRequest = call.request.clone();
-        assert_eq!(request.operation, "attachment");
-        let arguments: crate::protocol::attachment::Arguments =
-            serde_json::from_value(request.arguments).unwrap();
-        assert_eq!(arguments.message, message.to_string());
-        assert_eq!((arguments.block, arguments.attachment), (0, 0));
+        assert_eq!(request.operation, "rows");
+        let rows: crate::protocol::line::Rows = serde_json::from_value(request.arguments).unwrap();
+        assert_eq!(
+            rows.selection.as_deref(),
+            Some(format!("attachment:{message}#0").as_str())
+        );
+        let [crate::protocol::line::Step::Read(read)] = rows.steps.as_slice() else {
+            panic!("an attachment opens with one read: {:?}", rows.steps);
+        };
         let reader = daemon.daemon.reads.reader().unwrap();
         let resolution = reader.attachment(&message, 0, 0).unwrap();
         assert_eq!(
-            arguments.input.as_deref(),
+            read.input.as_deref(),
             Some(resolution.matches[0].input.as_str())
         );
     }

@@ -65,17 +65,14 @@ fn export_folder_import_resolves_assets_after_rebuild() {
 }
 
 fn check(env: &crate::Fixture) {
-    let descriptor = cli(env, &["--json", "attachment", MESSAGE, "0"]);
+    let descriptor = cli(env, &["--json", ATTACHMENT, "read"]);
     assert!(descriptor.status.success(), "{descriptor:?}");
-    assert_eq!(json(&descriptor)["descriptor"]["state"], "available");
-    assert_eq!(
-        json(&descriptor)["descriptor"]["matches"][0]["names"],
-        json!(["imported.png"])
-    );
+    let descriptor = attachment_page(&json(&descriptor))["descriptor"].clone();
+    assert_eq!(descriptor["state"], "available");
+    assert_eq!(descriptor["matches"][0]["names"], json!(["imported.png"]));
     let page = cli(env, &["--json", SESSION, "read", "--budget", "100000"]);
     let page = typed_page(&page);
     let item = one_attachment(&page.document.items);
-    let descriptor = json(&descriptor)["descriptor"].clone();
     assert_available(env, item, &descriptor);
     assert_eq!(
         descriptor["matches"][0]["size"],
@@ -85,12 +82,16 @@ fn check(env: &crate::Fixture) {
         descriptor["matches"][0]["blob"],
         json!(polylogue_model::BlobHash::of(b"imported asset bytes"))
     );
-    let bytes = cli(env, &["--json", "attachment", MESSAGE, "0"]);
+    let bytes = cli(env, &["--json", ATTACHMENT, "read"]);
     assert!(bytes.status.success(), "{bytes:?}");
     use base64::Engine as _;
     assert_eq!(
         base64::engine::general_purpose::STANDARD
-            .decode(json(&bytes)["content_base64"].as_str().unwrap())
+            .decode(
+                attachment_page(&json(&bytes))["content_base64"]
+                    .as_str()
+                    .unwrap()
+            )
             .unwrap(),
         b"imported asset bytes"
     );

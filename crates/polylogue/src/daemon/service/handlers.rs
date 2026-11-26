@@ -9,7 +9,7 @@ use super::{
 use crate::brief::Ask;
 use crate::cli::print;
 use crate::commands::{Caller, Command};
-use crate::daemon::handler::{Call, CountReplyMap, Handler};
+use crate::daemon::handler::{Call, Handler};
 use crate::protocol;
 use command_surface::{Access, Answer, TextStyle};
 use polylogue_model::user::UserWrite;
@@ -114,69 +114,6 @@ pub(super) fn waiting_query(
     call: &Call<'_>,
 ) -> Result<Answer<protocol::query::Answer>, Failure> {
     query_reply(call, QueryInput::of(arguments), false)
-}
-
-/// `measure WHAT`: the query `QUERY | measure WHAT`, one row per measurement.
-pub(crate) struct Measure;
-impl Handler for Measure {
-    type Arguments = protocol::query::MeasureArguments;
-    type Answer = protocol::query::Answer;
-    const PAGES: bool = true;
-    fn count_reply(_arguments: &Self::Arguments) -> Option<CountReplyMap<Self::Answer>> {
-        Some(std::convert::identity)
-    }
-    fn query_text(arguments: &Self::Arguments) -> Option<&str> {
-        arguments.query.as_deref()
-    }
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
-    fn ranking_query(arguments: &Self::Arguments, row: &Command) -> Option<String> {
-        Some(measure_query(row.name, arguments))
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let text = measure_query(call.row.name, &arguments);
-        run_query(
-            call,
-            QueryInput {
-                text: &text,
-                page_size: arguments.limit,
-                why: arguments.why,
-                session: None,
-                fields: &arguments.fields,
-            },
-        )
-    }
-}
-
-/// `measure NAME` for a whole-archive measure: `sessions | measure NAME`.
-pub(crate) struct MeasureArchive;
-impl Handler for MeasureArchive {
-    type Arguments = protocol::query::MeasureArchiveArguments;
-    type Answer = protocol::query::Answer;
-    const PAGES: bool = true;
-    fn count_reply(_arguments: &Self::Arguments) -> Option<CountReplyMap<Self::Answer>> {
-        Some(std::convert::identity)
-    }
-    const PRINT: fn(&Self::Answer, TextStyle) -> String = print::query;
-    fn ranking_query(arguments: &Self::Arguments, row: &Command) -> Option<String> {
-        Some(measure_query(row.name, &arguments.clone().into()))
-    }
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        Measure::run(arguments.into(), call)
-    }
-}
-
-/// `measure NAME` with its options as the query `QUERY | measure NAME:OPTION`.
-pub(crate) fn measure_query(row: &str, arguments: &protocol::query::MeasureArguments) -> String {
-    let name = row.trim_start_matches("measure ");
-    let what = match arguments.metric.as_deref().or(arguments.option.as_deref()) {
-        Some(metric) => format!("{name}:{metric}"),
-        None => name.to_owned(),
-    };
-    let what = polylogue_query::quoted(&what);
-    match arguments.query.as_deref().filter(|q| !q.trim().is_empty()) {
-        Some(query) => format!("{query} | measure {what}"),
-        None => format!("sessions | measure {what}"),
-    }
 }
 
 pub(crate) struct Sql;
@@ -531,40 +468,6 @@ impl Handler for SchemaUnread {
         Ok(match call.reader() {
             Ok(reader) => super::super::schema::unread(&reader, arguments.origin.as_deref()),
             Err(failure) => failure.answer(),
-        })
-    }
-}
-
-/// One attachment's descriptor and a checked range of its bytes.
-pub(crate) struct Attachment;
-impl Handler for Attachment {
-    type Arguments = protocol::attachment::Arguments;
-    type Answer = protocol::attachment::Answer;
-    const PAGES: bool = true;
-    fn run(arguments: Self::Arguments, call: &Call<'_>) -> Result<Answer<Self::Answer>, Failure> {
-        let index = |value: u64, key: &str| {
-            usize::try_from(value).map_err(|_| format!("{key} exceeds address space"))
-        };
-        let read = (|| {
-            let message = polylogue_model::MessageId::parse(
-                arguments
-                    .message
-                    .strip_prefix("message:")
-                    .unwrap_or(&arguments.message),
-            )
-            .map_err(|e| e.to_string())?;
-            Ok::<_, String>(super::super::attachment::Range {
-                message,
-                block: index(arguments.block, "block")?,
-                attachment: index(arguments.attachment, "attachment")?,
-                input: arguments.input,
-                length: index(arguments.length, "length")?,
-                cursor: call.cursor.map(str::to_owned),
-            })
-        })();
-        Ok(match read {
-            Ok(range) => super::super::attachment::read(range, call.daemon),
-            Err(message) => error(polylogue_model::Code::BadRequest, message),
         })
     }
 }
