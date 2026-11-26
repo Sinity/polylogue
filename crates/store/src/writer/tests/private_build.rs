@@ -41,8 +41,18 @@ fn serving(archive: &Archive) -> ReadPool {
     ReadPool::serving(archive, 1, 8 << 20).unwrap()
 }
 
+/// The messages a reader of `pool` sees.
 fn messages(pool: &ReadPool) -> u64 {
-    pool.reader().unwrap().status(&[]).unwrap().messages
+    rows(&pool.reader().unwrap())
+}
+
+/// The messages `reader` sees.
+fn rows(reader: &crate::read::Reader<'_>) -> u64 {
+    reader
+        .query("SELECT count(*) AS n FROM message", &[])
+        .unwrap()[0]["n"]
+        .as_u64()
+        .unwrap()
 }
 
 fn journal_mode(path: &std::path::Path) -> String {
@@ -536,7 +546,7 @@ fn a_crash_during_a_build_discards_it_and_restarts_from_the_stored_bytes() {
         let reader = pipeline.reader().unwrap();
         // The stored bytes survive in the archive; the build file holds
         // nothing of the prepared runs.
-        assert_eq!(reader.status(&[]).unwrap().messages, 0, "{point}");
+        assert_eq!(rows(&reader), 0, "{point}");
         assert_eq!(reader.status(&[]).unwrap().inputs, 2, "{point}");
         drop(reader);
         let writer = Writer::start(&archive).unwrap();
@@ -651,11 +661,11 @@ fn a_current_read_that_meets_the_install_reads_the_installed_index() {
             crate::fault::release();
             installer.join().unwrap().unwrap();
         }
-        reader.status(&[])
+        Ok::<_, crate::StoreError>(rows(reader))
     });
     crate::fault::clear();
 
-    assert_eq!(status.unwrap().messages, 1);
+    assert_eq!(status.unwrap(), 1);
     assert_eq!(*opened.borrow(), [paths.built.clone(), paths.index.clone()]);
 }
 
@@ -683,7 +693,7 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
     }
     let held = crate::fault::held();
     let checkout = pipeline.reader();
-    let started = checkout.as_ref().ok().map(|reader| reader.status(&[]));
+    let started = checkout.as_ref().ok().map(rows);
     crate::fault::release();
     let installed = installer.join();
     crate::fault::clear();
@@ -691,9 +701,9 @@ fn a_started_ready_build_reader_keeps_its_snapshot_after_installed_writes() {
     assert!(held, "the install reached its rename boundary");
     installed.unwrap().unwrap();
     let reader = checkout.expect("open the ready build before install");
-    assert_eq!(started.unwrap().unwrap().messages, 1);
+    assert_eq!(started.unwrap(), 1);
     store_message(&archive, &writer, "ready-second", "written after install");
     drop(writer);
-    assert_eq!(reader.status(&[]).unwrap().messages, 1);
+    assert_eq!(rows(&reader), 1);
     assert_eq!(messages(&pipeline), 2);
 }

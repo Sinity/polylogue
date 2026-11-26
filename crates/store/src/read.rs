@@ -75,10 +75,11 @@ pub struct MessageParse {
     pub ordinal: u64,
 }
 
-/// Where a shown message sits, and the byte range its commit is read from.
+/// Where a shown message sits, and the version its commit is read for.
 struct MessageArrival {
     order: Option<i64>,
-    source: Option<(String, i64, i64)>,
+    /// The message's ID and shown version, when it has one.
+    version: Option<(String, Vec<u8>)>,
 }
 
 impl MessageArrival {
@@ -91,13 +92,40 @@ impl MessageArrival {
     }
 
     fn resolve(self, conn: &Connection) -> Result<Option<u64>> {
-        let Some((input, chain, end)) = self.source else {
+        let Some((id, hash)) = self.version else {
             return Ok(None);
         };
-        let end = u64::try_from(end)
-            .map_err(|_| StoreError::stored(0, "negative message source endpoint"))?;
-        crate::source::Source::committed_through(conn, &input, chain, end)
+        version_commit(conn, &id, &hash)
     }
+}
+
+row! {
+    /// Where one reading of a message's version ends in its chain.
+    struct VersionReading {
+        input: String,
+        chain: i64,
+        source_end: i64,
+    }
+    statements {
+        const OF_VERSION = "SELECT i.id AS input, r.chain, r.source_start + r.source_length AS source_end
+            FROM message_parse r JOIN input_ref i ON i.pk=r.input_pk WHERE r.message_id=?1 AND r.hash=?2";
+    }
+}
+
+/// The commit of a message's version: the latest of the commits of the
+/// readings that state it, since a shown version can join the blocks of
+/// several (a sparse export's union). Each reading's commit is the
+/// archive's for its byte range.
+fn version_commit(conn: &Connection, id: &str, hash: &[u8]) -> Result<Option<u64>> {
+    let mut latest = None;
+    for reading in conn.all(&VersionReading::OF_VERSION, rusqlite::params![id, hash])? {
+        let end = u64::try_from(reading.source_end)
+            .map_err(|_| StoreError::stored(0, "negative message source endpoint"))?;
+        let commit =
+            crate::source::Source::committed_through(conn, &reading.input, reading.chain, end)?;
+        latest = latest.max(commit);
+    }
+    Ok(latest)
 }
 
 row! {
@@ -128,15 +156,12 @@ row! {
 }
 
 row! {
-    /// Where a shown message's reading ends in its chain.
+    /// A shown message's version.
     struct MessageCommit {
-        input: String,
-        source_chain: i64,
-        source_end: i64,
+        version_hash: Vec<u8>,
     }
     statements {
-        const OF_MESSAGE = "SELECT i.id AS input, m.source_chain, m.source_end
-            FROM message m JOIN input_ref i ON i.pk=m.input_pk WHERE m.id=?1 AND m.version_hash IS NOT NULL";
+        const OF_MESSAGE = "SELECT m.version_hash FROM message m WHERE m.id=?1 AND m.version_hash IS NOT NULL";
     }
 }
 
@@ -162,7 +187,7 @@ macro_rules! message_columns {
                 (SELECT count(*) FROM block WHERE message_pk=m.pk) ELSE 0 END AS stored_block_count,
             CASE WHEN m.version_hash IS NOT NULL THEN source_input.id END AS source_input,
             CASE WHEN m.version_hash IS NOT NULL THEN m.source_chain END AS source_chain,
-            CASE WHEN m.version_hash IS NOT NULL THEN m.source_end END AS source_end, "
+            "
     };
 }
 
@@ -192,7 +217,6 @@ row! {
         stored_block_count: i64,
         source_input: Option<String>,
         source_chain: Option<i64>,
-        source_end: Option<i64>,
         record_order: Option<i64>,
     }
     statements {
@@ -1222,7 +1246,7 @@ impl Reader<'_> {
         match conn.maybe(&MessageCommit::OF_MESSAGE, [id.to_string()])? {
             Some(commit) => MessageArrival {
                 order: None,
-                source: Some((commit.input, commit.source_chain, commit.source_end)),
+                version: Some((id.to_string(), commit.version_hash)),
             }
             .resolve(conn),
             None => Ok(None),
@@ -1400,6 +1424,7 @@ impl Reader<'_> {
                     .map_err(|_| unreadable("an unparseable production record"))?
                     .unwrap_or_default(),
             };
+            let version = row.version_hash.clone().map(|hash| (named.clone(), hash));
             let block_selection = row
                 .version_hash
                 .map(|hash| {
@@ -1424,11 +1449,7 @@ impl Reader<'_> {
                 .transpose()?;
             let commit = MessageArrival {
                 order: row.record_order,
-                source: row
-                    .source_input
-                    .zip(row.source_chain)
-                    .zip(row.source_end)
-                    .map(|((input, chain), end)| (input, chain, end)),
+                version,
             };
             Ok(visit(pk, message, block_selection, commit))
         })

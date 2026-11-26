@@ -285,14 +285,13 @@ fn status_counts_rows_and_sums_the_session_count_summaries() {
                 .unwrap()
         };
         assert_eq!(status.sessions, rows("session"));
-        assert_eq!(status.messages, rows("message"));
         assert_eq!(status.documents, rows("document"));
         assert_eq!(status.tool_calls, rows("tool_call"));
         assert_eq!(status.inputs, rows("a.input"));
         assert_eq!(status.revisions, rows("a.revision"));
-        (status.sessions, status.messages)
+        (status.sessions, status.messages, rows("message"))
     };
-    assert_eq!(counted(&f), (2, 5));
+    assert_eq!(counted(&f), (2, 5, 5));
     let index = rusqlite::Connection::open(f.archive.index_db()).unwrap();
     index
         .execute_batch(
@@ -301,9 +300,9 @@ fn status_counts_rows_and_sums_the_session_count_summaries() {
              DELETE FROM message WHERE id = 'claude-code:one-0';",
         )
         .unwrap();
-    assert_eq!(counted(&f).1, 5, "messages follow the summaries");
+    assert_eq!(counted(&f), (2, 5, 4), "messages follow the summaries");
     summarize(&f);
-    assert_eq!(counted(&f), (2, 4));
+    assert_eq!(counted(&f), (2, 4, 4));
 }
 
 mod selection;

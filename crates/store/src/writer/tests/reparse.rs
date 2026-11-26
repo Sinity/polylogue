@@ -922,8 +922,11 @@ fn events_follow_late_moved_and_removed_messages_without_changing_their_own_posi
     assert!(changed() > before);
 }
 
-/// The totals `status` reads, counted again from the rows.
+/// The totals `status` reads, counted again from the rows once the
+/// session summaries, which message and tool call totals are summed from,
+/// have caught up.
 fn assert_totals_equal_a_recount(w: &TestArchive) {
+    w.writer.derive().unwrap();
     let pool = ReadPool::open(&w.archive).unwrap();
     let r = pool.reader().unwrap();
     let status = r.status(&crate::fixture::synthetic_contracts()).unwrap();
