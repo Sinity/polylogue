@@ -1,5 +1,10 @@
 //! A named array inside a JSON object. Serde visits each element; the returned
 //! metadata keeps the surrounding fields with that array replaced by `[]`.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::*;
 use polylogue_model::Json;
 use serde::de::{Error as _, MapAccess};

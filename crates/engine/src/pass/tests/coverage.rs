@@ -53,7 +53,7 @@ fn status_keeps_the_last_completed_full_walk_across_incremental_events() {
         first
     );
     assert_eq!(
-        reader.status().unwrap().capture_coverage,
+        reader.status(&[]).unwrap().capture_coverage,
         vec![first.clone()]
     );
     drop(reader);

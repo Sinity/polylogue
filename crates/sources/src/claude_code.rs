@@ -18,8 +18,11 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 12;
 
-mod blocks;
-mod fields;
+parser_modules! {
+    mod blocks;
+    mod fields;
+}
+
 pub mod side;
 
 use crate::lines::Record;

@@ -34,7 +34,9 @@ fn the_daemon_rebuilds_an_index_from_another_schema_and_serves() {
         drop(lock);
         let env = crate::Fixture::new(&root, &home, &dir.path().join("config"));
         let _daemon = start_daemon(&env);
-        let status = wait_status(&env, |s| s["store"]["index_rebuild"]["building"] == false);
+        let status = wait_status(&env, |s| {
+            s["index"]["rebuilding"]["state"] == "no" && s["store"]["index_rebuild"].is_object()
+        });
         let rebuild = &status["store"]["index_rebuild"];
         assert_eq!(rebuild["reason"]["kind"], reason, "{change}: {rebuild}");
         assert_ne!(rebuild["previous_schema"], rebuild["schema"], "{rebuild}");

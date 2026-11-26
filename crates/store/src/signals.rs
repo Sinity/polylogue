@@ -173,7 +173,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
     }
     let source = Source::of(conn)?;
     let id = value.event.delivery_id();
-    let old:Option<Vec<u8>>=conn.scalar_optional(&source.sql("SELECT body FROM @source.signal_event WHERE (request=?1 AND ordinal=?2) OR (delivery=?3 AND position=?4)"),params![value.request,ordinal(value)?,id,position(value)?])?;
+    let old:Option<Vec<u8>>=conn.scalar_optional(&source.sql("SELECT body FROM @source.signal_event WHERE (request=?1 AND request_position=?2) OR (delivery=?3 AND position=?4)"),params![value.request,ordinal(value)?,id,position(value)?])?;
     if let Some(old) = old {
         let old: EventRecord = crate::encoding::unpack_json(&old)?;
         return if old == *value {
@@ -182,7 +182,7 @@ fn insert_event(conn: &Connection, value: &EventRecord, counter: i64) -> Result<
             Err(StoreError::internal("a signal event identity was reused"))
         };
     }
-    conn.execute(&source.sql("INSERT INTO @source.signal_event(request,ordinal,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,ordinal(value)?,id,position(value)?,value.at.unix_ms(),crate::authored_records::pack(value)?,counter])?;
+    conn.execute(&source.sql("INSERT INTO @source.signal_event(request,request_position,delivery,position,at,body,commit_seq) VALUES(?1,?2,?3,?4,?5,?6,?7)"),params![value.request,ordinal(value)?,id,position(value)?,value.at.unix_ms(),crate::authored_records::pack(value)?,counter])?;
     Ok(())
 }
 pub(crate) fn capture(

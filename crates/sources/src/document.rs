@@ -5,6 +5,8 @@
 /// includes it, so raise it when what any helper returns changes.
 pub const VERSION: u32 = 1;
 
+parser_modules! {}
+
 use crate::Records;
 use crate::parse::Output;
 use polylogue_model::{Json, JsonExt, MessageId, NativeId, Origin, SessionId};

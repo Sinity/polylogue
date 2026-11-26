@@ -376,7 +376,7 @@ impl Walk<'_, '_, '_, '_> {
                     selection.cursor_context().clock.day.zone(),
                 )?);
             }
-            if options.annotations
+            if options.annotations()
                 && let records::SelectedRecord::Original(original) = &record
             {
                 layout_facts::annotate(
@@ -427,7 +427,7 @@ impl Walk<'_, '_, '_, '_> {
             let keep = records::reference(
                 reader,
                 &target,
-                options.inherited,
+                options.inherited(),
                 start.as_ref(),
                 &mut render,
             )?;
@@ -438,7 +438,7 @@ impl Walk<'_, '_, '_, '_> {
         }
         let mut current = match start {
             Some(start) => Some(start),
-            None => records::step(reader, &target, options.inherited, None, direction)?,
+            None => records::step(reader, &target, options.inherited(), None, direction)?,
         };
         while let Some(position) = current {
             let mut observed = false;
@@ -446,7 +446,7 @@ impl Walk<'_, '_, '_, '_> {
             records::reference(
                 reader,
                 &target,
-                options.inherited,
+                options.inherited(),
                 Some(&position),
                 &mut |record, facts, actual| {
                     if observed || actual != position {
@@ -468,7 +468,7 @@ impl Walk<'_, '_, '_, '_> {
             current = records::step(
                 reader,
                 &target,
-                options.inherited,
+                options.inherited(),
                 Some(&position),
                 direction,
             )?;

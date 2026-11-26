@@ -42,8 +42,8 @@ pub struct Answer {
     pub archive: Option<PathBuf>,
     pub pid: u32,
     pub uptime_seconds: u64,
-    /// The first reads that status and briefs answer from are not ready yet.
-    pub warming: bool,
+    /// What the archive's figures in this reply come from.
+    pub answers_from: AnswersFrom,
     /// Changes to what status reports since the daemon started: the loop's
     /// work, and the snapshot read after a commit.
     pub changes: u64,
@@ -51,15 +51,31 @@ pub struct Answer {
     /// pass running or due, derived figures and search text current, and
     /// this answer read after the latest commit.
     pub caught_up: bool,
-    /// The archive totals; none when they could not be read (`totals_error`).
+    /// The archive totals, from the snapshot; absent when none is read
+    /// (`answers_from`) or it could not be read (`totals_error`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub store: Option<polylogue_store::Status>,
-    /// The build of `index.db` in progress, with its progress.
+    /// The rebuild of `index.db` in progress, with its reason and counts.
+    /// Read with `build_progress`, so both are present or neither.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub index_build: Option<polylogue_store::archive::index_build::IndexBuild>,
-    /// The build's phase, rates and estimate, beside its counts.
+    /// Which index files exist and what they mean: the installed index
+    /// (`none`, `current` or `unusable` with why) and the rebuild (`no`,
+    /// `writing` with its reason, or `ready`), with a failed install's error.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index: Option<polylogue_store::archive::index_build::IndexStatus>,
+    /// The build's steps, rates and estimate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_progress: Option<polylogue_store::archive::build_progress::BuildProgress>,
+    /// Why the snapshot holds no archive totals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub totals_error: Option<String>,
+    /// Each subscription limit's current window, from the snapshot.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub quota: Vec<polylogue_store::measure::quota::CurrentWindow>,
+    /// Why the snapshot holds no quota windows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_error: Option<String>,
     /// Exact stored counts, requested with --vectors or --verify.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vectors: Option<polylogue_store::vectors::VectorStatus>,
@@ -72,8 +88,12 @@ pub struct Answer {
     #[serde(flatten)]
     pub loop_status: polylogue_engine::LoopStatus,
     pub signals: Option<Signals>,
-    pub notices: Notices,
-    pub running: Running,
+    /// Absent until a snapshot is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notices: Option<Notices>,
+    /// Absent until a snapshot is read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub running: Option<Running>,
     pub warm: Warm,
     pub mode: Mode,
     pub freshness: polylogue_model::freshness::ReadFreshness,
@@ -86,6 +106,47 @@ pub struct Answer {
     /// running longer than [`STATEMENTS_AFTER`], by thread name.
     #[serde(default)]
     pub threads: Vec<polylogue_store::activity::Thread>,
+}
+
+/// What a status reply's archive figures come from.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum AnswersFrom {
+    /// The status snapshot read at `read_at`. An index build beside a
+    /// readable index is shown with it; the figures are the installed
+    /// index's.
+    Snapshot { read_at: polylogue_model::Timestamp },
+    /// No index can be read while one is built: `build_progress` is the
+    /// content.
+    Build,
+    /// No snapshot has been read since `since`.
+    NotReadYet { since: NotReadSince },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum NotReadSince {
+    /// The daemon started.
+    Start,
+    /// A built index was installed.
+    Install,
+}
+
+impl AnswersFrom {
+    /// The one wording of a reply without figures, used by the reply's note,
+    /// the view's headline and `--line`; none for a snapshot, and none for a
+    /// build, which the build's progress describes.
+    pub fn words(&self) -> Option<&'static str> {
+        match self {
+            Self::Snapshot { .. } | Self::Build => None,
+            Self::NotReadYet {
+                since: NotReadSince::Start,
+            } => Some("figures not read yet since the daemon started"),
+            Self::NotReadYet {
+                since: NotReadSince::Install,
+            } => Some("figures not read yet since the new index was installed"),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -168,6 +229,9 @@ pub struct Notice {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Warm {
+    /// Whether the scope index briefs answer from has been read since the
+    /// daemon started.
+    pub scope_index_loaded: bool,
     pub vectors: Option<Vectors>,
     pub vector_loads: u64,
     pub query_vectors_reused: u64,

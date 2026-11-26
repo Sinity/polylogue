@@ -13,6 +13,15 @@ pub enum ReadDelivery {
     #[default]
     Page,
     Stream,
+    /// A stream a directory bundle is written from: it also carries the
+    /// bytes of the present attachments its records name.
+    Bundle,
+}
+impl ReadDelivery {
+    /// Records go out as they are read, with no pages.
+    pub fn streams(self) -> bool {
+        self != Self::Page
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]

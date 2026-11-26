@@ -361,8 +361,12 @@ fn a_same_chain_document_cannot_override_a_newer_source_time() {
     let mut older = doc_batch("a", document("ordered", "older source", 1000), true);
     older.change = Change::Reparse { chain: 1 };
     older.parse[0].reset = false;
-    w.store_reading(older, None).unwrap();
-    assert!(w.writer.flush().unwrap().errors.is_empty());
+    // Planned from before the newer source was parsed: refused, and the
+    // newer document stays.
+    assert!(matches!(
+        w.store_reading(older, None),
+        Err(crate::StoreError::StalePart { .. })
+    ));
     let reads = ReadPool::open(&w.archive).unwrap();
     assert_eq!(
         reads
@@ -409,5 +413,42 @@ fn a_later_record_of_the_same_chain_can_supply_a_newer_document_time() {
         [Block::Text {
             text: "newer".into()
         }]
+    );
+}
+
+/// Search text the writer settles while it prepares a derive is a commit
+/// its readers are told of, as the search thread's batches are, so the
+/// status snapshot is read again after it and stops saying search text is
+/// pending (docs/operations.md, status). The search thread is held before
+/// it reads the queue, so the derive's preparation is what settles it.
+#[cfg(feature = "faults")]
+#[test]
+fn search_text_settled_for_a_derive_is_announced_as_a_commit() {
+    use crate::fault::{self, Action};
+    let w = test_archive();
+    fault::clear();
+    fault::arm("search.read_queue", "", Action::Hold, 0, 1);
+    w.store_reading(
+        doc_batch(
+            "settled",
+            document("project:a:doc:settled", "walrus tusk", 1),
+            true,
+        ),
+        Some(&SOURCE_RECORD),
+    )
+    .unwrap();
+    assert!(w.writer.flush_rows().unwrap().errors.is_empty());
+    fault::wait_held();
+    let pool = ReadPool::open(&w.archive).unwrap();
+    assert!(pool.reader().unwrap().status(&[]).unwrap().search_pending > 0);
+    let commits = w.writer.completion_commits();
+    w.writer.derive().unwrap();
+    let pending = pool.reader().unwrap().status(&[]).unwrap().search_pending;
+    let announced = commits.try_recv();
+    fault::release();
+    assert_eq!(pending, 0);
+    assert!(
+        announced.is_ok_and(|changed| changed.content),
+        "the commit that settled the search text was not announced"
     );
 }

@@ -1,4 +1,9 @@
 //! A rollout's recorded identity, independent of its location or encoding.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use polylogue_model::Json;
 use polylogue_model::JsonExt;
 use std::io::BufRead;

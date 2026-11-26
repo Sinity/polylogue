@@ -1,5 +1,10 @@
 //! One Hermes state row as a message: its blocks, tool calls and results,
 //! and the diagnostics for fields that could not be read.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::{decoded, identity, native, text};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};

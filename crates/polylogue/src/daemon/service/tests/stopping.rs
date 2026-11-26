@@ -54,8 +54,11 @@ fn stop_during_a_pass_keeps_committed_rows() {
         )
         .unwrap()
         .unwrap();
-    assert_eq!(held.parsed_upto, 0, "private parsing did not advance");
-    assert!(!held.parsed);
+    assert_eq!(
+        held.state,
+        polylogue_model::chain::ChainState::Unparsed,
+        "private parsing did not advance"
+    );
     let original = std::fs::read(&held_path).unwrap();
     assert_eq!(held.stored, original.len() as u64);
     let source = reader
@@ -125,7 +128,7 @@ fn stop_during_index_rebuild_keeps_stored_bytes() {
         config.clone(),
         crate::daemon::service::ArchiveMode::Standalone,
         polylogue_engine::Lifetime::UntilIdle,
-        Some(polylogue_testkit::stopped_attempt()),
+        &Default::default(),
     )
     .unwrap();
     assert!(

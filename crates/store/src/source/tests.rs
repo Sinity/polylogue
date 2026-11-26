@@ -5,11 +5,11 @@ use super::*;
 #[test]
 fn cache_schema_renames_tables_without_changing_input_columns_or_counter_keys() {
     let cache = Connection::open_in_memory().unwrap();
-    cache.execute_batch(crate::schema::INDEX).unwrap();
+    cache.execute_batch(&crate::schema::INDEX).unwrap();
     cache.execute_batch(&schema().unwrap().ddl).unwrap();
     cache
         .execute(
-            "INSERT INTO source_input(id,format) VALUES ('i','test')",
+            "INSERT INTO source_input(id,origin) VALUES ('i','test')",
             [],
         )
         .unwrap();
@@ -20,7 +20,7 @@ fn cache_schema_renames_tables_without_changing_input_columns_or_counter_keys() 
     assert_eq!(input, "i");
     let total: i64 = cache
         .query_row(
-            "SELECT n FROM source_row_count WHERE name='input'",
+            "SELECT count FROM source_row_count WHERE name='input'",
             [],
             |row| row.get(0),
         )
@@ -49,7 +49,7 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
     let standalone = Connection::open(&path).unwrap();
     standalone.execute_batch(&crate::schema::ARCHIVE).unwrap();
     standalone
-        .execute("INSERT INTO input(id,format) VALUES ('i','test')", [])
+        .execute("INSERT INTO input(id,origin) VALUES ('i','test')", [])
         .unwrap();
     let reader = Connection::open_in_memory().unwrap();
     reader
@@ -58,14 +58,14 @@ fn standalone_logical_source_views_preserve_rowids_and_live_values() {
     views(&reader).unwrap();
     let before: i64 = reader
         .query_row(
-            "SELECT n FROM source_row_count WHERE name='input'",
+            "SELECT count FROM source_row_count WHERE name='input'",
             [],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(before, 1);
     standalone
-        .execute("INSERT INTO input(id,format) VALUES ('j','test')", [])
+        .execute("INSERT INTO input(id,origin) VALUES ('j','test')", [])
         .unwrap();
     let actual: (i64, String) = reader
         .query_row(
@@ -359,13 +359,13 @@ fn narrow_schema_uses_the_sqlite_namespace_rewriter() {
     );
     conn.execute("INSERT INTO source_annotation(id,root,kind,author,via,machine,created_at,commit_seq) VALUES('fact','fact','note','operator','cli','host',1,1)",[]).unwrap();
     conn.execute(
-        "INSERT INTO source_annotation_link(record,role,ref) VALUES('fact','about','session:codex:s')",
+        "INSERT INTO source_annotation_link(annotation,role,ref) VALUES('fact','about','session:codex:s')",
         [],
     )
     .unwrap();
     assert!(
         conn.execute(
-            "INSERT INTO source_annotation_link(record,role,ref) VALUES('absent','about','session:codex:s')",
+            "INSERT INTO source_annotation_link(annotation,role,ref) VALUES('absent','about','session:codex:s')",
             []
         )
         .is_err()
@@ -373,7 +373,7 @@ fn narrow_schema_uses_the_sqlite_namespace_rewriter() {
     conn.execute("INSERT INTO source_annotation_import(annotation,input,chain,machine,actor,at,commit_seq) VALUES('fact','input',1,'host','operator','2026-01-01T00:00:00Z',1)", []).unwrap();
     assert!(conn.execute("INSERT INTO source_annotation_import(annotation,input,chain,machine,actor,at,commit_seq) VALUES('absent','input',1,'host','operator','2026-01-01T00:00:00Z',1)", []).is_err());
     assert_eq!(
-        conn.query_row("SELECT record FROM source_annotation_link", [], |row| {
+        conn.query_row("SELECT annotation FROM source_annotation_link", [], |row| {
             row.get::<_, String>(0)
         })
         .unwrap(),

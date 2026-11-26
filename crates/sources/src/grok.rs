@@ -5,10 +5,13 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 3;
 
-use crate::fields::ExpectedType as T;
-mod identity;
+parser_modules! {
+    mod identity;
+}
+
 use crate::document::{Sink, first_key, message_id, session_id};
 use crate::export::{ExportParser, ExportState, ItemSink, ScanError, ScanStats};
+use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};
 use crate::parse::{MessageRow, Output, Parse, Step};
 use crate::{RecordOutcome, Records};

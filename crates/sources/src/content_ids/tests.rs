@@ -86,3 +86,5 @@ fn normalized_written_text_preserves_message_identity_and_original_block() {
     };
     assert_eq!(written_text.as_deref(), Some("exact patch"));
 }
+
+mod goldens;
