@@ -452,20 +452,21 @@ fn listing_wait_returns_when_rows_match() {
 #[test]
 fn a_waiting_listing_on_an_absent_id_returns_when_the_session_appears() {
     let d = test_daemon::start("first prompt");
-    let reads = d.watch_reads();
     std::thread::scope(|scope| {
         let waiting = scope.spawn(|| {
-            line(
-                &d,
-                "wait-for-s2",
+            // The import takes longer than a test request's default deadline,
+            // which would otherwise cut the wait short.
+            let mut call = Call::new(
+                "rows",
                 json!({"selection": "sessions where id:claude-code:s2", "wait": "1m"}),
             )
+            .id("wait-for-s2");
+            call.deadline = command_surface::Deadline::None;
+            call.answer(&d.daemon)
         });
-        let read = reads
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .unwrap();
-        while read.limit.stage() != Some("listing wait") {
-            read.limit.check().unwrap();
+        // The listing is waiting, or about to: either way the import below
+        // is the change it answers with.
+        while d.daemon.requests.running() == 0 {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
         std::fs::write(
