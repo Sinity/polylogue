@@ -185,6 +185,8 @@ pub enum StepOutcome {
 #[serde(tag = "kind", content = "reply", rename_all = "snake_case")]
 pub enum StepAnswer {
     Read(Box<polylogue_model::read::ReadPage>),
+    /// One checked range of an attachment's bytes.
+    Attachment(Box<crate::daemon::attachment::BytePage>),
     /// The read's records were delivered before the next step began.
     Streamed(Box<polylogue_model::read::ReadComplete>),
     /// The follow's events were delivered through these final marks.
@@ -200,6 +202,22 @@ pub enum StepAnswer {
 }
 
 pub use polylogue_model::user::SaveReport;
+
+/// The attachment range a line's first step answered with.
+#[cfg(test)]
+pub(crate) fn attachment_page(answer: &Value) -> crate::daemon::attachment::BytePage {
+    let line: LineAnswer = serde_json::from_value(answer.clone()).expect("a line answer");
+    let LineAnswer::Steps(steps) = line else {
+        panic!("not a step answer: {answer}");
+    };
+    match steps.steps.into_iter().next().map(|step| step.outcome) {
+        Some(StepOutcome::Done {
+            reply: StepAnswer::Attachment(page),
+            ..
+        }) => *page,
+        _ => panic!("no attachment range: {answer}"),
+    }
+}
 
 /// Whom `send` reached, and the sessions it skipped with the line that sends to each alone.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

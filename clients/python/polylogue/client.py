@@ -142,13 +142,13 @@ class Client:
         return self.call(*arguments)
 
     def follow_read(self, request):
-        """Execute one generated rows or attachment request on the daemon socket.
+        """Execute one generated rows request on the daemon socket.
 
         The structured request stays unchanged, including omitted and null
         deadlines, budgets and step cursors. No displayed command is parsed.
         """
         request = _copy(request)
-        if request["operation"] not in {"rows", "attachment"}:
+        if request["operation"] != "rows":
             raise ValueError(f"unsupported read follow-up operation: {request['operation']}")
         unknown = request.keys() - {
             "operation", "arguments", "request_id", "deadline", "budget_tokens",

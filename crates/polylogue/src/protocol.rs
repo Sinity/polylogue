@@ -1,37 +1,5 @@
 //! Product failure codes classified once into the shared transport contract.
 pub mod act;
-pub mod attachment {
-    //! Attachment descriptors and bytes share one checked range operation.
-    use schemars::JsonSchema;
-    use serde::{Deserialize, Serialize};
-
-    #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-    #[serde(deny_unknown_fields)]
-    pub struct Arguments {
-        /// The message ID
-        #[schemars(extend("argument_form" = "positional"))]
-        pub message: String,
-        /// Zero-based source block index
-        #[schemars(extend("argument_form" = "positional"))]
-        pub block: u64,
-        /// Zero-based attachment within a tool result (default 0)
-        #[serde(default)]
-        #[schemars(extend("unlisted" = true))]
-        pub attachment: u64,
-        /// The stored input to read when several match
-        #[schemars(extend("unlisted" = true))]
-        pub input: Option<String>,
-        /// Bytes per retrieval range
-        #[serde(default = "range_bytes")]
-        #[schemars(extend("unlisted" = true))]
-        pub length: u64,
-    }
-    fn range_bytes() -> u64 {
-        crate::daemon::attachment::PAGE_BYTES as u64
-    }
-    pub(crate) type Answer = crate::daemon::attachment::BytePage;
-}
-
 pub mod browser;
 pub mod calendar;
 pub mod complete {

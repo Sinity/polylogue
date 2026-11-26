@@ -15,7 +15,7 @@ A reference names one thing in the archive, or one thing outside it, in a form e
 | `span:<container>#<unit>=<a>-<b>` | a span of text. The container is a message, a document, a block, a tool call (`tool:<session>#<call id>`, a span of its output), `annotation:<root>@<rev>` or `alternate:<root>@<rev>#<n>`; the unit is `b` (UTF-8 bytes), `c` (code points) or `u16` (UTF-16 code units, as browser selections report them) |
 | `document:<id>` | an imported document, such as a captured harness memory file |
 | `event:<id>` | a Polylogue event |
-| `attachment:<id>` | an attachment; `polylogue attachment:<id> read --to FILE` writes its bytes |
+| `attachment:<message>#<n>`, `attachment:<message>#<n>.<k>` | the attachment of a message's n-th stored block, or the k-th of a tool result's attachments (the first is `#<n>`); `polylogue attachment:<message>#<n> read --to FILE` writes its bytes |
 | `annotation:<root>` | the current revision of an annotation ([annotations.md](annotations.md)) |
 | `annotation:<root>@<rev>` | one exact revision of an annotation |
 | `alternate:<root>[@<rev>][#<n>]` | an alternate, one revision of it, or one of its parts ([alternates.md](alternates.md)) |

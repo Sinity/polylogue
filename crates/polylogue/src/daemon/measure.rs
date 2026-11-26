@@ -1,9 +1,8 @@
 //! `| measure WHAT`: tokens by kind and cost, subscription quota and the
 //! analyses, over the sessions a query selects (every session when it names
 //! no conditions). The query program chooses the sessions; this runs the
-//! measurement over them. [`MEASURES`] is the one list: the `measure *`
-//! commands, the `query` help, the plain-text view and the error for an
-//! unknown name all read it.
+//! measurement over them. [`MEASURES`] is the one list: the `query` help,
+//! the plain-text view and the error for an unknown name all read it.
 
 use super::Failure;
 use polylogue_render::measures as text;

@@ -230,18 +230,25 @@ impl ReadServices for Daemon {
         .continuation(request, cursor, deadline)
     }
     fn attachment_call(&self, at: &AttachmentPlace) -> Result<ReadyCall, Error> {
-        let arguments = serde_json::to_value(crate::protocol::attachment::Arguments {
-            message: at.message.to_string(),
+        use crate::protocol::line::{Rows, Step};
+        let reference = polylogue_model::Reference::Attachment {
+            message: at.message.clone(),
             block: at.block,
             attachment: at.attachment,
-            input: at.input.clone(),
-            length: crate::daemon::attachment::PAGE_BYTES as u64,
+        };
+        let arguments = serde_json::to_value(Rows {
+            selection: Some(reference.to_string()),
+            steps: vec![Step::Read(Box::new(crate::protocol::steps::ReadStep {
+                input: at.input.clone(),
+                ..Default::default()
+            }))],
+            ..Rows::default()
         })
         .map_err(|error| Error::Internal(error.to_string()))?;
         let identity = canonical_json::canonical_hash("polylogue-attachment-call", &arguments)
             .map_err(|error| Error::Internal(error.to_string()))?;
         self.ready_call(&RunnableRequest {
-            operation: "attachment".into(),
+            operation: "rows".into(),
             arguments,
             request_id: format!("read-attachment-{}", identity.to_hex()),
             deadline: Deadline::Default,

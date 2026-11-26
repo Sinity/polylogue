@@ -5,13 +5,6 @@
 use command_surface::{JsonSchema, ParsedCommand};
 use serde::{Deserialize, de::DeserializeOwned};
 
-/// `attachment`: where the verified bytes go.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub(crate) struct Attachment {
-    /// Write the verified bytes to FILE
-    pub out: Option<String>,
-}
-
 /// `schema infer`, `schema unread` and `schema diff`: where the result goes.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub(crate) struct SchemaOutput {

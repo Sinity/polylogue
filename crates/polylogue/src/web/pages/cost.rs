@@ -21,7 +21,10 @@ pub fn cost(scope: &str, data: &Value) -> String {
     layout(
         "Cost and usage",
         "",
-        &format!("polylogue measure usage {}", shell_quote(scope)),
+        &format!(
+            "polylogue {}",
+            shell_quote(&format!("{scope} | measure usage"))
+        ),
         &body,
     )
 }

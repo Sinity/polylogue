@@ -50,10 +50,9 @@ fn missing_or_corrupt_empty_frames_never_install_blank_attachment_output() {
                     &fixture.env(),
                     &[
                         "--json",
-                        "attachment",
-                        MESSAGE,
-                        "0",
-                        "--out",
+                        ATTACHMENT,
+                        "read",
+                        "--to",
                         destination.to_str().unwrap(),
                     ],
                 )
@@ -81,10 +80,9 @@ fn missing_or_corrupt_empty_frames_never_install_blank_attachment_output() {
                 &fixture.env(),
                 &[
                     "--json",
-                    "attachment",
-                    MESSAGE,
-                    "0",
-                    "--out",
+                    ATTACHMENT,
+                    "read",
+                    "--to",
                     absent.to_str().unwrap(),
                 ],
             );

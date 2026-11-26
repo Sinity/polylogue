@@ -110,7 +110,7 @@ An attachment is a stored entity, not a flag on a block:
   | Hermes | `pastes/`, `image_cache/` |
 
 - In a ChatGPT export, an attachment is matched to the stored export members by the native file ID and the export's naming and library sidecars; a file ID can match without a name, and several distinct matching files stay separate matches.
-- `polylogue attachment:<id> read --to FILE` works for every origin and writes the exact bytes for any caller, through a temporary file that replaces `FILE` only once the length and hash agree ([reading.md](reading.md#attachments)).
+- `polylogue attachment:<message>#<n> read --to FILE` works for every origin and writes the exact bytes for any caller, through a temporary file that replaces `FILE` only once the length and hash agree ([reading.md](reading.md#attachments)).
 
 ## Pastes
 

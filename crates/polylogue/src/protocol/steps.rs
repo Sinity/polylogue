@@ -92,6 +92,9 @@ pub struct ReadStep {
     #[serde(default, skip_serializing_if = "is_page")]
     #[schemars(extend("unlisted" = true))]
     pub delivery: ReadDelivery,
+    /// With an attachment: the stored input to read when several hold its bytes
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<String>,
 }
 
 fn is_page(delivery: &ReadDelivery) -> bool {

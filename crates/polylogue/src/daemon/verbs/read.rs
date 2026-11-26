@@ -1,13 +1,16 @@
 //! `read`: the read operation's body over the line's rows. Its next pages
 //! are `rows` calls, so a reading continues in the grammar it started in.
-use super::{RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use};
+use super::{
+    Given, RowRule, Selection, StepCall, StepDone, Verb, delegated, not_built, not_built_use,
+};
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
 use crate::daemon::service::Daemon;
 use crate::protocol::line::{Rows, Step, StepAnswer};
 use crate::protocol::steps::ReadStep;
 use command_surface::{Deadline, RunnableRequest};
-use polylogue_model::read::{Format, ReadyCall};
+use polylogue_model::Reference;
+use polylogue_model::read::{Format, ReadBudget, ReadDelivery, ReadyCall};
 use polylogue_reading::{AttachmentPlace, Compile, Error, ReadRequest, ReadServices};
 use polylogue_store::{Reader, WriterSender};
 use std::sync::Arc;
@@ -26,6 +29,14 @@ impl Verb for Read {
             return Err(Failure::bad_request(
                 "read --follow streams; it has no single answer",
             ));
+        }
+        if let Given::Reference(Reference::Attachment {
+            message,
+            block,
+            attachment,
+        }) = &selection.given
+        {
+            return bytes(step, message, *block, *attachment, call);
         }
         let arguments = arguments(&step, target(selection)?)?;
         let call = Call {
@@ -46,6 +57,70 @@ impl Verb for Read {
         ))
     }
 }
+
+/// An attachment reads as one checked range of its bytes; `next` is the
+/// cursor of the following range.
+fn bytes(
+    step: ReadStep,
+    message: &polylogue_model::MessageId,
+    block: u64,
+    attachment: u64,
+    call: &StepCall<'_>,
+) -> Result<StepDone, Failure> {
+    let ReadStep {
+        format,
+        input,
+        budget,
+        cursor,
+        ..
+    } = step.clone();
+    let rest = ReadStep {
+        format: None,
+        input: None,
+        budget: ReadBudget::Default,
+        cursor: None,
+        displayed: false,
+        delivery: ReadDelivery::Page,
+        ..step
+    };
+    if rest != ReadStep::default() {
+        return Err(Failure::bad_request(
+            "an attachment reads as its bytes; it takes only --input, --budget, --cursor and --format bytes",
+        ));
+    }
+    if format.as_deref().is_some_and(|format| format != "bytes") {
+        return Err(Failure::bad_value(
+            "an attachment reads only in the bytes format",
+        ));
+    }
+    let index = |value: u64, key: &str| {
+        usize::try_from(value)
+            .map_err(|_| Failure::bad_value(format!("{key} exceeds address space")))
+    };
+    let length = match budget {
+        ReadBudget::Tokens(tokens) => {
+            index(tokens.saturating_mul(BYTES_PER_TOKEN).max(1), "budget")?
+        }
+        ReadBudget::Unlimited | ReadBudget::Default => crate::daemon::attachment::PAGE_BYTES,
+    };
+    delegated(
+        crate::daemon::attachment::read(
+            crate::daemon::attachment::Range {
+                message: message.clone(),
+                block: index(block, "block")?,
+                attachment: index(attachment, "attachment")?,
+                input,
+                length,
+                cursor,
+            },
+            call.call.daemon,
+        ),
+        |page| StepAnswer::Attachment(Box::new(page)),
+    )
+}
+
+/// Base64 carries three bytes in four characters, about one token.
+const BYTES_PER_TOKEN: u64 = 3;
 
 /// The text a read selects.
 pub(crate) fn target(selection: &Selection) -> Result<String, Failure> {
@@ -92,7 +167,13 @@ pub(crate) fn arguments(
         budget,
         cursor: _,
         delivery,
+        input,
     } = step;
+    if input.is_some() {
+        return Err(Failure::bad_request(
+            "--input chooses the stored copy of an attachment; read attachment:MESSAGE#BLOCK",
+        ));
+    }
     for (given, option) in [
         (from.as_deref().is_some_and(|from| from != "seen"), "from"),
         (until.is_some(), "until"),

@@ -196,9 +196,11 @@ This writes a bundle; `read --to FILE` writes one document. Annotations are writ
 
 ## Attachments
 
-How attachments appear in a transcript is [transcripts.md](transcripts.md#attachments). The bytes are read through `read` with the `bytes` format, for every caller and every origin:
+How attachments appear in a transcript is [transcripts.md](transcripts.md#attachments); each shown attachment carries the line that reads it. The bytes are read through `read` on its `attachment:` reference ([references.md](references.md#forms)), for every caller and every origin. An attachment has only this reading: `read` on it takes `--format bytes` (the default for it), `--budget N`, `--cursor C` and `--input ID`, and refuses the other options.
 
-- On the CLI, `polylogue attachment:01JC4F2A read --to ~/tmp/plot.png` writes the exact bytes through a temporary file that replaces the target only once the length and hash agree.
+- One answer is one checked range: the attachment's descriptor on the first, the receiving input, the blob hash and size, the range's offset, its bytes as base64 and `next`, the cursor of the following range, absent on the last. `--budget N` sizes a range to about 3N bytes (base64 carries three bytes in about one token); the default range is 64 KiB.
+- `--input ID` chooses the stored input to read when several hold the attachment's bytes; the descriptor lists them.
+- On the CLI, `polylogue attachment:claude-code:01JC4F2A#0 read --to ~/tmp/plot.png` reads every range and writes the exact bytes through a temporary file that replaces the target only once the length and hash agree.
 - Over MCP, an image comes back as MCP image content; other bytes come back as base64 pages, each sized so its encoded text fits the budget and each carrying its `next`.
 - Over HTTP the bytes come back with their media type.
 - Missing or corrupt bodies are refused with the attachment's availability; reading never serves bytes whose hash does not match.
