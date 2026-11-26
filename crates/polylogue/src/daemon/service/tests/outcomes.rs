@@ -171,24 +171,35 @@ fn an_import_answered_during_a_build_says_the_index_is_being_built() {
 }
 
 #[test]
-fn answer_reports_pending_search_text_and_parse_lag() {
-    use polylogue_model::freshness::{CompletenessDimension, CompletenessReason};
+fn answer_reports_pending_search_text_and_parse_lag_with_counts_and_origins() {
+    use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, CountedReason};
     let mut freshness = current();
     freshness.local.search =
-        CompletenessDimension::Incomplete(vec![CompletenessReason::SearchPending]);
-    freshness.local.parsing =
-        CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind]);
+        CompletenessDimension::Incomplete(vec![CountedReason::search_pending(Some(3))]);
+    freshness.local.parsing = CompletenessDimension::Incomplete(vec![
+        CountedReason::inputs(CompletenessReason::ParserBehind, "codex", 1),
+        CountedReason::inputs(CompletenessReason::MissingCheckpoint, "claude-code", 12),
+    ]);
     let answer = query_outcome(query(Outcome::Rows, &[]), &freshness);
     assert_eq!(answer.exit_code(), 5);
     let (mut value, notes) = test_answers::degraded(answer);
     assert_eq!(
         notes,
         [
-            "parsing is behind the stored bytes",
-            "search text is pending"
+            "1 codex input has bytes not parsed yet; status counts them, and no query lists stored inputs yet",
+            "12 claude-code inputs have not been parsed yet; status counts them, and no query lists stored inputs yet",
+            "3 texts await search",
         ]
     );
     assert_eq!(value.read_at_mut().freshness.as_ref(), Some(&freshness));
+    // --json carries each count beside its reason's name.
+    assert_eq!(
+        serde_json::to_value(&freshness.local.parsing).unwrap(),
+        serde_json::json!({"state": "incomplete", "reasons": [
+            {"reason": "parser_behind", "origin": "codex", "count": 1, "waiting_ends": true},
+            {"reason": "missing_checkpoint", "origin": "claude-code", "count": 12, "waiting_ends": true},
+        ]})
+    );
     let answer = crate::protocol::read(value.clone(), &freshness);
     let (same_value, same_notes) = test_answers::degraded(answer);
     assert_eq!(
@@ -196,4 +207,21 @@ fn answer_reports_pending_search_text_and_parse_lag() {
         serde_json::to_value(value).unwrap()
     );
     assert_eq!(same_notes, notes);
+}
+
+/// docs/interfaces.md, Exit codes: a failed or refused parse stands until
+/// its bytes or its parser change, so waiting does not end it and it does
+/// not make a reply degraded; with no rows the reply is empty.
+#[test]
+fn a_failed_parse_leaves_a_query_ok_or_empty() {
+    use polylogue_model::freshness::{CompletenessReason, CountedReason};
+    let mut freshness = current();
+    freshness.local.failed_parses = vec![
+        CountedReason::inputs(CompletenessReason::ParseFailed, "codex", 2),
+        CountedReason::inputs(CompletenessReason::Refused, "chatgpt", 1),
+    ];
+    assert!(freshness.up_to_date());
+    assert!(!freshness.catching_up());
+    test_answers::ok(query_outcome(query(Outcome::Rows, &[]), &freshness));
+    test_answers::empty(query_outcome(query(Outcome::Empty, &[]), &freshness));
 }

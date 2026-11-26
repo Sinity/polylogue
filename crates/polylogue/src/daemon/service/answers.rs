@@ -26,7 +26,7 @@ pub(crate) fn query_outcome(
     } = answer;
     value.read_at_mut().freshness = Some(freshness.clone());
     let mut notes = notes;
-    notes.extend(freshness.notes().into_iter().map(str::to_owned));
+    notes.extend(freshness.notes());
     let degraded = !freshness.up_to_date() || outcome == crate::daemon::query::Outcome::Incomplete;
     if degraded {
         command_surface::Answer {

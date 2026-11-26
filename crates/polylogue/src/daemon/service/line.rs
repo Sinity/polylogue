@@ -44,7 +44,9 @@ impl Operation for Line {
         Ok(Policy {
             access: rows.access(),
             changes_archive,
-            bound: if streams(rows) {
+            // A waiting listing is bounded by its wait, like a stream by
+            // its caller: the default read deadline would end it early.
+            bound: if streams(rows) || rows.wait.is_some() {
                 Bound::CallerOnly
             } else if changes_archive {
                 Bound::UntilHandOver
@@ -896,6 +898,33 @@ fn rows_page(
     .map(|found| LineAnswer::Listing(Box::new(found))))
 }
 
+/// Whether a waiting listing waits on after this answer: it matched no
+/// rows, and either the index is up to date or it is catching up for
+/// reasons the daemon ends by itself, which may bring the rows. Rows, a
+/// failed part and a reason waiting does not end answer at once.
+fn keeps_waiting(answer: &Answer<LineAnswer>) -> bool {
+    match &answer.outcome {
+        command_surface::Outcome::Empty(_) => true,
+        command_surface::Outcome::Degraded {
+            value: LineAnswer::Listing(found),
+            ..
+        } => {
+            let crate::protocol::query::Answer::Rows(rows) = &**found else {
+                return false;
+            };
+            rows.rows.is_empty()
+                && rows.next.is_none()
+                && rows.incomplete.is_empty()
+                && rows
+                    .read_at
+                    .freshness
+                    .as_ref()
+                    .is_some_and(polylogue_model::freshness::ReadFreshness::catching_up)
+        }
+        _ => false,
+    }
+}
+
 /// The selection alone: its rows, a page at a time.
 fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswer>, Failure> {
     let query = Selection {
@@ -937,18 +966,7 @@ fn listing(rows: Rows, given: Given, call: &Call<'_>) -> Result<Answer<LineAnswe
             limit.check()?;
         }
         let answer = rows_page(call, &rows, &query, true)?;
-        // A listing waits for rows: an answer with none keeps waiting, also
-        // when it is degraded because the index is behind its archive.
-        let no_rows = match &answer.outcome {
-            command_surface::Outcome::Empty(_) => true,
-            command_surface::Outcome::Degraded { value, .. } => matches!(
-                value,
-                LineAnswer::Listing(found)
-                    if matches!(&**found, crate::protocol::query::Answer::Rows(rows) if rows.rows.is_empty())
-            ),
-            _ => false,
-        };
-        if !no_rows {
+        if !keeps_waiting(&answer) {
             return Ok(answer);
         }
         let left = until.saturating_duration_since(Instant::now());

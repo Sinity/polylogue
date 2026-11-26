@@ -1,7 +1,9 @@
 use super::*;
 use crate::protocol::status::{AnswersFrom, NotReadSince, Notice, PendingWrites, Warm};
 use polylogue_model::Timestamp;
-use polylogue_model::freshness::{CompletenessReason, ReadCompleteness, ReadFreshness};
+use polylogue_model::freshness::{
+    CompletenessReason, CountedReason, ReadCompleteness, ReadFreshness,
+};
 use polylogue_model::live::{LiveState, WaitingOn};
 use polylogue_store::log::Record;
 
@@ -123,7 +125,7 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
             ("done", 109_793),
             ("parsing", 48),
             ("failed", 31),
-            ("no_parser_yet", 15),
+            ("no_parser", 15),
         ]
         .into_iter()
         .map(|(state, n)| (state.to_owned(), n))
@@ -183,7 +185,18 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
         index_rebuild: None,
     });
     status.freshness.local.parsing =
-        CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind]);
+        CompletenessDimension::Incomplete(vec![CountedReason::inputs(
+            CompletenessReason::ParserBehind,
+            "codex",
+            48,
+        )]);
+    // docs/operations.md, Status: a failed parse is named as a problem
+    // with its count and origin, never as parsing behind.
+    status.freshness.local.failed_parses = vec![CountedReason::inputs(
+        CompletenessReason::ParseFailed,
+        "claude-code",
+        31,
+    )];
     status.loop_status.passes = 12;
     status.loop_status.last_pass_at = Some(at(today(12, 58, 4)));
     status.loop_status.last_pass.seconds = 4.2;
@@ -214,9 +227,17 @@ fn an_idle_answer_renders_the_archive_reading_and_activity() {
         record(today(14, 2, 11), Priority::Info, "search thread: caught up"),
     ];
     assert_eq!(
-        plain(&status, &["parsing is behind the stored bytes"]),
+        plain(
+            &status,
+            &status
+                .freshness
+                .status_notes()
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+        ),
         "\
-polylogue  ⚠ parsing is behind the stored bytes
+polylogue  ⚠ 31 claude-code inputs failed to parse  (+1 more under NOTES)
            standalone · daemon 4479 · up 17h35m · idle · /home/op/archive
 
 ARCHIVE    37,419 sessions   11.24M messages   4.77M tool calls   288 documents
@@ -224,7 +245,8 @@ ARCHIVE    37,419 sessions   11.24M messages   4.77M tool calls   288 documents
 
 READING    #############################.  99.9%   109,793 of 109,887 files read
            48 parsing · 31 failed · 15 without a parser
-           parsing is behind the stored bytes · session figures current · search current
+           48 codex inputs have bytes not parsed yet · session figures current · search current
+           31 claude-code inputs failed to parse
 
 LAST CHECK 12:58:04 · 4.2 s · 37 of 132,286 files changed
            12.4 MiB read · 1,204 messages written
@@ -245,7 +267,8 @@ UNUSED     claude-code:message.usage.cache ×11.20M not yet read · 40 more, 1 o
 RECENT     14:01:10  ⚠ scope index: busy
            14:02:11  search thread: caught up
 
-NOTES      ⚠ parsing is behind the stored bytes
+NOTES      ⚠ 31 claude-code inputs failed to parse
+           ⚠ 48 codex inputs have bytes not parsed yet
 "
     );
 }
@@ -1210,5 +1233,29 @@ SOURCES    walked 14:04:00
            /home/op/.gemini · incomplete, 1 path unreadable · 1 ignored
              ignored: 1 symbolic link is not followed
 "
+    );
+}
+
+/// Every chain state the census counts (`model::chain::ChainStatusName`)
+/// is worded in the READING section, in the view's order.
+#[test]
+fn every_chain_state_the_census_counts_has_its_words() {
+    use polylogue_model::chain::ChainStatusName;
+    let mut status = answer();
+    status.store = Some(polylogue_store::Status {
+        parse_states: ChainStatusName::ALL
+            .iter()
+            .map(|state| (state.as_str().to_owned(), 1))
+            .collect(),
+        ..Default::default()
+    });
+    let view = plain(&status, &[]);
+    let reading = view
+        .lines()
+        .find(|line| line.contains("parsing ·"))
+        .unwrap_or_else(|| panic!("{view}"));
+    assert_eq!(
+        reading.trim(),
+        "1 parsing · 1 waiting to grow · 1 refused · 1 failed · 1 without a parser · 1 repeated by a newer file"
     );
 }

@@ -95,19 +95,6 @@ pub(crate) fn request(parsed: &ParsedLine) -> Result<RunnableRequest, Refusal> {
         .map_err(|e| Refusal::new(Code::BadRequest, e.message))?
         .request;
     call.arguments = arguments;
-    if let Some(wait) = &parsed.line.wait {
-        let wait = crate::signals::duration(wait).ok_or_else(|| {
-            Refusal::new(Code::BadValue, "--wait needs a duration such as 30s or 30m")
-        })?;
-        let wait = u64::try_from(wait).unwrap_or(u64::MAX);
-        call.deadline = match call.deadline {
-            command_surface::Deadline::None => command_surface::Deadline::None,
-            command_surface::Deadline::Default => command_surface::Deadline::Milliseconds(wait),
-            command_surface::Deadline::Milliseconds(ms) => {
-                command_surface::Deadline::Milliseconds(ms.max(wait))
-            }
-        };
-    }
     Ok(call)
 }
 /// Consume only the input the parser marked, and clear that intent after reading.

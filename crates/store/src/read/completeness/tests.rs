@@ -54,9 +54,13 @@ fn derived_writes_count_checkpoints_across_counter_domains() {
     let fresh = pool.reader().unwrap();
     let completeness = fresh.completeness(&contracts).unwrap();
     assert!(!completeness.caught_up());
-    assert!(
-        matches!(completeness.parsing, CompletenessDimension::Incomplete(ref reasons)
-        if reasons.contains(&CompletenessReason::ParserBehind))
+    assert_eq!(
+        completeness.parsing,
+        CompletenessDimension::Incomplete(vec![CountedReason::inputs(
+            CompletenessReason::ParserBehind,
+            "claude-code",
+            1
+        )])
     );
 }
 
@@ -106,11 +110,16 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         .unwrap();
     assert_eq!(
         behind.parsing,
-        CompletenessDimension::Incomplete(vec![CompletenessReason::ParserBehind])
+        CompletenessDimension::Incomplete(vec![CountedReason::inputs(
+            CompletenessReason::ParserBehind,
+            "synthetic",
+            1
+        )])
     );
     assert!(!behind.caught_up());
-    // A failure at the stored length waits for new bytes; it is shown, and
-    // the index is not complete while it stands.
+    // A failure at the stored length waits for new bytes or a new parser:
+    // waiting does not end it, so the index is up to date beside it, and
+    // the failure is counted by origin for status.
     edit(
         &fixture.archive.index_db(),
         "UPDATE parse_state SET state='failed',waiting=6,failure_kind='refused',failure_detail='not a synthetic file'",
@@ -120,9 +129,15 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         .unwrap()
         .completeness(&[expected("synthetic", "v1")])
         .unwrap();
+    assert_eq!(refused.parsing, CompletenessDimension::Complete);
+    assert!(refused.caught_up());
     assert_eq!(
-        refused.parsing,
-        CompletenessDimension::Incomplete(vec![CompletenessReason::Refused])
+        refused.failed_parses,
+        [CountedReason::inputs(
+            CompletenessReason::Refused,
+            "synthetic",
+            1
+        )]
     );
     edit(
         &fixture.archive.index_db(),
@@ -133,9 +148,56 @@ fn waiting_length_and_explicit_kept_contracts_have_distinct_meanings() {
         .unwrap()
         .completeness(&[expected("synthetic", "v1")])
         .unwrap();
+    assert!(failed.caught_up());
     assert_eq!(
-        failed.parsing,
-        CompletenessDimension::Incomplete(vec![CompletenessReason::ParseFailed])
+        failed.failed_parses,
+        [CountedReason::inputs(
+            CompletenessReason::ParseFailed,
+            "synthetic",
+            1
+        )]
+    );
+}
+
+/// docs/operations.md, Status: a failed and a refused parse are named with
+/// their counts and origins, never as parsing behind.
+#[test]
+fn status_names_failed_and_refused_parses_and_not_lag() {
+    let root = tempfile::tempdir().unwrap();
+    let fixture = Fixture::new(root.path()).unwrap();
+    edit(
+        &fixture.archive.archive_db(),
+        "INSERT INTO input VALUES('broken','synthetic'),('foreign','synthetic');
+        INSERT INTO revision(input,number,produced,chain,length,commit_seq)
+        VALUES('broken',1,'first',1,10,1),('foreign',1,'first',1,7,1);",
+    );
+    edit(
+        &fixture.archive.index_db(),
+        "INSERT INTO input_ref(id,format) VALUES('broken','synthetic'),('foreign','synthetic');
+        INSERT INTO parse_state(input_pk,chain,parser_version,state,parsed_to,waiting,failure_kind,failure_detail)
+        SELECT pk,1,'v1','failed',0,10,'malformed','not a record' FROM input_ref WHERE id='broken';
+        INSERT INTO parse_state(input_pk,chain,parser_version,state,parsed_to,waiting,failure_kind,failure_detail)
+        SELECT pk,1,'v1','failed',0,7,'refused','no parser reads this path' FROM input_ref WHERE id='foreign';",
+    );
+    let contracts = [expected("synthetic", "v1")];
+    let pool = fixture.reads().unwrap();
+    let reader = pool.reader().unwrap();
+    let freshness = polylogue_model::freshness::ReadFreshness {
+        local: reader.completeness(&contracts).unwrap(),
+        sinex: polylogue_model::freshness::IndexFreshness::Standalone,
+    };
+    assert!(freshness.up_to_date());
+    assert!(freshness.notes().is_empty());
+    assert_eq!(
+        freshness.status_notes(),
+        [
+            "1 synthetic input failed to parse",
+            "1 synthetic input was refused by its parser"
+        ]
+    );
+    assert_eq!(
+        reader.status(&contracts).unwrap().parse_states,
+        BTreeMap::from([("failed".to_owned(), 1), ("refused".to_owned(), 1)])
     );
 }
 
@@ -171,7 +233,7 @@ fn bytes_only_declaration_needs_no_parser_or_parsed_coverage() {
 /// The parsing answer of a walk over every chain of the source joined with
 /// its parse state, written from the rules of `docs/archive.md` (parse
 /// versions) rather than through `model::chain`: the independent oracle.
-fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDimension, u64, u64) {
+fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> Walked {
     let declared: BTreeMap<&str, &ReadingContract> =
         contracts.iter().map(|c| (c.origin(), c)).collect();
     let conn = reader.conn().unwrap();
@@ -196,7 +258,9 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
         )
         .unwrap();
     let mut rows = statement.query([]).unwrap();
-    let (mut missing, mut unknown, mut kept, mut raw_only) = (BTreeSet::new(), false, 0, 0);
+    let mut missing: BTreeMap<(CompletenessReason, String), u64> = BTreeMap::new();
+    let mut stopped: BTreeMap<(CompletenessReason, String), u64> = BTreeMap::new();
+    let (mut unknown, mut kept, mut raw_only) = (false, 0, 0);
     while let Some(row) = rows.next().unwrap() {
         let origin: String = row.get(0).unwrap();
         let length: i64 = row.get(1).unwrap();
@@ -204,10 +268,13 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
         let version: Option<String> = row.get(3).unwrap();
         let seen_to: Option<i64> = row.get(4).unwrap();
         let failure: Option<String> = row.get(5).unwrap();
+        let count = |into: &mut BTreeMap<_, u64>, reason| {
+            *into.entry((reason, origin.clone())).or_default() += 1;
+        };
         match declared.get(origin.as_str()) {
             None => {
                 unknown = true;
-                missing.insert(CompletenessReason::MissingDeclaration);
+                count(&mut missing, CompletenessReason::MissingDeclaration);
             }
             Some(ReadingContract::Kept { .. }) => kept += 1,
             Some(ReadingContract::RawOnly { .. }) => raw_only += 1,
@@ -216,29 +283,39 @@ fn walked(reader: &Reader<'_>, contracts: &[ReadingContract]) -> (CompletenessDi
             }) => {
                 if state.is_none() {
                     if length > 0 {
-                        missing.insert(CompletenessReason::MissingCheckpoint);
+                        count(&mut missing, CompletenessReason::MissingCheckpoint);
                     }
                 } else if version.as_ref() != Some(wanted) {
-                    missing.insert(CompletenessReason::ParseVersionChanged);
+                    count(&mut missing, CompletenessReason::ParseVersionChanged);
                 } else if seen_to != Some(length) {
-                    missing.insert(CompletenessReason::ParserBehind);
+                    count(&mut missing, CompletenessReason::ParserBehind);
                 } else if failure.as_deref() == Some("refused") {
-                    missing.insert(CompletenessReason::Refused);
+                    count(&mut stopped, CompletenessReason::Refused);
                 } else if failure.is_some() {
-                    missing.insert(CompletenessReason::ParseFailed);
+                    count(&mut stopped, CompletenessReason::ParseFailed);
                 }
             }
         }
     }
+    let counted = |reasons: BTreeMap<(CompletenessReason, String), u64>| -> Vec<CountedReason> {
+        reasons
+            .into_iter()
+            .map(|((reason, origin), n)| CountedReason::inputs(reason, &origin, n))
+            .collect()
+    };
     let parsing = if missing.is_empty() {
         CompletenessDimension::Complete
     } else if unknown {
-        CompletenessDimension::Unknown(missing.into_iter().collect())
+        CompletenessDimension::Unknown(counted(missing))
     } else {
-        CompletenessDimension::Incomplete(missing.into_iter().collect())
+        CompletenessDimension::Incomplete(counted(missing))
     };
-    (parsing, kept, raw_only)
+    (parsing, kept, raw_only, counted(stopped))
 }
+
+/// The parsing dimension, the kept and bytes-only chains, and the failed
+/// or refused parses.
+type Walked = (CompletenessDimension, u64, u64, Vec<CountedReason>);
 
 /// Stores bytes of an export member that the import reads as `format`.
 fn import(stored: &WriterArchive, body: &[u8], format: &str) -> crate::staging::StoredInput {
@@ -307,7 +384,12 @@ fn caught_up_equals_a_full_walk() {
         let reader = pool.reader().unwrap();
         for contracts in &contract_sets {
             let kept = reader.completeness(contracts).unwrap();
-            let answer = (kept.parsing, kept.kept_chains, kept.raw_only_chains);
+            let answer = (
+                kept.parsing,
+                kept.kept_chains,
+                kept.raw_only_chains,
+                kept.failed_parses,
+            );
             assert_eq!(answer, walked(&reader, contracts), "{stage}: {contracts:?}");
             answers.push(answer);
         }

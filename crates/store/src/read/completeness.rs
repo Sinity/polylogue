@@ -4,7 +4,6 @@
 //! here).
 use super::*;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
 
 /// Supplied by the origin registry, never inferred from a stored cursor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -32,7 +31,9 @@ impl ReadingContract {
     }
 }
 
-use polylogue_model::freshness::{CompletenessDimension, CompletenessReason, ReadCompleteness};
+use polylogue_model::freshness::{
+    CompletenessDimension, CompletenessReason, CountedReason, ReadCompleteness,
+};
 
 impl Reader<'_> {
     /// [`Reader::chain_census`] of this read's position, computed once for
@@ -74,7 +75,11 @@ impl Reader<'_> {
                 ));
             }
         }
-        let mut missing = BTreeSet::new();
+        // Chains by why they are behind and by origin; and those whose
+        // parse failed or was refused, which waiting does not end and which
+        // therefore leave parsing complete.
+        let mut missing: BTreeMap<(CompletenessReason, &str), u64> = BTreeMap::new();
+        let mut stopped: BTreeMap<(CompletenessReason, &str), u64> = BTreeMap::new();
         let mut unknown = false;
         let mut kept_chains = 0_u64;
         let mut raw_only_chains = 0_u64;
@@ -84,10 +89,13 @@ impl Reader<'_> {
         for ((origin, status), n) in &census.chains {
             use polylogue_model::chain::ChainStatusName as Status;
             let n = *n;
+            let add = |into: &mut BTreeMap<_, u64>, reason, n| {
+                *into.entry((reason, origin.as_str())).or_default() += n;
+            };
             match declared.get(origin.as_str()).copied() {
                 None => {
                     unknown = true;
-                    missing.insert(CompletenessReason::MissingDeclaration);
+                    add(&mut missing, CompletenessReason::MissingDeclaration, n);
                 }
                 Some(ReadingContract::Kept { .. }) => kept_chains += n,
                 // Bytes kept with no parser are as far as they can be: they
@@ -96,38 +104,50 @@ impl Reader<'_> {
                 Some(ReadingContract::Expected { .. }) => match status {
                     Status::Done | Status::Waiting | Status::Repeated => {}
                     Status::NoParser => raw_only_chains += n,
-                    Status::Refused => {
-                        missing.insert(CompletenessReason::Refused);
-                    }
-                    Status::Failed => {
-                        missing.insert(CompletenessReason::ParseFailed);
-                    }
+                    Status::Refused => add(&mut stopped, CompletenessReason::Refused, n),
+                    Status::Failed => add(&mut stopped, CompletenessReason::ParseFailed, n),
                     Status::Parsing => {
-                        missing.extend(census.behind.get(origin).into_iter().flatten().copied());
+                        for (reason, n) in census.behind.get(origin).into_iter().flatten() {
+                            add(&mut missing, *reason, *n);
+                        }
                     }
                 },
             }
         }
+        let counted = |reasons: BTreeMap<(CompletenessReason, &str), u64>| -> Vec<CountedReason> {
+            reasons
+                .into_iter()
+                .map(|((reason, origin), n)| CountedReason::inputs(reason, origin, n))
+                .collect()
+        };
         let parsing = if missing.is_empty() {
             CompletenessDimension::Complete
         } else if unknown {
-            CompletenessDimension::Unknown(missing.into_iter().collect())
+            CompletenessDimension::Unknown(counted(missing))
         } else {
-            CompletenessDimension::Incomplete(missing.into_iter().collect())
+            CompletenessDimension::Incomplete(counted(missing))
         };
         // The marks the derive step works from, and the versions it last
         // derived at; read in constant time.
         let derivation = if crate::summary::caught_up(conn)? {
             CompletenessDimension::Complete
         } else {
-            CompletenessDimension::Incomplete(vec![CompletenessReason::DerivationBehind])
+            CompletenessDimension::Incomplete(vec![CountedReason::new(
+                CompletenessReason::DerivationBehind,
+            )])
         };
         let mut search_missing = Vec::new();
         if self.pool.reads_build() {
-            search_missing.push(CompletenessReason::IndexBuilding);
+            search_missing.push(CountedReason::new(CompletenessReason::IndexBuilding));
         }
         if conn.exists("SELECT EXISTS(SELECT 1 FROM search_pending)", [])? {
-            search_missing.push(CompletenessReason::SearchPending);
+            let pending = conn.scalar::<i64>(
+                "SELECT COALESCE((SELECT n FROM main.row_count WHERE name = 'search_pending'), 0)",
+                [],
+            )?;
+            search_missing.push(CountedReason::search_pending(
+                u64::try_from(pending).ok().filter(|n| *n > 0),
+            ));
         }
         let search = if search_missing.is_empty() {
             CompletenessDimension::Complete
@@ -142,6 +162,7 @@ impl Reader<'_> {
             confirmed_stream: CompletenessDimension::NotApplicable,
             kept_chains,
             raw_only_chains,
+            failed_parses: counted(stopped),
         })
     }
 }

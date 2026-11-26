@@ -64,6 +64,17 @@ impl Morrow {
         let dir = tempfile::tempdir().expect("temporary directory");
         let home = dir.path().join("home");
         let root = dir.path().join("archive");
+        Self::lay_out_in(set, &home);
+        Self {
+            dir,
+            home,
+            root,
+            set,
+        }
+    }
+
+    /// The set's files laid out in `home`, where each tool writes them.
+    pub fn lay_out_in(set: Set, home: &Path) {
         let src = morrow_dir();
         let parts: Vec<&(&str, &str)> = match set {
             Set::Main => MAIN.iter().collect(),
@@ -72,12 +83,6 @@ impl Morrow {
         };
         for (from, to) in parts {
             copy(&src.join(from), &home.join(to)).expect("lay out the example");
-        }
-        Self {
-            dir,
-            home,
-            root,
-            set,
         }
     }
 
