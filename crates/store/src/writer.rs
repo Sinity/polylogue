@@ -1070,7 +1070,14 @@ impl Inner {
                     return Err(StoreError::WriterGone);
                 }
                 inner.project_alternate_text()?;
-                crate::text_rows::index_pending(&inner.index)?;
+                // Search text settled here is a commit its readers are told
+                // of, as the search thread's batches are: status reads its
+                // snapshot again and stops saying search text is pending.
+                if crate::text_rows::index_pending(&inner.index)? > 0 {
+                    inner
+                        .commits
+                        .committed(crate::completion::Committed::CONTENT);
+                }
                 crate::summary::mark_moved_versions(&mut inner.index)
             })
             .and_then(|prepared| prepared.ok_or(StoreError::WriterGone));
