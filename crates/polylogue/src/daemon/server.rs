@@ -379,7 +379,6 @@ pub fn serve(
         engine,
         startup.mode.clone(),
         run.lifetime,
-        startup.stopped_attempt,
         supervisor.progress(),
     )
     .map_err(Failed::Start)?;

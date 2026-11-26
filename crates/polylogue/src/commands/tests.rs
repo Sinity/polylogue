@@ -298,3 +298,98 @@ fn status_parses_verification_manifest_and_explicit_vectors() {
     let arguments: crate::protocol::status::Arguments = serde_json::from_value(arguments).unwrap();
     assert!(arguments.vectors && !arguments.verify);
 }
+
+/// The value an option takes, from its schema: the type of a present value
+/// (null leaves it out), its format and its choices; a repeatable option
+/// takes the unit of one value.
+fn unit(property: &serde_json::Value) -> String {
+    use serde_json::Value;
+    if let Some(reference) = property["$ref"].as_str() {
+        return reference.rsplit('/').next().unwrap_or(reference).to_owned();
+    }
+    if let Some(branches) = property["anyOf"]
+        .as_array()
+        .or_else(|| property["oneOf"].as_array())
+    {
+        let mut units: Vec<String> = branches
+            .iter()
+            .filter(|branch| branch["type"] != "null")
+            .map(unit)
+            .collect();
+        units.sort();
+        units.dedup();
+        return units.join("|");
+    }
+    let kinds: Vec<&str> = match &property["type"] {
+        Value::String(kind) => vec![kind.as_str()],
+        Value::Array(kinds) => kinds.iter().filter_map(Value::as_str).collect(),
+        _ => vec![],
+    };
+    let kind = kinds
+        .into_iter()
+        .filter(|kind| *kind != "null")
+        .collect::<Vec<_>>()
+        .join("|");
+    let mut text = kind.clone();
+    if let Some(format) = property["format"].as_str() {
+        text = format!("{text}:{format}");
+    }
+    if let Some(choices) = property["enum"].as_array() {
+        text = format!("{text}{choices:?}");
+    }
+    // A repeatable option takes the unit of one value.
+    if kind == "array" {
+        return unit(&property["items"]);
+    }
+    text
+}
+
+/// One option name has one unit wherever a person types it: in every
+/// command a person types and in every verb's step. Program rows under
+/// `internal` keep their own fields.
+#[test]
+fn no_flag_name_has_two_units() {
+    use std::collections::BTreeMap;
+    let mut units: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
+    let mut note = |name: &str, unit: String, owner: String| {
+        units
+            .entry(name.to_owned())
+            .or_default()
+            .entry(unit)
+            .or_default()
+            .push(owner);
+    };
+    let declarations = crate::commands::declarations();
+    for command in COMMANDS.iter().filter(|command| !command.cli.hidden()) {
+        let Some(description) = declarations
+            .descriptions()
+            .iter()
+            .find(|description| description.spec.name == command.name)
+        else {
+            continue;
+        };
+        if let Some(properties) = description.input_schema["properties"].as_object() {
+            for (name, property) in properties {
+                note(name, unit(property), command.name.to_owned());
+            }
+        }
+    }
+    let steps = crate::daemon::verbs::declarations();
+    for verb in steps.verbs() {
+        if let Some(properties) = verb.input_schema()["properties"].as_object() {
+            for (name, property) in properties {
+                note(name, unit(property), verb.verb().to_owned());
+            }
+        }
+    }
+    // `status --after N` counts changes while the feed's and a page's
+    // `--after` name a position; the status design owns that name.
+    if let Some(after) = units.get_mut("after") {
+        after.retain(|_, owners| owners.as_slice() != ["status"]);
+    }
+    let twice: Vec<_> = units
+        .into_iter()
+        .filter(|(_, units)| units.len() > 1)
+        .collect();
+    assert!(twice.is_empty(), "{twice:#?}");
+}

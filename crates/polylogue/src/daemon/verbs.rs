@@ -1,8 +1,8 @@
 //! The verbs of a line. Each verb is a [`Verb`]: its step type, which rows
-//! it accepts, what it does on the selection the line resolved once, and
-//! what it would do under a dry run. The bodies delegate to the handlers of
-//! the operations the verbs replace, or refuse an option whose body is not
-//! built yet with a typed `not_built`.
+//! it accepts, the smallest tool that may run it, what it does on the
+//! selection the line resolved once, and what it would do under a dry run.
+//! [`verbs!`] declares the line's [`Step`] from the list of verbs, so a verb
+//! is added in one place.
 pub(crate) mod act;
 pub(crate) mod annotate;
 pub(crate) mod brief;
@@ -10,17 +10,22 @@ pub(crate) mod read;
 pub(crate) mod resume;
 pub(crate) mod save;
 
+use crate::commands::ToolAccess;
 use crate::daemon::Failure;
 use crate::daemon::handler::Call;
-use crate::protocol::line::{Step, StepAnswer};
-use command_surface::{Answer, Envelope, Outcome};
-use polylogue_model::{Code, Reference};
+use crate::protocol::line::StepAnswer;
+use crate::protocol::steps::*;
+use command_surface::{Answer, JsonSchema, Outcome, StepDeclarations};
+use polylogue_model::{Code, Reason, Reference};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// One verb of a line.
 pub(crate) trait Verb {
     type Step;
     const NAME: &'static str;
     const ROWS: RowRule;
+    /// The smallest tool that may run the step.
+    const ACCESS: ToolAccess;
     fn run(
         step: Self::Step,
         selection: &Selection,
@@ -37,6 +42,103 @@ pub(crate) trait Verb {
     }
 }
 
+/// Declares the line's [`Step`] from its verbs, in the order of the verb
+/// table: each variant's step type and the [`Verb`] that runs it. A boxed
+/// step is marked `boxed`.
+macro_rules! verbs {
+    ($($variant:ident($step:ty $(, $boxed:ident)?) => $verb:ty;)+) => {
+        /// One verb of a line with its options.
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+        #[serde(tag = "verb", rename_all = "snake_case")]
+        pub enum Step {
+            $($variant(verbs!(@type $step $(, $boxed)?)),)+
+        }
+
+        impl Step {
+            /// The verb as written on every surface.
+            pub fn verb(&self) -> &'static str {
+                match self {
+                    $(Self::$variant(_) => <$verb as Verb>::NAME,)+
+                }
+            }
+
+            /// The smallest tool that may run this step.
+            pub fn access(&self) -> ToolAccess {
+                match self {
+                    $(Self::$variant(_) => <$verb as Verb>::ACCESS,)+
+                }
+            }
+
+            /// Which rows the step's verb acts on.
+            pub(crate) fn rows(&self) -> RowRule {
+                match self {
+                    $(Self::$variant(_) => <$verb as Verb>::ROWS,)+
+                }
+            }
+
+            /// Runs the step; an answer that failed is the step's failure.
+            pub(crate) fn run(
+                self,
+                selection: &Selection,
+                call: &StepCall<'_>,
+            ) -> Result<StepDone, Failure> {
+                match self {
+                    $(Self::$variant(step) => {
+                        <$verb as Verb>::run(verbs!(@own step $(, $boxed)?), selection, call)
+                    })+
+                }
+                .and_then(StepDone::checked)
+            }
+
+            /// What the step would do, or the refusal it would meet.
+            pub(crate) fn would(
+                &self,
+                selection: &Selection,
+                call: &StepCall<'_>,
+            ) -> Result<String, Failure> {
+                match self {
+                    $(Self::$variant(step) => <$verb as Verb>::would(step, selection, call),)+
+                }
+            }
+        }
+
+        /// Every verb's declaration, in the order of the verb table.
+        pub fn declarations() -> StepDeclarations {
+            fn declare<A: DeserializeOwned + JsonSchema>(steps: &mut StepDeclarations, verb: &str) {
+                steps
+                    .declare::<A>(
+                        verb,
+                        crate::commands::arguments::from_schema(&schemars::schema_for!(A), false),
+                    )
+                    .unwrap_or_else(|failure| panic!("{verb}: {}", failure.message));
+            }
+            let mut steps = StepDeclarations::default();
+            $(declare::<$step>(&mut steps, <$verb as Verb>::NAME);)+
+            steps.cli_selection("selection", "references")
+        }
+    };
+    (@type $step:ty, boxed) => { Box<$step> };
+    (@type $step:ty) => { $step };
+    (@own $value:ident, boxed) => { *$value };
+    (@own $value:ident) => { $value };
+}
+
+verbs! {
+    Read(ReadStep, boxed) => read::Read;
+    Pick(PickStep) => Pick;
+    Brief(BriefStep) => brief::Brief;
+    Note(NoteStep, boxed) => annotate::Note;
+    Tag(TagStep) => annotate::Tag;
+    Edit(EditStep) => annotate::Edit;
+    Withdraw(WithdrawStep) => annotate::Withdraw;
+    Judge(JudgeStep) => annotate::Judge;
+    Save(SaveStep, boxed) => save::Save;
+    Send(SendStep) => act::Send;
+    Answer(AnswerStep) => act::Answer;
+    Interrupt(InterruptStep) => act::Interrupt;
+    Resume(ResumeStep) => resume::Resume;
+}
+
 /// Which rows a verb acts on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RowRule {
@@ -48,13 +150,43 @@ pub(crate) enum RowRule {
     One,
 }
 
-/// A finished step: its reply, the lines that take its writes back, and the
-/// notes and next calls of the handler it delegated to.
+/// A finished step: its answer (the reply with its notes, next calls and
+/// how complete it is) and the lines that take its writes back.
 pub(crate) struct StepDone {
-    pub reply: StepAnswer,
+    pub answer: Answer<StepAnswer>,
     pub undo: Vec<String>,
-    pub envelope: Envelope,
-    pub outcome: Outcome<()>,
+}
+
+impl StepDone {
+    /// A failed answer is the step's failure.
+    pub(crate) fn checked(self) -> Result<Self, Failure> {
+        match self.answer.outcome {
+            Outcome::Error(error) => Err(Failure::from(error)),
+            _ => Ok(self),
+        }
+    }
+
+    /// The reply alone, and how complete it is.
+    pub(crate) fn outcome(&self) -> Outcome<()> {
+        match &self.answer.outcome {
+            Outcome::Ok(_) => Outcome::Ok(()),
+            Outcome::Empty(_) => Outcome::Empty(()),
+            Outcome::Degraded { missing, .. } => Outcome::Degraded {
+                value: (),
+                missing: missing.clone(),
+            },
+            Outcome::Error(error) => Outcome::Error(error.clone()),
+        }
+    }
+}
+
+impl From<Answer<StepAnswer>> for StepDone {
+    fn from(answer: Answer<StepAnswer>) -> Self {
+        Self {
+            answer,
+            undo: Vec::new(),
+        }
+    }
 }
 
 /// What a step receives: the line's call with the step's own request ID.
@@ -119,7 +251,7 @@ impl Selection {
             (Some(resolved), _) => Ok(resolved),
             (None, Given::Reference(reference)) => Ok(std::slice::from_ref(reference)),
             (None, Given::References(references)) => Ok(references),
-            (None, Given::None) => Err(Failure::bad_request("this step needs rows")),
+            (None, Given::None) => Err(Reason::StepNeedsRows {}.into()),
             (None, Given::Query(_)) => Err(Failure::internal(
                 "a step over a query's rows ran before the line resolved them",
             )),
@@ -158,71 +290,6 @@ fn joined(references: &[Reference]) -> String {
         .join(" OR ")
 }
 
-/// The rule of the step's verb.
-pub(crate) fn rows_rule(step: &Step) -> RowRule {
-    match step {
-        Step::Read(_) => read::Read::ROWS,
-        Step::Pick(_) => Pick::ROWS,
-        Step::Brief(_) => brief::Brief::ROWS,
-        Step::Note(_) => annotate::Note::ROWS,
-        Step::Tag(_) => annotate::Tag::ROWS,
-        Step::Edit(_) => annotate::Edit::ROWS,
-        Step::Withdraw(_) => annotate::Withdraw::ROWS,
-        Step::Judge(_) => annotate::Judge::ROWS,
-        Step::Save(_) => save::Save::ROWS,
-        Step::Send(_) => act::Send::ROWS,
-        Step::Answer(_) => act::Answer::ROWS,
-        Step::Interrupt(_) => act::Interrupt::ROWS,
-        Step::Resume(_) => resume::Resume::ROWS,
-    }
-}
-
-/// Runs one step.
-pub(crate) fn run_step(
-    step: Step,
-    selection: &Selection,
-    call: &StepCall<'_>,
-) -> Result<StepDone, Failure> {
-    match step {
-        Step::Read(step) => read::Read::run(*step, selection, call),
-        Step::Pick(step) => Pick::run(step, selection, call),
-        Step::Brief(step) => brief::Brief::run(step, selection, call),
-        Step::Note(step) => annotate::Note::run(*step, selection, call),
-        Step::Tag(step) => annotate::Tag::run(step, selection, call),
-        Step::Edit(step) => annotate::Edit::run(step, selection, call),
-        Step::Withdraw(step) => annotate::Withdraw::run(step, selection, call),
-        Step::Judge(step) => annotate::Judge::run(step, selection, call),
-        Step::Save(step) => save::Save::run(*step, selection, call),
-        Step::Send(step) => act::Send::run(step, selection, call),
-        Step::Answer(step) => act::Answer::run(step, selection, call),
-        Step::Interrupt(step) => act::Interrupt::run(step, selection, call),
-        Step::Resume(step) => resume::Resume::run(step, selection, call),
-    }
-}
-
-/// What one step would do, or the refusal it would meet.
-pub(crate) fn would(
-    step: &Step,
-    selection: &Selection,
-    call: &StepCall<'_>,
-) -> Result<String, Failure> {
-    match step {
-        Step::Read(step) => read::Read::would(step, selection, call),
-        Step::Pick(step) => Pick::would(step, selection, call),
-        Step::Brief(step) => brief::Brief::would(step, selection, call),
-        Step::Note(step) => annotate::Note::would(step, selection, call),
-        Step::Tag(step) => annotate::Tag::would(step, selection, call),
-        Step::Edit(step) => annotate::Edit::would(step, selection, call),
-        Step::Withdraw(step) => annotate::Withdraw::would(step, selection, call),
-        Step::Judge(step) => annotate::Judge::would(step, selection, call),
-        Step::Save(step) => save::Save::would(step, selection, call),
-        Step::Send(step) => act::Send::would(step, selection, call),
-        Step::Answer(step) => act::Answer::would(step, selection, call),
-        Step::Interrupt(step) => act::Interrupt::would(step, selection, call),
-        Step::Resume(step) => resume::Resume::would(step, selection, call),
-    }
-}
-
 /// The command that withdraws exactly the revisions this write created.
 pub(crate) fn undo_line(
     request_id: &str,
@@ -233,9 +300,7 @@ pub(crate) fn undo_line(
     }
     let rows = crate::protocol::line::Rows {
         references: committed.iter().map(ToString::to_string).collect(),
-        steps: vec![Step::Withdraw(
-            crate::protocol::steps::WithdrawStep::default(),
-        )],
+        steps: vec![Step::Withdraw(WithdrawStep::default())],
         all: committed.len() > 1,
         ..Default::default()
     };
@@ -277,27 +342,6 @@ pub(crate) fn not_built_use(verb: &str, what: &str) -> Failure {
     Failure::new(Code::NotBuilt, format!("{verb} {what} is not built yet"))
 }
 
-/// A delegated handler's answer as a finished step: its failure is the
-/// step's; its notes and next calls go to the line.
-pub(crate) fn delegated<T>(
-    answer: Answer<T>,
-    reply: impl FnOnce(T) -> StepAnswer,
-) -> Result<StepDone, Failure> {
-    let Answer { outcome, envelope } = answer;
-    let (value, outcome) = match outcome {
-        Outcome::Ok(value) => (value, Outcome::Ok(())),
-        Outcome::Empty(value) => (value, Outcome::Empty(())),
-        Outcome::Degraded { value, missing } => (value, Outcome::Degraded { value: (), missing }),
-        Outcome::Error(error) => return Err(Failure::from(error)),
-    };
-    Ok(StepDone {
-        reply: reply(value),
-        undo: Vec::new(),
-        envelope,
-        outcome,
-    })
-}
-
 /// The sessions among the rows, refusing any other row.
 pub(crate) fn sessions(
     verb: &str,
@@ -308,9 +352,10 @@ pub(crate) fn sessions(
         .iter()
         .map(|reference| match reference {
             Reference::Session(session) => Ok(session.clone()),
-            other => Err(Failure::bad_request(format!(
-                "{verb} acts on sessions; {other} is not one"
-            ))),
+            other => Err(Failure::refusal(Reason::ActsOnSessions {
+                verb: verb.into(),
+                reference: other.to_string(),
+            })),
         })
         .collect()
 }
@@ -319,9 +364,10 @@ pub(crate) fn sessions(
 /// references; the daemon has no person to ask.
 pub(crate) struct Pick;
 impl Verb for Pick {
-    type Step = crate::protocol::steps::PickStep;
+    type Step = PickStep;
     const NAME: &'static str = "pick";
     const ROWS: RowRule = RowRule::Any;
+    const ACCESS: ToolAccess = ToolAccess::Read;
     fn run(_: Self::Step, _: &Selection, _: &StepCall<'_>) -> Result<StepDone, Failure> {
         Err(refused_pick())
     }
@@ -334,7 +380,30 @@ impl Verb for Pick {
 }
 
 pub(crate) fn refused_pick() -> Failure {
-    Failure::bad_request("pick runs on the command line; send the chosen references")
+    Reason::PickOnCommandLine {}.into()
+}
+
+/// One recipient's answer within a step over several: its value, its
+/// notes and next calls added to the step's, its failure the step's.
+pub(crate) fn gather<T>(
+    answer: Answer<T>,
+    outcome: &mut Outcome<()>,
+    envelope: &mut command_surface::Envelope,
+) -> Result<T, Failure> {
+    envelope.notes.extend(answer.envelope.notes);
+    envelope.next.extend(answer.envelope.next);
+    match answer.outcome {
+        Outcome::Error(error) => Err(Failure::from(error)),
+        Outcome::Ok(value) => {
+            merge_outcome(outcome, Outcome::Ok(()));
+            Ok(value)
+        }
+        Outcome::Empty(value) => Ok(value),
+        Outcome::Degraded { value, missing } => {
+            merge_outcome(outcome, Outcome::Degraded { value: (), missing });
+            Ok(value)
+        }
+    }
 }
 
 /// A line is empty only when all its completed steps are empty; missing

@@ -33,6 +33,7 @@ fn answer() -> Answer {
         uptime_seconds: 17 * 3600 + 35 * 60,
         store: None,
         index_build: None,
+        index: None,
         build_progress: None,
         answers_from: AnswersFrom::Snapshot {
             read_at: at(NOW - MINUTE),
@@ -281,7 +282,6 @@ fn current(name: &str, minutes: i64, count: Option<StepCount>) -> CurrentStep {
 
 fn progress(current: CurrentStep, finished: Vec<FinishedStep>, to_come: &[&str]) -> BuildProgress {
     BuildProgress {
-        reason: None,
         finished,
         current: Some(current),
         to_come: to_come.iter().map(|step| (*step).to_owned()).collect(),
@@ -362,7 +362,7 @@ fn a_build_lists_its_steps_with_counts_times_and_estimates() {
     steps.writer_busy = Some(1.);
     let mut status = building(
         IndexBuild {
-            serving_previous: false,
+            reason: polylogue_store::index::file::RebuildReason::NoIndex,
             chains: 10_687,
             chains_read: 10_687,
             bytes: STORED,
@@ -432,16 +432,13 @@ fn reading_stored_files_shows_bytes_and_files() {
     reading.rate_seconds = Some(300.);
     reading.eta_seconds = Some(1_560);
     let mut steps = progress(reading, Vec::new(), &["sorting texts", "installing"]);
-    steps.reason = Some(
-        polylogue_store::archive::index_rebuild::IndexRebuildReason::FormatVersion {
-            found: 41,
-            wanted: 42,
-        },
-    );
     steps.worker_cpu_seconds = vec![3.0, 3.2];
     let status = building(
         IndexBuild {
-            serving_previous: true,
+            reason: polylogue_store::index::file::RebuildReason::FormatVersion {
+                found: 41,
+                wanted: 42,
+            },
             chains: 21_678,
             chains_read: 4_120,
             bytes: 70_437_463_654,
@@ -456,7 +453,7 @@ polylogue  ◐ building the index, step 1 of 3
            standalone · daemon 4479 · up 8h2m · busy · /home/op/archive
 
 INDEX      building the index from 65.6 GiB of stored files: its format changed (41 to 42)
-           reads and searches use the previous index until the new one is installed
+           reads and searches answer \"index building\" until it is installed
            ################..............  56% of reading stored files · about 26 min left
 
            ▸ reading stored files    34m  36.8 GiB of 65.6 GiB · 4,120 of 21,678 files
@@ -486,7 +483,7 @@ fn a_step_without_an_estimate_says_why() {
     sorting.per_second = Some(2_650.);
     sorting.rate_seconds = Some(300.);
     let build = IndexBuild {
-        serving_previous: false,
+        reason: polylogue_store::index::file::RebuildReason::NoIndex,
         chains: 0,
         chains_read: 0,
         bytes: 0,
@@ -541,7 +538,7 @@ fn a_failed_attempt_is_shown_while_the_build_runs_again() {
     });
     let status = building(
         IndexBuild {
-            serving_previous: false,
+            reason: polylogue_store::index::file::RebuildReason::NoIndex,
             chains: 10,
             chains_read: 0,
             bytes: 0,
@@ -718,7 +715,7 @@ RECENT     2 earlier in `polylogue status --log`
     );
     let mut status = building(
         IndexBuild {
-            serving_previous: true,
+            reason: polylogue_store::index::file::RebuildReason::NoIndex,
             chains: 0,
             chains_read: 0,
             bytes: 0,
@@ -758,7 +755,7 @@ fn color_marks_the_state_and_the_running_step() {
     assembling.rate_seconds = Some(300.);
     let status = building(
         IndexBuild {
-            serving_previous: false,
+            reason: polylogue_store::index::file::RebuildReason::NoIndex,
             chains: 0,
             chains_read: 0,
             bytes: 0,
@@ -815,7 +812,7 @@ fn a_step_without_progress_says_what_did_not_move() {
     joining.rate_seconds = Some(900.);
     let status = building(
         IndexBuild {
-            serving_previous: false,
+            reason: polylogue_store::index::file::RebuildReason::NoIndex,
             chains: 0,
             chains_read: 0,
             bytes: 0,
@@ -1046,7 +1043,7 @@ fn a_rebuild_beside_a_readable_index_labels_the_installed_figures() {
         ..polylogue_store::Status::default()
     });
     status.index_build = Some(IndexBuild {
-        serving_previous: true,
+        reason: polylogue_store::index::file::RebuildReason::SchemaDiffers,
         chains: 14,
         chains_read: 3,
         bytes: 4 << 30,
@@ -1063,8 +1060,8 @@ ARCHIVE    12 sessions   340 messages   56 tool calls   0 documents
            14 inputs (5.0 GiB decoded) · 15 revisions
            from the installed index, until the build replaces it
 
-INDEX      building the index from 4.0 GiB of stored files: the archive had no index
-           reads and searches use the previous index until the new one is installed
+INDEX      building the index from 4.0 GiB of stored files: its tables changed
+           reads and searches use the installed index until the rebuilt one replaces it
            #######.......................  25% of reading stored files
 
            ▸ reading stored files     3m  1.0 GiB of 4.0 GiB · 3 of 14 files

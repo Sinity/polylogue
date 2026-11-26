@@ -343,7 +343,7 @@ fn a_relation_also_points_about_the_same_revision() {
         .id;
     let roles: Vec<(String, String)> = world
         .archive_db()
-        .prepare("SELECT role,ref FROM annotation_link WHERE record=?1 ORDER BY role")
+        .prepare("SELECT role,ref FROM annotation_link WHERE annotation=?1 ORDER BY role")
         .unwrap()
         .query_map([&challenge], |row| Ok((row.get(0)?, row.get(1)?)))
         .unwrap()
@@ -389,7 +389,7 @@ fn reading_current_annotations_about_a_target_uses_indexes_only() {
         .unwrap();
     crate::source::views(&conn).unwrap();
     let sql = format!(
-        "EXPLAIN QUERY PLAN SELECT n.id FROM source_annotation_link l JOIN source_annotation n ON n.id=l.record \
+        "EXPLAIN QUERY PLAN SELECT n.id FROM source_annotation_link l JOIN source_annotation n ON n.id=l.annotation \
          WHERE l.ref='session:codex:s' AND l.role='about' AND n.kind='note' AND {}",
         crate::annotations::sql::current_annotation("n")
     );

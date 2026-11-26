@@ -3,20 +3,23 @@
 //! [`web_chat`]), signal notices to sessions,
 //! the mailbox claim a hook makes, answers to permission requests,
 //! interrupts, and new hosted sessions (`start`, role instances,
-//! `hand-off`). Each act is recorded as a delivery with its computed
+//! `resume --in`). Each act is recorded as a delivery with its computed
 //! author, and reaches its session only through the channel
 //! [`polylogue_model::live::channel::channel`] chooses; a new session
 //! starts on the protocol [`polylogue_model::live::channel::host_protocol`]
 //! names.
-use super::{Daemon, Failure, authored_preparation, error, ok, writer};
+use super::{Daemon, Failure, authored_preparation, error, writer};
 use crate::commands::ToolAccess;
 use crate::daemon::handler::{Call, Operation, Policy};
 use crate::live_acts::{ResumeRun, probe};
-use crate::protocol::act as protocol;
-use command_surface::Answer;
+use crate::protocol::acts::{
+    ActOutcome, Answered, Claim, Claimed, ClaimedDelivery, Continued, Decided, Delivered,
+    Interrupted, Permission, Sent, Start, StartReply, Started,
+};
+use command_surface::{Answer, TextStyle};
 use polylogue_model::live::channel::{Act, Channel, channel};
 use polylogue_model::user::{Delivery, UserOutcome, UserWrite};
-use polylogue_model::{DeliveryEvent, DeliveryOutcome, DeliverySender, SessionId};
+use polylogue_model::{DeliveryEvent, DeliveryOutcome, DeliverySender, Reason, SessionId};
 use polylogue_reading::operation::Invocation;
 use serde_json::{Value, json};
 
@@ -24,96 +27,71 @@ use serde_json::{Value, json};
 mod tests;
 pub(crate) mod web_chat;
 
-/// The acts' handlers: each records its act and reaches its session.
-macro_rules! act {
-    ($(#[$doc:meta])* $name:ident, $arguments:ty, $access:expr, |$args:ident, $call:ident| $body:expr) => {
-        $(#[$doc])*
-        pub(crate) struct $name;
-        impl Operation for $name {
-            type Arguments = $arguments;
-            type Reply = Value;
-            fn policy(_: &Self::Arguments, _: polylogue_model::authorship::Channel) -> Result<Policy, Failure> {
-                Ok(Policy::write($access))
-            }
-            fn run($args: Self::Arguments, $call: &Call<'_>) -> Result<Answer<Value>, Failure> {
-                $body
-            }
-        }
-    };
+/// `internal mail-claim`: a hook takes the messages and notices pending for
+/// its session.
+pub(crate) struct MailClaim;
+impl Operation for MailClaim {
+    type Arguments = Claim;
+    type Reply = Claimed;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = crate::cli::print::claimed;
+    fn policy(_: &Claim, _: polylogue_model::authorship::Channel) -> Result<Policy, Failure> {
+        Ok(Policy::write(ToolAccess::Write))
+    }
+    fn run(arguments: Claim, call: &Call<'_>) -> Result<Answer<Claimed>, Failure> {
+        claim(call.daemon, &arguments.session)
+    }
 }
 
-act!(
-    SendMessage,
-    protocol::SendMessage,
-    ToolAccess::Act,
-    |a, call| send_message(
-        call.daemon,
-        call.invocation,
-        call.request_id,
-        &a.target,
-        &a.text,
-        a.live,
-        a.about
-    )
-);
-act!(
-    /// A hook takes the messages and notices pending for its session.
-    Claim,
-    protocol::Claim, ToolAccess::Write,
-    |a, call| claim(call.daemon, &a.session)
-);
-act!(
-    AnswerRequest,
-    protocol::Answer,
-    ToolAccess::Act,
-    |a, call| answer(
-        call.daemon,
-        call.invocation,
-        call.request_id,
-        &a.session,
-        a.decision == protocol::Decision::Approve,
-        a.text,
-        a.standing
-    )
-);
-act!(
-    Permission,
-    protocol::Permission,
-    ToolAccess::Write,
-    |a, call| permission(call.daemon, call.invocation, &a.session, &a.tool, &a.input)
-);
-act!(
-    Interrupt,
-    protocol::Interrupt,
-    ToolAccess::Act,
-    |a, call| interrupt(call.daemon, call.invocation, call.request_id, &a.session)
-);
-act!(Start, protocol::Start, ToolAccess::Act, |a, call| {
-    if let Some(provider) = a
-        .harness
-        .as_deref()
-        .and_then(polylogue_sources::origin::web_chat_name)
-    {
-        return web_chat::start(call, provider, a);
+/// `internal permission`: the synchronous permission hook asks for a
+/// decision given ahead.
+pub(crate) struct StandingPermission;
+impl Operation for StandingPermission {
+    type Arguments = Permission;
+    type Reply = Decided;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = crate::cli::print::decided;
+    fn policy(_: &Permission, _: polylogue_model::authorship::Channel) -> Result<Policy, Failure> {
+        Ok(Policy::write(ToolAccess::Write))
     }
-    let pending = [
-        (a.submit, "--submit"),
-        (a.model.is_some(), "--model"),
-        (a.effort.is_some(), "--effort"),
-        (a.project.is_some(), "--project"),
-        (!a.attach.is_empty(), "--attach"),
-    ];
-    if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
-        return Ok(error(
-            polylogue_model::Code::NotBuilt,
-            format!("start {option} on a harness session is not built yet"),
-        ));
+    fn run(a: Permission, call: &Call<'_>) -> Result<Answer<Decided>, Failure> {
+        permission(call.daemon, call.invocation, &a.session, &a.tool, &a.input)
     }
-    if a.harness.is_none() && a.role.is_none() {
-        Err(Failure::bad_request("start takes --in or --role"))
-    } else {
+}
+
+/// `start`: a session Polylogue hosts, or a web chat's new conversation.
+pub(crate) struct StartSession;
+impl Operation for StartSession {
+    type Arguments = Start;
+    type Reply = StartReply;
+    const PRINT: fn(&Self::Reply, TextStyle) -> String = crate::cli::print::start;
+    fn policy(_: &Start, _: polylogue_model::authorship::Channel) -> Result<Policy, Failure> {
+        Ok(Policy::write(ToolAccess::Act))
+    }
+    fn run(a: Start, call: &Call<'_>) -> Result<Answer<StartReply>, Failure> {
+        if let Some(provider) = a
+            .harness
+            .as_deref()
+            .and_then(polylogue_sources::origin::web_chat_name)
+        {
+            return Ok(web_chat::start(call, provider, a)?.map(StartReply::WebChat));
+        }
+        let pending = [
+            (a.submit, "--submit"),
+            (a.model.is_some(), "--model"),
+            (a.effort.is_some(), "--effort"),
+            (a.project.is_some(), "--project"),
+            (!a.attach.is_empty(), "--attach"),
+        ];
+        if let Some((_, option)) = pending.into_iter().find(|(used, _)| *used) {
+            return Ok(error(
+                polylogue_model::Code::NotBuilt,
+                format!("start {option} on a harness session is not built yet"),
+            ));
+        }
+        if a.harness.is_none() && a.role.is_none() {
+            return Err(Reason::StartNeedsHarnessOrRole {}.into());
+        }
         let cwd = call.directory(a.cwd.as_deref())?;
-        start(
+        Ok(start(
             call.daemon,
             call.invocation,
             call.request_id,
@@ -121,27 +99,10 @@ act!(Start, protocol::Start, ToolAccess::Act, |a, call| {
             a.role.as_deref(),
             &cwd,
             &a.text,
-        )
+        )?
+        .map(StartReply::Hosted))
     }
-});
-act!(
-    HandOffSession,
-    protocol::HandOff,
-    ToolAccess::Act,
-    |a, call| hand_off(
-        call.daemon,
-        call.invocation,
-        &HandOff {
-            request_id: call.request_id,
-            source: &a.session,
-            to: &a.to,
-            cwd: a.cwd.as_deref(),
-            at: a.at.as_deref(),
-            stop_source: a.stop_source,
-            print: a.print,
-        },
-    )
-);
+}
 
 fn now(d: &Daemon) -> i64 {
     d.config.requests.now().unix_ms()
@@ -374,7 +335,17 @@ fn protocol_send(
     session: &SessionId,
     delivery: &str,
     pack: &str,
-) -> Result<Value, Failure> {
+) -> Result<Delivered, Failure> {
+    let row = |outcome, reason: Option<String>, note: Option<&str>| Delivered {
+        session: session.clone(),
+        delivery: Some(delivery.to_owned()),
+        channel: Some(Channel::Protocol),
+        outcome,
+        reason,
+        detail: None,
+        note: note.map(str::to_owned),
+        started: None,
+    };
     Ok(match d.acts.host_send(session, pack, Some(delivery)) {
         Ok(true) => {
             outcome_event(
@@ -384,12 +355,13 @@ fn protocol_send(
                 DeliveryOutcome::Delivered,
                 "sent over the hosted connection".into(),
             )?;
-            json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "delivered"})
+            row(ActOutcome::Delivered, None, None)
         }
-        Ok(false) => {
-            json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "prepared",
-                   "note": "waits for the running prompt; recorded when it is sent"})
-        }
+        Ok(false) => row(
+            ActOutcome::Prepared,
+            None,
+            Some("waits for the running prompt; recorded when it is sent"),
+        ),
         Err(reason) => {
             outcome_event(
                 d,
@@ -398,7 +370,7 @@ fn protocol_send(
                 DeliveryOutcome::NotSent,
                 format!("failed({reason})"),
             )?;
-            json!({"session": session, "delivery": delivery, "channel": "protocol", "outcome": "not_sent", "reason": reason})
+            row(ActOutcome::NotSent, Some(reason), None)
         }
     })
 }
@@ -440,7 +412,7 @@ fn message_text(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn send_message(
+pub(crate) fn send(
     d: &Daemon,
     invocation: &Invocation,
     request_id: &str,
@@ -448,12 +420,9 @@ fn send_message(
     text: &str,
     live: bool,
     about: Option<String>,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<Sent>, Failure> {
     if text.trim().is_empty() {
-        return Ok(error(
-            polylogue_model::Code::BadRequest,
-            "a message needs text",
-        ));
+        return Err(Reason::MessageNeedsText {}.into());
     }
     let now = now(d);
     let sessions = match recipients(d, invocation, target, now)? {
@@ -504,9 +473,16 @@ fn send_message(
         let (view_state, facts, cwd) = match session_state(d, session, now)? {
             Some(state) => state,
             None => {
-                sent.push(
-                    json!({"session": session, "outcome": "not_sent", "reason": "session_missing"}),
-                );
+                sent.push(Delivered {
+                    session: session.clone(),
+                    delivery: None,
+                    channel: None,
+                    outcome: ActOutcome::NotSent,
+                    reason: Some("session_missing".into()),
+                    detail: None,
+                    note: None,
+                    started: None,
+                });
                 continue;
             }
         };
@@ -537,13 +513,26 @@ fn send_message(
             view_state,
             &probe(&d.acts, session, &facts),
         );
+        let row = |channel, outcome, note: Option<&str>| Delivered {
+            session: session.clone(),
+            delivery: Some(delivery.clone()),
+            channel,
+            outcome,
+            reason: None,
+            detail: None,
+            note: note.map(str::to_owned),
+            started: None,
+        };
         let row = match chosen {
             Ok(Channel::Hook) => {
                 d.acts
                     .hand_to_hook(&delivery, session)
                     .map_err(Failure::io)?;
-                json!({"session": session, "delivery": delivery, "channel": "hook",
-                       "outcome": "prepared", "note": "reaches the session at its next tool result or prompt"})
+                row(
+                    Some(Channel::Hook),
+                    ActOutcome::Prepared,
+                    Some("reaches the session at its next tool result or prompt"),
+                )
             }
             Ok(Channel::Resume) => {
                 // Held for the resumed run: no hook takes it.
@@ -552,8 +541,15 @@ fn send_message(
                     delivery: delivery.clone(),
                     text: pack,
                 });
-                json!({"session": session, "delivery": delivery, "channel": "resume",
-                       "outcome": if started { "started" } else { "queued" }})
+                row(
+                    Some(Channel::Resume),
+                    if started {
+                        ActOutcome::Started
+                    } else {
+                        ActOutcome::Queued
+                    },
+                    None,
+                )
             }
             Ok(Channel::Protocol) => protocol_send(d, invocation, session, &delivery, &pack)?,
             Err(refusal) => {
@@ -564,15 +560,20 @@ fn send_message(
                     DeliveryOutcome::NotSent,
                     refusal.reason.to_owned(),
                 )?;
-                json!({"session": session, "delivery": delivery, "outcome": "not_sent",
-                       "reason": refusal.reason, "detail": refusal.detail})
+                Delivered {
+                    reason: Some(refusal.reason.to_owned()),
+                    detail: Some(refusal.detail.to_string()),
+                    ..row(None, ActOutcome::NotSent, None)
+                }
             }
         };
         sent.push(row);
     }
-    Ok(ok(
-        json!({"message": message, "deliveries": sent, "undo": "none: a sent message cannot be taken back"}),
-    ))
+    Ok(Answer::ok(Sent {
+        message: Some(message),
+        deliveries: sent,
+        undo: "none: a sent message cannot be taken back".into(),
+    }))
 }
 
 /// A hook's mailbox claim: every message and notice pending for the session,
@@ -581,7 +582,7 @@ fn send_message(
 /// records each `delivered` once it has written it to the harness; a claim
 /// whose hook never confirms stays without an outcome and is not handed
 /// out again.
-fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
+fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Claimed>, Failure> {
     let _claims = d.acts.claim_lock();
     // The flag is lowered before the pending list is read: a delivery handed
     // to the hook after that read raises it again, whereas lowering after
@@ -600,13 +601,13 @@ fn claim(d: &Daemon, session: &SessionId) -> Result<Answer<Value>, Failure> {
             return Err(failure);
         }
     };
-    let claimed: Vec<Value> = d
+    let deliveries = d
         .acts
         .take(pending)
         .into_iter()
-        .map(|(id, text)| json!({"id": id, "text": text}))
+        .map(|(id, text)| ClaimedDelivery { id, text })
         .collect();
-    Ok(ok(json!({ "deliveries": claimed })))
+    Ok(Answer::ok(Claimed { deliveries }))
 }
 
 /// Messages and notices still pending for sessions that stopped running
@@ -708,7 +709,7 @@ fn request_reference(session: &SessionId, at: i64) -> String {
 /// An answer to a session's pending permission request, or, with
 /// `standing`, to the same tool and input whenever it asks next.
 #[allow(clippy::too_many_arguments)]
-fn answer(
+pub(crate) fn answer(
     d: &Daemon,
     invocation: &Invocation,
     request_id: &str,
@@ -716,7 +717,7 @@ fn answer(
     approve: bool,
     text: Option<String>,
     standing: bool,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<Answered>, Failure> {
     let now = now(d);
     let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
         return Ok(error(
@@ -833,16 +834,27 @@ fn answer(
                 Err(reason) => (DeliveryOutcome::NotSent, format!("failed({reason})")),
             };
             outcome_event(d, invocation, request_id, what, detail)?;
-            Ok(ok(
-                json!({"delivery": request_id, "request": reference, "channel": "protocol",
-                         "outcome": what.as_str(), "undo": "none: an answer cannot be taken back"}),
-            ))
+            Ok(Answer::ok(Answered {
+                delivery: request_id.to_owned(),
+                request: reference,
+                channel: Channel::Protocol,
+                outcome: if result.is_ok() {
+                    ActOutcome::Delivered
+                } else {
+                    ActOutcome::NotSent
+                },
+                note: None,
+                undo: "none: an answer cannot be taken back".into(),
+            }))
         }
-        _ => Ok(ok(
-            json!({"delivery": request_id, "request": reference, "channel": "hook",
-                          "outcome": "prepared", "note": "applies when the session next asks for the same tool and input",
-                          "undo": "none: an answer cannot be taken back"}),
-        )),
+        _ => Ok(Answer::ok(Answered {
+            delivery: request_id.to_owned(),
+            request: reference,
+            channel: Channel::Hook,
+            outcome: ActOutcome::Prepared,
+            note: Some("applies when the session next asks for the same tool and input".into()),
+            undo: "none: an answer cannot be taken back".into(),
+        })),
     }
 }
 
@@ -855,7 +867,14 @@ fn permission(
     session: &SessionId,
     tool: &str,
     input: &Value,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<Decided>, Failure> {
+    let none = || {
+        Answer::ok(Decided {
+            decision: None,
+            text: None,
+            delivery: None,
+        })
+    };
     let reader = d.reads.reader()?;
     let standing = reader
         .deliveries_to(&session.to_string())?
@@ -873,7 +892,7 @@ fn permission(
         });
     drop(reader);
     let Some((row, body)) = standing else {
-        return Ok(ok(json!({ "decision": null })));
+        return Ok(none());
     };
     // Concurrent permission hooks: only the first applies it.
     let taken = {
@@ -881,7 +900,7 @@ fn permission(
         d.acts.take(vec![(row.id.clone(), ())])
     };
     if taken.is_empty() {
-        return Ok(ok(json!({ "decision": null })));
+        return Ok(none());
     }
     outcome_event(
         d,
@@ -890,21 +909,21 @@ fn permission(
         DeliveryOutcome::Delivered,
         format!("applied to the {tool} permission request"),
     )?;
-    Ok(ok(json!({
-        "decision": body["decision"],
-        "text": body["text"],
-        "delivery": row.id,
-    })))
+    Ok(Answer::ok(Decided {
+        decision: body["decision"].as_str().map(str::to_owned),
+        text: body["text"].as_str().map(str::to_owned),
+        delivery: Some(row.id),
+    }))
 }
 
 /// Stops a session's turn, recorded as a `control` delivery with its
 /// outcome.
-fn interrupt(
+pub(crate) fn interrupt(
     d: &Daemon,
     invocation: &Invocation,
     request_id: &str,
     session: &SessionId,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<Interrupted>, Failure> {
     let now = now(d);
     let Some(state) = d.reads.reader()?.live_state(&session.to_string(), now)? else {
         return Ok(error(
@@ -936,10 +955,13 @@ fn interrupt(
             Ok(()) => (
                 DeliveryOutcome::Delivered,
                 "interrupted over the hosted connection".to_owned(),
-                ok(
-                    json!({"session": session, "delivery": request_id, "channel": "protocol",
-                              "outcome": "delivered", "undo": "none: an interrupted turn is not resumed"}),
-                ),
+                Answer::ok(Interrupted {
+                    session: session.clone(),
+                    delivery: request_id.to_owned(),
+                    channel: Channel::Protocol,
+                    outcome: ActOutcome::Delivered,
+                    undo: "none: an interrupted turn is not resumed".into(),
+                }),
             ),
             Err(reason) => (
                 DeliveryOutcome::NotSent,
@@ -1140,22 +1162,21 @@ fn start_session(
     d: &Daemon,
     invocation: &Invocation,
     new: NewSession<'_>,
-) -> Result<Result<SessionId, Answer<Value>>, Failure> {
+) -> Result<Result<SessionId, Failure>, Failure> {
     use polylogue_model::live::channel::{HostProtocol, host_protocol};
     let protocol = match host_protocol(new.harness) {
         Ok(protocol) => protocol,
         Err(refusal) => {
-            return Ok(Err(error(
-                polylogue_model::Code::Refused,
-                format!("{}: {}", refusal.reason, refusal.detail),
-            )));
+            return Ok(Err(Failure::refused(format!(
+                "{}: {}",
+                refusal.reason, refusal.detail
+            ))));
         }
     };
     if !new.cwd.is_dir() {
-        return Ok(Err(error(
-            polylogue_model::Code::BadValue,
-            format!("{} is not a directory", new.cwd.display()),
-        )));
+        return Ok(Err(Failure::refusal(Reason::NotADirectory {
+            path: new.cwd.display().to_string(),
+        })));
     }
     let first = format!("delivery:{}\n{}", new.request_id, new.text);
     let session = match protocol {
@@ -1230,28 +1251,22 @@ fn start(
     role_name: Option<&str>,
     cwd: &std::path::Path,
     text: &str,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<Started>, Failure> {
     let role = role_name
         .map(|name| role(d, invocation, name))
         .transpose()?;
     let harness = match (harness, &role) {
         (Some(harness), Some(role)) if harness != role.harness => {
-            return Ok(error(
-                polylogue_model::Code::BadValue,
-                format!(
-                    "the role {} runs {}, not {harness}",
-                    role.name, role.harness
-                ),
-            ));
+            return Err(Reason::RoleRunsAnotherHarness {
+                role: role.name.clone(),
+                runs: role.harness.clone(),
+                asked: harness.to_owned(),
+            }
+            .into());
         }
         (Some(harness), _) => harness.to_owned(),
         (None, Some(role)) => role.harness.clone(),
-        (None, None) => {
-            return Ok(error(
-                polylogue_model::Code::BadRequest,
-                "start takes --in or --role",
-            ));
-        }
+        (None, None) => return Err(Reason::StartNeedsHarnessOrRole {}.into()),
     };
     let (text, refs) = match &role {
         Some(role) => (
@@ -1275,16 +1290,15 @@ fn start(
         },
     )? {
         Ok(session) => session,
-        Err(refused) => return Ok(refused),
+        Err(refused) => return Ok(refused.answer()),
     };
-    Ok(ok(json!({
-        "session": session,
-        "delivery": request_id,
-        "channel": "protocol",
-        "hosting": "hosted",
-        "role": role.map(|r| r.name),
-        "undo": "none: interrupt it, or let it finish",
-    })))
+    Ok(Answer::ok(Started {
+        session,
+        delivery: request_id.to_owned(),
+        channel: Channel::Protocol,
+        role: role.map(|r| r.name),
+        undo: "none: interrupt it, or let it finish".into(),
+    }))
 }
 
 /// The first turn's message text for a new role instance, which has no message
@@ -1315,7 +1329,7 @@ fn message_new_instance(
     role: &Role,
     text: &str,
     about: Option<&str>,
-) -> Result<Answer<Value>, Failure> {
+) -> Result<Answer<Sent>, Failure> {
     let Some(cwd) = role_cwd(d, &role.name)? else {
         return Ok(error(
             polylogue_model::Code::Refused,
@@ -1342,48 +1356,58 @@ fn message_new_instance(
         },
     )? {
         Ok(session) => session,
-        Err(refused) => return Ok(refused),
+        Err(refused) => return Ok(refused.answer()),
     };
-    Ok(ok(json!({
-        "deliveries": [{"session": session, "delivery": request_id, "channel": "protocol",
-                        "outcome": "delivered", "started": role.name}],
-        "undo": "none: a sent message cannot be taken back",
-    })))
+    Ok(Answer::ok(Sent {
+        message: None,
+        deliveries: vec![Delivered {
+            session,
+            delivery: Some(request_id.to_owned()),
+            channel: Some(Channel::Protocol),
+            outcome: ActOutcome::Delivered,
+            reason: None,
+            detail: None,
+            note: None,
+            started: Some(role.name.clone()),
+        }],
+        undo: "none: a sent message cannot be taken back".into(),
+    }))
 }
 
-/// A hand-off's arguments.
-struct HandOff<'a> {
-    request_id: &'a str,
-    source: &'a SessionId,
-    to: &'a str,
+/// The new session `resume --in` starts: its harness, its directory, the
+/// message it continues from, and whether the source is interrupted.
+pub(crate) struct Continuation<'a> {
+    pub request_id: &'a str,
+    pub source: &'a SessionId,
+    pub harness: &'a str,
     /// Where the new session runs, when not where the source ran.
-    cwd: Option<&'a std::path::Path>,
-    at: Option<&'a str>,
-    stop_source: bool,
-    print: bool,
+    pub cwd: Option<&'a std::path::Path>,
+    pub at: Option<&'a str>,
+    pub stop_source: bool,
 }
 
-/// Hands a session's work to a new hosted session in any harness: the new
-/// session starts in the source's directory with the source's takeover
-/// pack and a line naming the message to continue from (`at`), its first
-/// turn carrying the pack's
-/// delivery reference, and records the source as what it was briefed
-/// from. It is a new session, never a resume or a fork of the source.
-/// `stop_source` then interrupts the source; `print` shows the pack and
-/// starts nothing.
-fn hand_off(
+/// What a continuation's new session is briefed with: the source's
+/// session brief and the line naming the message to continue from.
+pub(crate) struct Briefing {
+    /// Where the new session runs; none when the source recorded no
+    /// directory that exists here.
+    pub cwd: Option<std::path::PathBuf>,
+    pub at: Option<polylogue_model::Reference>,
+    pub text: String,
+    pub refs: Vec<String>,
+}
+
+/// The briefing of a continuation, read and prepared; nothing starts.
+pub(crate) fn briefing(
     d: &Daemon,
     invocation: &Invocation,
-    h: &HandOff<'_>,
-) -> Result<Answer<Value>, Failure> {
+    c: &Continuation<'_>,
+) -> Result<Briefing, Failure> {
     let reader = d.reads.reader()?;
-    let Some(source) = reader.session(h.source)? else {
-        return Ok(error(
-            polylogue_model::Code::NotFound,
-            format!("no session {}", h.source),
-        ));
+    let Some(source) = reader.session(c.source)? else {
+        return Err(Failure::not_found(format!("no session {}", c.source)));
     };
-    let cwd = match h.cwd {
+    let cwd = match c.cwd {
         Some(cwd) => Some(cwd.to_owned()),
         None => source
             .cwd
@@ -1393,57 +1417,68 @@ fn hand_off(
             .filter(|c| c.is_dir()),
     };
     let at =
-        h.at.map(polylogue_model::Reference::parse)
+        c.at.map(polylogue_model::Reference::parse)
             .transpose()
-            .map_err(Failure::bad_value)?;
+            .map_err(|problem| {
+                Failure::refusal(Reason::BadReference {
+                    text: c.at.unwrap_or_default().to_owned(),
+                    problem: problem.to_string(),
+                })
+            })?;
     let operation = d.resolve_operation_context(invocation.clone())?;
     let prepared = crate::brief::prepare(
         crate::brief::BriefContext {
             reader: &reader,
             pending_deliveries: &[],
-            delivery_id: h.request_id,
+            delivery_id: c.request_id,
             context: &operation,
             ranking_identity: None,
             near: None,
         },
         &d.scope,
         &[],
-        &crate::brief::Ask::Takeover {
-            session: h.source.clone(),
+        &crate::brief::Ask::Session {
+            session: c.source.clone(),
             for_session: None,
         },
         Default::default(),
     )?;
     drop(reader);
-    let mut text = format!("Hand-off from {}", h.source);
+    let mut text = format!("Hand-off from {}", c.source);
     if let Some(at) = &at {
         text.push_str(&format!(", continuing from {at}"));
     }
     text.push_str(":\n");
     text.push_str(&prepared.text);
-    let mut refs = vec![format!("session:{}", h.source)];
+    let mut refs = vec![format!("session:{}", c.source)];
     refs.extend(at.as_ref().map(polylogue_model::Reference::to_string));
     refs.extend(prepared.refs.iter().cloned());
-    if h.print {
-        let channel = polylogue_model::live::channel::host_protocol(h.to);
-        return Ok(ok(json!({
-            "to": h.to,
-            "cwd": cwd,
-            "channel": channel.as_ref().ok().map(|p| p.as_str()),
-            "refused": channel
-                .as_ref()
-                .err()
-                .map(|r| format!("{}: {}", r.reason, r.detail)),
-            "pack": text,
-            "refs": refs,
-        })));
-    }
-    let Some(cwd) = cwd else {
+    Ok(Briefing {
+        cwd,
+        at,
+        text,
+        refs,
+    })
+}
+
+/// Continues a session's work in a new hosted session in any harness: the
+/// new session starts in the source's directory with the source's session
+/// brief and a line naming the message to continue from (`at`), its first
+/// turn carrying the brief's delivery reference, and records the source as
+/// what it was briefed from. It is a new session, never a resume or a fork
+/// of the source. `stop_source` then interrupts the source.
+pub(crate) fn resume_in(
+    d: &Daemon,
+    invocation: &Invocation,
+    c: &Continuation<'_>,
+) -> Result<Answer<Continued>, Failure> {
+    let briefing = briefing(d, invocation, c)?;
+    let Some(cwd) = briefing.cwd else {
         return Ok(error(
             polylogue_model::Code::Refused,
             format!(
                 "{} recorded no working directory that exists here; give one with --cwd",
-                h.source
+                c.source
             ),
         ));
     };
@@ -1451,30 +1486,33 @@ fn hand_off(
         d,
         invocation,
         NewSession {
-            request_id: h.request_id,
-            harness: h.to,
+            request_id: c.request_id,
+            harness: c.harness,
             cwd: &cwd,
-            text,
-            refs,
+            text: briefing.text,
+            refs: briefing.refs,
         },
     )? {
         Ok(session) => session,
-        Err(refused) => return Ok(refused),
+        Err(refused) => return Ok(refused.answer()),
     };
-    let stopped = if h.stop_source {
-        let answer = interrupt(d, invocation, &format!("{}-stop", h.request_id), h.source)?;
-        serde_json::to_value(&answer).unwrap_or(Value::Null)
+    let stop_source = if c.stop_source {
+        Some(interrupt(
+            d,
+            invocation,
+            &format!("{}-stop", c.request_id),
+            c.source,
+        )?)
     } else {
-        Value::Null
+        None
     };
-    Ok(ok(json!({
-        "session": session,
-        "delivery": h.request_id,
-        "channel": "protocol",
-        "hosting": "hosted",
-        "briefed_from": h.source,
-        "at": at.map(|a| a.to_string()),
-        "stop_source": stopped,
-        "undo": "none: the new session runs on its own; interrupt it to stop it",
-    })))
+    Ok(Answer::ok(Continued {
+        session,
+        delivery: c.request_id.to_owned(),
+        channel: Channel::Protocol,
+        briefed_from: c.source.clone(),
+        at: briefing.at.map(|at| at.to_string()),
+        stop_source,
+        undo: "none: the new session runs on its own; interrupt it to stop it".into(),
+    }))
 }

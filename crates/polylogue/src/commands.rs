@@ -270,7 +270,8 @@ pub struct Command {
     /// Mutates state: POST over HTTP, where the origin is checked.
     pub writes: bool,
     /// What the command line does with the answer in place of printing it
-    /// (`export` writes a file, `continue --exec` runs the plan).
+    /// (`dev schema` writes its result where `--to` names, `status` prints
+    /// its own view).
     pub output: Option<OutputHandler>,
     /// What the command line does in place of one request and its printed
     /// answer: `dev feed` follows its events.
@@ -495,7 +496,7 @@ pub static COMMANDS: &[Command] = &[
         ],
         help: "Start a session Polylogue hosts on the harness's control protocol (Codex's app-server, Claude Code stream-json, Gemini CLI and Hermes ACP): its approvals, questions and turns can then be answered, steered and interrupted from anywhere, and it survives a daemon restart. With --role, an instance of that role: its harness, with its instructions. With --in chatgpt, the browser extension drafts a new web conversation (--model, --effort, --project, --attach); --submit sends it, held for the operator's answer when anyone else asks",
         reason: "Starts a harness session; no query selects one that does not exist yet",
-        run: Run::Daemon(daemon::<acts::Start>()),
+        run: Run::Daemon(daemon::<acts::StartSession>()),
         tool: Some(Tool::Act),
         http: true,
         writes: true,
@@ -534,7 +535,7 @@ pub static COMMANDS: &[Command] = &[
     },
     Command {
         name: "internal hook",
-        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, takeover context for a pasted session ID or supported web link",
+        help: "Called by a harness hook; reads the event from stdin and answers with context when the event takes it: the brief at session start, the brief of a session whose ID or supported web link is pasted",
         run: configured_local::<local::arguments::Hook>(local::hook),
         tool: None,
         cli: Cli::Hidden,
@@ -575,7 +576,7 @@ pub static COMMANDS: &[Command] = &[
         name: "internal mail-claim",
         reason: "A session's hook takes the messages and notices waiting for it",
         help: "Take the messages and notices pending for a session",
-        run: Run::Daemon(daemon::<acts::Claim>()),
+        run: Run::Daemon(daemon::<acts::MailClaim>()),
         cli: Cli::Hidden,
         writes: true,
         tool: None,
@@ -585,7 +586,7 @@ pub static COMMANDS: &[Command] = &[
         name: "internal permission",
         reason: "The synchronous permission hook asks for a decision given ahead",
         help: "A decision given ahead for a session's pending tool request",
-        run: Run::Daemon(daemon::<acts::Permission>()),
+        run: Run::Daemon(daemon::<acts::StandingPermission>()),
         cli: Cli::Hidden,
         writes: true,
         tool: None,
@@ -778,11 +779,7 @@ pub fn declarations() -> &'static std::sync::Arc<command_surface::OperationDecla
                 }
                 if command.cli == Cli::Line {
                     declarations
-                        .declare_steps(
-                            command.name,
-                            "steps",
-                            crate::protocol::steps::declarations(),
-                        )
+                        .declare_steps(command.name, "steps", crate::daemon::verbs::declarations())
                         .expect("the line's steps are declared once");
                 }
             }

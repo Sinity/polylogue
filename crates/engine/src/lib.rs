@@ -23,7 +23,6 @@ mod watch;
 use databases::Databases;
 use plan::{InputState, Plan};
 use polylogue_model::LockExt;
-use polylogue_model::batch::StoppedAttempt;
 use polylogue_sources::{ORIGINS, OriginSpec, Support};
 use polylogue_store::{
     Archive, Change, FileFacts, InputKey, KnownInput, Observation, ReadPool, WriteReport, Writer,
@@ -48,7 +47,6 @@ pub use import::python_polylogue::{ClassCount, PythonImportReport, RefusedRow};
 mod parser_checkpoint;
 mod pass;
 mod plan;
-mod prefix_copies;
 
 /// An origin has a reading only when its declared parser or generic row-dump
 /// reader supplies one. Unparsed provider bytes have no parser version to invent.
@@ -346,12 +344,6 @@ pub struct Pass {
     pub blobs_appended: u64,
     pub blobs_deduplicated: u64,
     pub messages_written: u64,
-    /// Older chains whose reading was recorded from a newer chain of the
-    /// same input whose bytes begin alike, instead of parsed again.
-    pub readings_copied: u64,
-    /// Bytes of those older chains the copies read: each copy's position,
-    /// before which the chain is not parsed.
-    pub bytes_copied: u64,
     /// Sessions whose derived products the pass recomputed.
     pub sessions_derived: u64,
     /// An import left previously queued derived values to the background worker.
@@ -382,8 +374,6 @@ impl Pass {
         self.blobs_appended += next.blobs_appended;
         self.blobs_deduplicated += next.blobs_deduplicated;
         self.messages_written += next.messages_written;
-        self.readings_copied += next.readings_copied;
-        self.bytes_copied += next.bytes_copied;
         self.sessions_derived += next.sessions_derived;
         self.derivation_pending = next.derivation_pending;
         self.seconds += next.seconds;
@@ -633,9 +623,6 @@ pub struct Engine {
     requests: Option<Requests>,
     /// Imports answered by a build while it ran, for the loop's summary.
     imports_during_build: u64,
-    /// The paths an import request stored new bytes for and their sizes,
-    /// kept across its retry after a build installed under it.
-    import_stored: Vec<(PathBuf, u64)>,
     /// What is failing, logged when it starts and when it clears.
     failure_log: failure_log::FailureLog,
     /// The files the current pass planned to read.
@@ -653,7 +640,6 @@ pub struct Engine {
     /// Paths excluded from every nested live scan until their readings commit.
     reparsing: HashMap<PathBuf, usize>,
     /// The executable and parser settings for stopped-work selection.
-    stopped_attempt: StoppedAttempt,
     watched_loaded: bool,
     readings_pending: bool,
     stored_planning: Option<pass::StoredPlanning>,
@@ -677,7 +663,6 @@ pub struct Engine {
     lookups: repo_lookup::Background,
     /// How many bytes two stored chains share from their starts; each pair
     /// is compared once per pass.
-    shared_prefixes: std::cell::RefCell<prefix_copies::SharedPrefixes>,
     /// When repository lookups were last refreshed; at most once a minute.
     lookups_at: Option<Instant>,
 }
@@ -695,24 +680,15 @@ impl Engine {
     }
 
     /// Starts the writer on an archive the caller has locked.
-    pub fn new(
-        config: Config,
-        archive: Archive,
-        stopped_attempt: StoppedAttempt,
-    ) -> Result<Self, EngineError> {
+    pub fn new(config: Config, archive: Archive) -> Result<Self, EngineError> {
         let budget = config.memory_budget;
         let config = config.with_memory_budget(budget);
         let archive = archive.with_memory_budget(config.memory_budget);
         let writer = Writer::start(&archive)?;
-        Self::with_writer(config, archive, writer, stopped_attempt)
+        Self::with_writer(config, archive, writer)
     }
 
-    fn with_writer(
-        config: Config,
-        archive: Archive,
-        writer: Writer,
-        stopped_attempt: StoppedAttempt,
-    ) -> Result<Self, EngineError> {
+    fn with_writer(config: Config, archive: Archive, writer: Writer) -> Result<Self, EngineError> {
         let reader_memory = config.reader_memory_per_connection()?;
         let reads = ReadPool::with_budget(&archive, 1, reader_memory)?;
         let blobs = Arc::new(archive.blobs()?);
@@ -725,7 +701,6 @@ impl Engine {
             blobs,
             inputs: HashMap::new(),
             reparsing: HashMap::new(),
-            stopped_attempt,
             watched_loaded: false,
             readings_pending: false,
             stored_planning: None,
@@ -741,12 +716,10 @@ impl Engine {
             collectors_at: None,
             capture_checked: None,
             lookups: repo_lookup::Background::default(),
-            shared_prefixes: Default::default(),
             lookups_at: None,
             collectors: collectors::Collectors::default(),
             requests: None,
             imports_during_build: 0,
-            import_stored: Vec::new(),
             failure_log: Default::default(),
             planned: HashSet::new(),
         })
@@ -816,16 +789,12 @@ impl Engine {
         let Some(origin) = ORIGINS.iter().find(|origin| origin.name == known.format) else {
             return;
         };
-        let progress = known
-            .chain
-            .map(|chain| polylogue_store::read::ChainProgress {
-                chain,
-                imported: origin.route.is_imported(),
-                length: known.stored,
-                parsed_upto: known.parsed_upto,
-                parsed: known.parsed,
-                waiting: known.waiting,
-            });
+        let progress = known.chain.map(|chain| polylogue_store::LatestChain {
+            chain,
+            imported: origin.route.is_imported(),
+            stored: known.stored,
+            state: known.state.clone(),
+        });
         self.inputs
             .entry(path.to_path_buf())
             .or_insert_with(|| InputState::new(known.input_id.clone(), origin))

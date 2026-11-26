@@ -17,7 +17,8 @@ fn reading(input: &str, start: u64) -> Reading {
         parse_version: "reader-3".into(),
         start,
         parsed_upto: 100,
-        progress: polylogue_model::batch::StepProgress::AtEnd,
+        at_end: true,
+        failure: None,
     }
 }
 fn message(input: &str, start: u64) -> Product {
@@ -151,28 +152,26 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message" => 10,
+                "polylogue.message" => 11,
                 "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
                 | "polylogue.request_restore" => 11,
-                "polylogue.session" | "polylogue.link" | "polylogue.parse_progress" => 8,
-                "polylogue.input_observation" => 7,
+                "polylogue.session" | "polylogue.link" | "polylogue.parse_progress" => 9,
+                "polylogue.input_observation" => 8,
                 "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.background"
-                | "polylogue.repository" => 7,
-                "polylogue.query_run" => 9,
+                | "polylogue.repository" => 8,
+                "polylogue.query_run" => 10,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
-                "polylogue.fragment" => 5,
+                "polylogue.fragment" => 6,
                 "polylogue.annotation" | "polylogue.attachment_binding" => 2,
                 "polylogue.annotation_restore" | "polylogue.historical_restore" => 1,
-                "polylogue.query"
-                | "polylogue.tool_call"
-                | "polylogue.prefix_copy"
-                | "polylogue.prefix_member" => 3,
-                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 7,
+                "polylogue.query" => 3,
+                "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 4,
+                "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 8,
                 "polylogue.line_save" | "polylogue.line_save_restore" => 5,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
             }
@@ -255,7 +254,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         .into_iter()
         .find(|declaration| declaration.kind.name == "polylogue.fragment")
         .unwrap();
-    assert_eq!(declaration.kind.version, 5);
+    assert_eq!(declaration.kind.version, 6);
     jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
         .unwrap()
         .validate(&payload)
@@ -519,8 +518,20 @@ fn annotation_names_versioned_every_changed_declaration() {
 /// raised every declaration whose definition changed.
 #[test]
 fn field_names_version_every_changed_declaration() {
-    let previous: serde_json::Value =
+    let source14: serde_json::Value =
         serde_json::from_str(include_str!("tests/source14-kind-hashes.json")).unwrap();
+    let source15: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source15-kind-hashes.json")).unwrap();
+    assert_versioned_transition(&source14, &recorded_kinds(&source15), &[], &[]);
+}
+
+/// Source 16 records reading options as the caller writes them (show and
+/// hide words, neutral names, one alternate) and raised every declaration
+/// whose definition changed.
+#[test]
+fn read_options_version_every_changed_declaration() {
+    let previous: serde_json::Value =
+        serde_json::from_str(include_str!("tests/source15-kind-hashes.json")).unwrap();
     assert_eq!(
         u64::from(crate::source_reference().version),
         previous["source"]["version"].as_u64().unwrap() + 1
@@ -536,30 +547,4 @@ fn field_names_version_every_changed_declaration() {
         })
         .collect();
     assert_versioned_transition(&previous, &current, &[], &[]);
-}
-
-#[test]
-fn historical_annotation_positions_keep_the_published_execution_string_schema() {
-    // This is the at field from the preserved SOURCE12 declaration. SOURCE13
-    // changed View only; at's nullable-string codec is still unchanged.
-    let old = serde_json::json!({
-        "description":"The message a context reading is taken at; the latest when absent.",
-        "anyOf":[{"$ref":"#/$defs/MessageId"},{"type":"null"}]
-    });
-    for kind in declarations("polylogue") {
-        let schema = kind.payload_schema.as_ref().unwrap();
-        if let Some(options) = schema["$defs"].get("ReadOptions") {
-            assert_eq!(options["properties"]["at"], old, "{}", kind.kind.name);
-            assert_eq!(
-                schema["$defs"]["MessageId"],
-                serde_json::json!({"type":"string"})
-            );
-            assert!(
-                schema["$defs"].get("ReadAt").is_none(),
-                "{}",
-                kind.kind.name
-            );
-        }
-    }
-    assert_eq!(crate::source_reference().version, 15);
 }

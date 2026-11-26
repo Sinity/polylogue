@@ -32,7 +32,7 @@ fn parser(plan: &Plan) -> Box<dyn ExportParser> {
 fn collect(engine: &Engine, plan: &Plan) -> Vec<ParseStep> {
     let mut steps = Vec::new();
     parse_export(plan, &mut *parser(plan), &engine.blobs, |item| {
-        let (mut step, cursor) = item.into_parse(plan, &engine.blobs, &engine.stopped_attempt)?;
+        let (mut step, cursor) = item.into_parse(plan, &engine.blobs)?;
         step.prepare();
         steps.push(step);
         Ok(cursor)
@@ -89,13 +89,8 @@ fn delivery_order_keeps_nonmonotone_physical_item_ranges() {
                 assert_eq!(item_count, items);
                 assert_eq!(delivery_count, ordinal as u64);
                 assert_eq!(step.parsed_upto, raw.len() as u64);
-                assert!(step.progress.reached_end());
-                assert!(
-                    step.checkpoint
-                        .as_ref()
-                        .unwrap()
-                        .matches(&plan.origin.parse_version(), raw.len() as u64)
-                );
+                assert!(step.at_end);
+                assert!(step.failure.is_none());
             }
         }
     }
@@ -113,7 +108,7 @@ fn interrupted_delivery_replays_the_same_sealed_prefix_from_archived_bytes() {
     let mut prefix = Vec::new();
     let mut first_item = true;
     let result = parse_export(&plan, &mut *parser(&plan), &engine.blobs, |item| {
-        let (mut step, cursor) = item.into_parse(&plan, &engine.blobs, &engine.stopped_attempt)?;
+        let (mut step, cursor) = item.into_parse(&plan, &engine.blobs)?;
         step.prepare();
         let delivery = step.delivery.unwrap();
         if matches!(delivery.source, ExportDeliverySource::Item { .. }) {
@@ -193,18 +188,14 @@ fn an_element_the_parser_cannot_read_does_not_refuse_its_siblings() {
 }
 
 fn assert_refusal(step: &ParseStep) {
-    assert_eq!(
-        step.stopped_attempt,
-        Some(polylogue_testkit::stopped_attempt())
-    );
     assert!(matches!(
         step.delivery.unwrap().source,
         ExportDeliverySource::ContainerHeader
     ));
     step.validate_export().unwrap();
     assert_eq!((step.start, step.parsed_upto), (0, 0));
-    assert!(!step.progress.reached_end());
-    assert!(step.checkpoint.is_none());
+    assert!(!step.at_end);
+    assert!(step.resume.is_none());
     assert!(step.complete_output().unwrap().messages.is_empty());
     assert!(step.complete_output().unwrap().sessions.is_empty());
     assert_eq!(step.counts.records, 1);
@@ -230,22 +221,22 @@ fn malformed_scan_refuses_once_without_a_checkpoint() {
         assert!(plan.failed && plan.failure_recorded);
         assert_eq!(
             home.count(
-                "SELECT count(*) AS n FROM parse_state WHERE status='refused' AND reason IS NOT NULL AND at_length IS NOT NULL"
+                "SELECT count(*) AS n FROM parse_state WHERE failure_kind='refused' AND failure_detail IS NOT NULL AND state='failed'"
             ),
             1
         );
         assert_eq!(home.count("SELECT count(*) AS n FROM message"), 0);
-        assert_eq!(home.count("SELECT parsed_upto AS n FROM parse_state"), 0);
+        assert_eq!(home.count("SELECT parsed_to AS n FROM parse_state"), 0);
         assert_eq!(
             home.count("SELECT sum(unreadable) AS n FROM parse_state"),
             1
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM parse_state WHERE checkpoint IS NOT NULL"),
+            home.count("SELECT count(*) AS n FROM parse_state WHERE resume IS NOT NULL"),
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_type(state,'$.progress.refused')='object' AND json_extract(state,'$.last.covered.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.refused')=1 AND json_extract(state,'$.last.covered.source.kind')='container_header'"),
             1
         );
         let wire = engine
@@ -264,13 +255,13 @@ fn malformed_scan_refuses_once_without_a_checkpoint() {
         fs::remove_file(&plan.path).unwrap();
         let (progress, stored) = {
             let reader = engine.reads.reader().unwrap();
-            let progress = reader.input_progress(&plan.input.id).unwrap().unwrap();
+            let progress = reader.latest_chain(&plan.input.id).unwrap().unwrap();
             let stored = reader
-                .stored_chain(&plan.input.id, progress.chain, progress.length)
+                .stored_chain(&plan.input.id, progress.chain, progress.stored)
                 .unwrap();
             (progress, stored)
         };
-        assert_eq!(progress.length, raw.len() as u64);
+        assert_eq!(progress.stored, raw.len() as u64);
         let mut kept = Vec::new();
         std::io::Read::read_to_end(&mut stored.reader(Arc::clone(&engine.blobs)), &mut kept)
             .unwrap();
@@ -290,7 +281,7 @@ fn malformed_scan_refuses_once_without_a_checkpoint() {
                 chain: progress.chain,
             },
             None,
-            progress.length,
+            progress.stored,
             0,
             pool::Bytes::Stored(Arc::new(stored)),
             engine.config.chunk,
@@ -311,18 +302,21 @@ fn malformed_scan_refuses_once_without_a_checkpoint() {
             ],
             archived_counts
         );
-        assert_eq!(home.count("SELECT parsed_upto AS n FROM parse_state"), 0);
+        assert_eq!(home.count("SELECT parsed_to AS n FROM parse_state"), 0);
         assert_eq!(
             home.count("SELECT sum(unreadable) AS n FROM parse_state"),
             1
         );
-        assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 1);
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM parse_state WHERE checkpoint IS NOT NULL"),
+            home.count("SELECT sum(used+skipped+unreadable) AS n FROM parse_state"),
+            1
+        );
+        assert_eq!(
+            home.count("SELECT count(*) AS n FROM parse_state WHERE resume IS NOT NULL"),
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_type(state,'$.progress.refused')='object' AND json_extract(state,'$.last.covered.source.kind')='container_header'"),
+            home.count("SELECT count(*) AS n FROM wire_reading WHERE json_extract(state,'$.refused_export')=1 AND json_extract(state,'$.export_cursor') IS NULL AND json_extract(state,'$.refused')=1 AND json_extract(state,'$.last.covered.source.kind')='container_header'"),
             1
         );
     }
@@ -375,8 +369,7 @@ fn successful_short_scans_cannot_complete_even_after_a_full_rewound_pass() {
         let (engine, _lock, plan) = plan(&home, &raw);
         let mut steps = Vec::new();
         let read = parse_export(&plan, &mut ShortSuccess { rewind }, &engine.blobs, |item| {
-            let (mut step, cursor) =
-                item.into_parse(&plan, &engine.blobs, &engine.stopped_attempt)?;
+            let (mut step, cursor) = item.into_parse(&plan, &engine.blobs)?;
             step.prepare();
             steps.push(step);
             Ok(cursor)
@@ -425,8 +418,11 @@ fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
         );
         assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);
         assert!(texts(&home, "chatgpt:new").is_empty());
-        assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 2);
-        assert_eq!(home.count("SELECT parsed_upto AS n FROM parse_state"), 0);
+        assert_eq!(
+            home.count("SELECT sum(used+skipped+unreadable) AS n FROM parse_state"),
+            2
+        );
+        assert_eq!(home.count("SELECT parsed_to AS n FROM parse_state"), 0);
         engine
             .reads
             .reader()
@@ -442,21 +438,22 @@ fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
     assert_eq!(unchanged.bytes_read, 0, "{unchanged:?}");
     assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);
     assert!(texts(&home, "chatgpt:new").is_empty());
-    assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 2);
-    let config = engine.config.clone();
-    let archive = engine.archive.clone();
-    let mut attempt = engine.stopped_attempt;
-    attempt.executable = polylogue_model::BlobHash::of(b"changed export reader executable");
-    drop(engine);
-    let mut engine = Engine::new(config, archive, attempt).unwrap();
+    assert_eq!(
+        home.count("SELECT sum(used+skipped+unreadable) AS n FROM parse_state"),
+        2
+    );
+    polylogue_store::fixture::older_reading(&engine.archive, "chatgpt").unwrap();
     let pass = engine.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     assert_eq!(pass.bytes_stored, 0, "{pass:?}");
     assert_eq!(texts(&home, "chatgpt:old"), ["old body"]);
     assert_eq!(texts(&home, "chatgpt:new"), ["new body"]);
-    assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 4);
     assert_eq!(
-        home.count("SELECT parsed_upto AS n FROM parse_state"),
+        home.count("SELECT sum(used+skipped+unreadable) AS n FROM parse_state"),
+        4
+    );
+    assert_eq!(
+        home.count("SELECT parsed_to AS n FROM parse_state"),
         raw.len() as i64
     );
     assert_eq!(home.count("SELECT count(*) AS n FROM a.extent"), 1);
@@ -470,5 +467,8 @@ fn changed_executable_extends_the_committed_export_prefix_without_recounting() {
         Some(old_commit)
     );
     assert!(engine.run_pass().unwrap().errors.is_empty());
-    assert_eq!(home.count("SELECT sum(records) AS n FROM parse_state"), 4);
+    assert_eq!(
+        home.count("SELECT sum(used+skipped+unreadable) AS n FROM parse_state"),
+        4
+    );
 }
