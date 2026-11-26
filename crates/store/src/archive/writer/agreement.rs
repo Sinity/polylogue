@@ -80,6 +80,32 @@ impl Chains {
         None
     }
 
+    /// The newer chains of the input that `chain` is known to agree with,
+    /// and through which byte: the agreement any newer chain's reading
+    /// holds the same rows for.
+    pub fn newer(&self, chain: i64) -> impl Iterator<Item = (i64, u64)> + '_ {
+        self.0
+            .range(chain + 1..)
+            .filter_map(move |(&newer, _)| Some((newer, self.known(chain, newer)?)))
+            .filter(|(_, known)| *known > 0)
+    }
+
+    /// What the record says of `chain`, stored to `stored` bytes: the
+    /// newest chain known to begin with all of it, and the byte through
+    /// which its records are a newer chain's (the most any newer chain is
+    /// known to agree with it).
+    pub fn repeats(&self, chain: i64, stored: u64) -> (Option<i64>, u64) {
+        let mut repeated_by = None;
+        let mut own_from = 0;
+        for (newer, known) in self.newer(chain) {
+            if stored > 0 && known >= stored {
+                repeated_by = Some(newer);
+            }
+            own_from = own_from.max(known.min(stored));
+        }
+        (repeated_by, own_from)
+    }
+
     /// The agreement of new bytes with the earlier chains of this input.
     /// `latest` is the input's newest earlier chain and `compare(chain,
     /// from)` the first byte at which the new bytes and `chain` differ,
@@ -125,32 +151,65 @@ impl Chains {
 row! {
     /// One chain's stored agreement with the earlier chain it begins like.
     struct ChainRow {
+        input: String,
         number: i64,
         begins_like: Option<i64>,
         agrees_to: i64,
     }
-    statements {
-        const OF_INPUT = "SELECT number, begins_like, agrees_to FROM source_chain
-            WHERE input = ?1 ORDER BY number";
-    }
 }
 
-/// The recorded chains of `input`, on a connection with the archive's
-/// source names.
+/// The chains of an input that begin like an earlier one, on any
+/// connection that reaches the archive ([`crate::source::Source::reading`]).
+const AGREEING: &str = "SELECT input, number, begins_like, agrees_to FROM @source.chain
+    WHERE begins_like IS NOT NULL";
+
+fn insert(chains: &mut Chains, row: ChainRow) -> Result<()> {
+    let agrees_to = u64::try_from(row.agrees_to)
+        .map_err(|_| crate::StoreError::stored(2, "negative chain agreement"))?;
+    chains.0.insert(
+        row.number,
+        Agreement {
+            begins_like: row.begins_like,
+            agrees_to,
+        },
+    );
+    Ok(())
+}
+
+/// The recorded chains of `input`. Only chains that begin like an earlier
+/// one are listed: a chain that begins like none has no path to walk.
 pub fn recorded(conn: &rusqlite::Connection, input: &str) -> Result<Chains> {
+    let source = crate::source::Source::reading(conn)?;
+    let statement =
+        crate::row::Statement::<ChainRow>::built(source.sql(&format!("{AGREEING} AND input = ?1")));
     let mut chains = Chains::default();
-    for row in conn.all(&ChainRow::OF_INPUT, [input])? {
-        let agrees_to = u64::try_from(row.agrees_to)
-            .map_err(|_| crate::StoreError::stored(2, "negative chain agreement"))?;
-        chains.0.insert(
-            row.number,
-            Agreement {
-                begins_like: row.begins_like,
-                agrees_to,
-            },
-        );
+    for row in conn.all(&statement, [input])? {
+        insert(&mut chains, row)?;
     }
     Ok(chains)
+}
+
+/// The recorded chains of every input that has a chain beginning like an
+/// earlier one, or of the `selected` inputs only.
+pub fn recorded_by_input(
+    conn: &rusqlite::Connection,
+    selected: Option<&[String]>,
+) -> Result<std::collections::HashMap<String, Chains>> {
+    let source = crate::source::Source::reading(conn)?;
+    let (sql, json) = match selected {
+        Some(inputs) => (
+            format!("{AGREEING} AND input IN (SELECT value FROM json_each(?1))"),
+            Some(serde_json::to_string(inputs)?),
+        ),
+        None => (format!("{AGREEING} AND ?1 IS NULL"), None),
+    };
+    let statement = crate::row::Statement::<ChainRow>::built(source.sql(&sql));
+    let mut by_input = std::collections::HashMap::<String, Chains>::new();
+    for row in conn.all(&statement, [json])? {
+        let chains = by_input.entry(row.input.clone()).or_default();
+        insert(chains, row)?;
+    }
+    Ok(by_input)
 }
 
 #[cfg(test)]

@@ -48,6 +48,7 @@ pub(crate) mod identity;
 mod index_connection;
 pub(crate) use readings::{read_message, shown_message};
 pub(crate) mod readings;
+mod repeated;
 mod rows;
 mod search;
 mod shown;

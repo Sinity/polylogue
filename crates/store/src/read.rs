@@ -1618,10 +1618,14 @@ impl Reader<'_> {
         let unused = self.unused_at_position()?;
         let (search_pending, search_pending_is_minimum) = search_pending(c, SEARCH_PENDING_BOUND)?;
         Ok(Status {
-            // Sessions and documents are counted; messages and tool calls
+            // Sessions (as the `sessions` unit lists them) and documents are
+            // counted; messages and tool calls
             // are summed from the visible sessions' count summaries, which
             // follow the index by the summary worker.
-            sessions: count("SELECT count(*) FROM main.session")?,
+            sessions: count(&format!(
+                "SELECT count(*) FROM main.session s WHERE {}",
+                crate::query::units::listed_sessions(&crate::query::fields::Aliases::plain())
+            ))?,
             messages: visible("message_count")?,
             documents: count("SELECT count(*) FROM main.document")?,
             tool_calls: visible("tool_call_count")?,

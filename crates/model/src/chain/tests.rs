@@ -112,12 +112,25 @@ fn a_new_parser_version_reads_every_state_again_whole() {
     }
 }
 
+/// A chain a newer one partly agrees with is read whole, never extended
+/// (docs/archive.md, readings).
+#[test]
+fn a_chain_a_newer_one_begins_like_is_read_whole() {
+    let mut agreed = facts(150);
+    agreed.own_from = 40;
+    assert_eq!(due(&parsed(100, 100, true), &agreed), Due::Whole);
+    assert_eq!(
+        due(&parsed(100, 100, true), &facts(150)),
+        Due::Extend { from: 100 }
+    );
+}
+
 #[test]
 fn a_repeated_chain_has_no_parse_and_no_parser_reads_nothing() {
     let mut repeated = facts(100);
     repeated.repeated_by = Some(7);
     assert_eq!(due(&ChainState::Unparsed, &repeated), Due::No);
-    assert_eq!(due(&parsed(100, 100, true), &repeated), Due::Remove);
+    assert_eq!(due(&parsed(100, 100, true), &repeated), Due::No);
     assert_eq!(
         status(&parsed(100, 100, true), &repeated),
         ChainStatus::Repeated

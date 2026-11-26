@@ -1273,6 +1273,19 @@ pub fn turns() -> String {
 #[cfg(test)]
 mod tests;
 
+/// The sessions the `sessions` unit lists with no filter: each logical
+/// session once (its root), with a transcript, not hidden. Status counts
+/// these, so its figure, the listing and its count agree.
+pub fn listed_sessions(a: &Aliases) -> String {
+    format!(
+        "{s}.pk = {root} AND {stub} AND {visible}",
+        s = a.s,
+        root = fields::logical_root(&a.s),
+        stub = default_sql(DefaultId::NotStub, a),
+        visible = default_sql(DefaultId::SessionsVisible, a),
+    )
+}
+
 /// The SQL of a default filter over a unit's aliases.
 pub fn default_sql(id: DefaultId, a: &Aliases) -> String {
     match id {

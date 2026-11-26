@@ -120,6 +120,18 @@ pub(super) fn write_step(
             ])?;
         }
     }
+    super::repeated::follow(
+        tx,
+        w.changes,
+        &b.input.id,
+        input_pk,
+        chain,
+        super::repeated::Seen {
+            from: if p.reset { 0 } else { previous.seen_to() },
+            to: next.seen_to(),
+        },
+        touched,
+    )?;
     Ok(())
 }
 
