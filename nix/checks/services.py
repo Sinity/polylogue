@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import time
 import tomllib
 
 profile, expected_pid = Path(sys.argv[1]), int(sys.argv[2])
@@ -21,7 +22,12 @@ for name, path in expected.items():
         assert environment[name.encode()].decode() == path, (name, environment)
 argv = (process / "cmdline").read_bytes().split(b"\0")
 assert argv[argv.index(b"--archive") + 1].decode() == expected["archive"], argv
-assert Path(expected["archive"], "index.db").is_file()
+# The first index is built in private files and installed when its build
+# ends, which can be after the unit reports ready.
+deadline = time.monotonic() + 30
+while not Path(expected["archive"], "index.db").is_file():
+    assert time.monotonic() < deadline, sorted(os.listdir(expected["archive"]))
+    time.sleep(0.1)
 config = Path(os.fsdecode(argv[argv.index(b"--config") + 1]))
 assert tomllib.loads(config.read_text())["archive"] == expected["archive"]
 for name in ("polylogue", "plg", "plog", "polylogue-main"):
