@@ -825,6 +825,11 @@ fn summary_cards_show_header_facts_without_source_instructions() {
         },
         &LayoutFacts::default(),
     );
+    for format in [Format::Terminal, Format::Markdown, Format::Html] {
+        assert!(
+            !encode(&document(items.clone()), format).contains("HARNESS_INSTRUCTIONS_NOT_SUMMARY")
+        );
+    }
     assert_prose(
         &document(items),
         "session:test:session · title unknown\nmain · started unknown (unknown)\nworking directories: not recorded\nbranch: not recorded · model provider: not recorded · tool version: not recorded\n",
@@ -1340,6 +1345,7 @@ fn a_recorded_call_with_unknown_tool_name_is_not_an_orphan_result() {
     };
     assert!(!call.orphan);
     assert_eq!(call.call_id.as_deref(), Some("known-call"));
+    assert!(!crate::encode::call_label(call).contains("unknown call"));
     assert_eq!(crate::encode::call_label(call), "unknown");
 }
 
@@ -1768,6 +1774,17 @@ fn alternates_replace_thinking_and_remote_tool_output_at_their_sources() {
     assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Thinking { content: ThinkingContent::Text { text }, .. } if text == "translated thinking")));
     assert!(items.iter().any(|i| matches!(&i.kind, ItemKind::Call { call } if call.output.as_deref()==Some("translated result") && call.result_source.as_ref()==Some(&result_source))));
     let doc = document(items);
+    for format in [
+        Format::Terminal,
+        Format::Markdown,
+        Format::Html,
+        Format::Json,
+        Format::Jsonl,
+    ] {
+        let encoded = encode(&doc, format);
+        assert!(!encoded.contains("original thinking"));
+        assert!(!encoded.contains("original result"));
+    }
     let expected = document(vec![
         ReadItem {
             source: Source::record("message:test:session:message"),
@@ -3324,6 +3341,7 @@ fn html_relationship_links_encode_only_recorded_session_references() {
         "session:claude-code:parent",
         "session:claude-code:child\"<&",
     );
+    assert!(!html.contains("<branch>"));
     assert_eq!(
         html,
         concat!(
