@@ -77,11 +77,10 @@ fn interrupt_write(w: &ClaudeHome, point: &str, fail: bool) {
         child.id() as libc::pid_t
     );
     assert_eq!(
-        libc::WIFSTOPPED(status),
-        true,
+        (libc::WIFSTOPPED(status), libc::WSTOPSIG(status)),
+        (true, libc::SIGSTOP),
         "child exited before {point}: {status}"
     );
-    assert_eq!(libc::WSTOPSIG(status), libc::SIGSTOP);
     child.kill().unwrap();
     use std::os::unix::process::ExitStatusExt;
     assert_eq!(child.wait().unwrap().signal(), Some(libc::SIGKILL));
@@ -148,6 +147,18 @@ fn check_reopened_archive(fail: bool) {
             .filter(|(name, _)| committed || name != "pending.jsonl")
             .cloned()
             .collect::<Vec<_>>();
+        let mut uninterrupted = ClaudeHome::new();
+        uninterrupted.home = w.home.clone();
+        {
+            let (mut engine, _lock) = uninterrupted.engine(64 << 20);
+            assert_eq!(engine.run_pass().unwrap().errors, []);
+        }
+        let sessions = [
+            "claude-code:first",
+            "claude-code:second",
+            "claude-code:pending",
+        ];
+        let expected = sessions.map(|id| uninterrupted.export(id));
         interrupt_write(&w, point, fail);
         let (mut engine, _lock) = w.engine(64 << 20);
         // Opening starts no update. Read the archive before the source is read again.
@@ -161,5 +172,10 @@ fn check_reopened_archive(fail: bool) {
         assert_eq!(w.texts("first"), ["first committed body"]);
         assert_eq!(w.texts("second"), ["second committed body"]);
         assert_eq!(w.texts("pending"), ["pending body"]);
+        assert_eq!(
+            sessions.map(|id| w.export(id)),
+            expected,
+            "{point}: uninterrupted view"
+        );
     }
 }
