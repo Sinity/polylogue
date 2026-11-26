@@ -1,8 +1,8 @@
-//! The session item index: for each physical session, an ordered list of the
+//! Transcript lines: for each physical session, an ordered list of the
 //! layout items a transcript can show, each with its token estimates in the
-//! collapsed and the full form. The writer keeps it in the same transaction
-//! as the rows it describes; reads page it with running sums and a binary
-//! search, and read bodies only for the entries of one page.
+//! collapsed and the full form. The session summary writes them from the
+//! session's rows; reads page them with running sums and a binary search,
+//! and read bodies only for the lines of one page.
 use super::{EntryKey, Expansion, ReadOptions, View, estimate_tokens};
 use crate::{Block, Message, PromptKind, ToolAction, WrittenBy};
 use serde::{Deserialize, Serialize};
@@ -146,7 +146,7 @@ fn message_base(
     }
 }
 
-/// The header facts shared by prepared items and stored message rows.
+/// The header facts of a message's entries.
 fn message_header(message: &Message, place: MessagePlace, written_by: WrittenBy) -> IndexEntry {
     let header_line = header_tokens(message);
     let mut header = message_base(
@@ -165,26 +165,6 @@ fn message_header(message: &Message, place: MessagePlace, written_by: WrittenBy)
         header.context_tokens = message.usage.total_input();
     }
     header
-}
-
-/// Rebind prepared content entries to the selected message and current placement.
-/// Body lengths, estimates, tool targets and original ordinals stay prepared.
-pub fn update_message_entries(entries: &mut [IndexEntry], message: &Message, place: MessagePlace) {
-    let Some((first, blocks)) = entries.split_first_mut() else {
-        return;
-    };
-    let header = message_header(message, place, WrittenBy::of(message));
-    for entry in blocks {
-        if let EntryKey::Message { message: id, .. } = &mut entry.key {
-            *id = message.id.clone();
-        }
-        entry.written_by = header.written_by;
-        entry.prompt_kind = header.prompt_kind;
-        entry.active_path = place.active_path;
-        entry.branch_point = place.branch_point;
-        entry.at = header.at;
-    }
-    *first = header;
 }
 
 /// The entries of one stored message, header first, blocks in their original

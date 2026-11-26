@@ -7,6 +7,7 @@ pub(crate) mod calling_process;
 pub mod changes;
 pub(crate) mod completion;
 pub(crate) mod follow;
+pub(crate) mod invocation;
 pub(crate) mod line;
 pub mod local;
 pub mod picker;
@@ -31,20 +32,6 @@ fn version() -> String {
     format!("{} (revision {revision})", env!("CARGO_PKG_VERSION"))
 }
 
-/// The global options that take their value as the next word. A reader of a
-/// raw command line (the hook and daemon peer checks) skips each with its value.
-pub(crate) const GLOBAL_VALUED_OPTIONS: [&str; 9] = [
-    "--deadline",
-    "--archive",
-    "--config",
-    "--listen",
-    "--auth-token-file",
-    "--request",
-    "--request-id",
-    "--cursor",
-    "--budget",
-];
-
 /// The clap command tree: one subcommand per table command, grouped by
 /// their first word, and the bare query as the root's own arguments.
 pub fn command() -> clap::Command {
@@ -53,50 +40,10 @@ pub fn command() -> clap::Command {
         .color(clap::ColorChoice::Never)
         .styles(clap::builder::Styles::plain())
         .version(version())
-        .about("Search, read and measure your AI sessions")
-        .arg(
-            clap::Arg::new("json")
-                .long("json")
-                .global(true)
-                .action(ArgAction::SetTrue)
-                .help("Machine-readable output"),
-        );
-    root = root
-        .arg(
-            clap::Arg::new("request")
-                .long("request")
-                .global(true)
-                .value_name("JSON")
-                .help("The operation's complete typed argument object"),
-        )
-        .arg(
-            clap::Arg::new("request_id")
-                .long("request-id")
-                .global(true)
-                .value_name("ID")
-                .help("The request identity, kept across retries"),
-        )
-        .arg(
-            clap::Arg::new("deadline")
-                .long("deadline")
-                .global(true)
-                .value_name("MS|none")
-                .help("Milliseconds from when the daemon accepts the request, or none to lift the deadline"),
-        )
-        .arg(
-            clap::Arg::new("cursor")
-                .long("cursor")
-                .global(true)
-                .value_name("CURSOR")
-                .help("Continue from a previous page's `next`"),
-        )
-        .arg(
-            clap::Arg::new("budget")
-                .long("budget")
-                .global(true)
-                .value_name("BUDGET")
-                .help("Tokens for a prepared context; defaults to its named pack"),
-        );
+        .about("Search, read and measure your AI sessions");
+    for option in &invocation::GLOBAL_OPTIONS {
+        root = root.arg(option.clap_arg());
+    }
     for c in COMMANDS.iter() {
         match c.cli {
             Cli::Line => continue,
@@ -106,15 +53,14 @@ pub fn command() -> clap::Command {
             }
         }
     }
-    root = root.subcommand_precedence_over_arg(true).arg(
+    root.subcommand_precedence_over_arg(true).arg(
         clap::Arg::new("selection")
             .value_name("SELECTION")
             .help("One quoted query or reference")
             .add(clap_complete::engine::ArgValueCompleter::new(
                 completion::Query,
             )),
-    );
-    crate::config::augment_command(root)
+    )
 }
 
 /// Places a row's subcommand under its group words (`dev schema infer`
@@ -291,20 +237,17 @@ fn chosen(matches: &ArgMatches) -> Option<(&'static Command, &ArgMatches)> {
 /// The shared parser alone turns the accepted words into values and an envelope.
 fn parsed(c: &Command, m: &ArgMatches) -> Result<ParsedCommand, String> {
     let mut words = c.cli_words();
-    for name in [
-        "json",
-        "request",
-        "request_id",
-        "deadline",
-        "cursor",
-        "budget",
-    ] {
-        if name == "json" {
+    for option in invocation::GLOBAL_OPTIONS
+        .iter()
+        .filter(|option| option.owner == invocation::Owner::Line)
+    {
+        let name = option.name;
+        if option.value.is_none() {
             if m.get_flag(name) {
-                words.push("--json".into());
+                words.push(format!("--{name}"));
             }
         } else if let Some(value) = m.try_get_one::<String>(name).ok().flatten() {
-            words.extend([format!("--{}", name.replace('_', "-")), value.clone()]);
+            words.extend([format!("--{name}"), value.clone()]);
         }
     }
     let arguments = arguments_of(c);
@@ -423,60 +366,112 @@ pub(crate) fn parse_error(error: clap::Error, output: crate::config::OutputConfi
     ExitCode::from(u8::try_from(error.exit_code()).expect("Clap exit code fits u8"))
 }
 
-pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> Option<ExitCode> {
-    let (command, matches) = chosen(matches)?;
-    let Run::Local(run, _, validate) = command.run else {
-        return None;
+/// What configuration the command a command line chose runs with.
+pub(crate) enum Configuration {
+    /// None: it runs on its arguments alone.
+    None,
+    /// The client's: paths, the archive and output settings.
+    Client,
+    /// The whole deployment (`config::Startup`).
+    Deployment,
+}
+
+pub(crate) fn configuration(matches: &ArgMatches) -> Configuration {
+    match chosen(matches).map(|(command, _)| command.run) {
+        Some(Run::Local(..)) => Configuration::None,
+        Some(Run::ConfiguredLocal(..)) => Configuration::Deployment,
+        Some(Run::ClientLocal(..) | Run::Daemon(_)) | None => Configuration::Client,
+    }
+}
+
+/// The chosen local command and its checked values, or the exit of their
+/// refusal.
+fn local_values(
+    matches: &ArgMatches,
+    output: crate::config::OutputConfig,
+) -> Result<(&'static Command, ParsedCommand), ExitCode> {
+    let json = matches.get_flag("json");
+    let Some((command, matches)) = chosen(matches) else {
+        return Err(fail(
+            output,
+            json,
+            polylogue_model::Code::BadRequest,
+            "no such command",
+        ));
     };
-    let parsed = match parsed(command, matches) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            return Some(fail(
-                output,
-                matches.get_flag("json"),
-                polylogue_model::Code::BadRequest,
-                &error,
-            ));
-        }
+    let parsed = parsed(command, matches)
+        .map_err(|error| fail(output, json, polylogue_model::Code::BadRequest, &error))?;
+    let validate = match command.run {
+        Run::Local(_, _, validate)
+        | Run::ConfiguredLocal(_, _, validate)
+        | Run::ClientLocal(_, _, validate) => validate,
+        Run::Daemon(_) => return Ok((command, parsed)),
     };
-    if let Err(error) = validate(&parsed.request.arguments) {
-        return Some(fail(
+    validate(&parsed.request.arguments).map_err(|error| {
+        fail(
             output,
             parsed.json,
             polylogue_model::Code::BadRequest,
             &error,
-        ));
-    }
-    Some(run(command, &parsed, output, parsed.json))
+        )
+    })?;
+    Ok((command, parsed))
 }
 
-pub fn run(matches: &ArgMatches, startup: &crate::config::Startup) -> ExitCode {
-    let policy = startup.output;
-    let json = matches.get_flag("json");
-    let Some((cmd, m)) = chosen(matches) else {
-        return fail(
-            policy,
-            json,
-            polylogue_model::Code::BadRequest,
-            "no such command",
-        );
+/// Runs a command that needs no configuration (`Configuration::None`).
+pub fn run_local(matches: &ArgMatches, output: crate::config::OutputConfig) -> ExitCode {
+    let (command, parsed) = match local_values(matches, output) {
+        Ok(values) => values,
+        Err(exit) => return exit,
     };
-    let values = match parsed(cmd, m) {
-        Ok(parsed) => parsed,
-        Err(error) => return fail(policy, json, polylogue_model::Code::BadRequest, &error),
+    match command.run {
+        Run::Local(run, ..) => run(command, &parsed, output, parsed.json),
+        _ => not_this_configuration(command, output, parsed.json),
+    }
+}
+
+/// Runs a command that needs the whole deployment
+/// (`Configuration::Deployment`).
+pub fn run_configured(matches: &ArgMatches, startup: &crate::config::Startup) -> ExitCode {
+    let output = startup.client.output;
+    let (command, parsed) = match local_values(matches, output) {
+        Ok(values) => values,
+        Err(exit) => return exit,
+    };
+    match command.run {
+        Run::ConfiguredLocal(run, ..) => run(command, &parsed, startup, parsed.json),
+        _ => not_this_configuration(command, output, parsed.json),
+    }
+}
+
+/// `main` gives each command the configuration `configuration` names.
+fn not_this_configuration(
+    command: &Command,
+    output: crate::config::OutputConfig,
+    json: bool,
+) -> ExitCode {
+    fail(
+        output,
+        json,
+        polylogue_model::Code::Internal,
+        &format!("`{}` was started without its configuration", command.name),
+    )
+}
+
+/// Runs a command with the client's configuration
+/// (`Configuration::Client`): a daemon request, or a local command that
+/// needs only paths and output settings.
+pub fn run(matches: &ArgMatches, client: &crate::config::Client) -> ExitCode {
+    let policy = client.output;
+    let json = matches.get_flag("json");
+    let (cmd, values) = match local_values(matches, policy) {
+        Ok(values) => values,
+        Err(exit) => return exit,
     };
     match cmd.run {
-        Run::Local(run, _, validate) => {
-            return match validate(&values.request.arguments) {
-                Ok(()) => run(cmd, &values, policy, json),
-                Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error),
-            };
-        }
-        Run::ConfiguredLocal(run, _, validate) => {
-            return match validate(&values.request.arguments) {
-                Ok(()) => run(cmd, &values, startup, json),
-                Err(error) => fail(policy, json, polylogue_model::Code::BadRequest, &error),
-            };
+        Run::ClientLocal(run, ..) => return run(cmd, &values, client, json),
+        Run::Local(..) | Run::ConfiguredLocal(..) => {
+            return not_this_configuration(cmd, policy, json);
         }
         Run::Daemon(_) => {}
     }
@@ -493,9 +488,9 @@ pub fn run(matches: &ArgMatches, startup: &crate::config::Startup) -> ExitCode {
         return fail_with(policy, json, &failure.error, &[]);
     }
     if let Some(deliver) = cmd.deliver {
-        return deliver(&values, startup, call);
+        return deliver(&values, client, call);
     }
-    let root = startup.config.archive.clone();
+    let root = client.archive.clone();
     let answer = match crate::client::call_ready(&Archive::at(&root), call) {
         Ok(r) => r,
         Err(e) if is_down(&e) => {
@@ -550,7 +545,7 @@ pub fn run(matches: &ArgMatches, startup: &crate::config::Startup) -> ExitCode {
         return fail_with(policy, json, &mismatch, &[]);
     }
     match cmd.output {
-        Some(output) => output(&values, &answer, startup, json),
+        Some(output) => output(&values, &answer, client, json),
         None => {
             match crate::commands::declarations().render_text(cmd.name, &answer, style(policy)) {
                 Ok(text) => print!("{text}"),
@@ -590,7 +585,7 @@ fn style(output: crate::config::OutputConfig) -> TextStyle {
 pub fn status_output(
     values: &ParsedCommand,
     answer: &Answer<Value>,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     json: bool,
 ) -> ExitCode {
     let arguments = match crate::protocol::status::Arguments::deserialize(&values.request.arguments)
@@ -598,7 +593,7 @@ pub fn status_output(
         Ok(arguments) => arguments,
         Err(error) => {
             return fail(
-                startup.output,
+                client.output,
                 json,
                 polylogue_model::Code::Internal,
                 &error.to_string(),
@@ -606,13 +601,13 @@ pub fn status_output(
         }
     };
     if arguments.watch {
-        return watch_status(values, &arguments, answer, startup, json);
+        return watch_status(values, &arguments, answer, client, json);
     }
     let mut status = match status_answer(answer) {
         Ok(status) => status,
         Err(error) => {
             return fail(
-                startup.output,
+                client.output,
                 json,
                 polylogue_model::Code::Internal,
                 &error.to_string(),
@@ -630,14 +625,14 @@ pub fn status_output(
             );
         } else {
             let verification = status.verification.take();
-            print!("{}", status_view(&status, answer, startup, &arguments));
+            print!("{}", status_view(&status, answer, client, &arguments));
             if let Some(found) = verification {
-                print!("{}", print::verification(&found, style(startup.output)));
+                print!("{}", print::verification(&found, style(client.output)));
             }
         }
         return ExitCode::from(answer.exit_code());
     }
-    let line = status.running.line(startup.clock.now().as_millisecond());
+    let line = status.running.line(client.clock.now().as_millisecond());
     if json {
         println!("{}", serde_json::json!({ "line": line }));
     } else {
@@ -658,7 +653,7 @@ fn status_answer(answer: &Answer<Value>) -> serde_json::Result<crate::protocol::
 fn status_view(
     status: &crate::protocol::status::Answer,
     answer: &Answer<Value>,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     arguments: &crate::protocol::status::Arguments,
 ) -> String {
     let mut problems = match &answer.outcome {
@@ -666,11 +661,6 @@ fn status_view(
         _ => Vec::new(),
     };
     problems.extend(answer.envelope.notes.iter().cloned());
-    let zone = startup
-        .config
-        .standalone_day()
-        .map(|day| day.zone().clone())
-        .unwrap_or(jiff::tz::TimeZone::UTC);
     let width = if std::io::IsTerminal::is_terminal(&std::io::stdout()) {
         // A terminal that reports no size (a pseudo-terminal nobody sized)
         // gets the same width as no terminal.
@@ -685,10 +675,10 @@ fn status_view(
         status,
         &problems,
         &status_view::View {
-            style: style(startup.output),
+            style: style(client.output),
             width,
-            now_ms: startup.clock.now().as_millisecond(),
-            zone: &zone,
+            now_ms: client.clock.now().as_millisecond(),
+            zone: &client.zone(),
             whole_log: arguments.log,
         },
     )
@@ -700,26 +690,26 @@ fn watch_status(
     values: &ParsedCommand,
     arguments: &crate::protocol::status::Arguments,
     first: &Answer<Value>,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     json: bool,
 ) -> ExitCode {
-    if json || style(startup.output) != TextStyle::Ansi {
+    if json || style(client.output) != TextStyle::Ansi {
         return fail(
-            startup.output,
+            client.output,
             json,
             polylogue_model::Code::BadRequest,
             "--watch redraws the view on a color terminal; without one, run `polylogue status` as often as needed",
         );
     }
-    let archive = Archive::at(&startup.config.archive);
+    let archive = Archive::at(&client.archive);
     let mut answer = first.clone();
     loop {
         let frame = match &answer.outcome {
             command_surface::Outcome::Error(error) => {
-                print::diagnostic("", &error.message, None, startup.output.stdout_color())
+                print::diagnostic("", &error.message, None, client.output.stdout_color())
             }
             _ => match status_answer(&answer) {
-                Ok(status) => status_view(&status, &answer, startup, arguments),
+                Ok(status) => status_view(&status, &answer, client, arguments),
                 Err(error) => error.to_string(),
             },
         };
@@ -730,7 +720,7 @@ fn watch_status(
             Ok(answer) => answer,
             Err(error) => {
                 return fail(
-                    startup.output,
+                    client.output,
                     json,
                     polylogue_model::Code::DaemonRequired,
                     &error.to_string(),
@@ -740,79 +730,65 @@ fn watch_status(
     }
 }
 
-fn run_plan(
-    plan: &crate::resume::Plan,
-    output: crate::config::OutputConfig,
-    replace: bool,
-) -> ExitCode {
+/// Reopens a session in its harness: with `replace` this process becomes
+/// the harness, otherwise it waits for it. Its exit status is the
+/// harness's; a session with no way to reopen it here is `refused` and a
+/// harness that cannot be started is `io`.
+fn run_plan(plan: &crate::resume::Plan, output: crate::config::OutputConfig, replace: bool) -> u8 {
     use std::os::unix::process::CommandExt;
-    let Some(resume) = &plan.harness_command else {
-        eprint!(
-            "{}",
-            print::diagnostic(
-                "",
-                &format!(
-                    "this session has no harness resume; continue with context instead: {}",
-                    print::command_line(&plan.context_assisted)
-                ),
-                None,
-                output.stderr_color()
-            )
+    let refused = |reason: &str| {
+        let message = format!(
+            "{reason}; continue with context instead: {}",
+            print::command_line(&plan.context_assisted)
         );
-        return ExitCode::from(1);
+        failure_status(output, polylogue_model::Code::Refused, &message)
+    };
+    let Some(resume) = &plan.harness_command else {
+        return refused("this session has no harness resume");
     };
     // The harness reopens the session from its resume directory; the CLI's
     // own directory would reopen nothing or the wrong project.
     let dir = match resume.cwd.as_deref() {
-        Some(dir) if std::path::Path::new(dir).is_dir() => Ok(dir),
-        Some(dir) => Err(format!("directory_missing: {dir} does not exist here")),
-        None => Err("directory_unknown: the session recorded no directory to resume in".into()),
-    };
-    let dir = match dir {
-        Ok(dir) => dir,
-        Err(reason) => {
-            eprint!(
-                "{}",
-                print::diagnostic(
-                    "",
-                    &format!(
-                        "{reason}; continue with context instead: {}",
-                        print::command_line(&plan.context_assisted)
-                    ),
-                    None,
-                    output.stderr_color()
-                )
-            );
-            return ExitCode::from(1);
+        Some(dir) if std::path::Path::new(dir).is_dir() => dir,
+        Some(dir) => return refused(&format!("directory_missing: {dir} does not exist here")),
+        None => {
+            return refused("directory_unknown: the session recorded no directory to resume in");
         }
     };
     let mut cmd = std::process::Command::new(&resume.program);
     cmd.args(&resume.args).current_dir(dir);
-    if !replace {
+    let error = if replace {
+        cmd.exec()
+    } else {
         use std::os::unix::process::ExitStatusExt as _;
-        return match cmd.status() {
+        match cmd.status() {
             // A harness killed by a signal exits as a shell reports it: 128 + signal.
-            Ok(status) => ExitCode::from(
-                status
+            Ok(status) => {
+                return status
                     .code()
                     .or_else(|| status.signal().map(|signal| 128 + signal))
                     .and_then(|code| u8::try_from(code).ok())
-                    .unwrap_or(1),
-            ),
-            Err(error) => fail(output, false, polylogue_model::Code::Io, &error.to_string()),
-        };
-    }
-    let err = cmd.exec();
-    eprint!(
-        "{}",
-        print::diagnostic(
-            "",
-            &format!("could not run {}: {err}", resume.program),
-            None,
-            output.stderr_color()
-        )
-    );
-    ExitCode::FAILURE
+                    .unwrap_or(1);
+            }
+            Err(error) => error,
+        }
+    };
+    failure_status(
+        output,
+        polylogue_model::Code::Io,
+        &format!("could not run {}: {error}", resume.program),
+    )
+}
+
+/// Prints a failure for a person and returns its exit status.
+fn failure_status(
+    output: crate::config::OutputConfig,
+    code: polylogue_model::Code,
+    message: &str,
+) -> u8 {
+    let failure = crate::protocol::failure(code, message);
+    fail_with(output, false, &failure, &[]);
+    failure.kind.exit_code()
 }
 
 pub(crate) fn is_down(e: &std::io::Error) -> bool {

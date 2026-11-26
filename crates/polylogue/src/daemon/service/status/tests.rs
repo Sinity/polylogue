@@ -349,3 +349,75 @@ fn status_lists_what_each_busy_thread_is_doing() {
     exit.send(()).unwrap();
     worker.join().unwrap();
 }
+
+#[test]
+fn lasting_worker_failure_is_a_status_problem() {
+    use polylogue_model::{Cause, Code, Failure};
+    use polylogue_store::{StoreError, completion::CommitEvents};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    let daemon = crate::test_daemon::start("synthetic source");
+    for cause in [Cause::Transient, Cause::Environment] {
+        let events = CommitEvents::default();
+        let subscription = events.subscribe();
+        let wake = subscription.wake_handle();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopped = stop.clone();
+        let (sent, changed) = mpsc::channel();
+        let thread = std::thread::Builder::new()
+            .name("status failure test".into())
+            .spawn(move || {
+                polylogue_store::follow::follow(
+                    "status failure test",
+                    Some(&subscription),
+                    &stopped,
+                    || polylogue_model::Timestamp::from_unix_ms(1_700_000_000_000).unwrap(),
+                    || sent.send(()).unwrap(),
+                    || {
+                        Err(StoreError::Failed(Failure::stated(
+                            "",
+                            cause,
+                            Code::Io,
+                            "synthetic worker failure",
+                        )))
+                    },
+                )
+            })
+            .unwrap();
+        changed.recv().unwrap();
+        let state = if cause == Cause::Transient {
+            "failing"
+        } else {
+            "halted"
+        };
+        let expected = format!("status failure test: {state}: synthetic worker failure");
+        for reply in [
+            answer(&daemon.daemon, None, false),
+            unread(&daemon.daemon, None, None, false, 0),
+        ] {
+            let command_surface::Outcome::Degraded { value, missing } = reply.outcome else {
+                panic!("worker failure must degrade status");
+            };
+            assert!(missing.contains(&expected), "{missing:?}");
+            let worker = value
+                .threads
+                .iter()
+                .find(|thread| thread.name == "status failure test")
+                .unwrap()
+                .worker
+                .as_ref()
+                .unwrap();
+            assert_eq!(
+                worker.problem("status failure test"),
+                Some(expected.clone())
+            );
+        }
+        stop.store(true, Ordering::Release);
+        let _ = wake.try_send(());
+        assert!(thread.join().unwrap());
+    }
+}

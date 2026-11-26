@@ -33,6 +33,8 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 5;
 
+parser_modules! {}
+
 use crate::document::{first_key, session_id};
 use crate::fields::ExpectedType as T;
 use crate::fields::{Fields, Rule};

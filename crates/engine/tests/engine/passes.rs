@@ -960,7 +960,7 @@ fn copied_tool_history_keeps_items_after_restart() {
     assert_eq!(
         reader
             .query(
-                "SELECT count(*) AS n FROM session_item WHERE message_pk IS NOT NULL",
+                "SELECT count(*) AS n FROM transcript_line WHERE message_pk IS NOT NULL",
                 &[]
             )
             .unwrap(),

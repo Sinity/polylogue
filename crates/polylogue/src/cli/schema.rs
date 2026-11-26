@@ -72,7 +72,7 @@ pub fn diff(
 pub fn output(
     values: &command_surface::ParsedCommand,
     answer: &command_surface::Answer<serde_json::Value>,
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     json: bool,
 ) -> ExitCode {
     let value = answer
@@ -82,7 +82,7 @@ pub fn output(
         Ok(destination) => destination,
         Err(message) => {
             return super::fail(
-                startup.output,
+                client.output,
                 json,
                 polylogue_model::Code::BadRequest,
                 &message,
@@ -99,7 +99,7 @@ pub fn output(
         );
         return ExitCode::from(answer.exit_code());
     }
-    run(values, json, startup.output, || Ok(value.clone()))
+    run(values, json, client.output, || Ok(value.clone()))
 }
 
 /// Where `--to` sends the result; standard output without it.

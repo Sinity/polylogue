@@ -62,9 +62,11 @@ fn layout_uses_the_shared_frame_and_shows_direction_controls_as_text() {
 }
 
 #[test]
-fn the_overview_shows_a_missing_store_as_unknown() {
+fn the_overview_explains_unavailable_totals() {
     let page = home(&json!({"store": null}), &json!(null));
-    assert!(page.contains("<div><dt>store</dt><dd>unknown</dd></div>"));
+    assert!(
+        page.contains("<div><dt>Archive totals</dt><dd>Archive totals are unavailable.</dd></div>")
+    );
 }
 
 #[test]
@@ -73,4 +75,27 @@ fn the_overview_shows_an_unknown_status_value_as_unknown_and_zero_as_zero() {
     let page = home(&status, &json!(null));
     assert!(page.contains("<div><dt>search pending</dt><dd>unknown</dd></div>"));
     assert!(page.contains("<div><dt>messages</dt><dd>0</dd></div>"));
+}
+
+#[test]
+fn the_overview_names_an_index_rebuild_and_unreadable_totals() {
+    for (status, expected) in [
+        (
+            json!({"store":null,"index_build":{"chains":10}}),
+            "The index is being rebuilt.",
+        ),
+        (
+            json!({"store":null,"totals_error":"index is unavailable"}),
+            "Totals could not be read: index is unavailable",
+        ),
+        (
+            json!({"store":null,"warming":true}),
+            "The index is catching up.",
+        ),
+    ] {
+        let page = home(&status, &json!(null));
+        assert!(page.contains(&format!(
+            "<div><dt>Archive totals</dt><dd>{expected}</dd></div>"
+        )));
+    }
 }

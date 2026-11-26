@@ -5,6 +5,8 @@
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 1;
 
+parser_modules! {}
+
 use crate::document::after_byte_order_mark;
 
 /// One line record: its bytes without the line ending, and where they

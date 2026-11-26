@@ -4,7 +4,7 @@ use serde_json::Value;
 use std::io::{self, Write};
 
 pub(crate) fn record(
-    startup: &crate::config::Startup,
+    client: &crate::config::Client,
     step: &Value,
     data: &str,
     json: bool,
@@ -35,12 +35,7 @@ pub(crate) fn record(
                 serde_json::json!({"event":"record","data":line})
             )?;
         } else {
-            let zone = startup
-                .config
-                .standalone_day()
-                .map(|day| day.zone().clone())
-                .unwrap_or(jiff::tz::TimeZone::UTC);
-            if let Some(text) = line.text(&zone) {
+            if let Some(text) = line.text(&client.zone()) {
                 let mut output = io::stdout().lock();
                 writeln!(output, "{}", polylogue_render::terminal::escape(&text))?;
                 output.flush()?;

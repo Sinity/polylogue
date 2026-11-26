@@ -260,8 +260,6 @@ pub(crate) struct PreparedMessage {
     pub(crate) time: Vec<u8>,
     /// The message's content hash: its version.
     pub(crate) hash: [u8; 32],
-    /// Item estimates from the typed content, before payloads are released.
-    pub(crate) items: Vec<polylogue_model::read::IndexEntry>,
     /// Each block's text hash, for a block that keeps its text in `text`.
     pub(crate) texts: Vec<Option<[u8; 32]>>,
     pub(crate) content: crate::content::Placed,
@@ -311,11 +309,6 @@ impl PreparedMessage {
             id: message.id.clone(),
             time: time_bytes(message.at, message.time_accuracy())?,
             hash: block_selection.source_version.0,
-            items: polylogue_model::read::message_entries(
-                message,
-                &block_selection.block_ordinals,
-                polylogue_model::read::MessagePlace::default(),
-            ),
             texts: text_hashes(&message.blocks),
             block_selection,
             content,

@@ -20,9 +20,6 @@ pub enum Stage {
     Parse,
     /// Writing a group of batches' rows (writer thread).
     Rows,
-    /// Bringing the session item index up to date at the end of a write
-    /// (writer thread, within `rows`).
-    Items,
     /// All writer work between receiving a message and returning to its queue.
     Writer,
     /// Committing a replacement transaction, including its SQLite sync wait.
@@ -40,13 +37,12 @@ pub enum Stage {
     Derive,
 }
 
-const STAGES: [Stage; 13] = [
+const STAGES: [Stage; 12] = [
     Stage::Read,
     Stage::Database,
     Stage::Store,
     Stage::Parse,
     Stage::Rows,
-    Stage::Items,
     Stage::Writer,
     Stage::Commit,
     Stage::SearchIndex,
@@ -56,7 +52,7 @@ const STAGES: [Stage; 13] = [
     Stage::Derive,
 ];
 
-static NANOS: [AtomicU64; 13] = [const { AtomicU64::new(0) }; 13];
+static NANOS: [AtomicU64; 12] = [const { AtomicU64::new(0) }; 12];
 
 impl Stage {
     pub fn name(self) -> &'static str {
@@ -66,7 +62,6 @@ impl Stage {
             Stage::Store => "store",
             Stage::Parse => "parse",
             Stage::Rows => "rows",
-            Stage::Items => "items",
             Stage::Writer => "writer",
             Stage::Commit => "commit",
             Stage::SearchIndex => "search_index",

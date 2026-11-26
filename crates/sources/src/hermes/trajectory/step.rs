@@ -1,5 +1,10 @@
 //! ATIF step text and actions, as document blocks. A step's role is kept as
 //! written; it does not say a model wrote the text or read it.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use polylogue_model::JsonExt;
 use polylogue_model::{Attachment, AttachmentDirection, Block, Json, ToolOutcome, UnknownReason};
 

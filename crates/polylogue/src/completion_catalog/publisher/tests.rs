@@ -872,20 +872,41 @@ fn reopening_keeps_typed_result_bindings_for_new_saved_definitions() {
 fn full_standalone_restart_retains_publication_and_applies_deltas_without_a_snapshot() {
     use std::os::unix::fs::MetadataExt;
     use std::time::{Duration, Instant};
+    const CHILD: &str = "POLYLOGUE_COMPLETION_RESTART_TEST";
+    const TEST: &str = "completion_catalog::publisher::tests::full_standalone_restart_retains_publication_and_applies_deltas_without_a_snapshot";
+    if let Some(request) = std::env::var_os(CHILD) {
+        let (path, key, name): (std::path::PathBuf, String, String) =
+            serde_json::from_str(request.to_str().unwrap()).unwrap();
+        let text = format!("sessions where tag:{}", &name[..name.len() - 1]);
+        assert!(
+            super::super::complete_file(&path, &key, &text, text.len())
+                .iter()
+                .any(|candidate| candidate.value == name),
+            "completion never published {name}"
+        );
+        return;
+    }
     let mut daemon = crate::test_daemon::start("A synthetic prompt for completion restart");
     let path = daemon.daemon.completion_path.clone();
     let key = crate::runtime_dir::archive_key(&daemon.daemon.archive.root);
     let wait = |name: &str| {
-        let text = format!("sessions where tag:{}", &name[..name.len() - 1]);
         let until = Instant::now() + Duration::from_secs(5);
         loop {
-            if super::super::complete_file(&path, &key, &text, text.len())
-                .iter()
-                .any(|candidate| candidate.value == name)
-            {
+            // SQLite shares WAL mappings within a process; an offline consumer
+            // runs separately from the publisher.
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, serde_json::to_string(&(&path, &key, name)).unwrap())
+                .output()
+                .unwrap();
+            if output.status.success() {
                 break;
             }
-            assert!(Instant::now() < until, "completion never published {name}");
+            assert!(
+                Instant::now() < until,
+                "completion never published {name}: {}",
+                String::from_utf8_lossy(&output.stderr),
+            );
             std::thread::sleep(Duration::from_millis(5));
         }
     };

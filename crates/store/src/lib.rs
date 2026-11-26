@@ -51,6 +51,7 @@ pub mod activity;
 pub mod alternates;
 pub mod authored_records;
 pub mod capture_read;
+pub mod follow;
 pub mod measure;
 mod ordered_blocks;
 mod parse_state;
@@ -298,7 +299,7 @@ impl StoreError {
     }
 
     /// Stored data this build cannot read back that no one column holds:
-    /// extents, item indexes, stored sums.
+    /// extents, transcript lines, stored sums.
     pub fn stored_data(reason: impl ToString) -> Self {
         Self::StoredValue {
             column: None,

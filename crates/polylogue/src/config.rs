@@ -1,7 +1,10 @@
 //! The binary's one deployment/environment boundary. Grammar-only entry points
 //! use ProcessInputs; loading deployment files happens after those early exits.
+//! Every client loads a `Client` (paths, the archive, output settings);
+//! only the daemon and the commands that run the engine in the calling
+//! process extend it into a `Startup` (identity, the token file,
+//! `sinex.toml`, `signals.toml`).
 pub mod signals;
-use clap::{Arg, ArgMatches, Command};
 use polylogue_model::WallClock;
 use query_language::time::DaySetting;
 use serde::Deserialize;
@@ -26,6 +29,20 @@ pub enum Error {
     },
     #[error("Sinex owns the logical day in primary mode")]
     SinexDay,
+    #[error("the current directory is unavailable")]
+    WorkingDirectory,
+}
+impl Error {
+    /// The failure a start-up that met this error leaves with: an
+    /// unreadable file or working directory is `io`, a value the
+    /// configuration cannot take is `bad_value`.
+    pub fn failure(&self) -> command_surface::Failure {
+        let code = match self {
+            Self::File { .. } | Self::WorkingDirectory => polylogue_model::Code::Io,
+            Self::Invalid(_) | Self::SinexDay => polylogue_model::Code::BadValue,
+        };
+        crate::protocol::failure(code, self.to_string())
+    }
 }
 #[derive(Clone)]
 pub struct EnvSnapshot {
@@ -168,7 +185,7 @@ pub struct ProcessInputs {
     pub cwd: Option<PathBuf>,
 }
 impl ProcessInputs {
-    pub fn capture() -> Result<Self, Error> {
+    pub fn capture() -> Self {
         let environment = EnvSnapshot::capture();
         let (workers, memory_bytes) = process_allowance();
         let output = OutputConfig::new(
@@ -177,7 +194,7 @@ impl ProcessInputs {
             environment.get_os("NO_COLOR").is_some(),
             environment.get_os("TERM").and_then(OsStr::to_str),
         );
-        Ok(Self {
+        Self {
             environment,
             output,
             clock: WallClock::new(jiff::Timestamp::now),
@@ -185,7 +202,7 @@ impl ProcessInputs {
             workers,
             memory_bytes,
             cwd: std::env::current_dir().ok(),
-        })
+        }
     }
 }
 /// What this process may use: its cores (physical cores within its CPU
@@ -399,17 +416,50 @@ impl Config {
         Ok(Arc::new(config))
     }
 }
-pub struct Startup {
-    pub config: Arc<Config>,
-    pub engine: polylogue_engine::Config,
-    pub mode: crate::daemon::service::ArchiveMode,
+/// What every client invocation loads: where the archive and the
+/// per-user directories are, and how output is shown.
+#[derive(Debug, Clone)]
+pub struct Client {
+    pub paths: Paths,
+    pub archive: PathBuf,
     pub clock: WallClock,
     pub output: OutputConfig,
     /// The pager a terminal read is shown through: `$PAGER`, else `less -FRX`.
     pub pager: String,
-    pub hook: crate::hook::Inputs,
     /// Zsh reads its startup files here when ZDOTDIR is set.
     pub zsh_directory: PathBuf,
+    /// The deployment's logical day, or why it cannot be resolved; a
+    /// standalone daemon refuses to start without it.
+    day: Result<DaySetting, String>,
+    deployment: DeploymentFile,
+}
+impl Client {
+    /// The zone a client shows times in: the logical day's, or UTC when
+    /// the deployment names none that resolves.
+    pub fn zone(&self) -> jiff::tz::TimeZone {
+        self.day
+            .as_ref()
+            .map_or(jiff::tz::TimeZone::UTC, |day| day.zone().clone())
+    }
+}
+/// The parts of the loaded deployment file only `Startup::extend` reads.
+#[derive(Debug, Clone)]
+struct DeploymentFile {
+    overrides: Overrides,
+    cwd: PathBuf,
+    /// The directory of `polylogue.toml`, against which its relative paths
+    /// and its neighbouring files resolve.
+    base: PathBuf,
+    http: HttpFile,
+}
+/// A client's configuration extended with what only the daemon and the
+/// commands that run the engine here need.
+pub struct Startup {
+    pub client: Client,
+    pub config: Arc<Config>,
+    pub engine: polylogue_engine::Config,
+    pub mode: crate::daemon::service::ArchiveMode,
+    pub hook: crate::hook::Inputs,
     pub(crate) lifecycle: crate::daemon::lifecycle::Inputs,
 }
 #[derive(Debug, Clone, Default)]
@@ -426,61 +476,6 @@ impl Overrides {
             .map(|path| absolute(path.clone(), cwd))
             .unwrap_or_else(|| paths.config.join("polylogue/polylogue.toml"))
     }
-    pub fn from_matches(matches: &ArgMatches) -> Self {
-        Self {
-            config_file: matches
-                .try_get_one::<PathBuf>("config")
-                .ok()
-                .flatten()
-                .cloned(),
-            archive: matches
-                .try_get_one::<PathBuf>("archive")
-                .ok()
-                .flatten()
-                .cloned(),
-            listen: matches
-                .try_get_one::<SocketAddr>("listen")
-                .ok()
-                .flatten()
-                .copied(),
-            auth_token_file: matches
-                .try_get_one::<PathBuf>("auth-token-file")
-                .ok()
-                .flatten()
-                .cloned(),
-        }
-    }
-}
-pub fn augment_command(command: Command) -> Command {
-    command
-        .arg(
-            Arg::new("archive")
-                .long("archive")
-                .global(true)
-                .value_parser(clap::value_parser!(PathBuf))
-                .help("Archive directory"),
-        )
-        .arg(
-            Arg::new("config")
-                .long("config")
-                .global(true)
-                .value_parser(clap::value_parser!(PathBuf))
-                .help("Deployment configuration file"),
-        )
-        .arg(
-            Arg::new("listen")
-                .long("listen")
-                .global(true)
-                .value_parser(clap::value_parser!(SocketAddr))
-                .help("HTTP listen address"),
-        )
-        .arg(
-            Arg::new("auth-token-file")
-                .long("auth-token-file")
-                .global(true)
-                .value_parser(clap::value_parser!(PathBuf))
-                .help("HTTP bearer token file"),
-        )
 }
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -489,7 +484,7 @@ struct FileConfig {
     http: Option<HttpFile>,
     day: Option<DayFile>,
 }
-#[derive(Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HttpFile {
     listen: Option<SocketAddr>,
@@ -532,20 +527,6 @@ fn optional_file(path: &Path) -> Result<Option<String>, Error> {
         }),
     }
 }
-/// The grammar/completion boundary reads only the deployment file's archive
-/// selection. It opens no archive and resolves no clock, identity or zone.
-pub fn archive_location(process: &ProcessInputs, overrides: &Overrides) -> Result<PathBuf, Error> {
-    let paths = Paths::resolve(&process.environment)?;
-    let cwd = process
-        .cwd
-        .as_ref()
-        .ok_or_else(|| Error::Invalid("the current directory is unavailable".into()))?;
-    let (path, file) = deployment_file(&paths, overrides, cwd)?;
-    let base = path
-        .parent()
-        .ok_or_else(|| Error::Invalid("configuration path has no parent".into()))?;
-    Ok(paths.archive(overrides, cwd, file.archive.as_deref(), base))
-}
 fn deployment_file(
     paths: &Paths,
     overrides: &Overrides,
@@ -561,8 +542,63 @@ fn deployment_file(
         .unwrap_or_default();
     Ok((path, file))
 }
-impl Startup {
+impl Client {
+    /// Loads the configuration: the deployment file, then the flags, then
+    /// the environment where it is meaningful. This reads `polylogue.toml`
+    /// and nothing else; `Startup::extend` adds the daemon's part from the
+    /// same file.
     pub fn load(process: &ProcessInputs, overrides: Overrides) -> Result<Self, Error> {
+        let cwd = process.cwd.clone().ok_or(Error::WorkingDirectory)?;
+        let paths = Paths::resolve(&process.environment)?;
+        let (config_file, file) = deployment_file(&paths, &overrides, &cwd)?;
+        let base = config_file
+            .parent()
+            .ok_or_else(|| Error::Invalid("configuration path has no parent".into()))?
+            .to_owned();
+        let archive = paths.archive(&overrides, &cwd, file.archive.as_deref(), &base);
+        let DayFile { zone, start } = file.day.unwrap_or(DayFile {
+            zone: None,
+            start: None,
+        });
+        let start = start.unwrap_or(jiff::civil::Time::constant(4, 0, 0, 0));
+        let day = match zone {
+            Some(zone) => jiff::tz::TimeZone::get(&zone)
+                .map_err(|error| error.to_string())
+                .and_then(|zone| DaySetting::new(zone, start).map_err(|error| error.to_string())),
+            None => DaySetting::system(start).map_err(|error| error.to_string()),
+        };
+        Ok(Self {
+            zsh_directory: process
+                .environment
+                .get_os("ZDOTDIR")
+                .map(|path| absolute(path.into(), &cwd))
+                .unwrap_or_else(|| paths.home.clone()),
+            paths,
+            archive,
+            clock: process.clock.clone(),
+            output: process.output,
+            pager: process
+                .environment
+                .text("PAGER")?
+                .filter(|pager| !pager.trim().is_empty())
+                .unwrap_or("less -FRX")
+                .to_owned(),
+            day,
+            deployment: DeploymentFile {
+                overrides,
+                cwd,
+                base,
+                http: file.http.unwrap_or_default(),
+            },
+        })
+    }
+}
+impl Startup {
+    /// Adds what only the daemon and the commands that run the engine in
+    /// this process need: the machine identity, the HTTP listener and its
+    /// token, the archive mode from `sinex.toml` and the outlets in
+    /// `signals.toml`.
+    pub fn extend(client: Client, process: &ProcessInputs) -> Result<Self, Error> {
         let identity = process.identity.clone().map(Ok).unwrap_or_else(|| {
             let read_line = |path: &str| -> Result<String, Error> {
                 let value = std::fs::read_to_string(path).map_err(|source| Error::File {
@@ -579,20 +615,15 @@ impl Startup {
                 host: read_line("/proc/sys/kernel/hostname")?,
             })
         })?;
-        let cwd = process
-            .cwd
-            .as_ref()
-            .ok_or_else(|| Error::Invalid("the current directory is unavailable".into()))?;
         let workers = process
             .workers
             .ok_or_else(|| Error::Invalid("the process CPU allowance is unavailable".into()))?;
-        let paths = Paths::resolve(&process.environment)?;
-        let (config_file, file) = deployment_file(&paths, &overrides, cwd)?;
-        let base = config_file
-            .parent()
-            .ok_or_else(|| Error::Invalid("configuration path has no parent".into()))?;
-        let archive = paths.archive(&overrides, cwd, file.archive.as_deref(), base);
-        let http = file.http.unwrap_or_default();
+        let DeploymentFile {
+            overrides,
+            cwd,
+            base,
+            http,
+        } = client.deployment.clone();
         let listen = process
             .environment
             .text("POLYLOGUE_LISTEN")?
@@ -607,9 +638,9 @@ impl Startup {
         let token_file = process
             .environment
             .get_os("POLYLOGUE_AUTH_TOKEN_FILE")
-            .map(|path| absolute(path.into(), cwd))
-            .or_else(|| overrides.auth_token_file.map(|path| absolute(path, cwd)))
-            .or_else(|| http.auth_token_file.map(|path| absolute(path, base)));
+            .map(|path| absolute(path.into(), &cwd))
+            .or_else(|| overrides.auth_token_file.map(|path| absolute(path, &cwd)))
+            .or_else(|| http.auth_token_file.map(|path| absolute(path, &base)));
         let token = token_file
             .map(|path| {
                 let value = std::fs::read_to_string(&path).map_err(|source| Error::File {
@@ -634,44 +665,26 @@ impl Startup {
         let mode_path = if overrides.config_file.is_some() {
             base.join("sinex.toml")
         } else {
-            archive.join("sinex.toml")
+            client.archive.join("sinex.toml")
         };
-        let mode = load_mode(&mode_path);
+        let mode = archive_mode(&mode_path);
         let standalone = matches!(mode, crate::daemon::service::ArchiveMode::Standalone);
-        let standalone_day = if standalone {
-            let DayFile { zone, start } = file.day.unwrap_or(DayFile {
-                zone: None,
-                start: None,
-            });
-            let start = start.unwrap_or(jiff::civil::Time::constant(4, 0, 0, 0));
-            let day = match zone {
-                Some(zone) => {
-                    let zone = jiff::tz::TimeZone::get(&zone)
-                        .map_err(|error| Error::Invalid(error.to_string()))?;
-                    DaySetting::new(zone, start)
-                }
-                None => DaySetting::system(start),
-            };
-            Some(day.map_err(|error| Error::Invalid(error.to_string()))?)
-        } else {
-            None
-        };
         let tool_dirs = polylogue_sources::origin::variable_roots()
             .into_iter()
             .filter_map(|(name, _)| {
                 process
                     .environment
                     .get_os(name)
-                    .map(|value| (name.to_string(), absolute(value.into(), cwd)))
+                    .map(|value| (name.to_string(), absolute(value.into(), &cwd)))
             })
             .collect();
-        let signals = SignalDeployment::load(&base.join("signals.toml"))?;
+        let signals = SignalDeployment::read(&base.join("signals.toml"))?;
         let notification_bus_address = process
             .environment
             .text("DBUS_SESSION_BUS_ADDRESS")?
             .map(str::to_string);
         let engine = polylogue_engine::Config::new(
-            paths.home.clone(),
+            client.paths.home.clone(),
             tool_dirs,
             identity.machine.clone(),
             identity.host.clone(),
@@ -683,8 +696,8 @@ impl Startup {
             process.memory_bytes.unwrap_or(4 << 30),
         ));
         let config = Arc::new(Config {
-            paths,
-            archive,
+            paths: client.paths.clone(),
+            archive: client.archive.clone(),
             http: HttpConfig { listen, token },
             requests: polylogue_model::user::RequestMetadata::new(
                 identity.machine.clone(),
@@ -699,25 +712,14 @@ impl Startup {
                     .text("VOYAGE_API_KEY")?
                     .map(str::to_string),
             ),
-            standalone_day,
+            standalone_day: standalone
+                .then(|| client.day.clone().map_err(Error::Invalid))
+                .transpose()?,
         });
         Ok(Self {
-            zsh_directory: process
-                .environment
-                .get_os("ZDOTDIR")
-                .map(|path| absolute(path.into(), cwd))
-                .unwrap_or_else(|| config.paths.home.clone()),
             config,
             engine,
             mode,
-            clock: process.clock.clone(),
-            output: process.output,
-            pager: process
-                .environment
-                .text("PAGER")?
-                .filter(|pager| !pager.trim().is_empty())
-                .unwrap_or("less -FRX")
-                .to_owned(),
             lifecycle: crate::daemon::lifecycle::Inputs::from_environment(
                 &process.environment,
                 std::process::id(),
@@ -736,6 +738,7 @@ impl Startup {
                     .filter(|value| !value.is_empty())
                     .map(str::to_string),
             },
+            client,
         })
     }
 }
@@ -782,16 +785,38 @@ impl Config {
     }
 }
 #[cfg(test)]
-impl Startup {
-    pub(crate) fn for_test(engine: polylogue_engine::Config, archive: &Path) -> Self {
+impl Client {
+    /// The client part of `Config::for_test`'s fixture.
+    pub(crate) fn for_test(config: &Config, clock: WallClock) -> Self {
         Self {
-            zsh_directory: engine.home.clone(),
-            config: Config::for_test(&engine, archive),
-            clock: engine.clock.clone(),
-            engine,
-            mode: crate::daemon::service::ArchiveMode::Standalone,
+            paths: config.paths.clone(),
+            archive: config.archive.clone(),
+            clock,
             output: OutputConfig::new(false, false, true, None),
             pager: "cat".into(),
+            zsh_directory: config.paths.home.clone(),
+            day: Ok(config
+                .standalone_day
+                .clone()
+                .expect("fixture configurations are standalone")),
+            deployment: DeploymentFile {
+                overrides: Overrides::default(),
+                cwd: config.paths.home.clone(),
+                base: config.paths.config.join("polylogue"),
+                http: HttpFile::default(),
+            },
+        }
+    }
+}
+#[cfg(test)]
+impl Startup {
+    pub(crate) fn for_test(engine: polylogue_engine::Config, archive: &Path) -> Self {
+        let config = Config::for_test(&engine, archive);
+        Self {
+            client: Client::for_test(&config, engine.clock.clone()),
+            config,
+            engine,
+            mode: crate::daemon::service::ArchiveMode::Standalone,
             lifecycle: crate::daemon::lifecycle::Inputs::from_environment(
                 &EnvSnapshot::from_values([]),
                 0,
@@ -809,7 +834,7 @@ impl Startup {
 /// (`docs/primary-mode.md`): with the `sinex` feature a configuration asking
 /// for it is refused at start; without it the archive is blocked, readable
 /// with writes paused.
-pub(crate) fn load_mode(path: &Path) -> crate::daemon::service::ArchiveMode {
+pub(crate) fn archive_mode(path: &Path) -> crate::daemon::service::ArchiveMode {
     use crate::daemon::service::ArchiveMode;
     #[derive(Deserialize)]
     struct Header {

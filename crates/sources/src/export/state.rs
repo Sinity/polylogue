@@ -1,4 +1,9 @@
 //! In-memory state for individual captures and small parser fixtures.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use std::collections::HashMap;
 
 #[derive(Default)]

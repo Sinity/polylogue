@@ -124,15 +124,14 @@ pub(super) fn write_step(
 }
 
 /// Ends a transaction that wrote readings: computes the shown rows of what
-/// they state, marks the sessions it touched due for their summaries and
-/// brings the session item index up to date. Returns the messages written
-/// and the item units read.
+/// they state and marks the sessions it touched due for their summaries.
+/// Returns the messages written.
 pub(crate) fn finish(
     tx: &Transaction<'_>,
     touched: Touched,
     changes: &ChangeSummary,
     counter: i64,
-) -> Result<(u64, u64)> {
+) -> Result<u64> {
     let written = super::shown::compose(
         &super::shown::Context {
             tx,
@@ -141,23 +140,19 @@ pub(crate) fn finish(
         },
         touched,
     )?;
-    let read = finish_summaries(tx, changes, counter)?;
-    Ok((written, read))
+    finish_summaries(tx, changes, counter)?;
+    Ok(written)
 }
 
 /// Marks the sessions a transaction's shown rows changed due for their
-/// summaries, and brings the session item index up to date with the rows;
-/// returns the item units read. Nothing of a summary is computed here.
+/// summaries. Nothing of a summary is computed here.
 pub(super) fn finish_summaries(
     tx: &Transaction<'_>,
     changes: &ChangeSummary,
     counter: i64,
-) -> Result<u64> {
+) -> Result<()> {
     changes.mark_due(tx, counter)?;
-    changes.finish_links(tx)?;
-    crate::timing::time(crate::timing::Stage::Items, || {
-        crate::items::refresh(tx, changes)
-    })
+    changes.finish_links(tx)
 }
 
 fn validate_range(batch: &Batch, step: &ParseStep) -> Result<()> {

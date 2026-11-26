@@ -4,7 +4,7 @@ fn the_command_tree_is_well_formed() {
 }
 
 #[test]
-fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
+fn deployment_flags_preserve_daemon_signal_policy() {
     let daemon = super::cli::command()
         .try_get_matches_from([
             "polylogue",
@@ -20,29 +20,6 @@ fn deployment_flags_preserve_daemon_signal_policy_and_native_host_selection() {
         .try_get_matches_from(["polylogue", "demo", "/synthetic/tour"])
         .unwrap();
     assert!(!super::keeps_sigpipe_ignored(&tour));
-    let origin = "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/";
-    assert!(super::cli::run_line::native_host(&[origin.into()]));
-    assert!(!super::cli::run_line::native_host(&[
-        origin.into(),
-        "extra".into()
-    ]));
-    let (overrides, words) = super::cli::run_line::deployment_arguments(&[
-        "--archive".into(),
-        "/synthetic/archive".into(),
-        "--config".into(),
-        "/synthetic/config".into(),
-        origin.into(),
-    ])
-    .unwrap();
-    assert!(super::cli::run_line::native_host(&words));
-    assert_eq!(
-        overrides.archive.unwrap(),
-        std::path::Path::new("/synthetic/archive")
-    );
-    assert_eq!(
-        overrides.config_file.unwrap(),
-        std::path::Path::new("/synthetic/config")
-    );
 }
 
 /// Each catalog key, set to a value other than its default, changes what its
@@ -182,26 +159,4 @@ fn every_catalog_key_changes_an_output() {
         let after = output(&snapshot(&changed));
         assert_ne!(before, after, "{key} changes nothing");
     }
-}
-
-#[test]
-fn completion_keeps_valid_deployment_flags_beside_an_invalid_one() {
-    let words = |words: &[&str]| -> Vec<std::ffi::OsString> {
-        words.iter().map(std::ffi::OsString::from).collect()
-    };
-    let overrides = super::completion_overrides(&words(&[
-        "polylogue",
-        "--listen",
-        "not-an-address",
-        "--archive",
-        "/synthetic/archive",
-        "rows",
-        "--config",
-    ]));
-    assert_eq!(
-        overrides.archive,
-        Some(std::path::PathBuf::from("/synthetic/archive"))
-    );
-    assert_eq!(overrides.listen, None);
-    assert_eq!(overrides.config_file, None);
 }

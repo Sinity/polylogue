@@ -763,6 +763,12 @@ impl Inner {
                 crate::timing::time(crate::timing::Stage::Rows, || self.write_group(group));
             }
             for (write, reply) in derive_writes.drain(..) {
+                // Computed from the installed index: while a build is being
+                // written, nothing of it is applied and its sessions stay due.
+                if self.building() {
+                    let _ = reply.send(Ok(vec![false; write.len()]));
+                    continue;
+                }
                 let result = crate::summary::apply(&self.index, &write);
                 if result.is_ok() {
                     self.commits
@@ -1033,6 +1039,11 @@ impl Inner {
                     .errors
                     .push(polylogue_model::Failure::new("derive", &e));
                 let _ = reply.send(Ok(*report));
+            }
+            (Err(e), derive_thread::Waiting::Session(question)) => {
+                question.answer(Err(StoreError::Failed(polylogue_model::Failure::new(
+                    "derive", &e,
+                ))));
             }
             (Err(e), derive_thread::Waiting::Nobody) => {
                 self.report
@@ -1308,8 +1319,7 @@ impl Inner {
             }
             batches += 1;
         }
-        let (messages, read) = rows::finish(&itx, touched, &changes, counter)?;
-        self.report.item_units_read += read;
+        let messages = rows::finish(&itx, touched, &changes, counter)?;
         crate::fault::check("write.index_commit", "")?;
         itx.commit()?;
         self.commits
@@ -1402,6 +1412,5 @@ fn merge_report(report: &mut WriteReport, other: WriteReport) {
     report.segment_bytes_written += other.segment_bytes_written;
     report.blobs_appended += other.blobs_appended;
     report.blobs_deduplicated += other.blobs_deduplicated;
-    report.item_units_read += other.item_units_read;
     report.errors.extend(other.errors);
 }
