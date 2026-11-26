@@ -11,6 +11,8 @@ use polylogue_model::{
 use std::path::Path;
 
 pub const VERSION: u32 = 3;
+
+parser_modules! {}
 pub const ORIGIN: &str = "aider";
 pub const HISTORY: &str = ".aider.llm.history";
 pub const COMPANION: &str = ".aider.chat.history.md";

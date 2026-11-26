@@ -1,4 +1,9 @@
 //! The identity form of a conversation, independent of response order.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use polylogue_model::JsonExt;
 use polylogue_model::{BlobHash, Json};
 

@@ -6,8 +6,9 @@ input. Change the compiler version in common and both products together.
 
 | Command | Does |
 |---|---|
-| `cargo xtask check --changed` | formatting, the workspace-hack verification, Clippy (unchanged crates reuse their result), the Nix checks when their inputs changed, and the tests your changes since the merge base with `origin/master` can affect: the loop while editing |
+| `cargo xtask check --changed` | formatting, the workspace-hack verification, Clippy (unchanged crates reuse their result), the Nix checks when their inputs changed, and the tests your changes since the merge base with `origin/master` can affect |
 | `cargo xtask check [--base <ref>]` | the same with every test, or with the parts and tests the changes since the merge base with `<ref>` can affect |
+| `dev/land [--dry-run] <n>` | land pull request `n` once its required check is green against a base still current for the packages it changes ([landing](#landing)) |
 | `cargo xtask fast` | formatting, the workspace-hack verification and both Clippy configurations, without tests |
 | `cargo xtask test -p <crate> --lib -E 'test(<name>)'` | the selected tests under nextest, building only that crate's library test target and what it depends on |
 | `cargo xtask test --changed`, `--base <ref>` | the tests the changes since the merge base with `origin/master` (or `<ref>`) can affect: changed packages and their dependents |
@@ -18,6 +19,7 @@ input. Change the compiler version in common and both products together.
 | `cargo xtask warm` | build every test binary and both Clippy configurations without running tests |
 | `cargo xtask prune-build` | remove from the target directory every artifact that both Clippy configurations, the test build and xtask's build no longer use |
 | `cargo xtask scenarios` | end-to-end tests of the real daemon, CLI and MCP server |
+| `cargo xtask run [--root <dir>] [--watch \| --binary <path>]` | the checkout's daemon in a sandbox on a scratch root, until stopped ([below](#a-daemon-to-probe)) |
 | `cargo xtask bench ...` | corpus builds and interactive read measurements |
 | `cargo xtask extension-providers` | rewrite the browser extension's provider table (`extension/src/background/providers.js`) from the origin registry; a sources test fails while the checked-in table differs |
 | `cargo xtask status`, `cargo xtask history ...` | what failed in this checkout's last run, and the recorded run history |
@@ -61,11 +63,55 @@ features (the fixture, fault and `sinex` features listed in `FEATURES` in
 `xtask/src/main.rs`) reach it through the selected packages: xtask passes
 the entries for the selected packages and their direct dependencies, the
 store's `fixture` forwards the model's and the query catalog's, and the
-testkit, which only tests depend on, enables the test features of what it
-builds on. Shared dependency features are declared once in the root
+testkit enables the test features of what it builds on. xtask uses the
+testkit without its default `archives` feature, so an xtask build compiles
+the model and the sources, whose units the test build shares, but not the
+engine or the store. Shared dependency features are declared once in the root
 manifest's `[workspace.dependencies]`. For an isolated dependency
 investigation, invoke Cargo directly with its own package and feature flags;
 that creates a separate compilation graph.
+
+## A daemon to probe
+
+`cargo xtask run` builds the checkout's `polylogue` and starts its daemon,
+standalone, in the testkit's sandbox on a scratch root: `--root <dir>`, or a
+new directory under `$TMPDIR` that is removed at the stop. It prints the
+daemon's process, its web reader's address, the archive, the home the daemon
+watches (write session files there to give it something to find) and the
+path of a CLI script, `<root>/polylogue`, that reaches this daemon and no
+other (`<root>/polylogue status`). An archive already under the root is
+reopened. `--watch` rebuilds when the sources change and restarts the
+daemon on the new build; a failed build keeps the running daemon.
+`--binary <path>` serves with a binary already built, an installed one for
+instance, and builds nothing. Stopping the command (Ctrl-C or SIGTERM)
+stops the daemon's process group, and a killed command takes the daemon
+with it. One checkout runs one such daemon at a time while it builds its
+own (devkit's development lock). The run is standalone only; it starts no
+Sinex stack.
+
+The sandbox is the environment every daemon a test or xtask spawns runs in
+(`polylogue_testkit::Sandbox`). Nothing of the caller's environment reaches
+it but `PATH`: `HOME`, every XDG directory, every root variable the sources
+declare (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `HERMES_HOME` and the rest) and
+`TMPDIR` lie under the root, and `POLYLOGUE_LISTEN` names a port that was
+free when the sandbox was made, so the daemon neither finds the caller's
+files nor competes for the default web port 8765. A probe started by hand
+follows the same recipe: an explicit environment from `env -i`, a scratch
+root, and a free port.
+
+```sh
+root=$(mktemp -d)
+mkdir -p "$root"/home "$root"/runtime && chmod 700 "$root"/runtime
+env -i PATH="$PATH" HOME="$root/home" XDG_CONFIG_HOME="$root/config" \
+  XDG_DATA_HOME="$root/data" XDG_STATE_HOME="$root/state" \
+  XDG_CACHE_HOME="$root/cache" XDG_RUNTIME_DIR="$root/runtime" \
+  POLYLOGUE_LISTEN=127.0.0.1:<free port> \
+  polylogue --archive "$root/archive" daemon
+```
+
+With `HOME` under the root and the tools' root variables unset, every
+source location resolves under the scratch home. The CLI reaches that
+daemon under the same environment with the same `--archive`.
 
 ## Compiler cache
 
@@ -145,9 +191,13 @@ A host may queue these commands through its own job runner; the operations
 AgentCTL runs are declared in `.agentctl/project.toml`. They clear an ambient
 `CARGO_TARGET_DIR` before entering the workspace's shell, which then selects
 the checkout's own host target and seeds its dependency artifacts through
-`sinnix-cargo-target` where the host has it. `fast` and `compile` share the
-one-slot `compile` queue; `focused` runs in the `normal` queue beside them,
-and full checks and Nix checks in `bulk`. `measure` is the one operation for
+`sinnix-cargo-target` where the host has it. While writing, an agent runs
+`compile` (a type-check) and `focused` for the tests it writes or changes,
+with `-p <package>` and a target flag; the suite runs in the hosted check,
+and a local `check` only reproduces a failure the hosted check reported.
+`fast` and `compile` share the one-slot `compile` queue; `focused` runs in
+the `normal` queue beside them, and full checks and Nix checks in `bulk`.
+`measure` is the one operation for
 benchmarks, archive rebuilds and measurement drivers: it runs one at a time,
 waits until 10 GiB of memory is free rather than starting a run its memory
 limit would end, runs at low CPU and I/O priority, and never sees the paid
@@ -158,12 +208,15 @@ selection. Keep the experimental target exclusive to the same checkout.
 
 To build against a local checkout of the shared crates, run
 `cargo xtask link-common PATH`, and `cargo xtask unlink-common` before
-committing a lock file, as the shared
+committing a lock file. New common commits arrive as a pull request on the
+`update-polylogue-sinex-common` branch, opened by common's `Update product
+locks` workflow once Sinex's master has adopted them; it moves the Sinex
+revision and the common lock together. The shared
 [dependency guide](https://github.com/Sinity/polylogue-sinex-common#depending-on-this-repository)
-describes.
+describes the route.
 
-For an early type-check of one package, `cargo check --locked -p
-polylogue-sinex --tests` checks its library target without compiling a test
+A type-check of one package, `cargo check --locked -p polylogue-sinex
+--tests`, checks its library and test targets without compiling a test
 executable. The declared AgentCTL `compile` operation accepts those Cargo check
 arguments.
 
@@ -205,6 +258,30 @@ them, fresh ones included, in its JSON messages). Cargo never deletes an
 artifact it no longer needs, and a dependency's new version gives every unit
 above it a new name, so without this each saved build kept the copies of all
 earlier ones. A manual run may reuse that build but never replaces it.
+
+### Landing
+
+A pull request's run checks GitHub's merge of its head with master at that
+moment, and its `check` job records that master commit as the notice
+annotation `tested base` on its check run. `dev/land <n>` (git, gh and awk;
+nothing to build) waits for the required check on the head, polling once a
+minute, then compares the packages the pull request changes with those master
+changed since the tested base. A package is a directory with a `Cargo.toml`;
+another path counts as its top-level directory; the root manifest,
+`Cargo.lock`, `rust-toolchain.toml`, the flake, `.cargo/`, `.config/` and
+`.github/` count as every package; Markdown counts as none. When the two sets
+meet, or the run recorded no tested base and the pull request changes more
+than Markdown, it merges master into the branch
+with GitHub's update-branch, waits for the check on the new head and compares
+again; a conflict stops it. Otherwise it squash-merges with
+`--match-head-commit` and prints the head, tested base, master's tip, both
+package sets and the runs it waited for. A failed check stops it with the
+failing jobs' names; it never reruns one. `--dry-run` prints the decision and
+exits 0 only when the pull request would merge now. Master can still move in
+the second or two between the last comparison and the merge. The comparison
+does not see a break across packages, such as a new caller in one crate of
+an API master removed from another; master's own run after the merge finds
+it.
 
 ## Published package
 

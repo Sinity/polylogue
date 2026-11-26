@@ -31,6 +31,50 @@ pub struct Fixture {
     lines_written: std::cell::RefCell<std::collections::HashMap<i64, i64>>,
 }
 
+/// A file's bytes, or `None` for a directory, at a path under an archive root.
+type ArchiveFile = (std::path::PathBuf, Option<Vec<u8>>);
+
+/// The files and directories of a new archive whose empty build is
+/// installed, parents first, made once per process and read once its
+/// writer has stopped. The lock file and the databases' shared-memory
+/// files belong to that archive's open connections and are left out.
+fn empty_archive() -> Result<&'static [ArchiveFile]> {
+    static FILES: std::sync::OnceLock<Vec<ArchiveFile>> = std::sync::OnceLock::new();
+    if let Some(files) = FILES.get() {
+        return Ok(files);
+    }
+    let dir = tempfile::tempdir()?;
+    let root = dir.path().join("archive");
+    {
+        let (archive, _lock) = Archive::open_or_create(&root)?;
+        crate::Writer::start(&archive)?.build(Vec::new())?;
+    }
+    let mut files = Vec::new();
+    let mut pending = vec![root.clone()];
+    while let Some(directory) = pending.pop() {
+        for entry in std::fs::read_dir(&directory)? {
+            let entry = entry?;
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(&root)
+                .map_err(|_| crate::StoreError::internal("fixture file outside its archive"))?
+                .to_owned();
+            if entry.file_type()?.is_dir() {
+                files.push((relative, None));
+                pending.push(path);
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name == "lock" || name.ends_with("-shm") {
+                continue;
+            }
+            files.push((relative, Some(std::fs::read(&path)?)));
+        }
+    }
+    Ok(FILES.get_or_init(|| files))
+}
+
 /// A session's facts; everything not given is unknown, except that an empty
 /// `kind` is `main` and an id without a colon gets origin `test`.
 #[derive(Debug, Clone, Default)]
@@ -91,11 +135,26 @@ pub struct CallFacts<'a> {
 
 impl Fixture {
     pub fn new(root: &Path) -> Result<Self> {
-        let (archive, lock) = Archive::open_or_create(root)?;
         // Fixture rows are written directly into an installed index: the
         // new archive's empty build is installed first, as a daemon's first
-        // pass over nothing does.
-        crate::Writer::start(&archive)?.build(Vec::new())?;
+        // pass over nothing does. That build is the same for every fixture,
+        // so it is made once per process and its files written out here.
+        std::fs::create_dir_all(root)?;
+        for (path, bytes) in empty_archive()? {
+            let path = root.join(path);
+            match bytes {
+                Some(bytes) => std::fs::write(path, bytes)?,
+                None => std::fs::create_dir_all(path)?,
+            }
+        }
+        // Each fixture has its own index generation and cursor key, as a
+        // fresh build gives, so a cursor from one fixture is foreign to
+        // another.
+        crate::archive::generation::rotate(&open_write(
+            &root.join("index.db"),
+            crate::archive::cache::SETUP,
+        )?)?;
+        let (archive, lock) = Archive::open_or_create(root)?;
         let index = open_write(&archive.index_db(), crate::archive::cache::SETUP)?;
         // Fixture rows count their changes from 1, after a write position of
         // 0; the empty build's own commits are not part of the fixture.

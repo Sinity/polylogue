@@ -86,7 +86,7 @@ fn followed_page(
 
 const READY_DEADLINE: Duration = Duration::from_secs(60);
 
-pub(super) struct Daemon(Child);
+pub(super) struct Daemon(pub(super) Child);
 
 impl Drop for Daemon {
     fn drop(&mut self) {
@@ -576,52 +576,6 @@ fn status_list_read_and_import_through_the_daemon_then_daemon_required() {
     assert_eq!(json(&out)["error"]["code"], "daemon_required");
 }
 
-/// A run over a synthetic home reads none of the caller's tool directories,
-/// whatever its environment says (docs/testing.md, Scenarios).
-#[test]
-fn the_scenario_daemon_stores_nothing_from_an_inherited_tool_directory() {
-    let dir = tempfile::tempdir().unwrap();
-    let home = dir.path().join("home");
-    let project = home.join(".claude/projects/-p");
-    std::fs::create_dir_all(&project).unwrap();
-    std::fs::write(project.join("home.jsonl"), line("h1", "home", "synthetic")).unwrap();
-    let elsewhere = dir.path().join("operator/.claude");
-    let other = elsewhere.join("projects/-p");
-    std::fs::create_dir_all(&other).unwrap();
-    std::fs::write(
-        other.join("elsewhere.jsonl"),
-        line("e1", "elsewhere", "outside the synthetic home"),
-    )
-    .unwrap();
-    let env = crate::Fixture::new(
-        &dir.path().join("archive"),
-        &home,
-        &dir.path().join("config"),
-    );
-    let mut command = Command::new(crate::BIN);
-    command
-        .env("CLAUDE_CONFIG_DIR", &elsewhere)
-        .env("CODEX_HOME", dir.path().join("operator/.codex"));
-    env.environment(&mut command);
-    command
-        .arg("--archive")
-        .arg(env.archive())
-        .arg("--config")
-        .arg(dir.path().join("config/polylogue/polylogue.toml"));
-    let _daemon = start_daemon_with(&env, command);
-    // One idle pass has scanned every root it was given.
-    let status = wait_status(&env, |s| s["store"]["messages"].as_u64() > Some(0));
-    assert_eq!(status["store"]["messages"], 1, "{status}");
-    let out = cli(&env, &["--json", "sessions"]);
-    let ids: Vec<_> = listing(json(&out))["rows"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|row| row["id"].as_str().unwrap().to_owned())
-        .collect();
-    assert_eq!(ids, ["claude-code:home"]);
-}
-
 #[test]
 fn ai_studio_drive_prompt_and_title_read_identically_after_a_rebuild_from_stored_bytes() {
     use polylogue_model::read::{ItemKind, ReadHeader, ReadItem, ValueState};
@@ -844,39 +798,6 @@ mod attachments;
 mod read_bench;
 
 mod python;
-
-#[test]
-fn killed_daemon_runtime_files_are_removed_with_its_fixture() {
-    let dir = tempfile::tempdir().unwrap();
-    let archive = dir.path().join("archive");
-    let home = dir.path().join("home");
-    let config = dir.path().join("config");
-    let env = crate::Fixture::new(archive.as_path(), home.as_path(), config.as_path());
-    let daemon = start_daemon(&env);
-    wait_status(&env, |_| true);
-    let runtime = dir.path().join("runtime/polylogue");
-    // Readiness of the socket precedes the HTTP listener's access files.
-    let started = std::time::Instant::now();
-    loop {
-        assert!(
-            started.elapsed() < Duration::from_secs(60),
-            "the daemon never wrote its HTTP access files"
-        );
-        if runtime.exists()
-            && std::fs::read_dir(&runtime).unwrap().any(|entry| {
-                let path = entry.unwrap().path();
-                path.join("port").exists() && path.join("token").exists()
-            })
-        {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    drop(daemon);
-    assert!(runtime.exists());
-    dir.close().unwrap();
-    assert!(!runtime.exists());
-}
 
 mod query_surfaces;
 

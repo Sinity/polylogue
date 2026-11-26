@@ -66,6 +66,7 @@ pub use identical_chains::{
 };
 pub mod activity;
 pub mod alternates;
+pub mod follow;
 pub mod schema;
 pub mod schema_inputs;
 pub mod scope_index;

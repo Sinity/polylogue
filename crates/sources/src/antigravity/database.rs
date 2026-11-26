@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 pub const VERSION: u32 = 1;
+
+parser_modules! {}
 pub const LOCATIONS: &[&str] = &[".gemini/antigravity-cli/conversation_summaries.db"];
 
 pub fn is_database(path: &Path) -> bool {

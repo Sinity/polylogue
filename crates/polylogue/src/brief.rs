@@ -1,5 +1,5 @@
 //! Context and briefings. This module is the one scheduler for context
-//! Polylogue puts in front of a model: every brief, takeover and recall is
+//! Polylogue puts in front of a model: every brief (of a directory, a session or search words) is
 //! prepared here, and the daemon records each one it hands out as a delivery
 //! with its exact text.
 //!
@@ -45,8 +45,8 @@ use serde_json::Value;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-/// Hits a recall returns per page.
-const RECALL_PAGE: u64 = 20;
+/// Hits a search brief returns per page.
+const SEARCH_PAGE: u64 = 20;
 /// The default named-context budget in tokens.
 pub const DEFAULT_BUDGET: u32 = 10_000;
 const RESUME_BUDGET: u32 = 4_000;
@@ -94,13 +94,13 @@ pub enum Ask {
         session: SessionId,
     },
     /// Taking over from another session named by its ID or a pasted session link.
-    Takeover {
+    Session {
         session: SessionId,
         #[serde(default)]
         for_session: Option<SessionId>,
     },
     /// Three or more sessions named together: one line each, never a
-    /// takeover of each.
+    /// brief of each.
     Sessions {
         sessions: Vec<SessionId>,
         #[serde(default)]
@@ -108,7 +108,7 @@ pub enum Ask {
     },
     /// Past work relevant to a text, with a summary of how it was found.
     /// `cursor` continues from a previous page's `next`.
-    Recall {
+    Words {
         text: String,
         #[serde(default)]
         cwd: Option<PathBuf>,
@@ -134,19 +134,30 @@ impl Ask {
         match self {
             Self::SessionStart { session, .. } => session.as_ref(),
             Self::Advisory { session, .. } => Some(session),
-            Self::Takeover { for_session, .. }
+            Self::Session { for_session, .. }
             | Self::Sessions { for_session, .. }
-            | Self::Recall { for_session, .. } => for_session.as_ref(),
+            | Self::Words { for_session, .. } => for_session.as_ref(),
         }
     }
 
     pub fn cwd(&self) -> Option<&Path> {
         match self {
             Self::SessionStart { cwd, .. } | Self::Advisory { cwd, .. } => Some(cwd),
-            Self::Recall { cwd, .. } => cwd.as_deref(),
-            Self::Takeover { .. } | Self::Sessions { .. } => None,
+            Self::Words { cwd, .. } => cwd.as_deref(),
+            Self::Session { .. } | Self::Sessions { .. } => None,
         }
     }
+}
+
+/// The context prepared for a brief step or a hook, with the delivery that
+/// records its outcome.
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct BriefReply {
+    /// The delivery's ID, which the hook reports the outcome of; none when no
+    /// delivery was queued
+    pub delivery: Option<String>,
+    pub prepared: Prepared,
 }
 
 /// Prepared context, not yet delivered.
@@ -157,17 +168,17 @@ pub struct Prepared {
     /// References included, in order.
     pub refs: Vec<String>,
     pub left_out: Vec<LeftOut>,
-    /// Recall only: how it searched.
+    /// A search brief only: how it searched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search_summary: Option<SearchSummary>,
     /// Nothing worth sending: the caller sends nothing.
     pub empty: bool,
-    /// Recall only: the cursor of the next page, when there is one.
+    /// A search brief only: the cursor of the next page, when there is one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next: Option<String>,
 }
 
-/// How a recall searched, so a reader can judge what it may have missed.
+/// How a search brief searched, so a reader can judge what it may have missed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct SearchSummary {
     pub words: Vec<String>,
@@ -227,7 +238,7 @@ fn repo_names(dirs: &[String], recorded: Vec<String>) -> Vec<String> {
 }
 
 /// The deliveries that set the point a resume or compaction brief reports
-/// changes since, once delivered: takeovers, messages and other hand-overs to
+/// changes since, once delivered: session briefs, messages and other hand-overs to
 /// the session do not.
 pub(crate) const BRIEF_EVENTS: [polylogue_model::DeliveryEvent; 3] = [
     polylogue_model::DeliveryEvent::SessionStart,
@@ -255,6 +266,7 @@ impl LastBrief {
 
 pub struct BriefContext<'a, 'reader> {
     pub reader: &'a Reader<'reader>,
+    pub pending_deliveries: &'a [polylogue_store::archive::writer::PendingDelivery],
     pub delivery_id: &'a str,
     pub context: &'a std::sync::Arc<polylogue_reading::operation::Context>,
     pub ranking_identity: Option<&'a str>,
@@ -263,13 +275,10 @@ pub struct BriefContext<'a, 'reader> {
 
 /// Prepares the context `ask` wants. `delivery_id` goes in the text, so a
 /// reader of the transcript can find the delivery record. `scope` is the
-/// daemon's scope index; `queued` is the latest delivered brief to the
-/// ask's recipient whose delivery record the writer has not committed yet. `near`
-/// ranks a recall by similarity when vectors exist.
+/// daemon's scope index. `near` ranks a search brief by similarity when vectors exist.
 pub fn prepare(
     brief: BriefContext<'_, '_>,
     scope: &SharedScopeIndex,
-    queued: Option<LastBrief>,
     pending_advice: &[Vec<String>],
     ask: &Ask,
     budget_tokens: command_surface::TokenBudget,
@@ -288,15 +297,7 @@ pub fn prepare(
             cwd,
             session,
             source,
-        } => session_start(
-            &brief,
-            scope,
-            queued,
-            cwd,
-            session.as_ref(),
-            *source,
-            budget,
-        ),
+        } => session_start(&brief, scope, cwd, session.as_ref(), *source, budget),
         Ask::Advisory {
             prompt,
             cwd,
@@ -311,13 +312,15 @@ pub fn prepare(
             pending_advice,
             context,
         ),
-        Ask::Takeover { session, .. } => takeover(reader, session, budget, delivery_id, context),
+        Ask::Session { session, .. } => {
+            session_brief(reader, session, budget, delivery_id, context)
+        }
         Ask::Sessions { sessions, .. } => {
             session_index(reader, sessions, budget, delivery_id, context)
         }
-        Ask::Recall {
+        Ask::Words {
             text, cwd, cursor, ..
-        } => recall(&brief, text, cwd.as_deref(), cursor.as_deref(), budget),
+        } => search_brief(&brief, text, cwd.as_deref(), cursor.as_deref(), budget),
     }
 }
 /// Notes a brief carries: the operator's, and agents' the operator
@@ -1111,7 +1114,6 @@ fn session_item(
 fn session_start(
     brief: &BriefContext<'_, '_>,
     scope: &SharedScopeIndex,
-    queued: Option<LastBrief>,
     cwd: &Path,
     session: Option<&SessionId>,
     source: StartSource,
@@ -1131,22 +1133,50 @@ fn session_start(
     // On resume and after compaction, only what changed since this
     // session's last delivered brief, committed or still queued.
     let previous = match (source, &me) {
-        (StartSource::Resume | StartSource::Compact, Some(s)) => LastBrief::newest(
-            reader
-                .deliveries_to(s)?
-                .into_iter()
-                .find(|d| {
-                    BRIEF_EVENTS.contains(&d.event)
-                        && d.events.iter().any(|what| {
-                            what == polylogue_model::DeliveryOutcome::Delivered.as_str()
-                        })
+        (StartSource::Resume | StartSource::Compact, Some(recipient)) => {
+            use polylogue_model::user::UserWrite;
+            let pending = brief.pending_deliveries;
+            let delivered = |id: &str| {
+                pending.iter().any(|request| {
+                    matches!(&request.request.write, UserWrite::DeliveryEvent {
+                        delivery, what: polylogue_model::DeliveryOutcome::Delivered, ..
+                    } if delivery == id)
                 })
-                .map(|d| LastBrief {
-                    at: d.at,
-                    seq: d.seq,
-                }),
-            queued,
-        ),
+            };
+            let stored = reader.deliveries_to(recipient)?;
+            let committed = stored
+                .iter()
+                .find(|delivery| {
+                    BRIEF_EVENTS.contains(&delivery.event)
+                        && (delivery.events.iter().any(|what| what == "delivered")
+                            || delivered(&delivery.id))
+                })
+                .map(|delivery| LastBrief {
+                    at: delivery.at,
+                    seq: delivery.seq,
+                });
+            let mut previous = committed;
+            for pending in pending.iter().rev() {
+                let request = &pending.request;
+                if let UserWrite::Deliver(delivery) = &request.write
+                    && delivery.recipient_id.as_deref() == Some(recipient.as_str())
+                    && BRIEF_EVENTS.contains(&delivery.event)
+                    && delivered(&request.id)
+                    && let Some(prepared_at) = pending.prepared_at
+                    && !stored.iter().any(|delivery| delivery.id == request.id)
+                {
+                    previous = LastBrief::newest(
+                        previous,
+                        Some(LastBrief {
+                            at: request.at,
+                            seq: prepared_at,
+                        }),
+                    );
+                    break;
+                }
+            }
+            previous
+        }
         _ => None,
     };
     let mut deadline = Deadline::default();
@@ -1525,7 +1555,7 @@ fn session_index(
     })
 }
 
-fn takeover(
+fn session_brief(
     reader: &Reader<'_>,
     session: &SessionId,
     budget: u64,
@@ -1586,7 +1616,7 @@ fn takeover(
     let _ = writeln!(text, "Messages available: {}", messages.len());
     let mut left_out = vec![LeftOut {
         what: "tool calls and their output".into(),
-        reason: "a takeover carries prompts, notes and the last answer".into(),
+        reason: "a session brief carries prompts, notes and the last answer".into(),
     }];
     if other_annotations > 0 {
         let _ = writeln!(
@@ -1694,7 +1724,7 @@ fn takeover(
     })
 }
 
-/// One message a recall found.
+/// One message a search brief found.
 struct Hit {
     session: String,
     message: String,
@@ -1703,12 +1733,12 @@ struct Hit {
     snippet: Option<String>,
 }
 
-/// A recall's query: messages with every word in prose, every word in
+/// A search brief's query: messages with every word in prose, every word in
 /// tool output and, with `similarity`, every message ranked by similarity
 /// to the whole text, ranked together by reciprocal rank fusion; with
 /// `directory`, sessions there rank in one more list. Also the name of
 /// each list, in `found_in`'s numbering.
-fn recall_query(
+fn search_query(
     words: &[String],
     text: &str,
     similarity: bool,
@@ -1746,7 +1776,7 @@ fn recall_query(
     Some((query, lists.iter().map(|(name, _)| *name).collect()))
 }
 
-fn recall(
+fn search_brief(
     brief: &BriefContext<'_, '_>,
     text_in: &str,
     cwd: Option<&Path>,
@@ -1759,6 +1789,7 @@ fn recall(
         context,
         ranking_identity,
         near,
+        ..
     } = *brief;
     let words = search::words(text_in);
     let text = text_in.trim();
@@ -1766,7 +1797,7 @@ fn recall(
     let mut similarity = near.is_some() && !text.is_empty();
     let mut similarity_failed = None;
     let found = loop {
-        let Some((query, indexes)) = recall_query(&words, text, similarity, directory.as_deref())
+        let Some((query, indexes)) = search_query(&words, text, similarity, directory.as_deref())
         else {
             break None;
         };
@@ -1775,7 +1806,7 @@ fn recall(
             crate::daemon::query::Ask {
                 text: &query,
                 cursor,
-                page_size: Some(RECALL_PAGE),
+                page_size: Some(SEARCH_PAGE),
                 why: false,
                 session: None,
                 context: std::sync::Arc::clone(context),
@@ -1792,7 +1823,7 @@ fn recall(
                 let rows = page
                     .value
                     .into_rows()
-                    .map_err(|f| recall_failure(&query, &f))?;
+                    .map_err(|f| search_failure(&query, &f))?;
                 break Some((rows, indexes));
             }
             // The provider could not embed the text: the words still search.
@@ -1800,7 +1831,7 @@ fn recall(
                 similarity = false;
                 similarity_failed = Some(f.error.message);
             }
-            Err(f) => return Err(recall_failure(&query, &f)),
+            Err(f) => return Err(search_failure(&query, &f)),
         }
     };
     let mut page: Vec<Hit> = Vec::new();
@@ -1998,14 +2029,14 @@ fn recall(
 #[cfg(test)]
 mod tests;
 
-/// A recall query's failure keeps the code it failed with.
-fn recall_failure(query: &str, failure: &command_surface::Failure) -> StoreError {
+/// A search brief query's failure keeps the code it failed with.
+fn search_failure(query: &str, failure: &command_surface::Failure) -> StoreError {
     StoreError::Selection {
         code: failure
             .code
             .as_deref()
             .and_then(polylogue_model::Code::from_name)
             .unwrap_or(polylogue_model::Code::Internal),
-        message: format!("recall query {query:?}: {}", failure.message),
+        message: format!("search brief query {query:?}: {}", failure.message),
     }
 }

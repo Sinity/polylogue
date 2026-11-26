@@ -1,5 +1,5 @@
-//! One-time operation: brings an `archive.db` of format 6 to format 7 in
-//! place, beside its segment log. Not part of the product; it is run on a
+//! One-time operation: brings an `archive.db` of format 6 to the current
+//! format (8) in place, beside its segment log. Not part of the product; it is run on a
 //! reflinked copy first and once on the operator's archive, then deleted.
 //!
 //! `cargo run -p polylogue-store --example archive_format_7 -- <archive root>`
@@ -24,6 +24,10 @@
 //! - a revision stored as `first` that continues an earlier chain is
 //!   `appended`;
 //! - `extent.capture_read` goes.
+//!
+//! Format 8, in place on the new file: a read's run record keeps its reading
+//! options as the caller wrote them (`show` and `hide` words, `neutral_names`,
+//! one `alternate`), and its hashes and its completion's follow.
 use polylogue_store::archive::writer::agreement::Chains;
 use polylogue_store::blobs::{ChainSource, StoredChain};
 use rusqlite::{Connection, params};
@@ -62,6 +66,14 @@ fn main() -> Result<(), Error> {
     let conn = Connection::open(&new)?;
     conn.pragma_update(None, "journal_mode", "wal")?;
     polylogue_store::schema::ensure_archive(&conn)?;
+    // The new file says the current format only once every step has run: a
+    // file a failed step leaves says the format before, which the product
+    // refuses to open as another format.
+    conn.pragma_update(
+        None,
+        "user_version",
+        polylogue_store::schema::ARCHIVE_VERSION - 1,
+    )?;
     conn.execute("ATTACH DATABASE ?1 AS old", [old.to_str().ok_or("path")?])?;
     conn.pragma_update(None, "foreign_keys", false)?;
     let renamed = rename_rollouts(&conn)?;
@@ -70,7 +82,11 @@ fn main() -> Result<(), Error> {
         new: &new,
     };
     println!("step\ttable\tbefore\tafter");
-    for step in STEPS.iter().filter(|step| step.from == 6) {
+    // Steps run in the order of the formats they bring an archive from.
+    if !STEPS.windows(2).all(|pair| pair[0].from <= pair[1].from) {
+        return Err("the steps are not in the order of their formats".into());
+    }
+    for step in STEPS {
         let tx = conn.unchecked_transaction()?;
         (step.run)(&tx, &context)?;
         tx.commit()?;
@@ -108,6 +124,11 @@ fn main() -> Result<(), Error> {
         return Err(format!("{violations} rows name rows that are not there").into());
     }
     conn.execute("DETACH DATABASE old", [])?;
+    conn.pragma_update(
+        None,
+        "user_version",
+        polylogue_store::schema::ARCHIVE_VERSION,
+    )?;
     conn.pragma_update(None, "wal_checkpoint", "TRUNCATE")?;
     let after = counts(&conn)?;
     drop(conn);
@@ -295,6 +316,12 @@ const STEPS: &[Step] = &[
         name: "chain rows",
         tables: &["chain"],
         run: chain_rows,
+    },
+    Step {
+        from: 7,
+        name: "reading options as written",
+        tables: &["query_run"],
+        run: read_options,
     },
 ];
 
@@ -517,4 +544,597 @@ fn chain_rows(conn: &Connection, context: &Context<'_>) -> Result<(), Error> {
         recorded.0.insert(chain, agreement);
     }
     Ok(())
+}
+
+/// A query run's ID, run and completion, as stored.
+type QueryRunRow = (String, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// Query runs a page at a time, in id order, so memory does not follow the
+/// table: each page's rows are read whole before `visit` sees them, and
+/// `visit` may update the rows it is given.
+fn each_query_run(
+    conn: &Connection,
+    mut visit: impl FnMut(&str, Option<Vec<u8>>, Option<Vec<u8>>) -> Result<(), Error>,
+) -> Result<u64, Error> {
+    const PAGE: i64 = 512;
+    let mut after = String::new();
+    let mut visited = 0;
+    loop {
+        let page: Vec<QueryRunRow> = conn
+            .prepare_cached(
+                "SELECT id, run, completion FROM main.query_run WHERE id > ?1 ORDER BY id LIMIT ?2",
+            )?
+            .query_map(params![after, PAGE], |r| <(_, _, _)>::try_from(r))?
+            .collect::<rusqlite::Result<_>>()?;
+        let Some((last, _, _)) = page.last() else {
+            return Ok(visited);
+        };
+        after = last.clone();
+        for (id, run, completion) in page {
+            visited += 1;
+            visit(&id, run, completion)?;
+        }
+    }
+}
+
+fn unpack(bytes: &[u8]) -> Result<serde_json::Value, Error> {
+    Ok(serde_json::from_slice(&zstd::decode_all(bytes)?)?)
+}
+
+/// Runs whose reading options are in format 7's shape.
+fn earlier_shaped(conn: &Connection) -> Result<u64, Error> {
+    let mut n = 0;
+    each_query_run(conn, |_, run, _| {
+        if let Some(run) = run {
+            n += u64::from(rewrite(&mut unpack(&run)?, &mut 0) > 0);
+        }
+        Ok(())
+    })?;
+    Ok(n)
+}
+
+/// Format 8 records a read's options as the caller writes them; the run's
+/// binding and record hashes, and its completion's copies of them, are
+/// computed again over the rewritten run. Nothing else holds those hashes:
+/// a run is cited by its ID, which does not change.
+///
+/// Not carried, on purpose: a run that rendered several alternates (the
+/// `reading.alternates` setting) names none, so reading it again follows
+/// the setting, as a read that names none does; `latest` goes, as no
+/// surface ever set it. The step prints how many runs had several
+/// alternates.
+fn read_options(conn: &Connection, _: &Context<'_>) -> Result<(), Error> {
+    let before = earlier_shaped(conn)?;
+    let pack = |value: &[u8]| zstd::bulk::compress(value, 1);
+    let (mut rewritten, mut several) = (0, 0);
+    let visited = each_query_run(conn, |id, run, completion| {
+        let Some(run) = run else { return Ok(()) };
+        let mut value = unpack(&run)?;
+        if rewrite(&mut value, &mut several) == 0 {
+            return Ok(());
+        }
+        let run: polylogue_model::query_objects::QueryRun = serde_json::from_value(value)?;
+        let binding_hash = run.binding_hash()?;
+        let run_hash = run.record_hash()?;
+        conn.execute(
+            "UPDATE main.query_run SET run = ?2, binding_hash = ?3, run_hash = ?4 WHERE id = ?1",
+            params![
+                id,
+                pack(&serde_json::to_vec(&run)?)?,
+                binding_hash.to_string(),
+                run_hash.to_string()
+            ],
+        )?;
+        if let Some(completion) = completion {
+            let mut outcome: polylogue_model::query_objects::QueryRunOutcome =
+                serde_json::from_slice(&zstd::decode_all(&completion[..])?)?;
+            outcome.binding_hash = binding_hash;
+            outcome.run_hash = run_hash;
+            conn.execute(
+                "UPDATE main.query_run SET completion = ?2 WHERE id = ?1",
+                params![id, pack(&serde_json::to_vec(&outcome)?)?],
+            )?;
+        }
+        rewritten += 1;
+        Ok(())
+    })?;
+    let after = earlier_shaped(conn)?;
+    println!("reading options as written	runs visited	{visited}	{visited}");
+    println!("reading options as written	runs rewritten	-	{rewritten}");
+    println!("reading options as written	runs in the earlier shape	{before}	{after}");
+    println!("reading options as written	runs that rendered several alternates	{several}	-");
+    if after != 0 {
+        return Err(format!("{after} runs keep the earlier reading options").into());
+    }
+    Ok(())
+}
+
+/// Rewrites every read presentation's options under `value` to the shape
+/// the caller writes, says how many it rewrote, and counts those that had
+/// rendered several alternates in `several`.
+fn rewrite(value: &mut serde_json::Value, several: &mut u64) -> usize {
+    use serde_json::Value;
+    let mut n = 0;
+    match value {
+        Value::Object(object) => {
+            if object.get("kind").and_then(Value::as_str) == Some("read")
+                && let Some(options) = object.get_mut("options")
+                && let Some(written) = as_written(options)
+            {
+                if options["alternates"]
+                    .as_array()
+                    .is_some_and(|all| all.len() > 1)
+                {
+                    *several += 1;
+                }
+                *options = written;
+                n += 1;
+            }
+            for (_, child) in object.iter_mut() {
+                n += rewrite(child, several);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                n += rewrite(item, several);
+            }
+        }
+        _ => {}
+    }
+    n
+}
+
+/// Format 7's reading options as the words that give them, or none when
+/// they are already in format 8's shape. Format 7 held each item kind
+/// expanded (`tools: "full"` with `output_lines`, `inherited: true`...), its
+/// resolved alternates and `for_others`; `latest` was never set. This is the
+/// inverse format 7 had (`ReadOptions::show_hide_words`): its defaults did
+/// not depend on the view, so a word is written exactly where a value
+/// differs from its one default.
+fn as_written(options: &serde_json::Value) -> Option<serde_json::Value> {
+    use serde_json::{Map, Value, json};
+    const EARLIER: &[&str] = &[
+        "tools",
+        "thinking",
+        "harness",
+        "output_lines",
+        "inherited",
+        "branches",
+        "turns",
+        "annotations",
+        "for_others",
+        "alternates",
+        "spawns",
+        "context_meter",
+        "latest",
+    ];
+    let object = options.as_object()?;
+    if !object.keys().any(|key| EARLIER.contains(&key.as_str())) {
+        return None;
+    }
+    let (mut show, mut hide) = (Vec::<String>::new(), Vec::<String>::new());
+    let level = |name: &str| object.get(name).and_then(Value::as_str);
+    let lines = object
+        .get("output_lines")
+        .and_then(Value::as_u64)
+        .unwrap_or(100);
+    match level("tools") {
+        Some("full") if lines == 0 => show.push("tools:full".into()),
+        Some("full") => show.push(format!("tools:{lines}")),
+        Some("headers") => show.push("tools:line".into()),
+        Some("none") => hide.push("tools".into()),
+        _ => {}
+    }
+    for name in ["thinking", "harness"] {
+        match level(name) {
+            Some("full") => show.push(format!("{name}:full")),
+            Some("headers") => show.push(format!("{name}:line")),
+            Some("none") => hide.push(name.into()),
+            _ => {}
+        }
+    }
+    let flag =
+        |name: &str, default: bool| object.get(name).and_then(Value::as_bool).unwrap_or(default);
+    for (field, word, default) in [
+        ("inherited", "inherited", false),
+        ("branches", "branches", false),
+        ("annotations", "annotations", true),
+        ("turns", "turns", false),
+        ("context_meter", "context", false),
+    ] {
+        match (flag(field, default), default) {
+            (true, false) => show.push(word.into()),
+            (false, true) => hide.push(word.into()),
+            _ => {}
+        }
+    }
+    match object.get("spawns") {
+        Some(Value::String(hidden)) if hidden == "hidden" => hide.push("spawns".into()),
+        Some(Value::Object(inline)) => match inline.get("inline").map(|inline| &inline["depth"]) {
+            Some(Value::Number(depth)) if depth.as_u64() == Some(0) => {
+                show.push("spawns:card".into())
+            }
+            Some(Value::Number(depth)) => show.push(format!("spawns:{depth}")),
+            _ => show.push("spawns:full".into()),
+        },
+        _ => {}
+    }
+    let mut written = Map::new();
+    written.insert(
+        "view".into(),
+        object.get("view").cloned().unwrap_or(json!("transcript")),
+    );
+    if !show.is_empty() {
+        written.insert("show".into(), json!(show));
+    }
+    if !hide.is_empty() {
+        written.insert("hide".into(), json!(hide));
+    }
+    for key in ["around", "diff", "at"] {
+        if let Some(value) = object.get(key).filter(|value| !value.is_null()) {
+            written.insert(key.into(), value.clone());
+        }
+    }
+    // The run rendered these alternates; one of them is the one the caller
+    // would name, several came from the setting, which the read follows.
+    if let Some([alternate]) = object
+        .get("alternates")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+    {
+        written.insert("alternate".into(), alternate.clone());
+    }
+    if flag("physical", false) {
+        written.insert("physical".into(), json!(true));
+    }
+    if flag("for_others", false) {
+        written.insert("neutral_names".into(), json!(true));
+    }
+    Some(Value::Object(written))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A read run written in format 7's shape: its options expanded, its
+    /// hashes those the earlier build computed.
+    fn earlier_run() -> (serde_json::Value, serde_json::Value) {
+        let options = serde_json::json!({
+            "view": "context",
+            "tools": "full",
+            "output_lines": 5,
+            "thinking": "none",
+            "harness": "headers",
+            "inherited": true,
+            "branches": false,
+            "turns": false,
+            "annotations": false,
+            "for_others": true,
+            "alternates": ["translation:pl"],
+            "spawns": {"inline": {"depth": 2}},
+            "context_meter": true,
+            "physical": false,
+            "at": "2026-11-21T10:00:00Z",
+            "latest": false
+        });
+        let written = serde_json::json!({
+            "view": "context",
+            "show": ["tools:5", "harness:line", "inherited", "context", "spawns:2"],
+            "hide": ["thinking", "annotations"],
+            "at": "2026-11-21T10:00:00Z",
+            "alternate": "translation:pl",
+            "neutral_names": true
+        });
+        (options, written)
+    }
+
+    /// A run of an object read as the product writes it, with its read
+    /// options replaced by `options`.
+    fn run_json(options: &serde_json::Value) -> serde_json::Value {
+        use polylogue_model::query_objects::{
+            ExecutionPresentation, ObjectExecutionBinding, QueryRun, RunBinding,
+        };
+        let hash = polylogue_model::BlobHash::of(b"run").to_string();
+        let run = QueryRun {
+            id: polylogue_model::RunId::parse(&format!(
+                "{}-{}-{}-{}-{}",
+                &hash[..8],
+                &hash[8..12],
+                &hash[12..16],
+                &hash[16..20],
+                &hash[20..32]
+            ))
+            .unwrap(),
+            question: None,
+            at: polylogue_model::Timestamp::from_unix_ms(1_763_000_000_000).unwrap(),
+            read_at: polylogue_model::ChangePosition {
+                generation: "synthetic".into(),
+                index: 1,
+                archive: 1,
+            },
+            machine: "synthetic-machine".into(),
+            authorship: polylogue_model::authorship::Authorship {
+                author: polylogue_model::Author::Operator,
+                via: polylogue_model::authorship::Channel::Cli,
+            },
+            binding: RunBinding::OriginalObject {
+                execution: Box::new(ObjectExecutionBinding {
+                    reference: polylogue_model::Reference::parse("request:synthetic-request")
+                        .unwrap(),
+                    content_hash: polylogue_model::BlobHash::of(b"request"),
+                    scope_fingerprint: None,
+                    versions: Default::default(),
+                    presentation: ExecutionPresentation::Read {
+                        options: Default::default(),
+                        delivery: polylogue_model::read::ReadDelivery::Page,
+                        format: polylogue_model::read::Format::Json,
+                        page_budget: None,
+                        direct_source: None,
+                    },
+                    accepted_request: None,
+                }),
+            },
+        };
+        let mut value = serde_json::to_value(run).unwrap();
+        value["binding"]["execution"]["presentation"]["options"] = options.clone();
+        value
+    }
+
+    #[test]
+    fn earlier_reading_options_become_the_words_that_give_them() {
+        let (earlier, written) = earlier_run();
+        assert_eq!(as_written(&earlier), Some(written.clone()));
+        assert_eq!(as_written(&written), None);
+        // Several alternates came from the setting; the rewritten read
+        // follows the setting again.
+        let several = serde_json::json!({"alternates": ["a", "b"], "view": "transcript"});
+        assert_eq!(
+            as_written(&several),
+            Some(serde_json::json!({"view": "transcript"}))
+        );
+    }
+
+    use polylogue_model::read::{Expansion, ReadOptions, SpawnDisplay, View};
+
+    /// What format 7's options read as, by its own accessors: each item kind
+    /// with its one default, whatever the view, and tool output lines only
+    /// when tools are shown whole. Inline spawns to depth 0 place no inline
+    /// reading, as cards do.
+    type Effective = (
+        Expansion,
+        Expansion,
+        Expansion,
+        Option<u64>,
+        [bool; 5],
+        SpawnDisplay,
+    );
+
+    fn earlier_effective(options: &serde_json::Value) -> Effective {
+        let level = |name: &str| match options.get(name).and_then(serde_json::Value::as_str) {
+            Some("none") => Expansion::None,
+            Some("full") => Expansion::Full,
+            _ => Expansion::Collapsed,
+        };
+        let flag = |name: &str, default: bool| {
+            options
+                .get(name)
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(default)
+        };
+        let tools = level("tools");
+        let spawns = match options.get("spawns") {
+            Some(serde_json::Value::String(hidden)) if hidden == "hidden" => SpawnDisplay::Hidden,
+            Some(serde_json::Value::Object(inline)) => match inline["inline"]["depth"].as_u64() {
+                Some(0) => SpawnDisplay::Card,
+                Some(depth) => SpawnDisplay::Inline {
+                    depth: Some(depth as u32),
+                },
+                None => SpawnDisplay::Inline { depth: None },
+            },
+            _ => SpawnDisplay::Card,
+        };
+        (
+            tools,
+            level("thinking"),
+            level("harness"),
+            (tools == Expansion::Full).then(|| {
+                options
+                    .get("output_lines")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(100)
+            }),
+            [
+                flag("inherited", false),
+                flag("branches", false),
+                flag("annotations", true),
+                flag("turns", false),
+                flag("context_meter", false),
+            ],
+            spawns,
+        )
+    }
+
+    fn written_effective(options: &ReadOptions) -> Effective {
+        let tools = options.tools();
+        (
+            tools,
+            options.thinking(),
+            options.harness(),
+            (tools == Expansion::Full).then(|| options.output_lines()),
+            [
+                options.inherited(),
+                options.branches(),
+                options.annotations(),
+                options.turns(),
+                options.context_meter(),
+            ],
+            options.spawns(),
+        )
+    }
+
+    /// Every view and every value of format 7's fields reads the same after
+    /// the step as before. Each accessor reads only the words of its own
+    /// item kind, so the levels (with output lines) and the flags with the
+    /// spawn forms are crossed in two groups, each over every view.
+    #[test]
+    fn written_words_read_as_the_earlier_options_did() {
+        let levels = [None, Some("none"), Some("headers"), Some("full")];
+        let spawns = [
+            None,
+            Some(serde_json::json!("hidden")),
+            Some(serde_json::json!("card")),
+            Some(serde_json::json!({"inline": {"depth": null}})),
+            Some(serde_json::json!({"inline": {"depth": 0}})),
+            Some(serde_json::json!({"inline": {"depth": 3}})),
+        ];
+        let flags = [
+            "inherited",
+            "branches",
+            "annotations",
+            "turns",
+            "context_meter",
+        ];
+        let check = |options: serde_json::Value| {
+            let written = as_written(&options).unwrap_or_else(|| options.clone());
+            let read: ReadOptions = serde_json::from_value(written.clone())
+                .unwrap_or_else(|e| panic!("{written}: {e}"));
+            assert_eq!(
+                written_effective(&read),
+                earlier_effective(&options),
+                "{options} became {written}"
+            );
+            assert_eq!(read.view.name(), options["view"].as_str().unwrap());
+        };
+        let mut cases = 0;
+        for view in View::ALL {
+            for tools in levels {
+                for lines in [None, Some(0), Some(5), Some(100)] {
+                    for thinking in levels {
+                        for harness in levels {
+                            let mut options =
+                                serde_json::json!({"view": view.name(), "latest": false});
+                            for (name, level) in [
+                                ("tools", tools),
+                                ("thinking", thinking),
+                                ("harness", harness),
+                            ] {
+                                if let Some(level) = level {
+                                    options[name] = serde_json::json!(level);
+                                }
+                            }
+                            if let Some(lines) = lines {
+                                options["output_lines"] = serde_json::json!(lines);
+                            }
+                            check(options);
+                            cases += 1;
+                        }
+                    }
+                }
+            }
+            for set in 0..(1u32 << (2 * flags.len())) {
+                for spawn in &spawns {
+                    let mut options = serde_json::json!({"view": view.name(), "for_others": false});
+                    // Each flag absent, false or true: two bits each, 3 meaning absent.
+                    let mut skip = false;
+                    for (n, name) in flags.iter().enumerate() {
+                        match (set >> (2 * n)) & 3 {
+                            0 => options[*name] = serde_json::json!(false),
+                            1 => options[*name] = serde_json::json!(true),
+                            2 => {}
+                            _ => skip = true,
+                        }
+                    }
+                    if skip {
+                        continue;
+                    }
+                    if let Some(spawn) = spawn {
+                        options["spawns"] = spawn.clone();
+                    }
+                    check(options);
+                    cases += 1;
+                }
+            }
+        }
+        assert_eq!(cases, View::ALL.len() * (4 * 4 * 4 * 4 + 243 * 6));
+    }
+
+    /// The step rewrites an archive's read runs, recomputes both hashes in
+    /// the row and in its completion, and leaves other runs as they were.
+    #[test]
+    fn read_runs_are_rewritten_with_their_hashes() {
+        let dir = tempfile::tempdir().unwrap();
+        let conn = Connection::open(dir.path().join("archive.db")).unwrap();
+        polylogue_store::schema::ensure_archive(&conn).unwrap();
+        let (earlier, written) = earlier_run();
+        let run = run_json(&earlier);
+        let id = run["id"].as_str().unwrap().to_owned();
+        let pack = |value: &serde_json::Value| {
+            zstd::bulk::compress(&serde_json::to_vec(value).unwrap(), 1).unwrap()
+        };
+        let old_hash = "0".repeat(64);
+        let completion = serde_json::to_value(polylogue_model::query_objects::QueryRunOutcome {
+            run: polylogue_model::RunId::parse(&id).unwrap(),
+            binding_hash: polylogue_model::BlobHash::of(b"earlier binding"),
+            run_hash: polylogue_model::BlobHash::of(b"earlier run"),
+            at: polylogue_model::Timestamp::from_unix_ms(1_763_000_000_001).unwrap(),
+            outcome: polylogue_model::query_objects::RunOutcome::Ok,
+            count: Some(1),
+            exact: true,
+            next: None,
+        })
+        .unwrap();
+        conn.execute(
+            "INSERT INTO query_run(id, binding_hash, run_hash, object_ref, run, completion)
+             VALUES (?1, ?2, ?2, ?3, ?4, ?5)",
+            params![
+                id,
+                old_hash,
+                run["binding"]["execution"]["reference"].as_str().unwrap(),
+                pack(&run),
+                pack(&completion)
+            ],
+        )
+        .unwrap();
+        assert_eq!(earlier_shaped(&conn).unwrap(), 1);
+        let context = Context {
+            root: dir.path(),
+            new: &dir.path().join("archive.db"),
+        };
+        read_options(&conn, &context).unwrap();
+        assert_eq!(earlier_shaped(&conn).unwrap(), 0);
+        let (stored, hashes, done): (Vec<u8>, (String, String), Vec<u8>) = conn
+            .query_row(
+                "SELECT run, binding_hash, run_hash, completion FROM query_run WHERE id = ?1",
+                [&id],
+                |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?), r.get(3)?)),
+            )
+            .unwrap();
+        let stored: polylogue_model::query_objects::QueryRun =
+            serde_json::from_slice(&zstd::decode_all(&stored[..]).unwrap()).unwrap();
+        let polylogue_model::query_objects::RunBinding::OriginalObject { execution } =
+            &stored.binding
+        else {
+            panic!("an object run")
+        };
+        let polylogue_model::query_objects::ExecutionPresentation::Read { options, .. } =
+            &execution.presentation
+        else {
+            panic!("a read")
+        };
+        assert_eq!(serde_json::to_value(options).unwrap(), written);
+        assert_eq!(
+            hashes,
+            (
+                stored.binding_hash().unwrap().to_string(),
+                stored.record_hash().unwrap().to_string()
+            )
+        );
+        let done: polylogue_model::query_objects::QueryRunOutcome =
+            serde_json::from_slice(&zstd::decode_all(&done[..]).unwrap()).unwrap();
+        assert_eq!(
+            (done.binding_hash.to_string(), done.run_hash.to_string()),
+            hashes
+        );
+    }
 }

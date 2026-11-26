@@ -341,8 +341,8 @@ impl ShowProfile {
             tools: options.tools(),
             thinking: options.thinking(),
             harness: options.harness(),
-            branches: options.branches,
-            output_lines: options.output_lines,
+            branches: options.branches(),
+            output_lines: options.output_lines(),
         }
     }
 

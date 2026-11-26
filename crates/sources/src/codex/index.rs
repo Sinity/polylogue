@@ -4,6 +4,11 @@
 //! `session_index.jsonl` names threads (`{id, thread_name, updated_at}`);
 //! a later line renames.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::session_id;
 use crate::lines::Record;
 use crate::parse::{Output, Parser};

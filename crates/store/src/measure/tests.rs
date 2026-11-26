@@ -849,4 +849,127 @@ fn survival_refuses_a_time_bounded_scope() {
     assert!(survival::first_failure(&r, &selection, false).is_err());
 }
 
+/// Status's quota: each limit's newest reading within its window, a
+/// declared limit nothing reported as `no_reading`, and a measurement whose
+/// window has ended as `window_reset` (docs/operations.md#status).
+#[test]
+fn current_windows_hold_the_newest_reading_of_each_limit() {
+    use quota::{CurrentUse, CurrentWindow, NotMeasured};
+    let ts = |ms| polylogue_model::Timestamp::from_unix_ms(ms).unwrap();
+    let minute = 60_000;
+    let hour = 60 * minute;
+    let dir = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(dir.path()).unwrap();
+    let codex = session(&mut f, "codex:s");
+    for (id, at, used) in [("codex:a", T0, 10.0), ("codex:b", T0 + 30 * minute, 25.0)] {
+        let pk = model_message(&mut f, codex, id, "gpt-5", at, &tokens(1, 0, None, 1));
+        let q = reading("codex", 300, false, Some(used), T0 + 2 * hour, None);
+        f.usage(pk, &tokens(1, 0, None, 1), Some(q)).unwrap();
+    }
+    let claude = session(&mut f, "claude-code:s");
+    let pk = model_message(
+        &mut f,
+        claude,
+        "claude-code:x",
+        "claude-opus-4-1",
+        T0 + 10 * minute,
+        &tokens(1, 0, Some(0), 1),
+    );
+    let rejected = reading(
+        "seven_day",
+        10_080,
+        false,
+        Some(100.0),
+        T0 + 2 * DAY,
+        Some("rejected"),
+    );
+    f.usage(pk, &tokens(1, 0, Some(0), 1), Some(rejected))
+        .unwrap();
+    f.derive().unwrap();
+    let pool = f.reads().unwrap();
+    let r = pool.reader().unwrap();
+    let window = |tool: &str, limit: &str, minutes, state| CurrentWindow {
+        tool: tool.into(),
+        limit: limit.into(),
+        window_minutes: minutes,
+        state,
+    };
+    let five_hour = window(
+        "claude-code",
+        "five_hour",
+        300,
+        CurrentUse::NotMeasured {
+            reason: NotMeasured::NoReading,
+        },
+    );
+    let seven_day = window(
+        "claude-code",
+        "seven_day",
+        10_080,
+        CurrentUse::Measured {
+            used_percent: 100.0,
+            measured_at: ts(T0 + 10 * minute),
+            resets_at: Some(ts(T0 + 2 * DAY)),
+            status: Some("rejected".into()),
+        },
+    );
+    assert_eq!(
+        quota::current(&r, T0 + hour, KNOWN).unwrap(),
+        vec![
+            five_hour.clone(),
+            seven_day.clone(),
+            window(
+                "codex",
+                "codex",
+                300,
+                CurrentUse::Measured {
+                    used_percent: 25.0,
+                    measured_at: ts(T0 + 30 * minute),
+                    resets_at: Some(ts(T0 + 2 * hour)),
+                    status: None,
+                },
+            ),
+        ]
+    );
+    assert_eq!(
+        quota::current(&r, T0 + 3 * hour, KNOWN).unwrap(),
+        vec![
+            five_hour,
+            seven_day,
+            window(
+                "codex",
+                "codex",
+                300,
+                CurrentUse::NotMeasured {
+                    reason: NotMeasured::WindowReset,
+                },
+            ),
+        ]
+    );
+    // Eight days on, nothing is within the longest window.
+    assert_eq!(
+        quota::current(&r, T0 + 8 * DAY, KNOWN)
+            .unwrap()
+            .into_iter()
+            .map(|window| (window.tool, window.limit, window.state))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "claude-code".to_owned(),
+                "five_hour".to_owned(),
+                CurrentUse::NotMeasured {
+                    reason: NotMeasured::NoReading
+                }
+            ),
+            (
+                "claude-code".to_owned(),
+                "seven_day".to_owned(),
+                CurrentUse::NotMeasured {
+                    reason: NotMeasured::NoReading
+                }
+            ),
+        ]
+    );
+}
+
 mod reports;

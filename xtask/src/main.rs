@@ -1,5 +1,6 @@
 mod bench;
 mod common_link;
+mod development;
 mod nix;
 mod prune;
 mod selection;
@@ -69,7 +70,7 @@ enum Cli {
     /// tests those changes can affect and the Nix checks when their inputs
     /// changed. Clippy reuses
     /// every unchanged crate's result, so `check --changed` costs what the
-    /// change touches: the loop while editing.
+    /// change touches.
     Check {
         #[command(flatten)]
         base: Base,
@@ -79,6 +80,11 @@ enum Cli {
     Warm,
     /// The end-to-end tests: the real daemon, CLI and MCP server.
     Scenarios,
+    /// The checkout's daemon, standalone, in a sandbox on a scratch root:
+    /// nothing of the caller's environment reaches it, and its web reader
+    /// has a free port. Prints where it serves and the CLI script that
+    /// reaches it; stopping the command stops the daemon.
+    Run(development::Development),
     /// Tests only: everything, the tests changes can affect, or a selection.
     Test {
         /// Build every test binary without running any (a cloud
@@ -451,6 +457,7 @@ fn main() -> ExitCode {
                 )?)
             })
         }),
+        Cli::Run(options) => exit_code(development::execute(options)),
         Cli::Bench(command) => bench::execute(command),
         Cli::LinkCommon { checkout } => exit_code(common_link::link(checkout)),
         Cli::UnlinkCommon => exit_code(common_link::unlink()),

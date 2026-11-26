@@ -167,10 +167,10 @@ const EMBEDDINGS_ADDITIONS: &[&str] = &[
 ];
 
 /// The register format version.
-pub const ARCHIVE_VERSION: u32 = 7;
+pub const ARCHIVE_VERSION: u32 = 8;
 
 /// The index schema and row encoding version. Reading versions are independent.
-pub const INDEX_VERSION: u32 = 17;
+pub const INDEX_VERSION: u32 = 18;
 
 /// The SQLite `application_id` of an `archive.db` or `index.db` written at or
 /// after the baseline ("PLG1"). A versioned file without it was written by an

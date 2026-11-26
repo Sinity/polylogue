@@ -1,5 +1,10 @@
 //! Keep the model-facing streams beside the provider's original display data.
 
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use polylogue_model::JsonExt;
 use polylogue_model::{Block, ErrorReason, Json, ToolOutcome, UnknownReason};
 

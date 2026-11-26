@@ -2,6 +2,56 @@
 //! to fail, panic, stop the process or hold the thread; without it every
 //! check compiles to nothing, and no shipped build enables the feature.
 
+/// Points checked by the store, engine and application.
+#[cfg(feature = "faults")]
+const DECLARED_POINTS: &[&str] = &[
+    "assets.install",
+    "bytes.rows",
+    "capture.after_commit",
+    "capture.between_put_and_commit",
+    "completion.before_commit",
+    "completion.full_snapshot",
+    "database.after_gone",
+    "database.after_row",
+    "import.after_authored_restore",
+    "import.before_authored_restore",
+    "import.rows",
+    "index.after_creation",
+    "index.after_set_aside",
+    "index.build.after_finish_sync",
+    "index.build.before_rename",
+    "index.build.composing",
+    "index.build.loading",
+    "index.build.prepare",
+    "index.deferred",
+    "parse",
+    "parser.checkpoint",
+    "pass.admit",
+    "pool.chain_reply",
+    "read.annotation_validity",
+    "read.chains_behind_index",
+    "read.query",
+    "read.source_range",
+    "read.watched_inputs",
+    "reparse.commit",
+    "reparse.prepare",
+    "repo_lookup.refresh",
+    "search.before_queue",
+    "segment.after_append",
+    "segment.after_sync",
+    "tool_database.comparison_commit",
+    "vectors.read",
+    "write.archive_commit",
+    "write.copy_reading",
+    "write.copy_table",
+    "write.coverage",
+    "write.index_commit",
+    "write.input",
+    "write.register_sync",
+    "write.replay_rows",
+    "write.user",
+];
+
 /// What an armed point does when reached.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
@@ -33,13 +83,16 @@ mod armed {
     /// Arms `point` for subjects containing `subject`: the first `skip`
     /// reaches pass, the next `times` act.
     pub fn arm(point: &str, subject: &str, action: Action, skip: u32, times: u32) {
+        assert!(
+            super::DECLARED_POINTS.contains(&point),
+            "undeclared fault point: {point}"
+        );
         POINTS
             .locked()
             .push((point.to_owned(), subject.to_owned(), action, skip, times));
     }
 
-    /// `(point, subject, thread name)` of each reach of a point armed with
-    /// [`Action::Record`].
+    /// `(point, subject, thread name)` of each action fired at an armed point.
     static RECORDED: Mutex<Vec<(String, String, String)>> = Mutex::new(Vec::new());
 
     pub(super) fn record(point: &str, subject: &str) {
@@ -49,7 +102,7 @@ mod armed {
             .push((point.to_owned(), subject.to_owned(), thread));
     }
 
-    /// The reaches of `point` recorded so far, in order, as
+    /// The actions fired at `point` so far, in order, as
     /// `(subject, thread name)`.
     pub fn recorded(point: &str) -> Vec<(String, String)> {
         RECORDED
@@ -148,21 +201,31 @@ pub use armed::{arm, clear, held, recorded, release, wait_held, wait_held_within
 #[inline]
 pub fn check(point: &str, subject: &str) -> crate::Result<()> {
     #[cfg(feature = "faults")]
-    match armed::take(point, subject) {
-        Some(Action::Fail) => {
-            // An injected failure stands for a step that could not
-            // complete (a sync, a commit), never a refusal of content.
-            return Err(crate::StoreError::Io(std::io::Error::other(format!(
-                "injected fault at {point} ({subject})"
-            ))));
+    {
+        assert!(
+            DECLARED_POINTS.contains(&point),
+            "undeclared fault point: {point}"
+        );
+        let action = armed::take(point, subject);
+        if action.is_some() {
+            armed::record(point, subject);
         }
-        Some(Action::Panic) => panic!("injected panic at {point} ({subject})"),
-        Some(Action::StopProcess) => {
-            stop_process();
+        match action {
+            Some(Action::Fail) => {
+                // An injected failure stands for a step that could not
+                // complete (a sync, a commit), never a refusal of content.
+                return Err(crate::StoreError::Io(std::io::Error::other(format!(
+                    "injected fault at {point} ({subject})"
+                ))));
+            }
+            Some(Action::Panic) => panic!("injected panic at {point} ({subject})"),
+            Some(Action::StopProcess) => {
+                stop_process();
+            }
+            Some(Action::Hold) => armed::hold(),
+            Some(Action::Record) => {}
+            None => {}
         }
-        Some(Action::Hold) => armed::hold(),
-        Some(Action::Record) => armed::record(point, subject),
-        None => {}
     }
     let _ = (point, subject);
     Ok(())

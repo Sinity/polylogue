@@ -366,15 +366,18 @@ impl Archive {
         }
     }
 
-    /// The steps, rate and estimates of the build in progress.
-    pub fn build_progress(&self) -> Option<super::build_progress::BuildProgress> {
+    /// The build in progress with its steps, rate and estimates, read under
+    /// one lock so a build that starts or ends meanwhile never gives one
+    /// without the other.
+    pub fn build_progress(&self) -> Option<(IndexBuild, super::build_progress::BuildProgress)> {
         let inner = self.index_build.inner();
-        inner.file?;
-        Some(
+        let build = inner.progress()?;
+        Some((
+            build,
             inner
                 .measured
                 .report(std::time::Instant::now(), crate::timing::writer_seconds()),
-        )
+        ))
     }
 }
 

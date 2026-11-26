@@ -1,4 +1,9 @@
 //! Repeated arrays along an OTLP-style field path; wrapper values are discarded.
+/// Version of the rows this module produces.
+pub const VERSION: u32 = 1;
+
+parser_modules! {}
+
 use super::*;
 use serde::de::{Error as _, IgnoredAny, MapAccess};
 

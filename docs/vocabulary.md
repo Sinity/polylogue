@@ -255,6 +255,9 @@ generated page of the thing they belong to, or on the area page that owns them.
 - **fusion**: ranking rows by their places in several ordered lists.
 - **warm state**: derived state the daemon keeps between requests, each item
   keyed by what it depends on (`docs/latency.md`).
+- **status snapshot**: what `status` reads from the index, read after each
+  commit; a status reply **answers from** the snapshot, an index build, or
+  nothing read yet (`docs/operations.md`).
 
 ## Reading
 
@@ -483,6 +486,8 @@ generated page of the thing they belong to, or on the area page that owns them.
   resolves it.
 
 ## The daemon and its surfaces
+
+- **worker**: work following committed changes. It is **running**, **failing** while a transient failure waits for another commit, or **halted** when repeating the work cannot end its failure.
 
 - **daemon**: the one process on the archive, the background service; it
   holds the lock, runs the two writers and serves every client.

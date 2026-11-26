@@ -17,6 +17,11 @@ use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
 pub const VERSION: u32 = 5;
 
+parser_modules! {
+    mod files;
+    mod grok;
+}
+
 use crate::document::first_byte;
 use crate::document::{Sink, first_key, message_id, session_id, time_of};
 use crate::fields::ExpectedType as T;
@@ -175,8 +180,6 @@ pub fn session_for(
     session_id(origin_of(provider), provider_session_id)
 }
 
-mod files;
-mod grok;
 pub use files::files;
 
 pub struct Capture;

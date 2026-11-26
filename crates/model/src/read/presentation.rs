@@ -213,7 +213,7 @@ impl PresentationMap {
 impl AlternateText {
     /// A stale alternate applies only when the reader names its key.
     pub fn is_active(&self, options: &ReadOptions) -> bool {
-        !self.mark.stale || options.alternates.contains(&self.mark.key)
+        !self.mark.stale || options.alternate.as_deref() == Some(self.mark.key.as_str())
     }
 }
 fn body_key(source: &Source) -> BodyKey {
