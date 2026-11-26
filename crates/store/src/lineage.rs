@@ -30,12 +30,13 @@ pub(crate) fn is_lineage(kind: &str) -> bool {
     matches!(kind, "spawn" | "fork" | "continuation" | "resume")
 }
 
-/// The visible incoming relations, including their stored presentation order.
+/// The visible incoming relations, in the order of their identity.
 /// Only the affected child's indexed edge set is read while writing.
 pub(crate) fn relation_identity(conn: &Connection, child: &str) -> Result<String> {
     conn.value(
-        "SELECT json_group_array(json_array(pk,parent_id,child_id,kind,how,branch_point,spawning_call,copies_prefix))
-         FROM (SELECT * FROM session_link WHERE child_id=?1 ORDER BY pk)",
+        "SELECT json_group_array(json_array(parent_id,child_id,kind,how,branch_point,spawning_call,copies_prefix))
+         FROM (SELECT * FROM session_link WHERE child_id=?1
+               ORDER BY parent_id, kind, how, branch_point, spawning_call)",
         [child],
     )?
     .ok_or_else(|| crate::StoreError::internal("an aggregate read no row"))
@@ -96,9 +97,11 @@ row! {
     }
     statements {
         const OF_PARENT = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
-            FROM session_link INDEXED BY session_link_key WHERE parent_id = ?1 ORDER BY pk";
+            FROM session_link INDEXED BY session_link_key WHERE parent_id = ?1
+            ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call";
         const OF_CHILD = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
-            FROM session_link INDEXED BY session_link_child WHERE child_id = ?1 ORDER BY pk";
+            FROM session_link INDEXED BY session_link_child WHERE child_id = ?1
+            ORDER BY parent_id, child_id, kind, how, branch_point, spawning_call";
     }
 }
 
