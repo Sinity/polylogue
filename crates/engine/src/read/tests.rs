@@ -753,7 +753,9 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         let (mut engine, lock) = crate::import::tests::engine(&home, first.len() as u64);
         fault::clear();
         // The real pool failure boundary is before provider parsing and after
-        // byte preparation. Reopen retries that same failing parser boundary.
+        // byte preparation. The failure stands at the stored length, so a
+        // reopen reads nothing of the chain again (docs/archive.md, parse
+        // versions).
         fault::arm(
             "parse",
             &home.file("failed.jsonl").to_string_lossy(),
@@ -764,12 +766,17 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
         let result = engine.run_pass();
         fault::clear();
         let pass = result.unwrap();
-        assert!(
-            pass.errors
-                .iter()
-                .any(|error| error.to_string().contains("injected panic at parse")),
-            "attempt {attempt}: {pass:?}"
-        );
+        if attempt == 0 {
+            assert!(
+                pass.errors
+                    .iter()
+                    .any(|error| error.to_string().contains("injected panic at parse")),
+                "attempt {attempt}: {pass:?}"
+            );
+        } else {
+            assert!(pass.errors.is_empty(), "attempt {attempt}: {pass:?}");
+            assert_eq!(pass.bytes_read, 0, "attempt {attempt}: {pass:?}");
+        }
         if attempt == 1 {
             assert_eq!(pass.bytes_stored, 0);
         }
