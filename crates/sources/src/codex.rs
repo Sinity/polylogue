@@ -17,7 +17,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 12;
+pub const VERSION: u32 = 13;
 
 parser_modules! {
     mod fields;
@@ -1074,9 +1074,17 @@ impl Rollout {
                 if let Some(reading) = p.get("rate_limits").and_then(quota) {
                     let identity = crate::content_ids::untagged_hash(&reading);
                     if parser_state.limits.as_ref() != Some(&identity) {
-                        parser_state.limits = Some(identity.clone());
+                        parser_state.limits = Some(identity);
+                        // A report is this reading observed at this time: a
+                        // reading that returns to an earlier value is a new
+                        // report in its own place, while the same reading at
+                        // the same instant stays one report.
+                        let report_id = crate::content_ids::untagged_hash(&(
+                            at.map(crate::time::SourceTime::timestamp),
+                            &reading,
+                        ));
                         let reading = polylogue_model::QuotaReport {
-                            report_id: identity,
+                            report_id,
                             reading,
                             measured_at: None,
                         };
