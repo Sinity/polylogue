@@ -193,7 +193,7 @@ row! {
         service_tier: Option<String>,
         stop_reason: Option<String>,
         duration_ms: Option<u64>,
-        attrs_json: Option<Json<serde_json::Value>>,
+        attrs_json: Option<String>,
         cache_write_1h_tokens: Option<u64>,
         speed: Option<String>,
         version_hash: Option<Vec<u8>>,
@@ -1294,7 +1294,11 @@ impl Reader<'_> {
             let named = row.id.to_string();
             let unreadable =
                 |what: &str| StoreError::stored(0, format!("message {named} has {what}"));
-            let attrs = row.attrs_json.map(|Json(attrs)| attrs);
+            let attrs: Option<serde_json::Value> = row
+                .attrs_json
+                .map(|attrs| serde_json::from_str(&attrs))
+                .transpose()
+                .map_err(|_| unreadable("unparseable attributes"))?;
             let (role, kind) = (row.role, row.prompt_kind);
             let visible = match content.visibility {
                 None => true,
