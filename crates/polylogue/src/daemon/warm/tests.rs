@@ -744,8 +744,7 @@ fn ranking_with_model_calls_off_uses_stored_vectors() {
         assert!(
             notes
                 .iter()
-                .any(|note| note
-                    .ends_with("semantic search for new text is off (model calls are off)")),
+                .any(|note| note == "semantic search for new text is off (model calls are off); enable it with `polylogue set embed.calls on`; rows are ordered by time and unranked"),
             "{notes:?}"
         );
         let refused = crate::test_daemon::call(d, "embed", json!({ "yes": true }));

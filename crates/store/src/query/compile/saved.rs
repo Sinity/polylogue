@@ -153,7 +153,6 @@ impl Compiler<'_> {
             session_rows: SessionRows::Physical,
             time_text_columns,
             ranked: false,
-            text_ranked: false,
             snippet_terms: vec![],
             id_checks: vec![],
             change_generations: vec![],

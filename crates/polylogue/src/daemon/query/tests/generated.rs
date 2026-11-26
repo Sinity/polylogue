@@ -799,30 +799,26 @@ proptest! {
         // Stored vectors stay, so each variant adds to the one before.
         for vectors in ["none", "some texts", "every text"] {
             let similarity = match vectors {
-                "every text" => Some(vectors_for(&w, |_| true)),
-                "some texts" => Some(vectors_for(&w, |session| session.ends_with('0') || session.ends_with('2'))),
-                _ => Some(std::sync::Arc::new(polylogue_store::vectors::Similarity::unknown())),
+                "every text" => vectors_for(&w, |_| true),
+                "some texts" => vectors_for(&w, |session| session.ends_with('0') || session.ends_with('2')),
+                _ => std::sync::Arc::new(polylogue_store::vectors::Similarity::unknown()),
             };
             let near = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, polylogue_store::StoreError> {
-                Ok(std::sync::Arc::clone(similarity.as_ref().unwrap()))
+                Ok(std::sync::Arc::clone(&similarity))
             };
             let mut request = ask(&ranked_text);
             request.page_size = Some(1 << 40);
-            request.embeddings = similarity.is_some();
-            if similarity.is_some() {
-                request.near = Some(&near);
-            }
+            request.embeddings = true;
+            request.near = Some(&near);
             let v = run_q(&w, request).unwrap();
             prop_assert_eq!(key_set(Unit::Sessions, &v), key_set(Unit::Sessions, &plain), "{}", vectors);
             prop_assert_eq!(&v["count"], &plain["count"], "{}", vectors);
-            if similarity.is_some() {
-                prop_assert!(
+            prop_assert!(
                     v["unknown"]["similar"]
                         .as_u64()
                         .is_some_and(|n| Some(n) <= plain["count"].as_u64()),
                     "{}", v
                 );
-            }
         }
         let never = |_: &str| -> Result<std::sync::Arc<polylogue_store::vectors::Similarity>, polylogue_store::StoreError> {
             panic!("a count computed a similarity")

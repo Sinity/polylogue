@@ -92,6 +92,8 @@ pub struct WhyClause {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Near {
     pub text: String,
+    /// Every semantic selection also has a text relevance ranking.
+    pub text_ranked: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -126,8 +128,6 @@ pub struct Program {
     time_text_columns: std::collections::BTreeSet<String>,
     /// Ordered by relevance to text terms.
     pub ranked: bool,
-    /// The answer has a text relevance ranking, alone or fused.
-    pub text_ranked: bool,
     /// What a ranked row's snippet looks for: the positive top-level prose
     /// terms, all of them required.
     pub snippet_terms: Vec<SnippetTerms>,

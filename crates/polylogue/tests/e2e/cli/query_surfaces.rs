@@ -480,6 +480,15 @@ fn unavailable_rankings_and_empty_reads_explain_themselves_on_morrow() {
         matches!(&hybrid.outcome, command_surface::Outcome::Degraded { missing, .. } if missing.iter().any(|note| note == expected)),
         "{hybrid:?}"
     );
+    let limited = answer(
+        "sessions where chrono similar:\"ambiguous dates\" | limit 1 | count",
+        false,
+    );
+    assert_eq!(limited.exit_code(), 5, "{limited:?}");
+    assert_eq!(
+        listing(limited.value().unwrap().clone())["rows"][0]["count"],
+        1
+    );
     let empty = answer("zzzznothing", true);
     assert!(
         matches!(empty.outcome, command_surface::Outcome::Empty(_)),

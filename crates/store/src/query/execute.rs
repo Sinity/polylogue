@@ -51,11 +51,12 @@ impl Program {
                 | polylogue_model::Reason::EmbeddingProvider { .. }
                 | polylogue_model::Reason::EmbeddingCallsOff {}),
             )) => {
-                if matches!(reason, polylogue_model::Reason::EmbeddingsOff {}) && !self.text_ranked
+                if matches!(reason, polylogue_model::Reason::EmbeddingsOff {})
+                    && !request.text_ranked
                 {
                     return Err(crate::StoreError::Refused(reason).into());
                 }
-                let order = if self.text_ranked {
+                let order = if request.text_ranked {
                     "rows are ranked by text relevance alone"
                 } else {
                     "rows are ordered by time and unranked"

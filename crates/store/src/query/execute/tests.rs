@@ -686,6 +686,7 @@ fn cached_counts_follow_the_vector_snapshot() {
     let mut program = crate::query::compile("messages", &options).unwrap();
     program.near = Some(crate::query::compile::Near {
         text: "synthetic seed".into(),
+        text_ranked: false,
     });
     program.counts_near = true;
     let hex = hash

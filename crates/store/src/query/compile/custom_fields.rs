@@ -191,7 +191,11 @@ impl Compiler<'_> {
             ),
             _ => unreachable!("near units are checked when requested"),
         };
-        self.similar_text = Some(near.clone());
+        let mut near = near.clone();
+        if let Some(other) = &self.similar_text {
+            near.text_ranked &= other.text_ranked;
+        }
+        self.similar_text = Some(near);
         ranking::Similarity { expression, join }
     }
 }

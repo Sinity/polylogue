@@ -148,6 +148,7 @@ impl<'a> Compiler<'a> {
             Some(semantic) => Some((
                 Near {
                     text: semantic.text.clone(),
+                    text_ranked: false,
                 },
                 RowContext {
                     unit: semantic.unit,
@@ -336,7 +337,8 @@ impl<'a> Compiler<'a> {
     ) -> Result<Option<(String, String)>, QueryError> {
         let rows_answer = parts.matched.is_none() && parts.measure.is_none();
         let similarity = match parts.similar.take().filter(|_| rows_answer) {
-            Some((near, rows)) => {
+            Some((mut near, rows)) => {
+                near.text_ranked = parts.ranking.is_some();
                 Some(self.similarity(&near, &rows, &parts.scope, &parts.where_sql))
             }
             None => None,
@@ -746,7 +748,6 @@ impl<'a> Compiler<'a> {
             row_sources: None,
             time_text_columns: Default::default(),
             ranked,
-            text_ranked: matches!(ranking, Some(Ranking::Text(_) | Ranking::Fused { .. })),
             snippet_terms: self.snippet_terms,
             id_checks: self.id_checks,
             change_generations: self.change_generations,
