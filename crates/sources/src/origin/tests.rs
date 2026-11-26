@@ -119,9 +119,6 @@ fn parser_versions_include_referenced_modules() {
         .collect();
     assert_eq!(opens.len(), ORIGINS.len());
     for (origin, open) in ORIGINS.iter().zip(opens) {
-        if origin.support != Support::Parsed {
-            continue;
-        }
         let version = origin.parse_version();
         let declared: BTreeSet<_> = version
             .split(',')
@@ -223,6 +220,13 @@ fn parser_versions_include_referenced_modules() {
                         .chars()
                         .take_while(|c| c.is_ascii_lowercase() || *c == '_')
                         .collect();
+                    // Metadata readers use only the shared line interface.
+                    if origin.support != Support::Parsed
+                        && module == "export"
+                        && path == root.join("parse.rs")
+                    {
+                        continue;
+                    }
                     // The registry describes origins, rather than parsing rows.
                     if module.is_empty()
                         || module == "origin"
