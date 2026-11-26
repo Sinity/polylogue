@@ -328,7 +328,7 @@ pub fn rule(id: FieldId) -> Rule {
         SessionsOutlier => Rule::NONE.sql_fn(|a| crate::session_sql::outlier(&a.s)),
         SessionsCorrections => Rule::NONE.sql_fn(|a| crate::session_sql::corrections(&a.s)),
         SessionsOpenItems => Rule::NONE.sql_fn(|a| crate::session_sql::open_items(&a.s)),
-        SessionsSubagentCost => Rule::NONE.sql_fn(|a| crate::measure::cost_of(&format!("SELECT child.pk FROM session child WHERE child.pk IN ({}) AND child.pk<>{}.pk",descendants(&a.s),a.s))),
+        SessionsSubagentCost => Rule::NONE.sql_fn(|a| crate::measure::cost_of(&format!("SELECT child.pk FROM session child WHERE child.pk IN ({}) AND child.pk<>{}.pk",spawn_tree(&a.s),a.s))),
         SessionsCostComplete => Rule::NONE.sql_fn(|a| crate::session_sql::cost_complete(&a.s)),
         SessionsCostWithParents => Rule::NONE.sql_fn(|a| crate::session_sql::cost_with_parents(&a.s)),
         MessagesLang => Rule::NONE.custom(custom::alternate_lang),
@@ -882,7 +882,7 @@ fn sessions_cost(a: &Aliases) -> String {
 }
 
 fn sessions_tree_cost(a: &Aliases) -> String {
-    crate::measure::cost_of(&descendants(&a.s))
+    crate::measure::cost_of(&spawn_tree(&a.s))
 }
 
 fn sessions_live(a: &Aliases, now: i64) -> String {
@@ -1027,6 +1027,19 @@ pub fn hidden(s: &str) -> String {
         "EXISTS (SELECT 1 FROM source_annotation hn JOIN source_annotation_link ht ON ht.record = hn.id AND ht.role = 'about' \
          WHERE hn.kind = 'hidden' AND ht.ref = 'session:' || {s}.id AND {})",
         current_annotation("hn")
+    )
+}
+
+/// The session and every session below it through `spawn` links: its tree
+/// (docs/measures.md, session cost). Continuations, forks and resumes are
+/// not trees, so a child belongs to exactly one.
+pub fn spawn_tree(s: &str) -> String {
+    format!(
+        "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM session_link l \
+         INDEXED BY session_link_parent \
+         JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
+         JOIN session lc ON lc.id = l.child_id \
+         WHERE l.kind = 'spawn') SELECT pk FROM tr"
     )
 }
 

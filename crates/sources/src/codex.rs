@@ -1010,19 +1010,18 @@ impl Rollout {
                     item.str("agent_thread_id")
                         .filter(|s| !s.is_empty())
                         .and_then(session_id),
-                ) {
-                    if parser_state.spawned.insert(child.to_string()) {
-                        let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
-                        link(
-                            out,
-                            LinkKind::Spawn,
-                            parent,
-                            child,
-                            None,
-                            call,
-                            "SubAgentActivity",
-                        );
-                    }
+                ) && parser_state.spawned.insert(child.to_string())
+                {
+                    let call = item.str("id").filter(|s| !s.is_empty()).map(str::to_owned);
+                    link(
+                        out,
+                        LinkKind::Spawn,
+                        parent,
+                        child,
+                        None,
+                        call,
+                        "SubAgentActivity",
+                    );
                 }
                 self.event(parser_state, p, "subagent_activity", at, out)
             }

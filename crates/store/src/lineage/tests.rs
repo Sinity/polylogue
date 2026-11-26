@@ -166,7 +166,7 @@ fn conflicting_parents_choose_neither_and_keep_one_structural_parent() {
     f.link("test:child", "test:leaf", "resume", None).unwrap();
     let conn = db(&f);
     conn.execute(
-        "UPDATE link SET branch_point='test:one' WHERE child_id='test:child'",
+        "UPDATE session_link SET branch_point='test:one' WHERE child_id='test:child'",
         [],
     )
     .unwrap();
@@ -406,10 +406,10 @@ fn link_statements_resolve_to_relations() {
     let conn = db(&f);
     let mut expected_links: Vec<SessionLink> = Vec::new();
     for (parent, child, kind, how, statements, expected) in cases {
-        let stated: Vec<Statement> = statements
+        let stated: Vec<LinkStatement> = statements
             .iter()
             .enumerate()
-            .map(|(n, (point, call, copies))| Statement {
+            .map(|(n, (point, call, copies))| LinkStatement {
                 branch_point: point.map(str::to_owned),
                 spawning_call: call.map(str::to_owned),
                 copies_prefix: *copies,
@@ -419,11 +419,15 @@ fn link_statements_resolve_to_relations() {
             })
             .collect();
         let resolved = relations(&stated);
-        let coordinates: Vec<Coordinates> = resolved
+        let owned = |(point, call): (Option<&str>, Option<&str>)| {
+            (point.map(str::to_owned), call.map(str::to_owned))
+        };
+        let coordinates: Vec<_> = resolved
             .iter()
-            .map(|r| (r.branch_point.as_deref(), r.spawning_call.as_deref()))
+            .map(|r| (r.branch_point.clone(), r.spawning_call.clone()))
             .collect();
-        assert_eq!(coordinates, *expected, "{parent} {child} {kind} {how:?}");
+        let expected: Vec<_> = expected.iter().map(|c| owned(*c)).collect();
+        assert_eq!(coordinates, expected, "{parent} {child} {kind} {how:?}");
         let copies = statements.iter().any(|(_, _, copies)| *copies);
         for relation in &resolved {
             assert_eq!(relation.evidence, "field.0");
