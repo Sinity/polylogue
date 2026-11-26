@@ -356,7 +356,7 @@ fn importing_the_same_bytes_twice_stores_them_once() {
     let outside = w.dir.path().join("export/s9.jsonl");
     fs::create_dir_all(outside.parent().unwrap()).unwrap();
     fs::write(&outside, user("x1", "s9", "imported")).unwrap();
-    let (mut e, _lock) = w.engine(64 << 20);
+    let (mut e, _lock) = w.installed_engine(64 << 20);
     let first = e
         .import_with_options(
             std::slice::from_ref(&outside),
@@ -391,7 +391,7 @@ fn import_without_final_newline_reads_last_record() {
     fs::create_dir_all(outside.parent().unwrap()).unwrap();
     let bytes = user("x1", "s8", "first") + &assistant("x2", "s8", "last");
     fs::write(&outside, bytes.trim_end_matches('\n')).unwrap();
-    let (mut e, _lock) = w.engine(64 << 20);
+    let (mut e, _lock) = w.installed_engine(64 << 20);
     let report = e
         .import_with_options(
             std::slice::from_ref(&outside),
@@ -436,7 +436,7 @@ fn importing_a_directory_imports_every_file_under_it() {
     fs::create_dir_all(spool.join("nested")).unwrap();
     fs::write(spool.join("a.jsonl"), user("d1", "sa", "first")).unwrap();
     fs::write(spool.join("nested/b.jsonl"), user("d2", "sb", "second")).unwrap();
-    let (mut e, _lock) = w.engine(64 << 20);
+    let (mut e, _lock) = w.installed_engine(64 << 20);
     let report = e
         .import_with_options(
             std::slice::from_ref(&spool),
@@ -493,7 +493,7 @@ fn a_zip_export_imports_its_conversations_and_keeps_its_other_files() {
     zip.write_all(b"\x89PNG not really").unwrap();
     zip.finish().unwrap();
 
-    let (mut e, _lock) = w.engine(64 << 20);
+    let (mut e, _lock) = w.installed_engine(64 << 20);
     let report = e.import(std::slice::from_ref(&zip_path)).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     assert_eq!(report.imported.len(), 3, "{:?}", report.imported);
@@ -521,7 +521,7 @@ fn array_conversations_parse_when_the_chunk_is_smaller_than_one_record() {
     ]);
     fs::write(&path, serde_json::to_vec_pretty(&convs).unwrap()).unwrap();
     // The array path stores one conversation independently of the line chunk.
-    let (mut e, _lock) = w.engine(64);
+    let (mut e, _lock) = w.installed_engine(64);
     let report = e.import(std::slice::from_ref(&path)).unwrap();
     assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     assert_eq!(messages_of(&w.root, "chatgpt:c1")[0].text(), "one");

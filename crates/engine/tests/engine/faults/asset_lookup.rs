@@ -25,7 +25,7 @@ fn a_rebuilt_index_has_the_asset_lookup_before_any_message() {
     )
     .unwrap();
     {
-        let (mut engine, _lock) = w.engine(64 << 20);
+        let (mut engine, _lock) = w.installed_engine(64 << 20);
         let report = engine.import(std::slice::from_ref(&export)).unwrap();
         assert!(report.pass.errors.is_empty(), "{:?}", report.pass.errors);
     }

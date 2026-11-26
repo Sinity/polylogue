@@ -247,7 +247,7 @@ fn an_export_imported_into_a_fresh_archive_gives_the_same_sessions_ids_and_user_
         "s1.jsonl",
         &(user("u1", "s1", "hello") + &assistant("a1", "s1", "hi") + &user("u2", "s1", "more")),
     );
-    let (mut e, _lock) = w.engine(64 << 20);
+    let (mut e, _lock) = w.installed_engine(64 << 20);
     assert!(e.run_pass().unwrap().errors.is_empty());
     let writes = e.writer();
     let agent = Author::Agent(Some(SessionId::parse("claude-code:s1").unwrap()));
@@ -435,7 +435,7 @@ fn conflicting_forks_survive_bundle_export_and_import() {
         record["forkedFrom"] = serde_json::json!({"sessionId":"parent","messageUuid":fork_point});
         original.append("child.jsonl", &format!("{record}\n"));
     }
-    let (mut source, _lock) = original.engine(64 << 20);
+    let (mut source, _lock) = original.installed_engine(64 << 20);
     let pass = source.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     let child = SessionId::parse("claude-code:child").unwrap();
@@ -506,7 +506,7 @@ fn copied_subset_survives_whole_parent_bundle_and_later_parent_import() {
         .unwrap(),
     )
     .unwrap();
-    let (mut source, _source_lock) = original.engine(64 << 20);
+    let (mut source, _source_lock) = original.installed_engine(64 << 20);
     let report = source.import(&[path]).unwrap();
     assert!(report.refused.is_empty(), "{report:?}");
     assert!(report.pass.errors.is_empty(), "{report:?}");
@@ -551,7 +551,7 @@ fn copied_file_subset_survives_export_with_parent() {
         "child.jsonl",
         &(user("first", "parent", "copied first") + &user("own", "child", "own child")),
     );
-    let (mut source, _source_lock) = original.engine(64 << 20);
+    let (mut source, _source_lock) = original.installed_engine(64 << 20);
     let pass = source.run_pass().unwrap();
     assert!(pass.errors.is_empty(), "{pass:?}");
     let child = SessionId::parse("claude-code:child").unwrap();
@@ -604,7 +604,7 @@ fn later_copy_annotations_preserve_declared_parent_without_expanding_earlier_bun
         );
         original.append("other.jsonl", &user("other-own", "other", "other own"));
         original.append("child.jsonl", &user("own", "child", "own"));
-        let (mut source, _source_lock) = original.engine(64 << 20);
+        let (mut source, _source_lock) = original.installed_engine(64 << 20);
         assert!(source.run_pass().unwrap().errors.is_empty());
         let sessions = [
             "claude-code:parent",

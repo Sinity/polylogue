@@ -55,6 +55,22 @@ impl ClaudeHome {
         )
     }
 
+    /// [`Self::engine`] on an archive with an installed index: a new
+    /// archive's first pass, run without sources, installs its empty
+    /// rebuild, as a daemon started before any file is found does
+    /// (docs/installing.md). Imports then parse into the installed index;
+    /// with none installed they are stored and read after the rebuild.
+    pub fn installed_engine(&self, chunk: u64) -> (Engine, ArchiveLock) {
+        let (mut engine, lock) = self.engine(chunk);
+        if engine.archive.index_build().is_some() {
+            engine.config.reads_sources = false;
+            let pass = engine.run_pass().expect("install the empty rebuild");
+            assert!(pass.errors.is_empty(), "{pass:?}");
+            engine.config.reads_sources = true;
+        }
+        (engine, lock)
+    }
+
     /// A session file in the project directory.
     pub fn file(&self, name: &str) -> PathBuf {
         self.home.join(".claude/projects/-proj").join(name)
