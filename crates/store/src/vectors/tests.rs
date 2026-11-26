@@ -175,10 +175,16 @@ fn stores_scans_and_survives_reopening() {
     assert!(missing(&v, key, &[1], 1).is_empty());
     assert!(missing(&v, key, &[2], 2).is_empty());
     assert_eq!(v.rejected(key).unwrap(), HashSet::from([vec![3]]));
-    let s = v.status().unwrap();
-    assert_eq!(s.keys[0].texts, 2);
-    assert_eq!(s.keys[0].vectors, 3);
-    assert_eq!(s.keys[0].failures, 1);
+    assert_eq!(
+        v.status().unwrap().keys,
+        [KeyStatus {
+            key: key.into(),
+            dims: Some(3),
+            texts: 2,
+            vectors: 3,
+            failures: 1,
+        }]
+    );
     // Another key's vectors never answer this one.
     let other = std::sync::Arc::new(v.load("other").unwrap());
     assert_eq!(other.vectors(), 0);
@@ -915,4 +921,62 @@ fn int8_scores_stay_within_one_percent_of_the_f32_dot_product() {
             vector.text_hash
         );
     }
+}
+
+/// A provider that refuses a text before its first vector has told the
+/// dimensions leaves the refusal under a key with no vectors. Status lists
+/// that key with its refusals, and a key that holds both counts both.
+#[test]
+fn status_counts_refused_texts_under_a_key_with_no_vectors() {
+    let dir = tempfile::tempdir().unwrap();
+    let (archive, _lock) = Archive::open_or_create(&dir.path().join("a")).unwrap();
+    texts(&archive, &[&[1], &[2], &[3]]);
+    let pool = crate::ReadPool::open(&archive).unwrap();
+    let reader = pool.reader().unwrap();
+    let mut v = reader.vectors_writer().unwrap();
+    let at = polylogue_model::WallClock::fixed(jiff::Timestamp::UNIX_EPOCH);
+    let before_dimensions = "local/test/0/document/unit";
+    let known = "local/test/3/document/unit";
+    v.fail(before_dimensions, &[1], "too long", &at).unwrap();
+    v.fail(before_dimensions, &[2], "too long", &at).unwrap();
+    assert_eq!(
+        v.status().unwrap().keys,
+        [KeyStatus {
+            key: before_dimensions.into(),
+            dims: None,
+            texts: 0,
+            vectors: 0,
+            failures: 2,
+        }]
+    );
+    v.put(
+        known,
+        &[Vector {
+            text_hash: vec![3],
+            chunk: 0,
+            values: unit(&[1.0, 0.0, 0.0]),
+        }],
+        &at,
+    )
+    .unwrap();
+    v.fail(known, &[2], "too long", &at).unwrap();
+    assert_eq!(
+        v.status().unwrap().keys,
+        [
+            KeyStatus {
+                key: before_dimensions.into(),
+                dims: None,
+                texts: 0,
+                vectors: 0,
+                failures: 2,
+            },
+            KeyStatus {
+                key: known.into(),
+                dims: Some(3),
+                texts: 1,
+                vectors: 1,
+                failures: 1,
+            },
+        ]
+    );
 }

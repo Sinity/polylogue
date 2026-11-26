@@ -197,13 +197,15 @@ fn archive(status: &Answer, view: &View<'_>) -> Vec<String> {
     }
     if let Some(vectors) = &status.vectors {
         for key in &vectors.keys {
-            let mut line = format!(
-                "vectors {}: {} for {} texts, {} dimensions",
-                clean(&key.key),
-                count(key.vectors),
-                count(key.texts),
-                key.dims
-            );
+            let mut line = match key.dims {
+                Some(dims) => format!(
+                    "vectors {}: {} for {} texts, {dims} dimensions",
+                    clean(&key.key),
+                    count(key.vectors),
+                    count(key.texts),
+                ),
+                None => format!("vectors {}: none stored", clean(&key.key)),
+            };
             if key.failures > 0 {
                 line.push_str(&format!(" · {} failed", count(key.failures)));
             }

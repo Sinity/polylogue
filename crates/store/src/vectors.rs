@@ -102,7 +102,9 @@ pub struct VectorStatus {
 #[serde(deny_unknown_fields)]
 pub struct KeyStatus {
     pub key: String,
-    pub dims: u32,
+    /// The values in each vector under the key; absent while the key holds
+    /// no vector, only refused texts.
+    pub dims: Option<u32>,
     pub texts: u64,
     pub vectors: u64,
     pub failures: u64,
@@ -569,18 +571,30 @@ impl Vectors {
         Ok(loaded)
     }
 
+    /// Every key that holds a vector or a refused text. A key counts its
+    /// refusals whether or not any of its texts has a vector: the refusal
+    /// recorded before a provider's first vector tells the dimensions is
+    /// under a key of its own.
     pub fn status(&self) -> Result<VectorStatus> {
         let _read = self.read_transaction()?;
         let mut stmt = self.conn.prepare(
-            "SELECT model, max(dims), count(DISTINCT text_hash), count(*),
-                 (SELECT count(*) FROM embed_failure f WHERE f.model = e.model)
-             FROM embedded e GROUP BY model ORDER BY model",
+            "WITH stored AS (
+                 SELECT model, max(dims) AS dims, count(DISTINCT text_hash) AS texts,
+                        count(*) AS vectors
+                 FROM embedded GROUP BY model),
+               refused AS (SELECT model, count(*) AS failures FROM embed_failure GROUP BY model)
+             SELECT key.model, stored.dims, coalesce(stored.texts, 0),
+                    coalesce(stored.vectors, 0), coalesce(refused.failures, 0)
+             FROM (SELECT model FROM stored UNION SELECT model FROM refused) key
+             LEFT JOIN stored ON stored.model = key.model
+             LEFT JOIN refused ON refused.model = key.model
+             ORDER BY key.model",
         )?;
         let keys = stmt
             .query_map([], |r| {
                 Ok(KeyStatus {
                     key: r.get(0)?,
-                    dims: r.get::<_, i64>(1)? as u32,
+                    dims: r.get::<_, Option<i64>>(1)?.map(|dims| dims as u32),
                     texts: r.get::<_, i64>(2)? as u64,
                     vectors: r.get::<_, i64>(3)? as u64,
                     failures: r.get::<_, i64>(4)? as u64,
