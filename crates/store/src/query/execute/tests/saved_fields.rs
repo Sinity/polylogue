@@ -130,6 +130,57 @@ fn links_to_matches_supports_links_and_ignores_about_links() {
 }
 
 #[test]
+fn a_session_counts_open_items_and_corrections_about_anything_inside_it() {
+    let d = tempfile::tempdir().unwrap();
+    let mut f = Fixture::new(d.path()).unwrap();
+    let pk = session(&mut f, "test:work");
+    session(&mut f, "test:other");
+    // One reference of each kind that lies in the session, and one outside it.
+    let inside = [
+        "session:test:work",
+        "message:test:work-m",
+        "block:test:work-m#0",
+        "span:message:test:work-m#b=0-2",
+        "span:block:test:work-m#0#c=0-2",
+        "tool:test:work#call-1",
+    ];
+    for kind in [AnnotationKind::Question, AnnotationKind::Correction] {
+        for target in inside.into_iter().chain(["session:test:other"]) {
+            f.user(UserWrite::Assert {
+                annotations: vec![statement(kind, target, &[(LinkRole::About, target.into())])],
+            })
+            .unwrap();
+        }
+    }
+    // The message arrives after the annotations that name it and its parts.
+    f.message(
+        pk,
+        MessageFacts {
+            id: "test:work-m",
+            role: "assistant",
+            written_by: "model",
+            text: Some("work"),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let found = rows(&f, "sessions", &["id", "open_items", "corrections"]);
+    let counts: Vec<_> = found
+        .iter()
+        .map(|row| {
+            (
+                row["id"].as_str().unwrap(),
+                row["open_items"].as_i64().unwrap(),
+                row["corrections"].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(counts.len(), 2);
+    assert!(counts.contains(&("test:work", 6, 6)), "{counts:?}");
+    assert!(counts.contains(&("test:other", 1, 1)), "{counts:?}");
+}
+
+#[test]
 fn answered_and_open_follow_links() {
     let d = tempfile::tempdir().unwrap();
     let mut f = Fixture::new(d.path()).unwrap();
