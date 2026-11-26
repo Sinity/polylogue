@@ -54,3 +54,34 @@ fn extent_writer_refuses_stale_append_without_replacing_prefix() {
         .unwrap();
     assert_eq!(actual, b"abcdefghi");
 }
+
+/// A step that does not start at the committed reading's position is a
+/// stale step from its sender, not a fault of the bytes: the writer keeps
+/// the stored bytes and refuses the rows with the refusal's own cause, so
+/// the chain is planned again instead of failing until its bytes change
+/// (docs/archive.md, parse state).
+#[test]
+fn a_stale_step_is_refused_for_its_own_cause_not_the_bytes() {
+    use polylogue_model::{Cause, Caused as _};
+    let w = test_archive();
+    let step = |range: std::ops::Range<u64>| {
+        let mut step = ParseStep::new(Output::default(), counts(0), range, false);
+        step.parse_version = "synthetic=1".into();
+        step
+    };
+    let mut first = bytes(&w.archive, 0, b"abc");
+    first.batch.parse = vec![step(0..3)];
+    store(&w, first).unwrap();
+    let mut stale = bytes(&w.archive, 3, b"def");
+    stale.batch.parse = vec![step(1..4)];
+    match store(&w, stale) {
+        Err(error @ StoreError::RowsRefused { .. }) => {
+            assert_eq!(
+                error.to_string(),
+                "reading starts at 1 after committed position 3"
+            );
+            assert_eq!(error.cause(), Cause::Request, "{error}");
+        }
+        other => panic!("expected the stale step's refusal, got {other:?}"),
+    }
+}

@@ -535,6 +535,7 @@ fn every_store_error_variant_has_a_code_and_kind() {
                     bytes_written: 3,
                 },
                 reason: "a row".into(),
+                cause: polylogue_model::Cause::Content,
             },
             Code::Import,
             FailureKind::Io,

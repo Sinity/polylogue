@@ -524,6 +524,7 @@ fn rows_refused(stored: Option<&StoredInput>, error: StoreError) -> Result<Store
             Err(StoreError::RowsRefused {
                 stored: stored.clone(),
                 reason: error.to_string(),
+                cause: polylogue_model::Caused::cause(&error),
             })
         }
         _ => Err(error),
