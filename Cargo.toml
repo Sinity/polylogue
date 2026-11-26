@@ -89,3 +89,14 @@ codegen-units = 256
 codegen-units = 16
 opt-level = 2
 debug = false
+
+# The packaged binary. Measured on hosted runners on the package's own build
+# (`-p polylogue --features polylogue/sinex`): without these settings the
+# binary was 115.3 MB with 28 MB of symbol table; whole-program optimisation
+# with one code generation unit merges the repeated serde and schema code
+# (84.8 MB before stripping), and stripping symbols leaves 73.2 MB. Panics
+# stay unwinding: the build and the engine catch a failed worker.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
