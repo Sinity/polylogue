@@ -369,8 +369,11 @@ of it (the path, else `$POLYLOGUE_SINEX_COMMON`, else
 `../polylogue-sinex-common`). Linking is explicit. It writes the git-ignored
 `.cargo/local.toml`, and Cargo.lock then names the local crates, so the lock
 is not committed in that state. `cargo xtask unlink-common` restores the lock.
-Merge the common pull request first. Polylogue also pins Sinex by revision
-(`crates/sinex/Cargo.toml`), and that Sinex revision's own common dependencies
-must resolve against the same common commit, so the order is: common merges,
-Sinex adopts that common commit, then one Polylogue pull request moves the
-Sinex revision and the common lock together and converts the callers.
+The common pull request's `products` jobs run this workspace's checks against
+its head. Merge the common pull request first. Polylogue also pins Sinex by
+revision (`crates/sinex/Cargo.toml`), and that Sinex revision's own common
+dependencies must resolve against the same common commit, so Polylogue moves
+after Sinex: once Sinex's master adopts the common commit, common's `Update
+product locks` workflow opens or updates the pull request here, on the
+`update-polylogue-sinex-common` branch, that moves the Sinex revision and the
+common lock together. Convert the callers on that branch.
