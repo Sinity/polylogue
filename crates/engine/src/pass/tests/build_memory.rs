@@ -478,3 +478,41 @@ fn imports_every_100_ms_are_answered_and_the_build_reads_each_byte_once() {
         );
     }
 }
+
+/// A new archive's first pass stores its files, rebuilds the index from
+/// them and parses each file exactly once, in the rebuild: with no
+/// installed index nothing plans a parse before the install
+/// (docs/architecture.md, one path).
+#[test]
+fn a_first_pass_over_a_new_archive_parses_each_file_once_in_the_rebuild() {
+    let home = ClaudeHome::new();
+    home.append("first.jsonl", &claude_user("one", "first", "first file"));
+    home.append("second.jsonl", &claude_user("two", "second", "second file"));
+    fault::clear();
+    fault::arm("parse", "", Action::Record, 0, 1_000);
+    let (mut engine, _lock) = home.engine(1 << 20);
+    assert!(engine.archive.index_build().is_some());
+    let pass = engine.run_pass().unwrap();
+    let parses = fault::recorded("parse");
+    fault::clear();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    assert!(engine.archive.index_build().is_none());
+    let mut parsed: Vec<String> = parses
+        .iter()
+        .map(|(subject, thread)| {
+            assert!(
+                thread.starts_with("polylogue-build-"),
+                "{subject} on {thread}"
+            );
+            std::path::Path::new(subject)
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    parsed.sort();
+    assert_eq!(parsed, ["first.jsonl", "second.jsonl"]);
+    assert_eq!(home.texts("first"), ["first file"]);
+    assert_eq!(home.texts("second"), ["second file"]);
+}

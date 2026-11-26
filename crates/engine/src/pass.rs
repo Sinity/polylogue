@@ -2017,15 +2017,22 @@ impl Engine {
         // stored chains to be read. Arrays run serially only after preceding
         // pool work has committed.
         let mut plans = plans;
-        // With no installed index there is nothing to parse into: files are
-        // stored, and the rebuild, or the incremental update after its
-        // install, parses them.
+        // With no installed index there is nothing to parse into, so no
+        // parse is planned: files are stored, chains already stored stay
+        // due, and the rebuild (which covers the archive up to the position
+        // it starts at) or the incremental update after its install parses
+        // them.
         if !self.archive.index_files()?.serves() {
-            for plan in &mut plans {
+            let mut storing = Vec::with_capacity(plans.len());
+            for mut plan in plans {
+                plan.storing_only = true;
                 if matches!(plan.source, pool::Bytes::File) {
-                    plan.storing_only = true;
+                    storing.push(plan);
+                } else {
+                    self.finish_plan(plan);
                 }
             }
+            plans = storing;
             for capture in &mut self.rollout_captures {
                 capture.storing_only = true;
             }
@@ -2086,7 +2093,7 @@ impl Engine {
                 replacements.push(plan);
                 continue;
             }
-            if let Some(parser) = export_parser(&plan) {
+            if let Some(parser) = export_parser(&plan).filter(|_| !plan.storing_only) {
                 let later = later_paths(&plan, &plans);
                 self.execute_pool(std::mem::take(&mut pooled), Vec::new(), &later, pass)?;
                 if self.yielding() {

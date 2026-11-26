@@ -1225,13 +1225,6 @@ impl Inner {
             }
             chains.push(stored_reading_chain(&self.archive, b)?);
         }
-        // With no installed index there is nothing to write the parse into:
-        // its bytes are committed, so its chain stays due, and the rebuild or
-        // the incremental update after its install parses it. It counts as
-        // nothing written.
-        if matches!(self.index, index_connection::IndexConnection::Absent(_)) {
-            return Ok(());
-        }
         let mut has_step = false;
         let mut all_replayed = true;
         'batches: for (batch, chain) in batches.clone().zip(&chains) {
