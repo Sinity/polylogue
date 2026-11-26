@@ -1,0 +1,78 @@
+{
+  "sessions": [
+    {
+      "id": "chatgpt:chatgpt-fixture-conversation",
+      "kind": "main",
+      "title": "Privacy-safe ChatGPT native fixture",
+      "messages": [
+        {
+          "id": "chatgpt:context",
+          "role": "system",
+          "at": 1784164500.0,
+          "parent": null,
+          "text": "Privacy-safe fixture profile.\n\nPreserve structured provider evidence."
+        },
+        {
+          "id": "chatgpt:user",
+          "role": "user",
+          "at": 1784164540.0,
+          "parent": "chatgpt:context",
+          "text": "Analyze the attached fixture and create an artifact."
+        },
+        {
+          "id": "chatgpt:answer-inactive",
+          "role": "assistant",
+          "at": 1784164542.0,
+          "parent": "chatgpt:user",
+          "text": "Superseded answer."
+        },
+        {
+          "id": "chatgpt:thought-active",
+          "role": "assistant",
+          "at": 1784164544.946,
+          "parent": "chatgpt:user",
+          "text": "",
+          "thinking": "Privacy-safe reasoning trace."
+        },
+        {
+          "id": "chatgpt:tool-call",
+          "role": "assistant",
+          "at": 1784164545.0,
+          "parent": "chatgpt:thought-active",
+          "text": "",
+          "calls": [
+            {
+              "name": "browser.search",
+              "result": {
+                "outcome": "ok",
+                "text": "Privacy-safe tool result."
+              }
+            }
+          ]
+        },
+        {
+          "id": "chatgpt:tool-result",
+          "role": "user",
+          "at": 1784164546.0,
+          "parent": "chatgpt:tool-call",
+          "text": ""
+        },
+        {
+          "id": "chatgpt:recap-active",
+          "role": "assistant",
+          "at": 1784169732.588194,
+          "parent": "chatgpt:tool-result",
+          "text": "",
+          "thinking": "Privacy-safe reasoning summary."
+        },
+        {
+          "id": "chatgpt:answer-active",
+          "role": "assistant",
+          "at": 1784169733.0,
+          "parent": "chatgpt:recap-active",
+          "text": "Final answer. [Download artifact](sandbox:/mnt/data/fixture-result.zip)"
+        }
+      ]
+    }
+  ]
+}

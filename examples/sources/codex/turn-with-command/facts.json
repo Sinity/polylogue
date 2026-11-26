@@ -1,0 +1,70 @@
+{
+  "sessions": [
+    {
+      "id": "codex:019a0000-0000-7000-8000-000000000001",
+      "kind": "main",
+      "messages": [
+        {
+          "id": null,
+          "role": "system",
+          "at": "2026-03-01T10:00:03.000Z",
+          "parent": null,
+          "text": "<permissions instructions>\nWork in the sandbox."
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-03-01T10:00:04.000Z",
+          "parent": null,
+          "text": "<environment_context>\n  <cwd>/work/repo</cwd>\n</environment_context>"
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-03-01T10:00:05.000Z",
+          "parent": null,
+          "text": "Why does the build fail?"
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-03-01T10:00:07.000Z",
+          "parent": null,
+          "text": "",
+          "thinking": "Check the build."
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-03-01T10:00:08.000Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "exec_command",
+              "command": "cargo build",
+              "result": {
+                "outcome": "error",
+                "text": "error[E0425]: cannot find value `x`"
+              }
+            }
+          ]
+        },
+        {
+          "id": null,
+          "role": "user",
+          "at": "2026-03-01T10:00:11.000Z",
+          "parent": null,
+          "text": ""
+        },
+        {
+          "id": null,
+          "role": "assistant",
+          "at": "2026-03-01T10:00:13.000Z",
+          "parent": null,
+          "text": "`x` is undefined in main.rs."
+        }
+      ]
+    }
+  ]
+}

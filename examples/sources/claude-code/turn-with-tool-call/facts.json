@@ -1,0 +1,87 @@
+{
+  "sessions": [
+    {
+      "id": "claude-code:s1",
+      "kind": "main",
+      "messages": [
+        {
+          "id": "claude-code:u1",
+          "role": "user",
+          "at": "2026-03-01T10:00:00Z",
+          "parent": null,
+          "text": "Why does the build fail?"
+        },
+        {
+          "id": "claude-code:a1",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:01Z",
+          "parent": null,
+          "text": "",
+          "thinking": "Check the compiler output.",
+          "calls": [
+            {
+              "name": "Bash",
+              "command": "cargo build",
+              "result": {
+                "outcome": "error",
+                "text": "error[E0425]: cannot find value\nExit code 101"
+              }
+            }
+          ]
+        },
+        {
+          "id": "claude-code:u2",
+          "role": "user",
+          "at": "2026-03-01T10:00:05Z",
+          "parent": "claude-code:a1",
+          "text": ""
+        },
+        {
+          "id": "claude-code:a3",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:01Z",
+          "parent": null,
+          "text": "",
+          "calls": [
+            {
+              "name": "Edit",
+              "path": "/repo/src/lib.rs",
+              "result": {
+                "outcome": "error",
+                "text": "The user doesn't want to proceed with this tool use."
+              }
+            }
+          ]
+        },
+        {
+          "id": "claude-code:u3",
+          "role": "user",
+          "at": "2026-03-01T10:00:09Z",
+          "parent": "claude-code:a3",
+          "text": ""
+        },
+        {
+          "id": "claude-code:u4",
+          "role": "user",
+          "at": "2026-03-01T10:00:10Z",
+          "parent": null,
+          "text": "[Request interrupted by user for tool use]"
+        },
+        {
+          "id": "claude-code:u5",
+          "role": "user",
+          "at": "2026-03-01T10:00:11Z",
+          "parent": null,
+          "text": "<command-name>/model</command-name>"
+        },
+        {
+          "id": "claude-code:a4",
+          "role": "assistant",
+          "at": "2026-03-01T10:00:01Z",
+          "parent": null,
+          "text": "The build fails because a value is missing."
+        }
+      ]
+    }
+  ]
+}
