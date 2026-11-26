@@ -443,10 +443,10 @@ impl<'a> Compiler<'a> {
             similarity.unwrap_or("1")
         ));
         let (hidden, mut keys) = self.selection_order(&order, ranking);
-        // A unit whose rows are an aggregate is computed whole, so its page
-        // is not read as two parts, which would compute it twice.
-        if matches!(units::spec(parts.scope.unit).from, fields::Expr::Template(t) if t.starts_with('('))
-        {
+        // A unit whose rows are computed (an aggregate, a relation over
+        // other rows) is computed whole, so its page is not read as two
+        // parts, which would compute it twice.
+        if !units::spec(parts.scope.unit).reads_a_table() {
             for key in &mut keys {
                 key.partition = false;
             }

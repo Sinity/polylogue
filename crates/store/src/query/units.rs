@@ -378,6 +378,14 @@ pub fn expand_pair(template: &str, a: &Aliases, n: &Aliases) -> String {
 
 /// How the store reads each unit; exhaustive, so a declared unit fails the
 /// build until it has rows here.
+impl UnitSpec {
+    /// The unit's rows are a table's rows, read in an index's order, not
+    /// computed from other rows.
+    pub(crate) fn reads_a_table(&self) -> bool {
+        matches!(self.from, Expr::Template(t) if !t.starts_with('('))
+    }
+}
+
 pub fn spec(unit: Unit) -> &'static UnitSpec {
     match unit {
         Unit::Sessions => &SESSIONS,

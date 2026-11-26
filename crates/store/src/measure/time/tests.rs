@@ -109,7 +109,8 @@ fn span_and_parties_match_a_hand_computed_session() {
             // 2: the human party is unknown without a provider turn end.
             // 3: a stored prefix ends at a session order of the message.
             // 4: folded from the session summary's stored state.
-            4,
+            // 5: a stored prefix holds the session order as bytes.
+            5,
             serde_json::json!({
                 "first_at":0,"last_at":4500000,"time_source":"messages","wall_ms":4500000,"clustered_ms":3720000,"tool_sum_ms":3434000,"tool_union_ms":1704000,"tool_overlap_ms":1730000,
                 "tool_untimed":0,"tool_no_result":0,"tool_same_timestamp":0,"tool_reversed":0,"timed_messages":18,"untimed_messages":0,"unordered_gaps":0,"first_failure_at":2262000,"prompts_to_failure":1,"prompted":true,"ends_with":"model_text","ends_with_message":"m17","last_stop_reason":"end_turn"
