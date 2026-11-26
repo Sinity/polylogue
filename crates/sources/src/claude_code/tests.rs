@@ -210,7 +210,7 @@ fn subagent_links_its_carrier_only_by_sidechain_flag() {
         .output;
     assert_eq!(
         out.messages[0].message.session.native().as_str(),
-        "s1/sidechain"
+        "s1~side-u"
     );
     assert_eq!(out.links[0].kind, LinkKind::Spawn);
 }
@@ -844,5 +844,77 @@ fn a_compaction_summary_is_recorded() {
             .map(ToString::to_string)
             .as_deref(),
         Some("claude-code:summary")
+    );
+}
+
+#[test]
+fn a_sidechain_with_a_missing_parent_starts_its_own_session() {
+    let records = vec![
+        json!({"type":"user","uuid":"first","sessionId":"s1","isSidechain":true,
+            "parentUuid":"absent-one","message":{"role":"user","content":"First task."}}),
+        json!({"type":"user","uuid":"second","sessionId":"s1","isSidechain":true,
+            "parentUuid":"absent-two","message":{"role":"user","content":"Second task."}}),
+        json!({"type":"assistant","uuid":"answer","sessionId":"s1","isSidechain":true,
+            "parentUuid":"second","message":{"role":"assistant","content":"Second answer."}}),
+    ];
+    let step = run(
+        &main_file("s1"),
+        &mut ParserState::default(),
+        &jsonl(&records),
+        0,
+    )
+    .unwrap();
+    let messages = final_messages(&[step]);
+    assert_eq!(
+        messages
+            .iter()
+            .map(|message| message.session.native().as_str())
+            .collect::<Vec<_>>(),
+        ["s1~side-first", "s1~side-second", "s1~side-second"]
+    );
+    assert_eq!(messages[0].parent, message_id("absent-one"));
+    assert_eq!(messages[1].parent, message_id("absent-two"));
+}
+
+#[test]
+fn morrows_older_sidechain_uses_its_first_record_uuid() {
+    let bytes = include_bytes!(
+        "../../../../examples/morrow/claude-code-only/claude-code/projects/-home-op-morrow/7f3a2c10-0101-4000-8000-000000000101.jsonl"
+    );
+    let step = run(
+        &main_file("7f3a2c10-0101-4000-8000-000000000101"),
+        &mut ParserState::default(),
+        bytes,
+        0,
+    )
+    .unwrap();
+    let steps = crate::chain_names::tests::settled(&[step]);
+    let out = &steps[0].output;
+    let side = "7f3a2c10-0101-4000-8000-000000000101~side-d1500000-0000-4000-8000-000000000001";
+    assert_eq!(
+        out.sessions
+            .iter()
+            .filter(|session| session.kind == SessionKind::Sidechain)
+            .map(|session| session.id.native().as_str())
+            .collect::<Vec<_>>(),
+        [side]
+    );
+    assert_eq!(
+        out.messages
+            .iter()
+            .filter(|row| row.message.session.native().as_str() == side)
+            .map(|row| row.message.id.native().as_str())
+            .collect::<Vec<_>>(),
+        [
+            "d1500000-0000-4000-8000-000000000001",
+            "d1500000-0000-4000-8000-000000000002"
+        ]
+    );
+    assert_eq!(
+        out.links
+            .iter()
+            .filter(|link| link.kind == LinkKind::Spawn && link.child.native().as_str() == side)
+            .count(),
+        1
     );
 }

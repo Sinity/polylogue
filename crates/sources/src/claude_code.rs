@@ -16,7 +16,7 @@
 
 use polylogue_model::JsonExt;
 /// Version of the rows this module produces.
-pub const VERSION: u32 = 12;
+pub const VERSION: u32 = 13;
 
 parser_modules! {
     mod blocks;
@@ -64,7 +64,7 @@ pub fn open(path: &Path) -> Option<Parse> {
 /// `claude --resume <id>`. Subagents and sidechains are not resumable on
 /// their own.
 pub fn resume(native: &str) -> Option<Vec<String>> {
-    if native.starts_with("agent-") || native.ends_with("/sidechain") {
+    if native.starts_with("agent-") || native.contains("~side-") {
         return None;
     }
     Some(vec!["claude".into(), "--resume".into(), native.into()])
@@ -217,7 +217,13 @@ impl ClaudeCode {
                     .to_owned();
                 if v.bool("isSidechain") == Some(true) {
                     RecordSession {
-                        native: format!("{base}/sidechain"),
+                        native: format!(
+                            "{base}~side-{}",
+                            v.str("uuid")
+                                .filter(|uuid| !uuid.is_empty())
+                                .map(str::to_owned)
+                                .unwrap_or_else(|| crate::content_ids::untagged_hash(v))
+                        ),
                         kind: SessionKind::Sidechain,
                     }
                 } else {
@@ -283,14 +289,17 @@ impl ClaudeCode {
             // last in, so its moves, a move back included, join the earlier
             // ones (`Session::merge`).
             if !out.sessions.iter().any(|stated| stated.id == id)
+                && record_session.kind != SessionKind::Sidechain
                 && let Some(previous) = parser_state.cwd.get(&record_session.native)
             {
                 s.offer_cwd(previous);
             }
             s.offer_cwd(cwd);
-            parser_state
-                .cwd
-                .insert(record_session.native.clone(), cwd.to_owned());
+            if record_session.kind != SessionKind::Sidechain {
+                parser_state
+                    .cwd
+                    .insert(record_session.native.clone(), cwd.to_owned());
+            }
         }
         if let Some(branch) = v.str("gitBranch").filter(|s| !s.is_empty()) {
             s.git_branch = Some(branch.to_owned());

@@ -55,7 +55,7 @@
     ],
     "links": [
       {
-        "child": "claude-code:claude-normalization-main/sidechain",
+        "child": "claude-code:claude-normalization-main~side-normalization-side",
         "evidence": "isSidechain",
         "kind": "spawn",
         "parent": "claude-code:claude-normalization-main",
@@ -337,8 +337,7 @@
         "offset": 3447
       },
       {
-        "end": 4088,
-        "id_kind": "content",
+        "end": 4116,
         "message": {
           "at": "2026-07-01T10:00:10Z",
           "blocks": [
@@ -348,12 +347,12 @@
             }
           ],
           "duration_ms": 250,
-          "id": "claude-code:claude-normalization-main/sidechain~assistant-36451488b358ecdf-0",
+          "id": "claude-code:normalization-side",
           "model": "claude-opus-4-6",
           "parent": "claude-code:main-fg-result",
           "reported_cost_usd": 0.025,
           "role": "assistant",
-          "session": "claude-code:claude-normalization-main/sidechain",
+          "session": "claude-code:claude-normalization-main~side-normalization-side",
           "usage": {
             "cache_write": 5,
             "cached_input": 75,
@@ -382,7 +381,7 @@
         "cwd": [
           "/workspace/polylogue"
         ],
-        "id": "claude-code:claude-normalization-main/sidechain",
+        "id": "claude-code:claude-normalization-main~side-normalization-side",
         "kind": "sidechain",
         "started": "2026-07-01T10:00:10Z",
         "started_quality": "intrinsic",
