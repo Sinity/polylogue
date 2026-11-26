@@ -958,7 +958,7 @@ fn commits_during_a_rebuild_reach_the_index_after_its_install_and_one_round() {
         let commit = |reading: Batch| -> Batch {
             let mut bytes_only = reading.clone();
             bytes_only.parse.clear();
-            let prepared = archive.prepare_bytes(&SOURCE_RECORD).unwrap();
+            let prepared = archive.prepare_bytes(&SOURCE_RECORD[..]).unwrap();
             let stored = writer.store_bytes(prepared, bytes_only).unwrap();
             let mut reading = reading;
             reading.change = Change::Reparse {

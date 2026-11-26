@@ -17,7 +17,7 @@ use crate::archive::Archive;
 use crate::archive::build_progress::{CountUnit, StepCount};
 use crate::archive::writer::Position;
 use crate::index::file::Paths;
-use crate::{ConnExt as _, Result, StoreError};
+use crate::{Result, StoreError};
 use rusqlite::{Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

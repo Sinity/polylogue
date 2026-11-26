@@ -6,12 +6,12 @@
 //! events about inputs and the events placed after another session's
 //! message. Assembly uses the composition an incremental update uses
 //! ([`crate::writer::shown`]).
+use super::Rebuild;
 use super::load::Loaded;
 use super::worker::{
     COMPOSE, EVENT, FACTS, GroupKeys, MESSAGE, OUTCOME, SESSIONS_PER_TRANSACTION, decode_row,
     split_id,
 };
-use super::{Rebuild, RebuildStage};
 use crate::archive::bump_counter;
 use crate::sorted_runs::Merger;
 use crate::writer::readings::Touched;

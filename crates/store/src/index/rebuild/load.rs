@@ -159,7 +159,7 @@ impl Rebuild {
                 .ok_or_else(|| StoreError::Invalid("a build stream holds an empty key".into()))?;
             if load.stream != Some(kind) {
                 if kind >= TABLES {
-                    self.stage(RebuildStage::LoadingParses);
+                    self.stages.start(RebuildStage::LoadingParses);
                 }
                 load.stream = Some(kind);
             }
