@@ -994,3 +994,75 @@ fn copied_tool_history_keeps_items_after_restart() {
         ]
     );
 }
+
+/// A rate-limit reading that returns to an earlier value is a new report in
+/// its own place: appending it marks the session due from the appended
+/// rows, so the summary worker reads those rows, not the session from the
+/// earlier report's place.
+#[test]
+fn a_repeated_rate_limit_reading_costs_the_appended_rows() {
+    use std::io::Write as _;
+    let w = ClaudeHome::new();
+    let rollouts = w.home.join(".codex/sessions/2026/03/03");
+    fs::create_dir_all(&rollouts).unwrap();
+    let thread = "019a0000-0000-7000-8000-000000000003";
+    let env = |n: u64, ty: &str, payload: serde_json::Value| {
+        serde_json::json!({"timestamp": format!("2026-03-03T{:02}:{:02}:{:02}.000Z", n / 3600, n / 60 % 60, n % 60),
+                           "type": ty, "payload": payload})
+        .to_string()
+            + "\n"
+    };
+    let limits = |used: f64| {
+        serde_json::json!({"type": "token_count", "info": null,
+            "rate_limits": {"primary": {"used_percent": used, "window_minutes": 300}}})
+    };
+    let prompt = |n: u64| {
+        serde_json::json!({"type": "message", "role": "user",
+            "content": [{"type": "input_text", "text": format!("prompt {n} of a long session")}]})
+    };
+    let mut codex = env(
+        0,
+        "session_meta",
+        serde_json::json!({"id": thread, "timestamp": "2026-03-03T00:00:00.000Z", "cwd": "/work/q"}),
+    );
+    // The first reading, then 1,200 prompts with the limits moving on.
+    codex += &env(1, "event_msg", limits(10.0));
+    for n in 2..1_202 {
+        codex += &env(n, "response_item", prompt(n));
+        if n % 100 == 0 {
+            codex += &env(n, "event_msg", limits(10.0 + n as f64 / 100.0));
+        }
+    }
+    let path = rollouts.join(format!("rollout-2026-03-03T00-00-00-{thread}.jsonl"));
+    fs::write(&path, &codex).unwrap();
+    let (mut e, _lock) = w.engine(64 << 20);
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    // A prompt and the first reading again.
+    let appended =
+        env(1_300, "response_item", prompt(1_300)) + &env(1_301, "event_msg", limits(10.0));
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(appended.as_bytes())
+        .unwrap();
+    let before = polylogue_store::summary::rows_folded();
+    let pass = e.run_pass().unwrap();
+    assert!(pass.errors.is_empty(), "{:?}", pass.errors);
+    let read = polylogue_store::summary::rows_folded() - before;
+    assert!(
+        read <= 4,
+        "the summary worker read {read} rows for an append of two"
+    );
+    let reports = w
+        .reads()
+        .reader()
+        .unwrap()
+        .query(
+            "SELECT count(*) AS n FROM event WHERE kind = 'quota_report'",
+            &[],
+        )
+        .unwrap();
+    assert_eq!(reports, [serde_json::json!({"n": 14})]);
+}
