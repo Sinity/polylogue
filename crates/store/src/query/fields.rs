@@ -1036,7 +1036,7 @@ pub fn hidden(s: &str) -> String {
 pub fn spawn_tree(s: &str) -> String {
     format!(
         "WITH RECURSIVE tr(pk) AS (SELECT {s}.pk UNION SELECT lc.pk FROM session_link l \
-         INDEXED BY session_link_parent \
+         INDEXED BY session_link_key \
          JOIN session lp ON lp.id = l.parent_id JOIN tr ON tr.pk = lp.pk \
          JOIN session lc ON lc.id = l.child_id \
          WHERE l.kind = 'spawn') SELECT pk FROM tr"

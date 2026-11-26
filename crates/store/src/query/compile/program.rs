@@ -929,6 +929,9 @@ impl<'a> Compiler<'a> {
             );
             return o;
         }
+        if let Some(terms) = spec.order {
+            return terms.iter().map(|term| a.expand(term)).collect();
+        }
         let desc = if spec.newest_first { " DESC" } else { "" };
         let mut o = vec![format!("{time} IS NULL"), format!("{time}{desc}")];
         if spec.session_order {

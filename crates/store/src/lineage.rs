@@ -73,7 +73,7 @@ row! {
     }
     statements {
         const OF_PARENT = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
-            FROM session_link INDEXED BY session_link_parent WHERE parent_id = ?1 ORDER BY pk";
+            FROM session_link INDEXED BY session_link_key WHERE parent_id = ?1 ORDER BY pk";
         const OF_CHILD = "SELECT parent_id, child_id, kind, how, branch_point, spawning_call, copies_prefix
             FROM session_link INDEXED BY session_link_child WHERE child_id = ?1 ORDER BY pk";
     }
