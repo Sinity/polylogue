@@ -790,7 +790,7 @@ fn parser_error_keeps_checkpoint_and_eof_across_reopen() {
             0
         );
         assert_eq!(
-            home.count("SELECT count(*) AS n FROM parse_state WHERE status='failed' AND reason LIKE '%injected fault at parse%'"),
+            home.count("SELECT count(*) AS n FROM parse_state WHERE status='failed' AND reason LIKE '%injected panic at parse%'"),
             1
         );
         drop(engine);

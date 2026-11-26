@@ -2968,12 +2968,14 @@ impl Engine {
         };
         let mut summary = RunSummary::default();
         let mut discover = true;
-        // What the last failed turn failed with. A turn whose failures all
-        // pass by themselves is tried again after `live_every`; one failing
-        // again with the same failures (by subject, cause and code, not by
-        // their sentences) waits for a change.
+        // What the last failed turn failed with, by subject, cause and code
+        // (not by sentence). A turn failing again with the same failures is
+        // a repeat: an idle run ends on it, and the daemon waits for a
+        // change unless every failure passes by itself, which is tried again
+        // after `live_every`.
         let mut failed_with: Option<Vec<(String, polylogue_model::Cause, polylogue_model::Code)>> =
             None;
+        let mut repeated;
         let mut waits_for_change;
         let mut changed = std::collections::BTreeSet::new();
         let mut watch_errors = Vec::new();
@@ -3012,6 +3014,7 @@ impl Engine {
                     }
                     discover = false;
                     failed_with = None;
+                    repeated = false;
                     waits_for_change = false;
                     pass
                 }
@@ -3036,13 +3039,16 @@ impl Engine {
                     }
                     let keys: Vec<_> = errors
                         .iter()
-                        .filter(|failure| failure.cause != polylogue_model::Cause::Transient)
                         .map(|failure| {
                             let (subject, cause, code) = failure.key();
                             (subject.to_owned(), cause, code)
                         })
                         .collect();
-                    waits_for_change = !keys.is_empty() && failed_with.as_ref() == Some(&keys);
+                    repeated = failed_with.as_ref() == Some(&keys);
+                    waits_for_change = repeated
+                        && keys
+                            .iter()
+                            .any(|(_, cause, _)| *cause != polylogue_model::Cause::Transient);
                     failed_with = Some(keys);
                     Pass {
                         full_scans: u64::from(discover && self.config.reads_sources),
@@ -3079,7 +3085,7 @@ impl Engine {
                 // capture that continues gets `live_every` before the next pass.
                 // A turn failing as the one before it ends the run with its
                 // errors reported.
-                let mut more = pending && !waits_for_change;
+                let mut more = pending && !repeated;
                 if more {
                     match self
                         .requests
@@ -3109,7 +3115,7 @@ impl Engine {
                     }
                 }
                 more |= self.take_watched(&mut changed, &mut watch_errors);
-                more |= !waits_for_change && !changed.is_empty();
+                more |= !repeated && !changed.is_empty();
                 if !more {
                     return Ok(self.stopped(summary));
                 }
