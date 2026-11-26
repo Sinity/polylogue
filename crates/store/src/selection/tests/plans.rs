@@ -92,22 +92,23 @@ fn default_pages_read_in_index_order() {
             continue;
         };
         // A derived relation, and a unit whose rows are computed (`files`,
-        // `turns`), is computed whole before its page. The archive's units
-        // (annotations, deliveries, jobs) hold what people, agents and the
-        // extension write, few enough that sorting them at read is cheap,
-        // and the archive format owns their indexes. Links between sessions
-        // are ordered by their parent's latest activity, which no link row
-        // holds.
+        // `turns`), is computed whole before its page.
         let spec = crate::query::units::spec(unit);
         if !matches!(
             program.statements,
             crate::query::compile::Statements::Keyed(_)
         ) || !spec.reads_a_table()
-            || spec.reads_the_archive()
-            || unit == polylogue_query::units::Unit::SessionLinks
         {
             continue;
         }
+        // The units over the large tables read in an index's order. The
+        // others (live intervals, processes, links, the change feed and the
+        // archive's units) hold few rows, sorted at read.
+        use polylogue_query::units::Unit as U;
+        let in_index_order = matches!(
+            unit,
+            U::Sessions | U::Messages | U::Blocks | U::ToolCalls | U::Events | U::Documents
+        );
         let steps = page_steps(&f, text);
         let mut undated = false;
         for step in &steps {
@@ -117,7 +118,10 @@ fn default_pages_read_in_index_order() {
             // time index cannot hold.
             let shared_time = unit == polylogue_query::units::Unit::ToolCalls && undated;
             assert!(
-                !step.starts_with("USE TEMP B-TREE") || step.contains(" LAST ") || shared_time,
+                !in_index_order
+                    || !step.starts_with("USE TEMP B-TREE")
+                    || step.contains(" LAST ")
+                    || shared_time,
                 "{text}: {steps:#?}"
             );
             for table in ["message", "event", "tool_call"] {
