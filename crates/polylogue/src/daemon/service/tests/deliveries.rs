@@ -503,6 +503,60 @@ fn undelivered_brief_does_not_move_the_changes_since_point() {
 }
 
 #[test]
+fn a_pending_brief_does_not_hide_a_note_committed_after_it_was_prepared() {
+    use polylogue_model::annotation::{AnnotationKind, LinkRole, NewAnnotation, NewAnnotationLink};
+    use polylogue_store::writer::{DispatchPhase, Queued};
+    let d = daemon_with_a_project();
+    let (pause, held) = hold_writer(&d, "held-before-note");
+    let writer = d.daemon.writes.as_ref().unwrap();
+    let invocation = d
+        .daemon
+        .invocation(&polylogue_model::authorship::Authorship {
+            author: polylogue_model::Author::Operator,
+            via: polylogue_model::authorship::Channel::Cli,
+        });
+    let note = invocation.request(
+        "note-before-delivery".into(),
+        UserWrite::Assert {
+            annotations: vec![NewAnnotation {
+                kind: AnnotationKind::Lesson,
+                key: None,
+                value: Some(serde_json::json!("the otter release needs release notes")),
+                valid_until: None,
+                links: vec![NewAnnotationLink {
+                    role: LinkRole::About,
+                    reference: polylogue_model::Reference::Cwd("/home/op/proj".into()),
+                }],
+            }],
+        },
+    );
+    let Queued::Committing(note) = writer.archive().try_submit(note).unwrap() else {
+        panic!("the note fits in the writer queue");
+    };
+    let delivery_pause =
+        writer.pause_user_dispatch_for_test("brief-before-note-commit-1", DispatchPhase::Owned);
+    let startup = brief(&d, "brief-before-note-commit", StartSource::Startup);
+    assert!(
+        !startup["prepared"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("the otter release needs release notes")
+    );
+    delivered(&d, startup["delivery"].as_str().unwrap());
+    pause.release();
+    delivery_pause.wait().unwrap();
+    note.recv().unwrap().unwrap();
+    let resume = brief(&d, "brief-after-note-commit", StartSource::Resume);
+    delivery_pause.release();
+    held.join().unwrap();
+    let text = resume["prepared"]["text"].as_str().unwrap();
+    assert!(
+        text.contains("the otter release needs release notes"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_pending_outcome_makes_a_committed_brief_the_start_of_the_next_delta() {
     let d = daemon_with_a_project();
     lesson(&d, "the otter release needs a signed tag");
