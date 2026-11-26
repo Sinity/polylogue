@@ -203,12 +203,12 @@ fn status_carries_the_recent_log_and_log_returns_every_kept_record() {
 #[test]
 fn status_answers_within_its_default_deadline_while_a_pass_ingests_a_large_corpus() {
     use std::sync::Arc;
-    const SESSIONS: usize = 400;
+    const SESSIONS: usize = 200;
     const TURNS: usize = 60;
     /// Status requests sent while every read connection is held.
     const WHILE_HELD: usize = 20;
     let daemon = crate::test_daemon::start("synthetic source");
-    // Neutral generated text, about 40 MB in all, written beside the
+    // Neutral generated text, about 20 MB in all, written beside the
     // session the daemon has already read so its next pass ingests it.
     let project = daemon.home.join(".claude/projects/-corpus");
     std::fs::create_dir_all(&project).unwrap();

@@ -152,27 +152,25 @@ fn declarations_guard_complete_records_and_reject_unknown_kind_names() {
         assert_eq!(
             declaration.kind.version,
             match declaration.kind.name.as_str() {
-                "polylogue.message" => 10,
+                "polylogue.message" => 11,
                 "polylogue.delivery"
                 | "polylogue.delivery_outcome"
                 | "polylogue.request"
                 | "polylogue.request_restore" => 11,
-                "polylogue.session" | "polylogue.link" | "polylogue.parse_progress" => 8,
+                "polylogue.session" | "polylogue.link" | "polylogue.parse_progress" => 9,
                 "polylogue.input_observation" => 8,
                 "polylogue.document"
                 | "polylogue.event"
                 | "polylogue.background"
-                | "polylogue.repository" => 7,
+                | "polylogue.repository" => 8,
                 "polylogue.query_run" => 10,
                 "polylogue.query_run_outcome" => 2,
                 "polylogue.blob" | "polylogue.coverage" => 3,
-                "polylogue.fragment" => 5,
+                "polylogue.fragment" => 6,
                 "polylogue.annotation" | "polylogue.attachment_binding" => 2,
                 "polylogue.annotation_restore" | "polylogue.historical_restore" => 1,
-                "polylogue.query"
-                | "polylogue.tool_call"
-                | "polylogue.prefix_copy"
-                | "polylogue.prefix_member" => 3,
+                "polylogue.query" => 3,
+                "polylogue.tool_call" | "polylogue.prefix_copy" | "polylogue.prefix_member" => 4,
                 "polylogue.line_resolution" | "polylogue.line_resolution_restore" => 8,
                 "polylogue.line_save" | "polylogue.line_save_restore" => 5,
                 other => panic!("undeclared successor kind/version expectation: {other}"),
@@ -256,7 +254,7 @@ fn partial_fragment_has_its_own_kind_and_retains_the_receiving_record_range() {
         .into_iter()
         .find(|declaration| declaration.kind.name == "polylogue.fragment")
         .unwrap();
-    assert_eq!(declaration.kind.version, 5);
+    assert_eq!(declaration.kind.version, 6);
     jsonschema::validator_for(declaration.payload_schema.as_ref().unwrap())
         .unwrap()
         .validate(&payload)
