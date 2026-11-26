@@ -139,7 +139,11 @@ pub(crate) fn page(
     }
     let freshness = page.snapshot.freshness.clone();
     let missing = page.snapshot.incomplete.clone();
-    let empty = page.records.is_empty() && page.document.footer.shown == 0;
+    let empty = page.records.is_empty()
+        && page.document.footer.shown == 0
+        && page.document.footer.coverage.is_empty()
+        && matches!(&page.document.header.kind,
+            HeaderKind::Record { record_type } if record_type == "query");
     let mut answer = crate::protocol::read(page, &freshness);
     if !missing.is_empty() {
         answer.outcome = match answer.outcome {
