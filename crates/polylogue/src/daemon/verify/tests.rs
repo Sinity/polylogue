@@ -176,14 +176,14 @@ fn explicit_vector_status_counts_all_models_without_a_provider() {
                 keys: vec![
                     KeyStatus {
                         key: "model-a".into(),
-                        dims: 2,
+                        dims: Some(2),
                         texts: 2,
                         vectors: 3,
                         failures: 1
                     },
                     KeyStatus {
                         key: "model-b".into(),
-                        dims: 1,
+                        dims: Some(1),
                         texts: 1,
                         vectors: 1,
                         failures: 0
