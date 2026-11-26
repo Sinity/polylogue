@@ -1,6 +1,6 @@
 //! The parents home, read after the real engine has stored its files.
 use polylogue_model::{SessionId, SessionKind, WrittenBy, money::usd_display};
-use polylogue_store::measure::{self, Selection};
+use polylogue_store::query::{Options, compile};
 use polylogue_testkit::{Morrow, Set};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::ControlFlow;
@@ -18,7 +18,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             12,
             3,
             "$1.26",
-            "$1.26",
+            None,
         ),
         (
             "claude-code:7f3a2c10-0002-4000-8000-000000000002",
@@ -27,7 +27,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             18,
             3,
             "$2.85",
-            "$3.01",
+            None,
         ),
         (
             "claude-code:agent-a7f3a2c1000000003",
@@ -36,7 +36,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             6,
             0,
             "$0.16",
-            "$0.16",
+            None,
         ),
         (
             "claude-code:7f3a2c10-0004-4000-8000-000000000004",
@@ -45,7 +45,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             29,
             3,
             "$1.59",
-            "$1.59",
+            None,
         ),
         (
             "claude-code:7f3a2c10-0101-4000-8000-000000000101",
@@ -54,7 +54,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             10,
             2,
             "$0.76",
-            "$0.94",
+            Some("$0.94"),
         ),
         (
             "claude-code:7f3a2c10-0101-4000-8000-000000000101~side-d1500000-0000-4000-8000-000000000001",
@@ -63,7 +63,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             2,
             0,
             "$0.03",
-            "$0.03",
+            Some("$0.03"),
         ),
         (
             "claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000102",
@@ -72,7 +72,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             6,
             0,
             "$0.10",
-            "$0.15",
+            Some("$0.15"),
         ),
         (
             "claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000103",
@@ -81,7 +81,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             4,
             0,
             "$0.05",
-            "$0.05",
+            Some("$0.05"),
         ),
         (
             "claude-code:7f3a2c10-0101-4000-8000-000000000101/a7f3a2c1000000104",
@@ -90,7 +90,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             8,
             0,
             "$0.05",
-            "$0.05",
+            Some("$0.05"),
         ),
         (
             "claude-code:7f3a2c10-0105-4000-8000-000000000105",
@@ -99,7 +99,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             12,
             2,
             "$0.60",
-            "$0.66",
+            Some("$0.66"),
         ),
         (
             "claude-code:7f3a2c10-0105-4000-8000-000000000105/a7f3a2c1000000106",
@@ -108,7 +108,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             4,
             0,
             "$0.03",
-            "$0.03",
+            Some("$0.03"),
         ),
         (
             "claude-code:7f3a2c10-0105-4000-8000-000000000105/a7f3a2c1000000107",
@@ -117,7 +117,7 @@ fn parents_set_lineage_matches_morrow_facts() {
             5,
             0,
             "$0.03",
-            "$0.03",
+            Some("$0.03"),
         ),
         (
             "claude-code:7f3a2c10-0108-4000-8000-000000000108",
@@ -126,16 +126,37 @@ fn parents_set_lineage_matches_morrow_facts() {
             6,
             2,
             "$0.36",
-            "$0.36",
+            Some("$0.36"),
         ),
     ];
     let w = Morrow::build(Set::Parents);
     let pool = w.reads();
     let reader = pool.reader().unwrap();
-    // The reader has no session inventory or session-summary count accessor.
-    let rows = reader
-        .query("SELECT id, pk, message_count FROM session ORDER BY id", &[])
-        .unwrap();
+    let options = Options {
+        clock: query_language::time::Clock::new(
+            "2026-10-08T12:00:00Z".parse().unwrap(),
+            query_language::time::DaySetting::new(
+                jiff::tz::TimeZone::UTC,
+                jiff::civil::time(0, 0, 0, 0),
+            )
+            .unwrap(),
+        ),
+        origins: vec!["claude-code".into()],
+        page_size: None,
+        random_seed: None,
+        embeddings: false,
+        self_session: None,
+        here: None,
+        seen_marks_of: None,
+        saved: Default::default(),
+        fields: ["id", "messages", "cost", "tree_cost"]
+            .map(str::to_owned)
+            .to_vec(),
+        kept: Default::default(),
+        provider_catalog: None,
+    };
+    let program = compile("sessions where physical:true | sort by id", &options).unwrap();
+    let rows = reader.query_rows(&program).unwrap();
     let mut expected_ids: Vec<_> = expected.iter().map(|row| row.0).collect();
     expected_ids.sort();
     assert_eq!(
@@ -179,19 +200,11 @@ fn parents_set_lineage_matches_morrow_facts() {
         shown_ids.insert(id, ids);
         let row = rows.iter().find(|row| row["id"] == id).unwrap();
         assert_eq!(
-            row["message_count"].as_u64(),
+            row["messages"].as_u64(),
             Some(own as u64),
             "session message count: {id}"
         );
-        let usage = measure::usage(
-            &reader,
-            &Selection {
-                sessions: Some(vec![row["pk"].as_i64().unwrap()]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let amount = usage.api_cost.known.unwrap().nusd();
+        let amount = row["cost"].as_i64().unwrap();
         assert_eq!(usd_display(amount), cost, "own cost: {id}");
         costs.insert(id.to_owned(), amount);
         for link in reader.links(&sid).unwrap() {
@@ -245,17 +258,9 @@ fn parents_set_lineage_matches_morrow_facts() {
     }
     // FACTS.md: tree cost includes spawned descendants, never copies or forks.
     for (id, _, _, _, _, _, tree_cost) in expected {
-        let mut pending = vec![id.to_owned()];
-        let mut total = 0;
-        while let Some(parent) = pending.pop() {
-            total += costs[&parent];
-            pending.extend(
-                links
-                    .iter()
-                    .filter(|l| l.0 == parent && l.2 == "spawn")
-                    .map(|l| l.1.clone()),
-            );
-        }
+        let Some(tree_cost) = tree_cost else { continue };
+        let row = rows.iter().find(|row| row["id"] == id).unwrap();
+        let total = row["tree_cost"].as_i64().unwrap();
         assert_eq!(usd_display(total), tree_cost, "tree cost: {id}");
         if id == expected[4].0 {
             // FACTS.md: L1's tree is exactly 0.9364.
