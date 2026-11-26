@@ -38,7 +38,7 @@ fn exchange(host: &Arc<BrowserHost>, message: Value) -> Answer {
         Ok(data) => Answer { status: 200, data },
         Err(error) => Answer {
             status: error.kind.http_status().unwrap_or(503),
-            data: json!({"error":error.code,"message":error.message,"reason":error.reason}),
+            data: json!({"error":error.code,"message":error.message,"reason":error.reason()}),
         },
     }
 }

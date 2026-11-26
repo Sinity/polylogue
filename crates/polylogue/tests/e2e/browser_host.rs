@@ -167,11 +167,17 @@ fn capture_over_one_megabyte_arrives_in_parts_and_is_stored_whole() {
         &json!({"version":2,"type":"capture","capture":body}),
     );
     assert_eq!(saved["outcome"], "ok");
-    let path = dir
-        .path()
-        .join("state/polylogue/browser-capture")
-        .join(polylogue::browser::capture_log_path("chatgpt", "large"));
-    let stored = std::fs::read(path).unwrap();
+    let captures: Vec<_> =
+        std::fs::read_dir(dir.path().join("state/polylogue/browser-capture/chatgpt"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+            .collect();
+    assert_eq!(captures.len(), 1);
+    let stored = std::fs::read(&captures[0]).unwrap();
     let start =
         polylogue_model::capture_log::MAGIC.len() + polylogue_model::capture_log::HEADER_LEN;
     assert_eq!(&stored[start..], body.as_bytes());
