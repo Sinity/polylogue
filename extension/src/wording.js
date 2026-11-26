@@ -16,49 +16,43 @@
     return new Date(at).toLocaleString();
   }
 
-  // `page` is the background's answer about a tab: the conversation on
-  // it, what the archive holds of it, and the extension's last capture.
+  // `page` is the background's answer about a tab (see capture_state.js).
+  // Answers the capture state with the words for it: what is held is the
+  // label, and a failed last capture is a line under it.
   function conversation(page) {
-    if (page?.error) {
-      return { tone: "bad", label: "The extension could not check this page", detail: String(page.error) };
-    }
-    if (!page?.provider) return { tone: "neutral", label: "Not a chat page", detail: "" };
-    if (!page.conversation) {
-      return { tone: "neutral", label: `${providerName(page.provider)}: no conversation open`, detail: "" };
-    }
-    const last = page.last;
+    const states = root.polylogueCaptureState;
+    const state = states.of(page);
+    const last = page?.last;
+    const failed = last?.outcome === "failed";
     const lastLine = last ? `Last capture ${ago(last.at)}: ${last.text}` : "";
-    if (page.host === "missing") {
-      return {
-        tone: "bad",
-        label: "Polylogue is not installed for this browser",
-        detail: "Run `polylogue install chrome --extension-id <id>`.",
-      };
-    }
-    if (last?.outcome === "failed") {
-      return { tone: "bad", label: "The last capture failed", detail: lastLine };
-    }
-    switch (page.state) {
-      case "archived":
-        return {
-          tone: "ok",
-          label: `In the archive: ${page.messages} message${page.messages === 1 ? "" : "s"}`,
-          detail: lastLine,
-        };
-      case "spooled":
-        return {
-          tone: page.daemon === "running" ? "ok" : "warn",
-          label: page.daemon === "running" ? "Stored; Polylogue is reading it" : "Stored; Polylogue reads it when its daemon answers",
-          detail: lastLine,
-        };
-      case "missing":
-        return { tone: "warn", label: "Not captured yet", detail: lastLine };
+    const lastOrFailureLine = failed ? `The last capture failed ${ago(last.at)}: ${last.text}` : lastLine;
+    const said = (tone, label, detail) => ({ state, tone, label, detail });
+    switch (state) {
+      case states.COULD_NOT_CHECK:
+        return said("bad", "The extension could not check this page", String(page.error));
+      case states.NOT_A_CHAT_PAGE:
+        return said("neutral", "Not a chat page", "");
+      case states.NO_CONVERSATION_OPEN:
+        return said("neutral", `${providerName(page.provider)}: no conversation open`, "");
+      case states.HOST_NOT_INSTALLED:
+        return said("bad", "Polylogue is not installed for this browser", "Run `polylogue install chrome --extension-id <id>`.");
+      case states.HOST_DID_NOT_ANSWER:
+        return said("bad", "Polylogue did not answer", lastOrFailureLine);
+      case states.IN_ARCHIVE:
+      case states.IN_ARCHIVE_FILES_DOWNLOADING:
+        return said(failed ? "warn" : "ok", `In the archive: ${page.messages} message${page.messages === 1 ? "" : "s"}`, lastOrFailureLine);
+      case states.STORED_BEING_READ:
+        return said(failed ? "warn" : "ok", "Stored; Polylogue is reading it", lastOrFailureLine);
+      case states.STORED_DAEMON_NOT_ANSWERING:
+        return said("warn", "Stored; Polylogue reads it when its daemon answers", lastOrFailureLine);
+      case states.LAST_CAPTURE_FAILED:
+        return said("bad", "The last capture failed", lastLine);
+      case states.NOT_CAPTURED:
+        return said("warn", "Not captured yet", lastLine);
+      case states.DAEMON_DID_NOT_ANSWER:
+        return said("warn", "The daemon did not answer", lastLine || "It is stopped (start it with `polylogue daemon`) or busy.");
       default:
-        return {
-          tone: last?.outcome === "stored" ? "ok" : "warn",
-          label: last?.outcome === "stored" ? "Stored; the daemon did not answer" : "The daemon did not answer",
-          detail: lastLine || "It is stopped (start it with `polylogue daemon`) or busy.",
-        };
+        throw new Error(`unknown capture state: ${state}`);
     }
   }
 

@@ -32,6 +32,7 @@
       "js": [
         "src/content/chatgpt.js",
         "src/content/page.js",
+        "src/capture_state.js",
         "src/wording.js",
         "src/content/panel.js"
       ],
@@ -44,6 +45,7 @@
       "js": [
         "src/content/claude.js",
         "src/content/page.js",
+        "src/capture_state.js",
         "src/wording.js",
         "src/content/panel.js"
       ],
@@ -56,6 +58,7 @@
       "js": [
         "src/content/grok.js",
         "src/content/page.js",
+        "src/capture_state.js",
         "src/wording.js",
         "src/content/panel.js"
       ],
@@ -68,6 +71,7 @@
       "js": [
         "src/content/gemini.js",
         "src/content/page.js",
+        "src/capture_state.js",
         "src/wording.js",
         "src/content/panel.js"
       ],

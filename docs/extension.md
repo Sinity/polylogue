@@ -74,7 +74,7 @@ Each conversation is in one of six plain states, shown in the in-page indicator,
 | *Not saved* | the provider does not keep it (a temporary chat) |
 | *Partial fidelity* | stored from a weaker route and missing structure |
 
-A view of a conversation that has not been captured says "Not captured yet".
+A view of a conversation that has not been captured says "Not captured yet". A conversation the archive or the spool holds is shown as held; a later capture of it that failed is reported on a line under that state, never in its place. A messaging host that is installed and fails to answer is reported as Polylogue not answering, in the panel and the popup alike.
 
 ## Provider URLs
 
