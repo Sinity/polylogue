@@ -367,16 +367,25 @@ fn unread(
 }
 
 fn pending_writes(d: &Daemon) -> crate::protocol::status::PendingWrites {
-    let (delivery_outcomes, outcome_error) = d.queued_deliveries.pending_outcomes();
+    let delivery_outcomes = d.writes.as_ref().map_or(0, |writes| {
+        writes
+            .archive()
+            .pending_deliveries()
+            .iter()
+            .filter(|request| {
+                matches!(
+                    request.request.write,
+                    polylogue_model::user::UserWrite::DeliveryEvent { .. }
+                )
+            })
+            .count() as u64
+    });
     let spool = d.live_spool.locked().summary();
     let (live_event_lines, spool_error) = (spool.lines, spool.error);
     crate::protocol::status::PendingWrites {
         delivery_outcomes,
         live_event_lines,
-        last_error: outcome_error
-            .into_iter()
-            .chain(spool_error)
-            .reduce(|left, right| format!("{left}; {right}")),
+        last_error: spool_error,
     }
 }
 

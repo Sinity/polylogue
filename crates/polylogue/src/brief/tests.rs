@@ -98,13 +98,13 @@ fn recall_fuses_prose_and_tool_output_in_the_querys_order() {
     let p = prepare(
         crate::brief::BriefContext {
             reader: &reader,
+            pending_deliveries: &[],
             delivery_id: "d1",
             context: &fixture_context(Timestamp::from_unix_ms(0).unwrap()),
             ranking_identity: None,
             near: None,
         },
         &SharedScopeIndex::default(),
-        None,
         &[],
         &ask,
         Default::default(),
@@ -305,13 +305,13 @@ fn a_brief_reports_what_recent_sessions_did_and_what_is_open() {
         prepare(
             crate::brief::BriefContext {
                 reader: &reader,
+                pending_deliveries: &[],
                 delivery_id: "d1",
                 context: &fixture_context(now),
                 ranking_identity: None,
                 near: None,
             },
             &scope_of(&reader),
-            None,
             &[],
             &ask,
             budget,
@@ -439,13 +439,13 @@ fn recall_pages_continue_by_cursor() {
         let p = prepare(
             crate::brief::BriefContext {
                 reader: &reader,
+                pending_deliveries: &[],
                 delivery_id: "d",
                 context: &fixture_context(now),
                 ranking_identity: None,
                 near: None,
             },
             &SharedScopeIndex::default(),
-            None,
             &[],
             &ask,
             Default::default(),
@@ -476,13 +476,13 @@ fn recall_pages_continue_by_cursor() {
         prepare(
             crate::brief::BriefContext {
                 reader: &reader,
+                pending_deliveries: &[],
                 delivery_id: "d",
                 context: &fixture_context(now),
                 ranking_identity: None,
                 near: None
             },
             &SharedScopeIndex::default(),
-            None,
             &[],
             &ask,
             Default::default()
@@ -535,13 +535,13 @@ fn a_brief_reads_a_bounded_number_of_pages_at_any_directory() {
         let p = prepare(
             crate::brief::BriefContext {
                 reader: &reader,
+                pending_deliveries: &[],
                 delivery_id: "d1",
                 context: &fixture_context(now),
                 ranking_identity: None,
                 near: None,
             },
             &scope,
-            None,
             &[],
             &Ask::SessionStart {
                 cwd: cwd.into(),
@@ -610,13 +610,13 @@ fn a_brief_past_its_deadline_answers_with_the_sections_it_has() {
         prepare(
             crate::brief::BriefContext {
                 reader: &reader,
+                pending_deliveries: &[],
                 delivery_id: "d1",
                 context: &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
                 ranking_identity: None,
                 near: None,
             },
             &scope,
-            None,
             &[],
             &Ask::SessionStart {
                 cwd: "/home/op/proj".into(),
@@ -733,13 +733,13 @@ fn takeover_prompt_times_match_records() {
     let prepared = prepare(
         BriefContext {
             reader: &reader,
+            pending_deliveries: &[],
             delivery_id: "synthetic-takeover-times",
             context: &context,
             ranking_identity: None,
             near: None,
         },
         &SharedScopeIndex::default(),
-        None,
         &[],
         &Ask::Takeover {
             session: SessionId::parse("codex:synthetic-takeover").unwrap(),
@@ -806,13 +806,13 @@ fn named_context_default_budgets_and_tight_budgets_fit() {
     let prepared = prepare(
         crate::brief::BriefContext {
             reader: &reader,
+            pending_deliveries: &[],
             delivery_id: "tight",
             context: &fixture_context(Timestamp::from_unix_ms(T0 + 3_600_000).unwrap()),
             ranking_identity: None,
             near: None,
         },
         &scope_of(&reader),
-        None,
         &[],
         &ask,
         command_surface::TokenBudget::Tokens(400),
@@ -869,13 +869,13 @@ fn numeric_default_and_unlimited_budgets_keep_distinct_meanings() {
         prepare(
             crate::brief::BriefContext {
                 reader: &reader,
+                pending_deliveries: &[],
                 delivery_id: "budget-example",
                 context: &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
                 ranking_identity: None,
                 near: None,
             },
             &scope,
-            None,
             &[],
             &ask,
             budget,
@@ -984,13 +984,13 @@ fn startup_manual_and_compaction_prompts_fit_whole() {
         let p = prepare(
             crate::brief::BriefContext {
                 reader: &reader,
+                pending_deliveries: &[],
                 delivery_id: "protected",
                 context: &fixture_context(Timestamp::from_unix_ms(T0 + 3600000).unwrap()),
                 ranking_identity: None,
                 near: None,
             },
             &scope,
-            None,
             &[],
             &Ask::SessionStart {
                 cwd: "/home/op/proj".into(),
@@ -1030,13 +1030,13 @@ fn older_observed_claims_remain_visible_without_claiming_external_state() {
     let p = prepare(
         crate::brief::BriefContext {
             reader: &reader,
+            pending_deliveries: &[],
             delivery_id: "old-claim",
             context: &fixture_context(Timestamp::from_unix_ms(T0 + 40 * 86400000).unwrap()),
             ranking_identity: None,
             near: None,
         },
         &scope_of(&reader),
-        None,
         &[],
         &Ask::SessionStart {
             cwd: "/home/op/proj".into(),
@@ -1243,13 +1243,13 @@ fn latest_human_correction_is_shown_before_the_older_model_answer() {
     let prepared = prepare(
         crate::brief::BriefContext {
             reader: &reader,
+            pending_deliveries: &[],
             delivery_id: "latest-request",
             context: &fixture_context(Timestamp::from_unix_ms(T0).unwrap()),
             ranking_identity: None,
             near: None,
         },
         &scope_of(&reader),
-        None,
         &[],
         &Ask::SessionStart {
             cwd: "/work/corrected".into(),
